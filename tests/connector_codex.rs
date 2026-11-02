@@ -1142,3 +1142,37 @@ fn codex_connector_metadata_indicates_format() {
         Some("rollout_json")
     );
 }
+
+// review 2026-11-02 F6 through the CASS wrapper (incl. its enrichment pass).
+#[test]
+fn codex_sums_distinct_request_token_counts_through_cass_wrapper() {
+    let dir = TempDir::new().unwrap();
+    let sessions = dir.path().join("sessions/2025/12/01");
+    fs::create_dir_all(&sessions).unwrap();
+    let sample = r#"{"timestamp":"2025-12-01T10:00:00.000Z","type":"session_meta","payload":{"id":"p2c","cwd":"/test/workspace","cli_version":"0.42.0"}}
+{"timestamp":"2025-12-01T10:00:00.500Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"question"}]}}
+{"timestamp":"2025-12-01T10:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"answer"}]}}
+{"timestamp":"2025-12-01T10:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5,"output_tokens":10},"total_token_usage":{"total_tokens":15}}}}
+{"timestamp":"2025-12-01T10:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5,"output_tokens":10},"total_token_usage":{"total_tokens":15}}}}
+{"timestamp":"2025-12-01T10:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":7,"output_tokens":14},"total_token_usage":{"total_tokens":36}}}}
+"#;
+    fs::write(sessions.join("rollout-p2c.jsonl"), sample).unwrap();
+    let ctx = ScanContext::with_roots(
+        dir.path().to_path_buf(),
+        vec![ScanRoot::local(dir.path().to_path_buf())],
+        None,
+    );
+    let convs = CodexConnector::new().scan(&ctx).unwrap();
+    assert_eq!(convs.len(), 1);
+    let assistant = convs[0]
+        .messages
+        .iter()
+        .find(|m| m.role == "assistant" && m.content.contains("answer"))
+        .expect("assistant message");
+    let usage = assistant
+        .extra
+        .pointer("/cass/token_usage")
+        .expect("token usage");
+    assert_eq!(usage["input_tokens"].as_i64(), Some(12));
+    assert_eq!(usage["output_tokens"].as_i64(), Some(24));
+}
