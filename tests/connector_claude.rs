@@ -1166,3 +1166,36 @@ fn generated_title_survives_fad_ingest() {
     );
     storage.close().unwrap();
 }
+
+fn claude_scan(jsonl: &str) -> Vec<coding_agent_search::connectors::NormalizedConversation> {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("fixture-claude/projects/review-p2a");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("p2a-session.jsonl"), jsonl).unwrap();
+    let ctx = ScanContext {
+        data_dir: tmp.path().join("fixture-claude"),
+        scan_roots: Vec::new(),
+        since_ts: None,
+        progress_tick: None,
+    };
+    let convs = ClaudeCodeConnector::new().scan(&ctx).expect("scan");
+    drop(tmp);
+    convs
+}
+
+// review 2026-11-02 F2 through the CASS wrapper.
+#[test]
+fn claude_keeps_thinking_only_records_searchable() {
+    let convs = claude_scan(concat!(
+        r#"{"type":"user","sessionId":"p2a","message":{"role":"user","content":"why?"}}"#,
+        "\n",
+        r#"{"type":"assistant","sessionId":"p2a","requestId":"r1","message":{"id":"m1","role":"assistant","content":[{"type":"thinking","thinking":"p2a-unique-thought"}]}}"#,
+        "\n",
+    ));
+    assert!(
+        convs[0]
+            .messages
+            .iter()
+            .any(|m| m.content.contains("p2a-unique-thought"))
+    );
+}
