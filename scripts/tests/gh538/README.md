@@ -3,9 +3,8 @@
 This runs the actual selected production Rust against real filesystem operations
 when the full application build is unavailable. It **does not pass the full Rust
 gate, run the live CASS watcher, validate canonical SQL/search recovery, or qualify
-the reporter's original macOS stall**. See the investigation record at
-[`docs/perf/issue-538-watch-reliability.md`](../../../docs/perf/issue-538-watch-reliability.md)
-for those separate requirements and the supported reporter trace command.
+the reporter's original macOS stall**; those require the full application gate
+and the supported reporter trace command.
 
 ## Run
 

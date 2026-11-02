@@ -1,9 +1,3 @@
-## Permanent CI/automation policy: DSR only
-
-GitHub Actions must NEVER be used for ANY purpose in this project. Do not create, enable, dispatch, rerun, or rely on GitHub Actions workflows, whether they use GitHub-hosted runners or self-hosted runners registered with Actions. This is permanent policy, not a billing, quota, or outage workaround.
-
-Use [DSR (Doodlestein Self-Releaser)](https://github.com/Dicklesworthstone/doodlestein_self_releaser) directly for CI, checks, builds, tests, releases, deployment automation, scheduled jobs, and other automation. DSR is the execution path, not a fallback after trying Actions. Existing workflow YAML may remain as input for local DSR/`act` execution; that does not authorize execution through GitHub Actions. Do not delete those definitions merely to enforce this policy. Keep all existing quality gates and evidence requirements when routing work through DSR.
-
 # State
 
 This is a locally developed project with local changes. My goal is to maintain local fixes, but periodically checkout
@@ -17,11 +11,6 @@ create a new method which does the new or fixed functionality.
 
 При нехватке места удаляй кеши сборки без лишних вопросов (только регенерируемые артефакты: target/, incremental-кеши)
 
-# AGENTS.md — coding_agent_session_search (cass)
-
-> Guidelines for AI coding agents working in this Rust codebase.
-
----
 
 ## RULE 0 - THE FUNDAMENTAL OVERRIDE PREROGATIVE
 
@@ -250,7 +239,7 @@ The strict family guard requires uniform 0.4.12 registry versions.
 | Dependency | Pinned source |
 |------------|-----------------|
 | `frankensqlite` (`fsqlite`) / `fsqlite-types` and the whole SQLite family | crates.io `=0.4.12` (tag v0.4.12 = `26aa19afcbd5afdb01658a10bb33417ad0b513be`); `build.rs` refuses a mixed family. Carries 0.4.12's bd-obwsy (the 0.4.10 advisory), bd-gwoit, bd-yxqs9 and largest-rowid explicit-write (9308c4bb6) fixes, plus 0.4.1's GH#462 reserved-page WAL repair, 0.4.2's derived WAL-index recovery for read-only opens (GH#477), 0.4.4's durable pending-freelist repairs, 0.4.6's page-referenced-twice (bd-b5vmw) and lost-index-entry (bd-11sz4) fixes, 0.4.7's large multi-row INSERT index fix (bd-2eebi), serialized-DDL race fix (bd-4iaoi), GH#503 shadow-autoindex repair open, bounded published-page plane (5s1la) and first-`sqlite_master` full-file read fix (k2k20), and 0.4.9's prompt stale-WAL-index refusal (48c6cf6b2) and stock-empty-WAL-index first-write fix (4b48c95d8, cass GH#509). CASS runtime qualification of 0.4.12 passed (gi7k7). 0.4.6 included upstream's likely fix (fd8c16a94) for a long-lived connection left refusing every BEGIN (2l1b0.75, frankensqlite GH#429), not yet verified on the owner-archive scenario; the legacy OMP analytics phase keeps its own fresh writer regardless |
-| `franken-agent-detection` | `=0.3.10` at git rev `6b337ba434b72c65c6c5a748b7ec47885f840ac0` (GH#520 remote-mirror source identity, Continue `continue` and Kiro CLI `kiro` connectors, early SQLite connector runtime shutdown and full OpenCode read-error chains, GH#519), features `pi-durable` and `pi-sqlite` (the `pi_durable` connector for Pi's durable-harness stores, FAD#28; `pi_agent_rust` SQLite sessions; Pi compaction/branch provenance, FAD#27) and `codex-zstd` (reads Codex rollouts compressed to `rollout-*.jsonl.zst` by Codex's `local_thread_store_compression`, with the id of their plain form, GH#513; indexes native Codebuff transcripts, whose timestamps are a locale time of day, with each instant taken from the message ID, and keeps indexing a store's other chats when one transcript does not parse, GH#511; indexes OpenCode 2.x sessions from `session_v2`/`session_message`, GH#504; decodes OpenClaw zstd-compressed transcript events; indexes Claude Code prompts typed mid-turn, GH#500; honors `CASS_EXCLUDE_PATHS` in the Codex and Pi-family connectors, GH#486, and resolves `..`, relative and symlink-alias spellings of an entry, 0f1k0; caps session reads while reading, and lets cass set the Codex rollout budget so `CASS_CODEX_MAX_SOURCE_BYTES` above 100 MiB works) |
+| `franken-agent-detection` | `=0.3.10` at git rev `6b337ba434b72c65c6c5a748b7ec47885f840ac0` (GH#520 remote-mirror source identity, Continue `continue` and Kiro CLI `kiro` connectors, early SQLite connector runtime shutdown and full OpenCode read-error chains, GH#519), features `pi-durable` and `pi-sqlite` (the `pi_durable` connector for Pi's durable-harness stores, FAD#28; `pi_agent_rust` SQLite sessions; Pi compaction/branch provenance, FAD#27) and `codex-zstd` (reads Codex rollouts compressed to `rollout-*.jsonl.zst` by Codex's `local_thread_store_compression`, with the id of their plain form, GH#513; indexes native Codebuff transcripts, whose timestamps are a locale time of day, with each instant taken from the message ID, and keeps indexing a store's other chats when one transcript does not parse, FAD#28) |
 | `asupersync` | crates.io `=0.5.0` (the line fsqlite 0.4.x requires) |
 | `frankensearch` | crates.io `=0.7.1` (tag `crates-v0.7.1`), resolving `frankensearch-index 0.4.2` (hotfix, tag `frankensearch-index-v0.4.2`: files are installed with `std::fs::rename`, so on Windows an open reader no longer blocks an install, bead if17v; and the dumped HNSW sidecars are flushed through write handles, so an HNSW build works on Windows, bead ujxiq), `frankensearch-quill 0.4.1` (hotfix, tag `frankensearch-quill-v0.4.1`: opening a writer verifies each segment once instead of four times; bead hfosx), `frankensearch-rerank 0.5.0`, `frankenhnsw 0.3.5` and the `frankentorch-*` family; features `hash`, `cass-compat`, `quill`, `ann`, `native`. Quill 0.4.0 is the first main-branch release after the 0.3.4 hotfix and carries all three of its fixes: the GH#499 live-doc numeric scoring, the standard CASS Boolean grammar (NOT > AND > OR, parentheses; frankensearch#56) and the union seek_danger fix (a disjunction under a conjunction lost matches on concat-merged segments). It also verifies snapshot segments concurrently on open (GH#501; up to 8 threads, the same bytes are still hashed), builds snippets only for returned hits, and skips a read-only reopen when nothing was published. The CASS schema hash is unchanged (`v9-quill`), so the upgrade does not rebuild the lexical index |
 | `frankentui` (`ftui`, `ftui-runtime`, `ftui-tty`, `ftui-extras`) | crates.io `=0.5.0` (2026-08-21; previously git `5f78cfa0` / 0.3.1 — the 0.5 API compiled with zero call-site changes) |
@@ -350,9 +339,9 @@ rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-check-target cargo fmt --check
 
 If you see errors, **carefully understand and resolve each issue**. Read sufficient context to fix them the RIGHT way.
 
-### UBS Pre-Merge Gate
+### Full gate
 
-Per `coding_agent_session_search-dpfvr`, every change runs `ubs --ci --fail-on-warning` against the changed files (the `ubs` stage of `scripts/gate.sh`). The gate is **blocking** — warnings stop merges. **GitHub Actions is permanently off** (owner, 2026-10-09: "NO GH ACTIONS, PERIOD!!! EVER!!! we ONLY ever use /dsr"). `.github/workflows/` stays empty: never add a workflow for anything (verification, patch application, publication), never park a fix in one, and never make a bead's closure wait on a workflow run. `scripts/gate.sh` refuses to run on a tree that carries a workflow file, and `tests/no_github_actions.rs` fails on one (all 67 were removed 2026-10-21 with the owner's approval, after finished fixes parked in them sat unapplied on main: bead nqbwq). Windows and macOS proof comes from the dsr build hosts (`dsr health all`), releases from `dsr build` / `dsr release` / `dsr fallback`. This gate — like fmt/clippy/tests — is agent-run through `rch` before pushing. Run it as ONE fleet admission with `scripts/gate.sh` (fmt, clippy `-D warnings`, lib tests, targeted integration tests, goldens; `--lib-filter`, `--integration name:filter,...`, `--regen-goldens`; `GATE_RETRIES=40` retries fleet refusals) and cite its `STAGE=<name> EXIT=<code>` receipt lines in the bead closure and the commit message — never spend an admission on a bare `cargo check`.
+Run the whole verification suite as one admission: `scripts/gate.sh` (fmt, clippy `-D warnings`, lib tests, targeted integration tests, goldens; `--lib-filter`, `--integration name:filter,...`, `--regen-goldens`; `GATE_RETRIES=40` retries fleet refusals).
 
 **Local pre-flight before pushing:**
 
@@ -918,196 +907,6 @@ backtrace = []                             # Enhanced backtraces
 
 ---
 
-## MCP Agent Mail — Multi-Agent Coordination
-
-A mail-like layer that lets coding agents coordinate asynchronously via MCP tools and resources. Provides identities, inbox/outbox, searchable threads, and advisory file reservations with human-auditable artifacts in Git.
-
-### Why It's Useful
-
-- **Prevents conflicts:** Explicit file reservations (leases) for files/globs
-- **Token-efficient:** Messages stored in per-project archive, not in context
-- **Quick reads:** `resource://inbox/...`, `resource://thread/...`
-
-### Same Repository Workflow
-
-1. **Register identity:**
-   ```
-   ensure_project(project_key=<abs-path>)
-   register_agent(project_key, program, model)
-   ```
-
-2. **Reserve files before editing:**
-   ```
-   file_reservation_paths(project_key, agent_name, ["src/**"], ttl_seconds=3600, exclusive=true)
-   ```
-
-3. **Communicate with threads:**
-   ```
-   send_message(..., thread_id="FEAT-123")
-   fetch_inbox(project_key, agent_name)
-   acknowledge_message(project_key, agent_name, message_id)
-   ```
-
-4. **Quick reads:**
-   ```
-   resource://inbox/{Agent}?project=<abs-path>&limit=20
-   resource://thread/{id}?project=<abs-path>&include_bodies=true
-   ```
-
-### Macros vs Granular Tools
-
-- **Prefer macros for speed:** `macro_start_session`, `macro_prepare_thread`, `macro_file_reservation_cycle`, `macro_contact_handshake`
-- **Use granular tools for control:** `register_agent`, `file_reservation_paths`, `send_message`, `fetch_inbox`, `acknowledge_message`
-
-### Common Pitfalls
-
-- `"from_agent not registered"`: Always `register_agent` in the correct `project_key` first
-- `"FILE_RESERVATION_CONFLICT"`: Adjust patterns, wait for expiry, or use non-exclusive reservation
-- **Auth errors:** If JWT+JWKS enabled, include bearer token with matching `kid`
-
----
-
-## Beads (br) — Dependency-Aware Issue Tracking
-
-Beads provides a lightweight, dependency-aware issue database and CLI (`br` - beads_rust) for selecting "ready work," setting priorities, and tracking status. It complements MCP Agent Mail's messaging and file reservations.
-
-**Important:** `br` is non-invasive—it NEVER runs git commands automatically. You must manually commit changes after `br sync --flush-only`.
-
-### Conventions
-
-- **Single source of truth:** Beads for task status/priority/dependencies; Agent Mail for conversation and audit
-- **Shared identifiers:** Use Beads issue ID (e.g., `br-123`) as Mail `thread_id` and prefix subjects with `[br-123]`
-- **Reservations:** When starting a task, call `file_reservation_paths()` with the issue ID in `reason`
-
-### Typical Agent Flow
-
-1. **Pick ready work (Beads):**
-   ```bash
-   br ready --json  # Choose highest priority, no blockers
-   ```
-
-2. **Reserve edit surface (Mail):**
-   ```
-   file_reservation_paths(project_key, agent_name, ["src/**"], ttl_seconds=3600, exclusive=true, reason="br-123")
-   ```
-
-3. **Announce start (Mail):**
-   ```
-   send_message(..., thread_id="br-123", subject="[br-123] Start: <title>", ack_required=true)
-   ```
-
-4. **Work and update:** Reply in-thread with progress
-
-5. **Complete and release:**
-   ```bash
-   br close 123 --reason "Completed"
-   br sync --flush-only  # Export to JSONL (no git operations)
-   ```
-   ```
-   release_file_reservations(project_key, agent_name, paths=["src/**"])
-   ```
-   Final Mail reply: `[br-123] Completed` with summary
-
-### Mapping Cheat Sheet
-
-| Concept | Value |
-|---------|-------|
-| Mail `thread_id` | `br-###` |
-| Mail subject | `[br-###] ...` |
-| File reservation `reason` | `br-###` |
-| Commit messages | Include `br-###` for traceability |
-
----
-
-## bv — Graph-Aware Triage Engine
-
-bv is a graph-aware triage engine for Beads projects (`.beads/beads.jsonl`). It computes PageRank, betweenness, critical path, cycles, HITS, eigenvector, and k-core metrics deterministically.
-
-**Scope boundary:** bv handles *what to work on* (triage, priority, planning). For agent-to-agent coordination (messaging, work claiming, file reservations), use MCP Agent Mail.
-
-**CRITICAL: Use ONLY `--robot-*` flags. Bare `bv` launches an interactive TUI that blocks your session.**
-
-### The Workflow: Start With Triage
-
-**`bv --robot-triage` is your single entry point.** It returns:
-- `quick_ref`: at-a-glance counts + top 3 picks
-- `recommendations`: ranked actionable items with scores, reasons, unblock info
-- `quick_wins`: low-effort high-impact items
-- `blockers_to_clear`: items that unblock the most downstream work
-- `project_health`: status/type/priority distributions, graph metrics
-- `commands`: copy-paste shell commands for next steps
-
-```bash
-bv --robot-triage        # THE MEGA-COMMAND: start here
-bv --robot-next          # Minimal: just the single top pick + claim command
-```
-
-### Command Reference
-
-**Planning:**
-| Command | Returns |
-|---------|---------|
-| `--robot-plan` | Parallel execution tracks with `unblocks` lists |
-| `--robot-priority` | Priority misalignment detection with confidence |
-
-**Graph Analysis:**
-| Command | Returns |
-|---------|---------|
-| `--robot-insights` | Full metrics: PageRank, betweenness, HITS, eigenvector, critical path, cycles, k-core, articulation points, slack |
-| `--robot-label-health` | Per-label health: `health_level`, `velocity_score`, `staleness`, `blocked_count` |
-| `--robot-label-flow` | Cross-label dependency: `flow_matrix`, `dependencies`, `bottleneck_labels` |
-| `--robot-label-attention [--attention-limit=N]` | Attention-ranked labels |
-
-**History & Change Tracking:**
-| Command | Returns |
-|---------|---------|
-| `--robot-history` | Bead-to-commit correlations |
-| `--robot-diff --diff-since <ref>` | Changes since ref: new/closed/modified issues, cycles |
-
-**Other:**
-| Command | Returns |
-|---------|---------|
-| `--robot-burndown <sprint>` | Sprint burndown, scope changes, at-risk items |
-| `--robot-forecast <id\|all>` | ETA predictions with dependency-aware scheduling |
-| `--robot-alerts` | Stale issues, blocking cascades, priority mismatches |
-| `--robot-suggest` | Hygiene: duplicates, missing deps, label suggestions |
-| `--robot-graph [--graph-format=json\|dot\|mermaid]` | Dependency graph export |
-| `--export-graph <file.html>` | Interactive HTML visualization |
-
-### Scoping & Filtering
-
-```bash
-bv --robot-plan --label backend              # Scope to label's subgraph
-bv --robot-insights --as-of HEAD~30          # Historical point-in-time
-bv --recipe actionable --robot-plan          # Pre-filter: ready to work
-bv --recipe high-impact --robot-triage       # Pre-filter: top PageRank
-bv --robot-triage --robot-triage-by-track    # Group by parallel work streams
-bv --robot-triage --robot-triage-by-label    # Group by domain
-```
-
-### Understanding Robot Output
-
-**All robot JSON includes:**
-- `data_hash` — Fingerprint of source beads.jsonl
-- `status` — Per-metric state: `computed|approx|timeout|skipped` + elapsed ms
-- `as_of` / `as_of_commit` — Present when using `--as-of`
-
-**Two-phase analysis:**
-- **Phase 1 (instant):** degree, topo sort, density
-- **Phase 2 (async, 500ms timeout):** PageRank, betweenness, HITS, eigenvector, cycles
-
-### jq Quick Reference
-
-```bash
-bv --robot-triage | jq '.quick_ref'                        # At-a-glance summary
-bv --robot-triage | jq '.recommendations[0]'               # Top recommendation
-bv --robot-plan | jq '.plan.summary.highest_impact'        # Best unblock target
-bv --robot-insights | jq '.status'                         # Check metric readiness
-bv --robot-insights | jq '.Cycles'                         # Circular deps (must fix!)
-```
-
----
-
 ## UBS — Ultimate Bug Scanner
 
 **Golden Rule:** `ubs <changed-files>` before every commit. Exit 0 = safe. Exit >0 = fix & re-run.
@@ -1152,9 +951,7 @@ Parse: `file:line:col` -> location | Suggested fix -> how to fix | Exit 0/1 -> p
 
 ## RCH — Remote Compilation Helper
 
-RCH offloads `cargo build`, `cargo test`, `cargo clippy`, and other compilation commands to a fleet of 8 remote Contabo VPS workers instead of building locally. This prevents compilation storms from overwhelming csd when many agents run simultaneously.
-
-**RCH is installed at `~/.local/bin/rch` and is hooked into Claude Code's PreToolUse automatically.** Most of the time you don't need to do anything if you are Claude Code — builds are intercepted and offloaded transparently. Codex, Gemini, and other agents without that hook must use explicit `rch exec -- env CARGO_TARGET_DIR=... cargo ...` forms.
+RCH offloads `cargo build`, `cargo test`, `cargo clippy`, and other compilation commands to a fleet of remote build workers instead of building locally.
 
 To manually offload a build:
 ```bash
@@ -1166,14 +963,12 @@ rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-rch-target cargo clippy
 Quick commands:
 ```bash
 rch doctor                    # Health check
-rch workers probe --all       # Test connectivity to all 8 workers
+rch workers probe --all       # Test connectivity to all workers
 rch status                    # Overview of current state
 rch queue                     # See active/waiting builds
 ```
 
 If rch or its workers are unavailable, it fails open — builds run locally as normal. For proof runs use `RCH_REQUIRE_REMOTE=1 rch exec -- ...`: it fails closed and refuses local fallback (refusal `RCH-I012`, non-zero exit) when the fleet is pressure-blocked or has no admissible worker — that is not a build failure, so retry once `rch status` shows an admissible worker.
-
-**Note for Codex/GPT-5.2:** Codex does not have the automatic PreToolUse hook, but you can (and should) still manually offload compute-intensive compilation commands using `rch exec -- <command>`. This avoids local resource contention when multiple agents are building simultaneously.
 
 ---
 
@@ -1249,106 +1044,11 @@ Returns structured results with file paths, line ranges, and extracted code snip
 - **Don't** use `ripgrep` to understand "how does X work" -> wastes time with manual reads
 - **Don't** use `ripgrep` for codemods -> risks collateral edits
 
-<!-- bv-agent-instructions-v1 -->
-
 ---
 
-## Beads Workflow Integration
+## Using cass as an Agent
 
-This project uses [beads_rust](https://github.com/Dicklesworthstone/beads_rust) (`br`) for issue tracking. Issues are stored in `.beads/` and tracked in git.
-
-**Important:** `br` is non-invasive—it NEVER executes git commands. After `br sync --flush-only`, you must manually run `git add .beads/ && git commit`.
-
-### Essential Commands
-
-```bash
-# View issues (launches TUI - avoid in automated sessions)
-bv
-
-# CLI commands for agents (use these instead)
-br ready              # Show issues ready to work (no blockers)
-br list --status=open # All open issues
-br show <id>          # Full issue details with dependencies
-br create --title="..." --type=task --priority=2
-br update <id> --status=in_progress
-br close <id> --reason "Completed"
-br close <id1> <id2>  # Close multiple issues at once
-br sync --flush-only  # Export to JSONL (NO git operations)
-```
-
-### Workflow Pattern
-
-1. **Start**: Run `br ready` to find actionable work
-2. **Claim**: Use `br update <id> --status=in_progress`
-3. **Work**: Implement the task
-4. **Complete**: Use `br close <id>`
-5. **Sync**: Run `br sync --flush-only` then manually commit
-
-### Key Concepts
-
-- **Dependencies**: Issues can block other issues. `br ready` shows only unblocked work.
-- **Priority**: P0=critical, P1=high, P2=medium, P3=low, P4=backlog (use numbers, not words)
-- **Types**: task, bug, feature, epic, question, docs
-- **Blocking**: `br dep add <issue> <depends-on>` to add dependencies
-
-### Session Protocol
-
-**Before ending any session, run this checklist:**
-
-```bash
-git status              # Check what changed
-git add <files>         # Stage code changes
-br sync --flush-only    # Export beads to JSONL
-git add .beads/         # Stage beads changes
-git commit -m "..."     # Commit everything together
-git push                # Push to remote
-```
-
-### Best Practices
-
-- Check `br ready` at session start to find available work
-- Update status as you work (in_progress -> closed)
-- Create new issues with `br create` when you discover tasks
-- Use descriptive titles and set appropriate priority/type
-- Always `br sync --flush-only && git add .beads/` before ending session
-
-### Commit-Message Convention
-
-When closing a bead via `br close`, the corresponding code commit MUST include `(coding_agent_session_search-<id>)` in the commit subject. This makes `git log --grep=<id>` deterministic and unblocks audit-trail tooling.
-
-Example:
-```
-feat(doctor): add raw_mirror capture during indexing (coding_agent_session_search-9dfb0)
-```
-
-Multi-bead commits append all relevant IDs:
-```
-fix(audit): wave-2 bead recoveries (coding_agent_session_search-ifr7) (coding_agent_session_search-lxn5)
-```
-
-Stand-alone bead-tracker commits (e.g. `br sync --flush-only` exports, CI-only changes, dependency bumps) do not need this prefix.
-
-An opt-in pre-push hook at `scripts/git-hooks/pre-push.sh` warns (does not block) when commits being pushed to main lack any bead-ID reference. Install via `bash scripts/git-hooks/install.sh`.
-
-<!-- end-bv-agent-instructions -->
-
-## Landing the Plane (Session Completion)
-
-**When ending a work session**, you MUST complete ALL steps below.
-
-**MANDATORY WORKFLOW:**
-
-1. **File issues for remaining work** - Create issues for anything that needs follow-up
-2. **Run quality gates** (if code changed) - Tests, linters, builds
-3. **Update issue status** - Close finished work, update in-progress items
-4. **Sync beads** - `br sync --flush-only` to export to JSONL
-5. **Hand off** - Provide context for next session
-
----
-
-## cass — Cross-Agent Session Search
-
-`cass` indexes prior agent conversations (Claude Code, Codex, Cursor, Gemini, ChatGPT, etc.) so we can reuse solved problems.
+`cass` indexes prior agent conversations (Claude Code, Codex, Cursor, Gemini, ChatGPT, etc.) so you can reuse solved problems.
 
 **Rules:** Never run bare `cass` (TUI). Always use `--robot` or `--json`.
 
@@ -1371,31 +1071,3 @@ cass robot-docs guide
 - Use `--robot-meta` to see requested vs realized search mode, semantic refinement, and lexical fallback reasons
 
 stdout is data-only, stderr is diagnostics; exit code 0 means success.
-
-Treat cass as a way to avoid re-solving problems other agents already handled.
-
----
-
-Note for Codex/GPT-5.2:
-
-You constantly bother me and stop working with concerned questions that look similar to this:
-
-```
-Unexpected changes (need guidance)
-
-- Working tree still shows edits I did not make in Cargo.toml, Cargo.lock, src/main.rs, src/patterns.rs. Please advise whether to keep/commit/revert these before any further work. I did not touch them.
-
-Next steps (pick one)
-
-1. Decide how to handle the unrelated modified files above so we can resume cleanly.
-```
-
-NEVER EVER DO THAT AGAIN. The answer is literally ALWAYS the same: those are changes created by the potentially dozen of other agents working on the project at the same time. This is not only a common occurrence, it happens multiple times PER MINUTE. The way to deal with it is simple: you NEVER, under ANY CIRCUMSTANCE, stash, revert, overwrite, or otherwise disturb in ANY way the work of other agents. Just treat those changes identically to changes that you yourself made. Just fool yourself into thinking YOU made the changes and simply don't recall it for some reason.
-
----
-
-## Note on Built-in TODO Functionality
-
-Also, if I ask you to explicitly use your built-in TODO functionality, don't complain about this and say you need to use beads. You can use built-in TODOs if I tell you specifically to do so. Always comply with such orders.
-
-For any web requests you must make with curl or otherwise, identify yourself honestly: use a User-Agent that names this project, e.g. "coding_agent_session_search-agent (+https://github.com/Dicklesworthstone/coding_agent_session_search)". Never borrow another product's or company's crawler or client User-Agent, and never spoof a client to get past a block.
