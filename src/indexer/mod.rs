@@ -1,6 +1,8 @@
 mod archive_lease;
 pub mod background_refresh;
 mod checkpoint_deadline;
+// Local fix (review 2026-11-02, I1): unreadable forgotten source stays forgotten.
+mod forgotten_source_admission;
 pub(crate) mod lexical_generation;
 mod lexical_publish;
 pub mod lexical_reconcile;
@@ -37615,7 +37617,7 @@ pub mod persist {
     use crate::search::tantivy::TantivyIndex;
     #[cfg(test)]
     use crate::sources::provenance::{Source, SourceKind};
-    use crate::storage::sqlite::{FrankenStorage, IndexingCache, InsertOutcome, SourceFileStamp};
+    use crate::storage::sqlite::{FrankenStorage, IndexingCache, InsertOutcome};
 
     /// Indexed-text bytes read per step when a whole canonical conversation is
     /// replayed inline, so a conversation with gigabytes of history never has
@@ -39908,12 +39910,21 @@ pub mod persist {
                 keep.push(false);
                 continue;
             }
+            // Local fix (review 2026-11-02, I1): an unreadable file is not "changed".
             let forgotten_and_unchanged = match tombstones.get(path.as_ref()) {
                 None => false,
-                Some(stamp) if *stamp == SourceFileStamp::of(&conv.source_path) => true,
-                Some(_) => {
-                    changed.push(path.into_owned());
-                    false
+                Some(stamp) => {
+                    use super::forgotten_source_admission::{
+                        ForgottenSourceObservation, observe_forgotten_source,
+                    };
+                    match observe_forgotten_source(stamp, &conv.source_path) {
+                        ForgottenSourceObservation::Unchanged
+                        | ForgottenSourceObservation::Unavailable => true,
+                        ForgottenSourceObservation::Changed => {
+                            changed.push(path.into_owned());
+                            false
+                        }
+                    }
                 }
             };
             if forgotten_and_unchanged {
@@ -45387,6 +45398,60 @@ mod tests {
             fs::read(source_path)?,
             b"ordinary transcript explicitly changed after forget"
         );
+        Ok(())
+    }
+
+    // review 2026-11-02 I1: a forgotten source whose file becomes unreadable
+    // between parse and persist must stay forgotten.
+    #[test]
+    #[serial]
+    fn review_i1_unreadable_forgotten_source_keeps_its_tombstone() -> Result<()> {
+        if !gh537_isolated_workspace_policy_test(
+            "review_i1_unreadable_forgotten_source_keeps_its_tombstone",
+        )? {
+            return Ok(());
+        }
+        let temp = TempDir::new()?;
+        let storage = FrankenStorage::open(&temp.path().join("archive.db"))?;
+        let source_path = temp.path().join("ordinary.jsonl");
+        fs::write(&source_path, b"original ordinary transcript")?;
+        let mut conv = norm_conv(Some("review-i1"), vec![norm_msg(0, 100)]);
+        conv.source_path = source_path.clone();
+        persist::persist_conversations_batched(
+            &storage,
+            None,
+            std::slice::from_ref(&conv),
+            LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            false,
+        )?;
+        storage.forget_conversations(
+            &crate::storage::sqlite::ForgetConversationsFilter {
+                source_glob: Some(source_path.to_str().context("source path")?),
+                ..Default::default()
+            },
+            false,
+        )?;
+        assert_eq!(storage.forgotten_source_stamps()?.len(), 1);
+        assert_eq!(count_total_messages_exact(&storage)?, 0);
+
+        // The conversation was already parsed into memory; now the file
+        // disappears (moved, deleted, permission change) before persistence.
+        fs::remove_file(&source_path)?;
+        conv.messages.push(norm_msg(1, 200));
+        persist::persist_conversations_batched(
+            &storage,
+            None,
+            std::slice::from_ref(&conv),
+            LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            false,
+        )?;
+
+        assert_eq!(
+            count_total_messages_exact(&storage)?,
+            0,
+            "a forgotten conversation must not come back because its file is unreadable"
+        );
+        assert_eq!(storage.forgotten_source_stamps()?.len(), 1);
         Ok(())
     }
 
