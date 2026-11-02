@@ -101,6 +101,8 @@ analytics:
   data.overall_elapsed_ms: u64
   data.wal_checkpoint: string ('completed' | 'failed') — the rebuild closes with a
                   WAL checkpoint so the next opener replays nothing
+  data.wal_checkpoint_detail: { status: 'completed' | 'blocked' | 'not_attempted' | 'error', ... }
+                  blocked: busy, log_frames, checkpointed_frames; not_attempted: reason
   Always rebuilds; fresh rollups are not skipped (there is no --force).
 
 ### analytics validate

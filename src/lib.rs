@@ -20324,25 +20324,38 @@ fn run_analytics_rebuild(
     // checkpointing path `cass index` uses. The rows are already committed, so
     // a blocked checkpoint (another reader pinning the WAL) is reported, not
     // treated as a failed rebuild.
-    let wal_checkpoint = match crate::indexer::close_storage_with_wal_checkpoint(
-        storage,
-        &db_path,
-        "analytics rebuild",
-    ) {
-        Ok(()) => "completed",
-        Err(err) => {
-            tracing::warn!(
-                error = %format!("{err:#}"),
-                db_path = %db_path.display(),
-                "analytics rebuild: final WAL checkpoint did not complete"
-            );
-            eprintln!(
-                "Warning: final WAL checkpoint after analytics rebuild did not complete: {err:#}"
-            );
-            "failed"
-        }
-    };
+    // Local fix (review 2026-11-02, I2): report the real checkpoint outcome.
+    let (wal_checkpoint, wal_checkpoint_detail) =
+        match crate::indexer::close_storage_with_wal_checkpoint_report(
+            storage,
+            &db_path,
+            "analytics rebuild",
+        ) {
+            Ok(report) => {
+                if report != crate::indexer::WalCheckpointReport::Completed {
+                    eprintln!(
+                        "Warning: final WAL checkpoint after analytics rebuild did not complete: {report:?}"
+                    );
+                }
+                crate::indexer::analytics_wal_checkpoint_fields(&report)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    error = %format!("{err:#}"),
+                    db_path = %db_path.display(),
+                    "analytics rebuild: final WAL checkpoint did not complete"
+                );
+                eprintln!(
+                    "Warning: final WAL checkpoint after analytics rebuild did not complete: {err:#}"
+                );
+                (
+                    "failed",
+                    serde_json::json!({"status": "error", "error": format!("{err:#}")}),
+                )
+            }
+        };
     payload.insert("wal_checkpoint".into(), serde_json::json!(wal_checkpoint));
+    payload.insert("wal_checkpoint_detail".into(), wal_checkpoint_detail);
     payload.insert(
         "track".into(),
         serde_json::json!(match track {
@@ -20557,6 +20570,7 @@ mod analytics_filter_validation_tests {
             serde_json::json!("completed"),
             "{payload}"
         );
+        assert_eq!(payload["wal_checkpoint_detail"]["status"], "completed");
         let wal_len = std::fs::metadata(crate::storage::sqlite::database_sidecar_path(
             &db_path, "-wal",
         ))
@@ -28417,6 +28431,8 @@ fn render_analytics_docs() -> Vec<String> {
         "  data.overall_elapsed_ms: u64".into(),
         "  data.wal_checkpoint: string ('completed' | 'failed') — the rebuild closes with a".into(),
         "                  WAL checkpoint so the next opener replays nothing".into(),
+        "  data.wal_checkpoint_detail: { status: 'completed' | 'blocked' | 'not_attempted' | 'error', ... }".into(),
+        "                  blocked: busy, log_frames, checkpointed_frames; not_attempted: reason".into(),
         "  Always rebuilds; fresh rollups are not skipped (there is no --force).".into(),
         String::new(),
         "### analytics validate".into(),

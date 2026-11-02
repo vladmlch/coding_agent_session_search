@@ -3,6 +3,11 @@ pub mod background_refresh;
 mod checkpoint_deadline;
 // Local fix (review 2026-11-02, I1): unreadable forgotten source stays forgotten.
 mod forgotten_source_admission;
+// Local fix (review 2026-11-02, I2): typed final-checkpoint report for analytics.
+mod wal_checkpoint_report;
+pub(crate) use wal_checkpoint_report::{
+    WalCheckpointReport, analytics_wal_checkpoint_fields, close_storage_with_wal_checkpoint_report,
+};
 pub(crate) mod lexical_generation;
 mod lexical_publish;
 pub mod lexical_reconcile;
