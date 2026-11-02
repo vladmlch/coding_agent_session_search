@@ -539,6 +539,8 @@ mod wal_checkpoint_status;
 mod local_lookup_indexes;
 // Local fix (review 2026-11-02, S3): tail readers hint the live autoindex.
 mod footprint_tail_sql;
+// Local fix (review 2026-11-02, U1): count a Claude reply's usage once.
+mod claude_usage_dedup;
 
 #[cfg(test)]
 mod doctor_mutation_lock_error_tests {
