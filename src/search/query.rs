@@ -4433,6 +4433,13 @@ fn remote_source_filter_is_post_applied(filter: &SourceFilter) -> bool {
     matches!(filter, SourceFilter::Remote)
 }
 
+/// Local fix (review 2026-11-02, Q1). `session_paths` is matched against the
+/// stored (not indexed) `source_path` after hydration, exactly like the
+/// remote filter, so the engine's hit count covers sessions outside the scope.
+fn session_paths_filter_is_post_applied(session_paths: &HashSet<String>) -> bool {
+    !session_paths.is_empty()
+}
+
 /// Production CASS result reducer shared by lexical, semantic, progressive,
 /// and feature-gated conformance callers.
 fn postprocess_hits_page_core(
@@ -8175,6 +8182,8 @@ impl SearchClient {
         // Delegate cass-compatible query parsing + Tantivy clause construction to frankensearch.
         // cass retains ownership of paging/fallback orchestration and stored-field hydration.
         let remote_post_filter = remote_source_filter_is_post_applied(&filters.source_filter);
+        let session_paths_post_filter =
+            session_paths_filter_is_post_applied(&filters.session_paths);
         let fs_filters = FsCassQueryFilters {
             agents: filters.agents.into_iter().collect(),
             workspaces: filters.workspaces.into_iter().collect(),
@@ -8212,7 +8221,8 @@ impl SearchClient {
         let top_docs = execute_query_with_bounded_exact_count(reader, &q, limit, offset)?;
         // With the remote selection applied after hydration the engine count
         // covers every origin, so it is no longer an exact total for the page.
-        let tantivy_total_count = if remote_post_filter {
+        // The same holds for the session_paths scope (review 2026-11-02 Q1).
+        let tantivy_total_count = if remote_post_filter || session_paths_post_filter {
             None
         } else {
             top_docs.total_count
@@ -23290,6 +23300,65 @@ mod tests {
         assert!(filtered_paths.contains(paths[2].to_string_lossy().as_ref()));
         assert!(!filtered_paths.contains(paths[1].to_string_lossy().as_ref()));
 
+        Ok(())
+    }
+
+    // review 2026-11-02 Q1: the engine counts every match before the
+    // session_paths post-filter, so its count is not an exact total.
+    #[test]
+    fn session_paths_filter_does_not_publish_engine_count_as_exact() -> Result<()> {
+        let dir = TempDir::new()?;
+        let mut index = TantivyIndex::open_or_create(dir.path())?;
+        let paths: Vec<_> = (0..3)
+            .map(|i| dir.path().join(format!("q1-session-{i}.jsonl")))
+            .collect();
+        for (i, path) in paths.iter().enumerate() {
+            index.add_conversation(&NormalizedConversation {
+                agent_slug: "claude".into(),
+                external_id: None,
+                title: Some(format!("q1-{i}")),
+                workspace: Some(std::path::PathBuf::from("/ws")),
+                source_path: path.clone(),
+                started_at: Some(100 + i as i64),
+                ended_at: None,
+                metadata: serde_json::json!({}),
+                messages: vec![NormalizedMessage {
+                    idx: 0,
+                    role: "user".into(),
+                    author: None,
+                    created_at: Some(100 + i as i64),
+                    content: format!("q1needle unique body {i}"),
+                    extra: serde_json::json!({}),
+                    snippets: vec![],
+                    invocations: Vec::new(),
+                }],
+            })?;
+        }
+        index.commit()?;
+        let client = SearchClient::open(dir.path(), None)?.expect("index present");
+
+        let unscoped = client.search_with_fallback(
+            "q1needle",
+            SearchFilters::default(),
+            10,
+            0,
+            0,
+            FieldMask::FULL,
+        )?;
+        assert_eq!(unscoped.hits.len(), 3);
+        assert_eq!(unscoped.total_count, Some(3), "unscoped count stays exact");
+
+        let mut scoped_filters = SearchFilters::default();
+        scoped_filters
+            .session_paths
+            .insert(paths[1].to_string_lossy().to_string());
+        let scoped =
+            client.search_with_fallback("q1needle", scoped_filters, 10, 0, 0, FieldMask::FULL)?;
+        assert_eq!(scoped.hits.len(), 1);
+        assert_eq!(
+            scoped.total_count, None,
+            "a pre-filter engine count must not be published as the scoped total"
+        );
         Ok(())
     }
 
