@@ -38,5 +38,3 @@ constructed `HostProbeResult` structs. The fixture approach:
 2. Validates the full serde round-trip (JSON parsing)
 3. Is easier to maintain and extend
 4. Follows the project's no-mock testing policy
-
-See `docs/artifacts/no-mock-audit.md` for the full audit.

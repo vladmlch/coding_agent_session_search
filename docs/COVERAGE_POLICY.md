@@ -188,7 +188,7 @@ rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-coverage-target cargo llvm-cov -
 
 ---
 
-## 8. Priority Gaps (from test-coverage-audit.md)
+## 8. Priority Gaps
 
 ### P0 - Critical (Blocks Releases)
 - [ ] lib.rs unit tests - Argument parsing, error types, command dispatch
