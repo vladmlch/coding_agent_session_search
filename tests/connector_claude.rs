@@ -1,5 +1,8 @@
 use coding_agent_search::connectors::claude_code::ClaudeCodeConnector;
 use coding_agent_search::connectors::{Connector, ScanContext};
+use coding_agent_search::indexer::{IndexOptions, run_index_with_local_connector_roots};
+use coding_agent_search::storage::sqlite::SqliteStorage;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -1076,4 +1079,90 @@ fn connector_respects_since_ts_filter() {
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1, "Past since_ts should include the file");
+}
+
+// =============================================================================
+// Review 2026-11-02 P2a: generated title through the real ingest path
+// =============================================================================
+
+/// FAD fix F1 (local fork): Claude's generated-title record
+/// (`{"type":"ai-title","aiTitle":"…"}`) must reach the stored
+/// `conversations.title` column, not just `NormalizedConversation.title` at
+/// the connector boundary. This drives the suite's real in-process ingest
+/// (`run_index_with_local_connector_roots`, the qu81y closed-world lane:
+/// scan exactly the listed root, never the host's real `~/.claude`) against
+/// a fake `~/.claude` tree, then reads the row back out of SQLite.
+///
+/// The second file covers the legacy `title` field on the same record type,
+/// which FAD keeps as a fallback when `aiTitle` is absent.
+#[test]
+fn generated_title_survives_fad_ingest() {
+    const GENERATED_MARKER: &str = "P2A-GENERATED-TITLE-PROBE";
+    const LEGACY_MARKER: &str = "P2A-LEGACY-TITLE-PROBE";
+
+    let tmp = create_claude_temp();
+    let claude_home = tmp.path().join("fixture-claude");
+    let projects = claude_home.join("projects/test-proj");
+    fs::create_dir_all(&projects).unwrap();
+
+    // First record is the generated-title sidecar; the user prompt
+    // deliberately differs so the stored title can only have come from the
+    // `aiTitle` record, never from first-line truncation.
+    fs::write(
+        projects.join("p2a-generated.jsonl"),
+        concat!(
+            r#"{"type":"ai-title","aiTitle":"P2A-GENERATED-TITLE-PROBE","sessionId":"11111111-2222-3333-4444-555555555555"}"#,
+            "\n",
+            r#"{"type":"user","sessionId":"11111111-2222-3333-4444-555555555555","cwd":"/workspace/p2a","message":{"role":"user","content":"a deliberately different first prompt"},"timestamp":"2026-11-02T10:00:00.000Z"}"#,
+            "\n",
+            r#"{"type":"assistant","sessionId":"11111111-2222-3333-4444-555555555555","message":{"role":"assistant","content":[{"type":"text","text":"p2a reply"}]},"timestamp":"2026-11-02T10:00:05.000Z"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    // Same shape with the legacy `title` field only (`aiTitle` absent).
+    fs::write(
+        projects.join("p2a-legacy.jsonl"),
+        concat!(
+            r#"{"type":"ai-title","title":"P2A-LEGACY-TITLE-PROBE","sessionId":"66666666-7777-4888-8999-000000000000"}"#,
+            "\n",
+            r#"{"type":"user","sessionId":"66666666-7777-4888-8999-000000000000","cwd":"/workspace/p2a","message":{"role":"user","content":"another deliberately different first prompt"},"timestamp":"2026-11-02T11:00:00.000Z"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+
+    let data_dir = tmp.path().join("cass-data");
+    fs::create_dir_all(&data_dir).unwrap();
+    let db_path = data_dir.join("agent_search.db");
+    let opts = IndexOptions {
+        full: false,
+        force_rebuild: false,
+        watch: false,
+        watch_once_paths: None,
+        db_path: db_path.clone(),
+        data_dir,
+        semantic: false,
+        build_hnsw: false,
+        embedder: "hash".to_string(),
+        progress: None,
+        watch_interval_secs: 30,
+    };
+    let roots = HashMap::from([("claude".to_string(), vec![claude_home])]);
+    run_index_with_local_connector_roots(opts, roots, None).unwrap();
+
+    let storage = SqliteStorage::open_readonly(&db_path).unwrap();
+    let conversations = storage.list_conversations(10, 0).unwrap();
+    let mut titles: Vec<Option<String>> = conversations.iter().map(|c| c.title.clone()).collect();
+    titles.sort();
+    assert_eq!(
+        titles,
+        vec![
+            Some(GENERATED_MARKER.to_string()),
+            Some(LEGACY_MARKER.to_string())
+        ],
+        "both the aiTitle record and the legacy title record must land in conversations.title"
+    );
+    storage.close().unwrap();
 }
