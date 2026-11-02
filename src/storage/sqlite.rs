@@ -535,6 +535,8 @@ fn doctor_mutation_lock_error_is_active(err: &std::io::Error) -> bool {
 
 // Local fix (review 2026-11-02, S1): read the TRUNCATE checkpoint status row.
 mod wal_checkpoint_status;
+// Local fix (review 2026-11-02, S2): snippets(message_id) lookup index.
+mod local_lookup_indexes;
 
 #[cfg(test)]
 mod doctor_mutation_lock_error_tests {
@@ -6227,6 +6229,8 @@ impl FrankenStorage {
             }
         }
         self.repair_missing_conversation_token_columns()?;
+        // Local fix (review 2026-11-02, S2).
+        local_lookup_indexes::ensure_snippets_message_id_index(&self.conn)?;
         Ok(())
     }
 
@@ -28896,6 +28900,82 @@ mod tests {
         );
         reader.execute("COMMIT;").unwrap();
         reader.close().unwrap();
+    }
+
+    fn snippets_index_names(storage: &SqliteStorage) -> Vec<String> {
+        storage
+            .conn
+            .query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'snippets' ORDER BY name;")
+            .unwrap()
+            .iter()
+            .map(|row| row.get_typed::<String>(0).unwrap())
+            .collect()
+    }
+
+    // review 2026-11-02 S2
+    #[test]
+    fn normal_open_creates_snippets_message_id_index() {
+        let dir = TempDir::new().unwrap();
+        let storage = SqliteStorage::open(&dir.path().join("a.db")).unwrap();
+        assert_eq!(
+            snippets_index_names(&storage),
+            vec![local_lookup_indexes::SNIPPETS_MESSAGE_ID_INDEX.to_string()]
+        );
+    }
+
+    // review 2026-11-02 S2: the fast current-schema open skips run_migrations,
+    // so it must get the index through repair_missing_current_schema_objects.
+    #[test]
+    fn fast_current_schema_open_creates_snippets_message_id_index() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("fast.db");
+        {
+            let storage = SqliteStorage::open(&db_path).unwrap();
+            storage
+                .conn
+                .execute(&format!(
+                    "DROP INDEX {};",
+                    local_lookup_indexes::SNIPPETS_MESSAGE_ID_INDEX
+                ))
+                .unwrap();
+            storage.close().unwrap();
+        }
+        let storage =
+            open_current_schema_storage_with_timeout(&db_path, std::time::Duration::from_secs(30))
+                .unwrap()
+                .expect("current schema must take the fast path");
+        assert_eq!(
+            snippets_index_names(&storage),
+            vec![local_lookup_indexes::SNIPPETS_MESSAGE_ID_INDEX.to_string()]
+        );
+    }
+
+    // review 2026-11-02 S2: an equivalent remote index under another name is
+    // accepted and no duplicate is created.
+    #[test]
+    fn open_accepts_equivalent_snippets_index_without_duplicate() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("remote.db");
+        {
+            let storage = SqliteStorage::open(&db_path).unwrap();
+            storage
+                .conn
+                .execute(&format!(
+                    "DROP INDEX {};",
+                    local_lookup_indexes::SNIPPETS_MESSAGE_ID_INDEX
+                ))
+                .unwrap();
+            storage
+                .conn
+                .execute("CREATE INDEX idx_snippets_msg ON snippets(message_id);")
+                .unwrap();
+            storage.close().unwrap();
+        }
+        let storage = SqliteStorage::open(&db_path).unwrap();
+        assert_eq!(
+            snippets_index_names(&storage),
+            vec!["idx_snippets_msg".to_string()]
+        );
     }
 
     #[cfg(unix)]
