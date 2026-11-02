@@ -1018,6 +1018,25 @@ mod devin_ingestion {
         assert_eq!(fs::read(&db).expect("source after scan"), before);
     }
 
+    // review 2026-11-02 F5: a store that cannot be read must not look like an
+    // empty successful scan (the host would then advance the watermark).
+    #[test]
+    fn devin_unreadable_database_fails_the_scan() {
+        let home = tempfile::tempdir().expect("isolated home");
+        let db = home.path().join("sessions.db");
+        fs::write(&db, b"this is not a sqlite database").expect("write junk store");
+        let (_, factory) = get_connector_factories()
+            .into_iter()
+            .find(|(slug, _)| *slug == "devin")
+            .expect("Devin factory");
+        let ctx = ScanContext::with_roots(
+            home.path().to_path_buf(),
+            vec![ScanRoot::local(db.clone())],
+            None,
+        );
+        assert!(factory().scan(&ctx).is_err());
+    }
+
     #[test]
     fn devin_cli_indexes_searches_and_reopens_without_duplicates() {
         let home = tempfile::tempdir().expect("isolated home");
