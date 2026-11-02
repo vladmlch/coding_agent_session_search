@@ -192,8 +192,13 @@ const CONTRACTS: &[DependencyContract] = &[
         // process teardown (cass#519) and preserves the full read-error chain.
         // GH#520 needs the post-0.3.10 mirror-root metadata API. Keep the
         // source contract exact until a registry release carries this fix.
-        expected_git: "https://github.com/Dicklesworthstone/franken_agent_detection",
-        expected_rev: "6b337ba434b72c65c6c5a748b7ec47885f840ac0",
+        // LOCAL FORK (review 2026-11-02): cass-local-fixes branch of
+        // ../franken_agent_detection, based on upstream
+        // 6b337ba434b72c65c6c5a748b7ec47885f840ac0. See that repo's
+        // LOCAL_FIXES.md. Return to the upstream URL/rev once upstream carries
+        // every row there.
+        expected_git: "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection",
+        expected_rev: "4544aa0cbf47fc5eb953addc40d18976063d19c5",
         expected_version: "0.3.10",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.
