@@ -533,6 +533,9 @@ fn doctor_mutation_lock_error_is_active(err: &std::io::Error) -> bool {
             && err.raw_os_error() == fs2::lock_contended_error().raw_os_error())
 }
 
+// Local fix (review 2026-11-02, S1): read the TRUNCATE checkpoint status row.
+mod wal_checkpoint_status;
+
 #[cfg(test)]
 mod doctor_mutation_lock_error_tests {
     use super::*;
@@ -1261,13 +1264,24 @@ pub(crate) fn attempt_dirty_wal_recovery_checkpoint(
     let checkpoint = conn.query("PRAGMA wal_checkpoint(TRUNCATE);");
     let close_result = conn.close();
     match (&checkpoint, &close_result) {
-        (Ok(_), Ok(())) => {
+        // Local fix (review 2026-11-02, S1): a blocked checkpoint returns
+        // Ok with busy=1 or unbackfilled frames; only a complete status row
+        // counts as recovery.
+        (Ok(rows), Ok(())) if wal_checkpoint_status::truncate_rows_report_complete(rows) => {
             tracing::info!(
                 db = %db_path.display(),
                 wal_bytes = meta.len(),
                 "dirty-WAL recovery: checkpoint(TRUNCATE) completed after failed readonly open; retrying readonly open"
             );
             true
+        }
+        (Ok(_), Ok(())) => {
+            tracing::warn!(
+                db = %db_path.display(),
+                wal_bytes = meta.len(),
+                "dirty-WAL recovery: checkpoint(TRUNCATE) was blocked or left frames; surfacing the original readonly failure"
+            );
+            false
         }
         _ => {
             if let Err(err) = &checkpoint {
@@ -28833,6 +28847,55 @@ mod tests {
         let count: i64 = rows.first().unwrap().get_typed(0).unwrap();
         assert_eq!(count, 3, "checkpointed rows must survive recovery");
         conn.close().unwrap();
+    }
+
+    // review 2026-11-02 S1: a checkpoint pinned by an open reader reports
+    // busy instead of failing; recovery must not call that "completed".
+    #[test]
+    fn dirty_wal_recovery_declines_when_checkpoint_reports_busy() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("pinned.db");
+        {
+            let mut conn =
+                crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
+                    .unwrap();
+            conn.execute("CREATE TABLE t (x INTEGER);").unwrap();
+            conn.execute("INSERT INTO t (x) VALUES (1), (2), (3);")
+                .unwrap();
+            close_franken_in_place_with_busy_retry(&mut conn, false).unwrap();
+        }
+        // Pin the WAL with an open read transaction from a second connection.
+        let reader =
+            crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
+        reader.execute("BEGIN;").unwrap();
+        reader.query("SELECT COUNT(*) FROM t;").unwrap();
+        let probe =
+            crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
+        let status = probe.query("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        probe.close().unwrap();
+        if wal_checkpoint_status::truncate_rows_report_complete(&status) {
+            // The engine let TRUNCATE finish despite the reader; there is
+            // no busy state to reproduce here. The pure tests in
+            // wal_checkpoint_status cover the classification.
+            reader.execute("COMMIT;").unwrap();
+            reader.close().unwrap();
+            return;
+        }
+        // Re-dirty the WAL so recovery has frames to attempt.
+        {
+            let writer =
+                crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
+                    .unwrap();
+            writer.execute("INSERT INTO t (x) VALUES (4);").unwrap();
+            writer.close().unwrap();
+        }
+        let hard_err = anyhow!("unable to open database file");
+        assert!(
+            !attempt_dirty_wal_recovery_checkpoint(&db_path, &hard_err),
+            "a busy TRUNCATE checkpoint must not be reported as completed recovery"
+        );
+        reader.execute("COMMIT;").unwrap();
+        reader.close().unwrap();
     }
 
     #[cfg(unix)]
