@@ -235,3 +235,32 @@ fn legacy_gemini_connector_still_indexes() {
     assert!(!convs.is_empty(), "legacy gemini fixture must still index");
     assert!(convs.iter().all(|c| c.agent_slug == "gemini"));
 }
+
+// review 2026-11-02 F3 through the CASS re-export.
+#[test]
+fn antigravity_keeps_planner_tool_calls_and_does_not_invent_generic() {
+    let base = PathBuf::from("tests/fixtures/antigravity_planner_calls");
+    let ctx = ScanContext {
+        data_dir: base.clone(),
+        scan_roots: vec![ScanRoot::local(base)],
+        since_ts: None,
+        progress_tick: None,
+    };
+    let convs = AntigravityConnector::new().scan(&ctx).expect("scan");
+    assert_eq!(convs.len(), 1);
+    let msgs = &convs[0].messages;
+    let planner = msgs
+        .iter()
+        .find(|m| m.content == "[Tool: view_file]")
+        .expect("tool-call-only planner record kept");
+    assert_eq!(
+        planner.extra["cass"]["invocations"][0]["arguments"]["AbsolutePath"],
+        "/tmp/a.rs"
+    );
+    assert!(
+        msgs.iter()
+            .flat_map(|m| &m.invocations)
+            .all(|i| i.name != "generic")
+    );
+    assert!(msgs.iter().any(|m| m.content.contains("p2b_unique_body")));
+}
