@@ -22291,6 +22291,10 @@ impl FrankenStorage {
         let mut usage_hourly_rows: usize = 0;
         let mut usage_daily_rows: usize = 0;
         let mut usage_models_daily_rows: usize = 0;
+        // Local fix (review 2026-11-02, U1): same reply-once rule as ingest.
+        // One state for the whole walk: the keyset scan interleaves
+        // conversations, so it must not be reset per chunk.
+        let mut claude_usage = claude_usage_dedup::ClaudeReplyUsageDedup::default();
 
         loop {
             if let Some(control) = control {
@@ -22426,6 +22430,9 @@ impl FrankenStorage {
                 if agent_slug == "codebuff" {
                     usage.tool_call_count = codebuff_tool_count(&extra);
                     usage.has_tool_calls = usage.tool_call_count > 0;
+                }
+                if agent_slug == "claude_code" {
+                    claude_usage.apply(row.conversation_id, &extra, &mut usage);
                 }
                 let model_info = usage
                     .model_name
@@ -30116,6 +30123,42 @@ sys.exit('stock writer does not own WAL_WRITE_LOCK')
             .insert_conversations_batched_with_analytics(&[(agent_id, None, &full)], false)
             .unwrap();
         assert_eq!(token_usage_sums(&storage), (10, 7, 100, 20));
+    }
+
+    // review 2026-11-02 U1: rebuild must apply the same rule as ingest.
+    #[test]
+    fn claude_reply_dedup_survives_analytics_rebuild() {
+        let dir = TempDir::new().unwrap();
+        let storage = SqliteStorage::open(&dir.path().join("u1c.db")).unwrap();
+        let agent_id = claude_usage_agent(&storage);
+        let t = 1_770_551_400_000;
+        let conv = claude_usage_conversation(vec![
+            claude_usage_record(0, t, "m1", Some("r1"), 10, 3),
+            claude_usage_record(1, t + 1, "m1", Some("r1"), 10, 7),
+            claude_usage_record(2, t + 2, "m2", Some("r2"), 5, 2),
+        ]);
+        storage
+            .insert_conversations_batched_with_analytics(&[(agent_id, None, &conv)], false)
+            .unwrap();
+        let conn = storage.raw();
+        for table in [
+            "message_metrics",
+            "usage_hourly",
+            "usage_daily",
+            "usage_models_daily",
+        ] {
+            conn.execute(&format!("DELETE FROM {table}")).unwrap();
+        }
+        storage.rebuild_analytics().unwrap();
+        let (input, output): (i64, i64) = conn
+            .query_row_map(
+                "SELECT COALESCE(SUM(api_input_tokens),0), COALESCE(SUM(api_output_tokens),0) \
+                 FROM message_metrics WHERE api_data_source = 'api'",
+                &[],
+                |row| Ok((row.get_typed(0)?, row.get_typed(1)?)),
+            )
+            .unwrap();
+        assert_eq!((input, output), (15, 9));
     }
 
     #[test]

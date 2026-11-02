@@ -1,7 +1,3 @@
-// Dead-code tolerated module-wide: this dedup helper lands ahead of the
-// insert-path (U1b) and rebuild-path (U1c) hooks that will call it.
-#![allow(dead_code)]
-
 //! Local fix (review 2026-11-02, U1).
 //!
 //! Claude Code writes one reply as several JSONL records that share
