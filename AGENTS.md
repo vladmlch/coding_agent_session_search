@@ -4,6 +4,19 @@ GitHub Actions must NEVER be used for ANY purpose in this project. Do not create
 
 Use [DSR (Doodlestein Self-Releaser)](https://github.com/Dicklesworthstone/doodlestein_self_releaser) directly for CI, checks, builds, tests, releases, deployment automation, scheduled jobs, and other automation. DSR is the execution path, not a fallback after trying Actions. Existing workflow YAML may remain as input for local DSR/`act` execution; that does not authorize execution through GitHub Actions. Do not delete those definitions merely to enforce this policy. Keep all existing quality gates and evidence requirements when routing work through DSR.
 
+# State
+
+This is a locally developed project with local changes. My goal is to maintain local fixes, but periodically checkout
+remote branch and prefer remote changes ONLY when they do the same as local one.
+Meaning that, try to scope every local change as an incremental addition with smallest change in integration point
+with existing code.
+Example: rather then refactoring method (changing arguments, arguments types, name etc.) or changing method logic,
+create a new method which does the new or fixed functionality.
+
+# Disk space and compilation caches
+
+При нехватке места удаляй кеши сборки без лишних вопросов (только регенерируемые артефакты: target/, incremental-кеши)
+
 # AGENTS.md — coding_agent_session_search (cass)
 
 > Guidelines for AI coding agents working in this Rust codebase.
