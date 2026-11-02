@@ -507,6 +507,16 @@ fn manifest_relative_shard_path(shard_idx: usize) -> String {
 }
 
 fn meta_fingerprint_for_existing_index_dir(index_path: &Path) -> Result<String> {
+    let quill_manifest = index_path.join(crate::search::quill_bridge::QUILL_INDEX_MARKER);
+    match fs::read(&quill_manifest) {
+        Ok(bytes) => return Ok(blake3::hash(&bytes).to_hex().to_string()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("reading Quill index manifest {}", quill_manifest.display())
+            });
+        }
+    }
     let meta_path = index_path.join("meta.json");
     let bytes = fs::read(&meta_path)
         .with_context(|| format!("reading Tantivy meta file {}", meta_path.display()))?;
