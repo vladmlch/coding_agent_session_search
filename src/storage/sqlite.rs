@@ -17963,6 +17963,30 @@ impl FrankenStorage {
                 let mut session_model_family = String::from("unknown");
                 let mut has_any_tokens = false;
 
+                // Local fix (review 2026-11-02, U1): count a Claude reply once.
+                let mut claude_usage = claude_usage_dedup::ClaudeReplyUsageDedup::default();
+                if conv.agent_slug == "claude_code" {
+                    let inserted_idx: std::collections::HashSet<i64> =
+                        inserted_messages.iter().map(|(_, m)| m.idx).collect();
+                    for stored in conv
+                        .messages
+                        .iter()
+                        .filter(|m| !inserted_idx.contains(&m.idx))
+                    {
+                        let stored_usage = crate::connectors::extract_tokens_for_agent(
+                            &conv.agent_slug,
+                            &stored.extra_json,
+                            &stored.content,
+                            &role_str(&stored.role),
+                        );
+                        claude_usage.observe_stored(
+                            conv_id,
+                            &stored.extra_json,
+                            stored_usage.output_tokens,
+                        );
+                    }
+                }
+
                 for &(message_id, msg) in &inserted_messages {
                     let role_s = role_str(&msg.role);
                     let mut usage = if historical_raw_json(&msg.extra_json).is_some() {
@@ -17983,6 +18007,9 @@ impl FrankenStorage {
                     if conv.agent_slug == "codebuff" {
                         usage.tool_call_count = codebuff_tool_count(&msg.extra_json);
                         usage.has_tool_calls = usage.tool_call_count > 0;
+                    }
+                    if conv.agent_slug == "claude_code" {
+                        claude_usage.apply(conv_id, &msg.extra_json, &mut usage);
                     }
 
                     let msg_ts = msg
@@ -29958,6 +29985,137 @@ sys.exit('stock writer does not own WAL_WRITE_LOCK')
             unknown_msg, 2,
             "user messages should land in unknown model bucket"
         );
+    }
+
+    fn claude_usage_record(
+        idx: i64,
+        at: i64,
+        message_id: &str,
+        request_id: Option<&str>,
+        input: i64,
+        output: i64,
+    ) -> crate::model::types::Message {
+        let mut extra = serde_json::json!({
+            "message": {
+                "id": message_id,
+                "model": "claude-opus-4-6",
+                "usage": {
+                    "input_tokens": input,
+                    "output_tokens": output,
+                    "cache_read_input_tokens": 100,
+                    "cache_creation_input_tokens": 20
+                }
+            }
+        });
+        if let Some(request_id) = request_id {
+            extra["requestId"] = serde_json::json!(request_id);
+        }
+        crate::model::types::Message {
+            id: None,
+            idx,
+            role: crate::model::types::MessageRole::Agent,
+            author: None,
+            created_at: Some(at),
+            content: format!("part {idx}"),
+            extra_json: extra,
+            snippets: vec![],
+        }
+    }
+
+    fn claude_usage_conversation(
+        messages: Vec<crate::model::types::Message>,
+    ) -> crate::model::types::Conversation {
+        crate::model::types::Conversation {
+            id: None,
+            agent_slug: "claude_code".into(),
+            workspace: None,
+            external_id: Some("u1-conv".into()),
+            title: Some("U1".into()),
+            source_path: std::path::PathBuf::from("/tmp/u1.jsonl"),
+            started_at: Some(1_770_551_400_000),
+            ended_at: Some(1_770_551_460_000),
+            approx_tokens: None,
+            metadata_json: serde_json::Value::Null,
+            messages,
+            source_id: "local".into(),
+            origin_host: None,
+        }
+    }
+
+    fn token_usage_sums(storage: &SqliteStorage) -> (i64, i64, i64, i64) {
+        storage
+            .raw()
+            .query_row_map(
+                "SELECT COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), \
+                 COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_creation_tokens),0) \
+                 FROM token_usage",
+                &[],
+                |row| {
+                    Ok((
+                        row.get_typed(0)?,
+                        row.get_typed(1)?,
+                        row.get_typed(2)?,
+                        row.get_typed(3)?,
+                    ))
+                },
+            )
+            .unwrap()
+    }
+
+    fn claude_usage_agent(storage: &SqliteStorage) -> i64 {
+        storage
+            .ensure_agent(&crate::model::types::Agent {
+                id: None,
+                slug: "claude_code".into(),
+                name: "Claude Code".into(),
+                version: None,
+                kind: crate::model::types::AgentKind::Cli,
+            })
+            .unwrap()
+    }
+
+    // review 2026-11-02 U1
+    #[test]
+    fn claude_reply_split_across_records_is_counted_once_on_insert() {
+        let dir = TempDir::new().unwrap();
+        let storage = SqliteStorage::open(&dir.path().join("u1.db")).unwrap();
+        let agent_id = claude_usage_agent(&storage);
+        let t = 1_770_551_400_000;
+        let conv = claude_usage_conversation(vec![
+            claude_usage_record(0, t, "m1", Some("r1"), 10, 3),
+            claude_usage_record(1, t + 1, "m1", Some("r1"), 10, 7),
+            claude_usage_record(2, t + 2, "m2", Some("r2"), 5, 2),
+            claude_usage_record(3, t + 3, "m3", None, 4, 1),
+        ]);
+        storage
+            .insert_conversations_batched_with_analytics(&[(agent_id, None, &conv)], false)
+            .unwrap();
+        // m1 once (10 in, 7 out), m2 (5, 2), m3 independent (4, 1).
+        // Cache: m1 once + m2 + m3 = 3 x (100, 20).
+        assert_eq!(token_usage_sums(&storage), (19, 10, 300, 60));
+    }
+
+    // review 2026-11-02 U1: the second record of a reply arrives in a later
+    // ingest of the same (re-parsed) conversation.
+    #[test]
+    fn claude_reply_split_across_ingests_is_counted_once() {
+        let dir = TempDir::new().unwrap();
+        let storage = SqliteStorage::open(&dir.path().join("u1b.db")).unwrap();
+        let agent_id = claude_usage_agent(&storage);
+        let t = 1_770_551_400_000;
+        let first =
+            claude_usage_conversation(vec![claude_usage_record(0, t, "m1", Some("r1"), 10, 3)]);
+        storage
+            .insert_conversations_batched_with_analytics(&[(agent_id, None, &first)], false)
+            .unwrap();
+        let full = claude_usage_conversation(vec![
+            claude_usage_record(0, t, "m1", Some("r1"), 10, 3),
+            claude_usage_record(1, t + 1, "m1", Some("r1"), 10, 7),
+        ]);
+        storage
+            .insert_conversations_batched_with_analytics(&[(agent_id, None, &full)], false)
+            .unwrap();
+        assert_eq!(token_usage_sums(&storage), (10, 7, 100, 20));
     }
 
     #[test]
