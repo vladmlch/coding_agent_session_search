@@ -537,6 +537,8 @@ fn doctor_mutation_lock_error_is_active(err: &std::io::Error) -> bool {
 mod wal_checkpoint_status;
 // Local fix (review 2026-11-02, S2): snippets(message_id) lookup index.
 mod local_lookup_indexes;
+// Local fix (review 2026-11-02, S3): tail readers hint the live autoindex.
+mod footprint_tail_sql;
 
 #[cfg(test)]
 mod doctor_mutation_lock_error_tests {
@@ -12407,16 +12409,10 @@ impl FrankenStorage {
         self.raise_lexical_rebuild_footprints_from_grouped_max_idx(
             footprints,
             &positions_by_conversation,
-            "SELECT conversation_id, MAX(idx) AS last_message_idx
-             FROM messages INDEXED BY idx_messages_conv_idx
-             GROUP BY conversation_id
-             ORDER BY conversation_id ASC",
+            footprint_tail_sql::TAIL_MAX_IDX_SQL,
         )
         .or_else(|err| {
-            if err
-                .to_string()
-                .contains("no such index: idx_messages_conv_idx")
-            {
+            if err.to_string().contains("no such index") {
                 return self.raise_lexical_rebuild_footprints_from_grouped_max_idx(
                     footprints,
                     &positions_by_conversation,
@@ -12589,16 +12585,10 @@ impl FrankenStorage {
         self.fill_missing_lexical_rebuild_footprint_tails_from_grouped_messages(
             footprints,
             missing_tail_positions,
-            "SELECT conversation_id, MAX(idx) AS last_message_idx
-             FROM messages INDEXED BY idx_messages_conv_idx
-             GROUP BY conversation_id
-             ORDER BY conversation_id ASC",
+            footprint_tail_sql::MISSING_TAIL_SQL,
         )
         .or_else(|err| {
-            if err
-                .to_string()
-                .contains("no such index: idx_messages_conv_idx")
-            {
+            if err.to_string().contains("no such index") {
                 return self.fill_missing_lexical_rebuild_footprint_tails_from_grouped_messages(
                     footprints,
                     missing_tail_positions,
@@ -28976,6 +28966,21 @@ mod tests {
             snippets_index_names(&storage),
             vec!["idx_snippets_msg".to_string()]
         );
+    }
+
+    // review 2026-11-02 S3: tail readers must not depend on the index V16 dropped.
+    #[test]
+    fn lexical_rebuild_tail_sql_uses_live_message_index() {
+        for sql in [
+            footprint_tail_sql::TAIL_MAX_IDX_SQL,
+            footprint_tail_sql::MISSING_TAIL_SQL,
+        ] {
+            assert!(!sql.contains("idx_messages_conv_idx"), "{sql}");
+            assert!(
+                sql.contains("INDEXED BY sqlite_autoindex_messages_1"),
+                "{sql}"
+            );
+        }
     }
 
     #[cfg(unix)]
