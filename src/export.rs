@@ -11,6 +11,9 @@ use std::borrow::Cow;
 
 use crate::search::query::SearchHit;
 
+pub(crate) mod indexed;
+pub(crate) mod projection;
+
 /// Sharing policy applied before raw or archived conversation data is rendered.
 /// Export policy is independent of index-time settings: an archive built with
 /// redaction disabled must still be safe to share by default.
