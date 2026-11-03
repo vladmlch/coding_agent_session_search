@@ -679,8 +679,15 @@ fn resolve_parent_conversation(
 /// The match rule is `resolve_parent_conversation` inverted: same
 /// provider + same `source_id` scope, and the child's evidence equal to
 /// the parent's `external_id` or matching its `/{evidence}` /
-/// `{evidence}.jsonl` suffix shapes. Ambiguity cannot arise here — the
-/// parent identity is already committed.
+/// `{evidence}.jsonl` suffix shapes. The forward rule's self-exclusion is
+/// kept too (`f.conversation_id != ?4`) so a corrupt row can never
+/// self-parent.
+///
+/// One recorded resolution is NOT claimable here: children the forward
+/// pass deliberately left `ambiguous` (their evidence matched several
+/// parents at publish time) must stay NULL rather than be linked to
+/// whichever matching parent arrives later. `no_evidence` rows are
+/// already excluded by the `parent_external_id IS NOT NULL` guard.
 ///
 /// Each resolved child's `coverage_detail_json` manifest is refreshed
 /// honestly (`parent.resolution` → `resolved`), so the persisted record
@@ -700,6 +707,7 @@ pub fn fixup_pending_parent_links(
          WHERE f.parent_conversation_id IS NULL \
            AND f.parent_external_id IS NOT NULL \
            AND f.parent_external_id != '' \
+           AND f.conversation_id != ?4 \
            AND a.slug = ?1 AND c.source_id = ?2 \
            AND (?3 = f.parent_external_id \
                 OR ?3 LIKE '%/' || f.parent_external_id \
@@ -709,6 +717,7 @@ pub fn fixup_pending_parent_links(
             ParamValue::from(parent_provider),
             ParamValue::from(parent_source_id),
             ParamValue::from(parent_external_id),
+            ParamValue::from(parent_conversation_id),
         ],
         |row| {
             Ok((
@@ -717,15 +726,31 @@ pub fn fixup_pending_parent_links(
             ))
         },
     )?;
-    let resolved = candidates.len();
+    let mut resolved = 0_usize;
     for (child_id, detail) in candidates {
-        let patched = detail.and_then(|text| {
-            let mut value: Value = serde_json::from_str(&text).ok()?;
-            if let Some(slot) = value.pointer_mut("/parent/resolution") {
-                *slot = json!("resolved");
+        let parsed = detail
+            .as_deref()
+            .and_then(|text| serde_json::from_str::<Value>(text).ok());
+        if parsed
+            .as_ref()
+            .and_then(|value| value.pointer("/parent/resolution"))
+            .and_then(Value::as_str)
+            == Some("ambiguous")
+        {
+            // The forward pass refused to guess among multiple matching
+            // parents; a later arrival must not claim the child either.
+            continue;
+        }
+        resolved += 1;
+        let patched = match (detail, parsed) {
+            (Some(text), Some(mut value)) => {
+                if let Some(slot) = value.pointer_mut("/parent/resolution") {
+                    *slot = json!("resolved");
+                }
+                Some(serde_json::to_string(&value).unwrap_or(text))
             }
-            Some(serde_json::to_string(&value).unwrap_or_else(|_| text))
-        });
+            _ => None,
+        };
         match patched {
             Some(detail) => db.facts_execute(
                 "UPDATE viewer_session_facts \

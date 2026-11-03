@@ -31,7 +31,10 @@ use crate::franken_sync::compat::RowExt;
 /// (durable parent evidence for the child-before-parent fixup) plus the
 /// `viewer_ingest_receipt_cleanup` delete trigger so a removed canonical
 /// session can never leave a `viewer_meta` ingest receipt claiming coverage.
-pub const EXTENSION_SCHEMA_VERSION: i64 = 3;
+/// v4: the `viewer_session_facts_parent_cleanup` delete trigger so a
+/// removed canonical parent cannot FK-refuse its own deletion or leave a
+/// child row pointing at a gone conversation.
+pub const EXTENSION_SCHEMA_VERSION: i64 = 4;
 
 /// Additive viewer schema. Every statement is idempotent so re-running the
 /// profile on an initialized archive is a no-op.
@@ -270,6 +273,30 @@ INSERT OR REPLACE INTO viewer_meta (key, value)
 VALUES ('extension_schema_version', '3');
 ";
 
+/// Schema v4 — parent-removal repair lane.
+///
+/// `viewer_session_facts_parent_cleanup` mirrors
+/// `viewer_ingest_receipt_cleanup` for the parent link: the fixup creates
+/// `parent_conversation_id` references in the child-first direction, so a
+/// `cass forget` of a resolved parent would otherwise be refused by the
+/// `REFERENCES conversations(id)` constraint (or, under a writer without
+/// FK enforcement, leave a child pointing at a gone conversation). The
+/// BEFORE DELETE trigger NULLs the link inside the same statement — the
+/// child's own rows stay, and a later matching parent can re-resolve the
+/// still-durable `parent_external_id` evidence.
+const VIEWER_SCHEMA_V4: &str = r"
+DROP TRIGGER IF EXISTS viewer_session_facts_parent_cleanup;
+CREATE TRIGGER viewer_session_facts_parent_cleanup BEFORE DELETE ON conversations
+BEGIN
+    UPDATE viewer_session_facts
+    SET parent_conversation_id = NULL
+    WHERE parent_conversation_id = OLD.id;
+END;
+
+INSERT OR REPLACE INTO viewer_meta (key, value)
+VALUES ('extension_schema_version', '4');
+";
+
 /// Guarded v3 column migration: `parent_external_id` cannot ride the
 /// `CREATE TABLE` statement (existing v2 archives keep their table), so it
 /// lands as an `ALTER TABLE` only when the column is absent — inside the
@@ -291,6 +318,23 @@ fn migrate_facts_parent_evidence(connection: &Connection) -> Result<()> {
             )
             .context("adding viewer_session_facts.parent_external_id (schema v3)")?;
     }
+    // Pre-v3 rows recorded the same parent evidence inside the coverage
+    // manifest (`parent.evidence`) that the column now persists, so the
+    // guarded migration can recover it — without this backfill those rows
+    // would keep parent_external_id NULL forever: the row-level
+    // idempotence key and the ingest receipt both skip republishing them,
+    // and the child-before-parent fixup only scans rows that recorded the
+    // column. `json_valid` keeps a malformed manifest from aborting the
+    // schema transaction; rows without recorded evidence simply stay NULL.
+    connection
+        .execute(
+            "UPDATE viewer_session_facts \
+             SET parent_external_id = \
+                 json_extract(coverage_detail_json, '$.parent.evidence') \
+             WHERE parent_external_id IS NULL \
+               AND json_valid(coverage_detail_json)",
+        )
+        .context("backfilling viewer_session_facts.parent_external_id (schema v3)")?;
     Ok(())
 }
 
@@ -342,6 +386,7 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
         connection.execute_batch(VIEWER_SCHEMA_V2)?;
         migrate_facts_parent_evidence(connection)?;
         connection.execute_batch(VIEWER_SCHEMA_V3)?;
+        connection.execute_batch(VIEWER_SCHEMA_V4)?;
         Ok(())
     })();
     match applied {

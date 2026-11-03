@@ -327,6 +327,247 @@ fn schema_requires_canonical_base_and_rolls_back_cleanly() -> Result<()> {
     Ok(())
 }
 
+/// Review fix (Important #1): rows published before the v3
+/// `parent_external_id` column existed keep their evidence only inside
+/// the coverage manifest (`parent.evidence`) — the guarded migration must
+/// recover it into the durable column so the child-before-parent fixup
+/// can ever see them. Rows without recorded evidence must stay NULL.
+#[test]
+fn facts_parent_evidence_backfill_for_pre_v3_rows() -> Result<()> {
+    let mut bridge = BridgeHarness::with_conversations(&[
+        FixtureConversation::repeated(1, "local", "fixture", 2),
+        FixtureConversation::repeated(2, "local", "fixture", 2),
+    ])?;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+
+    // Simulate a pre-v3 archive honestly: the v2 table shape (no
+    // `parent_external_id` column), a v2 version marker, and a facts row
+    // whose only parent evidence lives in the coverage manifest.
+    writer.execute_batch(
+        "CREATE TABLE viewer_session_facts (\
+            conversation_id INTEGER PRIMARY KEY \
+                REFERENCES conversations(id) ON DELETE CASCADE, \
+            extractor_version INTEGER NOT NULL, \
+            source_revision INTEGER NOT NULL DEFAULT 0, \
+            coverage_state TEXT NOT NULL DEFAULT 'unknown', \
+            coverage_detail_json TEXT, \
+            is_subagent INTEGER, \
+            parent_conversation_id INTEGER REFERENCES conversations(id), \
+            task_category TEXT, \
+            turn_count INTEGER, \
+            step_count INTEGER, \
+            thinking_block_count INTEGER, \
+            artifact_count INTEGER, \
+            subagent_count INTEGER, \
+            tool_error_count INTEGER, \
+            tool_calls_with_exit_status INTEGER, \
+            file_fact_count INTEGER, \
+            compaction_count INTEGER, \
+            model_set_json TEXT, \
+            first_prompt TEXT, \
+            extracted_at_ms INTEGER\
+        );\
+        CREATE TABLE IF NOT EXISTS viewer_meta (\
+            key TEXT PRIMARY KEY, \
+            value TEXT NOT NULL\
+        );\
+        INSERT INTO viewer_meta (key, value) \
+        VALUES ('extension_schema_version', '2');",
+    )?;
+    writer.execute_with_params(
+        "INSERT INTO viewer_session_facts \
+         (conversation_id,extractor_version,source_revision,coverage_state,\
+          coverage_detail_json,is_subagent) \
+         VALUES (?1,?2,?3,?4,?5,?6)",
+        &param_slice_to_values(params![
+            1_i64,
+            1_i64,
+            42_i64,
+            "partial",
+            r#"{"extractor":"claude-facts-v1","parent":{"evidence":"parent-sess-abc","resolution":"unresolved"}}"#,
+            1_i64
+        ]),
+    )?;
+    writer.execute_with_params(
+        "INSERT INTO viewer_session_facts \
+         (conversation_id,extractor_version,source_revision,coverage_state,\
+          coverage_detail_json,is_subagent) \
+         VALUES (?1,?2,?3,?4,?5,?6)",
+        &param_slice_to_values(params![
+            2_i64,
+            1_i64,
+            43_i64,
+            "partial",
+            r#"{"extractor":"claude-facts-v1","parent":{"evidence":null,"resolution":"no_evidence"}}"#,
+            0_i64
+        ]),
+    )?;
+
+    // The upgrade path runs the guarded ALTER plus the evidence backfill
+    // inside the same schema transaction.
+    schema::ensure_schema(&writer)?;
+
+    let row = writer.query_row(
+        "SELECT parent_external_id,parent_conversation_id \
+         FROM viewer_session_facts WHERE conversation_id=1",
+    )?;
+    ensure!(
+        row.get_typed::<Option<String>>(0)?.as_deref() == Some("parent-sess-abc"),
+        "a pre-v3 row must recover durable parent evidence from the manifest"
+    );
+    ensure!(
+        row.get_typed::<Option<i64>>(1)?.is_none(),
+        "the migration recovers evidence only — resolution waits for the parent"
+    );
+    let no_evidence: Option<String> = writer
+        .query_row(
+            "SELECT parent_external_id FROM viewer_session_facts \
+             WHERE conversation_id=2",
+        )?
+        .get_typed(0)?;
+    ensure!(
+        no_evidence.is_none(),
+        "a row without recorded evidence must stay NULL, never fabricated"
+    );
+    ensure!(
+        schema::installed_version(&writer)? == Some(schema::EXTENSION_SCHEMA_VERSION),
+        "the upgrade must land on the current extension profile"
+    );
+    drop(writer);
+    bridge.shutdown()
+}
+
+/// Review fix (Minor #4): the fixup keeps the forward rule's
+/// self-exclusion — a corrupt row naming its OWN external_id as parent
+/// evidence must never self-parent, while ordinary matching children are
+/// still claimed.
+#[test]
+fn facts_fixup_never_self_parents() -> Result<()> {
+    let mut bridge = BridgeHarness::with_conversations(&[
+        FixtureConversation::repeated(1, "local", "fixture", 2),
+        FixtureConversation::repeated(2, "local", "fixture", 2),
+    ])?;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    schema::ensure_schema(&writer)?;
+
+    // Conversation 1's own external_id is "fixture-1" — its facts row
+    // corruptly names itself as the parent evidence; conversation 2
+    // legitimately names fixture-1 as its parent.
+    for conversation_id in [1_i64, 2_i64] {
+        writer.execute_with_params(
+            "INSERT INTO viewer_session_facts \
+             (conversation_id,extractor_version,source_revision,coverage_state,\
+              coverage_detail_json,parent_external_id) \
+             VALUES (?1,?2,?3,?4,?5,?6)",
+            &param_slice_to_values(params![
+                conversation_id,
+                1_i64,
+                42_i64,
+                "partial",
+                r#"{"parent":{"evidence":"fixture-1","resolution":"unresolved"}}"#,
+                "fixture-1"
+            ]),
+        )?;
+    }
+
+    let claimed = facts::fixup_pending_parent_links(&writer, 1, "codex", "local", "fixture-1")?;
+    ensure!(
+        claimed == 1,
+        "only the real child may be claimed, never the corrupt self-row: {claimed}"
+    );
+    let self_link: Option<i64> = writer
+        .query_row(
+            "SELECT parent_conversation_id FROM viewer_session_facts \
+             WHERE conversation_id=1",
+        )?
+        .get_typed(0)?;
+    ensure!(
+        self_link.is_none(),
+        "a row naming its own external_id must never self-parent"
+    );
+    let child_link: Option<i64> = writer
+        .query_row(
+            "SELECT parent_conversation_id FROM viewer_session_facts \
+             WHERE conversation_id=2",
+        )?
+        .get_typed(0)?;
+    ensure!(
+        child_link == Some(1),
+        "the legitimate child still resolves to the parent"
+    );
+    drop(writer);
+    bridge.shutdown()
+}
+
+/// Review fix (Important #3, engine level): the
+/// `viewer_session_facts_parent_cleanup` trigger is load-bearing — pinned
+/// here by deleting a resolved parent with the trigger present (clean
+/// NULL) and probing the pre-fix failure mode with the trigger dropped
+/// (refused or dangling, never clean).
+#[test]
+fn facts_parent_delete_trigger_repairs_resolved_child_link() -> Result<()> {
+    let mut bridge = BridgeHarness::with_conversations(&[
+        FixtureConversation::repeated(1, "local", "fixture", 2),
+        FixtureConversation::repeated(2, "local", "fixture", 2),
+        FixtureConversation::repeated(3, "local", "fixture", 2),
+        FixtureConversation::repeated(4, "local", "fixture", 2),
+    ])?;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    schema::ensure_schema(&writer)?;
+    // Resolved links: child 2 -> parent 1, child 4 -> parent 3.
+    for (child_id, parent_id) in [(2_i64, 1_i64), (4_i64, 3_i64)] {
+        writer.execute_with_params(
+            "INSERT INTO viewer_session_facts \
+             (conversation_id,extractor_version,source_revision,coverage_state,\
+              parent_conversation_id) VALUES (?1,?2,?3,?4,?5)",
+            &param_slice_to_values(params![child_id, 1_i64, 42_i64, "partial", parent_id]),
+        )?;
+    }
+
+    // With the v4 trigger installed the parent delete lands inside one
+    // statement and the child's link is NULLed — never refused, never
+    // dangling.
+    writer.execute("DELETE FROM conversations WHERE id=1")?;
+    let link: Option<i64> = writer
+        .query_row(
+            "SELECT parent_conversation_id FROM viewer_session_facts \
+             WHERE conversation_id=2",
+        )?
+        .get_typed(0)?;
+    ensure!(
+        link.is_none(),
+        "the delete trigger must NULL the child's parent link"
+    );
+
+    // The pre-fix failure mode the trigger repairs: without it the NO
+    // ACTION reference either refuses the delete outright or leaves a
+    // dangling reference — never a clean NULL.
+    writer.execute("DROP TRIGGER viewer_session_facts_parent_cleanup")?;
+    match writer.execute("DELETE FROM conversations WHERE id=3") {
+        Err(error) => {
+            eprintln!("engine probe: delete-side FK refused without the trigger: {error}")
+        }
+        Ok(_) => {
+            let dangling: Option<i64> = writer
+                .query_row(
+                    "SELECT parent_conversation_id FROM viewer_session_facts \
+                     WHERE conversation_id=4",
+                )?
+                .get_typed(0)?;
+            ensure!(
+                dangling == Some(3),
+                "without the trigger the link must refuse or dangle, never self-clean"
+            );
+            eprintln!(
+                "engine probe: delete-side FK unenforced; the trigger is the \
+                 only cleanup on this build"
+            );
+        }
+    }
+    drop(writer);
+    bridge.shutdown()
+}
+
 #[test]
 fn schema_init_extensions_flag_uses_authorized_writer_then_exits() -> Result<()> {
     // The bridge binary's one-shot writer path initializes the extension
@@ -4167,6 +4408,184 @@ fn ingest_child_before_parent_resolves_on_parent_arrival() -> Result<()> {
     );
     assert_generation_coherent(&conn, child_id)?;
     assert_generation_coherent(&conn, parent_id)?;
+    drop(conn);
+    Ok(())
+}
+
+/// Review fix (Important #2): a child whose forward resolution was
+/// `ambiguous` — its evidence matched several parents at publish time —
+/// must NEVER be claimed by a later matching parent. The fixup leaves the
+/// link NULL and keeps the recorded resolution instead of rewriting the
+/// manifest to `resolved` around an arbitrary winner.
+#[test]
+fn ingest_ambiguous_child_is_never_claimed_by_later_parent() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    let parent_session = "parent-sess-amb";
+    // Two distinct parents whose path-derived external_ids BOTH match the
+    // child's recorded evidence (`%parent-sess-amb.jsonl`) — the forward
+    // resolution must stay ambiguous. They publish BEFORE the child so the
+    // ambiguity is deterministic, not ingest-order dependent.
+    seed_claude_session(
+        &fixture,
+        &format!("projA/{parent_session}.jsonl"),
+        parent_session,
+        "parent A",
+    )?;
+    seed_claude_session(
+        &fixture,
+        &format!("projB/{parent_session}.jsonl"),
+        parent_session,
+        "parent B",
+    )?;
+    run_cass_index(&fixture, &[])?;
+    run_init_extensions(&fixture)?;
+
+    // The subagent transcript arrives later and records its parent
+    // evidence durably — but two canonical parents already match it.
+    seed_claude_session(
+        &fixture,
+        &format!("projX/{parent_session}/subagents/agent-amb.jsonl"),
+        "child-amb-1",
+        "ambiguous child prompt",
+    )?;
+    run_cass_index(&fixture, &[])?;
+
+    let conn = ingest_conn(&fixture)?;
+    let child_id = canonical_id(&conn, "agent-amb")?;
+    let row = conn.query_row(&format!(
+        "SELECT parent_conversation_id, parent_external_id, coverage_detail_json \
+         FROM viewer_session_facts WHERE conversation_id={child_id}"
+    ))?;
+    ensure!(
+        row.get_typed::<Option<i64>>(0)?.is_none(),
+        "ambiguous evidence must leave the link NULL at publish"
+    );
+    ensure!(
+        row.get_typed::<Option<String>>(1)?.as_deref() == Some(parent_session),
+        "the recorded parent evidence must be the path-derived session id"
+    );
+    let detail: Value = serde_json::from_str(&row.get_typed::<String>(2)?)?;
+    ensure!(
+        detail["parent"]["resolution"] == "ambiguous",
+        "two matching parents at publish time record an ambiguous resolution: {detail}"
+    );
+    drop(conn);
+
+    // A THIRD matching parent arrives later — its own publication fixup
+    // must not claim the child the forward pass deliberately left
+    // ambiguous.
+    seed_claude_session(
+        &fixture,
+        &format!("projC/{parent_session}.jsonl"),
+        parent_session,
+        "parent C",
+    )?;
+    run_cass_index(&fixture, &[])?;
+
+    let conn = ingest_conn(&fixture)?;
+    let row = conn.query_row(&format!(
+        "SELECT parent_conversation_id, coverage_detail_json \
+         FROM viewer_session_facts WHERE conversation_id={child_id}"
+    ))?;
+    ensure!(
+        row.get_typed::<Option<i64>>(0)?.is_none(),
+        "a later matching parent must not claim an ambiguous child"
+    );
+    let detail: Value = serde_json::from_str(&row.get_typed::<String>(1)?)?;
+    ensure!(
+        detail["parent"]["resolution"] == "ambiguous",
+        "the manifest keeps its recorded ambiguous resolution: {detail}"
+    );
+    drop(conn);
+    Ok(())
+}
+
+/// Review fix (Important #3): `cass forget` of a resolved parent must not
+/// be refused by the `parent_conversation_id` reference its children
+/// hold — the `viewer_session_facts_parent_cleanup` trigger NULLs the
+/// link inside the delete, so the child keeps its own rows and its
+/// durable evidence can re-resolve on a later matching parent.
+#[test]
+fn ingest_forget_parent_nulls_resolved_child_link() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    let parent_session = "parent-sess-del";
+    // Child first, then parent — the same resolved-link setup the
+    // child-before-parent test pins.
+    seed_claude_session(
+        &fixture,
+        &format!("proj/{parent_session}/subagents/agent-del.jsonl"),
+        "child-del-1",
+        "child prompt",
+    )?;
+    run_cass_index(&fixture, &[])?;
+    run_init_extensions(&fixture)?;
+    seed_claude_session(
+        &fixture,
+        &format!("proj/{parent_session}.jsonl"),
+        parent_session,
+        "parent prompt",
+    )?;
+    run_cass_index(&fixture, &[])?;
+
+    let conn = ingest_conn(&fixture)?;
+    let child_id = canonical_id(&conn, "agent-del")?;
+    let parent_id = canonical_id(&conn, &format!("{parent_session}.jsonl"))?;
+    let resolved: Option<i64> = conn
+        .query_row(&format!(
+            "SELECT parent_conversation_id FROM viewer_session_facts \
+             WHERE conversation_id={child_id}"
+        ))?
+        .get_typed(0)?;
+    ensure!(
+        resolved == Some(parent_id),
+        "setup: the child's parent link must resolve before the forget"
+    );
+    drop(conn);
+
+    // Production removal of the parent only — the glob anchors on the
+    // trailing filename so the child's `subagents/` path cannot match.
+    let mut cmd = cass_cmd(&fixture);
+    cmd.arg("forget")
+        .arg("--json")
+        .arg("--source-glob")
+        .arg(format!("*{parent_session}.jsonl"))
+        .arg("--apply");
+    let output = cmd.stdin(Stdio::null()).output()?;
+    ensure!(
+        output.status.success(),
+        "cass forget of a resolved parent must not be FK-refused: {}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let conn = ingest_conn(&fixture)?;
+    ensure!(
+        count(
+            &conn,
+            &format!("SELECT COUNT(*) FROM conversations WHERE id={parent_id}")
+        )? == 0,
+        "the parent conversation must be removed"
+    );
+    let row = conn.query_row(&format!(
+        "SELECT parent_conversation_id, parent_external_id \
+         FROM viewer_session_facts WHERE conversation_id={child_id}"
+    ))?;
+    ensure!(
+        row.get_typed::<Option<i64>>(0)?.is_none(),
+        "the delete trigger must NULL the orphaned parent link"
+    );
+    ensure!(
+        row.get_typed::<Option<String>>(1)?.as_deref() == Some(parent_session),
+        "the durable evidence stays so a later matching parent can re-resolve"
+    );
+    ensure!(
+        count(
+            &conn,
+            &format!("SELECT COUNT(*) FROM conversations WHERE id={child_id}")
+        )? == 1,
+        "the child conversation itself is untouched by the parent's removal"
+    );
     drop(conn);
     Ok(())
 }
