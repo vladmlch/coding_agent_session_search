@@ -3277,6 +3277,125 @@ fn details_tool_output_revision_and_evidence() -> Result<()> {
     bridge.shutdown()
 }
 
+/// The chunk contract (`byte_offset`/`next_offset`/UTF-8 snap) exercised
+/// against the REAL ingest + serve lanes: a tool output larger than
+/// `TOOL_OUTPUT_BYTES` (512 KiB) is seeded through
+/// `insert_conversation_tree`, then `next_offset` is walked to the tail and
+/// the reassembly must equal the recorded bytes exactly. Mid-string and
+/// past-end `byte_offset`s are typed `invalid_request` probes.
+#[test]
+fn details_tool_output_chunked_walk_is_byte_exact() -> Result<()> {
+    let mut fixture = detail_fixture();
+    // >512 KiB with a multibyte character straddling EACH chunk boundary:
+    // the serve lane must snap `end` back to a UTF-8 boundary twice.
+    let mut big = "x".repeat(512 * 1024 - 1); // 524287 bytes
+    big.push('é'); // bytes 524287..524289 straddle the 512 KiB boundary
+    big.push_str(&"y".repeat(1_048_574 - big.len()));
+    big.push('é'); // bytes 1048574..1048576 straddle the second boundary
+    big.push_str(&"z".repeat(128 * 1024));
+    big.push_str("— needle tail —");
+    fixture[0].messages[2].content = big.clone();
+    let mut bridge = BridgeHarness::with_seed(&fixture, &[])?;
+    seed_detail_extras(&bridge)?;
+    init_extensions(&bridge)?;
+
+    // The guarded messages page cannot serve the oversized row whole; it
+    // degrades this one record honestly instead of failing the page.
+    let detail = bridge.exchange(json!({
+        "op":"get_session_details","conversation_id":1,"sections":["summary","messages"]}))?;
+    ensure!(detail["ok"] == true, "{detail}");
+    let revision = detail["result"]["generation"]["canonical_revision"]
+        .as_i64()
+        .unwrap();
+    let row = &detail["result"]["sections"]["messages"]["items"][2];
+    ensure!(
+        row["wire_suppressed"] == true && row["content"].is_null(),
+        "oversized row must be suppressed on the guarded page: {row}"
+    );
+
+    // Walk `next_offset` to the tail: every chunk stays at or under the
+    // 512 KiB budget, lands on a UTF-8 boundary, is contiguous with the
+    // bytes actually served, and reassembles byte-exact.
+    let mut reassembled = String::new();
+    let mut offset: i64 = 0;
+    let mut continued: Vec<i64> = Vec::new();
+    for chunks in 1..=8 {
+        let output = bridge.exchange(json!({
+            "op":"get_tool_output","conversation_id":1,"expected_revision":revision,
+            "step_anchor":{"kind":"message","idx":2},"byte_offset":offset}))?;
+        ensure!(output["ok"] == true, "{output}");
+        let resource = &output["result"];
+        let content = resource["content"]
+            .as_str()
+            .expect("content must be a string");
+        ensure!(
+            content.len() <= 512 * 1024,
+            "chunk {} exceeds the 512 KiB budget",
+            content.len()
+        );
+        ensure!(
+            resource["content_bytes"].as_i64() == Some(big.len() as i64),
+            "content_bytes drifted: {resource}"
+        );
+        ensure!(
+            resource["canonical_revision"].as_i64() == Some(revision),
+            "revision drifted mid-walk: {resource}"
+        );
+        ensure!(resource["availability"] == "available", "{resource}");
+        ensure!(resource["tool_use_id"] == "call-1", "{resource}");
+        reassembled.push_str(content);
+        match resource["next_offset"].as_i64() {
+            Some(next) => {
+                ensure!(next > offset, "cursor did not advance at {offset}");
+                ensure!(
+                    next == offset + content.len() as i64,
+                    "non-contiguous chunk: next={next} offset={offset} len={}",
+                    content.len()
+                );
+                ensure!(
+                    big.is_char_boundary(next as usize),
+                    "next_offset {next} splits a character"
+                );
+                continued.push(next);
+                offset = next;
+            }
+            None => break,
+        }
+        ensure!(chunks < 8, "chunk walk did not terminate: {continued:?}");
+    }
+    ensure!(
+        reassembled == big,
+        "reassembled output diverged from the recorded bytes"
+    );
+    // The two straddled boundaries snap back below the naive +512 KiB ends.
+    ensure!(
+        continued == [512 * 1024 - 1, 1_048_574],
+        "UTF-8 snap produced unexpected offsets: {continued:?}"
+    );
+
+    // Probes: mid-string and past-end offsets are typed invalid_request;
+    // the exact tail is the legal empty final chunk.
+    for probe in [524_288_i64, 1_048_575, -1, big.len() as i64 + 1] {
+        let reply = bridge.exchange(json!({
+            "op":"get_tool_output","conversation_id":1,"expected_revision":revision,
+            "step_anchor":{"kind":"message","idx":2},"byte_offset":probe}))?;
+        ensure!(
+            reply["ok"] == false && reply["error"]["kind"] == "invalid_request",
+            "expected invalid_request at byte_offset {probe}: {reply}"
+        );
+    }
+    let tail = bridge.exchange(json!({
+        "op":"get_tool_output","conversation_id":1,"expected_revision":revision,
+        "step_anchor":{"kind":"message","idx":2},"byte_offset":big.len() as i64}))?;
+    ensure!(
+        tail["ok"] == true
+            && tail["result"]["content"] == ""
+            && tail["result"]["next_offset"].is_null(),
+        "exact-end offset must serve the empty tail: {tail}"
+    );
+    bridge.shutdown()
+}
+
 // ---------------------------------------------------------------------------
 // Task 10: SQL analytics — projects / dashboard / health
 // ---------------------------------------------------------------------------
