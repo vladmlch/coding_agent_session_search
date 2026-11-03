@@ -763,6 +763,31 @@ pub fn resolve_public_ids(
     connection: &Connection,
     conversation_ids: &[i64],
 ) -> Result<std::collections::BTreeMap<i64, VerifiedIdentity>> {
+    Ok(
+        resolve_public_ids_with_evidence(connection, conversation_ids)?
+            .into_iter()
+            .map(|(conversation_id, (verified, _row))| (conversation_id, verified))
+            .collect(),
+    )
+}
+
+/// [`resolve_public_ids`] plus the raw canonical evidence [`Row`] each
+/// identity was verified against — `FORWARD_ROW_SQL`'s exact column order
+/// (`c.id` at index 0, the seven identity-bearing columns at 1..=7). The
+/// sort maintenance lane (`viewer_extensions::sort::repair_sort_keys`)
+/// binds its in-transaction write to this evidence through
+/// `publish_sort_tie_guarded`: a cross-connection canonical identity
+/// change committed between this probe and the chunk's write transaction
+/// makes the guard refuse, so a stale resolved key can never overwrite
+/// the invalidation the conversations trigger installed.
+///
+/// Dead on the bridge-binary compilation (only the library's sort lane
+/// and the test includes call this shape).
+#[allow(dead_code)]
+pub fn resolve_public_ids_with_evidence(
+    connection: &Connection,
+    conversation_ids: &[i64],
+) -> Result<std::collections::BTreeMap<i64, (VerifiedIdentity, Row)>> {
     let lookups = load_lookups(connection)?;
     for &conversation_id in conversation_ids {
         if conversation_id <= 0 {
@@ -799,11 +824,17 @@ pub fn resolve_public_ids(
         let resolved = resolve_row(row, &lookups)?;
         resolved_map.insert(
             conversation_id,
-            VerifiedIdentity {
-                provider: resolved.provider,
-                source_id: resolved.source_id,
-                public_id: resolved.public_id,
-            },
+            (
+                VerifiedIdentity {
+                    provider: resolved.provider,
+                    source_id: resolved.source_id,
+                    public_id: resolved.public_id,
+                },
+                // The probe row IS the resolution basis — cloning it into
+                // the result lets the guarded write re-verify exactly the
+                // evidence this identity was recomputed from.
+                row.clone(),
+            ),
         );
     }
     Ok(resolved_map)

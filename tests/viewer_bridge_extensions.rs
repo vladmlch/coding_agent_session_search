@@ -5741,6 +5741,181 @@ fn ingest_tie_publish_guards_against_racing_identity_change() -> Result<()> {
     Ok(())
 }
 
+/// Review fix-round-2 (Important, repair lane): `repair_sort_keys` used to
+/// resolve committed state outside its chunk transaction and then blindly
+/// UPDATE inside it — the same stale-tie race the ingest lane's evidence
+/// guard was built for. `CASS_TEST_VIEWER_REPAIR_RACE_SQL` injects a
+/// canonical identity mutation after a repair chunk's resolve probes and
+/// before its write transaction opens (the exact interleaving of a
+/// cross-connection canonical write racing the pass): the guarded write
+/// must refuse the stale basis so the row stays pending or keys to the
+/// moved identity — never a stale `claude:repair-race` left trusted.
+/// The probe is scoped to the seeded row's canonical `external_id` (the
+/// project-relative session path) so it is a no-op on the later passes
+/// that re-resolve the moved row.
+#[test]
+fn repair_sort_tie_publish_guards_against_racing_identity_change() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    seed_claude_session(&fixture, "proj/repair-race.jsonl", "repair-race", "race body")?;
+    run_cass_index(&fixture, &[])?;
+
+    // Force the pending state a migration or dimension invalidation
+    // leaves: the trigger layer can only NULL the tie, never recompute
+    // a verified public identity.
+    let conn = ingest_conn(&fixture)?;
+    conn.execute("UPDATE viewer_session_sort SET tie_key = NULL, tie_error = NULL")?;
+    let pending = count(
+        &conn,
+        "SELECT COUNT(*) FROM viewer_session_sort \
+         WHERE tie_key IS NULL AND tie_error IS NULL",
+    )?;
+    ensure!(pending == 1, "setup must leave the tie pending: {pending}");
+    drop(conn);
+
+    // A second session gives the index run publish work; its profile
+    // guard drives the repair pass that races the injected mutation.
+    seed_claude_session(&fixture, "proj/repair-b.jsonl", "repair-b", "other body")?;
+    run_cass_index(
+        &fixture,
+        &[(
+            "CASS_TEST_VIEWER_REPAIR_RACE_SQL",
+            "UPDATE conversations \
+             SET external_id='repairRACED', source_path='/raced/repairRACED.jsonl' \
+             WHERE external_id='proj/repair-race.jsonl'",
+        )],
+    )?;
+
+    let conn = ingest_conn(&fixture)?;
+    let conversation_id = canonical_id(&conn, "repairRACED")?;
+    let row = conn.query_row(&format!(
+        "SELECT tie_key, tie_error FROM viewer_session_sort \
+         WHERE conversation_id={conversation_id}"
+    ))?;
+    let tie_key: Option<String> = row.get_typed(0)?;
+    let tie_error: Option<String> = row.get_typed(1)?;
+    ensure!(
+        tie_key.as_deref() != Some("claude:repair-race"),
+        "the stale pre-race key must never persist: {row:?}"
+    );
+    ensure!(
+        tie_key.is_none() || tie_key.as_deref() == Some("claude:repairRACED"),
+        "the raced row must be pending or keyed to the moved identity: {row:?}"
+    );
+    ensure!(
+        tie_error.is_none(),
+        "a guard-refused row stays pending — never a fabricated refusal: {row:?}"
+    );
+    // The mutation provably landed inside the old race window.
+    let external: String = conn
+        .query_row(&format!(
+            "SELECT external_id FROM conversations WHERE id={conversation_id}"
+        ))?
+        .get_typed(0)?;
+    ensure!(
+        external == "repairRACED",
+        "the injected identity change must be visible: {external}"
+    );
+    drop(conn);
+
+    // The claimed contract — refused rows stay pending for the NEXT
+    // pass: a further publish converges the row to the post-mutation
+    // identity (the scoped probe is a no-op once the row has moved).
+    seed_claude_session(&fixture, "proj/repair-c.jsonl", "repair-c", "third body")?;
+    run_cass_index(
+        &fixture,
+        &[(
+            "CASS_TEST_VIEWER_REPAIR_RACE_SQL",
+            "UPDATE conversations \
+             SET external_id='repairRACED', source_path='/raced/repairRACED.jsonl' \
+             WHERE external_id='proj/repair-race.jsonl'",
+        )],
+    )?;
+    let conn = ingest_conn(&fixture)?;
+    let row = conn.query_row(&format!(
+        "SELECT tie_key, tie_error FROM viewer_session_sort \
+         WHERE conversation_id={conversation_id}"
+    ))?;
+    ensure!(
+        row.get_typed::<Option<String>>(0)?.as_deref() == Some("claude:repairRACED"),
+        "the next pass must converge the row to the moved identity: {row:?}"
+    );
+    ensure!(
+        row.get_typed::<Option<String>>(1)?.is_none(),
+        "converged row carries no refusal: {row:?}"
+    );
+    drop(conn);
+    Ok(())
+}
+
+/// Review fix-round-2 (adjacent, repair lane): a conversation deleted
+/// between the repair pass's pending-list read and its chunk write used
+/// to regain a bare `viewer_session_sort` row through the unguarded
+/// `INSERT OR IGNORE` — with FK enforcement off on the ingest writer
+/// that is a permanent `session_not_found` wedge. The injected delete
+/// lands in the old race window: the `WHERE EXISTS` row-ensure must
+/// leave nothing dangling behind.
+#[test]
+fn repair_sort_tie_delete_race_leaves_no_dangling_row() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    seed_claude_session(&fixture, "proj/repair-del.jsonl", "repair-del", "delete me")?;
+    run_cass_index(&fixture, &[])?;
+
+    let conn = ingest_conn(&fixture)?;
+    let conversation_id = canonical_id(&conn, "repair-del")?;
+    conn.execute("UPDATE viewer_session_sort SET tie_key = NULL, tie_error = NULL")?;
+    drop(conn);
+
+    // The delete races the repair chunk that carries the pending row.
+    seed_claude_session(&fixture, "proj/repair-del-b.jsonl", "repair-del-b", "kept")?;
+    run_cass_index(
+        &fixture,
+        &[(
+            "CASS_TEST_VIEWER_REPAIR_RACE_SQL",
+            "DELETE FROM conversations WHERE external_id='proj/repair-del.jsonl'",
+        )],
+    )?;
+
+    let conn = ingest_conn(&fixture)?;
+    ensure!(
+        count(
+            &conn,
+            &format!("SELECT COUNT(*) FROM conversations WHERE id={conversation_id}")
+        )? == 0,
+        "the injected delete must have landed"
+    );
+    ensure!(
+        count(
+            &conn,
+            &format!(
+                "SELECT COUNT(*) FROM viewer_session_sort \
+                 WHERE conversation_id={conversation_id}"
+            )
+        )? == 0,
+        "a deleted conversation must not regain a dangling sort row \
+         (the conversations-del trigger removed it; no guarded insert may resurrect it)"
+    );
+    ensure!(
+        count(
+            &conn,
+            "SELECT COUNT(*) FROM viewer_session_sort \
+             WHERE tie_key IS NULL AND tie_error IS NULL"
+        )? == 0,
+        "nothing may stay pending on a row that no longer exists"
+    );
+
+    // The un-raced sibling converged through the same pass normally.
+    let kept_id = canonical_id(&conn, "repair-del-b")?;
+    let row = conn.query_row(&format!(
+        "SELECT tie_key FROM viewer_session_sort WHERE conversation_id={kept_id}"
+    ))?;
+    ensure!(
+        row.get_typed::<Option<String>>(0)?.as_deref() == Some("claude:repair-del-b"),
+        "the surviving conversation must carry its verified key: {row:?}"
+    );
+    drop(conn);
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Engine capability probe (Task 4 audit evidence): pins the FrankenSQLite
 // plan/codegen behaviors the indexed browse design depends on — a

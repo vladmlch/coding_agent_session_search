@@ -15,9 +15,12 @@
 //!   public identity on the just-committed canonical row and writes the
 //!   key inside the same generation transaction as facts+receipt;
 //! * maintenance — `repair_sort_keys` (run by the authorized
-//!   `--init-extensions`/`--backfill-viewer-extensions` lanes) converges
-//!   every NULL tie row: unresolvable rows record their typed refusal kind
-//!   in `tie_error` so browse refuses honestly instead of guessing order.
+//!   `--init-extensions`/`--backfill-viewer-extensions` lanes and by the
+//!   ingest profile guard) converges every NULL tie row through the same
+//!   evidence-guarded write: unresolvable rows record their typed refusal
+//!   kind in `tie_error` so browse refuses honestly instead of guessing
+//!   order, and a canonical identity change racing a repair chunk can
+//!   never leave a stale key trusted.
 //!
 //! The identity recomputation is shared VERBATIM with the bridge read path
 //! (`viewer_bridge::identity` — provider-native CID derivation from
@@ -56,7 +59,7 @@ mod protocol {
 
 use anyhow::{Context, Result};
 use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt, TransactionExt};
-use coding_agent_search::franken_sync::{Connection, params};
+use coding_agent_search::franken_sync::{Connection, Row, params};
 
 use super::facts::FactsDb;
 
@@ -88,9 +91,19 @@ fn resolve_sort_tie(connection: &Connection, conversation_id: i64) -> Result<Sor
 /// row when the conversations-INSERT trigger somehow missed it (the other
 /// mirrors stay at their defaults until the next source-table write
 /// recomputes them — the repair lane below only ever owes the tie key).
+/// The row-ensure is `WHERE EXISTS`-guarded like the guarded writer's: a
+/// conversation deleted between the pending-list read and this write
+/// (FKs are off on the ingest writer) must not regain a dangling sort
+/// row that would wedge on a permanent `session_not_found`.
+///
+/// Low-level primitive: every in-repo write lane goes through
+/// [`publish_sort_tie_guarded`], which additionally re-verifies the
+/// canonical identity evidence inside the commit; this unguarded-UPDATE
+/// form is retained for callers that already hold the commit boundary.
 pub fn write_sort_tie(db: &impl FactsDb, conversation_id: i64, tie: &SortTie) -> Result<()> {
     db.facts_execute(
-        "INSERT OR IGNORE INTO viewer_session_sort (conversation_id) VALUES (?1)",
+        "INSERT OR IGNORE INTO viewer_session_sort (conversation_id) \
+         SELECT ?1 WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.id = ?1)",
         params![conversation_id],
     )?;
     let (key, error): (Option<&str>, Option<&str>) = match tie {
@@ -103,27 +116,6 @@ pub fn write_sort_tie(db: &impl FactsDb, conversation_id: i64, tie: &SortTie) ->
         params![conversation_id, key, error],
     )?;
     Ok(())
-}
-
-/// Resolve and persist the tie key for one freshly published conversation.
-/// Called inside the generation transaction against the just-committed
-/// canonical row; a refusal is persisted (not raised) because an
-/// unverifiable identity is durable state, never a reason to roll back a
-/// committed facts publication. The ingest lane uses the guarded pair
-/// (`resolve_published_tie_with_evidence` + `publish_sort_tie_guarded`)
-/// instead — a bare write can persist a key resolved against a canonical
-/// identity that moved between resolve and commit.
-pub fn publish_sort_tie(db: &impl FactsDb, conversation_id: i64, tie: &SortTie) -> Result<()> {
-    write_sort_tie(db, conversation_id, tie)
-}
-
-/// Resolve the tie key for a conversation whose canonical row just
-/// committed (reads committed state; the write lands inside the
-/// generation transaction). Superseded in the ingest lane by
-/// [`resolve_published_tie_with_evidence`], which captures the canonical
-/// identity evidence the guarded in-transaction write re-verifies.
-pub fn resolve_published_tie(connection: &Connection, conversation_id: i64) -> Result<SortTie> {
-    resolve_sort_tie(connection, conversation_id)
 }
 
 /// The identity-bearing canonical columns the tie resolution consumes —
@@ -172,7 +164,26 @@ fn read_tie_evidence(
     Ok(rows.into_iter().next())
 }
 
-/// `resolve_published_tie` plus the canonical identity evidence captured
+/// Evidence extraction for a [`Row`] carried out of
+/// `identity::resolve_public_ids_with_evidence`: the same seven
+/// identity-bearing columns at `FORWARD_ROW_SQL` positions 1..=7 (index 0
+/// is `c.id`). Unlike [`read_tie_evidence`] this adds no probe — the row
+/// the batch resolver verified IS the evidence, so the guarded write can
+/// only refuse on a change committed after that exact basis, never on a
+/// stale re-read.
+fn tie_evidence_from_row(row: &Row) -> Result<TieEvidence> {
+    Ok(TieEvidence {
+        agent_id: row.get_typed(1)?,
+        source_id: row.get_typed(2)?,
+        external_id: row.get_typed(3)?,
+        source_path: row.get_typed(4)?,
+        origin_host: row.get_typed(5)?,
+        metadata_bin: row.get_typed(6)?,
+        metadata_json: row.get_typed(7)?,
+    })
+}
+
+/// `resolve_sort_tie` plus the canonical identity evidence captured
 /// at resolve time. The generation transaction re-binds the persisted key
 /// to this evidence (`publish_sort_tie_guarded`) so a cross-connection
 /// canonical identity change between resolve and commit can never leave a
@@ -263,13 +274,30 @@ pub fn sort_ties_pending(connection: &Connection) -> Result<bool> {
         .is_empty())
 }
 
-/// Outcome of a maintenance-lane convergence pass.
+/// Outcome of a maintenance-lane convergence pass. Counts only rows whose
+/// write actually committed — a row the evidence guard refused (a racing
+/// canonical writer moved its basis mid-pass) is counted nowhere: it
+/// stays pending for the next pass.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SortRepairStats {
     /// Rows whose verified public key was persisted.
     pub resolved: usize,
     /// Rows whose resolver refusal kind was persisted into `tie_error`.
     pub refused: usize,
+}
+
+/// Deterministic stale-tie-race injection for the maintenance lane
+/// (test-only): `CASS_TEST_VIEWER_REPAIR_RACE_SQL` holds SQL executed on
+/// this connection ONCE per repair pass — after the first chunk's
+/// committed-state resolution reads and before its write transaction
+/// opens. That is exactly the interleaving of a cross-connection
+/// canonical identity write racing a repair chunk: the conversations
+/// trigger NULLs `tie_key`, and the evidence-guarded write must leave the
+/// row pending rather than persist the stale resolved key.
+fn repair_race_probe() -> Option<String> {
+    dotenvy::var("CASS_TEST_VIEWER_REPAIR_RACE_SQL")
+        .ok()
+        .filter(|sql| !sql.is_empty())
 }
 
 /// Converge every NULL tie row (`tie_key IS NULL AND tie_error IS NULL`)
@@ -279,15 +307,27 @@ pub struct SortRepairStats {
 /// `viewer_sort_*` triggers clear it back to pending, which the next pass
 /// re-resolves).
 ///
-/// Batched: `resolve_public_ids` loads the `agents`/`sources` lookups once
-/// per chunk; a chunk containing a refused row falls back to per-row
-/// resolution so one conflict doesn't poison its neighbours' verified
-/// keys. Resolution reads committed state on the bare connection; each
-/// chunk's writes then commit inside ONE bounded transaction — the
-/// ingest-lane caller (`ensure_profile_for_ingest`) converges
-/// archive-scale backlogs in 512-row commit units, never one giant pass
-/// and never a per-row fsync storm. Rows a racing canonical writer
-/// re-invalidates mid-pass simply stay pending for the next pass.
+/// Batched: `resolve_public_ids_with_evidence` loads the
+/// `agents`/`sources` lookups once per chunk and returns each row's
+/// resolution basis (the `FORWARD_ROW_SQL` columns) alongside its
+/// verified identity; a chunk containing a refused row falls back to
+/// per-row `resolve_published_tie_with_evidence` so one conflict doesn't
+/// poison its neighbours' verified keys. Resolution reads committed
+/// state on the bare connection; each chunk's writes then commit inside
+/// ONE bounded transaction — the ingest-lane caller
+/// (`ensure_profile_for_ingest`) converges archive-scale backlogs in
+/// 512-row commit units, never one giant pass and never a per-row fsync
+/// storm.
+///
+/// Every write goes through [`publish_sort_tie_guarded`]: a canonical
+/// identity change committed between a chunk's resolve probes and its
+/// write transaction (a supported reality — concurrent writers hit the
+/// same archive) fires the NULL trigger, and the guard's in-transaction
+/// evidence re-check refuses the stale key instead of blindly
+/// overwriting it with a value nothing re-invalidates. Guard-refused
+/// rows — raced, or deleted mid-pass — simply stay pending for the next
+/// pass; a deleted conversation never regains a dangling sort row
+/// because the row-ensure is itself `WHERE EXISTS`-guarded.
 ///
 /// Must NOT be called with a transaction already open on this connection.
 pub fn repair_sort_keys(connection: &Connection) -> Result<SortRepairStats> {
@@ -299,39 +339,70 @@ pub fn repair_sort_keys(connection: &Connection) -> Result<SortRepairStats> {
         |row| row.get_typed(0),
     )?;
     let mut stats = SortRepairStats::default();
+    let mut race_probe = repair_race_probe();
     for chunk in pending.chunks(512) {
         // Resolve the whole chunk first (committed-state reads), then
         // commit its writes as one bounded transaction.
-        let mut ties: Vec<(i64, SortTie)> = Vec::with_capacity(chunk.len());
-        match identity::resolve_public_ids(connection, chunk) {
+        let mut ties: Vec<(i64, SortTie, Option<TieEvidence>)> =
+            Vec::with_capacity(chunk.len());
+        match identity::resolve_public_ids_with_evidence(connection, chunk) {
             Ok(resolved_map) => {
-                for (conversation_id, verified) in resolved_map {
-                    stats.resolved += 1;
+                for (conversation_id, (verified, evidence_row)) in resolved_map {
                     ties.push((
                         conversation_id,
                         SortTie::Resolved(verified.public_id),
+                        Some(tie_evidence_from_row(&evidence_row)?),
                     ));
                 }
             }
             Err(_) => {
                 for &conversation_id in chunk {
-                    let tie = resolve_sort_tie(connection, conversation_id)?;
-                    match tie {
-                        SortTie::Resolved(_) => stats.resolved += 1,
-                        SortTie::Refused(_) => stats.refused += 1,
-                    }
-                    ties.push((conversation_id, tie));
+                    let (tie, evidence) =
+                        resolve_published_tie_with_evidence(connection, conversation_id)?;
+                    ties.push((conversation_id, tie, evidence));
                 }
             }
         }
         if ties.is_empty() {
             continue;
         }
+        // Test-only: inject the cross-connection canonical mutation at
+        // exactly the race window — resolved but not yet written.
+        if let Some(race_sql) = race_probe.take() {
+            connection
+                .execute_batch(&race_sql)
+                .context("injecting repair-lane tie-race canonical mutation")?;
+        }
         let mut tx = connection
             .transaction()
             .context("opening sort tie repair batch transaction")?;
-        for (conversation_id, tie) in &ties {
-            write_sort_tie(&tx, *conversation_id, tie)?;
+        for (conversation_id, tie, evidence) in &ties {
+            if publish_sort_tie_guarded(&tx, *conversation_id, tie, evidence.as_ref())? {
+                match tie {
+                    SortTie::Resolved(_) => stats.resolved += 1,
+                    SortTie::Refused(_) => stats.refused += 1,
+                }
+                continue;
+            }
+            // Guard refused: the canonical basis moved (or the row is
+            // gone) between resolve and this in-transaction write. The
+            // row stays pending — the next pass re-resolves it against
+            // the moved identity; a stale key is never persisted.
+            if evidence.is_none() {
+                // Already gone at resolve time: this pending sort row is
+                // an orphan the conversations-del trigger would have
+                // removed. Converge it honestly — the re-check inside
+                // the transaction leaves a same-id row re-created
+                // mid-pass pending for the next pass instead.
+                tx.facts_execute(
+                    "DELETE FROM viewer_session_sort \
+                     WHERE conversation_id = ?1 \
+                       AND NOT EXISTS (\
+                           SELECT 1 FROM conversations c WHERE c.id = ?1\
+                       )",
+                    params![*conversation_id],
+                )?;
+            }
         }
         tx.commit()
             .context("committing sort tie repair batch transaction")?;
