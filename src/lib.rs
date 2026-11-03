@@ -1406,6 +1406,9 @@ pub enum Commands {
         /// Exact source_id from search output (e.g. 'local', 'work-laptop')
         #[arg(long, alias = "source-id")]
         source: Option<String>,
+        /// Exact conversation_id from search (disambiguates shared source paths).
+        #[arg(long, alias = "conversation_id", value_parser = clap::value_parser!(i64).range(1..))]
+        conversation_id: Option<i64>,
         /// Output format
         #[arg(long, value_enum, default_value_t = ConvExportFormat::Markdown)]
         format: ConvExportFormat,
@@ -1437,6 +1440,10 @@ pub enum Commands {
         /// Exact source_id from search output (e.g. 'local', 'work-laptop')
         #[arg(long, alias = "source-id")]
         source: Option<String>,
+
+        /// Exact conversation_id from search (disambiguates shared source paths).
+        #[arg(long, alias = "conversation_id", value_parser = clap::value_parser!(i64).range(1..))]
+        conversation_id: Option<i64>,
 
         /// Output directory (default: current directory)
         #[arg(long)]
@@ -9343,6 +9350,7 @@ async fn execute_cli(
                 Commands::Export {
                     path,
                     source,
+                    conversation_id,
                     format,
                     output,
                     clipboard,
@@ -9354,6 +9362,7 @@ async fn execute_cli(
                         &path,
                         cli.db.clone(),
                         source.as_deref(),
+                        conversation_id,
                         format,
                         output.as_deref(),
                         clipboard,
@@ -9365,6 +9374,7 @@ async fn execute_cli(
                 Commands::ExportHtml {
                     session,
                     source,
+                    conversation_id,
                     output_dir,
                     filename,
                     encrypt,
@@ -9385,6 +9395,7 @@ async fn execute_cli(
                         &session,
                         cli.db.clone(),
                         source.as_deref(),
+                        conversation_id,
                         output_dir.as_deref(),
                         filename.as_deref(),
                         encrypt,
@@ -107308,44 +107319,6 @@ fn conversation_view_to_raw_messages(
         .collect()
 }
 
-/// Rehydrate Pi-family source events for HTML export when the canonical
-/// archive still has their per-message envelope. The normalized message text
-/// is deliberately flattened for search, so it cannot retain full tool
-/// arguments, correlation ids, or result status on its own.
-fn conversation_view_to_html_raw_messages(
-    view: &crate::ui::data::ConversationView,
-) -> Vec<serde_json::Value> {
-    let mut messages = conversation_view_to_raw_messages(view);
-    if !matches!(view.convo.agent_slug.as_str(), "pi_agent" | "omp") {
-        return messages;
-    }
-
-    for (raw_message, archived_message) in messages.iter_mut().zip(&view.messages) {
-        let Some(source_line) = crate::storage::sqlite::message_extra_to_source_jsonl_line(
-            &archived_message.extra_json,
-        ) else {
-            continue;
-        };
-        let Ok(source_event) = serde_json::from_str::<serde_json::Value>(&source_line) else {
-            tracing::warn!(
-                message_idx = archived_message.idx,
-                agent = %view.convo.agent_slug,
-                "pi-family HTML export could not decode the archived source event"
-            );
-            continue;
-        };
-        if source_event.get("type").and_then(serde_json::Value::as_str) == Some("message")
-            && source_event
-                .get("message")
-                .is_some_and(serde_json::Value::is_object)
-        {
-            *raw_message = source_event;
-        }
-    }
-
-    messages
-}
-
 fn canonical_followup_source_id(source_id: Option<&str>) -> Option<String> {
     let trimmed = source_id?.trim();
     if trimmed.is_empty() {
@@ -107495,13 +107468,6 @@ fn prefers_direct_jsonl_file(path: &Path, source_id: Option<&str>) -> bool {
     )
 }
 
-fn should_defer_indexed_lookup_for_direct_export(path: &Path, source_id: Option<&str>) -> bool {
-    let allow_direct_file = followup_source_is_local(source_id) || source_id.is_none();
-    prefers_direct_jsonl_file(path, source_id)
-        || (allow_direct_file
-            && (detect_opencode_sqlite_session(path) || detect_opencode_session(path)))
-}
-
 fn try_load_indexed_conversation_from_db_with_source(
     source_path: &Path,
     db_path: &Path,
@@ -107589,204 +107555,6 @@ fn read_followup_file_lines(path: &Path) -> CliResult<Vec<String>> {
             hint: Some("The session file may be truncated or contain invalid UTF-8".into()),
             retryable: false,
         })
-}
-
-/// One JSONL record that the direct-file export/view loader could not decode
-/// and therefore skipped (GH #427). `line_number` is 1-based.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SkippedJsonlLine {
-    pub(crate) line_number: usize,
-    pub(crate) error: String,
-}
-
-type TolerantJsonlParse = (
-    Vec<serde_json::Value>,
-    Option<i64>,
-    Option<i64>,
-    Vec<SkippedJsonlLine>,
-);
-
-/// How many skipped records are named individually on stderr before the
-/// remainder is summarised as a count.
-const MAX_REPORTED_SKIPPED_JSONL_LINES: usize = 5;
-
-/// Parse a JSONL session file for export/view, applying the same per-line
-/// policy as the indexer (GH #427): a record that fails to decode is skipped
-/// and reported instead of aborting the whole session. Only when *no* record
-/// decodes is the file rejected, so a genuinely non-JSONL path still falls
-/// back to the indexed copy exactly as before.
-pub(crate) fn parse_followup_jsonl_messages_tolerant(path: &Path) -> CliResult<TolerantJsonlParse> {
-    let lines = read_followup_file_lines(path)?;
-    let mut messages = Vec::new();
-    let mut session_start = None;
-    let mut session_end = None;
-    let mut skipped: Vec<SkippedJsonlLine> = Vec::new();
-
-    for (line_index, line) in lines.into_iter().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let msg = match serde_json::from_str::<serde_json::Value>(&line) {
-            Ok(msg) => msg,
-            Err(err) => {
-                skipped.push(SkippedJsonlLine {
-                    line_number: line_index + 1,
-                    error: err.to_string(),
-                });
-                continue;
-            }
-        };
-        if let Some(ts) = extract_message_timestamp(&msg) {
-            if session_start.is_none_or(|start| ts < start) {
-                session_start = Some(ts);
-            }
-            if session_end.is_none_or(|end| ts > end) {
-                session_end = Some(ts);
-            }
-        }
-        messages.push(msg);
-    }
-
-    if messages.is_empty()
-        && let Some(first) = skipped.first()
-    {
-        return Err(CliError {
-            code: 9,
-            kind: CliErrorKind::SessionParse.kind_str(),
-            message: format!(
-                "Failed to parse session JSONL at line {}: {}",
-                first.line_number, first.error
-            ),
-            hint: Some(format!(
-                "None of the {} non-empty line(s) in {} decoded as JSON; use the indexed copy or repair the session file.",
-                skipped.len(),
-                path.display()
-            )),
-            retryable: false,
-        });
-    }
-
-    Ok((messages, session_start, session_end, skipped))
-}
-
-/// Surface skipped records on stderr (stdout stays data-only) and in the
-/// trace log, mirroring the indexer's `malformed-json-line` diagnostic.
-fn report_skipped_jsonl_lines(path: &Path, decoded: usize, skipped: &[SkippedJsonlLine]) {
-    if skipped.is_empty() {
-        return;
-    }
-    for line in skipped {
-        tracing::warn!(
-            source_path = %path.display(),
-            line_no = line.line_number,
-            error = %line.error,
-            "session JSONL line failed to parse; skipping (GH #427)"
-        );
-    }
-    eprintln!(
-        "warning: skipped {} malformed JSONL record(s) in {}; rendered the remaining {} record(s) (cass index applies the same per-line policy)",
-        skipped.len(),
-        path.display(),
-        decoded
-    );
-    for line in skipped.iter().take(MAX_REPORTED_SKIPPED_JSONL_LINES) {
-        eprintln!("warning:   line {}: {}", line.line_number, line.error);
-    }
-    if skipped.len() > MAX_REPORTED_SKIPPED_JSONL_LINES {
-        eprintln!(
-            "warning:   ... and {} more",
-            skipped.len() - MAX_REPORTED_SKIPPED_JSONL_LINES
-        );
-    }
-}
-
-fn parse_followup_jsonl_messages(
-    path: &Path,
-) -> CliResult<(Vec<serde_json::Value>, Option<i64>, Option<i64>)> {
-    let (messages, session_start, session_end, skipped) =
-        parse_followup_jsonl_messages_tolerant(path)?;
-    report_skipped_jsonl_lines(path, messages.len(), &skipped);
-    Ok((messages, session_start, session_end))
-}
-
-#[cfg(test)]
-mod gh427_tolerant_jsonl_tests {
-    use super::*;
-
-    fn write_session(dir: &tempfile::TempDir, name: &str, body: &str) -> PathBuf {
-        let path = dir.path().join(name);
-        std::fs::write(&path, body).unwrap();
-        path
-    }
-
-    #[test]
-    fn one_truncated_record_is_skipped_and_reported_not_fatal() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_session(
-            &dir,
-            "rollout.jsonl",
-            concat!(
-                "{\"role\":\"user\",\"content\":\"first\",\"timestamp\":\"2026-08-25T00:00:01Z\"}\n",
-                "{\"role\":\"assistant\",\"content\":\"cut mid-str\n",
-                "\n",
-                "{\"role\":\"assistant\",\"content\":\"third\",\"timestamp\":\"2026-08-25T00:00:03Z\"}\n",
-            ),
-        );
-
-        let (messages, start, end, skipped) = parse_followup_jsonl_messages_tolerant(&path)
-            .expect("one malformed line must not abort the session");
-
-        assert_eq!(messages.len(), 2, "the surrounding valid records are kept");
-        assert_eq!(messages[0]["content"], "first");
-        assert_eq!(messages[1]["content"], "third");
-        assert_eq!(skipped.len(), 1);
-        assert_eq!(skipped[0].line_number, 2, "line numbers are 1-based");
-        assert!(
-            !skipped[0].error.is_empty(),
-            "the decode error is preserved for the warning"
-        );
-        assert!(start.is_some() && end.is_some() && start <= end);
-
-        // The reporting wrapper keeps the original return shape.
-        let (messages, _, _) = parse_followup_jsonl_messages(&path).unwrap();
-        assert_eq!(messages.len(), 2);
-    }
-
-    #[test]
-    fn file_with_no_decodable_record_is_still_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_session(&dir, "not-jsonl.txt", "plain text\nmore text\n");
-
-        let err = parse_followup_jsonl_messages_tolerant(&path)
-            .expect_err("a file with zero decodable records is not a JSONL session");
-        assert_eq!(err.code, 9);
-        assert_eq!(err.kind, CliErrorKind::SessionParse.kind_str());
-        assert!(
-            err.message.contains("at line 1"),
-            "the first failing line is named: {}",
-            err.message
-        );
-        assert!(
-            err.hint
-                .as_deref()
-                .is_some_and(|h| h.contains("None of the 2")),
-            "hint counts the undecodable lines: {:?}",
-            err.hint
-        );
-    }
-
-    #[test]
-    fn fully_valid_file_reports_no_skips() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_session(
-            &dir,
-            "ok.jsonl",
-            "{\"role\":\"user\",\"content\":\"a\"}\n{\"role\":\"assistant\",\"content\":\"b\"}\n",
-        );
-        let (messages, _, _, skipped) = parse_followup_jsonl_messages_tolerant(&path).unwrap();
-        assert_eq!(messages.len(), 2);
-        assert!(skipped.is_empty());
-    }
 }
 
 fn infer_followup_agent_and_workspace(path: &Path) -> (Option<String>, Option<String>) {
@@ -113134,415 +112902,6 @@ fn diagnose_empty_workspace_search(
 // NEW COMMANDS: Export, Expand, Timeline
 // ============================================================================
 
-/// Detect if a path points to an OpenCode storage session file.
-/// OpenCode stores sessions in: storage/session/{projectID}/{sessionID}.json
-fn detect_opencode_session(path: &Path) -> bool {
-    // Must be a JSON file
-    if path.extension().map(|e| e != "json").unwrap_or(true) {
-        return false;
-    }
-
-    // Primary check: verify directory structure
-    // Path should be: {storage_root}/session/{projectID}/{sessionID}.json
-    // with sibling message/ and/or part/ directories
-    if let Some(parent) = path.parent()
-        && let Some(session_dir) = parent.parent()
-        && session_dir
-            .file_name()
-            .map(|n| n == "session")
-            .unwrap_or(false)
-        && let Some(storage_root) = session_dir.parent()
-    {
-        let message_dir = storage_root.join("message");
-        let part_dir = storage_root.join("part");
-        if message_dir.exists() || part_dir.exists() {
-            return true;
-        }
-    }
-
-    // Fallback: check if path follows opencode naming convention
-    // Pattern: .../opencode/storage/session/...
-    let components: Vec<_> = path.components().map(|c| c.as_os_str()).collect();
-    for window in components.windows(3) {
-        let w0 = window[0].to_string_lossy().to_lowercase();
-        let w1 = window[1].to_string_lossy().to_lowercase();
-        let w2 = window[2].to_string_lossy().to_lowercase();
-        if w0.contains("opencode") && w1 == "storage" && w2 == "session" {
-            return true;
-        }
-    }
-
-    false
-}
-
-/// Detect if a path points to an OpenCode SQLite-backed session.
-///
-/// These paths look like `<prefix>/opencode.db/<url-encoded-session-id>` and are
-/// produced by the OpenCode connector when indexing from the SQLite database.
-/// The actual file at that path does not exist -- the session lives inside
-/// the `.db` file.
-fn detect_opencode_sqlite_session(path: &Path) -> bool {
-    // Walk ancestors looking for a component that ends in ".db"
-    if let Some(parent) = path.parent() {
-        let parent_name = parent
-            .file_name()
-            .map(|n| n.to_string_lossy())
-            .unwrap_or_default();
-        if parent_name.ends_with(".db") && parent.is_file() {
-            // The parent is a real .db file and the child is the session id
-            return true;
-        }
-    }
-    false
-}
-
-fn path_exists_or_virtual_opencode_sqlite_session(path: &Path, allow_direct_file: bool) -> bool {
-    path.exists() || (allow_direct_file && detect_opencode_sqlite_session(path))
-}
-
-/// Load an OpenCode session from the SQLite database for export.
-///
-/// `path` is expected to be `<dir>/opencode.db/<url-encoded-session-id>`.
-/// Returns (title, start_ts, end_ts, messages as JSON values).
-#[allow(clippy::type_complexity)]
-fn load_opencode_sqlite_session_for_export(
-    path: &Path,
-) -> anyhow::Result<(
-    Option<String>,
-    Option<i64>,
-    Option<i64>,
-    Vec<serde_json::Value>,
-)> {
-    use anyhow::Context;
-
-    let session_id_encoded = path
-        .file_name()
-        .context("missing session id in path")?
-        .to_string_lossy();
-    let session_id =
-        urlencoding::decode(&session_id_encoded).unwrap_or_else(|_| session_id_encoded.clone());
-    let db_path = path.parent().context("missing parent db path")?;
-
-    use franken_agent_detection::connectors::Connector;
-    let connector = franken_agent_detection::OpenCodeConnector::new();
-    let scan_ctx = franken_agent_detection::connectors::ScanContext::local_default(
-        db_path.to_path_buf(),
-        None,
-    );
-    let convs = connector.scan(&scan_ctx)?;
-
-    // The connector also discovers default stores and skips unreadable ones.
-    // An export must not substitute a same-ID session from another database.
-    let conv = convs
-        .into_iter()
-        .find(|conversation| {
-            conversation.external_id.as_deref() == Some(session_id.as_ref())
-                && conversation.source_path.parent() == Some(db_path)
-        })
-        .with_context(|| {
-            format!(
-                "session '{}' not found or unreadable in OpenCode database at {}",
-                session_id,
-                db_path.display()
-            )
-        })?;
-
-    let mut messages: Vec<serde_json::Value> = Vec::new();
-    for msg in &conv.messages {
-        let mut msg_json = serde_json::json!({
-            "role": msg.role,
-            "content": msg.content,
-        });
-        if let Some(ts) = msg.created_at {
-            msg_json["timestamp"] = serde_json::Value::from(ts);
-        }
-        if let Some(author) = &msg.author {
-            msg_json["model"] = serde_json::Value::from(author.clone());
-        }
-        messages.push(msg_json);
-    }
-
-    Ok((conv.title, conv.started_at, conv.ended_at, messages))
-}
-
-/// Load an OpenCode session for export.
-/// Returns (title, start_ts, end_ts, messages as JSON values).
-#[allow(clippy::type_complexity)]
-fn load_opencode_session_for_export(
-    session_path: &Path,
-) -> anyhow::Result<(
-    Option<String>,
-    Option<i64>,
-    Option<i64>,
-    Vec<serde_json::Value>,
-)> {
-    use anyhow::Context;
-    use std::collections::HashMap;
-    use walkdir::WalkDir;
-
-    let normalize_opencode_ts = |ts: Option<i64>| {
-        ts.and_then(|raw| crate::connectors::parse_timestamp(&serde_json::Value::from(raw)))
-    };
-
-    // Parse session file
-    let session_content = std::fs::read_to_string(session_path)
-        .with_context(|| format!("read session file {}", session_path.display()))?;
-    let session: serde_json::Value = serde_json::from_str(&session_content)
-        .with_context(|| format!("parse session JSON {}", session_path.display()))?;
-
-    let session_id = session["id"]
-        .as_str()
-        .context("session missing 'id' field")?;
-    let session_title = session["title"].as_str().map(String::from);
-    let session_start = normalize_opencode_ts(session["time"]["created"].as_i64());
-    let session_end = normalize_opencode_ts(session["time"]["updated"].as_i64());
-
-    // Find storage root by going up from session file
-    // Path: storage/session/{projectID}/{sessionID}.json
-    let storage_root = session_path
-        .parent() // {projectID}/
-        .and_then(|p| p.parent()) // session/
-        .and_then(|p| p.parent()) // storage/
-        .context("cannot determine storage root from session path")?;
-
-    let message_dir = storage_root.join("message").join(session_id);
-    let part_dir = storage_root.join("part");
-
-    if !message_dir.exists() {
-        anyhow::bail!("message directory not found: {}", message_dir.display());
-    }
-
-    // Build map of message_id -> parts
-    #[derive(serde::Deserialize, Clone)]
-    struct PartInfo {
-        id: Option<String>,
-        #[serde(default, alias = "order", alias = "sequence")]
-        index: Option<i64>,
-        #[serde(rename = "messageID")]
-        message_id: Option<String>,
-        #[serde(rename = "type")]
-        part_type: Option<String>,
-        text: Option<String>,
-        state: Option<PartState>,
-    }
-    #[derive(serde::Deserialize, Clone)]
-    struct PartState {
-        output: Option<String>,
-    }
-
-    fn trailing_ascii_number(value: &str) -> Option<u64> {
-        let bytes = value.as_bytes();
-        let mut start = bytes.len();
-        while start > 0 && bytes[start - 1].is_ascii_digit() {
-            start -= 1;
-        }
-        if start == bytes.len() {
-            return None;
-        }
-        value[start..].parse().ok()
-    }
-
-    fn opencode_part_order(path: &Path, part: &PartInfo) -> u64 {
-        part.id
-            .as_deref()
-            .and_then(trailing_ascii_number)
-            .or_else(|| {
-                path.file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .and_then(trailing_ascii_number)
-            })
-            .unwrap_or(u64::MAX)
-    }
-
-    fn opencode_message_order(path: &Path, msg_id: &str) -> u64 {
-        trailing_ascii_number(msg_id)
-            .or_else(|| {
-                path.file_stem()
-                    .and_then(|stem| stem.to_str())
-                    .and_then(trailing_ascii_number)
-            })
-            .unwrap_or(u64::MAX)
-    }
-
-    let mut parts_by_msg: HashMap<String, Vec<PartInfo>> = HashMap::new();
-    if part_dir.exists() {
-        let mut part_records: Vec<(std::path::PathBuf, PartInfo)> = Vec::new();
-        for entry in WalkDir::new(&part_dir).into_iter().flatten() {
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let p = entry.path();
-            if p.extension().map(|e| e == "json").unwrap_or(false)
-                && let Ok(content) = std::fs::read_to_string(p)
-                && let Ok(part) = serde_json::from_str::<PartInfo>(&content)
-            {
-                part_records.push((p.to_path_buf(), part));
-            }
-        }
-        part_records.sort_by(|(a_path, a_part), (b_path, b_part)| {
-            let a_idx = a_part.index.unwrap_or(i64::MAX);
-            let b_idx = b_part.index.unwrap_or(i64::MAX);
-            a_idx
-                .cmp(&b_idx)
-                .then_with(|| {
-                    opencode_part_order(a_path, a_part).cmp(&opencode_part_order(b_path, b_part))
-                })
-                .then_with(|| {
-                    a_part
-                        .id
-                        .as_deref()
-                        .unwrap_or("")
-                        .cmp(b_part.id.as_deref().unwrap_or(""))
-                })
-                .then_with(|| {
-                    a_part
-                        .part_type
-                        .as_deref()
-                        .unwrap_or("")
-                        .cmp(b_part.part_type.as_deref().unwrap_or(""))
-                })
-                .then_with(|| {
-                    a_part
-                        .text
-                        .as_deref()
-                        .unwrap_or("")
-                        .cmp(b_part.text.as_deref().unwrap_or(""))
-                })
-                .then_with(|| a_path.cmp(b_path))
-        });
-        for (_, part) in part_records {
-            if let Some(msg_id) = part.message_id.clone() {
-                parts_by_msg.entry(msg_id).or_default().push(part);
-            }
-        }
-    }
-
-    // Load messages
-    #[derive(serde::Deserialize)]
-    struct MsgInfo {
-        id: String,
-        role: Option<String>,
-        #[serde(rename = "modelID")]
-        model_id: Option<String>,
-        time: Option<MsgTime>,
-    }
-    #[derive(serde::Deserialize)]
-    struct MsgTime {
-        created: Option<i64>,
-    }
-
-    let mut messages: Vec<(i64, u64, std::path::PathBuf, serde_json::Value)> = Vec::new();
-    let mut message_ts_min: Option<i64> = None;
-    let mut message_ts_max: Option<i64> = None;
-
-    for entry in WalkDir::new(&message_dir)
-        .max_depth(1)
-        .into_iter()
-        .flatten()
-    {
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let p = entry.path();
-        if !p.extension().map(|e| e == "json").unwrap_or(false) {
-            continue;
-        }
-
-        let content = match std::fs::read_to_string(p) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let msg_info: MsgInfo = match serde_json::from_str(&content) {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-
-        // Assemble content from parts
-        let parts = parts_by_msg.get(&msg_info.id).cloned().unwrap_or_default();
-        let mut content_pieces: Vec<String> = Vec::new();
-        for part in &parts {
-            match part.part_type.as_deref() {
-                Some("text") => {
-                    if let Some(text) = &part.text
-                        && !text.trim().is_empty()
-                    {
-                        content_pieces.push(text.clone());
-                    }
-                }
-                Some("tool") => {
-                    if let Some(state) = &part.state
-                        && let Some(output) = &state.output
-                        && !output.trim().is_empty()
-                    {
-                        content_pieces.push(format!("[Tool Output]\n{output}"));
-                    }
-                }
-                Some("reasoning") => {
-                    if let Some(text) = &part.text
-                        && !text.trim().is_empty()
-                    {
-                        content_pieces.push(format!("[Reasoning]\n{text}"));
-                    }
-                }
-                Some("patch") => {
-                    if let Some(text) = &part.text
-                        && !text.trim().is_empty()
-                    {
-                        content_pieces.push(format!("[Patch]\n{text}"));
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let assembled_content = content_pieces.join("\n\n");
-        if assembled_content.trim().is_empty() {
-            continue;
-        }
-
-        let message_order = opencode_message_order(p, &msg_info.id);
-        let role = msg_info.role.unwrap_or_else(|| "assistant".to_string());
-        let timestamp = normalize_opencode_ts(msg_info.time.as_ref().and_then(|t| t.created));
-        if let Some(ts) = timestamp {
-            message_ts_min = Some(message_ts_min.map_or(ts, |current| current.min(ts)));
-            message_ts_max = Some(message_ts_max.map_or(ts, |current| current.max(ts)));
-        }
-
-        // Build JSON value matching expected format for formatters
-        let mut msg_json = serde_json::json!({
-            "role": role,
-            "content": assembled_content,
-            "model": msg_info.model_id,
-        });
-        if let Some(ts) = timestamp {
-            msg_json["timestamp"] = serde_json::Value::from(ts);
-        }
-
-        // Keep unknown timestamps at the end while preserving deterministic output.
-        messages.push((
-            timestamp.unwrap_or(i64::MAX),
-            message_order,
-            p.to_path_buf(),
-            msg_json,
-        ));
-    }
-
-    // Sort by timestamp
-    messages.sort_by(|(a_ts, a_order, a_path, _), (b_ts, b_order, b_path, _)| {
-        a_ts.cmp(b_ts)
-            .then_with(|| a_order.cmp(b_order))
-            .then_with(|| a_path.cmp(b_path))
-    });
-    let sorted_messages: Vec<serde_json::Value> =
-        messages.into_iter().map(|(_, _, _, m)| m).collect();
-
-    // Compute timestamps from messages if not available in session metadata.
-    let start = session_start.or(message_ts_min);
-    let end = session_end.or(message_ts_max);
-
-    Ok((session_title, start, end, sorted_messages))
-}
-
 /// Return value of [`resolve_resume_target`] — the full recipe needed
 /// to resume a session in its native harness.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114540,12 +113899,115 @@ fn run_resume(
     Ok(())
 }
 
+/// Map an index-resolution failure onto the CLI error taxonomy (plan Task 4,
+/// "Error contract"). Every variant is terminal: export never falls back to
+/// the original source file. Identity problems (not-indexed, ambiguous) are
+/// user-input failures (code 3); archive health problems (unavailable, read
+/// failure, no renderable messages) are operational failures (code 9).
+/// Hints name `cass index` because the exported state is the indexed
+/// snapshot — freshness is repaired by indexing, never by re-reading files.
+fn indexed_export_cli_error(err: crate::export::indexed::IndexedExportError) -> CliError {
+    use crate::export::indexed::IndexedExportError;
+    match err {
+        IndexedExportError::IndexUnavailable { path, source } => CliError {
+            code: 9,
+            kind: CliErrorKind::IndexUnavailable.kind_str(),
+            message: format!("Session index unavailable at {}: {source}", path.display()),
+            hint: Some("Run 'cass index' to (re)build the index, then export again.".to_string()),
+            retryable: false,
+        },
+        IndexedExportError::ConversationNotIndexed {
+            source_path,
+            source_id,
+        } => CliError {
+            code: 3,
+            kind: CliErrorKind::ConversationNotIndexed.kind_str(),
+            message: format!(
+                "No indexed conversation found for {} (source: {})",
+                source_path.display(),
+                source_id.as_deref().unwrap_or("any")
+            ),
+            hint: Some("Run 'cass index' to index it, then export again.".to_string()),
+            retryable: false,
+        },
+        IndexedExportError::AmbiguousIdentity {
+            source_path,
+            candidates,
+        } => {
+            let listing = candidates
+                .iter()
+                .map(|candidate| {
+                    format!(
+                        "id={} title={} started_at={} source_id={}",
+                        candidate
+                            .conversation_id
+                            .map(|id| id.to_string())
+                            .unwrap_or_else(|| "?".to_string()),
+                        candidate.title.as_deref().unwrap_or("<untitled>"),
+                        candidate
+                            .started_at
+                            .map(|ts| ts.to_string())
+                            .unwrap_or_else(|| "?".to_string()),
+                        candidate.source_id,
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            CliError {
+                code: 3,
+                kind: CliErrorKind::AmbiguousIdentity.kind_str(),
+                message: format!(
+                    "Export identity for {} is ambiguous: {} indexed conversations share this path/source: {listing}",
+                    source_path.display(),
+                    candidates.len()
+                ),
+                hint: Some(
+                    "Re-run with --source <source_id> or --conversation-id <id> to select exactly one conversation."
+                        .to_string(),
+                ),
+                retryable: false,
+            }
+        }
+        IndexedExportError::IndexReadFailure { path, source } => CliError {
+            code: 9,
+            kind: CliErrorKind::IndexReadFailure.kind_str(),
+            message: format!(
+                "Failed to read the session index at {}: {source}",
+                path.display()
+            ),
+            hint: Some("Run 'cass index' to rebuild the index, then export again.".to_string()),
+            retryable: false,
+        },
+    }
+}
+
+/// Map a projection failure onto the CLI error taxonomy. A non-empty indexed
+/// conversation must never become an empty successful export.
+fn export_projection_cli_error(err: crate::export::projection::ExportProjectionError) -> CliError {
+    use crate::export::projection::ExportProjectionError;
+    match err {
+        ExportProjectionError::NoRenderableMessages { indexed } => CliError {
+            code: 9,
+            kind: CliErrorKind::NoRenderableMessages.kind_str(),
+            message: format!(
+                "The indexed session has {indexed} message(s) but none are renderable (only tool or bookkeeping records were archived)"
+            ),
+            hint: Some(
+                "Retry with --include-tools, or run 'cass index' to refresh the archived content."
+                    .to_string(),
+            ),
+            retryable: false,
+        },
+    }
+}
+
 /// Export a conversation to markdown or other formats
 #[allow(clippy::too_many_arguments)]
 fn run_export(
     path: &Path,
     db_override: Option<PathBuf>,
     source_id: Option<&str>,
+    conversation_id: Option<i64>,
     format: ConvExportFormat,
     output: Option<&Path>,
     clipboard: bool,
@@ -114560,151 +114022,41 @@ fn run_export(
         validate_followup_source_id(source_id, "cass export")?;
     }
     let normalized_source_id = canonical_followup_source_id(source_id);
-    let source_id = normalized_source_id.as_deref();
 
     let db_path = db_override.unwrap_or_else(default_db_path);
-    let allow_direct_file = followup_source_is_local(source_id) || source_id.is_none();
-    let mut indexed_view = if should_defer_indexed_lookup_for_direct_export(path, source_id) {
-        None
-    } else {
-        try_load_indexed_conversation_from_db_with_source(path, &db_path, source_id, None)
-    };
 
-    if source_id.is_none()
-        && !path_exists_or_virtual_opencode_sqlite_session(path, allow_direct_file)
-        && indexed_view.is_none()
-    {
-        return Err(CliError {
-            code: 3,
-            kind: CliErrorKind::FileNotFound.kind_str(),
-            message: format!("Session file not found: {}", path.display()),
-            hint: Some("Use 'cass search' to find session paths".to_string()),
-            retryable: false,
-        });
-    }
+    // Index-first export (plan Invariants 1-3): the canonical indexed
+    // conversation is the sole source of truth. `path` is an opaque
+    // identity key — never opened, sniffed, or decompressed — and every
+    // index/projection failure is terminal: no fallback to the original
+    // source file on any of them.
+    let view = crate::export::indexed::load_indexed_export(
+        &db_path,
+        &crate::export::indexed::ExportSelector {
+            source_path: path.to_path_buf(),
+            source_id: normalized_source_id.clone(),
+            conversation_id,
+        },
+    )
+    .map_err(indexed_export_cli_error)?;
 
-    let mut messages: Vec<serde_json::Value>;
-    let indexed_title = indexed_view
-        .as_ref()
-        .and_then(|view| view.convo.title.clone());
-    let mut session_title: Option<String> = indexed_title;
-    let session_start: Option<i64>;
-    let mut _session_end: Option<i64>;
-    let prefer_direct_file = prefers_direct_jsonl_file(path, source_id);
+    let conversation = crate::export::projection::project_indexed_conversation(
+        &view,
+        &crate::export::projection::ExportOptions { include_tools },
+    )
+    .map_err(export_projection_cli_error)?;
 
-    if prefer_direct_file {
-        match parse_followup_jsonl_messages(path) {
-            Ok((parsed_messages, parsed_start, parsed_end)) => {
-                messages = parsed_messages;
-                session_start = parsed_start;
-                _session_end = parsed_end;
-            }
-            Err(err) => {
-                if indexed_view.is_none() {
-                    indexed_view = try_load_indexed_conversation_from_db_with_source(
-                        path, &db_path, source_id, None,
-                    );
-                }
-                if let Some(view) = indexed_view.as_ref() {
-                    session_title = view.convo.title.clone();
-                    session_start = view.convo.started_at;
-                    _session_end = view.convo.ended_at;
-                    messages = conversation_view_to_raw_messages(view);
-                } else {
-                    return Err(err);
-                }
-            }
-        }
-    } else if let Some(view) = indexed_view.as_ref() {
-        session_title = view.convo.title.clone();
-        session_start = view.convo.started_at;
-        _session_end = view.convo.ended_at;
-        messages = conversation_view_to_raw_messages(view);
-    } else if allow_direct_file && detect_opencode_sqlite_session(path) {
-        // OpenCode SQLite-backed session: path is db_path/session_id (#149)
-        match load_opencode_sqlite_session_for_export(path) {
-            Ok((title, start, end, msgs)) => {
-                session_title = title;
-                session_start = start;
-                _session_end = end;
-                messages = msgs;
-            }
-            Err(e) => {
-                return Err(CliError {
-                    code: 9,
-                    kind: CliErrorKind::OpencodeSqliteParse.kind_str(),
-                    message: format!("Failed to load OpenCode SQLite session: {e}"),
-                    hint: Some(
-                        "Ensure the OpenCode database exists and the session ID is valid".into(),
-                    ),
-                    retryable: false,
-                });
-            }
-        }
-    } else if allow_direct_file && detect_opencode_session(path) {
-        match load_opencode_session_for_export(path) {
-            Ok((title, start, end, msgs)) => {
-                session_title = title;
-                session_start = start;
-                _session_end = end;
-                messages = msgs;
-            }
-            Err(e) => {
-                return Err(CliError {
-                    code: 9,
-                    kind: CliErrorKind::OpencodeParse.kind_str(),
-                    message: format!("Failed to parse OpenCode session: {e}"),
-                    hint: Some(
-                        "Ensure the session file is valid and message/part directories exist"
-                            .into(),
-                    ),
-                    retryable: false,
-                });
-            }
-        }
-    } else if allow_direct_file && path.exists() {
-        if prefers_direct_jsonl_file(path, source_id) {
-            let (parsed_messages, parsed_start, parsed_end) = parse_followup_jsonl_messages(path)?;
-            messages = parsed_messages;
-            session_start = parsed_start;
-            _session_end = parsed_end;
-        } else {
-            return Err(CliError {
-                code: 9,
-                kind: CliErrorKind::IndexedSessionRequired.kind_str(),
-                message: format!(
-                    "Local export for '{}' requires an indexed conversation or a JSONL/OpenCode session",
-                    path.display()
-                ),
-                hint: Some(
-                    "Run 'cass index --full' first, or export directly from a JSONL/OpenCode session."
-                        .to_string(),
-                ),
-                retryable: false,
-            });
-        }
-    } else {
-        return Err(CliError {
-            code: 3,
-            kind: CliErrorKind::FileNotFound.kind_str(),
-            message: match source_id {
-                Some(source_id) => format!(
-                    "No indexed session found for source '{}' at {}",
-                    source_id,
-                    path.display()
-                ),
-                None => format!("Session file not found: {}", path.display()),
-            },
-            hint: Some(match source_id {
-                Some(_) => {
-                    "Use the exact source_id from search output or omit --source to prefer the local file/path."
-                        .to_string()
-                }
-                None => "Use 'cass search' to find session paths".to_string(),
-            }),
-            retryable: false,
-        });
-    }
+    tracing::debug!(
+        indexed = conversation.stats.total_indexed,
+        emitted = conversation.stats.emitted,
+        tool_payloads_indexed = conversation.stats.tool_payloads_indexed,
+        tool_payloads_emitted = conversation.stats.tool_payloads_emitted,
+        unknown_roles = conversation.stats.unknown_roles,
+        "export projection stats"
+    );
+    let mut messages = crate::export::projection::to_raw_messages(&conversation);
+    let mut session_title: Option<String> = conversation.title.clone();
+    let session_start: Option<i64> = conversation.started_at;
 
     let mut privacy = crate::export::ExportPrivacy::new(include_secrets);
     privacy.redact_messages(&mut messages);
@@ -114722,13 +114074,10 @@ fn run_export(
             code: 9,
             kind: CliErrorKind::EmptySession.kind_str(),
             message: format!("No messages found in: {}", path.display()),
-            hint: if allow_direct_file && detect_opencode_sqlite_session(path) {
-                Some("This path references an OpenCode SQLite session. Use `cass sessions --json` to list available sessions and their exportable paths.".into())
-            } else if allow_direct_file && detect_opencode_session(path) {
-                Some("Check that storage/message/{sessionID}/ contains message files".into())
-            } else {
-                None
-            },
+            hint: Some(
+                "The indexed conversation produced no exportable messages; run 'cass index' to refresh it or pass --include-tools/--include-skills."
+                    .to_string(),
+            ),
             retryable: false,
         });
     }
@@ -115058,6 +114407,7 @@ fn run_export_html(
     session_path: &Path,
     db_override: Option<PathBuf>,
     source_id: Option<&str>,
+    conversation_id: Option<i64>,
     output_dir: Option<&Path>,
     filename: Option<&str>,
     encrypt: bool,
@@ -115084,7 +114434,6 @@ fn run_export_html(
         validate_followup_source_id(source_id, "cass export-html")?;
     }
     let normalized_source_id = canonical_followup_source_id(source_id);
-    let source_id = normalized_source_id.as_deref();
     let structured_error_output = output_format.or_else(robot_format_from_env).is_some();
     let emit_structured_error = |err: &CliError| {
         if structured_error_output {
@@ -115105,61 +114454,27 @@ fn run_export_html(
     };
 
     let db_path = db_override.unwrap_or_else(default_db_path);
-    let allow_direct_file = followup_source_is_local(source_id) || source_id.is_none();
-    let mut indexed_view = if should_defer_indexed_lookup_for_direct_export(session_path, source_id)
-    {
-        None
-    } else {
-        try_load_indexed_conversation_from_db_with_source(session_path, &db_path, source_id, None)
-    };
 
-    // --- Validate session exists ---
-    if indexed_view.is_none()
-        && !path_exists_or_virtual_opencode_sqlite_session(session_path, allow_direct_file)
-    {
-        let err = CliError {
-            code: 3,
-            kind: CliErrorKind::SessionNotFound.kind_str(),
-            message: match source_id {
-                Some(source_id) => format!(
-                    "No indexed session found for source '{}' at {}",
-                    source_id,
-                    session_path.display()
-                ),
-                None => format!("Session file not found: {}", session_path.display()),
-            },
-            hint: Some(match source_id {
-                Some(_) => "Use the exact source_id from search output or omit --source to prefer the local file/path.".to_string(),
-                None => "Use 'cass search' to find session paths".to_string(),
-            }),
-            retryable: false,
-        };
-        let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-            if matches!(fmt, RobotFormat::Sessions) {
-                RobotFormat::Compact
-            } else {
-                fmt
-            }
-        });
-
-        if let Some(_fmt) = structured_format {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "success": false,
-                    "error": {
-                        "code": err.code,
-                        "kind": err.kind,
-                        "message": err.message,
-                        "hint": err.hint,
-                        "retryable": err.retryable
-                    }
-                })
-            );
+    // Index-first export (plan Invariants 1-3): the canonical indexed
+    // conversation is the sole source of truth. `session_path` is an opaque
+    // identity key — never opened, sniffed, or decompressed — and every
+    // index/projection failure is terminal: no fallback to the original
+    // source file on any of them.
+    let view = match crate::export::indexed::load_indexed_export(
+        &db_path,
+        &crate::export::indexed::ExportSelector {
+            source_path: session_path.to_path_buf(),
+            source_id: normalized_source_id.clone(),
+            conversation_id,
+        },
+    ) {
+        Ok(view) => view,
+        Err(err) => {
+            let err = indexed_export_cli_error(err);
+            emit_structured_error(&err);
             return Err(err);
         }
-        return Err(err);
-    }
+    };
 
     // --- Get password if encryption requested ---
     let final_password: Option<zeroize::Zeroizing<String>> = if encrypt {
@@ -115222,172 +114537,55 @@ fn run_export_html(
         None
     };
 
-    // --- Load session messages ---
-    let mut raw_messages: Vec<serde_json::Value>;
-    let indexed_title = indexed_view
-        .as_ref()
-        .and_then(|view| view.convo.title.clone());
-    let indexed_agent_name = indexed_view
-        .as_ref()
-        .map(|view| view.convo.agent_slug.clone());
-    let indexed_workspace = indexed_view.as_ref().and_then(|view| {
-        view.convo
-            .workspace
-            .as_ref()
-            .map(|path| path.display().to_string())
-    });
-    let (path_agent_name, path_workspace) = infer_followup_agent_and_workspace(session_path);
-    let mut session_title: Option<String> = indexed_title;
-    let session_start: Option<i64>;
-    let session_end: Option<i64>;
-    let mut agent_name: Option<String> = indexed_agent_name.or(path_agent_name);
-    let mut workspace: Option<String> = indexed_workspace.or(path_workspace);
-    let prefer_direct_file = prefers_direct_jsonl_file(session_path, source_id);
-
-    if prefer_direct_file {
-        match parse_followup_jsonl_messages(session_path) {
-            Ok((parsed_messages, parsed_start, parsed_end)) => {
-                raw_messages = parsed_messages;
-                session_start = parsed_start;
-                session_end = parsed_end;
-            }
-            Err(err) => {
-                if indexed_view.is_none() {
-                    indexed_view = try_load_indexed_conversation_from_db_with_source(
-                        session_path,
-                        &db_path,
-                        source_id,
-                        None,
-                    );
-                }
-                if let Some(view) = indexed_view.as_ref() {
-                    session_title = view.convo.title.clone();
-                    session_start = view.convo.started_at;
-                    session_end = view.convo.ended_at;
-                    agent_name = Some(view.convo.agent_slug.clone());
-                    workspace = view
-                        .convo
-                        .workspace
-                        .as_ref()
-                        .map(|p| p.display().to_string());
-                    raw_messages = conversation_view_to_html_raw_messages(view);
-                } else {
-                    emit_structured_error(&err);
-                    return Err(err);
-                }
-            }
-        }
-    } else if let Some(view) = indexed_view.as_ref() {
-        session_title = view.convo.title.clone();
-        session_start = view.convo.started_at;
-        session_end = view.convo.ended_at;
-        agent_name = Some(view.convo.agent_slug.clone());
-        workspace = view
-            .convo
-            .workspace
-            .as_ref()
-            .map(|p| p.display().to_string());
-        raw_messages = conversation_view_to_html_raw_messages(view);
-    } else {
-        // Detect agent from path
-        let path_str = session_path.to_string_lossy();
-        let path_lower = path_str.to_ascii_lowercase();
-        if path_lower.contains(".claude") {
-            agent_name = Some("claude_code".to_string());
-        } else if path_lower.contains(".codex") {
-            agent_name = Some("codex".to_string());
-        } else if path_lower.contains("cursor") {
-            agent_name = Some("cursor".to_string());
-        } else if path_lower.contains(".gemini") {
-            agent_name = Some("gemini".to_string());
-        } else if path_lower.contains(".vibe") {
-            agent_name = Some("vibe".to_string());
-        }
-
-        // Extract workspace from path
-        if let Some(parent) = session_path.parent() {
-            workspace = Some(parent.display().to_string());
-        }
-
-        if allow_direct_file && detect_opencode_sqlite_session(session_path) {
-            // OpenCode SQLite-backed session: path is db_path/session_id (#149)
-            match load_opencode_sqlite_session_for_export(session_path) {
-                Ok((title, start, end, msgs)) => {
-                    session_title = title;
-                    session_start = start;
-                    session_end = end;
-                    raw_messages = msgs;
-                    agent_name = Some("opencode".to_string());
-                }
-                Err(e) => {
-                    let err = CliError {
-                        code: 9,
-                        kind: CliErrorKind::OpencodeSqliteParse.kind_str(),
-                        message: format!("Failed to load OpenCode SQLite session: {e}"),
-                        hint: Some(
-                            "Ensure the OpenCode database exists and the session ID is valid"
-                                .into(),
-                        ),
-                        retryable: false,
-                    };
-                    emit_structured_error(&err);
-                    return Err(err);
-                }
-            }
-        } else if allow_direct_file && detect_opencode_session(session_path) {
-            match load_opencode_session_for_export(session_path) {
-                Ok((title, start, end, msgs)) => {
-                    session_title = title;
-                    session_start = start;
-                    session_end = end;
-                    raw_messages = msgs;
-                    agent_name = Some("opencode".to_string());
-                }
-                Err(e) => {
-                    let err = CliError {
-                        code: 9,
-                        kind: CliErrorKind::OpencodeParse.kind_str(),
-                        message: format!("Failed to parse OpenCode session: {e}"),
-                        hint: Some("Ensure the session file is valid".into()),
-                        retryable: false,
-                    };
-                    emit_structured_error(&err);
-                    return Err(err);
-                }
-            }
-        } else if prefers_direct_jsonl_file(session_path, source_id) {
-            let (parsed_messages, parsed_start, parsed_end) =
-                parse_followup_jsonl_messages(session_path).inspect_err(|err| {
-                    emit_structured_error(err);
-                })?;
-            raw_messages = parsed_messages;
-            session_start = parsed_start;
-            session_end = parsed_end;
-        } else {
-            let err = CliError {
-                code: 9,
-                kind: CliErrorKind::IndexedSessionRequired.kind_str(),
-                message: format!(
-                    "Local export for '{}' requires an indexed conversation or a JSONL/OpenCode session",
-                    session_path.display()
-                ),
-                hint: Some(
-                    "Run 'cass index --full' first, or export directly from a JSONL/OpenCode session."
-                        .to_string(),
-                ),
-                retryable: false,
-            };
+    // --- Project the indexed conversation into renderer messages ---
+    //
+    // `to_raw_messages` merges index-retained tool payloads (`message`,
+    // `type`, `payload`, flat tool keys) onto the `{role, content,
+    // timestamp?, author?}` envelope, so `extract_tool_calls`/`extract_*`
+    // resolve the same shapes the old whole-envelope swap produced — pi/omp
+    // tool detail still reaches `extract_tool_calls` under `--include-tools`.
+    let conversation = match crate::export::projection::project_indexed_conversation(
+        &view,
+        &crate::export::projection::ExportOptions { include_tools },
+    ) {
+        Ok(conversation) => conversation,
+        Err(err) => {
+            let err = export_projection_cli_error(err);
             emit_structured_error(&err);
             return Err(err);
         }
-    }
+    };
+
+    tracing::debug!(
+        indexed = conversation.stats.total_indexed,
+        emitted = conversation.stats.emitted,
+        tool_payloads_indexed = conversation.stats.tool_payloads_indexed,
+        tool_payloads_emitted = conversation.stats.tool_payloads_emitted,
+        unknown_roles = conversation.stats.unknown_roles,
+        "export projection stats"
+    );
+    let mut raw_messages = crate::export::projection::to_raw_messages(&conversation);
+    let (path_agent_name, path_workspace) = infer_followup_agent_and_workspace(session_path);
+    let mut session_title: Option<String> = conversation.title.clone();
+    let session_start: Option<i64> = conversation.started_at;
+    let session_end: Option<i64> = conversation.ended_at;
+    let mut agent_name: Option<String> = Some(conversation.agent_slug.clone()).or(path_agent_name);
+    let mut workspace: Option<String> = view
+        .convo
+        .workspace
+        .as_ref()
+        .map(|path| path.display().to_string())
+        .or(path_workspace);
 
     if raw_messages.is_empty() {
         let err = CliError {
             code: 9,
             kind: CliErrorKind::EmptySession.kind_str(),
             message: format!("No messages found in: {}", session_path.display()),
-            hint: None,
+            hint: Some(
+                "The indexed conversation produced no exportable messages; run 'cass index' to refresh it or pass --include-tools/--include-skills."
+                    .to_string(),
+            ),
             retryable: false,
         };
         emit_structured_error(&err);
@@ -115528,10 +114726,37 @@ fn run_export_html(
     // Tool results have content as an array containing {"type": "tool_result", ...} blocks.
     // Also exclude skill injections from counts when !include_skills, since those messages
     // are dropped from the rendered output and shouldn't inflate the prompt count.
+    //
+    // Count over a tool-inclusive projection: `--include-tools=false` withholds
+    // the merged tool envelopes from `raw_messages`, which would otherwise hide
+    // `tool_use`/`tool_result` blocks from the metadata counts (a
+    // `toolResult`-envelope row under a `user` role would also inflate
+    // `human_turns`). The rendered output is unaffected — the per-message
+    // filters above apply `include_tools` at render time. A failed
+    // re-projection cannot happen when the flagged one already succeeded, but
+    // degrade to the rendered set rather than error the export for a stat.
+    let counting_raws_storage;
+    let counting_raws: &[serde_json::Value] = if include_tools {
+        &raw_messages
+    } else {
+        match crate::export::projection::project_indexed_conversation(
+            &view,
+            &crate::export::projection::ExportOptions {
+                include_tools: true,
+            },
+        ) {
+            Ok(count_conversation) => {
+                counting_raws_storage =
+                    crate::export::projection::to_raw_messages(&count_conversation);
+                &counting_raws_storage
+            }
+            Err(_) => &raw_messages,
+        }
+    };
     let mut human_turns = 0usize;
     let mut assistant_msgs = 0usize;
     let mut tool_use_count = 0usize;
-    for msg in &raw_messages {
+    for msg in counting_raws {
         let role = extract_role(msg);
         let text = extract_text_content(msg);
 
@@ -116412,292 +115637,6 @@ pub fn group_messages_for_export(
 // ============================================================================
 
 #[cfg(test)]
-mod opencode_export_tests {
-    use super::*;
-    use serde_json::json;
-    use std::fs;
-    use tempfile::TempDir;
-
-    #[test]
-    fn load_opencode_export_ignores_missing_message_timestamps() {
-        let temp = TempDir::new().expect("tempdir");
-        let storage = temp.path().join("storage");
-        let session_dir = storage.join("session/project-1");
-        let message_dir = storage.join("message/session-1");
-        let part_dir = storage.join("part");
-
-        fs::create_dir_all(&session_dir).expect("create session dir");
-        fs::create_dir_all(&message_dir).expect("create message dir");
-        fs::create_dir_all(&part_dir).expect("create part dir");
-
-        let session_path = session_dir.join("session-1.json");
-        fs::write(
-            &session_path,
-            json!({
-                "id": "session-1",
-                "title": "OpenCode Export Test"
-            })
-            .to_string(),
-        )
-        .expect("write session");
-
-        fs::write(
-            message_dir.join("m1.json"),
-            json!({
-                "id": "m1",
-                "role": "assistant",
-                "modelID": "model-x"
-            })
-            .to_string(),
-        )
-        .expect("write message without ts");
-        fs::write(
-            message_dir.join("m2.json"),
-            json!({
-                "id": "m2",
-                "role": "assistant",
-                "modelID": "model-x",
-                "time": {
-                    "created": 1733000000
-                }
-            })
-            .to_string(),
-        )
-        .expect("write message with ts");
-
-        fs::create_dir_all(part_dir.join("m1")).expect("create parts m1");
-        fs::create_dir_all(part_dir.join("m2")).expect("create parts m2");
-        fs::write(
-            part_dir.join("m1/part-1.json"),
-            json!({
-                "messageID": "m1",
-                "type": "text",
-                "text": "no timestamp content"
-            })
-            .to_string(),
-        )
-        .expect("write part m1");
-        fs::write(
-            part_dir.join("m2/part-1.json"),
-            json!({
-                "messageID": "m2",
-                "type": "text",
-                "text": "has timestamp content"
-            })
-            .to_string(),
-        )
-        .expect("write part m2");
-
-        let (_title, start, end, messages) =
-            load_opencode_session_for_export(&session_path).expect("load opencode export");
-
-        // Bounds should come from the real timestamp, never from a synthetic 0 value.
-        assert_eq!(start, Some(1_733_000_000_000));
-        assert_eq!(end, Some(1_733_000_000_000));
-        assert_eq!(messages.len(), 2);
-
-        // Missing timestamp should remain missing in exported message JSON.
-        assert_eq!(
-            messages[0].get("timestamp").and_then(|v| v.as_i64()),
-            Some(1_733_000_000_000)
-        );
-        assert!(
-            messages[1].get("timestamp").is_none(),
-            "message without timestamp should not get an artificial 0"
-        );
-    }
-
-    #[test]
-    fn load_opencode_export_orders_equal_timestamp_messages_by_provider_message_number() {
-        let temp = TempDir::new().expect("tempdir");
-        let storage = temp.path().join("storage");
-        let session_dir = storage.join("session/project-1");
-        let message_dir = storage.join("message/session-1");
-        let part_root = storage.join("part");
-
-        fs::create_dir_all(&session_dir).expect("create session dir");
-        fs::create_dir_all(&message_dir).expect("create message dir");
-
-        let session_path = session_dir.join("session-1.json");
-        fs::write(
-            &session_path,
-            json!({
-                "id": "session-1",
-                "title": "OpenCode Equal Timestamp Messages"
-            })
-            .to_string(),
-        )
-        .expect("write session");
-
-        for (id, text) in [("m10", "third"), ("m2", "second"), ("m1", "first")] {
-            fs::write(
-                message_dir.join(format!("{id}.json")),
-                json!({
-                    "id": id,
-                    "role": "assistant",
-                    "time": {
-                        "created": 1733000000
-                    }
-                })
-                .to_string(),
-            )
-            .expect("write message");
-
-            let part_dir = part_root.join(id);
-            fs::create_dir_all(&part_dir).expect("create part dir");
-            fs::write(
-                part_dir.join("part1.json"),
-                json!({
-                    "messageID": id,
-                    "type": "text",
-                    "text": text
-                })
-                .to_string(),
-            )
-            .expect("write part");
-        }
-
-        let (_title, _start, _end, messages) =
-            load_opencode_session_for_export(&session_path).expect("load opencode export");
-
-        let contents: Vec<_> = messages
-            .iter()
-            .map(|message| message.get("content").and_then(|value| value.as_str()))
-            .collect();
-        assert_eq!(contents, vec![Some("first"), Some("second"), Some("third")]);
-    }
-
-    #[test]
-    fn load_opencode_export_orders_parts_by_provider_part_number() {
-        let temp = TempDir::new().expect("tempdir");
-        let storage = temp.path().join("storage");
-        let session_dir = storage.join("session/project-1");
-        let message_dir = storage.join("message/session-1");
-        let part_dir = storage.join("part/m1");
-
-        fs::create_dir_all(&session_dir).expect("create session dir");
-        fs::create_dir_all(&message_dir).expect("create message dir");
-        fs::create_dir_all(&part_dir).expect("create part dir");
-
-        let session_path = session_dir.join("session-1.json");
-        fs::write(
-            &session_path,
-            json!({
-                "id": "session-1",
-                "title": "OpenCode Ordered Parts"
-            })
-            .to_string(),
-        )
-        .expect("write session");
-
-        fs::write(
-            message_dir.join("m1.json"),
-            json!({
-                "id": "m1",
-                "role": "assistant",
-                "time": {
-                    "created": 1733000000
-                }
-            })
-            .to_string(),
-        )
-        .expect("write message");
-
-        for (filename, id, text) in [
-            ("part10.json", "part10", "third"),
-            ("part2.json", "part2", "second"),
-            ("part1.json", "part1", "first"),
-        ] {
-            fs::write(
-                part_dir.join(filename),
-                json!({
-                    "id": id,
-                    "messageID": "m1",
-                    "type": "text",
-                    "text": text
-                })
-                .to_string(),
-            )
-            .expect("write part");
-        }
-
-        let (_title, _start, _end, messages) =
-            load_opencode_session_for_export(&session_path).expect("load opencode export");
-
-        assert_eq!(messages.len(), 1);
-        assert_eq!(
-            messages[0].get("content").and_then(|v| v.as_str()),
-            Some("first\n\nsecond\n\nthird")
-        );
-    }
-
-    #[test]
-    fn load_opencode_export_orders_parts_by_explicit_provider_index() {
-        let temp = TempDir::new().expect("tempdir");
-        let storage = temp.path().join("storage");
-        let session_dir = storage.join("session/project-1");
-        let message_dir = storage.join("message/session-1");
-        let part_dir = storage.join("part/m1");
-
-        fs::create_dir_all(&session_dir).expect("create session dir");
-        fs::create_dir_all(&message_dir).expect("create message dir");
-        fs::create_dir_all(&part_dir).expect("create part dir");
-
-        let session_path = session_dir.join("session-1.json");
-        fs::write(
-            &session_path,
-            json!({
-                "id": "session-1",
-                "title": "OpenCode Indexed Parts"
-            })
-            .to_string(),
-        )
-        .expect("write session");
-
-        fs::write(
-            message_dir.join("m1.json"),
-            json!({
-                "id": "m1",
-                "role": "assistant",
-                "time": {
-                    "created": 1733000000
-                }
-            })
-            .to_string(),
-        )
-        .expect("write message");
-
-        for (filename, id, index, text) in [
-            ("part-a.json", "part-a", 3, "third"),
-            ("part-b.json", "part-b", 1, "first"),
-            ("part-c.json", "part-c", 2, "second"),
-        ] {
-            fs::write(
-                part_dir.join(filename),
-                json!({
-                    "id": id,
-                    "index": index,
-                    "messageID": "m1",
-                    "type": "text",
-                    "text": text
-                })
-                .to_string(),
-            )
-            .expect("write part");
-        }
-
-        let (_title, _start, _end, messages) =
-            load_opencode_session_for_export(&session_path).expect("load opencode export");
-
-        assert_eq!(messages.len(), 1);
-        assert_eq!(
-            messages[0].get("content").and_then(|v| v.as_str()),
-            Some("first\n\nsecond\n\nthird")
-        );
-    }
-}
-
-#[cfg(test)]
 mod export_timestamp_tests {
     use super::{
         extract_message_timestamp, format_export_duration, publish_unique_export_output_file,
@@ -116836,8 +115775,14 @@ mod export_timestamp_tests {
     }
 
     #[test]
-    fn export_html_reports_file_read_errors_instead_of_truncating() {
+    fn export_html_reports_not_indexed_without_reading_source_file() {
+        // Index-first export: the source path is an opaque identity key and
+        // is never opened. An unreadable file must not matter — the failure
+        // is the missing indexed conversation, not a file-read error.
         let temp = TempDir::new().expect("temp dir");
+        let db_path = temp.path().join("agent_search.db");
+        drop(crate::storage::sqlite::FrankenStorage::open(&db_path).expect("open db"));
+
         let session_path = temp.path().join("broken-session.jsonl");
         fs::write(
             &session_path,
@@ -116847,6 +115792,7 @@ mod export_timestamp_tests {
 
         let err = run_export_html(
             &session_path,
+            Some(db_path),
             None,
             None,
             Some(temp.path()),
@@ -116864,28 +115810,62 @@ mod export_timestamp_tests {
             false,
             None,
         )
-        .expect_err("invalid utf-8 should fail explicitly");
+        .expect_err("unindexed path should fail explicitly");
 
-        assert_eq!(err.kind, "file-read");
-        assert!(
-            err.message.contains("Failed to read session file"),
-            "unexpected error: {}",
-            err.message
-        );
+        assert_eq!(err.kind, "conversation-not-indexed");
+        assert_eq!(err.code, 3);
     }
 
     #[test]
     #[cfg(unix)]
     fn export_html_does_not_follow_existing_output_symlink() {
+        use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+        use crate::storage::sqlite::FrankenStorage;
+
         let temp = TempDir::new().expect("temp dir");
+        let db_path = temp.path().join("agent_search.db");
+        let storage = FrankenStorage::open(&db_path).expect("open db");
+        let agent_id = storage
+            .ensure_agent(&Agent {
+                id: None,
+                slug: "claude_code".to_string(),
+                name: "Claude Code".to_string(),
+                version: None,
+                kind: AgentKind::Cli,
+            })
+            .expect("ensure agent");
         let session_path = temp.path().join("session.jsonl");
-        fs::write(
-            &session_path,
-            br#"{"role":"user","content":"hello from symlink-safe export"}
-{"role":"assistant","content":"safe exported response"}
-"#,
-        )
-        .expect("write session");
+        storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &Conversation {
+                    id: None,
+                    agent_slug: "claude_code".to_string(),
+                    workspace: None,
+                    external_id: Some("symlink-safe".to_string()),
+                    title: Some("Symlink Safe Session".to_string()),
+                    source_path: session_path.clone(),
+                    started_at: Some(1_733_000_000_000),
+                    ended_at: Some(1_733_000_010_000),
+                    approx_tokens: None,
+                    metadata_json: serde_json::json!({}),
+                    messages: vec![Message {
+                        id: None,
+                        idx: 0,
+                        role: MessageRole::Agent,
+                        author: None,
+                        created_at: Some(1_733_000_000_000),
+                        content: "safe exported response".to_string(),
+                        extra_json: serde_json::Value::Null,
+                        snippets: Vec::new(),
+                    }],
+                    source_id: crate::sources::provenance::LOCAL_SOURCE_ID.to_string(),
+                    origin_host: None,
+                },
+            )
+            .expect("insert indexed conversation");
+        drop(storage);
 
         let protected_target = temp.path().join("protected.html");
         fs::write(&protected_target, "do not overwrite").expect("write protected target");
@@ -116895,6 +115875,7 @@ mod export_timestamp_tests {
 
         run_export_html(
             &session_path,
+            Some(db_path),
             None,
             None,
             Some(temp.path()),
@@ -117009,14 +115990,22 @@ mod export_timestamp_tests {
     }
 
     #[test]
-    fn export_html_accepts_virtual_opencode_sqlite_session_paths() {
+    fn export_html_virtual_opencode_sqlite_path_reports_not_indexed() {
+        // Index-first export: a virtual `<db>/<session-id>` path is only an
+        // identity key. When no indexed conversation claims it, export fails
+        // with the not-indexed diagnostic instead of parsing the provider
+        // database itself.
         let temp = TempDir::new().expect("temp dir");
-        let db_path = temp.path().join("opencode.db");
-        fs::write(&db_path, b"not a sqlite db").expect("write placeholder db file");
-        let session_path = db_path.join("session-1");
+        let db_path = temp.path().join("agent_search.db");
+        drop(crate::storage::sqlite::FrankenStorage::open(&db_path).expect("open db"));
+
+        let opencode_db = temp.path().join("opencode.db");
+        fs::write(&opencode_db, b"not a sqlite db").expect("write placeholder db file");
+        let session_path = opencode_db.join("session-1");
 
         let err = run_export_html(
             &session_path,
+            Some(db_path),
             None,
             None,
             Some(temp.path()),
@@ -117034,9 +116023,10 @@ mod export_timestamp_tests {
             false,
             None,
         )
-        .expect_err("invalid virtual sqlite session should fail after path acceptance");
+        .expect_err("virtual session without an indexed row should fail explicitly");
 
-        assert_eq!(err.kind, "opencode-sqlite-parse");
+        assert_eq!(err.kind, "conversation-not-indexed");
+        assert_eq!(err.code, 3);
     }
 }
 
@@ -117903,27 +116893,6 @@ mod indexed_conversation_fallback_tests {
     }
 
     #[test]
-    fn defer_index_lookup_for_direct_opencode_and_jsonl_paths() {
-        let tmp = TempDir::new().expect("temp dir");
-        let jsonl = tmp.path().join("session.jsonl");
-        std::fs::write(&jsonl, "{\"role\":\"user\",\"content\":\"hello\"}\n").expect("write jsonl");
-
-        let opencode_db = tmp.path().join("opencode.db");
-        std::fs::write(&opencode_db, b"placeholder").expect("write db");
-        let virtual_session = opencode_db.join("session-1");
-
-        assert!(should_defer_indexed_lookup_for_direct_export(&jsonl, None));
-        assert!(should_defer_indexed_lookup_for_direct_export(
-            &virtual_session,
-            None
-        ));
-        assert!(!should_defer_indexed_lookup_for_direct_export(
-            Path::new("/missing/indexed/session.jsonl"),
-            Some("work-laptop")
-        ));
-    }
-
-    #[test]
     fn validate_followup_source_id_rejects_trimmed_ambiguous_keywords() {
         for input in ["  ", "  all  ", "\tREMOTE\n"] {
             let err = validate_followup_source_id(input, "cass view")
@@ -118260,6 +117229,7 @@ mod indexed_conversation_fallback_tests {
             &synthetic_path,
             Some(db_path.clone()),
             Some("work-laptop"),
+            None,
             ConvExportFormat::Markdown,
             Some(output_path.as_path()),
             false, // clipboard
@@ -118275,7 +117245,7 @@ mod indexed_conversation_fallback_tests {
     }
 
     #[test]
-    fn run_export_prefers_local_jsonl_file_when_no_source_is_given() {
+    fn run_export_uses_indexed_snapshot_for_local_jsonl_file() {
         let tmp = TempDir::new().expect("temp dir");
         let db_path = tmp.path().join("agent_search.db");
         let storage = SqliteStorage::open(&db_path).expect("open sqlite");
@@ -118289,6 +117259,9 @@ mod indexed_conversation_fallback_tests {
         };
         let agent_id = storage.ensure_agent(&agent).expect("ensure agent");
 
+        // The on-disk file is a live transcript with different content. The
+        // index-first contract pins exports to the indexed snapshot: the file
+        // must never be opened, so "local second" cannot leak into output.
         let session_path = tmp.path().join("session.jsonl");
         std::fs::write(
             &session_path,
@@ -118331,6 +117304,7 @@ mod indexed_conversation_fallback_tests {
             &session_path,
             Some(db_path),
             None,
+            None,
             ConvExportFormat::Markdown,
             Some(output_path.as_path()),
             false, // clipboard
@@ -118338,21 +117312,15 @@ mod indexed_conversation_fallback_tests {
             true,
             false, // include_secrets
         )
-        .expect("export should prefer the local JSONL file over stale indexed content");
+        .expect("export should use the indexed snapshot regardless of the local JSONL");
 
         let markdown = std::fs::read_to_string(&output_path).expect("read markdown");
-        assert!(markdown.contains("local second"));
-        assert!(!markdown.contains("indexed only line"));
-        // When the direct JSONL file is available and no source_id is
-        // supplied, the indexed DB lookup is intentionally deferred
-        // (should_defer_indexed_lookup_for_direct_export returns true for
-        // .jsonl files).  The exported title is therefore derived from the
-        // session path, not from the indexed conversation.
-        assert!(!markdown.contains("indexed only line"));
+        assert!(markdown.contains("indexed only line"));
+        assert!(!markdown.contains("local second"));
     }
 
     #[test]
-    fn run_export_html_prefers_local_jsonl_file_when_no_source_is_given() {
+    fn run_export_html_uses_indexed_snapshot_for_local_jsonl_file() {
         let tmp = TempDir::new().expect("temp dir");
         let db_path = tmp.path().join("agent_search.db");
         let storage = SqliteStorage::open(&db_path).expect("open sqlite");
@@ -118366,6 +117334,8 @@ mod indexed_conversation_fallback_tests {
         };
         let agent_id = storage.ensure_agent(&agent).expect("ensure agent");
 
+        // The live file carries different content; the index-first contract
+        // pins exports to the indexed snapshot and never opens the source.
         let session_path = tmp.path().join("session.jsonl");
         std::fs::write(
             &session_path,
@@ -118409,6 +117379,7 @@ mod indexed_conversation_fallback_tests {
             &session_path,
             Some(db_path),
             None,
+            None,
             Some(output_dir.as_path()),
             Some("export.html"),
             false,
@@ -118424,41 +117395,72 @@ mod indexed_conversation_fallback_tests {
             false,
             Some(RobotFormat::Json),
         )
-        .expect("html export should prefer the local JSONL file over stale indexed content");
+        .expect("html export should use the indexed snapshot regardless of the local JSONL");
 
         let html_path = output_dir.join("export.html");
         let html = std::fs::read_to_string(&html_path).expect("read html");
-        assert!(html.contains("local second"));
-        assert!(!html.contains("indexed only line"));
-        // Agent and workspace metadata come from the indexed DB lookup,
-        // which is deferred for direct .jsonl files without a source_id.
-        // The HTML export still succeeds with content from the local file.
+        assert!(html.contains("indexed only line"));
+        assert!(!html.contains("local second"));
     }
 
     #[test]
-    fn run_export_html_infers_metadata_for_local_jsonl_without_index() {
+    fn run_export_html_infers_metadata_for_indexed_local_jsonl() {
         let tmp = TempDir::new().expect("temp dir");
-        let db_path = tmp.path().join("missing.db");
+        let db_path = tmp.path().join("agent_search.db");
+        let storage = SqliteStorage::open(&db_path).expect("open sqlite");
+
+        let agent = Agent {
+            id: None,
+            slug: "claude_code".to_string(),
+            name: "Claude Code".to_string(),
+            version: None,
+            kind: AgentKind::Cli,
+        };
+        let agent_id = storage.ensure_agent(&agent).expect("ensure agent");
+
         let session_path = tmp
             .path()
             .join(".claude")
             .join("projects")
             .join("demo")
             .join("session.jsonl");
-        std::fs::create_dir_all(session_path.parent().expect("session parent")).expect("mkdirs");
-        std::fs::write(
-            &session_path,
-            br#"{"role":"user","content":"local first"}
-{"role":"assistant","content":"local second"}
-"#,
-        )
-        .expect("write jsonl");
+        // `workspace` is left unset so the export falls back to path-derived
+        // metadata for the project label; the conversation body itself comes
+        // from the indexed snapshot.
+        let conversation = Conversation {
+            id: None,
+            agent_slug: "claude_code".to_string(),
+            workspace: None,
+            external_id: Some("claude-demo".to_string()),
+            title: Some("Claude Demo".to_string()),
+            source_path: session_path.clone(),
+            started_at: Some(1_733_000_000_000),
+            ended_at: Some(1_733_000_010_000),
+            approx_tokens: None,
+            metadata_json: serde_json::json!({}),
+            messages: vec![Message {
+                id: None,
+                idx: 0,
+                role: MessageRole::Agent,
+                author: None,
+                created_at: Some(1_733_000_000_000),
+                content: "indexed second".to_string(),
+                extra_json: serde_json::Value::Null,
+                snippets: Vec::new(),
+            }],
+            source_id: "local".to_string(),
+            origin_host: None,
+        };
+        storage
+            .insert_conversation_tree(agent_id, None, &conversation)
+            .expect("insert conversation");
 
         let output_dir = tmp.path().join("html-out");
         std::fs::create_dir_all(&output_dir).expect("mkdir html-out");
         run_export_html(
             &session_path,
             Some(db_path),
+            None,
             None,
             Some(output_dir.as_path()),
             Some("export.html"),
@@ -118475,41 +117477,72 @@ mod indexed_conversation_fallback_tests {
             false,
             Some(RobotFormat::Json),
         )
-        .expect(
-            "html export should infer metadata from the local session path when no index exists",
-        );
+        .expect("html export should render indexed content with inferred metadata");
 
         let html_path = output_dir.join("export.html");
         let html = std::fs::read_to_string(&html_path).expect("read html");
         assert!(html.contains("Claude"));
         assert!(html.contains("demo"));
-        assert!(html.contains("local second"));
+        assert!(html.contains("indexed second"));
     }
 
     #[test]
-    fn run_export_html_infers_copilot_metadata_for_local_jsonl_without_index() {
+    fn run_export_html_infers_copilot_metadata_for_indexed_local_jsonl() {
         let tmp = TempDir::new().expect("temp dir");
-        let db_path = tmp.path().join("missing.db");
+        let db_path = tmp.path().join("agent_search.db");
+        let storage = SqliteStorage::open(&db_path).expect("open sqlite");
+
+        let agent = Agent {
+            id: None,
+            slug: "copilot".to_string(),
+            name: "GitHub Copilot".to_string(),
+            version: None,
+            kind: AgentKind::Cli,
+        };
+        let agent_id = storage.ensure_agent(&agent).expect("ensure agent");
+
         let session_path = tmp
             .path()
             .join(".config")
             .join("gh-copilot")
             .join("sessions")
             .join("session.jsonl");
-        std::fs::create_dir_all(session_path.parent().expect("session parent")).expect("mkdirs");
-        std::fs::write(
-            &session_path,
-            br#"{"role":"user","content":"copilot first"}
-{"role":"assistant","content":"copilot second"}
-"#,
-        )
-        .expect("write jsonl");
+        // `workspace` is left unset so the export falls back to path-derived
+        // metadata for the project label.
+        let conversation = Conversation {
+            id: None,
+            agent_slug: "copilot".to_string(),
+            workspace: None,
+            external_id: Some("copilot-demo".to_string()),
+            title: Some("Copilot Session".to_string()),
+            source_path: session_path.clone(),
+            started_at: Some(1_733_000_000_000),
+            ended_at: Some(1_733_000_010_000),
+            approx_tokens: None,
+            metadata_json: serde_json::json!({}),
+            messages: vec![Message {
+                id: None,
+                idx: 0,
+                role: MessageRole::Agent,
+                author: None,
+                created_at: Some(1_733_000_000_000),
+                content: "copilot second".to_string(),
+                extra_json: serde_json::Value::Null,
+                snippets: Vec::new(),
+            }],
+            source_id: "local".to_string(),
+            origin_host: None,
+        };
+        storage
+            .insert_conversation_tree(agent_id, None, &conversation)
+            .expect("insert conversation");
 
         let output_dir = tmp.path().join("html-out");
         std::fs::create_dir_all(&output_dir).expect("mkdir html-out");
         run_export_html(
             &session_path,
             Some(db_path),
+            None,
             None,
             Some(output_dir.as_path()),
             Some("export.html"),
@@ -118526,7 +117559,7 @@ mod indexed_conversation_fallback_tests {
             false,
             Some(RobotFormat::Json),
         )
-        .expect("html export should infer copilot metadata from the local session path");
+        .expect("html export should render indexed content with inferred copilot metadata");
 
         let html_path = output_dir.join("export.html");
         let html = std::fs::read_to_string(&html_path).expect("read html");
@@ -118838,7 +117871,7 @@ This is not JSONL.
     }
 
     #[test]
-    fn run_export_falls_back_to_indexed_conversation_when_local_jsonl_is_invalid() {
+    fn run_export_ignores_invalid_local_jsonl_for_indexed_export() {
         let tmp = TempDir::new().expect("temp dir");
         let db_path = tmp.path().join("agent_search.db");
         let storage = SqliteStorage::open(&db_path).expect("open sqlite");
@@ -118852,6 +117885,8 @@ This is not JSONL.
         };
         let agent_id = storage.ensure_agent(&agent).expect("ensure agent");
 
+        // The unreadable file is an opaque identity key: export resolves the
+        // indexed snapshot and never parses the source.
         let session_path = tmp.path().join("broken-session.jsonl");
         std::fs::write(&session_path, b"this is not valid jsonl\n").expect("write invalid jsonl");
 
@@ -118888,6 +117923,7 @@ This is not JSONL.
             &session_path,
             Some(db_path),
             None,
+            None,
             ConvExportFormat::Markdown,
             Some(output_path.as_path()),
             false, // clipboard
@@ -118895,7 +117931,7 @@ This is not JSONL.
             true,
             false, // include_secrets
         )
-        .expect("export should fall back to indexed content when the local JSONL is invalid");
+        .expect("export should use indexed content without touching the invalid JSONL");
 
         let markdown = std::fs::read_to_string(&output_path).expect("read markdown");
         assert!(markdown.contains("indexed markdown fallback"));
@@ -118959,6 +117995,7 @@ This should stay behind the indexed export.
             &session_path,
             Some(db_path),
             None,
+            None,
             ConvExportFormat::Markdown,
             Some(output_path.as_path()),
             false, // clipboard
@@ -118977,7 +118014,7 @@ This should stay behind the indexed export.
     }
 
     #[test]
-    fn run_export_html_falls_back_to_indexed_conversation_when_local_jsonl_is_invalid() {
+    fn run_export_html_ignores_invalid_local_jsonl_for_indexed_export() {
         let tmp = TempDir::new().expect("temp dir");
         let db_path = tmp.path().join("agent_search.db");
         let storage = SqliteStorage::open(&db_path).expect("open sqlite");
@@ -119028,6 +118065,7 @@ This should stay behind the indexed export.
             &session_path,
             Some(db_path),
             None,
+            None,
             Some(output_dir.as_path()),
             Some("export.html"),
             false,
@@ -119043,7 +118081,7 @@ This should stay behind the indexed export.
             false,
             Some(RobotFormat::Json),
         )
-        .expect("html export should fall back to indexed content when the local JSONL is invalid");
+        .expect("html export should use indexed content without touching the invalid JSONL");
 
         let html_path = output_dir.join("export.html");
         let html = std::fs::read_to_string(&html_path).expect("read html");
@@ -119108,6 +118146,7 @@ This should stay behind the indexed html export.
         run_export_html(
             &session_path,
             Some(db_path),
+            None,
             None,
             Some(output_dir.as_path()),
             Some("export.html"),
@@ -119374,58 +118413,118 @@ This should stay behind the indexed html export.
     }
 
     #[test]
-    fn html_export_without_tools_omits_tool_role_from_arbitrary_direct_path() {
+    fn html_export_without_tools_omits_tool_role_for_opaque_indexed_path() {
         let tmp = TempDir::new().expect("temp dir");
-        let db_path = tmp.path().join("missing.db");
+        let db_path = tmp.path().join("agent_search.db");
         let output_dir = tmp.path().join("html-out");
         std::fs::create_dir_all(&output_dir).expect("create output dir");
 
         // Deliberately avoid every provider marker recognized by
-        // infer_followup_agent_and_workspace. The wire data is valid OMP, but
-        // an arbitrary user-selected path must not be required to advertise
-        // that fact merely to make --include-tools=false reliable.
+        // infer_followup_agent_and_workspace. The indexed wire data is valid
+        // OMP, but an arbitrary user-selected path must not be required to
+        // advertise that fact merely to make --include-tools=false reliable:
+        // the projection carries the archived tool detail and drops it when
+        // tools are excluded, regardless of path shape.
         let direct_path = tmp.path().join("opaque/session.jsonl");
-        std::fs::create_dir_all(direct_path.parent().expect("direct parent"))
-            .expect("create direct session dir");
-        let direct_jsonl = [
-            serde_json::json!({
-                "type": "message",
-                "message": { "role": "user", "content": "OPAQUEUSERSENTINEL" }
-            }),
-            serde_json::json!({
-                "type": "message",
-                "message": {
-                    "role": "assistant",
-                    "content": [
-                        { "type": "text", "text": "OPAQUEASSISTANTSENTINEL" },
-                        {
-                            "type": "toolCall",
-                            "id": "opaque-call",
-                            "name": "opaque_inspect",
-                            "arguments": { "path": "OPAQUEARGUMENTSENTINEL" }
-                        }
-                    ]
-                }
-            }),
-            serde_json::json!({
-                "type": "message",
-                "message": {
-                    "role": "toolResult",
-                    "toolCallId": "opaque-call",
-                    "toolName": "opaque_inspect",
-                    "content": [{ "type": "text", "text": "OPAQUERESULTSENTINEL" }]
-                }
-            }),
-        ]
-        .into_iter()
-        .map(|event| event.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-        std::fs::write(&direct_path, format!("{direct_jsonl}\n")).expect("write direct JSONL");
+        let user_event = serde_json::json!({
+            "type": "message",
+            "message": { "role": "user", "content": "OPAQUEUSERSENTINEL" }
+        });
+        let assistant_event = serde_json::json!({
+            "type": "message",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    { "type": "text", "text": "OPAQUEASSISTANTSENTINEL" },
+                    {
+                        "type": "toolCall",
+                        "id": "opaque-call",
+                        "name": "opaque_inspect",
+                        "arguments": { "path": "OPAQUEARGUMENTSENTINEL" }
+                    }
+                ]
+            }
+        });
+        let result_event = serde_json::json!({
+            "type": "message",
+            "message": {
+                "role": "toolResult",
+                "toolCallId": "opaque-call",
+                "toolName": "opaque_inspect",
+                "content": [{ "type": "text", "text": "OPAQUERESULTSENTINEL" }]
+            }
+        });
+
+        let storage = crate::storage::sqlite::FrankenStorage::open(&db_path).expect("open db");
+        let agent_id = storage
+            .ensure_agent(&Agent {
+                id: None,
+                slug: "omp".to_string(),
+                name: "Oh My Pi".to_string(),
+                version: None,
+                kind: AgentKind::Cli,
+            })
+            .expect("ensure OMP agent");
+        storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &Conversation {
+                    id: None,
+                    agent_slug: "omp".to_string(),
+                    workspace: Some(PathBuf::from("/workspace/cass")),
+                    external_id: Some("omp-opaque".to_string()),
+                    title: Some("OPAQUEUSERSENTINEL".to_string()),
+                    source_path: direct_path.clone(),
+                    started_at: Some(1_787_572_800_000),
+                    ended_at: Some(1_787_572_803_000),
+                    approx_tokens: None,
+                    metadata_json: serde_json::json!({}),
+                    messages: vec![
+                        Message {
+                            id: None,
+                            idx: 0,
+                            role: MessageRole::User,
+                            author: None,
+                            created_at: Some(1_787_572_801_000),
+                            content: "OPAQUEUSERSENTINEL".to_string(),
+                            extra_json: user_event,
+                            snippets: Vec::new(),
+                        },
+                        Message {
+                            id: None,
+                            idx: 1,
+                            role: MessageRole::Agent,
+                            author: None,
+                            created_at: Some(1_787_572_802_000),
+                            content:
+                                "OPAQUEASSISTANTSENTINEL\n[Tool: opaque_inspect] path=OPAQUEARGUMENTSENTINEL"
+                                    .to_string(),
+                            extra_json: assistant_event,
+                            snippets: Vec::new(),
+                        },
+                        Message {
+                            id: None,
+                            idx: 2,
+                            role: MessageRole::Tool,
+                            author: None,
+                            created_at: Some(1_787_572_803_000),
+                            content: "OPAQUERESULTSENTINEL".to_string(),
+                            extra_json: result_event,
+                            snippets: Vec::new(),
+                        },
+                    ],
+                    source_id: crate::sources::provenance::LOCAL_SOURCE_ID.to_string(),
+                    origin_host: None,
+                },
+            )
+            .expect("insert indexed OMP conversation");
+        drop(storage);
 
         run_export_html(
             &direct_path,
             Some(db_path),
+            None,
             None,
             Some(output_dir.as_path()),
             Some("opaque-without-tools.html"),
@@ -119442,7 +118541,7 @@ This should stay behind the indexed html export.
             false,
             Some(RobotFormat::Json),
         )
-        .expect("export arbitrary-path OMP HTML without tools");
+        .expect("export opaque-path OMP HTML without tools");
 
         let html = std::fs::read_to_string(output_dir.join("opaque-without-tools.html"))
             .expect("read arbitrary-path export");
@@ -119568,6 +118667,7 @@ This should stay behind the indexed html export.
                 &indexed_path,
                 Some(db_path.clone()),
                 None,
+                None,
                 Some(output_dir.as_path()),
                 Some(&filename),
                 false,
@@ -119611,7 +118711,7 @@ This should stay behind the indexed html export.
     }
 
     #[test]
-    fn omp_html_export_preserves_direct_and_indexed_pi_wire_semantics() {
+    fn omp_html_export_preserves_indexed_pi_wire_semantics_across_paths() {
         let tmp = TempDir::new().expect("temp dir");
         let db_path = tmp.path().join("agent_search.db");
         let output_dir = tmp.path().join("html-out");
@@ -119745,6 +118845,7 @@ This should stay behind the indexed html export.
                 path,
                 Some(db_path.clone()),
                 None,
+                None,
                 Some(output_dir.as_path()),
                 Some(filename),
                 false,
@@ -119764,12 +118865,35 @@ This should stay behind the indexed html export.
             std::fs::read_to_string(output_dir.join(filename)).expect("read OMP HTML")
         };
 
-        let direct_with_tools = export(&direct_path, "direct-with-tools.html", true);
+        // The direct path exists on disk but is NOT indexed — index-first
+        // export must refuse it rather than read provider bytes.
+        let direct_export = run_export_html(
+            &direct_path,
+            Some(db_path.clone()),
+            None,
+            None,
+            Some(output_dir.as_path()),
+            Some("direct-with-tools.html"),
+            false,
+            false,
+            true,
+            true,
+            true,
+            false,
+            false,
+            "system",
+            false,
+            false,
+            false,
+            Some(RobotFormat::Json),
+        )
+        .expect_err("unindexed direct path must fail explicitly");
+        assert_eq!(direct_export.kind, "conversation-not-indexed");
+
         let indexed_with_tools = export(&indexed_path, "indexed-with-tools.html", true);
-        let direct_without_tools = export(&direct_path, "direct-without-tools.html", false);
         let indexed_without_tools = export(&indexed_path, "indexed-without-tools.html", false);
 
-        for html in [&direct_with_tools, &indexed_with_tools] {
+        for html in [&indexed_with_tools] {
             for sentinel in [
                 "OMPUSERSENTINEL",
                 "OMPTHINKINGSENTINEL",
@@ -119785,7 +118909,7 @@ This should stay behind the indexed html export.
             }
         }
 
-        for html in [&direct_without_tools, &indexed_without_tools] {
+        for html in [&indexed_without_tools] {
             for sentinel in [
                 "OMPUSERSENTINEL",
                 "OMPTHINKINGSENTINEL",

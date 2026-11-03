@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 /// at the bottom of this module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ErrorKind {
+    AmbiguousIdentity,
     AmbiguousSource,
     ArchiveAnalyticsRebuild,
     ArchiveCount,
@@ -56,6 +57,7 @@ pub enum ErrorKind {
     ArchivePurge,
     ArchiveTokenDailyStatsRebuild,
     Config,
+    ConversationNotIndexed,
     CursorDecode,
     CursorParse,
     Daemon,
@@ -83,6 +85,8 @@ pub enum ErrorKind {
     Index,
     IndexBusy,
     IndexedSessionRequired,
+    IndexReadFailure,
+    IndexUnavailable,
     InvalidAgent,
     InvalidFilename,
     InvalidLine,
@@ -100,6 +104,7 @@ pub enum ErrorKind {
     MissingDb,
     MissingIndex,
     Model,
+    NoRenderableMessages,
     NotFound,
     OpenIndex,
     OpencodeParse,
@@ -155,6 +160,7 @@ impl ErrorKind {
     /// (no `_ => ...` catch-all).
     pub fn kind_str(self) -> &'static str {
         match self {
+            Self::AmbiguousIdentity => "ambiguous-identity",
             Self::AmbiguousSource => "ambiguous-source",
             Self::ArchiveAnalyticsRebuild => "archive-analytics-rebuild",
             Self::ArchiveCount => "archive-count",
@@ -163,6 +169,7 @@ impl ErrorKind {
             Self::ArchivePurge => "archive-purge",
             Self::ArchiveTokenDailyStatsRebuild => "archive-token-daily-stats-rebuild",
             Self::Config => "config",
+            Self::ConversationNotIndexed => "conversation-not-indexed",
             Self::CursorDecode => "cursor-decode",
             Self::CursorParse => "cursor-parse",
             Self::Daemon => "daemon",
@@ -188,6 +195,8 @@ impl ErrorKind {
             Self::Index => "index",
             Self::IndexBusy => "index-busy",
             Self::IndexedSessionRequired => "indexed-session-required",
+            Self::IndexReadFailure => "index-read-failure",
+            Self::IndexUnavailable => "index-unavailable",
             Self::InvalidAgent => "invalid-agent",
             Self::InvalidFilename => "invalid-filename",
             Self::InvalidLine => "invalid-line",
@@ -203,6 +212,7 @@ impl ErrorKind {
             Self::MissingDb => "missing-db",
             Self::MissingIndex => "missing-index",
             Self::Model => "model",
+            Self::NoRenderableMessages => "no-renderable-messages",
             Self::NotFound => "not-found",
             Self::OpenIndex => "open-index",
             Self::OpencodeParse => "opencode-parse",
@@ -256,6 +266,7 @@ impl ErrorKind {
     /// the golden test that asserts every variant round-trips.
     pub fn from_kind_str(kind: &str) -> Option<Self> {
         Some(match kind {
+            "ambiguous-identity" => Self::AmbiguousIdentity,
             "ambiguous-source" => Self::AmbiguousSource,
             "archive-analytics-rebuild" => Self::ArchiveAnalyticsRebuild,
             "archive-count" => Self::ArchiveCount,
@@ -264,6 +275,7 @@ impl ErrorKind {
             "archive-purge" => Self::ArchivePurge,
             "archive-token-daily-stats-rebuild" => Self::ArchiveTokenDailyStatsRebuild,
             "config" => Self::Config,
+            "conversation-not-indexed" => Self::ConversationNotIndexed,
             "cursor-decode" => Self::CursorDecode,
             "cursor-parse" => Self::CursorParse,
             "daemon" => Self::Daemon,
@@ -289,6 +301,8 @@ impl ErrorKind {
             "index" => Self::Index,
             "index-busy" => Self::IndexBusy,
             "indexed-session-required" => Self::IndexedSessionRequired,
+            "index-read-failure" => Self::IndexReadFailure,
+            "index-unavailable" => Self::IndexUnavailable,
             "invalid-agent" => Self::InvalidAgent,
             "invalid-filename" => Self::InvalidFilename,
             "invalid-line" => Self::InvalidLine,
@@ -304,6 +318,7 @@ impl ErrorKind {
             "missing-db" => Self::MissingDb,
             "missing-index" => Self::MissingIndex,
             "model" => Self::Model,
+            "no-renderable-messages" => Self::NoRenderableMessages,
             "not-found" => Self::NotFound,
             "open-index" => Self::OpenIndex,
             "opencode-parse" => Self::OpencodeParse,
@@ -357,6 +372,7 @@ impl ErrorKind {
     /// arm AND a `from_kind_str()` arm.
     pub fn all_variants() -> &'static [Self] {
         &[
+            Self::AmbiguousIdentity,
             Self::AmbiguousSource,
             Self::ArchiveAnalyticsRebuild,
             Self::ArchiveCount,
@@ -365,6 +381,7 @@ impl ErrorKind {
             Self::ArchivePurge,
             Self::ArchiveTokenDailyStatsRebuild,
             Self::Config,
+            Self::ConversationNotIndexed,
             Self::CursorDecode,
             Self::CursorParse,
             Self::Daemon,
@@ -390,6 +407,8 @@ impl ErrorKind {
             Self::Index,
             Self::IndexBusy,
             Self::IndexedSessionRequired,
+            Self::IndexReadFailure,
+            Self::IndexUnavailable,
             Self::InvalidAgent,
             Self::InvalidFilename,
             Self::InvalidLine,
@@ -405,6 +424,7 @@ impl ErrorKind {
             Self::MissingDb,
             Self::MissingIndex,
             Self::Model,
+            Self::NoRenderableMessages,
             Self::NotFound,
             Self::OpenIndex,
             Self::OpencodeParse,
@@ -508,13 +528,16 @@ mod tests {
     /// drift immediately at CI time.
     #[test]
     fn variant_count_matches_audited_lib_rs_kind_literals() {
-        // 92 unique kinds: GH #450 added `migration-repair-pending` (95), then
+        // 97 unique kinds: GH #450 added `migration-repair-pending` (95), then
         // 2l1b0.58 folded the duplicate spellings `index-missing` into
         // `missing-index` and `io-error` into `io`, and dropped `update-check`,
         // whose only producer (the pre-TUI update prompt) 2l1b0.56 removed.
+        // The index-first export contract (2026-11-02 plan, Tasks 4/5) added
+        // `ambiguous-identity`, `conversation-not-indexed`, `index-read-failure`,
+        // `index-unavailable` and `no-renderable-messages` (92 -> 97).
         // If lib.rs grows a new kind, bump this count AND add the variant +
         // arms above.
-        const AUDITED_KIND_COUNT: usize = 92;
+        const AUDITED_KIND_COUNT: usize = 97;
         assert_eq!(
             ErrorKind::all_variants().len(),
             AUDITED_KIND_COUNT,

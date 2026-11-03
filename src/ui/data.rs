@@ -93,7 +93,12 @@ fn normalize_ui_source_id_parts(source_id: Option<&str>, origin_host: Option<&st
         .unwrap_or_else(|| crate::sources::provenance::LOCAL_SOURCE_ID.to_string())
 }
 
-fn normalize_ui_hit_source_id(hit: &SearchHit) -> String {
+/// Normalized provenance identity of a search hit: `source_id` wins when
+/// non-blank, then `origin_host`, then a remote `origin_kind` collapses to
+/// `"remote"`, else `local`. `pub(crate)` so the index-first export
+/// (`src/ui/app.rs` `ExportSelector`) scopes by the exact same identity the
+/// hit-followup loaders validate against.
+pub(crate) fn normalize_ui_hit_source_id(hit: &SearchHit) -> String {
     let trimmed_source_id = hit.source_id.trim();
     if !trimmed_source_id.is_empty() {
         return normalize_ui_source_id_value(Some(trimmed_source_id));

@@ -22973,161 +22973,81 @@ fn export_write_error(action: &str, path: &Path, err: impl std::fmt::Display) ->
     format!("Failed {action} export {}: {err}", path.display())
 }
 
-fn tui_prefers_direct_followup_file(hit: &SearchHit) -> bool {
-    if !hit_is_local_source(hit) {
-        return false;
+/// Exact identity for index-first export resolution (plan Task 5). The hit's
+/// `source_path` is an opaque identity key — never stat'ed or opened — and
+/// `source_id` reuses the same provenance normalization the hit-followup
+/// loaders validate (`crate::ui::data::normalize_ui_hit_source_id`), so a
+/// stale/wrong hit errors instead of substituting a same-path row.
+fn export_selector_for_hit(hit: &SearchHit) -> crate::export::indexed::ExportSelector {
+    crate::export::indexed::ExportSelector {
+        source_path: std::path::PathBuf::from(&hit.source_path),
+        source_id: Some(crate::ui::data::normalize_ui_hit_source_id(hit)),
+        conversation_id: hit.conversation_id,
     }
-
-    let path = std::path::Path::new(&hit.source_path);
-    if !path.exists() {
-        return false;
-    }
-
-    matches!(
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_ascii_lowercase())
-            .as_deref(),
-        Some("jsonl")
-    )
 }
 
-#[allow(clippy::type_complexity)]
-fn load_local_export_raw_messages(
-    session_path: &std::path::Path,
-) -> Result<(Vec<serde_json::Value>, Option<String>, Option<i64>), String> {
-    use std::fs::File;
-    use std::io::{BufRead, BufReader};
-
-    if !session_path.exists() {
-        return Err(format!("Session not found: {}", session_path.display()));
-    }
-
-    if crate::detect_opencode_session(session_path) {
-        return crate::load_opencode_session_for_export(session_path)
-            .map(|(title, start, _end, msgs)| (msgs, title, start))
-            .map_err(|err| format!("Failed to parse OpenCode session: {err}"));
-    }
-
-    let file = File::open(session_path).map_err(|err| format!("Cannot open session: {err}"))?;
-    let reader = BufReader::new(file);
-    let mut messages = Vec::new();
-    let mut session_start = None;
-    // GH #427: apply the indexer's per-line policy. A record that fails to
-    // decode is skipped (and logged) rather than aborting the export; only a
-    // file with no decodable record at all is rejected, so the indexed
-    // fallback still engages for genuinely non-JSONL paths.
-    let mut skipped: usize = 0;
-    let mut first_parse_error: Option<String> = None;
-
-    for (line_index, line_result) in reader.lines().enumerate() {
-        let line = line_result.map_err(|err| {
+/// User-facing text for index-resolution failures — one distinct message per
+/// `IndexedExportError` kind, no generic collapse and no fallback to the
+/// original source file on any of them.
+fn indexed_export_error_message(err: &crate::export::indexed::IndexedExportError) -> String {
+    use crate::export::indexed::IndexedExportError;
+    match err {
+        IndexedExportError::IndexUnavailable { path, source } => format!(
+            "Session index unavailable at {}: {source}. Run 'cass index' to (re)build it, then export again.",
+            path.display()
+        ),
+        IndexedExportError::ConversationNotIndexed {
+            source_path,
+            source_id,
+        } => format!(
+            "No indexed conversation found for {} (source: {}). Run 'cass index' to index it, then export again.",
+            source_path.display(),
+            source_id.as_deref().unwrap_or("any")
+        ),
+        IndexedExportError::AmbiguousIdentity {
+            source_path,
+            candidates,
+        } => {
+            let ids = candidates
+                .iter()
+                .filter_map(|candidate| candidate.conversation_id)
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
             format!(
-                "Failed to read session: {err}. The session file may be truncated or contain invalid UTF-8."
+                "Export identity for {} is ambiguous: {} indexed conversations share this path/source (ids: {ids}). Re-run 'cass index' or export from a search result carrying a conversation id (e.g. 'cass export --conversation-id <id>' from CLI).",
+                source_path.display(),
+                candidates.len()
             )
-        })?;
-        if line.trim().is_empty() {
-            continue;
         }
-        let message = match serde_json::from_str::<serde_json::Value>(&line) {
-            Ok(message) => message,
-            Err(err) => {
-                let line_number = line_index + 1;
-                tracing::warn!(
-                    source_path = %session_path.display(),
-                    line_no = line_number,
-                    error = %err,
-                    "session JSONL line failed to parse; skipping (GH #427)"
-                );
-                skipped += 1;
-                if first_parse_error.is_none() {
-                    first_parse_error = Some(format!(
-                        "Failed to parse session JSONL at line {line_number}: {err}"
-                    ));
-                }
-                continue;
-            }
-        };
-        if let Some(ts) = crate::extract_message_timestamp(&message)
-            && session_start.is_none_or(|start| ts < start)
-        {
-            session_start = Some(ts);
-        }
-        messages.push(message);
-    }
-
-    if messages.is_empty()
-        && let Some(first) = first_parse_error
-    {
-        return Err(format!(
-            "{first} (none of the {skipped} non-empty line(s) decoded as JSON)"
-        ));
-    }
-    if skipped > 0 {
-        tracing::warn!(
-            source_path = %session_path.display(),
-            skipped,
-            decoded = messages.len(),
-            "export skipped malformed JSONL record(s); rendered the rest (GH #427)"
-        );
-    }
-
-    Ok((messages, None, session_start))
-}
-
-#[cfg(test)]
-mod gh427_tui_export_loader_tests {
-    use super::load_local_export_raw_messages;
-
-    #[test]
-    fn truncated_record_is_skipped_and_rest_is_exported() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("rollout.jsonl");
-        std::fs::write(
-            &path,
-            "{\"role\":\"user\",\"content\":\"first\"}\n{\"role\":\"assistant\",\"content\":\"cut\n{\"role\":\"assistant\",\"content\":\"third\"}\n",
-        )
-        .unwrap();
-
-        let (messages, title, _) = load_local_export_raw_messages(&path)
-            .expect("one malformed line must not fail the export");
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0]["content"], "first");
-        assert_eq!(messages[1]["content"], "third");
-        assert!(title.is_none());
-    }
-
-    #[test]
-    fn file_without_any_json_record_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("notes.jsonl");
-        std::fs::write(&path, "just text\n").unwrap();
-
-        let err = load_local_export_raw_messages(&path).unwrap_err();
-        assert!(err.contains("at line 1"), "{err}");
-        assert!(err.contains("none of the 1"), "{err}");
+        IndexedExportError::IndexReadFailure { path, source } => format!(
+            "Failed to read the session index at {}: {source}. Re-run 'cass index' to rebuild it, then export again.",
+            path.display()
+        ),
     }
 }
 
-fn load_indexed_export_view(
-    db_path: &std::path::Path,
-    hit: &SearchHit,
-) -> Result<Option<crate::ui::data::ConversationView>, String> {
-    use crate::storage::sqlite::FrankenStorage;
-    use crate::ui::data::load_conversation_for_hit;
-
-    if !db_path.exists() {
-        return Ok(None);
+/// User-facing text for projection failures — a non-empty indexed session
+/// must never produce a silently empty export.
+fn export_projection_error_message(
+    err: &crate::export::projection::ExportProjectionError,
+) -> String {
+    use crate::export::projection::ExportProjectionError;
+    match err {
+        ExportProjectionError::NoRenderableMessages { indexed } => format!(
+            "The indexed session has {indexed} message(s) but none are renderable (only tool or bookkeeping records were archived). Enable tool detail in the export options or re-run 'cass index'."
+        ),
     }
-
-    let storage =
-        FrankenStorage::open(db_path).map_err(|err| format!("Failed to open database: {err}"))?;
-    load_conversation_for_hit(&storage, hit).map_err(|err| format!("Failed to load session: {err}"))
 }
 
 /// Background task: export a session to HTML.
 ///
 /// Runs on a background thread via `Cmd::task` so the UI stays responsive.
+///
+/// Index-first export (plan Task 5): the canonical indexed conversation is
+/// the sole source of truth. `hit.source_path` is an opaque identity key —
+/// the original file is never opened and may be missing, renamed, unreadable,
+/// or changed since indexing; the exported bytes are the indexed snapshot.
 #[allow(clippy::too_many_arguments)]
 fn export_session_task(
     db_path: &std::path::Path,
@@ -23145,107 +23065,105 @@ fn export_session_task(
     };
     use chrono::DateTime;
 
-    let session_path = std::path::Path::new(&hit.source_path);
-    let allow_direct_file = hit_is_local_source(hit);
-    let prefer_direct_file = tui_prefers_direct_followup_file(hit);
-
-    let html_messages_from_view = |view: crate::ui::data::ConversationView| {
-        view.messages
-            .into_iter()
-            .filter_map(|msg| {
-                let content = msg.content;
-                if content.is_empty() && !include_tools {
-                    return None;
-                }
-
-                let role = match msg.role {
-                    crate::model::types::MessageRole::User => "user",
-                    crate::model::types::MessageRole::Agent => "assistant",
-                    crate::model::types::MessageRole::System => "system",
-                    crate::model::types::MessageRole::Tool => "tool",
-                    crate::model::types::MessageRole::Other(_) => "unknown",
-                }
-                .to_string();
-
-                let timestamp = msg
-                    .created_at
-                    .and_then(|ts| DateTime::from_timestamp_millis(ts).map(|dt| dt.to_rfc3339()));
-
-                Some(HtmlMessage {
-                    role,
-                    content,
-                    timestamp,
-                    tool_call: None,
-                    index: Some(msg.idx.max(0) as usize),
-                    author: msg.author,
-                })
-            })
-            .collect::<Vec<HtmlMessage>>()
-    };
-
-    let indexed_view = if !prefer_direct_file {
-        match load_indexed_export_view(db_path, hit) {
+    let view =
+        match crate::export::indexed::load_indexed_export(db_path, &export_selector_for_hit(hit)) {
             Ok(view) => view,
-            Err(err) => {
-                if allow_direct_file && session_path.exists() {
-                    None
-                } else {
-                    return CassMsg::ExportFailed(err);
-                }
-            }
-        }
-    } else {
-        None
+            Err(err) => return CassMsg::ExportFailed(indexed_export_error_message(&err)),
+        };
+    let conversation = match crate::export::projection::project_indexed_conversation(
+        &view,
+        &crate::export::projection::ExportOptions { include_tools },
+    ) {
+        Ok(conversation) => conversation,
+        Err(err) => return CassMsg::ExportFailed(export_projection_error_message(&err)),
     };
 
-    let mut messages: Vec<HtmlMessage> = if let Some(view) = indexed_view {
-        html_messages_from_view(view)
-    } else if allow_direct_file && session_path.exists() {
-        match load_local_export_raw_messages(session_path) {
-            Ok((mut raw_messages, _, _)) => {
-                crate::export::ExportPrivacy::new(false).redact_messages(&mut raw_messages);
-                raw_messages
-                    .into_iter()
-                    .enumerate()
-                    .filter_map(|(idx, msg)| {
-                        let role = crate::extract_role(&msg);
-                        let content = crate::extract_text_content(&msg);
-                        if content.is_empty() && !include_tools {
-                            return None;
-                        }
+    // The projection's raw-message shape is the same envelope the CLI HTML
+    // path consumes: `to_raw_messages` merges index-retained tool payloads
+    // (`message`/`type`/flat tool keys) onto `{role, content, timestamp?,
+    // author?}`, so `extract_tool_calls`/`extract_role`/`extract_*` resolve
+    // identically to `cass export-html`. Pi-family assistant text carries
+    // flattened `[Tool: ...]` lines when the archive lacks envelopes; fail
+    // closed on those when tools were explicitly excluded (same policy as
+    // the CLI).
+    let pi_family_export = matches!(conversation.agent_slug.as_str(), "pi_agent" | "omp");
+    let mut raw_messages = crate::export::projection::to_raw_messages(&conversation);
+    crate::export::ExportPrivacy::new(false).redact_messages(&mut raw_messages);
 
-                        let timestamp = crate::extract_message_timestamp(&msg).and_then(|ts| {
-                            DateTime::from_timestamp_millis(ts).map(|dt| dt.to_rfc3339())
-                        });
-                        let author = msg
-                            .get("author")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_string);
-
-                        Some(HtmlMessage {
-                            role,
-                            content,
-                            timestamp,
-                            tool_call: None,
-                            index: Some(idx),
-                            author,
-                        })
-                    })
-                    .collect()
-            }
-            Err(local_err) => match load_indexed_export_view(db_path, hit) {
-                Ok(Some(view)) => html_messages_from_view(view),
-                Ok(None) => return CassMsg::ExportFailed(local_err),
-                Err(index_err) => {
-                    return CassMsg::ExportFailed(format!(
-                        "{local_err}; indexed fallback failed: {index_err}"
-                    ));
-                }
-            },
+    let mut messages: Vec<HtmlMessage> = Vec::new();
+    for (idx, msg) in raw_messages.iter().enumerate() {
+        let role = crate::extract_role(msg);
+        if !include_tools && role == "tool" {
+            continue;
         }
-    } else {
-        return CassMsg::ExportFailed(format!("Session not found: {}", hit.source_path));
-    };
+        match role.as_str() {
+            "user" | "assistant" | "system" | "tool" | "unknown" => {}
+            _ => continue,
+        }
+
+        let tool_calls = if include_tools {
+            crate::extract_tool_calls(msg)
+        } else {
+            Vec::new()
+        };
+
+        let content = if include_tools {
+            if !tool_calls.is_empty() {
+                crate::strip_tool_marker(
+                    crate::extract_text_content_without_tool_blocks(msg).as_str(),
+                )
+            } else {
+                crate::extract_text_content(msg)
+            }
+        } else {
+            let content = crate::extract_text_content_without_tool_blocks(msg);
+            if pi_family_export && role == "assistant" {
+                crate::strip_flattened_tool_call_lines(&content)
+            } else {
+                content
+            }
+        };
+
+        if content.is_empty() && tool_calls.is_empty() {
+            continue;
+        }
+
+        let timestamp = crate::extract_message_timestamp(msg)
+            .and_then(|ts| DateTime::from_timestamp_millis(ts).map(|dt| dt.to_rfc3339()));
+        let author = msg
+            .get("author")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+
+        // One renderer message per extracted tool call, mirroring
+        // `run_export_html`: the first carries the message content, the rest
+        // carry only their tool payload so grouping can attach results.
+        if tool_calls.is_empty() {
+            messages.push(HtmlMessage {
+                role,
+                content,
+                timestamp,
+                tool_call: None,
+                index: Some(idx),
+                author,
+            });
+        } else {
+            for (tool_index, tool_call) in tool_calls.into_iter().enumerate() {
+                messages.push(HtmlMessage {
+                    role: role.clone(),
+                    content: if tool_index == 0 {
+                        content.clone()
+                    } else {
+                        String::new()
+                    },
+                    timestamp: timestamp.clone(),
+                    tool_call: Some(tool_call),
+                    index: Some(idx),
+                    author: author.clone(),
+                });
+            }
+        }
+    }
 
     if messages.is_empty() {
         return CassMsg::ExportFailed("No messages found in session".to_string());
@@ -23309,76 +23227,33 @@ fn export_session_task(
 ///
 /// Reuses the existing CLI markdown formatter and parser helpers so TUI export
 /// stays consistent with `cass export --format markdown`.
+///
+/// Index-first export (plan Task 5): the canonical indexed conversation is
+/// the sole source of truth. `hit.source_path` is an opaque identity key —
+/// the original file is never opened and may be missing, renamed, unreadable,
+/// or changed since indexing; the exported bytes are the indexed snapshot.
 fn export_session_markdown_task(
     db_path: &std::path::Path,
     hit: &SearchHit,
     output_path: &std::path::Path,
     include_tools: bool,
 ) -> CassMsg {
-    let session_path = std::path::Path::new(&hit.source_path);
-    let allow_direct_file = hit_is_local_source(hit);
-    let prefer_direct_file = tui_prefers_direct_followup_file(hit);
-
-    let indexed_markdown_view = |view: crate::ui::data::ConversationView| {
-        (
-            crate::conversation_view_to_raw_messages(&view),
-            view.convo.title.clone(),
-            view.convo.started_at,
-        )
+    let view =
+        match crate::export::indexed::load_indexed_export(db_path, &export_selector_for_hit(hit)) {
+            Ok(view) => view,
+            Err(err) => return CassMsg::ExportFailed(indexed_export_error_message(&err)),
+        };
+    let conversation = match crate::export::projection::project_indexed_conversation(
+        &view,
+        &crate::export::projection::ExportOptions { include_tools },
+    ) {
+        Ok(conversation) => conversation,
+        Err(err) => return CassMsg::ExportFailed(export_projection_error_message(&err)),
     };
 
-    let (mut messages, mut session_title, session_start) = if prefer_direct_file {
-        match load_local_export_raw_messages(session_path) {
-            Ok(loaded) => loaded,
-            Err(local_err) => match load_indexed_export_view(db_path, hit) {
-                Ok(Some(view)) => indexed_markdown_view(view),
-                Ok(None) => return CassMsg::ExportFailed(local_err),
-                Err(index_err) => {
-                    return CassMsg::ExportFailed(format!(
-                        "{local_err}; indexed fallback failed: {index_err}"
-                    ));
-                }
-            },
-        }
-    } else if db_path.exists() {
-        match load_indexed_export_view(db_path, hit) {
-            Ok(Some(view)) => indexed_markdown_view(view),
-            Ok(None) => {
-                if allow_direct_file && session_path.exists() {
-                    match load_local_export_raw_messages(session_path) {
-                        Ok(loaded) => loaded,
-                        Err(err) => return CassMsg::ExportFailed(err),
-                    }
-                } else {
-                    return CassMsg::ExportFailed(format!(
-                        "Session not found in index: {}",
-                        hit.source_path
-                    ));
-                }
-            }
-            Err(err) => {
-                if allow_direct_file && session_path.exists() {
-                    match load_local_export_raw_messages(session_path) {
-                        Ok(loaded) => loaded,
-                        Err(fallback_err) => {
-                            return CassMsg::ExportFailed(format!(
-                                "{fallback_err}; indexed fallback failed: {err}"
-                            ));
-                        }
-                    }
-                } else {
-                    return CassMsg::ExportFailed(err);
-                }
-            }
-        }
-    } else if allow_direct_file && session_path.exists() {
-        match load_local_export_raw_messages(session_path) {
-            Ok(loaded) => loaded,
-            Err(err) => return CassMsg::ExportFailed(err),
-        }
-    } else {
-        return CassMsg::ExportFailed(format!("Session not found: {}", hit.source_path));
-    };
+    let mut session_title = conversation.title.clone();
+    let session_start = conversation.started_at;
+    let mut messages = crate::export::projection::to_raw_messages(&conversation);
 
     if messages.is_empty() {
         return CassMsg::ExportFailed("No messages found in session".to_string());
@@ -28825,31 +28700,6 @@ mod tests {
     }
 
     #[test]
-    fn tui_prefers_direct_followup_file_accepts_legacy_and_named_local_sources() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let session_path = temp.path().join("session.jsonl");
-        std::fs::write(
-            &session_path,
-            b"{}
-",
-        )
-        .expect("write session");
-
-        for source_id in ["   ", "backup-local"] {
-            let mut hit = make_test_hit();
-            hit.source_path = session_path.display().to_string();
-            hit.source_id = source_id.to_string();
-            hit.origin_kind = "local".to_string();
-            hit.origin_host = None;
-
-            assert!(
-                tui_prefers_direct_followup_file(&hit),
-                "local-kind source {source_id:?} should use its live local file"
-            );
-        }
-    }
-
-    #[test]
     fn actionable_path_for_hit_with_config_trims_agent_before_rewrite() {
         let mut hit = make_test_hit();
         hit.source_id = "work-laptop".to_string();
@@ -31050,20 +30900,45 @@ mod tests {
 
     #[test]
     fn export_session_markdown_task_preserves_existing_file_on_collision() {
+        use crate::storage::sqlite::FrankenStorage;
         let tmp = tempfile::TempDir::new().expect("tempdir");
+
+        // Index-first export reads only the archive; the on-disk session file
+        // is written but must never be consulted or mutated.
         let session_path = tmp.path().join("session.jsonl");
-        std::fs::write(
-            &session_path,
-            r#"{"role":"user","content":"hello"}
-{"role":"assistant","content":"hi"}"#,
+        std::fs::write(&session_path, "source file intentionally divergent")
+            .expect("write session fixture");
+
+        let db_path = tmp.path().join("cass.db");
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        let conn = storage.raw();
+        conn.execute("INSERT INTO agents (id, slug, name, kind, created_at, updated_at) VALUES (1, 'claude_code', 'Claude Code', 'local', 0, 0)").unwrap();
+        {
+            use crate::franken_sync::compat::{ParamValue, param_slice_to_values};
+            let params = [
+                ParamValue::from(1_i64),
+                ParamValue::from(session_path.display().to_string()),
+            ];
+            conn.execute_with_params(
+                "INSERT INTO conversations (id, agent_id, external_id, title, source_path, source_id, approx_tokens) VALUES (?1, 1, 'ext', 'Session', ?2, 'local', 10)",
+                &param_slice_to_values(&params),
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, idx, role, content) VALUES (1, 1, 0, 'user', 'hello')",
         )
-        .expect("write session fixture");
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, idx, role, content) VALUES (2, 1, 1, 'assistant', 'hi')",
+        )
+        .unwrap();
+
         let existing_path = tmp.path().join("session.md");
         std::fs::write(&existing_path, "existing").expect("seed existing export");
 
-        let missing_db = tmp.path().join("missing.db");
         let export_hit = make_exact_hit(&session_path.display().to_string(), "local", 1, "hello");
-        let msg = export_session_markdown_task(&missing_db, &export_hit, &existing_path, false);
+        let msg = export_session_markdown_task(&db_path, &export_hit, &existing_path, false);
         let exported_path = match msg {
             CassMsg::ExportCompleted { output_path, .. } => output_path,
             other => panic!("expected ExportCompleted, got: {other:?}"),
@@ -31241,12 +31116,15 @@ mod tests {
         .unwrap();
 
         let output_path = tmp.path().join("shared-same-source.md");
-        let export_hit = make_exact_hit(
+        // Two indexed rows share (source_path, source_id): the hit must name
+        // the exact conversation row id, the same way a real search hit does.
+        let mut export_hit = make_exact_hit(
             "/fake/shared-md-same-source.jsonl",
             "local",
             1,
             "new markdown body",
         );
+        export_hit.conversation_id = Some(2);
         let msg = export_session_markdown_task(&db_path, &export_hit, &output_path, false);
         let exported_path = match msg {
             CassMsg::ExportCompleted { output_path, .. } => output_path,
@@ -31264,21 +31142,57 @@ mod tests {
     }
 
     #[test]
-    fn export_redaction_tui_html_and_markdown_keep_raw_source_credentials_private() {
+    fn export_redaction_tui_html_and_markdown_keep_indexed_credentials_private() {
+        use crate::storage::sqlite::FrankenStorage;
         let temp = tempfile::TempDir::new().expect("isolated TUI export");
         let session = temp.path().join("privacy.jsonl");
         let secret = "synthetic-tui-export-credential-84"; // ubs:ignore[rust.security.hardcoded-secrets] — Synthetic regression sentinel, never an authentication credential.
         let title = format!("Title password={secret}");
-        let events = [
-            serde_json::json!({"role":"user","content":"ordinary-kept-marker café 界"}),
-            serde_json::json!({"role":"assistant","content":format!("Discuss password rotation; password={secret}"),"metadata":{"authorization":secret}}),
-        ];
-        let bytes = events
-            .iter()
-            .map(|event| format!("{event}\n"))
-            .collect::<String>();
-        std::fs::write(&session, &bytes).unwrap();
-        let db = temp.path().join("absent.db");
+
+        // Index-first export reads only the archive: seed the canonical
+        // conversation (secret in content, title, and a nested index-retained
+        // tool payload) at the hit's source_path. The on-disk file is a
+        // decoy — its bytes must be ignored and untouched.
+        let bytes = "{\"role\":\"user\",\"content\":\"decoy\"}\n";
+        std::fs::write(&session, bytes).unwrap();
+
+        let db = temp.path().join("cass.db");
+        let storage = FrankenStorage::open(&db).unwrap();
+        let conn = storage.raw();
+        conn.execute("INSERT INTO agents (id, slug, name, kind, created_at, updated_at) VALUES (1, 'codex', 'Codex', 'local', 0, 0)").unwrap();
+        {
+            use crate::franken_sync::compat::{ParamValue, param_slice_to_values};
+            let params = [
+                ParamValue::from(1_i64),
+                ParamValue::from(session.display().to_string()),
+                ParamValue::from(title.clone()),
+            ];
+            conn.execute_with_params(
+                "INSERT INTO conversations (id, agent_id, external_id, title, source_path, source_id, approx_tokens) VALUES (?1, 1, 'ext', ?3, ?2, 'local', 10)",
+                &param_slice_to_values(&params),
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, idx, role, content) VALUES (1, 1, 0, 'user', 'ordinary-kept-marker café 界')",
+        )
+        .unwrap();
+        {
+            use crate::franken_sync::compat::{ParamValue, param_slice_to_values};
+            let params = [
+                ParamValue::from(format!("Discuss password rotation; password={secret}")),
+                ParamValue::from(
+                    serde_json::json!({"type":"tool","tool_name":"Read","tool_input":{"authorization":secret}})
+                        .to_string(),
+                ),
+            ];
+            conn.execute_with_params(
+                "INSERT INTO messages (id, conversation_id, idx, role, content, extra_json) VALUES (2, 1, 1, 'assistant', ?1, ?2)",
+                &param_slice_to_values(&params),
+            )
+            .unwrap();
+        }
+
         let mut hit = make_exact_hit(&session.display().to_string(), "local", 1, "fixture");
         hit.title.clone_from(&title);
         let markdown = export_session_markdown_task(&db, &hit, &temp.path().join("safe.md"), true);
@@ -31297,21 +31211,27 @@ mod tests {
             let CassMsg::ExportCompleted { output_path, .. } = result else {
                 panic!("export did not complete: {result:?}");
             };
-            let output = std::fs::read_to_string(output_path).unwrap();
+            let output = std::fs::read_to_string(&output_path).unwrap();
             assert!(!output.contains(secret));
             assert!(output.contains("ordinary-kept-marker"));
             assert!(output.contains("café 界"));
             assert!(output.contains("password rotation"));
+            assert!(
+                !output.contains("decoy"),
+                "export must not read the source file: {output_path:?}"
+            );
         }
         assert_eq!(std::fs::read_to_string(&session).unwrap(), bytes);
-        assert!(!db.exists());
     }
 
     #[test]
-    fn export_session_markdown_task_prefers_local_jsonl_over_stale_index() {
+    fn export_session_markdown_task_prefers_indexed_snapshot_over_changed_local_jsonl() {
         use crate::storage::sqlite::FrankenStorage;
         let tmp = tempfile::TempDir::new().expect("tempdir");
 
+        // Snapshot contract: the local file changed after indexing, but the
+        // exported bytes must be the indexed snapshot — export never opens
+        // the original file (plan Invariants 1-2).
         let session_path = tmp.path().join("fresh-session.jsonl");
         std::fs::write(
             &session_path,
@@ -31356,24 +31276,26 @@ mod tests {
         };
         let markdown = std::fs::read_to_string(exported_path).expect("read exported markdown");
         assert!(
-            markdown.contains("# Indexed Session"),
-            "markdown export should preserve the indexed/search-hit title when local JSONL content is preferred"
+            markdown.contains("# Stale Session"),
+            "markdown export should carry the indexed conversation title"
         );
         assert!(
-            markdown.contains("fresh local markdown body"),
-            "local JSONL content should outrank stale indexed content for TUI markdown export"
+            markdown.contains("stale indexed markdown body"),
+            "the indexed snapshot is the sole export source for TUI markdown export"
         );
         assert!(
-            !markdown.contains("stale indexed markdown body"),
-            "stale indexed content should not leak into local JSONL markdown export"
+            !markdown.contains("fresh local markdown body"),
+            "a changed local JSONL must not alter exported bytes"
         );
     }
 
     #[test]
-    fn export_session_markdown_task_falls_back_to_index_when_local_jsonl_is_invalid() {
+    fn export_session_markdown_task_uses_indexed_snapshot_when_local_jsonl_is_invalid() {
         use crate::storage::sqlite::FrankenStorage;
         let tmp = tempfile::TempDir::new().expect("tempdir");
 
+        // Index-first export: an unreadable/garbage source file is irrelevant;
+        // the indexed snapshot is the only consulted input.
         let session_path = tmp.path().join("broken-session.jsonl");
         std::fs::write(&session_path, "this is not valid jsonl\n").expect("write invalid session");
 
@@ -31413,7 +31335,7 @@ mod tests {
         let markdown = std::fs::read_to_string(exported_path).expect("read exported markdown");
         assert!(
             markdown.contains("indexed markdown fallback body"),
-            "indexed conversation should rescue markdown export when the local JSONL is invalid"
+            "indexed conversation supplies markdown export regardless of local JSONL state"
         );
     }
 
@@ -31620,12 +31542,15 @@ not jsonl",
         .unwrap();
 
         let output_path = tmp.path().join("shared-same-source.html");
-        let export_hit = make_exact_hit(
+        // Two indexed rows share (source_path, source_id): the hit must name
+        // the exact conversation row id, the same way a real search hit does.
+        let mut export_hit = make_exact_hit(
             "/fake/shared-same-source.jsonl",
             "local",
             1,
             "new export body",
         );
+        export_hit.conversation_id = Some(2);
         let msg = export_session_task(
             &db_path,
             &export_hit,
@@ -31653,10 +31578,13 @@ not jsonl",
     }
 
     #[test]
-    fn export_session_html_task_prefers_local_jsonl_over_stale_index() {
+    fn export_session_html_task_prefers_indexed_snapshot_over_changed_local_jsonl() {
         use crate::storage::sqlite::FrankenStorage;
         let tmp = tempfile::TempDir::new().expect("tempdir");
 
+        // Snapshot contract: the local file changed after indexing, but the
+        // exported bytes must be the indexed snapshot — export never opens
+        // the original file (plan Invariants 1-2).
         let session_path = tmp.path().join("fresh-session.html-source.jsonl");
         std::fs::write(
             &session_path,
@@ -31710,20 +31638,22 @@ not jsonl",
         };
         let html = std::fs::read_to_string(exported_path).expect("read exported html");
         assert!(
-            html.contains("fresh local html body"),
-            "local JSONL content should outrank stale indexed content for TUI HTML export"
+            html.contains("stale indexed html body"),
+            "the indexed snapshot is the sole export source for TUI HTML export"
         );
         assert!(
-            !html.contains("stale indexed html body"),
-            "stale indexed content should not leak into local JSONL HTML export"
+            !html.contains("fresh local html body"),
+            "a changed local JSONL must not alter exported bytes"
         );
     }
 
     #[test]
-    fn export_session_html_task_falls_back_to_index_when_local_jsonl_is_invalid() {
+    fn export_session_html_task_uses_indexed_snapshot_when_local_jsonl_is_invalid() {
         use crate::storage::sqlite::FrankenStorage;
         let tmp = tempfile::TempDir::new().expect("tempdir");
 
+        // Index-first export: an unreadable/garbage source file is irrelevant;
+        // the indexed snapshot is the only consulted input.
         let session_path = tmp.path().join("broken-session-html.jsonl");
         std::fs::write(&session_path, "this is not valid jsonl\n").expect("write invalid session");
 
@@ -31773,7 +31703,7 @@ not jsonl",
         let html = std::fs::read_to_string(exported_path).expect("read exported html");
         assert!(
             html.contains("indexed html fallback body"),
-            "indexed conversation should rescue HTML export when the local JSONL is invalid"
+            "indexed conversation supplies HTML export regardless of local JSONL state"
         );
     }
 

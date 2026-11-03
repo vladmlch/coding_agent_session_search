@@ -82,10 +82,8 @@ use crate::model::types::{Message, MessageRole};
 use crate::ui::data::ConversationView;
 use serde_json::{Map, Value};
 
-/// Agent-neutral projection of one indexed conversation.
-// `dead_code` until Task 4/5 wire `run_export`/`run_export_html`/TUI: the
-// metadata fields are consumed by renderers, not by `to_raw_messages`.
-#[allow(dead_code)]
+/// Agent-neutral projection of one indexed conversation. The metadata fields
+/// are consumed by renderers, not by `to_raw_messages`.
 #[derive(Debug, Clone)]
 pub(crate) struct ExportConversation {
     pub agent_slug: String,
@@ -187,8 +185,18 @@ const FLAT_TOOL_KEYS: &[&str] = &[
 ];
 
 /// Emitted role strings the renderers will actually render
-/// (`format_as_*`/`extract_role`-driven allowlist).
-const RENDERABLE_ROLES: &[&str] = &["user", "assistant", "system", "tool", "unknown"];
+/// (`format_as_*`/`extract_role`-driven allowlist). `toolResult`/`tool_result`
+/// appear verbatim when an archived `Other` role carried the pi-family name —
+/// those messages still render, so a toolResult-only archive is renderable.
+const RENDERABLE_ROLES: &[&str] = &[
+    "user",
+    "assistant",
+    "system",
+    "tool",
+    "toolResult",
+    "tool_result",
+    "unknown",
+];
 
 /// Top-level keys owned by the legacy raw-message shape
 /// (`{role, content, timestamp?, author?}`); merged tool fields must never
@@ -433,7 +441,6 @@ fn indexed_tool_payload(agent_slug: &str, message_idx: i64, extra_json: &Value) 
 /// counts even with empty content (renderers emit its header; content
 /// emptiness is their concern). An empty *indexed* conversation is `Ok` —
 /// the empty-session diagnostic belongs to the callers.
-#[allow(dead_code)]
 pub(crate) fn project_indexed_conversation(
     view: &ConversationView,
     options: &ExportOptions,
@@ -562,7 +569,6 @@ pub(crate) fn project_indexed_conversation(
 /// are never overwritten: `content` stays the normalized indexed text and
 /// `role` stays the normalized role, so `extract_role`/`extract_text_content`/
 /// `extract_message_timestamp` resolve identically to legacy output.
-#[allow(dead_code)]
 pub(crate) fn to_raw_messages(conversation: &ExportConversation) -> Vec<serde_json::Value> {
     conversation
         .messages

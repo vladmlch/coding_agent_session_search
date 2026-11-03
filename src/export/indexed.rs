@@ -27,9 +27,7 @@ pub(crate) struct ExportSelector {
 }
 
 /// One candidate row that matched `source_path` during ambiguous resolution,
-/// surfaced so callers can print actionable disambiguation. Fields are read
-/// by the export callers that render the ambiguity diagnostic (Task 4/5).
-#[allow(dead_code)]
+/// surfaced so callers can print actionable disambiguation.
 #[derive(Debug, Clone)]
 pub(crate) struct AmbiguousCandidate {
     pub conversation_id: Option<i64>,
@@ -327,7 +325,6 @@ fn resolve_by_identity(
 /// - metadata and messages are read in one consistent snapshot;
 /// - ambiguity fails instead of `ORDER BY started_at DESC LIMIT 1` selection;
 /// - a provided `conversation_id` must match `source_path`/`source_id` exactly.
-#[allow(dead_code)]
 pub(crate) fn load_indexed_export(
     archive_path: &Path,
     selector: &ExportSelector,
