@@ -564,8 +564,9 @@ fn classification_refusal(coverage: Option<String>) -> anyhow::Error {
 /// classification under an explicit classification filter. A found row is
 /// a typed refusal; the page query itself never runs on unanswerable sets.
 /// The owned-query lane serves ordering and filtering exclusively through
-/// `viewer_session_sort` — a pre-v5 profile (no persisted sort keys) is a
-/// stale extension install, refused with the same kind as a missing one.
+/// `viewer_session_sort` — a profile behind EXTENSION_SCHEMA_VERSION (v6)
+/// is a stale extension install, refused with the same kind as a missing
+/// one.
 fn require_sort_profile(connection: &Connection) -> Result<()> {
     let version = coding_agent_search::viewer_extensions::schema::installed_version(connection)?;
     match version {
@@ -576,7 +577,7 @@ fn require_sort_profile(connection: &Connection) -> Result<()> {
         }
         _ => Err(refuse(
             "viewer_extensions_missing",
-            "The viewer extension profile is missing or stale (schema v5 sort keys required); \
+            "The viewer extension profile is missing or stale (schema v6 sort keys required); \
              run --init-extensions first",
         )),
     }
@@ -714,7 +715,9 @@ fn run_tie_probe(connection: &Connection, resolved: &ResolvedFilters) -> Result<
         };
         return Err(refuse(
             kind,
-            "Unresolved public session identity in the browse candidate set",
+            "Unresolved public session identity in the browse candidate set; \
+             repair with `cass index` (the ingest lane converges pending keys) \
+             or `cass-viewer-bridge --init-extensions`",
         ));
     }
     Ok(())

@@ -39,7 +39,12 @@ use crate::franken_sync::compat::RowExt;
 /// filter mirrors, the seven per-sort composite order indexes, and the
 /// `viewer_sort_*` maintenance triggers keeping every scalar column
 /// transactionally in step with its source table.
-pub const EXTENSION_SCHEMA_VERSION: i64 = 5;
+/// v6: `viewer_sort_agents_del` — the missing agents-side dimension
+/// invalidation counterpart to `viewer_sort_sources_del`: an `agents`
+/// DELETE leaves a dangling `agent_id` whose stored tie key was verified
+/// against a dimension row that no longer exists; the trigger returns
+/// those rows to pending so browse refuses honestly until re-resolved.
+pub const EXTENSION_SCHEMA_VERSION: i64 = 6;
 
 /// Additive viewer schema. Every statement is idempotent so re-running the
 /// profile on an initialized archive is a no-op.
@@ -635,6 +640,26 @@ INSERT OR REPLACE INTO viewer_meta (key, value)
 VALUES ('extension_schema_version', '5');
 ";
 
+/// Schema v6 — symmetric dimension-delete invalidation.
+///
+/// `viewer_sort_sources_del` (v5) already returns a sort row's verified tie
+/// key to pending when its `sources` row is deleted; the `agents`
+/// counterpart was missing, so an `agents` DELETE left persisted keys
+/// verified against a gone dimension row trusted forever. Mirrors the
+/// sources trigger exactly: the stored key is no longer a verified
+/// identity, so the row returns to pending for the maintenance/ingest
+/// convergence lanes (`viewer_extensions::sort`).
+const VIEWER_SCHEMA_V6: &str = r"
+DROP TRIGGER IF EXISTS viewer_sort_agents_del;
+CREATE TRIGGER viewer_sort_agents_del AFTER DELETE ON agents BEGIN
+    UPDATE viewer_session_sort SET tie_key = NULL, tie_error = NULL
+    WHERE agent_id = OLD.id;
+END;
+
+INSERT OR REPLACE INTO viewer_meta (key, value)
+VALUES ('extension_schema_version', '6');
+";
+
 /// Guarded v3 column migration: `parent_external_id` cannot ride the
 /// `CREATE TABLE` statement (existing v2 archives keep their table), so it
 /// lands as an `ALTER TABLE` only when the column is absent — inside the
@@ -688,14 +713,31 @@ fn migrate_facts_parent_evidence(connection: &Connection) -> Result<()> {
 /// Canonical observer triggers stay owned by the authorized maintenance
 /// lane (`revisions::ensure_observers`); ingest publication itself does
 /// not depend on them.
+///
+/// After the guard, one bounded `idx_viewer_sort_tie_pending` probe checks
+/// for unresolved browse tie keys. The schema migrations and the
+/// dimension/canonical invalidation triggers can only ever leave `tie_key`
+/// NULL — resolution needs canonical-identity recomputation no trigger can
+/// express — so the ingest lane converges the pending set itself, in
+/// bounded per-chunk transactions (`sort::repair_sort_keys`), instead of
+/// stranding an archive-wide `facts_pending` browse refusal on a
+/// maintenance command an operator running only `cass index` never sees.
+/// Once converged the probe is the only steady-state cost. Must NOT be
+/// called with a transaction already open on this connection (the repair
+/// commits in its own bounded transactions).
 pub fn ensure_profile_for_ingest(connection: &Connection) -> Result<bool> {
-    match installed_version(connection)? {
-        Some(version) if version >= EXTENSION_SCHEMA_VERSION => Ok(true),
+    let ensured = match installed_version(connection)? {
+        Some(version) if version >= EXTENSION_SCHEMA_VERSION => true,
         _ => {
             ensure_schema(connection)?;
-            Ok(true)
+            true
         }
+    };
+    if ensured && super::sort::sort_ties_pending(connection)? {
+        super::sort::repair_sort_keys(connection)
+            .context("converging pending browse sort tie keys")?;
     }
+    Ok(ensured)
 }
 
 /// Initialize (or verify) the additive `viewer_*` extension profile inside
@@ -726,6 +768,7 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
         connection.execute_batch(VIEWER_SCHEMA_V3)?;
         connection.execute_batch(VIEWER_SCHEMA_V4)?;
         connection.execute_batch(VIEWER_SCHEMA_V5)?;
+        connection.execute_batch(VIEWER_SCHEMA_V6)?;
         Ok(())
     })();
     match applied {

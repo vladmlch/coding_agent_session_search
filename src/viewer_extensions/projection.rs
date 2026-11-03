@@ -1841,6 +1841,14 @@ fn generation_crash_probe() -> bool {
         .unwrap_or(false)
 }
 
+/// Bounded re-resolve attempts for the evidence-guarded tie write. A
+/// canonical identity change between the resolve probes and the
+/// in-transaction guarded write costs one attempt: three races in a row
+/// means something is actively mutating the row mid-index — the durable
+/// `failed` receipt then records the race and the backfill lane retries,
+/// instead of spinning unbounded inside one index run.
+const TIE_EVIDENCE_RACE_ATTEMPTS: usize = 3;
+
 /// Deterministic failure injection inside the generation transaction:
 /// `CASS_TEST_VIEWER_GENERATION_FAIL` aborts AFTER both lanes published
 /// but BEFORE commit — the whole generation (rows AND the in-tx `complete`
@@ -1850,6 +1858,19 @@ fn generation_fail_probe() -> bool {
     dotenvy::var("CASS_TEST_VIEWER_GENERATION_FAIL")
         .map(|value| !value.is_empty() && value != "0")
         .unwrap_or(false)
+}
+
+/// Deterministic stale-tie-race injection (test-only):
+/// `CASS_TEST_VIEWER_TIE_RACE_SQL` holds SQL executed on this connection
+/// ONCE per publication attempt-1 — after the tie evidence/resolve probes
+/// and before the generation transaction opens. That is exactly the
+/// interleaving of a cross-connection canonical identity write racing the
+/// publication: the conversations trigger NULLs `tie_key`, and the
+/// evidence-guarded write must refuse the stale key rather than persist it.
+fn tie_race_probe() -> Option<String> {
+    dotenvy::var("CASS_TEST_VIEWER_TIE_RACE_SQL")
+        .ok()
+        .filter(|sql| !sql.is_empty())
 }
 
 /// Compute the whole extension generation for one committed canonical
@@ -1995,20 +2016,57 @@ pub fn publish_ingest_generation(
         // orders browse alongside. A resolver refusal is durable sort state
         // — `tie_error` — never a reason to abort the publication; engine
         // failures DO abort it so the `failed` receipt stays honest.
-        let sort_tie = super::sort::resolve_published_tie(connection, conversation_id)
-            .context("resolving browse sort tie key")?;
-        let mut tx = connection
-            .transaction()
-            .context("opening ingest generation transaction")?;
-        publish_ingest_generation_in_tx(&tx, conv, conversation_id, &generation, &receipt)?;
-        super::sort::publish_sort_tie(&tx, conversation_id, &sort_tie)
-            .context("persisting browse sort tie key")?;
-        if generation_fail_probe() {
-            anyhow::bail!("CASS_TEST_VIEWER_GENERATION_FAIL injected publication fault");
+        //
+        // The resolve runs outside the generation transaction; a
+        // cross-connection canonical identity change can land between it
+        // and the in-transaction write (the conversations trigger NULLs
+        // `tie_key`, then a blind overwrite would persist a stale verified
+        // key nothing re-invalidates). The evidence-guarded write re-reads
+        // the identity columns inside the transaction and refuses on
+        // mismatch — the loop rolls back and re-resolves, so the committed
+        // key always verifies against the canonical row it commits beside.
+        for attempt in 1..=TIE_EVIDENCE_RACE_ATTEMPTS {
+            let (sort_tie, evidence) =
+                super::sort::resolve_published_tie_with_evidence(connection, conversation_id)
+                    .context("resolving browse sort tie key")?;
+            if attempt == 1
+                && let Some(race_sql) = tie_race_probe()
+            {
+                connection
+                    .execute_batch(&race_sql)
+                    .context("injecting tie-race canonical mutation")?;
+            }
+            let mut tx = connection
+                .transaction()
+                .context("opening ingest generation transaction")?;
+            publish_ingest_generation_in_tx(&tx, conv, conversation_id, &generation, &receipt)?;
+            if super::sort::publish_sort_tie_guarded(
+                &tx,
+                conversation_id,
+                &sort_tie,
+                evidence.as_ref(),
+            )
+            .context("persisting browse sort tie key")?
+            {
+                if generation_fail_probe() {
+                    anyhow::bail!("CASS_TEST_VIEWER_GENERATION_FAIL injected publication fault");
+                }
+                tx.commit()
+                    .context("committing ingest generation transaction")?;
+                return Ok(());
+            }
+            // The guard refused: canonical identity moved between the
+            // resolve probes and the in-transaction write. Roll the whole
+            // generation attempt back (dropping discharges the mandatory
+            // rollback before the next statement) and re-resolve against
+            // the moved row — never persist the stale key.
+            drop(tx);
         }
-        tx.commit()
-            .context("committing ingest generation transaction")?;
-        Ok(())
+        anyhow::bail!(
+            "canonical identity changed during ingest publication \
+             {TIE_EVIDENCE_RACE_ATTEMPTS} times; the durable failed receipt \
+             records the race and the backfill lane retries"
+        )
     })();
 
     match work {

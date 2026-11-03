@@ -2245,20 +2245,31 @@ fn list_sessions_sort_index_50k_exact_order_and_bounded_work() -> Result<()> {
         first_divergence(&expected, &seen)
     );
 
-    // ---- spot-walks for the remaining sorts and flat merge -------------
+    // ---- deep keyset walks: EVERY supported explicit sort to page 10 ---
+    // Page size 20, ten pages per sort: the page-10 slice must equal the
+    // oracle's `expected[180..200]` exactly, proving the persisted keyset
+    // cursor stays faithful to the oracle order at depth — not just in
+    // the cheap head pages — for every supported sort, including the two
+    // ascending directions the old spot-walk never exercised
+    // (`updated_asc`, `created_asc`).
     for (sort, pin_first, label) in [
+        (Some("updated_desc"), true, "explicit updated_desc"),
+        (Some("updated_asc"), true, "updated_asc"),
         (Some("created_desc"), true, "created_desc"),
+        (Some("created_asc"), true, "created_asc"),
         (Some("project_asc"), true, "project_asc"),
         (Some("step_desc"), true, "step_desc"),
         (Some("artifact_desc"), true, "artifact_desc"),
         (None, false, "flat pin_first=false"),
     ] {
         let expected = expected_scale_order(&rows, sort.unwrap_or("updated_desc"), pin_first);
-        let mut seen = Vec::new();
+        let mut seen: Vec<i64> = Vec::with_capacity(200);
         let mut cursor: Option<String> = None;
-        for _ in 0..2 {
+        let mut pages = 0_usize;
+        let mut page10: Vec<i64> = Vec::new();
+        loop {
             let mut request = json!({
-                "op":"list_sessions","limit":200,"pin_first":pin_first});
+                "op":"list_sessions","limit":20,"pin_first":pin_first});
             if let Some(sort) = sort {
                 request["sort"] = json!(sort);
             }
@@ -2266,15 +2277,33 @@ fn list_sessions_sort_index_50k_exact_order_and_bounded_work() -> Result<()> {
                 request["cursor"] = json!(c);
             }
             let page = bridge.exchange(request)?;
-            ensure!(page["ok"] == true, "{label} page: {page}");
-            seen.extend(item_ids(&page));
+            ensure!(page["ok"] == true, "{label} page {}: {page}", pages + 1);
+            let ids = item_ids(&page);
+            seen.extend_from_slice(&ids);
+            if pages == 9 {
+                page10 = ids;
+            }
+            pages += 1;
             cursor = page["result"]["next_cursor"].as_str().map(str::to_owned);
+            if pages == 10 || cursor.is_none() {
+                break;
+            }
         }
-        let head: Vec<i64> = expected[..400.min(expected.len())].to_vec();
+        ensure!(
+            pages == 10,
+            "{label} must reach page-10 depth over the scale set ({pages} pages)"
+        );
+        let oracle_slice = &expected[180..200];
+        ensure!(
+            page10 == oracle_slice,
+            "{label} page 10 must equal expected[180..200] exactly: \
+             page10={page10:?} oracle={oracle_slice:?}"
+        );
+        let head: &[i64] = &expected[..200];
         ensure!(
             seen == head,
-            "{label} first two pages must match the oracle: {}",
-            first_divergence(&head, &seen)
+            "{label} pages 1-10 must match the oracle prefix exactly: {}",
+            first_divergence(head, &seen)
         );
     }
 
@@ -2536,6 +2565,170 @@ fn list_sessions_stale_extension_profile_refused() -> Result<()> {
         refused["error"]["kind"] == "viewer_extensions_missing",
         "stale extension profile must refuse explicitly: {refused}"
     );
+    bridge.shutdown()
+}
+
+/// Review fix (Important #4, v6): `viewer_sort_agents_del` — the
+/// dimension-delete counterpart to `viewer_sort_sources_del`. Deleting an
+/// `agents` row leaves a dangling `agent_id` whose stored tie key was
+/// verified against a dimension row that no longer exists; without the
+/// trigger those keys stayed trusted forever. With it, the affected rows
+/// return to pending and browse refuses honestly until the convergence
+/// lanes re-resolve them — where the now-missing agent row surfaces the
+/// typed `canonical_coordinates_invalid` refusal.
+#[test]
+fn list_sessions_agent_delete_invalidates_tie_keys() -> Result<()> {
+    let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
+    init_extensions(&bridge)?;
+    seed_annotations(&bridge)?;
+
+    // Baseline: every sort row carries a verified public tie key.
+    let page = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(page["ok"] == true, "baseline browse must serve: {page}");
+    ensure!(item_ids(&page) == [4, 5, 2, 1, 3], "{page}");
+
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    match writer.execute("DELETE FROM agents WHERE slug = 'gemini'") {
+        Ok(_) => {
+            // The v6 trigger returned every gemini-owned row's persisted
+            // tie to pending — the keys were verified against a dimension
+            // row that no longer exists, so they must not stay trusted.
+            let pending: i64 = writer
+                .query_row(
+                    "SELECT COUNT(*) FROM viewer_session_sort \
+                     WHERE tie_key IS NULL AND tie_error IS NULL",
+                )?
+                .get_typed(0)?;
+            ensure!(
+                pending == 3,
+                "agents delete must invalidate every owned tie key: {pending} pending"
+            );
+            let refused = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+            ensure!(refused["ok"] == false, "{refused}");
+            ensure!(
+                refused["error"]["kind"] == "facts_pending",
+                "deleted-agent rows must refuse pending, never keep stale keys: {refused}"
+            );
+            // A filter that excludes the deleted agent's rows still
+            // serves — the refusal scope is the candidate set.
+            let claude = bridge.exchange(json!({
+                "op":"list_sessions","filters":{"provider":"claude"},"limit":10}))?;
+            ensure!(
+                claude["ok"] == true,
+                "unaffected claude rows must keep serving: {claude}"
+            );
+            ensure!(item_ids(&claude) == [4, 2], "{claude}");
+
+            // The maintenance lane re-resolves: the missing agents row is
+            // itself a refusal input, persisted as the typed kind browse
+            // then surfaces — honest, never a guessed order.
+            init_extensions(&bridge)?;
+            let refused = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+            ensure!(refused["ok"] == false, "{refused}");
+            ensure!(
+                refused["error"]["kind"] == "canonical_coordinates_invalid",
+                "dangling agent_id must persist its own refusal kind: {refused}"
+            );
+        }
+        Err(error) => {
+            eprintln!("engine probe: delete-side FK refused the agents delete: {error}");
+            // Enforcement refused the write before the trigger could fire —
+            // pin the trigger's presence so the counterpart is never lost
+            // on builds where delete-side FKs go unenforced.
+            let triggers = writer.query(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' \
+                 AND name = 'viewer_sort_agents_del'",
+            )?;
+            ensure!(
+                !triggers.is_empty(),
+                "viewer_sort_agents_del must exist beside viewer_sort_sources_del"
+            );
+        }
+    }
+    drop(writer);
+    bridge.shutdown()
+}
+
+/// Review fix (Important #2, unit level): the ingest lane's own profile
+/// guard must converge the pending tie set a schema install/upgrade (or a
+/// dimension invalidation) can only ever leave. `ensure_schema` alone
+/// backfills sort rows with NULL ties; `ensure_profile_for_ingest` — the
+/// call `cass index`'s publish hook reaches — resolves them in bounded
+/// batches, so a user who only indexes is never stranded on an
+/// archive-wide `facts_pending` browse refusal.
+#[test]
+fn ingest_profile_guard_converges_pending_sort_ties() -> Result<()> {
+    let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+
+    // The pre-fix upgrade state honestly: the profile installs (sort rows
+    // backfilled, every tie pending — triggers cannot compute a verified
+    // public identity) and nothing else runs.
+    schema::ensure_schema(&writer)?;
+    let pending: i64 = writer
+        .query_row(
+            "SELECT COUNT(*) FROM viewer_session_sort \
+             WHERE tie_key IS NULL AND tie_error IS NULL",
+        )?
+        .get_typed(0)?;
+    ensure!(
+        pending == 5,
+        "schema install alone must leave every tie pending: {pending}"
+    );
+
+    // The exact call the ingest hook makes: probe + bounded repair, not a
+    // no-op guard that strands the archive on a maintenance command the
+    // plain-`cass index` operator never sees.
+    ensure!(schema::ensure_profile_for_ingest(&writer)?);
+    let pending: i64 = writer
+        .query_row(
+            "SELECT COUNT(*) FROM viewer_session_sort \
+             WHERE tie_key IS NULL AND tie_error IS NULL",
+        )?
+        .get_typed(0)?;
+    ensure!(
+        pending == 0,
+        "the ingest profile guard must converge pending ties: {pending} remain"
+    );
+    let keys: Vec<String> = writer
+        .query(
+            "SELECT tie_key FROM viewer_session_sort ORDER BY conversation_id",
+        )?
+        .iter()
+        .map(|row| row.get_typed::<String>(0))
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure!(
+        keys == [
+            "gemini:fixture-1",
+            "claude:BBB",
+            "gemini:fixture-3",
+            "claude:CCC",
+            "gemini:fixture-5"
+        ],
+        "converged keys must be the verified public identities: {keys:?}"
+    );
+
+    // Idempotent: a second guard call is the cheap indexed probe only —
+    // pending stays zero and the keys are unmoved.
+    ensure!(schema::ensure_profile_for_ingest(&writer)?);
+    let pending: i64 = writer
+        .query_row(
+            "SELECT COUNT(*) FROM viewer_session_sort \
+             WHERE tie_key IS NULL AND tie_error IS NULL",
+        )?
+        .get_typed(0)?;
+    ensure!(pending == 0, "the converged set must stay converged");
+    drop(writer);
+
+    // And the read lane serves immediately — no facts_pending in sight
+    // (the fixture's pin/tail writes ride the same installed triggers).
+    seed_annotations(&bridge)?;
+    let page = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(
+        page["ok"] == true,
+        "browse must serve right after ingest-lane convergence: {page}"
+    );
+    ensure!(item_ids(&page) == [4, 5, 2, 1, 3], "{page}");
     bridge.shutdown()
 }
 
@@ -5415,6 +5608,134 @@ fn ingest_forget_parent_nulls_resolved_child_link() -> Result<()> {
             &format!("SELECT COUNT(*) FROM conversations WHERE id={child_id}")
         )? == 1,
         "the child conversation itself is untouched by the parent's removal"
+    );
+    drop(conn);
+    Ok(())
+}
+
+/// Review fix (Important #2, end to end): a user running ONLY `cass index`
+/// must not be stranded on an archive-wide `facts_pending` browse refusal.
+/// The ingest publication hook's profile guard probes the pending tie set
+/// and converges it in bounded batches — no `--init-extensions`, no
+/// `--backfill-viewer-extensions`, no maintenance command anywhere.
+#[test]
+fn ingest_index_converges_pending_sort_ties() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    seed_claude_session(&fixture, "proj/pending-a.jsonl", "pending-a", "first body")?;
+
+    // First index: the publish hook installs the profile AND resolves the
+    // session's tie inside the same plain `cass index` run.
+    run_cass_index(&fixture, &[])?;
+    let conn = ingest_conn(&fixture)?;
+    let pending = count(
+        &conn,
+        "SELECT COUNT(*) FROM viewer_session_sort \
+         WHERE tie_key IS NULL AND tie_error IS NULL",
+    )?;
+    ensure!(pending == 0, "first index must leave nothing pending: {pending}");
+
+    // The upgrade window: every sort row's verified tie is returned to
+    // pending — the state a schema migration or dimension invalidation
+    // can only produce (the trigger layer cannot compute a verified
+    // public identity).
+    conn.execute("UPDATE viewer_session_sort SET tie_key = NULL, tie_error = NULL")?;
+    let pending = count(
+        &conn,
+        "SELECT COUNT(*) FROM viewer_session_sort \
+         WHERE tie_key IS NULL AND tie_error IS NULL",
+    )?;
+    ensure!(pending == 1, "setup must leave the whole set pending: {pending}");
+    drop(conn);
+
+    // A second session gives the next plain index run real persist work;
+    // its publication hook converges the whole pending set, not only its
+    // own row.
+    seed_claude_session(&fixture, "proj/pending-b.jsonl", "pending-b", "second body")?;
+    run_cass_index(&fixture, &[])?;
+
+    let conn = ingest_conn(&fixture)?;
+    let pending = count(
+        &conn,
+        "SELECT COUNT(*) FROM viewer_session_sort \
+         WHERE tie_key IS NULL AND tie_error IS NULL",
+    )?;
+    ensure!(
+        pending == 0,
+        "plain cass index must converge pending ties in bounded batches: {pending} remain"
+    );
+    // And the persisted values are the verified public identities — never
+    // a guessed or stale key left trusted.
+    let keys: Vec<String> = conn
+        .query("SELECT tie_key FROM viewer_session_sort ORDER BY conversation_id")?
+        .iter()
+        .map(|row| row.get_typed::<String>(0))
+        .collect::<Result<Vec<_>, _>>()?;
+    ensure!(
+        keys == ["claude:pending-a", "claude:pending-b"],
+        "converged keys must be verified public identities: {keys:?}"
+    );
+    drop(conn);
+    Ok(())
+}
+
+/// Review fix (Important #3): the tie resolve used to run before the
+/// generation transaction while its write ran inside it — a canonical
+/// identity change in the gap NULLed the stored tie via the conversations
+/// trigger and the stale pre-transaction key overwrote it, never to be
+/// re-invalidated. The evidence-guarded write re-reads the identity
+/// columns inside the transaction: a raced basis refuses, the attempt
+/// rolls back, and the retry re-resolves against the moved row.
+/// `CASS_TEST_VIEWER_TIE_RACE_SQL` injects the mutation at exactly the
+/// old race window — deterministically, every run.
+#[test]
+fn ingest_tie_publish_guards_against_racing_identity_change() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    seed_claude_session(&fixture, "proj/race-a.jsonl", "race-a", "race prompt")?;
+
+    // The probe mutates the canonical identity between the resolve probes
+    // and the generation transaction — the exact interleaving the finding
+    // describes. source_path+external_id move together so the post-race
+    // identity still verifies to ONE new public id.
+    run_cass_index(
+        &fixture,
+        &[(
+            "CASS_TEST_VIEWER_TIE_RACE_SQL",
+            "UPDATE conversations \
+             SET external_id='racedAAA', source_path='/raced/racedAAA.jsonl'",
+        )],
+    )?;
+
+    let conn = ingest_conn(&fixture)?;
+    let conversation_id = canonical_id(&conn, "racedAAA")?;
+    let row = conn.query_row(&format!(
+        "SELECT tie_key, tie_error FROM viewer_session_sort \
+         WHERE conversation_id={conversation_id}"
+    ))?;
+    ensure!(
+        row.get_typed::<Option<String>>(0)?.as_deref() == Some("claude:racedAAA"),
+        "the guarded write must persist the post-mutation identity, \
+         never the stale pre-resolve key: {row:?}"
+    );
+    ensure!(
+        row.get_typed::<Option<String>>(1)?.is_none(),
+        "a re-resolved race must not record a refusal: {row:?}"
+    );
+    // The mutation provably landed — the guard re-resolved against the
+    // moved canonical row inside its own attempt window.
+    let external: String = conn
+        .query_row(&format!(
+            "SELECT external_id FROM conversations WHERE id={conversation_id}"
+        ))?
+        .get_typed(0)?;
+    ensure!(
+        external == "racedAAA",
+        "the injected identity change must be visible: {external}"
+    );
+    // Generation publication itself survived the raced attempt cleanly.
+    let receipt = ingest_receipt(&conn, conversation_id)?.expect("receipt");
+    ensure!(
+        receipt["state"] == "complete",
+        "the retry must still land a complete receipt: {receipt}"
     );
     drop(conn);
     Ok(())
