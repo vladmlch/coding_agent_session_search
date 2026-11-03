@@ -113,8 +113,20 @@ fn schema_mismatch_and_oversized_canonical_body_are_explicit_refusals() -> Resul
     )?;
     drop(writer);
     let body = bridge.exchange(json!({"op":"messages_page","conversation_id":1,"limit":1}))?;
-    assert_eq!(body["ok"], false);
-    assert_eq!(body["error"]["kind"], "canonical_payload_too_large");
+    // A row past the wire guard degrades to a suppressed placeholder —
+    // coordinates and bounded scalars preserved, payload marked absent —
+    // instead of failing the whole page.
+    assert_eq!(body["ok"], true);
+    let item = &body["result"]["items"][0];
+    assert_eq!(item["wire_suppressed"], true);
+    assert_eq!(item["conversation_id"], 1);
+    assert_eq!(item["extra"]["complete"], false);
+    assert_eq!(item["extra"]["origin"], "absent");
+    assert!(
+        item["extra"]["issues"]
+            .as_array()
+            .is_some_and(|issues| issues.contains(&json!("canonical_row_exceeds_wire_guard")))
+    );
     let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
     // One past the pinned profile: simulates an archive from a newer CASS.
     writer.execute("UPDATE meta SET value='24' WHERE key='schema_version'")?;

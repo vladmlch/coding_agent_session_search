@@ -391,6 +391,12 @@ pub enum Request {
         public_id: Option<String>,
         step_anchor: StepAnchor,
         expected_revision: i64,
+        /// UTF-8 byte offset for chunked reads: each call returns at most
+        /// `TOOL_OUTPUT_BYTES` of content plus `next_offset`/`content_bytes`
+        /// so output beyond the single-response budget reassembles exactly
+        /// instead of silently dropping its tail.
+        #[serde(default)]
+        byte_offset: Option<i64>,
     },
     /// `cass_owned_queries_v1` read op: session-level lexical search.
     /// `ast` carries the canonical viewer `SearchAst` wire object

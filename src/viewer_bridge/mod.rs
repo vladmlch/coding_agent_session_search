@@ -430,11 +430,12 @@ impl Session {
         public_id: Option<String>,
         anchor: &protocol::StepAnchor,
         expected_revision: i64,
+        byte_offset: i64,
     ) -> Result<Value> {
         let archive = self.archive()?;
         let (mut page, revision) = archive.snapshot(|connection| {
             let id = detail::resolve_target(connection, conversation_id, public_id.as_deref())?;
-            detail::tool_output(connection, id, anchor, expected_revision)
+            detail::tool_output(connection, id, anchor, expected_revision, byte_offset)
         })?;
         page["archive_stamp"] = serde_json::to_value(&archive.stamp)?;
         page["catalog_revision"] = revision.into();
@@ -590,10 +591,15 @@ impl Session {
                 public_id,
                 step_anchor,
                 expected_revision,
+                byte_offset,
                 ..
-            } => {
-                self.get_tool_output(conversation_id, public_id, &step_anchor, expected_revision)?
-            }
+            } => self.get_tool_output(
+                conversation_id,
+                public_id,
+                &step_anchor,
+                expected_revision,
+                byte_offset.unwrap_or(0),
+            )?,
             Request::SearchSessions {
                 ast,
                 query,

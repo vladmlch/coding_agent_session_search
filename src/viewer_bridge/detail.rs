@@ -43,6 +43,10 @@ const MAX_DETAIL_SECTIONS: usize = 16;
 const SECTION_NAME_BYTES: usize = 64;
 const DETAIL_CURSOR_BYTES: usize = 256;
 const TOOL_OUTPUT_BYTES: usize = 512 * 1024;
+/// Upper bound for the unguarded anchor-row materialization in
+/// `tool_output`: the chunked resource serves rows larger than the page
+/// guard but never unbounded ones.
+const TOOL_OUTPUT_ROW_BYTES: i64 = 64 * 1024 * 1024;
 const SNIPPET_ROWS: i64 = 256;
 const TEXT_GUARD_BYTES: i64 = 512 * 1024;
 const MAX_BLOCK_INDEX: i64 = 64;
@@ -951,6 +955,7 @@ fn summary_section(
     verified: &identity::VerifiedIdentity,
     annotation: Option<&Value>,
     facts: Option<&FactsRow>,
+    parent_public_id: Option<&str>,
 ) -> Result<Value> {
     let mut map = session.as_object().cloned().unwrap_or_default();
     let id = map
@@ -1019,6 +1024,10 @@ fn summary_section(
         "parent_conversation_id".into(),
         json!(facts.and_then(|f| f.parent_conversation_id)),
     );
+    // The public parent id is emitted only when the persisted canonical
+    // parent link resolves inside this same snapshot; an unresolvable or
+    // absent link stays `null`, never a basename guess.
+    map.insert("parent_public_id".into(), json!(parent_public_id));
     map.insert(
         "classification_coverage".into(),
         json!(
@@ -1097,12 +1106,26 @@ pub fn session_details(
     let verified = identity::resolve_public_id(connection, conversation_id)?;
     let annotation = annotations::read_annotation(connection, conversation_id)?;
     let facts = read_facts(connection, conversation_id)?;
+    // `parent_public_id` resolves the persisted canonical parent link
+    // through the same verified-identity path the session's own public id
+    // used — inside this one snapshot.
+    let parent_public_id = facts
+        .as_ref()
+        .and_then(|row| row.parent_conversation_id)
+        .and_then(|parent_id| identity::resolve_public_id(connection, parent_id).ok())
+        .map(|parent| parent.public_id);
     let generation = revisions::generation(connection)?;
 
     let mut out = Map::new();
     for name in &requested {
         let value = match name.as_str() {
-            "summary" => summary_section(&session, &verified, annotation.as_ref(), facts.as_ref())?,
+            "summary" => summary_section(
+                &session,
+                &verified,
+                annotation.as_ref(),
+                facts.as_ref(),
+                parent_public_id.as_deref(),
+            )?,
             "messages" => messages_section(page.as_ref().expect("messages section paged")),
             "raw" => raw_section(page.as_ref().expect("raw section paged"))?,
             "facts" => facts_section(facts.as_ref()),
@@ -1318,12 +1341,6 @@ fn extract_tool_output(item: &Value, block_index: usize) -> Result<RecordedOutpu
             "Tool output evidence was not recorded",
         ));
     };
-    if text.len() > TOOL_OUTPUT_BYTES {
-        return Err(refuse(
-            "resource_too_large",
-            "Recorded tool output exceeds the bounded resource budget",
-        ));
-    }
     Ok(RecordedOutput {
         text,
         complete,
@@ -1333,20 +1350,24 @@ fn extract_tool_output(item: &Value, block_index: usize) -> Result<RecordedOutpu
     })
 }
 
-/// `get_tool_output(conversation_id, step_anchor, expected_revision)` — a
-/// bounded text resource at a verified canonical-message anchor. The
-/// `expected_revision` must equal the committed logical
-/// `canonical_revision`; a stale value is `detail_changed`.
+/// `get_tool_output(conversation_id, step_anchor, expected_revision,
+/// byte_offset)` — a bounded text resource at a verified canonical-message
+/// anchor. The `expected_revision` must equal the committed logical
+/// `canonical_revision`; a stale value is `detail_changed`. Each response
+/// carries at most `TOOL_OUTPUT_BYTES` of `content` plus `next_offset` /
+/// `content_bytes`, so output larger than the single-response budget
+/// reassembles exactly instead of silently dropping its tail.
 pub fn tool_output(
     connection: &Connection,
     conversation_id: i64,
     anchor: &StepAnchor,
     expected_revision: i64,
+    byte_offset: i64,
 ) -> Result<Value> {
-    if conversation_id <= 0 || expected_revision < 0 {
+    if conversation_id <= 0 || expected_revision < 0 || byte_offset < 0 {
         return Err(refuse(
             "invalid_request",
-            "conversation_id must be positive and expected_revision nonnegative",
+            "conversation_id must be positive and expected_revision/byte_offset nonnegative",
         ));
     }
     if !revisions::extensions_installed(connection)? {
@@ -1406,10 +1427,39 @@ pub fn tool_output(
             ));
         }
     };
+    // Byte precheck on the shared row-weight expression: the unguarded
+    // materialization below is the one lane allowed past `ROW_BYTES`, and
+    // only up to `TOOL_OUTPUT_ROW_BYTES`.
+    let sizes = connection.query_with_params(
+        &format!(
+            "SELECT {} FROM messages WHERE conversation_id = ?1 AND {column} = ?2 LIMIT 2",
+            catalog::MSG_ROW_BYTES
+        ),
+        &param_slice_to_values(params![conversation_id, coordinate]),
+    )?;
+    if sizes.len() > 1 {
+        return Err(refuse(
+            "canonical_coordinates_invalid",
+            "Ambiguous canonical message coordinates",
+        ));
+    }
+    let Some(size_row) = sizes.first() else {
+        return Err(refuse(
+            "resource_unavailable",
+            "No canonical message carries this anchor",
+        ));
+    };
+    let row_bytes: i64 = size_row.get_typed(0)?;
+    if !(0..=TOOL_OUTPUT_ROW_BYTES).contains(&row_bytes) {
+        return Err(refuse(
+            "resource_too_large",
+            "Canonical message exceeds the tool-output resource budget",
+        ));
+    }
     let rows = connection.query_with_params(
         &format!(
             "SELECT {} FROM messages WHERE conversation_id = ?1 AND {column} = ?2 LIMIT 2",
-            catalog::MSG_GUARDED_COLUMNS
+            catalog::MSG_FULL_COLUMNS
         ),
         &param_slice_to_values(params![conversation_id, coordinate]),
     )?;
@@ -1425,7 +1475,7 @@ pub fn tool_output(
             "No canonical message carries this anchor",
         ));
     };
-    let item = catalog::decode_message_row(row)?;
+    let item = catalog::decode_message_row_uncapped(row)?;
     let output = extract_tool_output(&item, block_index as usize)?;
     let extra_complete = item["extra"]["complete"].as_bool().unwrap_or(false);
     let availability = if extra_complete && output.complete {
@@ -1433,8 +1483,30 @@ pub fn tool_output(
     } else {
         "partial"
     };
+    // Chunk the extracted text on a verified UTF-8 boundary; the caller
+    // reassembles by following `next_offset` until it is null.
+    let text = output.text;
+    let total = text.len() as i64;
+    let offset = byte_offset as usize;
+    if offset > text.len() || !text.is_char_boundary(offset) {
+        return Err(refuse(
+            "invalid_request",
+            "byte_offset must lie on a UTF-8 boundary within the recorded output",
+        ));
+    }
+    let mut end = (offset + TOOL_OUTPUT_BYTES).min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let next_offset: Value = if end < text.len() {
+        json!(end as i64)
+    } else {
+        Value::Null
+    };
     Ok(json!({
-        "content": output.text,
+        "content": &text[offset..end],
+        "content_bytes": total,
+        "next_offset": next_offset,
         "media_type": "text/plain; charset=utf-8",
         "availability": availability,
         "origin": "canonical_raw",

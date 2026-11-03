@@ -54,6 +54,25 @@ pub(super) const MSG_GUARDED_COLUMNS: &str = "id,conversation_id,idx,\
     COALESCE(length(CAST(content AS BLOB)),0)+\
     COALESCE(length(extra_bin),0)+\
     COALESCE(length(CAST(extra_json AS BLOB)),0)";
+/// The message-row byte total shared by the guarded projection, the
+/// suppressed-row emission and the tool-output anchor precheck — the three
+/// readers must agree on what "one canonical row" weighs.
+pub(super) const MSG_ROW_BYTES: &str = "COALESCE(length(CAST(role AS BLOB)),0)+\
+    COALESCE(length(CAST(author AS BLOB)),0)+\
+    COALESCE(length(CAST(content AS BLOB)),0)+\
+    COALESCE(length(extra_bin),0)+\
+    COALESCE(length(CAST(extra_json AS BLOB)),0)";
+/// Unguarded message columns plus the byte total: the tool-output resource
+/// is the one lane allowed to materialize a single row larger than
+/// `ROW_BYTES`, and only after the byte precheck below bounds it at
+/// `TOOL_OUTPUT_ROW_BYTES`.
+pub(super) const MSG_FULL_COLUMNS: &str = "id,conversation_id,idx,role,author,\
+    created_at,content,extra_bin,extra_json,\
+    COALESCE(length(CAST(role AS BLOB)),0)+\
+    COALESCE(length(CAST(author AS BLOB)),0)+\
+    COALESCE(length(CAST(content AS BLOB)),0)+\
+    COALESCE(length(extra_bin),0)+\
+    COALESCE(length(CAST(extra_json AS BLOB)),0)";
 
 pub fn check_schema(connection: &Connection) -> Result<()> {
     // These fixed projections verify every required column without reading bodies.
@@ -318,6 +337,13 @@ pub(super) fn decode_message_row(row: &Row) -> Result<Value> {
             "Canonical row exceeds the strict bridge byte profile",
         ));
     }
+    decode_message_row_uncapped(row)
+}
+
+/// Same decode without the `ROW_BYTES` page guard: only the tool-output
+/// resource may use it, and only after the byte-precheck bounded the row at
+/// `TOOL_OUTPUT_ROW_BYTES`. Never call this on a paged result.
+pub(super) fn decode_message_row_uncapped(row: &Row) -> Result<Value> {
     let id: i64 = row.get_typed(0)?;
     let conversation_id: i64 = row.get_typed(1)?;
     let idx: i64 = row.get_typed(2)?;
@@ -332,6 +358,54 @@ pub(super) fn decode_message_row(row: &Row) -> Result<Value> {
         "author":row.get_typed::<Option<String>>(4)?,"created_at_ms":row.get_typed::<Option<i64>>(5)?,
         "content":row.get_typed::<String>(6)?,"extra":extra::decode(row.get_typed(7)?,row.get_typed(8)?),
     }))
+}
+
+/// One page item for a row the guarded projection could not serve whole:
+/// the guarded columns still arrive (NULL where they exceeded their
+/// per-column bound), the suppressed payload is marked honestly, and the
+/// extra reports `complete:false` with an explicit issue — the page
+/// degrades this one record instead of failing the whole conversation.
+fn suppressed_message_row(row: &Row) -> Result<Value> {
+    let id: i64 = row.get_typed(0)?;
+    let conversation_id: i64 = row.get_typed(1)?;
+    let idx: i64 = row.get_typed(2)?;
+    if id <= 0 || conversation_id <= 0 || idx < 0 {
+        return Err(refuse(
+            "canonical_coordinates_invalid",
+            "Invalid canonical message coordinates",
+        ));
+    }
+    let mut extra: Value =
+        serde_json::to_value(extra::decode(row.get_typed(7)?, row.get_typed(8)?))?;
+    extra["complete"] = Value::Bool(false);
+    extra["origin"] = Value::String("absent".into());
+    extra["value"] = Value::Null;
+    let issues = extra["issues"].as_array_mut();
+    match issues {
+        Some(list) => list.push("canonical_row_exceeds_wire_guard".into()),
+        None => {
+            extra["issues"] = json!(["canonical_row_exceeds_wire_guard"]);
+        }
+    }
+    Ok(json!({
+        "id":id,"conversation_id":conversation_id,"idx":idx,
+        "role":row.get_typed::<Option<String>>(3)?,
+        "author":row.get_typed::<Option<String>>(4)?,
+        "created_at_ms":row.get_typed::<Option<i64>>(5)?,
+        "content":row.get_typed::<Option<String>>(6)?,
+        "extra":extra,
+        "wire_suppressed":true,
+    }))
+}
+
+/// Page item for one guarded message row: decode when the row fits the
+/// strict profile, emit the honest suppressed placeholder when it does not.
+fn message_page_item(row: &Row) -> Result<Value> {
+    let bytes: i64 = row.get_typed(9)?;
+    if !(0..=ROW_BYTES).contains(&bytes) {
+        return suppressed_message_row(row);
+    }
+    decode_message_row(row)
 }
 
 /// `pub(super)`: the detail lane applies the same response byte budget to
@@ -389,7 +463,7 @@ pub(super) fn read_messages_page_body(
         if offset == limit {
             break;
         }
-        if !push_bounded(&mut items, decode_message_row(row)?, &mut bytes)? {
+        if !push_bounded(&mut items, message_page_item(row)?, &mut bytes)? {
             truncated = true;
             break;
         }
