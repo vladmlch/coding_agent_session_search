@@ -57,8 +57,11 @@ const MAX_QUERY_DEPTH: usize = 32;
 const MAX_QUERY_NODES: usize = 1024;
 const MAX_QUERY_BYTES: usize = 65_536;
 const MAX_PAREN_DEPTH: usize = 32;
-const MAX_UNIVERSE: usize = 2_000;
-const MAX_MESSAGES_PER_SESSION: usize = 1_024;
+/// The indexed path evaluates the full candidate universe against
+/// persisted region rows — there is no universe truncation. This ceiling
+/// is the explicit refusal bound for workloads whose universe itself is
+/// too large to be honest evidence (refusal, not a clipped answer).
+const HARD_UNIVERSE_CEILING: usize = 200_000;
 const MAX_REGION_TEXT: usize = 64 * 1024;
 const MAX_LITERAL_HITS: usize = 100_000;
 const CURSOR_MAX_BYTES: usize = 4_096;
@@ -1050,27 +1053,83 @@ impl LiteralMatcher {
 // Session model + regions (FactBlock equivalents)
 // ---------------------------------------------------------------------------
 
-/// One searchable region — the CASS FactBlock equivalent: a typed,
-/// boundary-known text region bound to canonical or extension evidence.
+/// One searchable region — a persisted `viewer_search_regions` row: the
+/// stable key, scope/knownness, canonical + structural anchors, predicate
+/// fields and the hydration pointer. `quill_idx` is the region's Quill
+/// document slot: the canonical `messages.idx` for chat regions (the
+/// message document itself), or `2^40 + ordinal` — the synthetic slot the
+/// region document published for derived/meta scopes. `indexed_text`
+/// carries the bounded fragment for `derived`/`meta` lanes; `chat`
+/// regions leave it NULL and hydrate the canonical row on demand — the
+/// ONLY message read the indexed path performs.
 #[derive(Debug)]
 struct Region {
     key: String,
-    scope: &'static str,
+    scope: String,
     scope_known: bool,
-    /// Text the literal verifier runs against (bounded).
-    text: String,
+    quill_idx: i64,
     /// Canonical `messages.idx` anchoring this region (deep-link).
     message_idx: Option<i64>,
     message_id: Option<i64>,
+    /// Structural anchors persisted for deep-link consumers; the
+    /// `block_key` already pins the exact block today.
+    #[allow(dead_code)]
+    step_index: Option<i64>,
+    #[allow(dead_code)]
+    turn_index: Option<i64>,
     tool_name: Option<String>,
     file_path: Option<String>,
     exit_code: Option<i64>,
     has_error: Option<bool>,
-    error_type: Option<&'static str>,
-    /// `true` when this region's text is NOT part of the Quill document
-    /// projection (metadata/extra evidence): literal matches here are exact
-    /// membership but yield no Quill witness score.
-    outside_index: bool,
+    error_type: Option<String>,
+    text_source: String,
+    indexed_text: Option<String>,
+}
+
+/// Hydration accounting for the indexed path — the diagnostics the brief
+/// requires: every region/message materialization is counted so an
+/// unrelated selective search provably never re-reads the corpus.
+#[derive(Debug, Default)]
+struct HydrateStats {
+    regions_loaded: usize,
+    regions_hydrated: usize,
+    messages_hydrated: usize,
+}
+
+/// Bounded text for one persisted region — `chat` reads the canonical
+/// `messages.content` row it anchors (one indexed point read per hydrated
+/// region); `derived`/`meta` return the persisted fragment.
+fn region_text(
+    connection: &Connection,
+    region: &Region,
+    stats: &mut HydrateStats,
+) -> Result<Option<String>> {
+    stats.regions_hydrated += 1;
+    if region.text_source
+        == coding_agent_search::viewer_extensions::search_regions::TEXT_SOURCE_CHAT
+        && region.indexed_text.is_none()
+    {
+        stats.messages_hydrated += 1;
+        let Some(message_id) = region.message_id else {
+            return Ok(None);
+        };
+        let rows = connection.query_with_params(
+            "SELECT content FROM messages WHERE id = ?1 LIMIT 1",
+            &[SqliteValue::Integer(message_id)],
+        )?;
+        let content: Option<String> =
+            rows.first().map(|row| row.get_typed(0)).transpose()?.flatten();
+        return Ok(content.map(|text| {
+            // UTF-8-safe bound — a raw byte slice panics when the budget
+            // lands inside a multibyte scalar.
+            let mut end = text.len().min(MAX_REGION_TEXT);
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text[..end].to_owned()
+        }));
+    }
+    Ok(region.indexed_text.clone())
 }
 
 struct SessionCtx {
@@ -1113,175 +1172,6 @@ impl SessionCtx {
 }
 
 // ---------------------------------------------------------------------------
-// Region derivation — bounded per-session decode, provider-aware where the
-// canonical extra shape is recorded. Mirrors facts overlays + the detail
-// lane's attachment evidence; unknown shapes stay unscoped (scope_known
-// false) rather than misattributed.
-// ---------------------------------------------------------------------------
-
-fn extra_string<'a>(map: &'a Map<String, Value>, keys: &[&str]) -> Option<&'a str> {
-    keys.iter()
-        .find_map(|key| map.get(*key).and_then(Value::as_str))
-        .filter(|text| !text.is_empty())
-}
-
-/// Collect `(name, input-text, call_id)` and `(call_id, result-text, exit,
-/// is_error)` records from one decoded extra. Bounded extraction — never a
-/// second full parser; shapes the recorded providers actually emit.
-fn tool_records(extra: &Value) -> (Vec<Value>, Vec<Value>) {
-    let mut calls = Vec::new();
-    let mut results = Vec::new();
-    let kind = extra.get("type").and_then(Value::as_str).unwrap_or("");
-    if let Some(content) = extra.pointer("/message/content").and_then(Value::as_array) {
-        for part in content {
-            let part_kind = part.get("type").and_then(Value::as_str).unwrap_or("");
-            if matches!(part_kind, "tool_use" | "tool_call") {
-                calls.push(part.clone());
-            } else if matches!(part_kind, "tool_result") {
-                results.push(part.clone());
-            }
-        }
-    }
-    match kind {
-        "tool_use" | "tool_call" | "function_call" => calls.push(extra.clone()),
-        "tool_result" | "tool_call_output" | "function_call_output" => results.push(extra.clone()),
-        _ => {}
-    }
-    if let Some(item) = extra.get("payload") {
-        match item.get("type").and_then(Value::as_str).unwrap_or("") {
-            "function_call" | "tool_use" | "tool_call" => calls.push(item.clone()),
-            "function_call_output" | "tool_result" | "tool_call_output" => {
-                results.push(item.clone())
-            }
-            _ => {}
-        }
-    }
-    (calls, results)
-}
-
-fn call_text(call: &Value) -> String {
-    let mut parts = Vec::new();
-    if let Some(input) = call.get("input") {
-        match input {
-            Value::Object(map) => {
-                for key in ["command", "file_path", "path", "query", "pattern", "cmd"] {
-                    if let Some(text) = map.get(key).and_then(Value::as_str) {
-                        parts.push(text.to_owned());
-                    }
-                }
-                if parts.is_empty() {
-                    let text = input.to_string();
-                    if text.len() <= 8_192 {
-                        parts.push(text);
-                    }
-                }
-            }
-            Value::String(text) => parts.push(text.clone()),
-            _ => {}
-        }
-    }
-    if let Some(args) = call.get("arguments").and_then(Value::as_str) {
-        parts.push(args.to_owned());
-    }
-    parts.join(" ")
-}
-
-fn result_text(result: &Value) -> String {
-    for key in ["content", "output", "text", "stdout"] {
-        if let Some(value) = result.get(key) {
-            match value {
-                Value::String(text) => return text.clone(),
-                Value::Array(parts) => {
-                    return parts
-                        .iter()
-                        .filter_map(|part| {
-                            part.as_str().map(str::to_owned).or_else(|| {
-                                part.get("text").and_then(Value::as_str).map(str::to_owned)
-                            })
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                }
-                _ => {}
-            }
-        }
-    }
-    String::new()
-}
-
-fn numeric_i64(value: &Value) -> Option<i64> {
-    value.as_i64().or_else(|| {
-        value
-            .as_f64()
-            .filter(|v| v.fract() == 0.0)
-            .map(|v| v as i64)
-    })
-}
-
-fn thinking_text(extra: &Value) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(content) = extra.pointer("/message/content").and_then(Value::as_array) {
-        for part in content {
-            if matches!(
-                part.get("type").and_then(Value::as_str),
-                Some("thinking" | "reasoning")
-            ) && let Some(text) = part
-                .get("thinking")
-                .or_else(|| part.get("text"))
-                .and_then(Value::as_str)
-            {
-                parts.push(text.to_owned());
-            }
-        }
-    }
-    for key in ["thinking", "reasoning", "reasoning_content"] {
-        if let Some(text) = extra.get(key).and_then(Value::as_str) {
-            parts.push(text.to_owned());
-        }
-    }
-    if matches!(
-        extra.get("type").and_then(Value::as_str),
-        Some("thinking" | "reasoning" | "agent_reasoning")
-    ) {
-        for key in ["text", "content", "summary"] {
-            if let Some(text) = extra.get(key).and_then(Value::as_str) {
-                parts.push(text.to_owned());
-            }
-        }
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("\n"))
-    }
-}
-
-fn attachment_paths(extra: &Value) -> Vec<String> {
-    let mut paths = Vec::new();
-    let kind = extra.get("type").and_then(Value::as_str).unwrap_or("");
-    if matches!(kind, "attachment" | "artifact" | "file") {
-        if let Some(path) = extra_string(
-            extra.as_object().expect("checked"),
-            &["file_path", "path", "name"],
-        ) {
-            paths.push(path.to_owned());
-        }
-    }
-    if let Some(list) = extra.get("attachments").and_then(Value::as_array) {
-        for element in list {
-            if let Some(path) = element.as_str().filter(|p| !p.is_empty()) {
-                paths.push(path.to_owned());
-            } else if let Some(object) = element.as_object()
-                && let Some(path) = extra_string(object, &["file_path", "path", "name"])
-            {
-                paths.push(path.to_owned());
-            }
-        }
-    }
-    paths
-}
-
-// ---------------------------------------------------------------------------
 // Session loading — the SQL-narrowed universe
 // ---------------------------------------------------------------------------
 
@@ -1289,7 +1179,10 @@ fn attachment_paths(extra: &Value) -> Vec<String> {
 /// (provider/source/project/pinned/tag/classification/windows), the same
 /// unknown-facts probes as `list_sessions`. Returns session skeletons in
 /// `conversation_id` order.
-fn load_universe(connection: &Connection, filters: &ListFilters) -> Result<Vec<i64>> {
+fn load_universe(
+    connection: &Connection,
+    filters: &ListFilters,
+) -> Result<(Vec<i64>, String, Vec<SqliteValue>)> {
     let resolved = query::resolve_filters_public(connection, filters)?;
     query::run_probes_public(connection, &resolved)?;
     let (sql, params) = resolved.universe_sql();
@@ -1298,50 +1191,64 @@ fn load_universe(connection: &Connection, filters: &ListFilters) -> Result<Vec<i
     for row in &rows {
         ids.push(row.get_typed::<i64>(0)?);
     }
-    Ok(ids)
+    // The unordered `IN (…)` form feeds the batched auxiliary reads — the
+    // identical filter clauses, never a re-derived id list.
+    let (subquery, subquery_params) = resolved.universe_subquery();
+    Ok((ids, subquery, subquery_params))
 }
 
-/// One bounded session load: summary columns, annotations, tags, facts
-/// coverage, canonical messages and derived regions. Anything beyond the
-/// per-session budgets marks the inventory partial rather than scanning on.
-fn load_session(
-    connection: &Connection,
+/// `conversations` columns the session context needs (one set-based row
+/// per universe member, no joins).
+#[derive(Default)]
+struct ConvParts {
+    title: Option<String>,
+    started_at: Option<i64>,
+    ended_at: Option<i64>,
+    last_message_created_at: Option<i64>,
+    approx_tokens: Option<i64>,
+    grand_total_tokens: Option<i64>,
+    estimated_cost_usd: Option<f64>,
+    primary_model: Option<String>,
+    workspace_id: Option<i64>,
+    agent_id: Option<i64>,
+}
+
+/// `viewer_annotations` fields the session context needs.
+#[derive(Default)]
+struct AnnParts {
+    is_pinned: bool,
+    custom_title: Option<String>,
+    notes: Option<String>,
+}
+
+/// `viewer_session_facts` fields the session context needs.
+#[derive(Default)]
+struct FactParts {
+    is_subagent: Option<bool>,
+    category: Option<String>,
+    coverage_state: Option<String>,
+    coverage_detail_json: Option<String>,
+}
+
+/// One session-context projection assembled from the split set reads —
+/// same fields as the old per-session SELECT and the 6-way LEFT JOIN it
+/// replaced, minus tags/regions which the loader fills from its own
+/// batched reads.
+fn session_ctx_from_parts(
     conversation_id: i64,
-    max_messages: usize,
+    conv: ConvParts,
+    ann: AnnParts,
+    fact: FactParts,
+    activity_ms: Option<i64>,
+    docs_state: Option<&str>,
+    workspace_path: Option<String>,
+    agent_slug: Option<String>,
 ) -> Result<SessionCtx> {
-    let rows = connection.query_with_params(
-        &format!(
-            "SELECT c.id,c.source_id,c.title,c.started_at,c.ended_at,\
-             c.last_message_created_at,c.approx_tokens,c.grand_total_tokens,\
-             c.estimated_cost_usd,c.primary_model,c.external_id,\
-             va.is_pinned,va.custom_title,va.notes,\
-             f.is_subagent,f.task_category,f.coverage_state,f.coverage_detail_json,\
-             f.subagent_count,f.parent_conversation_id,f.first_prompt,\
-             w.path,a.slug,\
-             COALESCE((SELECT t2.last_message_created_at FROM conversation_tail_state t2 \
-              WHERE t2.conversation_id = c.id), c.last_message_created_at, c.ended_at, c.started_at) \
-             FROM conversations c \
-             LEFT JOIN viewer_annotations va ON va.conversation_id = c.id \
-             LEFT JOIN viewer_session_facts f ON f.conversation_id = c.id \
-             LEFT JOIN workspaces w ON w.id = c.workspace_id \
-             LEFT JOIN agents a ON a.id = c.agent_id WHERE c.id = ?1 LIMIT 2"
-        ),
-        &[SqliteValue::Integer(conversation_id)],
-    )?;
-    if rows.len() != 1 {
-        return Err(refuse(
-            "canonical_coordinates_invalid",
-            "Ambiguous canonical row",
-        ));
-    }
-    let row = &rows[0];
     let provider =
-        identity::normalize_agent_slug(&row.get_typed::<Option<String>>(22)?.unwrap_or_default())
-            .unwrap_or_default();
-    let workspace_path: Option<String> = row.get_typed(21)?;
-    let coverage_json: Option<String> = row.get_typed(17)?;
+        identity::normalize_agent_slug(&agent_slug.unwrap_or_default()).unwrap_or_default();
     let mut coverage: HashMap<String, String> = HashMap::new();
-    if let Some(detail) = coverage_json
+    if let Some(detail) = fact
+        .coverage_detail_json
         .as_deref()
         .and_then(|t| serde_json::from_str::<Value>(t).ok())
         && let Some(fields) = detail.get("fields").and_then(Value::as_object)
@@ -1352,34 +1259,37 @@ fn load_session(
             }
         }
     }
-    let coverage_state: Option<String> = row.get_typed(16)?;
-    let facts_present = coverage_state.is_some();
+    let facts_present = fact.coverage_state.is_some();
     if !facts_present {
         coverage.insert("is_subagent".to_owned(), "pending".to_owned());
         coverage.insert("category".to_owned(), "pending".to_owned());
     }
-    let started_at: Option<i64> = row.get_typed(3)?;
-    let ended_at: Option<i64> = row.get_typed(4)?;
-    let tokens: Option<i64> = row.get_typed::<Option<i64>>(7)?.or(row.get_typed(6)?);
-    let tags = annotations::tags_for(connection, &[conversation_id])?
-        .remove(&conversation_id)
-        .unwrap_or_default();
-    let subagent_count: Option<i64> = row.get_typed(18)?;
-    let parent_id: Option<i64> = row.get_typed(19)?;
+    let tokens = conv.grand_total_tokens.or(conv.approx_tokens);
 
-    // Canonical messages (bounded).
-    let messages = connection.query_with_params(
-        "SELECT id,idx,role,content,extra_bin,extra_json FROM messages \
-         WHERE conversation_id = ?1 ORDER BY idx LIMIT ?2",
-        &[
-            SqliteValue::Integer(conversation_id),
-            SqliteValue::Integer((max_messages + 1) as i64),
-        ],
-    )?;
-    let inventory_partial = messages.len() > max_messages;
-    let messages = &messages[..messages.len().min(max_messages)];
+    // The persisted publication mark decides inventory completeness: no
+    // marks row (publication never committed) or a non-`published` docs
+    // state (republished rows whose Quill region documents have not
+    // converged, or a meta edit awaiting doc replacement) means this
+    // session's region set cannot prove `False` — it degrades to honest
+    // pending coverage instead of silently missing hits.
+    let docs_pending = docs_state
+        != Some(coding_agent_search::viewer_extensions::search_regions::DOCS_PUBLISHED);
+    let inventory_partial = docs_pending;
+    if inventory_partial {
+        coverage.insert("block_inventory".to_owned(), "pending".to_owned());
+        coverage.insert("text_inventory".to_owned(), "pending".to_owned());
+    } else {
+        // Published marks prove the region inventory whole; provider facts
+        // that independently report a partial inventory keep precedence.
+        coverage
+            .entry("block_inventory".to_owned())
+            .or_insert_with(|| "complete".to_owned());
+        coverage
+            .entry("text_inventory".to_owned())
+            .or_insert_with(|| "complete".to_owned());
+    }
 
-    let mut session = SessionCtx {
+    Ok(SessionCtx {
         conversation_id,
         public_id: None,
         provider,
@@ -1388,369 +1298,235 @@ fn load_session(
             .map(identity::path_name)
             .filter(|name| !name.is_empty()),
         project_path: workspace_path,
-        title: row.get_typed(2)?,
-        custom_title: row.get_typed(12)?,
-        notes: row.get_typed(13)?,
-        is_pinned: row.get_typed::<Option<i64>>(11)?.unwrap_or(0) != 0,
-        tags,
-        is_subagent: row.get_typed::<Option<i64>>(14)?.map(|v| v != 0),
-        category: row.get_typed(15)?,
+        title: conv.title,
+        custom_title: ann.custom_title,
+        notes: ann.notes,
+        is_pinned: ann.is_pinned,
+        tags: Vec::new(),
+        is_subagent: fact.is_subagent,
+        category: fact.category,
         tokens,
-        cost: row.get_typed(8)?,
-        duration: match (started_at, ended_at) {
+        cost: conv.estimated_cost_usd,
+        duration: match (conv.started_at, conv.ended_at) {
             (Some(start), Some(end)) => Some((end - start) as f64 / 1000.0),
             _ => None,
         },
-        activity_ms: row.get_typed(23)?,
-        created_ms: started_at,
-        model: row.get_typed(9)?,
+        activity_ms,
+        created_ms: conv.started_at,
+        model: conv.primary_model,
         regions: Vec::new(),
         coverage,
         inventory_partial,
-    };
-    let _ = (facts_present, parent_id);
+    })
+}
 
-    // Regions: effective title (metadata overlay `title` scope).
-    if let Some(title) = session.effective_title().filter(|t| !t.is_empty()) {
-        session.regions.push(Region {
-            key: "meta:title".to_owned(),
-            scope: "title",
-            scope_known: true,
-            text: title[..title.len().min(MAX_REGION_TEXT)].to_owned(),
-            message_idx: None,
-            message_id: None,
-            tool_name: None,
-            file_path: None,
-            exit_code: None,
-            has_error: None,
-            error_type: None,
-            outside_index: true,
-        });
+fn region_from(row: coding_agent_search::viewer_extensions::search_regions::RegionRow) -> Region {
+    Region {
+        key: row.region_key,
+        scope: row.scope,
+        scope_known: row.scope_known,
+        quill_idx: row.quill_idx,
+        message_idx: row.message_idx,
+        message_id: row.message_id,
+        step_index: row.step_index,
+        turn_index: row.turn_index,
+        tool_name: row.tool_name,
+        file_path: row.file_path,
+        exit_code: row.exit_code,
+        has_error: row.has_error,
+        error_type: row.error_type,
+        text_source: row.text_source,
+        indexed_text: row.indexed_text,
     }
-    // Metadata chat blocks (oracle `_metadata_blocks`: tags + notes → chat).
-    if let Some(notes) = session.notes.as_deref().filter(|t| !t.is_empty()) {
-        session.regions.push(Region {
-            key: "meta:notes".to_owned(),
-            scope: "chat",
-            scope_known: true,
-            text: notes[..notes.len().min(MAX_REGION_TEXT)].to_owned(),
-            message_idx: None,
-            message_id: None,
-            tool_name: None,
-            file_path: None,
-            exit_code: None,
-            has_error: None,
-            error_type: None,
-            outside_index: true,
-        });
-    }
-    if !session.tags.is_empty() {
-        session.regions.push(Region {
-            key: "meta:tags".to_owned(),
-            scope: "chat",
-            scope_known: true,
-            text: session.tags.join(" "),
-            message_idx: None,
-            message_id: None,
-            tool_name: None,
-            file_path: None,
-            exit_code: None,
-            has_error: None,
-            error_type: None,
-            outside_index: true,
-        });
-    }
+}
 
-    // Subagents scope: child descriptors (label = child title, text =
-    // child first prompt / external id) bound to the parent session.
-    if subagent_count.unwrap_or(0) > 0 {
-        let children = connection.query_with_params(
-            "SELECT c2.id,c2.title,c2.external_id FROM viewer_session_facts f2 \
-             JOIN conversations c2 ON c2.id = f2.conversation_id \
-             WHERE f2.parent_conversation_id = ?1 ORDER BY c2.id LIMIT 64",
-            &[SqliteValue::Integer(conversation_id)],
+/// The whole candidate universe in a handful of per-table set reads —
+/// `conversations`, `viewer_annotations`, `viewer_session_facts`,
+/// `conversation_tail_state`, `viewer_search_region_marks`, `viewer_tags`
+/// and the persisted region inventory — each bound by the SAME
+/// `IN (universe subquery)`, with `workspaces`/`agents` read once as
+/// small lookup maps. A single 6-way LEFT JOIN costs one engine probe
+/// per joined table per universe row, which a >50k universe cannot
+/// afford inside the request deadline; splitting turns that into one
+/// linear scan per table plus Rust-side key assembly. NO `messages` read
+/// happens here: the persisted `viewer_search_regions` rows are the whole
+/// searchable surface, and the marks row decides whether that surface is
+/// complete evidence or honest `pending`/`unavailable` coverage.
+fn load_sessions_indexed(
+    connection: &Connection,
+    universe_ids: &[i64],
+    id_subquery: &str,
+    id_params: &[SqliteValue],
+    stats: &mut HydrateStats,
+) -> Result<Vec<SessionCtx>> {
+    let conv_rows = connection.query_with_params(
+        &format!(
+            "SELECT c.id, c.title, c.started_at, c.ended_at, \
+             c.last_message_created_at, c.approx_tokens, c.grand_total_tokens, \
+             c.estimated_cost_usd, c.primary_model, c.workspace_id, c.agent_id \
+             FROM conversations c WHERE c.id IN ({id_subquery}) ORDER BY c.id"
+        ),
+        id_params,
+    )?;
+    let mut conv: HashMap<i64, ConvParts> = HashMap::with_capacity(universe_ids.len());
+    for row in &conv_rows {
+        let cid: i64 = row.get_typed(0)?;
+        if conv
+            .insert(
+                cid,
+                ConvParts {
+                    title: row.get_typed(1)?,
+                    started_at: row.get_typed(2)?,
+                    ended_at: row.get_typed(3)?,
+                    last_message_created_at: row.get_typed(4)?,
+                    approx_tokens: row.get_typed(5)?,
+                    grand_total_tokens: row.get_typed(6)?,
+                    estimated_cost_usd: row.get_typed(7)?,
+                    primary_model: row.get_typed(8)?,
+                    workspace_id: row.get_typed(9)?,
+                    agent_id: row.get_typed(10)?,
+                },
+            )
+            .is_some()
+        {
+            return Err(refuse(
+                "canonical_coordinates_invalid",
+                "Ambiguous canonical row",
+            ));
+        }
+    }
+    let ann_rows = connection.query_with_params(
+        &format!(
+            "SELECT conversation_id, is_pinned, custom_title, notes \
+             FROM viewer_annotations WHERE conversation_id IN ({id_subquery})"
+        ),
+        id_params,
+    )?;
+    let mut ann: HashMap<i64, AnnParts> = HashMap::new();
+    for row in &ann_rows {
+        ann.insert(
+            row.get_typed(0)?,
+            AnnParts {
+                is_pinned: row.get_typed::<Option<i64>>(1)?.unwrap_or(0) != 0,
+                custom_title: row.get_typed(2)?,
+                notes: row.get_typed(3)?,
+            },
+        );
+    }
+    let fact_rows = connection.query_with_params(
+        &format!(
+            "SELECT conversation_id, is_subagent, task_category, coverage_state, \
+             coverage_detail_json FROM viewer_session_facts \
+             WHERE conversation_id IN ({id_subquery})"
+        ),
+        id_params,
+    )?;
+    let mut facts: HashMap<i64, FactParts> = HashMap::new();
+    for row in &fact_rows {
+        facts.insert(
+            row.get_typed(0)?,
+            FactParts {
+                is_subagent: row.get_typed::<Option<i64>>(1)?.map(|v| v != 0),
+                category: row.get_typed(2)?,
+                coverage_state: row.get_typed(3)?,
+                coverage_detail_json: row.get_typed(4)?,
+            },
+        );
+    }
+    let tail_rows = connection.query_with_params(
+        &format!(
+            "SELECT conversation_id, last_message_created_at \
+             FROM conversation_tail_state WHERE conversation_id IN ({id_subquery})"
+        ),
+        id_params,
+    )?;
+    let mut tail: HashMap<i64, Option<i64>> = HashMap::new();
+    for row in &tail_rows {
+        tail.insert(row.get_typed(0)?, row.get_typed(1)?);
+    }
+    let mark_rows = connection.query_with_params(
+        &format!(
+            "SELECT conversation_id, docs_state FROM viewer_search_region_marks \
+             WHERE conversation_id IN ({id_subquery})"
+        ),
+        id_params,
+    )?;
+    let mut marks: HashMap<i64, String> = HashMap::new();
+    for row in &mark_rows {
+        marks.insert(row.get_typed(0)?, row.get_typed(1)?);
+    }
+    // Agent/workspace slugs: small lookup tables, read once — the LEFT
+    // JOIN equivalent without a probe per universe row.
+    let workspace_rows = connection.query("SELECT id, path FROM workspaces")?;
+    let mut workspaces: HashMap<i64, Option<String>> = HashMap::new();
+    for row in &workspace_rows {
+        workspaces.insert(row.get_typed(0)?, row.get_typed(1)?);
+    }
+    let agent_rows = connection.query("SELECT id, slug FROM agents")?;
+    let mut agents: HashMap<i64, Option<String>> = HashMap::new();
+    for row in &agent_rows {
+        agents.insert(row.get_typed(0)?, row.get_typed(1)?);
+    }
+    let tag_rows = connection.query_with_params(
+        &format!(
+            "SELECT conversation_id, tag FROM viewer_tags \
+             WHERE conversation_id IN ({id_subquery}) \
+             ORDER BY conversation_id, tag"
+        ),
+        id_params,
+    )?;
+    let mut tags: BTreeMap<i64, Vec<String>> = BTreeMap::new();
+    for row in &tag_rows {
+        tags.entry(row.get_typed::<i64>(0)?)
+            .or_default()
+            .push(row.get_typed::<String>(1)?);
+    }
+    let region_rows =
+        coding_agent_search::viewer_extensions::search_regions::regions_for_universe_subquery(
+            connection,
+            id_subquery,
+            id_params,
         )?;
-        for (ordinal, child) in children.iter().enumerate() {
-            let child_id: i64 = child.get_typed(0)?;
-            let title: Option<String> = child.get_typed(1)?;
-            let external: Option<String> = child.get_typed(2)?;
-            let first_prompt = connection
-                .query_with_params(
-                    "SELECT content FROM messages WHERE conversation_id = ?1 \
-                     AND role = 'user' ORDER BY idx LIMIT 1",
-                    &[SqliteValue::Integer(child_id)],
-                )?
-                .first()
-                .and_then(|r| r.get_typed::<Option<String>>(0).ok().flatten());
-            let text = [
-                title.as_deref(),
-                external.as_deref(),
-                first_prompt.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("\n");
-            if !text.is_empty() {
-                session.regions.push(Region {
-                    key: format!("child:{ordinal}:{child_id}"),
-                    scope: "subagents",
-                    scope_known: true,
-                    text: text[..text.len().min(MAX_REGION_TEXT)].to_owned(),
-                    message_idx: None,
-                    message_id: None,
-                    tool_name: None,
-                    file_path: None,
-                    exit_code: None,
-                    has_error: None,
-                    error_type: None,
-                    outside_index: true,
-                });
-            }
-        }
-    }
-
-    // Message-derived regions + call/result correlation.
-    struct PendingCall {
-        name: String,
-        call_id: String,
-        text: String,
-        message_idx: i64,
-        message_id: i64,
-        file_path: Option<String>,
-    }
-    struct PendingResult {
-        call_id: Option<String>,
-        text: String,
-        exit_code: Option<i64>,
-        is_error: Option<bool>,
-        message_idx: i64,
-        message_id: i64,
-    }
-    let mut calls: Vec<PendingCall> = Vec::new();
-    let mut results: Vec<PendingResult> = Vec::new();
-
-    for row in messages {
-        let message_id: i64 = row.get_typed(0)?;
-        let idx: i64 = row.get_typed(1)?;
-        let role: String = row.get_typed(2)?;
-        let content: Option<String> = row.get_typed(3)?;
-        let extra_bin: Option<Vec<u8>> = row.get_typed(4)?;
-        let extra_json: Option<String> = row.get_typed(5)?;
-        let content = content.unwrap_or_default();
-        let decoded = super::extra::decode(extra_bin, extra_json);
-        let extra = if decoded.value.is_null() {
-            None
-        } else {
-            Some(decoded.value)
+    let mut ordered = Vec::with_capacity(universe_ids.len());
+    for cid in universe_ids {
+        let Some(conv_p) = conv.remove(cid) else {
+            return Err(refuse(
+                "canonical_coordinates_invalid",
+                "Universe row vanished between read passes",
+            ));
         };
-
-        // Chat region: every message's canonical text.
-        if !content.is_empty() {
-            session.regions.push(Region {
-                key: format!("m{idx}:chat"),
-                scope: "chat",
-                scope_known: true,
-                text: content[..content.len().min(MAX_REGION_TEXT)].to_owned(),
-                message_idx: Some(idx),
-                message_id: Some(message_id),
-                tool_name: None,
-                file_path: None,
-                exit_code: None,
-                has_error: None,
-                error_type: None,
-                outside_index: false,
-            });
-        }
-        let Some(extra) = extra else { continue };
-
-        // Thinking region.
-        if let Some(text) = thinking_text(&extra) {
-            session.regions.push(Region {
-                key: format!("m{idx}:thinking"),
-                scope: "thinking",
-                scope_known: true,
-                text: text[..text.len().min(MAX_REGION_TEXT)].to_owned(),
-                message_idx: Some(idx),
-                message_id: Some(message_id),
-                tool_name: None,
-                file_path: None,
-                exit_code: None,
-                has_error: None,
-                error_type: None,
-                outside_index: true,
-            });
-        }
-        // Attachment/artifact regions.
-        for (ordinal, path) in attachment_paths(&extra).into_iter().enumerate() {
-            session.regions.push(Region {
-                key: format!("m{idx}:artifact:{ordinal}"),
-                scope: "artifacts",
-                scope_known: true,
-                text: path[..path.len().min(MAX_REGION_TEXT)].to_owned(),
-                message_idx: Some(idx),
-                message_id: Some(message_id),
-                tool_name: None,
-                file_path: Some(path),
-                exit_code: None,
-                has_error: None,
-                error_type: None,
-                outside_index: true,
-            });
-        }
-        // Tool call/result records.
-        let (call_records, result_records) = tool_records(&extra);
-        for call in &call_records {
-            let name = extra_string(
-                call.as_object().unwrap_or(&Map::new()),
-                &["name", "tool_name"],
-            )
-            .map(str::to_owned)
-            .unwrap_or_else(|| "unknown".to_owned());
-            let call_id = extra_string(
-                call.as_object().unwrap_or(&Map::new()),
-                &["id", "call_id", "tool_use_id"],
-            )
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("anon:{idx}:{}", calls.len()));
-            let mut text = call_text(call);
-            if text.is_empty() {
-                text = content.clone();
-            }
-            let file_path = call
-                .get("input")
-                .and_then(Value::as_object)
-                .and_then(|input| {
-                    extra_string(
-                        input,
-                        &["file_path", "path", "TargetFile", "file", "filename"],
-                    )
-                })
-                .map(str::to_owned);
-            calls.push(PendingCall {
-                name,
-                call_id,
-                text,
-                message_idx: idx,
-                message_id,
-                file_path,
-            });
-        }
-        for result in &result_records {
-            let call_id = extra_string(
-                result.as_object().unwrap_or(&Map::new()),
-                &["tool_use_id", "call_id", "id"],
-            )
-            .map(str::to_owned);
-            let exit_code = result
-                .get("exit_code")
-                .or_else(|| result.get("exitCode"))
-                .and_then(numeric_i64);
-            let mut is_error = result
-                .get("is_error")
-                .or_else(|| result.get("isError"))
-                .and_then(Value::as_bool);
-            if let Some(code) = exit_code {
-                is_error = Some(code != 0 || is_error == Some(true));
-            }
-            let mut text = result_text(result);
-            if text.is_empty() {
-                text = content.clone();
-            }
-            results.push(PendingResult {
-                call_id,
-                text,
-                exit_code,
-                is_error,
-                message_idx: idx,
-                message_id,
-            });
-        }
-        // Bare tool-role messages without decoded records still yield a
-        // tools region (the canonical evidence says "this is a tool step").
-        if role == "tool" && call_records.is_empty() && result_records.is_empty() {
-            calls.push(PendingCall {
-                name: "unknown".to_owned(),
-                call_id: format!("role:{idx}"),
-                text: content.clone(),
-                message_idx: idx,
-                message_id,
-                file_path: None,
-            });
-        }
+        let activity_ms = tail
+            .get(cid)
+            .copied()
+            .flatten()
+            .or(conv_p.last_message_created_at)
+            .or(conv_p.ended_at)
+            .or(conv_p.started_at);
+        let workspace_path = conv_p
+            .workspace_id
+            .and_then(|id| workspaces.get(&id).cloned().flatten());
+        let agent_slug = conv_p
+            .agent_id
+            .and_then(|id| agents.get(&id).cloned().flatten());
+        let mut session = session_ctx_from_parts(
+            *cid,
+            conv_p,
+            ann.remove(cid).unwrap_or_default(),
+            facts.remove(cid).unwrap_or_default(),
+            activity_ms,
+            marks.get(cid).map(String::as_str),
+            workspace_path,
+            agent_slug,
+        )?;
+        session.tags = tags.remove(cid).unwrap_or_default();
+        session.regions = region_rows
+            .get(cid)
+            .map(|rows| rows.iter().cloned().map(region_from).collect())
+            .unwrap_or_default();
+        stats.regions_loaded += session.regions.len();
+        ordered.push(session);
     }
-
-    // Correlate calls + results on call_id into one tools region each
-    // (the oracle's tool-call block carries name+exit+is_error together).
-    let mut results_by_call: HashMap<String, Vec<PendingResult>> = HashMap::new();
-    let mut orphan_results: Vec<PendingResult> = Vec::new();
-    for result in results {
-        match &result.call_id {
-            Some(call_id) => results_by_call
-                .entry(call_id.clone())
-                .or_default()
-                .push(result),
-            None => orphan_results.push(result),
-        }
-    }
-    for (ordinal, call) in calls.into_iter().enumerate() {
-        let linked = results_by_call.remove(&call.call_id).unwrap_or_default();
-        let exit_code = linked.iter().find_map(|r| r.exit_code);
-        let is_error = linked.iter().find_map(|r| r.is_error);
-        let result_text_joined = linked
-            .iter()
-            .map(|r| r.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let text = [call.text.as_str(), result_text_joined.as_str()]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
-        // Result message indexes the region's deep link at the RESULT
-        // message when present (witness lands where output was recorded).
-        let anchor_idx = linked
-            .first()
-            .map(|r| r.message_idx)
-            .unwrap_or(call.message_idx);
-        let anchor_id = linked
-            .first()
-            .map(|r| r.message_id)
-            .unwrap_or(call.message_id);
-        session.regions.push(Region {
-            key: format!("tool:{ordinal}:{}", call.call_id),
-            scope: "tools",
-            scope_known: true,
-            text: text[..text.len().min(MAX_REGION_TEXT)].to_owned(),
-            message_idx: Some(anchor_idx),
-            message_id: Some(anchor_id),
-            tool_name: Some(call.name),
-            file_path: call.file_path,
-            exit_code,
-            has_error: is_error,
-            error_type: is_error.map(|error| if error { "tool" } else { "tool" }),
-            outside_index: true,
-        });
-    }
-    for (ordinal, result) in orphan_results.into_iter().enumerate() {
-        session.regions.push(Region {
-            key: format!("toolresult:{ordinal}:{}", result.message_idx),
-            scope: "tools",
-            scope_known: true,
-            text: result.text[..result.text.len().min(MAX_REGION_TEXT)].to_owned(),
-            message_idx: Some(result.message_idx),
-            message_id: Some(result.message_id),
-            tool_name: None,
-            file_path: None,
-            exit_code: result.exit_code,
-            has_error: result.is_error,
-            error_type: result
-                .is_error
-                .map(|error| if error { "tool" } else { "tool" }),
-            outside_index: true,
-        });
-    }
-    Ok(session)
+    Ok(ordered)
 }
 
 // ---------------------------------------------------------------------------
@@ -2053,7 +1829,7 @@ fn region_value(
             let wanted = expected.as_str().unwrap_or_default();
             // Oracle `_block_value`: `in:chat` admits title blocks too.
             let hit = if wanted == "chat" {
-                matches!(region.scope, "title" | "chat")
+                matches!(region.scope.as_str(), "title" | "chat")
             } else {
                 region.scope == wanted
             };
@@ -2082,7 +1858,14 @@ fn region_value(
         },
         "mcp" => {
             let pattern = expected.as_str().unwrap_or_default();
-            let matched = like_match(&region.text, pattern, false, true)
+            // mcp membership binds tool servers: the persisted fragment
+            // (tool-call text for derived lanes) or the tool name. Chat
+            // regions carry no text surface here — their content is a
+            // `chat` literal concern, not tool membership.
+            let matched = region
+                .indexed_text
+                .as_deref()
+                .is_some_and(|text| like_match(text, pattern, false, true))
                 || region
                     .tool_name
                     .as_deref()
@@ -2099,7 +1882,7 @@ fn region_value(
             None => unknown_field(session, "tool_exit", region),
             Some(code) => compare_numbers(code as f64, expected.as_f64().unwrap_or(f64::NAN), op),
         },
-        "error_type" => match region.error_type {
+        "error_type" => match region.error_type.as_deref() {
             None => unknown_field(session, "tool_error", region),
             Some(error_type) => {
                 if error_type == expected.as_str().unwrap_or_default() {
@@ -2129,7 +1912,10 @@ fn unknown_field(session: &SessionCtx, field: &str, region: &Region) -> Truth {
     if session.coverage_of(field) == "complete" {
         return Truth::False;
     }
-    if matches!(field, "tools" | "tool_exit") && region.scope_known && region.scope != "tools" {
+    if matches!(field, "tools" | "tool_exit")
+        && region.scope_known
+        && region.scope.as_str() != "tools"
+    {
         return Truth::False;
     }
     Truth::Unknown
@@ -2333,31 +2119,52 @@ fn eval_literal(
     branch: &str,
     positive: bool,
     session: &SessionCtx,
+    connection: &Connection,
+    stats: &mut HydrateStats,
     matchers: &HashMap<(String, bool), LiteralMatcher>,
-    quill_possible: &HashSet<i64>,
-) -> NodeResult {
+    quill_possible: Option<&HashSet<i64>>,
+) -> Result<NodeResult> {
     let matcher = &matchers[&(value.to_owned(), exact)];
     let mut out = NodeResult::default();
     if matcher.never {
-        return out;
+        return Ok(out);
     }
+    // A literal the index cannot express (non-ASCII text — Quill's
+    // analyzer produces no tokens for it, empirically verified) must not
+    // gate membership on hits: the gate would read the index's blind spot
+    // as a proven negative and silently false-negative every session.
+    // `quill_possible = None` evaluates every persisted region through the
+    // matcher — still bounded by the region inventory, never a corpus read.
     for region in &session.regions {
-        if matcher.matches(&region.text) {
-            out.known.insert(region.key.clone());
-            out.possible.insert(region.key.clone());
-            if positive {
-                out.witnesses.push((region.key.clone(), branch.to_owned()));
-            }
+        // Indexed membership gate: only regions whose Quill document slot
+        // produced a hit for this literal can be members. Everything else
+        // is provably absent — the index proves the negative, the corpus
+        // is never scanned.
+        if let Some(gate) = quill_possible
+            && !gate.contains(&region.quill_idx)
+        {
             continue;
         }
-        // Quill-verified hits that local verification cannot attribute are
-        // POSSIBLE membership (analyzer drift is honest uncertainty, never
-        // silently dropped or silently admitted).
-        if let Some(idx) = region.message_idx
-            && !region.outside_index
-            && quill_possible.contains(&idx)
-        {
-            out.possible.insert(region.key.clone());
+        match region_text(connection, region, stats)? {
+            Some(text) if matcher.matches(&text) => {
+                out.known.insert(region.key.clone());
+                out.possible.insert(region.key.clone());
+                if positive {
+                    out.witnesses.push((region.key.clone(), branch.to_owned()));
+                }
+            }
+            // A Quill-verified hit whose bounded fragment no longer
+            // reproduces the match (analyzer drift, canonical rewrite
+            // after publication) is POSSIBLE membership — honest
+            // uncertainty, never silently dropped or admitted. Only a
+            // gated candidate earns `possible`: under the ungated
+            // non-ASCII evaluation a non-matching region is a plain
+            // non-member, not uncertainty.
+            _ => {
+                if quill_possible.is_some() {
+                    out.possible.insert(region.key.clone());
+                }
+            }
         }
     }
     let unseen = session.inventory_partial
@@ -2374,17 +2181,19 @@ fn eval_literal(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 fn eval_node(
     node: &PlanNode,
     session: &SessionCtx,
+    connection: &Connection,
+    stats: &mut HydrateStats,
     matchers: &HashMap<(String, bool), LiteralMatcher>,
     quill_possible: &HashMap<String, HashMap<i64, HashSet<i64>>>,
-) -> NodeResult {
+) -> Result<NodeResult> {
     match node {
-        PlanNode::All => NodeResult::constant(Truth::True, BTreeSet::new()),
+        PlanNode::All => Ok(NodeResult::constant(Truth::True, BTreeSet::new())),
         PlanNode::Literal {
             value,
             exact,
@@ -2393,37 +2202,59 @@ fn eval_node(
         } => {
             let key = format!("{value}|{exact}");
             let empty = HashSet::new();
-            let hits = quill_possible
-                .get(&key)
-                .and_then(|by_session| by_session.get(&session.conversation_id))
-                .unwrap_or(&empty);
-            eval_literal(value, *exact, branch, *positive, session, matchers, hits)
+            // Non-ASCII literals are invisible to the Quill analyzer
+            // (verified: a Cyrillic term parses but can never hit), so the
+            // hit gate cannot prove a negative for them — `None` means
+            // "evaluate every persisted region through the matcher" and
+            // keeps Unicode membership truthful instead of silently
+            // reporting the index's blind spot as absence.
+            let hits = if value.is_ascii() {
+                Some(
+                    quill_possible
+                        .get(&key)
+                        .and_then(|by_session| by_session.get(&session.conversation_id))
+                        .unwrap_or(&empty),
+                )
+            } else {
+                None
+            };
+            eval_literal(
+                value,
+                *exact,
+                branch,
+                *positive,
+                session,
+                connection,
+                stats,
+                matchers,
+                hits,
+            )
         }
         PlanNode::Predicate {
             field,
             op,
             value,
             domain,
-        } => eval_predicate(field, op, value, *domain, session),
-        PlanNode::Not(child) => eval_node(child, session, matchers, quill_possible).negate(),
+        } => Ok(eval_predicate(field, op, value, *domain, session)),
+        PlanNode::Not(child) => Ok(eval_node(child, session, connection, stats, matchers, quill_possible)?.negate()),
         PlanNode::And(children) => {
             let mut result = NodeResult::constant(Truth::True, BTreeSet::new());
             for child in children {
-                let next = eval_node(child, session, matchers, quill_possible);
+                let next = eval_node(child, session, connection, stats, matchers, quill_possible)?;
                 result = combine(&result, &next, true);
                 if result.truth() == Truth::False {
                     break;
                 }
             }
-            result
+            Ok(result)
         }
         PlanNode::Or(children) => {
             let mut result = NodeResult::constant(Truth::False, BTreeSet::new());
             for child in children {
-                let next = eval_node(child, session, matchers, quill_possible);
+                let next = eval_node(child, session, connection, stats, matchers, quill_possible)?;
                 result = combine(&result, &next, false);
             }
-            result
+            Ok(result)
         }
     }
 }
@@ -2820,8 +2651,16 @@ pub fn search_sessions(
     let mut quill_scores: HashMap<(String, bool), LiteralHits> = HashMap::new();
     let mut quill_possible: HashMap<String, HashMap<i64, HashSet<i64>>> = HashMap::new();
     for (value, exact) in &plan.literals {
-        let text = literal_query_text(value, *exact);
-        let (hits, _issues) = enumerate_literal(readers, &text, &engine_filters)?;
+        let hits = if value.is_ascii() {
+            let text = literal_query_text(value, *exact);
+            enumerate_literal(readers, &text, &engine_filters)?.0
+        } else {
+            // The Quill analyzer emits no tokens for non-ASCII input —
+            // skip the engine call; `eval_node` gates such literals on
+            // `None` (evaluate every region) instead of trusting a
+            // guaranteed-empty hit set.
+            LiteralHits::new()
+        };
         quill_possible.insert(
             format!("{value}|{exact}"),
             hits.iter()
@@ -2831,33 +2670,49 @@ pub fn search_sessions(
         quill_scores.insert((value.clone(), *exact), hits);
     }
 
-    // 2) Universe: SQL-narrowed candidate sessions.
-    let universe = load_universe(connection, filters)?;
-    if universe.len() > MAX_UNIVERSE && !allow_partial {
+    // 2) Universe: SQL-narrowed candidate sessions. The indexed path
+    // evaluates the whole universe against persisted rows — never silently
+    // truncated. Universes beyond the hard ceiling are an explicit
+    // refusal, not a clipped answer.
+    let (universe, id_subquery, id_params) = load_universe(connection, filters)?;
+    let universe_size = universe.len();
+    if universe_size > HARD_UNIVERSE_CEILING {
         return Err(refuse(
             "search_budget_exceeded",
-            "Session universe exceeds the evaluation budget",
+            format!(
+                "Session universe {universe_size} exceeds the evaluation ceiling {HARD_UNIVERSE_CEILING}"
+            ),
         ));
     }
-    let universe_bounded = universe.len() > MAX_UNIVERSE;
-    let mut truncated_universe = false;
-    let universe: Vec<i64> = if universe_bounded {
-        truncated_universe = true;
-        universe.into_iter().take(MAX_UNIVERSE).collect()
-    } else {
-        universe
-    };
 
-    // 3) Evaluate every session in the bounded universe.
+    // 3) Evaluate every session against its persisted region rows.
     let generation = revisions::generation(connection)?.unwrap_or_default();
+    let mut stats = HydrateStats::default();
     let mut accepted: Vec<EvaluatedSession> = Vec::new();
     let mut unknown_reasons: BTreeMap<String, usize> = BTreeMap::new();
     let mut unknown_sessions = 0_usize;
-    for conversation_id in &universe {
-        let session = load_session(connection, *conversation_id, MAX_MESSAGES_PER_SESSION)?;
+    // Per-table set reads for the whole universe — the indexed path must
+    // never degrade to a per-session query storm (a >50k universe still
+    // evaluates inside the request deadline).
+    let sessions = load_sessions_indexed(
+        connection,
+        &universe,
+        &id_subquery,
+        &id_params,
+        &mut stats,
+    )?;
+    for session in sessions {
+        let conversation_id = session.conversation_id;
         let mut result = combine(
             &control_result(filters, &session),
-            &eval_node(&plan.root, &session, &matchers, &quill_possible),
+            &eval_node(
+                &plan.root,
+                &session,
+                connection,
+                &mut stats,
+                &matchers,
+                &quill_possible,
+            )?,
             true,
         );
         match result.truth() {
@@ -2877,11 +2732,11 @@ pub fn search_sessions(
                         .regions
                         .iter()
                         .find(|region| &region.key == region_key);
-                    let Some(idx) = region.and_then(|r| r.message_idx) else {
+                    let Some(idx) = region.map(|r| r.quill_idx) else {
                         continue;
                     };
                     if let Some(hit_map) = quill_scores.get(&(literal, exact))
-                        && let Some(scores) = hit_map.get(conversation_id)
+                        && let Some(scores) = hit_map.get(&conversation_id)
                         && let Some(score) = scores.get(&idx)
                     {
                         let score = *score as f64;
@@ -2927,25 +2782,18 @@ pub fn search_sessions(
 
     // 4) Sort + keyset page.
     let mut warnings: Vec<String> = Vec::new();
-    if truncated_universe {
-        warnings.push("candidate_universe_truncated".to_owned());
-    }
     if unknown_sessions > 0 {
         warnings.push("membership_incomplete".to_owned());
     }
     let mut ranking_incomplete = false;
     for entry in &accepted {
-        // An accepted session whose positive-branch proof rests only on
-        // non-indexed regions contributes no score evidence.
-        let has_index_witness = entry.witnesses.iter().any(|(key, _)| {
-            entry
-                .session
-                .regions
-                .iter()
-                .any(|r| &r.key == key && !r.outside_index)
-        });
+        // Every persisted region owns a Quill document slot, so index
+        // witness evidence exists iff the score loop bound a hit. An
+        // accepted session whose witnesses produced no hit (predicate-
+        // only proof, e.g. `has:tag` controls) contributes no score —
+        // the honest "ranking incomplete" signal survives unchanged.
         let has_positive_witness = !entry.witnesses.is_empty();
-        if has_positive_witness && !has_index_witness && entry.score.is_none() {
+        if has_positive_witness && entry.score.is_none() {
             ranking_incomplete = true;
         }
     }
@@ -3092,17 +2940,21 @@ pub fn search_sessions(
             else {
                 continue;
             };
+            // Snippets hydrate exactly the regions surfaced as matches —
+            // bounded by the page's witness set, never the corpus.
+            let snippet = region_text(connection, region, &mut stats)?
+                .unwrap_or_default();
             session_matches.push(json!({
                 "location": region.scope,
                 "location_type": region.scope,
                 "location_name": region.tool_name.as_deref()
                     .or(region.file_path.as_deref())
-                    .unwrap_or(region.scope),
+                    .unwrap_or(region.scope.as_str()),
                 "block_key": region.key,
                 "message_idx": region.message_idx,
                 "message_id": region.message_id,
                 "branch_id": branch,
-                "snippet": region.text.chars().take(160).collect::<String>(),
+                "snippet": snippet.chars().take(160).collect::<String>(),
                 "anchor_status": if region.message_idx.is_some() { "verified" } else { "unavailable" },
                 "score": Value::Null,
             }));
@@ -3131,7 +2983,7 @@ pub fn search_sessions(
             }
         }
     }
-    let complete = !(truncated_universe || unknown_sessions > 0);
+    let complete = unknown_sessions == 0;
     let next_cursor = if has_more {
         last.map(|cursor| encode_cursor(sort_name, &cursor, &generation, &query_digest))
             .map(Value::String)
@@ -3154,5 +3006,13 @@ pub fn search_sessions(
         "index_epoch": readers.index_epoch,
         "warnings": warnings,
         "issues": Value::Null,
+        // Explicit diagnostics required by Task 5: candidate + hydration
+        // counts prove the indexed path never re-reads the corpus.
+        "diagnostics": {
+            "candidate_sessions": universe_size,
+            "region_rows_loaded": stats.regions_loaded,
+            "regions_hydrated": stats.regions_hydrated,
+            "messages_hydrated": stats.messages_hydrated,
+        },
     }))
 }

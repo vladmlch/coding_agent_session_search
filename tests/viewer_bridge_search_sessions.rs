@@ -205,19 +205,62 @@ fn gold_fixture() -> Vec<GoldSession> {
     ]
 }
 
+/// The canonical `Conversation` one fixture session inserts — kept as a
+/// builder because Task 5's region publication replays the same value
+/// through `generation_for_canonical` (the ingest path's shared packet +
+/// structural projection inputs).
+fn gold_conversation(session: &GoldSession) -> Conversation {
+    Conversation {
+        id: None,
+        agent_slug: session.agent.to_owned(),
+        workspace: session.workspace.map(PathBuf::from),
+        external_id: Some(session.external_id.to_owned()),
+        title: Some(session.title.to_owned()),
+        source_path: session.source_path.to_owned().into(),
+        started_at: session.started_at,
+        ended_at: session.ended_at,
+        approx_tokens: Some(1_234),
+        metadata_json: session.metadata.clone(),
+        source_id: session.source_id.to_owned(),
+        origin_host: session.origin_host.map(str::to_owned),
+        messages: session
+            .messages
+            .iter()
+            .map(|(idx, role, content, extra)| Message {
+                id: None,
+                idx: *idx,
+                role: role.clone(),
+                author: None,
+                created_at: session.started_at.map(|base| base + idx),
+                content: (*content).to_owned(),
+                extra_json: extra.clone().unwrap_or_else(|| json!({"seed":idx})),
+                snippets: Vec::new(),
+            })
+            .collect(),
+    }
+}
+
 /// Seed canonical rows + Quill docs with per-message content, then the
-/// `viewer_*` extension profile and overlays. Returns the spawned harness.
+/// `viewer_*` extension profile, overlays AND the Task-5 persisted
+/// region inventory (published through the same generation path ingest
+/// runs) with its Quill region documents. Returns the spawned harness.
 fn gold_harness() -> Result<BridgeHarness> {
+    gold_harness_full(&gold_fixture(), &[])
+}
+
+/// Same publication as [`gold_harness`] over an arbitrary fixture set —
+/// the seven gold sessions plus any case-specific extras — and optional
+/// bridge args (e.g. `--enable-viewer-writes` for the annotation lane).
+fn gold_harness_full(fixture: &[GoldSession], extra_args: &[&str]) -> Result<BridgeHarness> {
     let temp = tempfile::tempdir()?;
     let data_dir = temp.path().join("data");
     std::fs::create_dir(&data_dir)?;
     let db = data_dir.join("archive.db");
-    let fixture = gold_fixture();
     {
         let storage = FrankenStorage::open(&db)?;
         let mut agents: BTreeMap<String, i64> = BTreeMap::new();
         let mut workspaces: BTreeMap<String, i64> = BTreeMap::new();
-        for session in &fixture {
+        for session in fixture {
             let agent_id = match agents.get(session.agent) {
                 Some(id) => *id,
                 None => {
@@ -246,34 +289,7 @@ fn gold_harness() -> Result<BridgeHarness> {
             let outcome = storage.insert_conversation_tree(
                 agent_id,
                 workspace_id,
-                &Conversation {
-                    id: None,
-                    agent_slug: session.agent.to_owned(),
-                    workspace: session.workspace.map(PathBuf::from),
-                    external_id: Some(session.external_id.to_owned()),
-                    title: Some(session.title.to_owned()),
-                    source_path: session.source_path.to_owned().into(),
-                    started_at: session.started_at,
-                    ended_at: session.ended_at,
-                    approx_tokens: Some(1_234),
-                    metadata_json: session.metadata.clone(),
-                    source_id: session.source_id.to_owned(),
-                    origin_host: session.origin_host.map(str::to_owned),
-                    messages: session
-                        .messages
-                        .iter()
-                        .map(|(idx, role, content, extra)| Message {
-                            id: None,
-                            idx: *idx,
-                            role: role.clone(),
-                            author: None,
-                            created_at: session.started_at.map(|base| base + idx),
-                            content: (*content).to_owned(),
-                            extra_json: extra.clone().unwrap_or_else(|| json!({"seed":idx})),
-                            snippets: Vec::new(),
-                        })
-                        .collect(),
-                },
+                &gold_conversation(session),
             )?;
             ensure!(
                 outcome.conversation_id == session.id,
@@ -282,46 +298,10 @@ fn gold_harness() -> Result<BridgeHarness> {
         }
         drop(storage);
     }
-    // Quill projection: one doc per canonical message (title+content).
-    {
-        let mut docs = Vec::new();
-        for session in &fixture {
-            for (idx, _role, content, _extra) in &session.messages {
-                docs.push(CassDocument {
-                    agent: session.agent.to_owned(),
-                    workspace: session.workspace.map(str::to_owned),
-                    workspace_original: session.workspace.map(str::to_owned),
-                    source_path: session.source_path.to_owned(),
-                    msg_idx: *idx as u64,
-                    created_at: session.started_at.map(|base| base + idx),
-                    title: Some(session.title.to_owned()),
-                    content: (*content).to_owned(),
-                    source_id: session.source_id.to_owned(),
-                    origin_kind: if session.source_id == "local" {
-                        "local".to_owned()
-                    } else {
-                        "ssh".to_owned()
-                    },
-                    origin_host: session.origin_host.map(str::to_owned),
-                    conversation_id: Some(session.id),
-                });
-            }
-        }
-        let path = expected_index_dir(&data_dir);
-        let mut index = QuillCassIndex::open_or_create(&path)?;
-        index.add_cass_documents(&docs)?;
-        index.commit()?;
-        std::fs::write(
-            path.join("schema_hash.json"),
-            serde_json::to_vec(&json!({
-                "schema_hash": coding_agent_search::search::tantivy::SCHEMA_HASH,
-            }))?,
-        )?;
-    }
-    let bridge = BridgeHarness::spawn_fixture(temp, data_dir, db, &[])?;
-
-    // Extension profile + overlays (facts, annotations, tags).
-    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    // Extension profile + overlays (facts, annotations, tags) must commit
+    // BEFORE region publication: `meta:*` rows and the subagents scope
+    // derive from exactly these tables.
+    let writer = Connection::open(db.to_string_lossy().into_owned())?;
     schema::ensure_schema(&writer)?;
     // S1 annotations: notes/tags/pin/custom title (chat-scope blocks).
     writer.execute(
@@ -335,16 +315,17 @@ fn gold_harness() -> Result<BridgeHarness> {
             &param_slice_to_values(params![tag]),
         )?;
     }
-    // Facts: S1 category bugfix + full coverage; S6 is_subagent + parent.
-    for (cid, is_sub, parent, category, coverage) in [
-        (1_i64, 0_i64, None, Some("bugfix"), "complete"),
-        (2, 0, None, Some("feature"), "complete"),
-        (3, 0, None, Some("feature"), "complete"),
-        (4, 0, None, Some("feature"), "complete"),
-        (5, 0, None, Some("feature"), "complete"),
-        (6, 1, Some(1_i64), Some("feature"), "complete"),
-        (7, 0, None, Some("feature"), "complete"),
-    ] {
+    // Facts: S1 category bugfix + full coverage; S6 is_subagent + parent;
+    // every extra fixture session gets the same complete-coverage row so
+    // case fixtures stay in the known-evidence universe.
+    for session in fixture {
+        let cid = session.id;
+        let (is_sub, parent, category): (i64, Option<i64>, Option<&str>) = match cid {
+            1 => (0, None, Some("bugfix")),
+            6 => (1, Some(1), Some("feature")),
+            _ => (0, None, Some("feature")),
+        };
+        let coverage = "complete";
         writer.execute_with_params(
             "INSERT INTO viewer_session_facts \
              (conversation_id,extractor_version,source_revision,coverage_state,\
@@ -379,8 +360,72 @@ fn gold_harness() -> Result<BridgeHarness> {
             ]),
         )?;
     }
+    // Task 5: persisted region inventory — each fixture session replays
+    // through `generation_for_canonical` (the shared packet + structural
+    // projection ingest consumes), then `publish_search_regions` commits
+    // the same row set ingest writes, with marks `pending` until the
+    // region documents land in Quill below.
+    for session in fixture {
+        let conv = gold_conversation(session);
+        let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+            &writer,
+            &conv,
+            session.id,
+        )?;
+        coding_agent_search::viewer_extensions::search_regions::publish_search_regions(
+            &writer,
+            session.id,
+            &generation.packet,
+            &generation.structure,
+        )?;
+    }
+    // Quill projection: one doc per canonical message, then every
+    // session's persisted region documents (derived/meta/noise-chat
+    // slots) reconciled by the same lane ingest calls.
+    {
+        let mut docs = Vec::new();
+        for session in fixture {
+            for (idx, _role, content, _extra) in &session.messages {
+                docs.push(CassDocument {
+                    agent: session.agent.to_owned(),
+                    workspace: session.workspace.map(str::to_owned),
+                    workspace_original: session.workspace.map(str::to_owned),
+                    source_path: session.source_path.to_owned(),
+                    msg_idx: *idx as u64,
+                    created_at: session.started_at.map(|base| base + idx),
+                    title: Some(session.title.to_owned()),
+                    content: (*content).to_owned(),
+                    source_id: session.source_id.to_owned(),
+                    origin_kind: if session.source_id == "local" {
+                        "local".to_owned()
+                    } else {
+                        "ssh".to_owned()
+                    },
+                    origin_host: session.origin_host.map(str::to_owned),
+                    conversation_id: Some(session.id),
+                });
+            }
+        }
+        let path = expected_index_dir(&data_dir);
+        let mut index = QuillCassIndex::open_or_create(&path)?;
+        index.add_cass_documents(&docs)?;
+        for session in fixture {
+            coding_agent_search::viewer_extensions::search_regions::publish_region_docs(
+                &mut index,
+                &writer,
+                session.id,
+            )?;
+        }
+        index.commit()?;
+        std::fs::write(
+            path.join("schema_hash.json"),
+            serde_json::to_vec(&json!({
+                "schema_hash": coding_agent_search::search::tantivy::SCHEMA_HASH,
+            }))?,
+        )?;
+    }
     drop(writer);
-    Ok(bridge)
+    BridgeHarness::spawn_fixture(temp, data_dir, db, extra_args)
 }
 
 // ---------------------------------------------------------------------------
@@ -828,3 +873,352 @@ fn search_sessions_ast_wire_shape_accepted() -> Result<()> {
     assert_members(&page, &[3])?;
     bridge.shutdown()
 }
+
+/// Task 5 hydration instrumentation: the indexed path must never re-read
+/// the corpus. `foo` lives in exactly two chat regions — the diagnostics
+/// pin a bounded hydration count (candidate verification + page snippets),
+/// never the session/message universe.
+#[test]
+fn search_sessions_indexed_hydration_is_bounded() -> Result<()> {
+    let mut bridge = gold_harness()?;
+
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    let diag = &page["result"]["diagnostics"];
+    ensure!(
+        diag["candidate_sessions"].as_u64() == Some(6),
+        "the SQL-narrowed universe is the browse set (S6 is a subagent): {diag}"
+    );
+    // Two candidate verifications + at most one snippet re-hydration per
+    // emitted witness (S1 + S2). A corpus scan would read all 12 fixture
+    // messages; anything past the small bound proves a regression.
+    let hydrated = diag["messages_hydrated"]
+        .as_u64()
+        .expect("messages_hydrated diagnostic");
+    ensure!(
+        hydrated <= 4,
+        "selective query must not hydrate the corpus: {diag}"
+    );
+    let regions = diag["regions_hydrated"]
+        .as_u64()
+        .expect("regions_hydrated diagnostic");
+    ensure!(regions <= 8, "region hydration stays bounded: {diag}");
+    ensure!(
+        diag["region_rows_loaded"].as_u64().unwrap() >= regions,
+        "row loads count the persisted inventory, not hydration: {diag}"
+    );
+
+    // A meta-only literal never touches `messages` at all: notes ride the
+    // persisted `indexed_text` fragment end to end.
+    let page = search(&mut bridge, json!({"query":"fluxcap"}))?;
+    assert_members(&page, &[1])?;
+    ensure!(
+        page["result"]["diagnostics"]["messages_hydrated"].as_u64() == Some(0),
+        "meta fragments must hydrate zero canonical messages: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// Unicode + deep coordinates + the 64 KiB region-text byte budget. S8
+/// parks a Cyrillic marker at message idx 1100 (deep-link coordinate);
+/// S9 holds a >64 KiB chat body whose terms straddle the hydration bound —
+/// in-budget terms verify, out-of-budget hits degrade to honest
+/// `unknown` (never a silent false negative and never a slice panic on a
+/// multibyte boundary).
+#[test]
+fn search_sessions_unicode_deep_and_byte_budget() -> Result<()> {
+    let mut fixture = gold_fixture();
+    let mut deep: Vec<(i64, MessageRole, &'static str, Option<Value>)> = (0..1_100_i64)
+        .map(|idx| (idx, MessageRole::Agent, "deep filler", None))
+        .collect();
+    deep.push((
+        1_100,
+        MessageRole::Agent,
+        "глубокий поисковый маркер 🚀 emoji",
+        None,
+    ));
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-deep",
+        source_path: "/sessions/s-8-deep.jsonl",
+        workspace: None,
+        title: "deep session",
+        started_at: Some(6_000),
+        ended_at: Some(9_500),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: deep,
+    });
+    // 64 KiB boundary: 13 B prefix + 'a' to byte 65535, then 'ж' (2 B)
+    // straddling the bound, padding, and a term beyond it.
+    let long_body = format!(
+        "boundaryterm {}{}{} beyondterm",
+        "a".repeat(65_535 - 13),
+        "ж",
+        "z".repeat(300)
+    );
+    let long_body: &'static str = Box::leak(long_body.into_boxed_str());
+    fixture.push(GoldSession {
+        id: 9,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-9-huge",
+        source_path: "/sessions/s-9-huge.jsonl",
+        workspace: None,
+        title: "huge message session",
+        started_at: Some(6_100),
+        ended_at: Some(9_400),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![(0, MessageRole::User, long_body, None)],
+    });
+    let mut bridge = gold_harness_full(&fixture, &[])?;
+
+    // Cyrillic literal at message idx 1100 — the deep coordinate survives
+    // on the persisted region row, hydrated on demand.
+    let page = search(&mut bridge, json!({"query":"маркер"}))?;
+    assert_members(&page, &[8])?;
+    let matches = page["result"]["matches"]["8"]
+        .as_array()
+        .expect("S8 witnesses");
+    ensure!(
+        matches
+            .iter()
+            .any(|m| m["message_idx"].as_i64() == Some(1_100)),
+        "deep witness must carry message idx 1100: {matches:?}"
+    );
+
+    // In-budget term verifies normally.
+    let page = search(&mut bridge, json!({"query":"boundaryterm"}))?;
+    assert_members(&page, &[9])?;
+
+    // `beyondterm` is indexed in the canonical document but lies past the
+    // 64 KiB hydration bound: the hit cannot be verified, so the session
+    // is honestly `unknown` — the page refuses instead of answering a
+    // silently incomplete membership.
+    let page = search(&mut bridge, json!({"query":"beyondterm"}))?;
+    ensure!(
+        page["ok"] == false,
+        "an unverifiable out-of-budget hit must not silently miss: {page}"
+    );
+
+    // The boundary-safe truncation did not panic the lane — the bridge is
+    // still serving (the searches above already proved it).
+    bridge.shutdown()
+}
+
+/// Phrase (quoted, contiguous-token), prefix (non-exact), and code
+/// punctuation semantics through the persisted regions — the same
+/// semantics the query-time lane produced.
+#[test]
+fn search_sessions_phrase_prefix_and_punctuation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+
+    // Contiguous phrase: S1's "foo bar combined request" matches; S2
+    // splits foo/bar across messages and must not.
+    let page = search(&mut bridge, json!({"query":"\"foo bar\""}))?;
+    assert_members(&page, &[1])?;
+    let page = search(&mut bridge, json!({"query":"\"bar there\""}))?;
+    assert_members(&page, &[2])?;
+
+    // Prefix semantics on the notes meta fragment.
+    let page = search(&mut bridge, json!({"query":"flu*"}))?;
+    assert_members(&page, &[1])?;
+    let page = search(&mut bridge, json!({"query":"comb*"}))?;
+    assert_members(&page, &[1])?;
+
+    // Contiguous phrase inside the recorded Bash input, and dotted
+    // punctuation in the attachment path — both survive the region doc +
+    // matcher round trip.
+    let page = search(
+        &mut bridge,
+        json!({"ast":{"type":"term","value":"quux deploy","exact":true}}),
+    )?;
+    assert_members(&page, &[3])?;
+    let page = search(&mut bridge, json!({"query":"\"evidence.png\""}))?;
+    assert_members(&page, &[7])?;
+    let page = search(&mut bridge, json!({"query":"file:evidence.png"}))?;
+    assert_members(&page, &[7])?;
+
+    bridge.shutdown()
+}
+
+/// Tool ordering + reuse: a result arriving BEFORE its call still
+/// correlates by `tool_use_id` (the region anchors the result's message
+/// coordinates), and a call id reused by a second call still yields its
+/// own region — the correlation is claim-once, not shadowed.
+#[test]
+fn search_sessions_tool_ordering_and_reuse() -> Result<()> {
+    let mut fixture = gold_fixture();
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-toolorder",
+        source_path: "/sessions/s-8-toolorder.jsonl",
+        workspace: None,
+        title: "reordered tools",
+        started_at: Some(6_200),
+        ended_at: Some(9_300),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            // Result arrives BEFORE the call it names (replayed order).
+            (
+                0,
+                MessageRole::Tool,
+                "earlyresult",
+                Some(json!({"type":"tool_result","tool_use_id":"dup",
+                    "is_error":false,"content":"earlyresult"})),
+            ),
+            (
+                1,
+                MessageRole::Agent,
+                "first call",
+                Some(json!({"type":"assistant","message":{"role":"assistant",
+                    "content":[{"type":"tool_use","id":"dup","name":"Bash",
+                    "input":{"command":"firstdupcommand"}}]}})),
+            ),
+            // The same call id reused (post-compaction replay) — a second
+            // region must still exist with its own text.
+            (
+                2,
+                MessageRole::Agent,
+                "second call",
+                Some(json!({"type":"assistant","message":{"role":"assistant",
+                    "content":[{"type":"tool_use","id":"dup","name":"Bash",
+                    "input":{"command":"seconddupcommand"}}]}})),
+            ),
+        ],
+    });
+    let mut bridge = gold_harness_full(&fixture, &[])?;
+
+    // Out-of-order correlation: `earlyresult` lives in the FIRST call's
+    // region, anchored to the result message (idx 0).
+    let page = search(&mut bridge, json!({"query":"in:tools earlyresult"}))?;
+    assert_members(&page, &[8])?;
+    let matches = page["result"]["matches"]["8"]
+        .as_array()
+        .expect("S8 witnesses");
+    ensure!(
+        matches
+            .iter()
+            .any(|m| m["message_idx"].as_i64() == Some(0)),
+        "result-first correlation anchors the result coordinate: {matches:?}"
+    );
+
+    // Reused call id: the second call's region survives with its own text.
+    let page = search(
+        &mut bridge,
+        json!({"query":"in:tools seconddupcommand"}),
+    )?;
+    assert_members(&page, &[8])?;
+    let page = search(
+        &mut bridge,
+        json!({"query":"in:tools firstdupcommand"}),
+    )?;
+    assert_members(&page, &[8])?;
+
+    bridge.shutdown()
+}
+
+/// Annotation edit → targeted meta replacement → Quill convergence: only
+/// the `meta:*` rows/docs change (notes + tags here), message-region
+/// ordinals stay put, and the marks row returns to `published` inside the
+/// write op — the very next search sees the converged membership.
+#[test]
+fn search_sessions_annotation_edit_converges_region_docs() -> Result<()> {
+    let mut bridge = gold_harness_full(&gold_fixture(), &["--enable-viewer-writes"])?;
+
+    // Baseline: S1's notes/tag meta regions are live.
+    let page = search(&mut bridge, json!({"query":"fluxcap"}))?;
+    assert_members(&page, &[1])?;
+    let page = search(&mut bridge, json!({"query":"mcp-server"}))?;
+    assert_members(&page, &[1])?;
+
+    // CAS patch (fixture revision is 1): replace notes + the whole tag
+    // set; title/pin stay. The write op commits the meta replacement and
+    // converges the region documents before answering.
+    let patch = bridge.exchange(json!({
+        "op":"patch_annotations","conversation_id":1,"expected_revision":1,
+        "patch":{"notes":"warpdrive maintenance log","tags":["overhauled"]}
+    }))?;
+    ensure!(patch["ok"] == true, "patch refused: {patch}");
+    ensure!(patch["result"]["annotation"]["revision"] == 2);
+
+    // Cleared fragments stop matching; new fragments are immediately live.
+    let page = search(&mut bridge, json!({"query":"fluxcap"}))?;
+    assert_members(&page, &[])?;
+    let page = search(&mut bridge, json!({"query":"mcp-server"}))?;
+    assert_members(&page, &[])?;
+    let page = search(&mut bridge, json!({"query":"warpdrive"}))?;
+    assert_members(&page, &[1])?;
+    let page = search(&mut bridge, json!({"query":"overhauled"}))?;
+    assert_members(&page, &[1])?;
+
+    // Message regions are untouched — same anchors, same membership.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    let matches = page["result"]["matches"]["1"]
+        .as_array()
+        .expect("S1 witnesses");
+    ensure!(
+        matches
+            .iter()
+            .any(|m| m["message_idx"].as_i64() == Some(0)),
+        "chat region ordinal/coordinate must survive the meta edit: {matches:?}"
+    );
+    bridge.shutdown()
+}
+
+/// Universes above 50k stay truthful: 65k+ synthetic sort rows with no
+/// region inventory make every candidate `unknown` — the lane refuses
+/// with the retryable `facts_pending` instead of truncating or silently
+/// answering.
+#[test]
+fn search_sessions_large_universe_stays_honest() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    // Explicit-id batched VALUES inserts — deterministic, no same-table
+    // INSERT…SELECT scan. 128 batches × 512 rows = 65_536 synthetic
+    // sessions (>50k) on top of the seven gold ones. The canonical
+    // observer triggers (installed by bridge startup) mirror every
+    // conversations row into `viewer_session_sort` — writing sort rows
+    // directly would collide with the trigger-maintained ones.
+    const STRESS_ROWS: i64 = 65_536;
+    const BATCH: i64 = 512;
+    for base in (8..8 + STRESS_ROWS).step_by(BATCH as usize) {
+        let mut conv_sql = String::from(
+            "INSERT INTO conversations \
+             (id,agent_id,workspace_id,source_id,external_id,title,source_path,started_at,ended_at) \
+             VALUES ",
+        );
+        let end = (base + BATCH).min(8 + STRESS_ROWS);
+        for id in base..end {
+            if id > base {
+                conv_sql.push(',');
+            }
+            conv_sql.push_str(&format!(
+                "({id},1,NULL,'local','stress-{id}','stress','/stress/{id}.jsonl',1,2)"
+            ));
+        }
+        writer.execute(&conv_sql)?;
+    }
+    drop(writer);
+
+    // Every synthetic row has no facts row, no regions and no marks row —
+    // a universe of ~65k `unknown`s must refuse honestly, not clip.
+    let page = search(&mut bridge, json!({"query":"zzz_absent_literal"}))?;
+    ensure!(
+        page["ok"] == false,
+        "a 65k pending universe must not silently answer: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "facts_pending",
+        "pending evidence is the retryable refusal: {page}"
+    );
+    bridge.shutdown()
+}
+

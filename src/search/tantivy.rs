@@ -2104,6 +2104,62 @@ impl TantivyIndex {
         self.inner.doc_count()
     }
 
+    /// Task 5: reconcile one session's persisted search-region documents
+    /// (thinking/tools/artifacts/subagents/meta scopes and noise-filtered
+    /// chat regions) against `viewer_search_regions` — deletes the queued
+    /// stale identities, upserts the current region docs and stamps
+    /// `docs_state='published'`. Called by the lexical ingest lanes that
+    /// already own the committed writer. Returns documents upserted.
+    pub fn publish_search_region_docs(
+        &mut self,
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+        conversation_id: i64,
+    ) -> Result<usize> {
+        crate::viewer_extensions::search_regions::publish_region_docs(
+            &mut self.inner,
+            db,
+            conversation_id,
+        )
+    }
+
+    /// Task 5: converge sessions whose region docs are still pending —
+    /// ingest republication and annotation-edit meta replacement both mark
+    /// `docs_state != 'published'`; the next index run reconciles them.
+    /// Returns the number of sessions converged.
+    pub fn converge_pending_search_region_docs(
+        &mut self,
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+        limit: i64,
+    ) -> Result<usize> {
+        let pending =
+            crate::viewer_extensions::search_regions::pending_region_doc_sessions(db, limit)?;
+        let mut converged = 0_usize;
+        for conversation_id in pending {
+            self.publish_search_region_docs(db, conversation_id)?;
+            converged += 1;
+        }
+        Ok(converged)
+    }
+
+    /// Task 5: converge EVERY session carrying a marks row — the
+    /// authoritative from-scratch rebuild owns no region documents, so
+    /// `published` marks must be re-materialized alongside `pending` ones.
+    /// Returns `(sessions_converged, documents_upserted)` so the rebuild's
+    /// published-doc accounting binds exactly what ships.
+    pub fn converge_all_search_region_docs(
+        &mut self,
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+        limit: i64,
+    ) -> Result<(usize, usize)> {
+        let sessions =
+            crate::viewer_extensions::search_regions::marked_region_doc_sessions(db, limit)?;
+        let mut docs = 0_usize;
+        for conversation_id in &sessions {
+            docs += self.publish_search_region_docs(db, *conversation_id)?;
+        }
+        Ok((sessions.len(), docs))
+    }
+
     /// Build every lexical document for one packet without writing anything.
     ///
     /// The projection and noise filter are identical to

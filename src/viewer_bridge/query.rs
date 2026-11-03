@@ -522,6 +522,16 @@ impl ResolvedFilters {
     /// search over the persisted sort row. Base + classification + window
     /// predicates, never a sort/limit (search sorts by relevance).
     pub(crate) fn universe_sql(&self) -> (String, Vec<SqliteValue>) {
+        let (subquery, params) = self.universe_subquery();
+        (format!("{subquery} ORDER BY vs.conversation_id"), params)
+    }
+
+    /// `SELECT vs.conversation_id FROM viewer_session_sort vs WHERE <same
+    /// clauses>` WITHOUT the ordering — the set-based `IN (…)` form the
+    /// search lane's batched universe reads embed, so every auxiliary read
+    /// (summary join, tags, region inventory) materializes the identical
+    /// filtered candidate set instead of re-transporting an id list.
+    pub(crate) fn universe_subquery(&self) -> (String, Vec<SqliteValue>) {
         let mut params = Vec::new();
         let conds = build_conditions(self, &mut params);
         let mut clauses = conds.base.clone();
@@ -535,8 +545,7 @@ impl ResolvedFilters {
         };
         (
             format!(
-                "SELECT vs.conversation_id FROM viewer_session_sort vs \
-                 WHERE {where_sql} ORDER BY vs.conversation_id"
+                "SELECT vs.conversation_id FROM viewer_session_sort vs WHERE {where_sql}"
             ),
             params,
         )

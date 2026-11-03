@@ -1775,6 +1775,10 @@ fn _packet_events(packet: &ConversationPacket) -> usize {
 pub struct IngestGeneration {
     pub facts: FactPublication,
     pub structure: StructuralPublication,
+    /// The shared replay both lanes derived from — the search-region
+    /// publication reuses it so every lane binds the identical committed
+    /// bytes and `source_revision`.
+    pub packet: crate::model::conversation_packet::ConversationPacket,
 }
 
 /// Outcome of one coherent generation publication.
@@ -1818,13 +1822,46 @@ pub fn generation_markers_visible(
     if !facts_present {
         return Ok(false);
     }
-    Ok(!db
+    let structure_present = !db
         .facts_query_map(
             "SELECT 1 FROM viewer_session_projection \
              WHERE conversation_id = ?1 AND source_revision = ?2 LIMIT 1",
             &[
                 ParamValue::from(conversation_id),
                 ParamValue::from(source_revision),
+            ],
+            |_| Ok(()),
+        )?
+        .is_empty();
+    if !structure_present {
+        return Ok(false);
+    }
+    // The Task-5 region lane is the third marker `complete` must bind: a
+    // receipt over a missing/stale region inventory is divergence the
+    // republish below repairs in the same commit. The marks table only
+    // exists at schema v7+; profiles at v6 return false here too (the
+    // `sqlite_master` probe keeps the check engine-safe), so an upgraded
+    // binary republishes every session once and converges.
+    let marks_table = !db
+        .facts_query_map(
+            "SELECT 1 FROM sqlite_master WHERE type='table' \
+             AND name='viewer_search_region_marks' LIMIT 1",
+            &[],
+            |_| Ok(()),
+        )?
+        .is_empty();
+    if !marks_table {
+        return Ok(false);
+    }
+    Ok(!db
+        .facts_query_map(
+            "SELECT 1 FROM viewer_search_region_marks \
+             WHERE conversation_id = ?1 AND source_revision = ?2 \
+             AND region_version = ?3 LIMIT 1",
+            &[
+                ParamValue::from(conversation_id),
+                ParamValue::from(source_revision),
+                ParamValue::from(super::search_regions::REGION_VERSION),
             ],
             |_| Ok(()),
         )?
@@ -1890,7 +1927,11 @@ pub fn generation_for_canonical(
     let mut facts = extract_session_facts(&packet, &conv.agent_slug);
     super::facts::fill_canonical_health(db, conversation_id, &mut facts)?;
     let structure = project_session_structure(&packet, &facts);
-    Ok(IngestGeneration { facts, structure })
+    Ok(IngestGeneration {
+        facts,
+        structure,
+        packet,
+    })
 }
 
 /// The generation transaction body — callable on any `FactsDb` (an open
@@ -1938,6 +1979,34 @@ pub fn publish_ingest_generation_in_tx(
         &conv.source_id,
         conv.external_id.as_deref().unwrap_or_default(),
     )?;
+    // Search regions publish AFTER the parent fixup: a child-before-parent
+    // landing here may have just linked prior children to this session,
+    // and its `subagents` meta regions must see those links in the same
+    // generation commit. When this session itself resolved to a parent,
+    // the parent's `subagents` regions gain a new descriptor — targeted
+    // meta replacement on that parent's rows inside the same transaction
+    // (its message-bound region ordinals never renumber).
+    super::search_regions::publish_search_regions(
+        db,
+        conversation_id,
+        &generation.packet,
+        &generation.structure,
+    )?;
+    let resolved_parent: Option<i64> = db
+        .facts_query_map(
+            "SELECT parent_conversation_id FROM viewer_session_facts \
+             WHERE conversation_id = ?1",
+            &[crate::franken_sync::compat::ParamValue::from(conversation_id)],
+            |row| row.get_typed::<Option<i64>>(0),
+        )?
+        .into_iter()
+        .next()
+        .flatten();
+    if let Some(parent_id) = resolved_parent
+        && parent_id != conversation_id
+    {
+        super::search_regions::replace_meta_regions(db, parent_id)?;
+    }
     super::facts::write_ingest_receipt(db, receipt)?;
     Ok((facts_outcome, structure_outcome))
 }

@@ -217,6 +217,16 @@ impl OwnedWriter {
                     now
                 ]),
             )?;
+            // Task 5 targeted meta replacement: title/notes/tag region
+            // rows re-derive inside the SAME transaction as the annotation
+            // upsert — cleared values delete their rows here (a stale
+            // Quill meta document can only produce an unverifiable hit,
+            // never membership) — and `docs_state` flips to
+            // `meta_pending` until the index lane replaces the docs.
+            coding_agent_search::viewer_extensions::search_regions::replace_meta_regions(
+                connection,
+                conversation_id,
+            )?;
             revisions::bump(connection, revisions::Counter::Annotation, now)?;
             Ok(json!({
                 "conversation_id": conversation_id,
@@ -234,5 +244,22 @@ impl OwnedWriter {
             "annotation": annotation,
             "generation": self.generation()?,
         }))
+    }
+
+    /// Task 5 post-edit convergence (caller wraps this best-effort): fold
+    /// every `docs_state != 'published'` marks row — including the meta
+    /// replacement the annotation commit just staged — into the live Quill
+    /// index and commit. When the published index cannot be written here
+    /// (absent, contended by an ingest writer), the marks row stays
+    /// `meta_pending` and search over the session degrades to honest
+    /// `unknown` rather than answering from stale meta documents.
+    pub fn converge_search_region_docs(&mut self, index_path: &Path) -> Result<()> {
+        let mut index =
+            coding_agent_search::search::tantivy::TantivyIndex::open_or_create(index_path)
+                .context("opening the published lexical index for region-doc convergence")?;
+        index.converge_pending_search_region_docs(&self.connection, i64::MAX)?;
+        index
+            .commit()
+            .context("committing converged search-region documents")
     }
 }

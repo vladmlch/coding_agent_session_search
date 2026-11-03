@@ -53,4 +53,5 @@ pub mod facts;
 pub mod projection;
 mod providers;
 pub mod schema;
+pub mod search_regions;
 pub mod sort;

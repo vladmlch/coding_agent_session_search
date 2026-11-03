@@ -44,7 +44,13 @@ use crate::franken_sync::compat::RowExt;
 /// DELETE leaves a dangling `agent_id` whose stored tie key was verified
 /// against a dimension row that no longer exists; the trigger returns
 /// those rows to pending so browse refuses honestly until re-resolved.
-pub const EXTENSION_SCHEMA_VERSION: i64 = 6;
+/// v7: `viewer_search_regions` + `viewer_search_region_marks` — the Task-5
+/// persisted search-region inventory (stable region keys, scope/knownness,
+/// canonical message + structural anchors, predicate fields, bounded
+/// `indexed_text` fragments for derived/meta lanes only) plus the
+/// per-session publication mark and stale-document reconcile queue that
+/// keeps `complete` ingest receipts honest about index coverage.
+pub const EXTENSION_SCHEMA_VERSION: i64 = 7;
 
 /// Additive viewer schema. Every statement is idempotent so re-running the
 /// profile on an initialized archive is a no-op.
@@ -660,6 +666,84 @@ INSERT OR REPLACE INTO viewer_meta (key, value)
 VALUES ('extension_schema_version', '6');
 ";
 
+/// Schema v7 — the Task-5 persisted search-region inventory.
+///
+/// `viewer_search_regions` holds one row per DSL-addressable region: the
+/// stable `region_key`, scope + knownness, canonical message coordinates
+/// (`message_idx`/`message_id`), structural anchors (`step_index`/
+/// `turn_index`), the predicate fields (`tool_name`/`file_path`/
+/// `exit_code`/`has_error`/`error_type`), the hydration lane
+/// (`text_source`: `chat` re-reads the canonical `messages.content` via
+/// `message_id`; `derived`/`meta` read the bounded `indexed_text`
+/// fragment persisted here — the ONLY added text storage, justified
+/// because re-deriving it would re-open the corpus scan this task
+/// removes) and the generation's `source_revision`. `quill_idx` is the
+/// region document's `msg_idx` slot: the canonical `messages.idx` for
+/// chat regions (mapping straight onto the message document), or
+/// `2^40 + region_ordinal` — a synthetic slot `decode_hit` accepts but no
+/// real message index ever occupies — for every other region so one
+/// Quill hit maps back to exactly one region key.
+///
+/// `viewer_search_region_marks` is the per-session coherency marker the
+/// `complete` ingest receipt binds: `(region_version, source_revision,
+/// region_count)`, the index-lane `docs_state` (`pending` until the
+/// region documents commit; `meta_pending` after targeted meta
+/// replacement) and `pending_doc_deletes` — the JSON list of stale
+/// document identities the Quill reconcile lane removes before
+/// re-stamping `published`.
+const VIEWER_SCHEMA_V7: &str = r"
+CREATE TABLE IF NOT EXISTS viewer_search_regions (
+    conversation_id INTEGER NOT NULL
+        REFERENCES conversations(id) ON DELETE CASCADE,
+    region_ordinal INTEGER NOT NULL,
+    region_key TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    scope_known INTEGER NOT NULL DEFAULT 1,
+    quill_idx INTEGER NOT NULL,
+    message_idx INTEGER,
+    message_id INTEGER,
+    step_index INTEGER,
+    turn_index INTEGER,
+    tool_name TEXT,
+    file_path TEXT,
+    exit_code INTEGER,
+    has_error INTEGER,
+    error_type TEXT,
+    text_source TEXT NOT NULL DEFAULT 'derived',
+    indexed_text TEXT,
+    source_revision INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (conversation_id, region_ordinal)
+);
+-- Quill hit → region lookup and keyed refresh both drive from this.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_viewer_search_regions_quill
+    ON viewer_search_regions(conversation_id, quill_idx);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_viewer_search_regions_key
+    ON viewer_search_regions(conversation_id, region_key);
+-- Block-domain predicates seek by scope/tool/file inside a candidate set.
+CREATE INDEX IF NOT EXISTS idx_viewer_search_regions_scope
+    ON viewer_search_regions(conversation_id, scope);
+CREATE INDEX IF NOT EXISTS idx_viewer_search_regions_tool
+    ON viewer_search_regions(tool_name);
+CREATE INDEX IF NOT EXISTS idx_viewer_search_regions_file
+    ON viewer_search_regions(file_path);
+
+CREATE TABLE IF NOT EXISTS viewer_search_region_marks (
+    conversation_id INTEGER PRIMARY KEY
+        REFERENCES conversations(id) ON DELETE CASCADE,
+    region_version INTEGER NOT NULL,
+    source_revision INTEGER NOT NULL DEFAULT 0,
+    region_count INTEGER NOT NULL DEFAULT 0,
+    docs_state TEXT NOT NULL DEFAULT 'pending',
+    pending_doc_deletes TEXT NOT NULL DEFAULT '[]',
+    published_at_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_viewer_search_region_marks_state
+    ON viewer_search_region_marks(docs_state);
+
+INSERT OR REPLACE INTO viewer_meta (key, value)
+VALUES ('extension_schema_version', '7');
+";
+
 /// Guarded v3 column migration: `parent_external_id` cannot ride the
 /// `CREATE TABLE` statement (existing v2 archives keep their table), so it
 /// lands as an `ALTER TABLE` only when the column is absent — inside the
@@ -769,6 +853,7 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
         connection.execute_batch(VIEWER_SCHEMA_V4)?;
         connection.execute_batch(VIEWER_SCHEMA_V5)?;
         connection.execute_batch(VIEWER_SCHEMA_V6)?;
+        connection.execute_batch(VIEWER_SCHEMA_V7)?;
         Ok(())
     })();
     match applied {

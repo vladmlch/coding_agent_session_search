@@ -524,6 +524,31 @@ impl Session {
                 let result =
                     self.writer()?
                         .patch_annotations(conversation_id, expected_revision, &patch)?;
+                // Task 5: fold the just-committed meta replacement into the
+                // published index now. Best-effort — a contended or absent
+                // index leaves `meta_pending`, and the marks row degrades
+                // the session to honest `unknown` rather than stale hits.
+                let index_dir =
+                    coding_agent_search::search::tantivy::expected_index_dir(&self.data_dir);
+                if let Err(error) = self
+                    .writer()?
+                    .converge_search_region_docs(&index_dir)
+                {
+                    tracing::warn!(
+                        error = %format!("{error:#}"),
+                        "search-region doc convergence after annotation edit deferred"
+                    );
+                } else {
+                    // The write lane just changed the published index —
+                    // the cached reader set is pinned to the pre-edit
+                    // snapshot and would keep surfacing the REPLACED meta
+                    // documents (a stale hit hydrates the new fragment and
+                    // degrades the session to a reasonless `unknown`).
+                    // Drop it so the next search reopens on the converged
+                    // index; generation-bound cursors expire honestly
+                    // through the moved `index_epoch`, never mix pages.
+                    self.readers = None;
+                }
                 // Task 12: the commit already journaled annotations_updated
                 // via the extension triggers; the wakeup merely shortens a
                 // listening pump's (possibly another bridge's) poll wait.
