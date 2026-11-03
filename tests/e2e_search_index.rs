@@ -213,6 +213,29 @@ mod gh472 {
                 .unwrap_or_else(|error| panic!("invalid checkpoint {}: {error}", path.display()))
         }
 
+        /// Checkpoint doc accounting: `indexed_docs` is the WHOLE
+        /// published document set — canonical message docs plus the
+        /// persisted search-region documents (`meta:title` and friends)
+        /// — so the expected total is `messages + indexed_region_docs`.
+        /// The region share pins exactly too: every gh472 fixture session
+        /// is titled, so each ships exactly one `meta:title` document.
+        fn assert_indexed_docs(
+            checkpoint: &Value,
+            messages: usize,
+            conversations: usize,
+        ) {
+            let region_docs = checkpoint["indexed_region_docs"]
+                .as_u64()
+                .expect("checkpoint records indexed_region_docs")
+                as usize;
+            assert_eq!(region_docs, conversations, "{checkpoint}");
+            assert_eq!(
+                checkpoint["indexed_docs"].as_u64().expect("indexed_docs") as usize,
+                messages + region_docs,
+                "{checkpoint}"
+            );
+        }
+
         fn run(&self, args: &[&str], overrides: &[(&str, &str)]) -> Run {
             let number = self.invocation.get();
             self.invocation.set(number + 1);
@@ -426,7 +449,7 @@ mod gh472 {
             assert_eq!(storage.source_ingest_ledger_entries().unwrap().len(), 2);
             drop(storage);
             assert_eq!(self.checkpoint()["completed"], true);
-            assert_eq!(self.checkpoint()["indexed_docs"], 4);
+            Self::assert_indexed_docs(&self.checkpoint(), 4, 2);
             archive
         }
 
@@ -543,7 +566,7 @@ mod gh472 {
             )
             .expect("restore matching original archive checkpoint");
             assert_eq!(self.checkpoint()["completed"], true);
-            assert_eq!(self.checkpoint()["indexed_docs"], 4);
+            Self::assert_indexed_docs(&self.checkpoint(), 4, 2);
             assert_eq!(
                 raw_lexical_total_matches(&self.index(), "gh472firstanchorz"),
                 0
@@ -678,7 +701,11 @@ mod gh472 {
                 );
                 assert_eq!(repair["canonical_conversations"], 2);
                 assert_eq!(repair["canonical_messages"], 4);
-                assert_eq!(repair["observed_tantivy_docs"], 3);
+                // Live docs in the donor index: 3 canonical messages + 1
+                // `meta:title` search-region document — the sparse gate
+                // compares the canonical-message share (4 − bound), so
+                // the region doc can never mask the missing message.
+                assert_eq!(repair["observed_tantivy_docs"], 4);
                 repaired.assert_codex_observations(2, usize::from(add_source));
                 let conversations = 2 + usize::from(add_source);
                 let messages = 4 + 2 * usize::from(add_source);
@@ -693,7 +720,7 @@ mod gh472 {
                 assert_eq!(checkpoint["completed"], true);
                 assert_eq!(checkpoint["db"]["total_conversations"], conversations);
                 assert_eq!(checkpoint["db"]["total_messages"], messages);
-                assert_eq!(checkpoint["indexed_docs"], messages);
+                Fixture::assert_indexed_docs(&checkpoint, messages, conversations);
                 assert_eq!(
                     raw_lexical_total_matches(&fixture.index(), "gh472donoranchorz"),
                     0
@@ -867,7 +894,7 @@ mod gh472 {
                 assert_codex_pair(&archive, source, "gh472thirdanchorz");
             }
             assert_eq!(fixture.checkpoint()["completed"], true);
-            assert_eq!(fixture.checkpoint()["indexed_docs"], conversations * 2);
+            Fixture::assert_indexed_docs(&fixture.checkpoint(), conversations * 2, conversations);
             assert_eq!(
                 raw_lexical_total_matches(&fixture.index(), "gh472donoranchorz"),
                 0
@@ -1234,10 +1261,23 @@ fn raw_lexical_reader_matches(
     );
     // The exact total is computed independently of the requested page, so ask
     // for the smallest page: a huge limit only sizes the top-k heap.
-    coding_agent_search::search::quill_bridge::search_paginated(reader, &parsed.query, 1, 0, true)
-        .expect("count raw lexical matches")
-        .total_count
-        .unwrap_or(0)
+    // Task 5: every call site asserts the canonical message count for the
+    // needle; persisted search-region documents share the index in the
+    // `msg_idx >= REGION_DOC_BASE` space and would inflate the count, so
+    // apply the same canonical-message guard the engine's own query path
+    // uses rather than hand-rolling a post-count filter.
+    let canonical_query =
+        coding_agent_search::search::quill_bridge::canonical_message_query(parsed.query);
+    coding_agent_search::search::quill_bridge::search_paginated(
+        reader,
+        &canonical_query,
+        1,
+        0,
+        true,
+    )
+    .expect("count raw lexical matches")
+    .total_count
+    .unwrap_or(0)
 }
 
 fn force_federated_publish_env(cmd: &mut assert_cmd::Command) {

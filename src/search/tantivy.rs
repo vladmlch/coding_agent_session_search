@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -1542,6 +1542,22 @@ pub struct TantivyIndex {
     /// durable cursor. `add_prebuilt_document_refs_slice` routes this many
     /// leading documents through upsert, then reverts to plain adds.
     resume_reconcile_docs_remaining: usize,
+    /// Task 5 two-phase region-doc publication: marks-row snapshots taken
+    /// by [`Self::stage_search_region_docs`] while the documents were
+    /// staged on this uncommitted writer. [`Self::commit_region_doc_stamps`]
+    /// replays them as freshness-guarded `published` stamps AFTER a
+    /// successful commit — the marks row can never certify documents a
+    /// failed commit or crash never shipped. [`Self::commit`] clears the
+    /// queue on failure so a later commit cannot stamp marks for
+    /// documents the lost commit may have dropped.
+    pending_region_doc_stamps: Vec<crate::viewer_extensions::search_regions::RegionDocStamp>,
+    /// Sessions whose region documents were already staged on this
+    /// uncommitted writer. Their marks still read `pending` (the stamp
+    /// lands only after commit), so the end-of-batch pending sweep would
+    /// otherwise re-stage them inside the same generation — a second
+    /// upsert of the same doc identity before publication is a duplicate
+    /// live id Quill refuses. Cleared exactly when the stamp queue is.
+    staged_region_doc_sessions: HashSet<i64>,
 }
 
 impl TantivyIndex {
@@ -1565,6 +1581,8 @@ impl TantivyIndex {
             inner,
             fields,
             resume_reconcile_docs_remaining: 0,
+            pending_region_doc_stamps: Vec::new(),
+            staged_region_doc_sessions: HashSet::new(),
         })
     }
 
@@ -1590,6 +1608,8 @@ impl TantivyIndex {
             inner,
             fields,
             resume_reconcile_docs_remaining: 0,
+            pending_region_doc_stamps: Vec::new(),
+            staged_region_doc_sessions: HashSet::new(),
         })
     }
 
@@ -1623,7 +1643,50 @@ impl TantivyIndex {
     }
 
     pub fn commit(&mut self) -> Result<()> {
-        self.inner.commit()
+        match self.inner.commit() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                // A failed publish can drop staged documents; queued
+                // region-doc stamps must never certify a marks row for
+                // documents a later commit did not carry. Clearing keeps
+                // the sessions honestly pending — the next converge pass
+                // re-materializes and re-stamps them.
+                self.pending_region_doc_stamps.clear();
+                self.staged_region_doc_sessions.clear();
+                Err(error)
+            }
+        }
+    }
+
+    /// Commit, then stamp the region documents this commit sealed
+    /// `published` (`docs_state='published'` marks rows). A commit
+    /// failure propagates with the stamps dropped — see [`Self::commit`].
+    /// The stamp itself is a freshness-guarded compare-and-swap, so a
+    /// marks row that changed since staging is refused rather than
+    /// clobbered.
+    pub fn commit_with_region_doc_stamps(
+        &mut self,
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+    ) -> Result<()> {
+        self.commit()?;
+        self.commit_region_doc_stamps(db)?;
+        Ok(())
+    }
+
+    /// Stamp every session whose region documents were staged on this
+    /// writer `published` — meaningful only after a successful commit.
+    /// Each stamp replays its stage-time marks snapshot
+    /// (`region_version`/`source_revision`/`docs_state`/
+    /// `pending_doc_deletes`), so a concurrent republish or meta-edit is
+    /// left pending instead of being overwritten. Returns the number of
+    /// sessions stamped (fewer than staged when the guard lost a race).
+    pub fn commit_region_doc_stamps(
+        &mut self,
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+    ) -> Result<usize> {
+        let stamps = std::mem::take(&mut self.pending_region_doc_stamps);
+        self.staged_region_doc_sessions.clear();
+        crate::viewer_extensions::search_regions::stamp_region_docs_published(db, &stamps)
     }
 
     /// GH #446: route the stall watchdog's liveness signal into the Quill
@@ -2104,22 +2167,44 @@ impl TantivyIndex {
         self.inner.doc_count()
     }
 
-    /// Task 5: reconcile one session's persisted search-region documents
+    /// Task 5: stage one session's persisted search-region documents
     /// (thinking/tools/artifacts/subagents/meta scopes and noise-filtered
-    /// chat regions) against `viewer_search_regions` — deletes the queued
-    /// stale identities, upserts the current region docs and stamps
-    /// `docs_state='published'`. Called by the lexical ingest lanes that
-    /// already own the committed writer. Returns documents upserted.
-    pub fn publish_search_region_docs(
+    /// chat regions) against `viewer_search_regions` on this uncommitted
+    /// writer — deletes the queued stale identities, upserts the current
+    /// region docs and queues the marks snapshot
+    /// [`Self::commit_region_doc_stamps`] replays once the commit lands.
+    /// The marks row stays untouched until then: a `published` stamp
+    /// issued before the commit would certify documents a failed commit
+    /// or crash never shipped. Called by the lexical ingest lanes that
+    /// already own the writer. Returns documents upserted.
+    pub fn stage_search_region_docs(
         &mut self,
         db: &impl crate::viewer_extensions::facts::FactsDb,
         conversation_id: i64,
     ) -> Result<usize> {
-        crate::viewer_extensions::search_regions::publish_region_docs(
-            &mut self.inner,
-            db,
-            conversation_id,
-        )
+        // Idempotent within one writer generation: the per-session ingest
+        // hook and the end-of-batch pending sweep both converge the same
+        // session, and its marks still read `pending` until the post-commit
+        // stamp. Re-staging here would re-upsert doc identities already
+        // live in the uncommitted generation — a duplicate live id Quill
+        // refuses — while the queued stage-time stamp snapshot still
+        // certifies exactly the version that was staged. A marks row that
+        // changed underneath the stage (republish/meta-edit) fails the
+        // stamp's compare-and-swap and is re-converged by the next run.
+        if self.staged_region_doc_sessions.contains(&conversation_id) {
+            return Ok(0);
+        }
+        let (docs, stamp) =
+            crate::viewer_extensions::search_regions::stage_region_docs(
+                &mut self.inner,
+                db,
+                conversation_id,
+            )?;
+        if let Some(stamp) = stamp {
+            self.staged_region_doc_sessions.insert(conversation_id);
+            self.pending_region_doc_stamps.push(stamp);
+        }
+        Ok(docs)
     }
 
     /// Task 5: converge sessions whose region docs are still pending —
@@ -2135,7 +2220,7 @@ impl TantivyIndex {
             crate::viewer_extensions::search_regions::pending_region_doc_sessions(db, limit)?;
         let mut converged = 0_usize;
         for conversation_id in pending {
-            self.publish_search_region_docs(db, conversation_id)?;
+            self.stage_search_region_docs(db, conversation_id)?;
             converged += 1;
         }
         Ok(converged)
@@ -2155,7 +2240,7 @@ impl TantivyIndex {
             crate::viewer_extensions::search_regions::marked_region_doc_sessions(db, limit)?;
         let mut docs = 0_usize;
         for conversation_id in &sessions {
-            docs += self.publish_search_region_docs(db, *conversation_id)?;
+            docs += self.stage_search_region_docs(db, *conversation_id)?;
         }
         Ok((sessions.len(), docs))
     }

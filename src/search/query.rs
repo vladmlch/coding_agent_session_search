@@ -8215,7 +8215,12 @@ impl SearchClient {
         )
         .map_err(|error| anyhow::anyhow!("building the CASS query parser: {error}"))?;
         let parsed = parser.parse(raw_query, &fs_filters);
-        let q = parsed.query;
+        // Plain lexical hits are canonical messages only. Persisted
+        // search-region documents share this index in the synthetic
+        // `msg_idx >= REGION_DOC_BASE` space (Task 5); the guard keeps
+        // them out of hits, pages, and exact totals while leaving the
+        // session-search gate (`raw_page`/`decode_hit`) untouched.
+        let q = crate::search::quill_bridge::canonical_message_query(parsed.query);
 
         let prefix_only = is_prefix_only(sanitized_query);
         let top_docs = execute_query_with_bounded_exact_count(reader, &q, limit, offset)?;

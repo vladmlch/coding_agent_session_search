@@ -189,7 +189,13 @@ fn search_ids(fixture: &Fixture, term: &str) -> Result<BTreeSet<String>> {
 
 fn search_ids_for_query(fixture: &Fixture, query: &Query) -> Result<BTreeSet<String>> {
     let reader = crate::search::quill_bridge::open_cass_reader(&fixture.index_path)?;
-    let page = crate::search::quill_bridge::search_paginated(&reader, query, 512, 0, true)?;
+    // Task 5: persisted search-region documents share the index in the
+    // `msg_idx >= REGION_DOC_BASE` space and their meta fragments match
+    // body-probe terms (the session title contains the probe token).
+    // These assertions identify canonical message bodies, so apply the
+    // same canonical-message guard the chat-facing query path uses.
+    let query = crate::search::quill_bridge::canonical_message_query(query.clone());
+    let page = crate::search::quill_bridge::search_paginated(&reader, &query, 512, 0, true)?;
     let ids: BTreeSet<_> = page
         .hits
         .iter()
@@ -289,7 +295,7 @@ fn gh538_watch_checkpoint_requires_published_coverage_and_no_replay_debt() -> Re
     assert!(refresh()?);
     let baseline =
         load_lexical_rebuild_checkpoint(&fixture.index_path)?.context("baseline checkpoint")?;
-    assert_eq!(baseline.indexed_docs, 1);
+    assert_eq!(baseline.indexed_docs - baseline.indexed_region_docs, 1);
     // Ordinary indexing may do the independent full verification; the live
     // callback must use that observation without cold-scanning old bodies.
     assert_eq!(
@@ -340,12 +346,9 @@ fn gh538_watch_checkpoint_requires_published_coverage_and_no_replay_debt() -> Re
     assert_eq!(handles.scan(&fixture, false)?.0.published_conversations, 1);
     assert_eq!(search_ids(&fixture, "checkpointappendgh538")?.len(), 1);
     assert!(refresh()?);
-    assert_eq!(
-        load_lexical_rebuild_checkpoint(&fixture.index_path)?
-            .context("advanced checkpoint")?
-            .indexed_docs,
-        2
-    );
+    let advanced =
+        load_lexical_rebuild_checkpoint(&fixture.index_path)?.context("advanced checkpoint")?;
+    assert_eq!(advanced.indexed_docs - advanced.indexed_region_docs, 2);
 
     // Canonical hard noise is intentionally absent from the lexical sink.
     // Preserve the existing independent noise-adjusted coverage criterion.
@@ -358,7 +361,10 @@ fn gh538_watch_checkpoint_requires_published_coverage_and_no_replay_debt() -> Re
     assert!(refresh()?);
     let published = load_lexical_rebuild_checkpoint(&fixture.index_path)?
         .context("noise-adjusted checkpoint")?;
-    assert_eq!(published.indexed_docs, 2);
+    assert_eq!(
+        published.indexed_docs - published.indexed_region_docs,
+        2
+    );
     persist_watch_lexical_replay_debt(
         &handles.storage.lock().unwrap(),
         &WatchLexicalReplayDebt::for_root(fixture.kind, &fixture.root),

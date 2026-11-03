@@ -16,7 +16,7 @@ mod revisions;
 mod support;
 
 use anyhow::{Result, ensure};
-use coding_agent_search::franken_sync::compat::param_slice_to_values;
+use coding_agent_search::franken_sync::compat::{RowExt, param_slice_to_values};
 use coding_agent_search::franken_sync::{Connection, params};
 use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use coding_agent_search::search::quill_bridge::QuillCassIndex;
@@ -27,6 +27,7 @@ use frankensearch::quill::cass::CassDocument;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use support::BridgeHarness;
 
 // ---------------------------------------------------------------------------
@@ -248,16 +249,14 @@ fn gold_harness() -> Result<BridgeHarness> {
     gold_harness_full(&gold_fixture(), &[])
 }
 
-/// Same publication as [`gold_harness`] over an arbitrary fixture set —
-/// the seven gold sessions plus any case-specific extras — and optional
-/// bridge args (e.g. `--enable-viewer-writes` for the annotation lane).
-fn gold_harness_full(fixture: &[GoldSession], extra_args: &[&str]) -> Result<BridgeHarness> {
-    let temp = tempfile::tempdir()?;
-    let data_dir = temp.path().join("data");
-    std::fs::create_dir(&data_dir)?;
-    let db = data_dir.join("archive.db");
+/// Seed the canonical rows, `viewer_*` extension profile, overlays
+/// (facts/annotations/tags) and the persisted Task-5 region inventory —
+/// everything that is NOT the lexical index. Returns the open writer so
+/// callers can stage/stamp region documents and run assertions; tests
+/// that need the no-index state stop here.
+fn gold_seed(fixture: &[GoldSession], db: &Path) -> Result<Connection> {
     {
-        let storage = FrankenStorage::open(&db)?;
+        let storage = FrankenStorage::open(db)?;
         let mut agents: BTreeMap<String, i64> = BTreeMap::new();
         let mut workspaces: BTreeMap<String, i64> = BTreeMap::new();
         for session in fixture {
@@ -296,7 +295,6 @@ fn gold_harness_full(fixture: &[GoldSession], extra_args: &[&str]) -> Result<Bri
                 "gold fixture insertion order must pin conversation ids"
             );
         }
-        drop(storage);
     }
     // Extension profile + overlays (facts, annotations, tags) must commit
     // BEFORE region publication: `meta:*` rows and the subagents scope
@@ -379,6 +377,18 @@ fn gold_harness_full(fixture: &[GoldSession], extra_args: &[&str]) -> Result<Bri
             &generation.structure,
         )?;
     }
+    Ok(writer)
+}
+
+/// Same publication as [`gold_harness`] over an arbitrary fixture set —
+/// the seven gold sessions plus any case-specific extras — and optional
+/// bridge args (e.g. `--enable-viewer-writes` for the annotation lane).
+fn gold_harness_full(fixture: &[GoldSession], extra_args: &[&str]) -> Result<BridgeHarness> {
+    let temp = tempfile::tempdir()?;
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir(&data_dir)?;
+    let db = data_dir.join("archive.db");
+    let writer = gold_seed(fixture, &db)?;
     // Quill projection: one doc per canonical message, then every
     // session's persisted region documents (derived/meta/noise-chat
     // slots) reconciled by the same lane ingest calls.
@@ -409,14 +419,24 @@ fn gold_harness_full(fixture: &[GoldSession], extra_args: &[&str]) -> Result<Bri
         let path = expected_index_dir(&data_dir);
         let mut index = QuillCassIndex::open_or_create(&path)?;
         index.add_cass_documents(&docs)?;
+        // Two-phase publication — the real lane's stage → commit → stamp
+        // order, so the fixture asserts exactly what ingest ships.
+        let mut stamps = Vec::new();
         for session in fixture {
-            coding_agent_search::viewer_extensions::search_regions::publish_region_docs(
-                &mut index,
-                &writer,
-                session.id,
-            )?;
+            let (_docs, stamp) =
+                coding_agent_search::viewer_extensions::search_regions::stage_region_docs(
+                    &mut index,
+                    &writer,
+                    session.id,
+                )?;
+            if let Some(stamp) = stamp {
+                stamps.push(stamp);
+            }
         }
         index.commit()?;
+        coding_agent_search::viewer_extensions::search_regions::stamp_region_docs_published(
+            &writer, &stamps,
+        )?;
         std::fs::write(
             path.join("schema_hash.json"),
             serde_json::to_vec(&json!({
@@ -1220,5 +1240,570 @@ fn search_sessions_large_universe_stays_honest() -> Result<()> {
         "pending evidence is the retryable refusal: {page}"
     );
     bridge.shutdown()
+}
+
+/// `mcp:` binds tool and meta surfaces — the tool name, every region's
+/// persisted `indexed_text` fragment and session tags — exactly what the
+/// indexed architecture evaluates from persisted rows. The Python
+/// oracle's `fts.tool_name OR fts.content` additionally matched block
+/// bodies it already had in memory; here a canonical chat body is a
+/// `chat` literal's surface, not tool membership (a predicate must
+/// never pay one `messages.content` read per region). Pinned
+/// divergence: `mcp:quux` sees S3's tool-call fragment but NOT S5's
+/// chat body carrying the same token.
+#[test]
+fn search_sessions_mcp_binds_tool_and_meta_surfaces() -> Result<()> {
+    let mut bridge = gold_harness()?;
+
+    // Tag surface: S1 carries the `mcp-server` tag — the session-level
+    // heuristic the oracle keeps.
+    let page = search(&mut bridge, json!({"query":"mcp:mcp-server"}))?;
+    assert_members(&page, &[1])?;
+    let page = search(&mut bridge, json!({"query":"mcp:server"}))?;
+    assert_members(&page, &[1])?;
+
+    // Tool-name surface: S3 recorded a Bash call.
+    let page = search(&mut bridge, json!({"query":"mcp:Bash"}))?;
+    assert_members(&page, &[3])?;
+
+    // Persisted fragment surface: S3's call/result regions carry `quux`
+    // in their `indexed_text` — a match. S5's identical token lives only
+    // in its canonical chat body — invisible to the predicate, and the
+    // pinned test proves it is never hydrated for one.
+    let page = search(&mut bridge, json!({"query":"mcp:quux"}))?;
+    assert_members(&page, &[3])?;
+    // ...while the same token IS found by a bare literal through the
+    // chat surface — the division of labour this pins.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+
+    bridge.shutdown()
+}
+
+/// A notes-ONLY annotation edit converges just the meta rows it owns:
+/// the old note text stops matching, the replacement matches, and the
+/// untouched tag surface keeps answering — targeted meta replacement
+/// must not disturb regions it did not own — while the marks row
+/// returns to `published` inside the same write op.
+#[test]
+fn search_sessions_notes_only_edit_converges_meta_regions() -> Result<()> {
+    let mut bridge = gold_harness_full(&gold_fixture(), &["--enable-viewer-writes"])?;
+
+    // Baseline surfaces: S1's notes text and both tags are live.
+    let page = search(&mut bridge, json!({"query":"fluxcap"}))?;
+    assert_members(&page, &[1])?;
+    let page = search(&mut bridge, json!({"query":"mcp-server"}))?;
+    assert_members(&page, &[1])?;
+
+    // Notes ONLY — no `tags` key, so the tag set is untouched.
+    let patch = bridge.exchange(json!({
+        "op":"patch_annotations","conversation_id":1,"expected_revision":1,
+        "patch":{"notes":"warpdrive maintenance log"}
+    }))?;
+    ensure!(patch["ok"] == true, "patch refused: {patch}");
+    ensure!(patch["result"]["annotation"]["revision"] == 2);
+
+    // Cleared fragment stops matching; the new fragment is live; the
+    // untouched tag surfaces keep answering through the same regions.
+    let page = search(&mut bridge, json!({"query":"fluxcap"}))?;
+    assert_members(&page, &[])?;
+    let page = search(&mut bridge, json!({"query":"warpdrive"}))?;
+    assert_members(&page, &[1])?;
+    let page = search(&mut bridge, json!({"query":"mcp-server"}))?;
+    assert_members(&page, &[1])?;
+    let page = search(&mut bridge, json!({"query":"release-blocker"}))?;
+    assert_members(&page, &[1])?;
+
+    // The marks row converged back to `published` inside the write op.
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let marks = writer.query(
+        "SELECT docs_state, pending_doc_deletes FROM viewer_search_region_marks \
+         WHERE conversation_id = 1",
+    )?;
+    ensure!(marks.len() == 1, "marks row present: {marks:?}");
+    ensure!(
+        marks[0].get_typed::<String>(0)? == "published",
+        "meta replacement must reconverge to published: {marks:?}"
+    );
+    ensure!(
+        marks[0].get_typed::<String>(1)? == "[]",
+        "converged marks carry no pending deletes: {marks:?}"
+    );
+    bridge.shutdown()
+}
+
+/// An annotation edit on an archive with NO published lexical index must
+/// not fabricate one holding only region docs: convergence skips, the
+/// marks row stays `meta_pending`, and `search_sessions` keeps refusing
+/// `index_unavailable` — the honest states the reader contract defines.
+/// Before the guard, `open_or_create` minted a real index of ONLY region
+/// docs whose fingerprint made every later chat literal a silent false
+/// negative.
+#[test]
+fn search_sessions_annotation_edit_without_index_fabricates_nothing() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir(&data_dir)?;
+    let db = data_dir.join("archive.db");
+    // Canonical rows + extension profile + persisted regions — but NO
+    // index at `expected_index_dir` (the deferred-lexical state).
+    let writer = gold_seed(&gold_fixture(), &db)?;
+    let index_path = expected_index_dir(&data_dir);
+    ensure!(
+        coding_agent_search::search::tantivy::searchable_index_fingerprint(&index_path)?
+            .is_none(),
+        "fixture must start without a published index"
+    );
+    let mut bridge =
+        BridgeHarness::spawn_fixture(temp, data_dir, db, &["--enable-viewer-writes"])?;
+
+    let patch = bridge.exchange(json!({
+        "op":"patch_annotations","conversation_id":1,"expected_revision":1,
+        "patch":{"notes":"replaced without an index"}
+    }))?;
+    ensure!(patch["ok"] == true, "patch refused: {patch}");
+
+    // No index was fabricated: the fingerprint is still absent and the
+    // marks row honestly reports `meta_pending` for the next ingest run.
+    ensure!(
+        coding_agent_search::search::tantivy::searchable_index_fingerprint(&index_path)?
+            .is_none(),
+        "annotation convergence must not fabricate an index"
+    );
+    let marks = writer.query(
+        "SELECT docs_state FROM viewer_search_region_marks WHERE conversation_id = 1",
+    )?;
+    ensure!(marks.len() == 1, "marks row present: {marks:?}");
+    ensure!(
+        marks[0].get_typed::<String>(0)? == "meta_pending",
+        "absent-index convergence must leave marks meta_pending: {marks:?}"
+    );
+
+    let page = search(&mut bridge, json!({"query":"fluxcap"}))?;
+    ensure!(page["ok"] == false, "no-index search must refuse: {page}");
+    ensure!(
+        page["error"]["kind"] == "index_unavailable",
+        "the reader contract still refuses honestly: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// Ungated (non-ASCII) literal verification is bounded: a session whose
+/// chat regions exceed the hydration budget can no longer be verified
+/// exactly, so it degrades to `unseen` — the request refuses
+/// `data_unavailable` without `allow_partial` (never a silent false
+/// negative), while `allow_partial` serves the verified membership with
+/// the `membership_incomplete` warning. Before the bound, a non-ASCII
+/// literal hydrated EVERY chat region across the universe — one
+/// `messages.content` point read each.
+#[test]
+fn search_sessions_non_ascii_verification_is_bounded() -> Result<()> {
+    let mut fixture = gold_fixture();
+    // 4_201 chat regions — one past the 4_096 request budget — and the
+    // Cyrillic marker lives in the LAST region so the budget provably
+    // gates the check.
+    let mut messages: Vec<(i64, MessageRole, &'static str, Option<Value>)> = (0..4_200_i64)
+        .map(|idx| (idx, MessageRole::Agent, "plain filler text", None))
+        .collect();
+    messages.push((
+        4_200,
+        MessageRole::Agent,
+        "кириллический уникальный маркер",
+        None,
+    ));
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-cyrillic-bulk",
+        source_path: "/sessions/s-8-cyrillic-bulk.jsonl",
+        workspace: None,
+        title: "cyrillic bulk",
+        started_at: Some(6_000),
+        ended_at: Some(9_000),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages,
+    });
+    let mut bridge = gold_harness_full(&fixture, &[])?;
+
+    // Without allow_partial the unverifiable session refuses honestly —
+    // budget exhaustion is `data_unavailable`, not retryable pending.
+    let page = search(&mut bridge, json!({"query":"маркер"}))?;
+    ensure!(
+        page["ok"] == false,
+        "an unverifiable ungated evaluation must refuse: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "budget exhaustion is honest-unavailable, never a pending retry: {page}"
+    );
+
+    // allow_partial still answers — the budget-exhausted session drops
+    // out as honest `unknown` rather than a fabricated negative.
+    let page = search(
+        &mut bridge,
+        json!({"query":"маркер","allow_partial":true}),
+    )?;
+    ensure!(page["ok"] == true, "partial opt-in must serve: {page}");
+    ensure!(
+        page["result"]["complete"] == false,
+        "an unverifiable session keeps the page incomplete: {page}"
+    );
+    ensure!(
+        ids(&page).is_empty(),
+        "no session verifies the gated literal: {page}"
+    );
+    // `search_sessions_unicode_deep_and_byte_budget` pins the other side:
+    // a session INSIDE the budget verifies the same non-ASCII literal
+    // exactly (deep coordinate and all).
+    bridge.shutdown()
+}
+
+/// Toggle write permission recursively — the deterministic commit
+/// failure the crash-safe publication test induces.
+fn set_tree_readonly(path: &Path, readonly: bool) -> Result<()> {
+    let mut perms = std::fs::metadata(path)?.permissions();
+    perms.set_readonly(readonly);
+    std::fs::set_permissions(path, perms)?;
+    if std::fs::metadata(path)?.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            set_tree_readonly(&entry?.path(), readonly)?;
+        }
+    }
+    Ok(())
+}
+
+/// Two-phase region-doc publication is crash-safe: staging never touches
+/// the marks row, a dropped writer or a FAILED COMMIT is the crash a
+/// pre-commit `published` stamp used to certify, the failed commit
+/// clears its queued stamps so a later commit cannot publish marks for
+/// lost documents, and the next converge re-materializes the documents
+/// and stamps `published` only after the commit seals them.
+#[test]
+fn region_doc_publication_is_crash_safe() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir(&data_dir)?;
+    let db = data_dir.join("archive.db");
+    let writer = gold_seed(&gold_fixture(), &db)?;
+    let index_path = expected_index_dir(&data_dir);
+    let mark_state = |state_sql: &str| -> Result<String> {
+        Ok(writer
+            .query_row(state_sql)?
+            .get_typed::<String>(0)?)
+    };
+    let pending_sql =
+        "SELECT docs_state FROM viewer_search_region_marks WHERE conversation_id = 1";
+
+    // Phase 1 — stage only: the marks row must still say `pending`
+    // (the single statement that used to stamp it early is gone).
+    {
+        let mut index =
+            coding_agent_search::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+        let docs = index.stage_search_region_docs(&writer, 1)?;
+        ensure!(docs > 0, "fixture session must produce region docs");
+        let state = mark_state(pending_sql)?;
+        ensure!(
+            state == "pending",
+            "staging must not stamp published: {state}"
+        );
+        // Crash: the writer drops WITHOUT commit — staged docs are lost.
+    }
+    let state = mark_state(pending_sql)?;
+    ensure!(
+        state == "pending",
+        "a crashed stage must stay pending, never certified: {state}"
+    );
+
+    // Phase 2 — a FAILED commit: stage again, make the index directory
+    // read-only so the segment write cannot land, and the commit must
+    // fail while dropping its queued stamp. Once writable again a plain
+    // commit succeeds — and the marks row is STILL pending, proving the
+    // failed commit invalidated its stamp queue (otherwise this commit
+    // would certify documents the lost commit may have dropped).
+    {
+        let mut index =
+            coding_agent_search::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+        let docs = index.stage_search_region_docs(&writer, 1)?;
+        ensure!(docs > 0, "fixture session must produce region docs");
+        set_tree_readonly(&index_path, true)?;
+        let failed = index.commit();
+        set_tree_readonly(&index_path, false)?;
+        ensure!(failed.is_err(), "a read-only index dir must refuse commit");
+        let state = mark_state(pending_sql)?;
+        ensure!(
+            state == "pending",
+            "a failed commit must leave marks pending: {state}"
+        );
+        index.commit()?;
+        let state = mark_state(pending_sql)?;
+        ensure!(
+            state == "pending",
+            "a later commit must not stamp marks for the lost stage: {state}"
+        );
+    }
+
+    // Recovery: converge the still-pending session on the same writer —
+    // the commit seals the re-materialized documents, THEN stamps.
+    {
+        let mut index =
+            coding_agent_search::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+        index.converge_pending_search_region_docs(&writer, i64::MAX)?;
+        index.commit_with_region_doc_stamps(&writer)?;
+        let state = mark_state(pending_sql)?;
+        ensure!(
+            state == "published",
+            "post-commit stamp must publish the converged session: {state}"
+        );
+    }
+    Ok(())
+}
+
+/// The post-commit marks stamp replays the stage-time snapshot as a
+/// compare-and-swap: a republish or meta edit between stage and stamp is
+/// refused — the newer pending state (and its queued delete list) is
+/// never overwritten by a stamp that never saw it.
+#[test]
+fn region_doc_stamp_is_freshness_guarded() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir(&data_dir)?;
+    let db = data_dir.join("archive.db");
+    let writer = gold_seed(&gold_fixture(), &db)?;
+    let index_path = expected_index_dir(&data_dir);
+
+    let mut index = QuillCassIndex::open_or_create(&index_path)?;
+    let (_docs, stamp) =
+        coding_agent_search::viewer_extensions::search_regions::stage_region_docs(
+            &mut index,
+            &writer,
+            1,
+        )?;
+    index.commit()?;
+
+    // A concurrent republish/meta-edit lands between stage and stamp:
+    // new revision, meta_pending, a queued stale identity.
+    writer.execute(
+        "UPDATE viewer_search_region_marks SET source_revision = source_revision + 1, \
+         docs_state = 'meta_pending', pending_doc_deletes = '[\"stale-doc-id\"]' \
+         WHERE conversation_id = 1",
+    )?;
+    let stamped =
+        coding_agent_search::viewer_extensions::search_regions::stamp_region_docs_published(
+            &writer,
+            &[stamp.expect("a marks row must yield a stamp")],
+        )?;
+    ensure!(
+        stamped == 0,
+        "a stale stamp must be refused, not clobber the newer state"
+    );
+    let row = writer.query_row(
+        "SELECT docs_state, pending_doc_deletes FROM viewer_search_region_marks \
+         WHERE conversation_id = 1",
+    )?;
+    ensure!(
+        row.get_typed::<String>(0)? == "meta_pending"
+            && row.get_typed::<String>(1)? == "[\"stale-doc-id\"]",
+        "the newer pending state survives the refused stamp: {row:?}"
+    );
+
+    // A fresh stage sees the new snapshot — it deletes the queued
+    // identity and its stamp applies cleanly.
+    let (_docs, stamp) =
+        coding_agent_search::viewer_extensions::search_regions::stage_region_docs(
+            &mut index,
+            &writer,
+            1,
+        )?;
+    index.commit()?;
+    let stamped =
+        coding_agent_search::viewer_extensions::search_regions::stamp_region_docs_published(
+            &writer,
+            &[stamp.expect("a marks row must yield a stamp")],
+        )?;
+    ensure!(stamped == 1, "a current stamp applies: {stamped}");
+    let row = writer.query_row(
+        "SELECT docs_state, pending_doc_deletes FROM viewer_search_region_marks \
+         WHERE conversation_id = 1",
+    )?;
+    ensure!(
+        row.get_typed::<String>(0)? == "published"
+            && row.get_typed::<String>(1)? == "[]",
+        "the current stamp publishes and clears the queue: {row:?}"
+    );
+    Ok(())
+}
+
+/// The live region-doc bound counts ONLY doc-backed rows: chat regions
+/// (canonical `quill_idx`, `indexed_text` NULL) own no document — the
+/// earlier `marks.region_count` bound charged every persisted row for a
+/// doc it never had, under-counted the observed message share, and broke
+/// the watch checkpoint's refresh/early-exit equality.
+#[test]
+fn live_region_doc_bound_counts_only_doc_backed_rows() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir(&data_dir)?;
+    let db = data_dir.join("archive.db");
+    let writer = gold_seed(&gold_fixture(), &db)?;
+
+    let doc_backed: i64 = writer
+        .query_row(
+            "SELECT COUNT(*) FROM viewer_search_regions \
+             WHERE quill_idx >= 1099511627776 AND indexed_text IS NOT NULL",
+        )?
+        .get_typed(0)?;
+    let total_rows: i64 = writer
+        .query_row("SELECT COUNT(*) FROM viewer_search_regions")?
+        .get_typed(0)?;
+    ensure!(
+        total_rows > doc_backed,
+        "fixture must contain non-doc-backed chat rows: {total_rows} vs {doc_backed}"
+    );
+    let bound =
+        coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(&writer)?;
+    ensure!(
+        bound == doc_backed as u64,
+        "bound must count doc-backed rows only: {bound} != {doc_backed}"
+    );
+    let marks_total: i64 = writer
+        .query_row("SELECT COALESCE(SUM(region_count),0) FROM viewer_search_region_marks")?
+        .get_typed(0)?;
+    ensure!(
+        bound < marks_total as u64,
+        "the old region_count bound ({marks_total}) over-counted: {bound}"
+    );
+
+    // A queued stale identity raises the bound by exactly its length.
+    writer.execute(
+        "UPDATE viewer_search_region_marks SET pending_doc_deletes = '[\"a\",\"b\"]' \
+         WHERE conversation_id = 1",
+    )?;
+    let bound =
+        coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(&writer)?;
+    ensure!(
+        bound == doc_backed as u64 + 2,
+        "pending deletes bound stale identities: {bound}"
+    );
+    Ok(())
+}
+
+/// Anchoring is linear in the session size: deriving regions used to
+/// scan `structure.steps` per message and `structure.tool_calls` per
+/// call (O(M·S + C·T) inside the generation transaction). Deriving at
+/// 16k vs 32k messages proves the scaling is ~2× (linear), never ~4×
+/// (quadratic), while every tool region still resolves its step/turn
+/// anchor through the maps.
+#[test]
+fn region_derivation_anchors_large_session_in_linear_time() -> Result<()> {
+    // Two bulk sessions, 16k and 32k messages, a tool call on every
+    // second message — enough structure for the quadratic term to
+    // dominate utterly if it still existed.
+    let bulk = |id: i64,
+                count: i64,
+                external_id: &'static str,
+                source_path: &'static str|
+     -> GoldSession {
+        let messages: Vec<(i64, MessageRole, &'static str, Option<Value>)> = (0..count)
+            .map(|idx| {
+                if idx % 2 == 0 {
+                    (
+                        idx,
+                        MessageRole::Agent,
+                        "working",
+                        Some(json!({"type":"assistant","message":{"role":"assistant",
+                            "content":[{"type":"tool_use","id":format!("call-{id}-{idx}"),
+                                "name":"Bash","input":{"command":format!("cmd-{idx}")}}]}})),
+                    )
+                } else {
+                    (idx, MessageRole::Agent, "progress", None)
+                }
+            })
+            .collect();
+        GoldSession {
+            id,
+            agent: "claude_code",
+            source_id: "local",
+            external_id,
+            source_path,
+            workspace: None,
+            title: "bulk anchors",
+            started_at: Some(1_000),
+            ended_at: Some(9_000),
+            origin_host: None,
+            metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+            messages,
+        }
+    };
+    let fixture = vec![
+        bulk(1, 16_000, "s-bulk-anchors-a", "/sessions/s-bulk-anchors-a.jsonl"),
+        bulk(2, 32_000, "s-bulk-anchors-b", "/sessions/s-bulk-anchors-b.jsonl"),
+    ];
+
+    let temp = tempfile::tempdir()?;
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir(&data_dir)?;
+    let db = data_dir.join("archive.db");
+    {
+        let storage = FrankenStorage::open(&db)?;
+        let agent_id = storage.ensure_agent(&Agent {
+            id: None,
+            slug: "claude_code".to_owned(),
+            name: "claude_code".to_owned(),
+            version: None,
+            kind: AgentKind::Cli,
+        })?;
+        for session in &fixture {
+            let outcome =
+                storage.insert_conversation_tree(agent_id, None, &gold_conversation(session))?;
+            ensure!(
+                outcome.conversation_id == session.id,
+                "bulk fixture insertion order pins conversation ids"
+            );
+        }
+    }
+    let writer = Connection::open(db.to_string_lossy().into_owned())?;
+
+    let mut durations = Vec::new();
+    for session in &fixture {
+        let conv = gold_conversation(session);
+        let generation =
+            coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+                &writer, &conv, session.id,
+            )?;
+        let started = Instant::now();
+        let regions =
+            coding_agent_search::viewer_extensions::search_regions::derive_message_regions(
+                session.id,
+                &generation.packet,
+                &generation.structure,
+            );
+        let elapsed = started.elapsed();
+        let tool_regions = regions
+            .iter()
+            .filter(|r| r.scope == "tools")
+            .count();
+        ensure!(
+            tool_regions == session.messages.len() / 2,
+            "one tool region per call: {tool_regions}"
+        );
+        ensure!(
+            regions
+                .iter()
+                .filter(|r| r.scope == "tools")
+                .all(|r| r.step_index.is_some() && r.message_idx.is_some()),
+            "every tool region keeps its anchors through the maps"
+        );
+        durations.push(elapsed);
+    }
+    let (small, large) = (durations[0], durations[1]);
+    // Linear doubling ≈ 2×, quadratic ≈ 4×. Generous margin against
+    // allocator noise while still excluding the old scan's ratio.
+    ensure!(
+        large < small * 3 && large < Duration::from_secs(30),
+        "region derivation must stay linear — 16k={small:?} 32k={large:?}"
+    );
+    Ok(())
 }
 

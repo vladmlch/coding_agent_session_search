@@ -113,6 +113,34 @@ pub fn raw_page(
     })
 }
 
+/// [`raw_page`] over canonical message documents only.
+///
+/// Raw rank cursors map every hit to a canonical
+/// `(conversation_id, message_index)` chat coordinate. Persisted
+/// search-region documents share the index in the synthetic
+/// `msg_idx >= REGION_DOC_BASE` space (Task 5) and would surface here as
+/// phantom chat hits, so the enumeration wraps the parsed query in the
+/// canonical-message guard. `search_sessions` deliberately keeps region
+/// documents in scope through [`raw_page`], which is why the exclusion
+/// lives in a sibling entry point rather than inside `raw_page` itself.
+pub fn raw_page_canonical(
+    reader: &QuillSearchIndex,
+    text: &str,
+    filters: &CassQueryFilters,
+    offset: usize,
+    limit: usize,
+) -> Result<QuillLexicalPage> {
+    let (query, _) = parse_lexical_query(text, filters)?;
+    let query = coding_agent_search::search::quill_bridge::canonical_message_query(query);
+    search_paginated(reader, &query, limit, offset, true).map_err(|error| {
+        if coding_agent_search::search::quill_bridge::is_query_fuel_exhausted(&error) {
+            refuse("ranking_budget_exceeded", "Quill query fuel exhausted; no complete ranking receipt")
+        } else {
+            error
+        }
+    })
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RawRankHit {
     pub source_id: String,

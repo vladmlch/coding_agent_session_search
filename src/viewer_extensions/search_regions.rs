@@ -25,10 +25,14 @@
 //! `CassDocument` whose `msg_idx` slot is `REGION_DOC_BASE + region_ordinal`
 //! — conversation-scoped identities via `cass_document_identity`, never
 //! parsed opaquely. `region_docs` rebuilds that doc set from the persisted
-//! rows; `publish_region_docs` reconciles it (delete stale ids, upsert the
-//! current set, then stamp `docs_state='published'`). A session whose
-//! marks row is missing or not `published` is honest *unseen* evidence at
-//! query time — never a silently wrong `False`.
+//! rows; [`stage_region_docs`] reconciles it on an uncommitted index
+//! writer (delete stale ids, upsert the current set) and
+//! [`stamp_region_docs_published`] flips `docs_state='published'` ONLY
+//! after the index commit seals those documents — stamping before the
+//! commit would certify documents a failed commit or crash never
+//! shipped, and `converge_pending` would then never revisit the session.
+//! A session whose marks row is missing or not `published` is honest
+//! *unseen* evidence at query time — never a silently wrong `False`.
 
 use std::collections::HashMap;
 
@@ -42,7 +46,7 @@ use crate::model::conversation_packet::ConversationPacket;
 use crate::search::quill_bridge::QuillCassIndex;
 
 use super::facts::FactsDb;
-use super::projection::StructuralPublication;
+use super::projection::{StepLink, StructuralPublication, ToolCallLink};
 
 /// Region schema revision; bumps when the derivation shape changes so the
 /// `(region_version, source_revision)` idempotence key republishes rows.
@@ -283,30 +287,57 @@ fn bounded(text: &str) -> String {
 // Region derivation (one deterministic pass; ordinals are derivation order)
 // ---------------------------------------------------------------------------
 
-/// Structural anchors for a message coordinate, resolved from the
-/// `StructuralPublication` step rows (`scope IN ('text','thinking',
-/// 'tool_call','tool_result')` carry `block_index` parts; the first part
-/// row of a message anchors the region).
-fn anchors_for(
-    structure: &StructuralPublication,
-    source_idx: i64,
-) -> (Option<i64>, Option<i64>) {
-    let step = structure
-        .steps
-        .iter()
-        .find(|link| link.source_idx == source_idx);
-    (step.map(|link| link.step_index), step.and_then(|link| link.turn_index))
+/// O(1) structural anchor lookups for one derivation pass.
+///
+/// `derive_message_regions` resolves a `(step_index, turn_index)` anchor
+/// from the `StructuralPublication` step rows (`scope IN
+/// ('text','thinking','tool_call','tool_result')` carry `block_index`
+/// parts; the first part row of a message anchors the region) for every
+/// message and every extracted call/result. Looking each up by scanning
+/// `structure.steps`/`structure.tool_calls` made a large session's
+/// publication O(messages·steps + calls·tool_calls) inside the
+/// generation transaction; the maps are built once per derivation and
+/// keep the original first-match semantics for duplicate `source_idx` /
+/// `call_id` rows (`HashMap::entry().or_insert` mirrors `.find()`).
+struct AnchorMaps<'a> {
+    steps_by_source_idx: HashMap<i64, &'a StepLink>,
+    calls_by_call_id: HashMap<&'a str, &'a ToolCallLink>,
 }
 
-fn tool_anchor(
-    structure: &StructuralPublication,
-    call_id: &str,
-    fallback_idx: i64,
-) -> (Option<i64>, Option<i64>) {
-    if let Some(link) = structure.tool_calls.iter().find(|link| link.call_id == call_id) {
-        (link.step_index, link.turn_index)
-    } else {
-        anchors_for(structure, fallback_idx)
+impl<'a> AnchorMaps<'a> {
+    fn build(structure: &'a StructuralPublication) -> Self {
+        let mut steps_by_source_idx: HashMap<i64, &'a StepLink> =
+            HashMap::with_capacity(structure.steps.len());
+        for link in &structure.steps {
+            steps_by_source_idx.entry(link.source_idx).or_insert(link);
+        }
+        let mut calls_by_call_id: HashMap<&'a str, &'a ToolCallLink> =
+            HashMap::with_capacity(structure.tool_calls.len());
+        for link in &structure.tool_calls {
+            calls_by_call_id
+                .entry(link.call_id.as_str())
+                .or_insert(link);
+        }
+        Self {
+            steps_by_source_idx,
+            calls_by_call_id,
+        }
+    }
+
+    fn anchors_for(&self, source_idx: i64) -> (Option<i64>, Option<i64>) {
+        let step = self.steps_by_source_idx.get(&source_idx);
+        (
+            step.map(|link| link.step_index),
+            step.and_then(|link| link.turn_index),
+        )
+    }
+
+    fn tool_anchor(&self, call_id: &str, fallback_idx: i64) -> (Option<i64>, Option<i64>) {
+        if let Some(link) = self.calls_by_call_id.get(call_id) {
+            (link.step_index, link.turn_index)
+        } else {
+            self.anchors_for(fallback_idx)
+        }
     }
 }
 
@@ -342,12 +373,16 @@ pub fn derive_message_regions(
     let mut regions: Vec<RegionRow> = Vec::new();
     let mut calls: Vec<PendingCall> = Vec::new();
     let mut results: Vec<PendingResult> = Vec::new();
+    // One pass over `structure.steps`/`structure.tool_calls` up front —
+    // every message/call/result anchor below is then a hash lookup, not a
+    // linear scan (previously O(messages·steps + calls·tool_calls)).
+    let anchors = AnchorMaps::build(structure);
 
     for message in &packet.payload.messages {
         let idx = message.idx;
         let message_id = message.message_id;
         let content = &message.content;
-        let (step_index, turn_index) = anchors_for(structure, idx);
+        let (step_index, turn_index) = anchors.anchors_for(idx);
 
         if !content.is_empty() {
             let noise = crate::search::canonicalize::is_hard_message_noise(
@@ -530,7 +565,7 @@ pub fn derive_message_regions(
             .first()
             .map(|r| r.message_id)
             .unwrap_or(call.message_id);
-        let (step_index, turn_index) = tool_anchor(structure, &call.call_id, anchor_idx);
+        let (step_index, turn_index) = anchors.tool_anchor(&call.call_id, anchor_idx);
         regions.push(RegionRow {
             region_ordinal: regions.len() as i64,
             region_key: format!("tool:{ordinal}:{}", call.call_id),
@@ -552,7 +587,7 @@ pub fn derive_message_regions(
         });
     }
     for (ordinal, result) in orphan_results.into_iter().enumerate() {
-        let (step_index, turn_index) = anchors_for(structure, result.message_idx);
+        let (step_index, turn_index) = anchors.anchors_for(result.message_idx);
         regions.push(RegionRow {
             region_ordinal: regions.len() as i64,
             region_key: format!("toolresult:{ordinal}:{}", result.message_idx),
@@ -1122,34 +1157,53 @@ pub fn regions_for_universe_subquery(
     Ok(out)
 }
 
-/// Upper bound on live region documents across the archive: every
-/// persisted region row maps to at most one document, and
-/// `pending_doc_deletes` bounds stale identities still awaiting removal.
-/// `0` on archives without the extension profile (no marks table). The
-/// lexical publication receipt uses this to split the total indexed-doc
-/// count back into its canonical-message share so the
-/// `indexed_docs <= total_messages` certification stays exact.
-pub fn live_region_doc_bound(db: &impl FactsDb) -> Result<u64> {
-    let has_table = !db
+/// Whether this archive carries the extension profile's marks table.
+/// Canonical-only stores (minimal test schemas, archives opened before
+/// the viewer profile ever installed) legitimately lack it; every
+/// marks-listing helper treats that as an empty inventory rather than a
+/// query error, matching [`live_region_doc_bound`]'s documented `0`.
+fn has_region_marks_table(db: &impl FactsDb) -> Result<bool> {
+    Ok(!db
         .facts_query_map(
             "SELECT 1 FROM sqlite_master WHERE type='table' \
              AND name='viewer_search_region_marks' LIMIT 1",
             &[],
             |row| row.get_typed::<i64>(0),
         )?
-        .is_empty();
-    if !has_table {
+        .is_empty())
+}
+
+/// Upper bound on live region documents across the archive: only
+/// persisted rows that actually own a document count — the synthetic-slot
+/// rows (`quill_idx >= REGION_DOC_BASE`) carrying a bounded
+/// `indexed_text` fragment, i.e. exactly the rows [`region_docs`]
+/// materializes. Chat regions (canonical `quill_idx`, `indexed_text`
+/// NULL) map onto the message document and own none, so counting
+/// `marks.region_count` here over-bounded the region share and
+/// under-counted the observed canonical-message share, breaking watch
+/// checkpoint refreshes and the early-exit equality.
+/// `pending_doc_deletes` bounds stale identities still awaiting removal.
+/// `0` on archives without the extension profile (no marks table). The
+/// lexical publication receipt uses this to split the total indexed-doc
+/// count back into its canonical-message share so the
+/// `indexed_docs <= total_messages` certification stays exact.
+pub fn live_region_doc_bound(db: &impl FactsDb) -> Result<u64> {
+    if !has_region_marks_table(db)? {
         return Ok(0);
     }
     let mut bound = 0_u64;
-    for (region_count, deletes_json) in db.facts_query_map(
-        "SELECT m.region_count, m.pending_doc_deletes \
+    for (doc_rows, deletes_json) in db.facts_query_map(
+        "SELECT \
+           (SELECT COUNT(*) FROM viewer_search_regions r \
+            WHERE r.conversation_id = m.conversation_id \
+              AND r.quill_idx >= ?1 AND r.indexed_text IS NOT NULL), \
+           m.pending_doc_deletes \
          FROM viewer_search_region_marks m \
          WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.id = m.conversation_id)",
-        &[],
+        &[ParamValue::from(REGION_DOC_BASE as i64)],
         |row| Ok((row.get_typed::<i64>(0)?, row.get_typed::<String>(1)?)),
     )? {
-        bound = bound.saturating_add(region_count.max(0) as u64);
+        bound = bound.saturating_add(doc_rows.max(0) as u64);
         let deletes: Vec<Value> = serde_json::from_str(&deletes_json).unwrap_or_default();
         bound = bound.saturating_add(deletes.len() as u64);
     }
@@ -1223,7 +1277,11 @@ pub fn region_marks_for(
 
 /// `docs_state = 'pending'` sessions — the index lane's dirty set after
 /// ingest publication or meta replacement ran without a doc commit yet.
+/// Empty on archives without the extension profile (no marks table).
 pub fn pending_region_doc_sessions(db: &impl FactsDb, limit: i64) -> Result<Vec<i64>> {
+    if !has_region_marks_table(db)? {
+        return Ok(Vec::new());
+    }
     db.facts_query_map(
         "SELECT conversation_id FROM viewer_search_region_marks m \
          WHERE m.docs_state != ?1 \
@@ -1241,8 +1299,12 @@ pub fn pending_region_doc_sessions(db: &impl FactsDb, limit: i64) -> Result<Vec<
 /// EVERY session carrying a marks row — the authoritative rebuild lane's
 /// converge set. A from-scratch index build owns no region documents at
 /// all, so `published` marks must be re-materialized too; `pending`/
-/// `meta_pending` states reconcile through the same pass.
+/// `meta_pending` states reconcile through the same pass. Empty on
+/// archives without the extension profile (no marks table).
 pub fn marked_region_doc_sessions(db: &impl FactsDb, limit: i64) -> Result<Vec<i64>> {
+    if !has_region_marks_table(db)? {
+        return Ok(Vec::new());
+    }
     db.facts_query_map(
         "SELECT conversation_id FROM viewer_search_region_marks m \
          WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.id = m.conversation_id) \
@@ -1320,36 +1382,63 @@ pub fn region_docs(
     Ok(docs)
 }
 
-/// Reconcile one session's region documents in Quill against the persisted
-/// inventory: delete every queued stale identity, upsert the current docs,
-/// then stamp `docs_state='published'`. Called by the lexical ingest lanes
-/// that already own a committed index writer. Returns the number of
-/// documents upserted (the rebuild lanes fold it into published-doc
-/// accounting).
-pub fn publish_region_docs(
+/// The marks-row snapshot [`stage_region_docs`] read while materializing
+/// a session's region documents. [`stamp_region_docs_published`] replays
+/// it as a compare-and-swap after the index commit: if a concurrent
+/// republish, meta replacement or delete-queue append landed between
+/// staging and the commit, the row's `region_version`/`source_revision`/
+/// `docs_state`/`pending_doc_deletes` no longer match and the stamp is
+/// refused — the session stays honestly pending for the next converge
+/// pass instead of certifying documents built against a stale inventory
+/// or clobbering a newer pending delete list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionDocStamp {
+    pub conversation_id: i64,
+    pub region_version: i64,
+    pub source_revision: i64,
+    pub docs_state: String,
+    /// Raw stored JSON — compared byte-for-byte so a republished delete
+    /// queue (even a reordered one) is never silently overwritten.
+    pub pending_doc_deletes: String,
+}
+
+/// Stage one session's region documents on the uncommitted index writer:
+/// delete every queued stale identity, upsert the current docs, and
+/// return the [`RegionDocStamp`] the caller replays through
+/// [`stamp_region_docs_published`] AFTER the index commit lands. The
+/// marks row is deliberately untouched here — stamping `published`
+/// before the commit would certify documents a failed commit or crash
+/// never shipped (a `published` mark is skipped by `converge_pending`,
+/// so the absent docs would silently drop literals from search).
+/// Returns `(upserted doc count, stamp)`; `(0, None)` when no region
+/// inventory was ever published for the session — not a pending one, an
+/// absent one — which the search lane treats as honest incomplete
+/// evidence.
+pub fn stage_region_docs(
     index: &mut QuillCassIndex,
     db: &impl FactsDb,
     conversation_id: i64,
-) -> Result<usize> {
-    let marks = region_mark(db, conversation_id)?;
-    if marks.is_none() {
-        // No region inventory was ever published for this session — not a
-        // pending one, an absent one. Nothing to reconcile and nothing to
-        // stamp; the search lane treats the missing mark as honest
-        // incomplete evidence.
-        return Ok(0);
-    }
-    let pending: Vec<String> = db
+) -> Result<(usize, Option<RegionDocStamp>)> {
+    let mark = db
         .facts_query_map(
-            "SELECT pending_doc_deletes FROM viewer_search_region_marks \
-             WHERE conversation_id = ?1",
+            "SELECT region_version, source_revision, docs_state, pending_doc_deletes \
+             FROM viewer_search_region_marks WHERE conversation_id = ?1",
             &[ParamValue::from(conversation_id)],
-            |row| row.get_typed::<Option<String>>(0),
+            |row| {
+                Ok((
+                    row.get_typed::<i64>(0)?,
+                    row.get_typed::<i64>(1)?,
+                    row.get_typed::<String>(2)?,
+                    row.get_typed::<String>(3)?,
+                ))
+            },
         )?
-        .first()
-        .and_then(|raw| raw.as_deref().map(str::to_owned))
-        .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
-        .unwrap_or_default();
+        .into_iter()
+        .next();
+    let Some((region_version, source_revision, docs_state, pending_json)) = mark else {
+        return Ok((0, None));
+    };
+    let pending: Vec<String> = serde_json::from_str(&pending_json).unwrap_or_default();
     index
         .delete_cass_document_ids(&pending)
         .context("deleting stale search-region documents")?;
@@ -1358,20 +1447,51 @@ pub fn publish_region_docs(
     index
         .upsert_cass_documents(&docs)
         .context("upserting search-region documents")?;
-    // `WHERE EXISTS` shares the sort lane's guard honesty: a conversation
-    // deleted by an FK-off writer mid-converge leaves an orphan marks row
-    // that must never be stamped `published` (and whose update an FK-on
-    // reader of the same archive rejects outright).
-    db.facts_execute(
-        "UPDATE viewer_search_region_marks SET docs_state = ?2, \
-         pending_doc_deletes = '[]' WHERE conversation_id = ?1 \
-         AND EXISTS (SELECT 1 FROM conversations c WHERE c.id = ?1)",
-        &[
-            ParamValue::from(conversation_id),
-            ParamValue::from(DOCS_PUBLISHED),
-        ],
-    )?;
-    Ok(doc_count)
+    Ok((
+        doc_count,
+        Some(RegionDocStamp {
+            conversation_id,
+            region_version,
+            source_revision,
+            docs_state,
+            pending_doc_deletes: pending_json,
+        }),
+    ))
+}
+
+/// Stamp staged sessions `published` — callable ONLY after the index
+/// commit that seals their documents. Each stamp replays the stage-time
+/// marks snapshot as a compare-and-swap: `region_version`,
+/// `source_revision`, `docs_state` and the exact `pending_doc_deletes`
+/// JSON must still match or a concurrent republish/meta-edit queued work
+/// this stamp never processed — those rows are left pending (returned
+/// count excludes them) for the next converge pass. The `WHERE EXISTS`
+/// guard shares the sort lane's honesty: a conversation deleted by an
+/// FK-off writer mid-converge leaves an orphan marks row that must never
+/// be stamped `published`.
+pub fn stamp_region_docs_published(
+    db: &impl FactsDb,
+    stamps: &[RegionDocStamp],
+) -> Result<usize> {
+    let mut stamped = 0_usize;
+    for stamp in stamps {
+        let updated = db.facts_execute(
+            "UPDATE viewer_search_region_marks SET docs_state = 'published', \
+             pending_doc_deletes = '[]' WHERE conversation_id = ?1 \
+             AND region_version = ?2 AND source_revision = ?3 \
+             AND docs_state = ?4 AND pending_doc_deletes = ?5 \
+             AND EXISTS (SELECT 1 FROM conversations c WHERE c.id = ?1)",
+            &[
+                ParamValue::from(stamp.conversation_id),
+                ParamValue::from(stamp.region_version),
+                ParamValue::from(stamp.source_revision),
+                ParamValue::from(stamp.docs_state.as_str()),
+                ParamValue::from(stamp.pending_doc_deletes.as_str()),
+            ],
+        )?;
+        stamped += usize::from(updated > 0);
+    }
+    Ok(stamped)
 }
 
 /// Hydrate one region's text for verification/snippets — the ONLY message

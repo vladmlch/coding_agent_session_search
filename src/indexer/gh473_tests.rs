@@ -327,7 +327,14 @@ mod gh473_preflight {
             (1, 1)
         );
         index.commit().unwrap();
-        assert_eq!(index.doc_count().unwrap(), 1);
+        // Task 5: the index also holds this session's region documents;
+        // compare the canonical share.
+        assert_eq!(
+            index.doc_count().unwrap()
+                - crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw())
+                    .unwrap_or(0) as u64,
+            1
+        );
 
         // With a warm writer, the existing canonical transaction retry budget
         // must fail without committing either the new message or the new ledger.
@@ -357,7 +364,13 @@ mod gh473_preflight {
             Some("generation-1")
         );
         index.commit().unwrap();
-        assert_eq!(index.doc_count().unwrap(), 1);
+        assert_eq!(
+            index.doc_count().unwrap()
+                - crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw())
+                    .unwrap_or(0) as u64,
+            1,
+            "canonical message share (Task 5: region docs share the index)"
+        );
 
         // Resume the exact source, then replay it unchanged. Both sinks and
         // the source-completion observation must converge without duplicates.
@@ -377,7 +390,15 @@ mod gh473_preflight {
             assert_eq!(outcome.inserted_messages, expected_insertions);
             assert_eq!(outcome.inserted_conversations, 0);
             index.commit().unwrap();
-            assert_eq!(index.doc_count().unwrap(), 2);
+            assert_eq!(
+                index.doc_count().unwrap()
+                    - crate::viewer_extensions::search_regions::live_region_doc_bound(
+                        storage.raw(),
+                    )
+                    .unwrap_or(0) as u64,
+                2,
+                "canonical message share (Task 5: region docs share the index)"
+            );
             assert_eq!(scalar(&storage, "SELECT COUNT(*) FROM conversations"), 1);
             assert_eq!(scalar(&storage, "SELECT COUNT(*) FROM messages"), 2);
             let ledger = storage.source_ingest_ledger_entries().unwrap();

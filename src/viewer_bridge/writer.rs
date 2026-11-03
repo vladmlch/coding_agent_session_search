@@ -253,13 +253,27 @@ impl OwnedWriter {
     /// (absent, contended by an ingest writer), the marks row stays
     /// `meta_pending` and search over the session degrades to honest
     /// `unknown` rather than answering from stale meta documents.
+    ///
+    /// A missing published index is skipped outright: `open_or_create`
+    /// would fabricate a real index holding ONLY region documents —
+    /// `searchable_index_fingerprint` would then report a published
+    /// generation, `ReaderSet::open` would stop refusing
+    /// `index_unavailable`, and chat literals would evaluate against an
+    /// empty hit set as false negatives. `meta_pending` survives for the
+    /// next ingest-time converge instead.
     pub fn converge_search_region_docs(&mut self, index_path: &Path) -> Result<()> {
+        if coding_agent_search::search::tantivy::searchable_index_fingerprint(index_path)
+            .context("reading the published index fingerprint for region-doc convergence")?
+            .is_none()
+        {
+            return Ok(());
+        }
         let mut index =
             coding_agent_search::search::tantivy::TantivyIndex::open_or_create(index_path)
                 .context("opening the published lexical index for region-doc convergence")?;
         index.converge_pending_search_region_docs(&self.connection, i64::MAX)?;
         index
-            .commit()
+            .commit_with_region_doc_stamps(&self.connection)
             .context("committing converged search-region documents")
     }
 }

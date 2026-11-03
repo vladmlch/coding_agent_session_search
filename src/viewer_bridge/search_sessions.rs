@@ -1086,6 +1086,15 @@ struct Region {
     indexed_text: Option<String>,
 }
 
+/// Request-level bound on ungated (non-ASCII) literal verification:
+/// every chat region check costs one `messages.content` point read, so
+/// an ungated literal over a large universe would otherwise hydrate the
+/// whole archive one region at a time. Sessions past the budget degrade
+/// to `unseen` — the honest-uncertainty path that refuses without
+/// `allow_partial` — rather than issuing an unbounded read storm.
+/// Derived/meta regions carry persisted fragments and stay free.
+const MAX_UNGATED_CHAT_HYDRATIONS: usize = 4_096;
+
 /// Hydration accounting for the indexed path — the diagnostics the brief
 /// requires: every region/message materialization is counted so an
 /// unrelated selective search provably never re-reads the corpus.
@@ -1094,6 +1103,9 @@ struct HydrateStats {
     regions_loaded: usize,
     regions_hydrated: usize,
     messages_hydrated: usize,
+    /// Reads spent on ungated (non-ASCII) chat verification — bounded by
+    /// [`MAX_UNGATED_CHAT_HYDRATIONS`].
+    ungated_chat_hydrations: usize,
 }
 
 /// Bounded text for one persisted region — `chat` reads the canonical
@@ -1859,9 +1871,17 @@ fn region_value(
         "mcp" => {
             let pattern = expected.as_str().unwrap_or_default();
             // mcp membership binds tool servers: the persisted fragment
-            // (tool-call text for derived lanes) or the tool name. Chat
-            // regions carry no text surface here — their content is a
-            // `chat` literal concern, not tool membership.
+            // (tool-call text for derived lanes, meta/noise-chat rows
+            // too) or the tool name. Chat regions with `indexed_text`
+            // NULL carry no text surface here — their canonical content
+            // is a `chat` literal's concern, not tool membership. This
+            // is the deliberately narrowed reading of the Python
+            // oracle's `fts.tool_name OR fts.content`: the oracle had
+            // every block's text in memory for free, while a region
+            // predicate in the indexed lane evaluates persisted row
+            // fields only — hydrating `messages.content` per region
+            // would be the corpus scan this architecture removes.
+            // Pinned by `search_sessions_mcp_binds_tool_and_meta_surfaces`.
             let matched = region
                 .indexed_text
                 .as_deref()
@@ -2144,6 +2164,27 @@ fn eval_literal(
             && !gate.contains(&region.quill_idx)
         {
             continue;
+        }
+        // Ungated evaluation (non-ASCII literal — the index cannot prove
+        // the negative) must not degrade into one `messages.content`
+        // point read per region across the whole universe: chat rows
+        // carry no persisted text, so each check is a real read. Past
+        // the request-level budget the session is `unseen` — honest
+        // uncertainty that refuses without `allow_partial` — while
+        // derived/meta regions keep verifying from persisted fragments.
+        if quill_possible.is_none()
+            && region.indexed_text.is_none()
+            && region.message_id.is_some()
+            && region.text_source
+                == coding_agent_search::viewer_extensions::search_regions::TEXT_SOURCE_CHAT
+        {
+            if stats.ungated_chat_hydrations >= MAX_UNGATED_CHAT_HYDRATIONS {
+                out.unseen = true;
+                out.reasons
+                    .insert("literal:chat_verification_budget_exceeded".to_owned());
+                continue;
+            }
+            stats.ungated_chat_hydrations += 1;
         }
         match region_text(connection, region, stats)? {
             Some(text) if matcher.matches(&text) => {

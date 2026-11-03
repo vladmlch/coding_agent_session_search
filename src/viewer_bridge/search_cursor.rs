@@ -12,7 +12,8 @@ use super::protocol::{
 };
 use super::reader::{ArchiveStamp, StrictArchive};
 use super::search::{
-    RawRankHit, ReaderSet, decode_hit, engine_filters, parse_lexical_query, raw_page,
+    RawRankHit, ReaderSet, decode_hit, engine_filters, parse_lexical_query,
+    raw_page_canonical,
 };
 
 const IDLE_TTL: Duration = Duration::from_secs(60);
@@ -89,7 +90,7 @@ impl RankCursor {
             }
             let reader = &self.readers.readers[self.reader_index];
             let count = (max_hits - hits.len()).min(expected - self.offset);
-            let page = raw_page(reader, &self.query, &self.filters, self.offset, count)?;
+            let page = raw_page_canonical(reader, &self.query, &self.filters, self.offset, count)?;
             if page.total_count != Some(expected) || page.hits.len() != count {
                 return Err(refuse(
                     "stale_snapshot",
@@ -210,7 +211,7 @@ impl CursorStore {
                     "Raw count deadline exceeded",
                 ));
             }
-            let page = raw_page(reader, &query, &compiled_filters, 0, 1)?;
+            let page = raw_page_canonical(reader, &query, &compiled_filters, 0, 1)?;
             let count = page.total_count.ok_or_else(|| {
                 refuse(
                     "ranking_budget_exceeded",
