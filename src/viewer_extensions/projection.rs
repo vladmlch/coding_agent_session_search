@@ -1748,3 +1748,315 @@ pub fn publish_structure_for_canonical_batch_best_effort<'a>(
 fn _packet_events(packet: &ConversationPacket) -> usize {
     events(packet).len()
 }
+
+// ---------------------------------------------------------------------------
+// Ingest-lane coherent generation publication (completion task)
+// ---------------------------------------------------------------------------
+//
+// Facts and the structural projection are ONE extension generation of a
+// canonical source revision: they must be computed from the same replayed
+// bytes and committed — with their durable receipt — inside a single
+// transaction. A crash between the `pending` mark and the generation
+// commit leaves honest durable evidence; a failed generation leaves the
+// exact reason; only rows+receipt committed together may ever read
+// `complete`.
+//
+// Recovery is the explicit `--backfill-viewer-extensions` lane: it scans
+// canonical conversations and republishes through THIS same code, so
+// `pending`/`failed`/missing receipts converge without a startup or
+// request-time reconstruction path.
+
+/// Facts + structure computed from ONE canonical replay — the generation
+/// unit the ingest lane publishes. `project_session_structure` copies
+/// `facts.source_revision`, so the two sides are revision-coherent by
+/// construction; the durable [`facts::IngestReceipt`] makes that coherence
+/// auditable (the receipt's `source_revision` is bound at `pending` time
+/// and certified at `complete`).
+pub struct IngestGeneration {
+    pub facts: FactPublication,
+    pub structure: StructuralPublication,
+}
+
+/// Outcome of one coherent generation publication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationPublishOutcome {
+    /// Facts, structure, parent fixup and the `complete` receipt committed
+    /// in one transaction.
+    Published,
+    /// A `complete` receipt already binds this exact
+    /// `(source_revision, extractor_version, projection_version)` — the
+    /// durable idempotence key. Nothing was rewritten, so unchanged
+    /// reingest moves no row and no revision counter.
+    SkippedUnchanged,
+    /// Crash-probe short-circuit (test-only): the `pending` receipt
+    /// committed and the generation transaction never ran.
+    Interrupted,
+}
+
+/// The durable-visibility half of `complete`: a receipt only certifies a
+/// generation when BOTH lane markers are committed at the bound
+/// `source_revision`. A receipt claiming `complete` over absent or stale
+/// rows is divergence, never coverage — callers republish rather than
+/// trusting it, so manual/accidental extension-row loss self-heals on the
+/// next ingest pass or backfill instead of masquerading as complete.
+pub fn generation_markers_visible(
+    db: &impl FactsDb,
+    conversation_id: i64,
+    source_revision: i64,
+) -> Result<bool> {
+    let facts_present = !db
+        .facts_query_map(
+            "SELECT 1 FROM viewer_session_facts \
+             WHERE conversation_id = ?1 AND source_revision = ?2 LIMIT 1",
+            &[
+                ParamValue::from(conversation_id),
+                ParamValue::from(source_revision),
+            ],
+            |_| Ok(()),
+        )?
+        .is_empty();
+    if !facts_present {
+        return Ok(false);
+    }
+    Ok(!db
+        .facts_query_map(
+            "SELECT 1 FROM viewer_session_projection \
+             WHERE conversation_id = ?1 AND source_revision = ?2 LIMIT 1",
+            &[
+                ParamValue::from(conversation_id),
+                ParamValue::from(source_revision),
+            ],
+            |_| Ok(()),
+        )?
+        .is_empty())
+}
+
+/// Deterministic crash injection for the receipt protocol's restart path:
+/// `CASS_TEST_VIEWER_GENERATION_CRASH` returns early AFTER the `pending`
+/// mark commits — the state a real mid-publication kill leaves (pending
+/// receipt, no generation rows).
+fn generation_crash_probe() -> bool {
+    dotenvy::var("CASS_TEST_VIEWER_GENERATION_CRASH")
+        .map(|value| !value.is_empty() && value != "0")
+        .unwrap_or(false)
+}
+
+/// Deterministic failure injection inside the generation transaction:
+/// `CASS_TEST_VIEWER_GENERATION_FAIL` aborts AFTER both lanes published
+/// but BEFORE commit — the whole generation (rows AND the in-tx `complete`
+/// receipt) rolls back together, so the archive can never hold a facts row
+/// without its structure.
+fn generation_fail_probe() -> bool {
+    dotenvy::var("CASS_TEST_VIEWER_GENERATION_FAIL")
+        .map(|value| !value.is_empty() && value != "0")
+        .unwrap_or(false)
+}
+
+/// Compute the whole extension generation for one committed canonical
+/// `Conversation` with a single `ConversationPacket::from_canonical_replay`
+/// — the same replay `facts_for_canonical` and `structure_for_canonical`
+/// each run on their own today, shared here so both sides bind the
+/// identical committed bytes (and therefore the identical
+/// `source_revision`). Canonical token/cost totals fill `facts.health`
+/// through the same `fill_canonical_health` read
+/// `publish_facts_for_canonical` performs.
+pub fn generation_for_canonical(
+    db: &impl FactsDb,
+    conv: &Conversation,
+    conversation_id: i64,
+) -> Result<IngestGeneration> {
+    let packet = ConversationPacket::from_canonical_replay(conv, provenance_of(conv));
+    let mut facts = extract_session_facts(&packet, &conv.agent_slug);
+    super::facts::fill_canonical_health(db, conversation_id, &mut facts)?;
+    let structure = project_session_structure(&packet, &facts);
+    Ok(IngestGeneration { facts, structure })
+}
+
+/// The generation transaction body — callable on any `FactsDb` (an open
+/// transaction, or a savepoint body inside the backfill batch). Publishes
+/// facts, then structure, then the targeted child-before-parent fixup,
+/// then the `complete` receipt. `receipt` must carry
+/// `state == RECEIPT_COMPLETE` bound to `generation`'s source revision.
+/// Returns the per-lane publication outcomes so callers (the backfill
+/// lane's honest stats) can distinguish writes from idempotence skips.
+///
+/// Nothing here commits: commit/rollback stays with the caller's
+/// transaction boundary, so every piece of the generation — rows AND
+/// receipt — lands or vanishes together.
+pub fn publish_ingest_generation_in_tx(
+    db: &impl FactsDb,
+    conv: &Conversation,
+    conversation_id: i64,
+    generation: &IngestGeneration,
+    receipt: &super::facts::IngestReceipt,
+) -> Result<(super::facts::FactPublishOutcome, ProjectionPublishOutcome)> {
+    let facts_outcome =
+        match super::facts::publish_session_facts(db, conversation_id, &generation.facts)? {
+            super::facts::FactPublishOutcome::ExtensionNotInstalled => {
+                anyhow::bail!("viewer_session_facts missing inside an ensured extension profile");
+            }
+            outcome => outcome,
+        };
+    let structure_outcome =
+        match publish_session_structure(db, conversation_id, &generation.structure)? {
+            ProjectionPublishOutcome::ExtensionNotInstalled => {
+                anyhow::bail!(
+                    "viewer_session_projection missing inside an ensured extension profile"
+                );
+            }
+            outcome => outcome,
+        };
+    // Child-before-parent: this generation may BE the parent evidence a
+    // previously-ingested child is still waiting on. The fixup is scoped
+    // to rows that durably recorded this exact `external_id` — no catalog
+    // rescan, no child republish.
+    super::facts::fixup_pending_parent_links(
+        db,
+        conversation_id,
+        &generation.facts.provider,
+        &conv.source_id,
+        conv.external_id.as_deref().unwrap_or_default(),
+    )?;
+    super::facts::write_ingest_receipt(db, receipt)?;
+    Ok((facts_outcome, structure_outcome))
+}
+
+/// Publish ONE coherent extension generation for a just-committed
+/// canonical `Conversation` on a bare writer connection:
+///
+/// 1. `ensure_profile_for_ingest` — the additive profile exists before
+///    any extraction/publication touches it.
+/// 2. Compute the generation once (shared replay → shared
+///    `source_revision`).
+/// 3. Skip when a `complete` receipt already binds this exact generation.
+/// 4. Commit a `pending` receipt on its own — the durable marker a
+///    mid-publication crash leaves behind.
+/// 5. Commit the whole generation in one transaction: facts + structure +
+///    parent fixup + `complete` receipt.
+/// 6. On error, commit a `failed` receipt carrying the exact reason, and
+///    return the error (canonical ingest is unaffected — the caller
+///    already committed).
+///
+/// A `pending` receipt that outlives step 5 is durable evidence of an
+/// interrupted publication; the explicit resumable backfill lane
+/// reconciles it. No state here can ever masquerade as `complete`.
+pub fn publish_ingest_generation(
+    connection: &Connection,
+    conv: &Conversation,
+    conversation_id: i64,
+) -> Result<GenerationPublishOutcome> {
+    super::schema::ensure_profile_for_ingest(connection)
+        .context("ensuring viewer extension profile for ingest publication")?;
+
+    let generation = generation_for_canonical(connection, conv, conversation_id)
+        .context("building extension generation from committed canonical bytes")?;
+    let source_revision = generation.facts.source_revision;
+
+    let previous = super::facts::ingest_receipt_for(connection, conversation_id)?;
+    if let Some(receipt) = &previous
+        && receipt.state == super::facts::RECEIPT_COMPLETE
+        && receipt.source_revision == source_revision
+        && receipt.extractor_version == super::facts::FACTS_EXTRACTOR_VERSION
+        && receipt.projection_version == PROJECTION_VERSION
+        // `complete` is only honest while both lane markers are durably
+        // visible at the bound revision — the task's definition of a
+        // completed generation. A receipt over missing rows is divergence:
+        // republish and let the same commit rewrite the receipt truthfully.
+        && generation_markers_visible(connection, conversation_id, source_revision)?
+    {
+        return Ok(GenerationPublishOutcome::SkippedUnchanged);
+    }
+
+    let mut receipt = super::facts::IngestReceipt {
+        conversation_id,
+        state: super::facts::RECEIPT_PENDING.to_string(),
+        source_revision,
+        extractor_version: super::facts::FACTS_EXTRACTOR_VERSION,
+        projection_version: PROJECTION_VERSION,
+        reason: None,
+        attempts: previous.map(|r| r.attempts + 1).unwrap_or(1),
+        updated_at_ms: now_ms(),
+    };
+    // The pending mark commits on its own so a crash between here and the
+    // generation commit leaves durable, honest evidence — never a false
+    // complete and never a silently missing row-set.
+    super::facts::write_ingest_receipt(connection, &receipt)
+        .context("committing pending ingest receipt")?;
+
+    if generation_crash_probe() {
+        return Ok(GenerationPublishOutcome::Interrupted);
+    }
+
+    receipt.state = super::facts::RECEIPT_COMPLETE.to_string();
+    let work = (|| -> Result<()> {
+        let mut tx = connection
+            .transaction()
+            .context("opening ingest generation transaction")?;
+        publish_ingest_generation_in_tx(&tx, conv, conversation_id, &generation, &receipt)?;
+        if generation_fail_probe() {
+            anyhow::bail!("CASS_TEST_VIEWER_GENERATION_FAIL injected publication fault");
+        }
+        tx.commit()
+            .context("committing ingest generation transaction")?;
+        Ok(())
+    })();
+
+    match work {
+        Ok(()) => Ok(GenerationPublishOutcome::Published),
+        Err(error) => {
+            // The failed mark is a separate durable commit: the generation
+            // rolled back, but the archive must remember that THIS source
+            // revision's publication was attempted and why it did not land.
+            receipt.state = super::facts::RECEIPT_FAILED.to_string();
+            receipt.reason = Some(format!("{error:#}"));
+            receipt.updated_at_ms = now_ms();
+            if let Err(mark_error) = super::facts::write_ingest_receipt(connection, &receipt) {
+                tracing::warn!(
+                    conversation_id,
+                    error = %mark_error,
+                    "failed to record the ingest publication failure durably"
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+/// Best-effort single-conversation hook: publish the coherent generation,
+/// logging any failure without aborting the (already committed) canonical
+/// ingest. The durable receipt records the exact reason either way.
+pub fn publish_ingest_generation_best_effort(
+    connection: &Connection,
+    conv: &Conversation,
+    conversation_id: i64,
+) {
+    if let Err(error) = publish_ingest_generation(connection, conv, conversation_id) {
+        tracing::warn!(
+            conversation_id,
+            error = %error,
+            "viewer extension generation publication failed; \
+             the durable ingest receipt records the reason and the \
+             --backfill-viewer-extensions lane reconciles it"
+        );
+    }
+}
+
+/// Best-effort batch hook: the same coherent-generation protocol, one
+/// pending/work pair per conversation so a single bad row leaves an
+/// honest `failed` receipt instead of aborting the batch's other work.
+pub fn publish_ingest_generations_batch_best_effort<'a>(
+    connection: &Connection,
+    pairs: impl IntoIterator<Item = (&'a Conversation, i64)>,
+) {
+    for (conv, conversation_id) in pairs {
+        if let Err(error) = publish_ingest_generation(connection, conv, conversation_id) {
+            tracing::warn!(
+                conversation_id,
+                error = %error,
+                "viewer extension generation publication failed; \
+                 the durable ingest receipt records the reason and the \
+                 --backfill-viewer-extensions lane reconciles it"
+            );
+        }
+    }
+}

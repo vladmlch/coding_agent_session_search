@@ -28,6 +28,18 @@
 //! `(projection_version, source_revision)`. No `SessionTrajectory` blob or
 //! message-body copies are stored; every row is a structural pointer.
 //!
+//! Facts and structure are ONE extension generation of a canonical source
+//! revision, published by `projection::publish_ingest_generation`:
+//! computed from a single `ConversationPacket::from_canonical_replay` and
+//! committed — with a durable `viewer_meta` ingest receipt — inside one
+//! transaction. The receipt (`pending|complete|failed` plus the exact
+//! reason) is the publication's durable state: `complete` is only honest
+//! when both lane markers are durably visible at the bound
+//! `source_revision`; an interrupted or failed generation is reconciled
+//! by the explicit resumable backfill, never at request/startup time.
+//! Canonical removal drops both the cascade-owned extension rows and the
+//! receipt itself (schema-v3 `viewer_ingest_receipt_cleanup` trigger).
+//!
 //! [`backfill`] is the Task-14 repair lane: facts/projection are ingest-pass
 //! publications, so archives indexed BEFORE the profile was installed keep
 //! empty extension tables. `backfill_viewer_extensions` hydrates committed

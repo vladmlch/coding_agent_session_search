@@ -30,6 +30,133 @@ pub use providers::classification::SessionQualityMetrics;
 /// re-derive on the next ingest pass instead of silently going stale.
 pub const FACTS_EXTRACTOR_VERSION: i64 = 1;
 
+// ---------------------------------------------------------------------------
+// Ingest publication receipts (durable generation state)
+// ---------------------------------------------------------------------------
+
+/// `viewer_meta` key prefix for per-session ingest publication receipts.
+/// The full key is `{INGEST_RECEIPT_KEY_PREFIX}{conversation_id}`; the
+/// suffix-only shape keeps receipts out of the `viewer_change_log_*`
+/// journal bookkeeping namespace.
+pub const INGEST_RECEIPT_KEY_PREFIX: &str = "ingest_receipt:";
+
+/// Receipt `state` values — a generation is only ever `complete` when the
+/// SAME transaction committed both `viewer_session_facts` and the
+/// `viewer_session_projection` marker + link rows for this
+/// `source_revision`. Anything else is honest unfinished work.
+pub const RECEIPT_PENDING: &str = "pending";
+pub const RECEIPT_COMPLETE: &str = "complete";
+pub const RECEIPT_FAILED: &str = "failed";
+
+/// Durable per-session publication receipt persisted in `viewer_meta`.
+///
+/// Lifecycle: the ingest orchestrator commits `pending` BEFORE the
+/// generation transaction so a crash mid-publication is visible rather
+/// than silent; `complete` is written INSIDE the generation transaction
+/// (the receipt can never claim coverage the rows do not have); `failed`
+/// is committed afterwards with the exact error. `attempts` counts
+/// pending marks so repeated failures are visible to operators.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct IngestReceipt {
+    pub conversation_id: i64,
+    /// `pending|complete|failed` — see the `RECEIPT_*` constants.
+    pub state: String,
+    /// Content-addressed canonical marker (`semantic_hash` first 64 bits)
+    /// this receipt binds — the generation's revision key.
+    pub source_revision: i64,
+    pub extractor_version: i64,
+    pub projection_version: i64,
+    /// Exact failure reason for `failed`; `null` otherwise.
+    pub reason: Option<String>,
+    /// Number of `pending` marks written for this conversation.
+    pub attempts: i64,
+    pub updated_at_ms: i64,
+}
+
+/// The durable receipt for one session, or `None` when none was ever
+/// written (a pre-profile session or a generation that was never
+/// attempted — both discoverable as unattempted work).
+pub fn ingest_receipt_for(
+    db: &impl FactsDb,
+    conversation_id: i64,
+) -> Result<Option<IngestReceipt>> {
+    if db
+        .facts_query_map(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='viewer_meta' LIMIT 1",
+            &[],
+            |_| Ok(()),
+        )?
+        .is_empty()
+    {
+        return Ok(None);
+    }
+    let rows = db.facts_query_map(
+        "SELECT value FROM viewer_meta WHERE key = ?1 LIMIT 1",
+        &[ParamValue::from(format!(
+            "{INGEST_RECEIPT_KEY_PREFIX}{conversation_id}"
+        ))],
+        |row| row.get_typed::<String>(0),
+    )?;
+    let Some(text) = rows.into_iter().next() else {
+        return Ok(None);
+    };
+    let receipt: IngestReceipt = serde_json::from_str(&text)
+        .with_context(|| format!("viewer_meta ingest receipt for {conversation_id} is not JSON"))?;
+    Ok(Some(receipt))
+}
+
+/// Write one receipt inside the caller's transaction boundary (a bare
+/// `&Connection` commits immediately; inside the generation transaction
+/// the write commits with the rows it certifies).
+pub fn write_ingest_receipt(db: &impl FactsDb, receipt: &IngestReceipt) -> Result<()> {
+    let value = serde_json::to_string(receipt).context("serializing ingest receipt")?;
+    db.facts_execute(
+        "INSERT OR REPLACE INTO viewer_meta (key, value) VALUES (?1, ?2)",
+        &[
+            ParamValue::from(format!(
+                "{INGEST_RECEIPT_KEY_PREFIX}{}",
+                receipt.conversation_id
+            )),
+            ParamValue::from(value),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Every receipt that is NOT `complete` — the durable set the explicit
+/// resumable backfill reconciles. Sessions with no receipt at all are
+/// covered by the backfill's conversation scan, not this list.
+pub fn list_incomplete_ingest_receipts(db: &impl FactsDb) -> Result<Vec<IngestReceipt>> {
+    if db
+        .facts_query_map(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='viewer_meta' LIMIT 1",
+            &[],
+            |_| Ok(()),
+        )?
+        .is_empty()
+    {
+        return Ok(Vec::new());
+    }
+    let mut receipts = Vec::new();
+    for text in db.facts_query_map(
+        "SELECT value FROM viewer_meta WHERE key LIKE ?1 ORDER BY key",
+        &[ParamValue::from(format!("{INGEST_RECEIPT_KEY_PREFIX}%"))],
+        |row| row.get_typed::<String>(0),
+    )? {
+        match serde_json::from_str::<IngestReceipt>(&text) {
+            Ok(receipt) if receipt.state != RECEIPT_COMPLETE => receipts.push(receipt),
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "ignoring undecodable ingest receipt in viewer_meta"
+                );
+            }
+        }
+    }
+    Ok(receipts)
+}
+
 /// Per-scope coverage record: `state` is one of
 /// `complete|partial|unavailable|pending`, `reasons` are exact evidence
 /// reasons — the manifest consumers print instead of trusting a blanket
@@ -255,11 +382,12 @@ pub fn publish_session_facts(
         "INSERT OR REPLACE INTO viewer_session_facts (\
             conversation_id, extractor_version, source_revision, coverage_state, \
             coverage_detail_json, is_subagent, parent_conversation_id, \
+            parent_external_id, \
             task_category, turn_count, step_count, thinking_block_count, \
             artifact_count, subagent_count, tool_error_count, \
             tool_calls_with_exit_status, file_fact_count, compaction_count, \
             model_set_json, first_prompt, extracted_at_ms\
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
         &[
             ParamValue::from(conversation_id),
             ParamValue::from(publication.extractor_version),
@@ -268,6 +396,7 @@ pub fn publish_session_facts(
             ParamValue::from(detail),
             ParamValue::from(publication.is_subagent.map(i64::from)),
             ParamValue::from(parent_id),
+            ParamValue::from(publication.parent_external_id.as_deref()),
             ParamValue::from(publication.task_category.as_deref()),
             ParamValue::from(publication.turn_count),
             ParamValue::from(publication.step_count),
@@ -540,6 +669,88 @@ fn resolve_parent_conversation(
     }
 }
 
+/// Targeted child-before-parent fixup (schema v3): sessions whose durable
+/// `parent_external_id` evidence matches the JUST-PUBLISHED parent gain a
+/// resolved `parent_conversation_id` inside the parent's own publication
+/// transaction — the child never needs a republish and the work stays
+/// scoped to rows that recorded this exact evidence (the evidence index),
+/// never a catalog rescan.
+///
+/// The match rule is `resolve_parent_conversation` inverted: same
+/// provider + same `source_id` scope, and the child's evidence equal to
+/// the parent's `external_id` or matching its `/{evidence}` /
+/// `{evidence}.jsonl` suffix shapes. Ambiguity cannot arise here — the
+/// parent identity is already committed.
+///
+/// Each resolved child's `coverage_detail_json` manifest is refreshed
+/// honestly (`parent.resolution` → `resolved`), so the persisted record
+/// stops claiming `unresolved` once the link is real.
+pub fn fixup_pending_parent_links(
+    db: &impl FactsDb,
+    parent_conversation_id: i64,
+    parent_provider: &str,
+    parent_source_id: &str,
+    parent_external_id: &str,
+) -> Result<usize> {
+    let candidates = db.facts_query_map(
+        "SELECT f.conversation_id, f.coverage_detail_json \
+         FROM viewer_session_facts f \
+         JOIN conversations c ON c.id = f.conversation_id \
+         JOIN agents a ON a.id = c.agent_id \
+         WHERE f.parent_conversation_id IS NULL \
+           AND f.parent_external_id IS NOT NULL \
+           AND f.parent_external_id != '' \
+           AND a.slug = ?1 AND c.source_id = ?2 \
+           AND (?3 = f.parent_external_id \
+                OR ?3 LIKE '%/' || f.parent_external_id \
+                OR ?3 LIKE '%' || f.parent_external_id || '.jsonl') \
+         ORDER BY f.conversation_id",
+        &[
+            ParamValue::from(parent_provider),
+            ParamValue::from(parent_source_id),
+            ParamValue::from(parent_external_id),
+        ],
+        |row| {
+            Ok((
+                row.get_typed::<i64>(0)?,
+                row.get_typed::<Option<String>>(1)?,
+            ))
+        },
+    )?;
+    let resolved = candidates.len();
+    for (child_id, detail) in candidates {
+        let patched = detail.and_then(|text| {
+            let mut value: Value = serde_json::from_str(&text).ok()?;
+            if let Some(slot) = value.pointer_mut("/parent/resolution") {
+                *slot = json!("resolved");
+            }
+            Some(serde_json::to_string(&value).unwrap_or_else(|_| text))
+        });
+        match patched {
+            Some(detail) => db.facts_execute(
+                "UPDATE viewer_session_facts \
+                 SET parent_conversation_id = ?1, coverage_detail_json = ?2 \
+                 WHERE conversation_id = ?3",
+                &[
+                    ParamValue::from(parent_conversation_id),
+                    ParamValue::from(detail),
+                    ParamValue::from(child_id),
+                ],
+            )?,
+            None => db.facts_execute(
+                "UPDATE viewer_session_facts \
+                 SET parent_conversation_id = ?1 \
+                 WHERE conversation_id = ?2",
+                &[
+                    ParamValue::from(parent_conversation_id),
+                    ParamValue::from(child_id),
+                ],
+            )?,
+        };
+    }
+    Ok(resolved)
+}
+
 /// Per-scope coverage manifest persisted in `coverage_detail_json`: every
 /// field carries its state plus exact reasons, so review can enumerate
 /// unknown/partial fields per provider instead of a blanket `complete`.
@@ -592,17 +803,16 @@ pub fn facts_for_canonical(conv: &Conversation) -> FactPublication {
     extract_session_facts(&packet, &conv.agent_slug)
 }
 
-/// `publish_session_facts` convenience for ingest call sites holding the
-/// canonical `Conversation` instead of a packet.
-pub fn publish_facts_for_canonical(
+/// Canonical health inputs: `grand_total_tokens`/`estimated_cost_usd` live
+/// on the `conversations` row, never the packet. Both the ingest hook and
+/// the coherent-generation publisher fill `publication.health` through
+/// this so the tool-failure finding's waste/savings stay measured
+/// (unknown totals stay NULL, never zeroed).
+pub fn fill_canonical_health(
     db: &impl FactsDb,
-    conv: &Conversation,
     conversation_id: i64,
-) -> Result<FactPublishOutcome> {
-    let mut publication = facts_for_canonical(conv);
-    // Canonical totals live on the conversations row, never the packet:
-    // read them directly so the tool-failure finding's waste/savings stay
-    // measured (unknown totals stay NULL, never zeroed).
+    publication: &mut FactPublication,
+) -> Result<()> {
     let totals = db.facts_query_map(
         "SELECT grand_total_tokens, estimated_cost_usd \
          FROM conversations WHERE id = ?1",
@@ -615,7 +825,19 @@ pub fn publish_facts_for_canonical(
         },
     )?;
     let (total_tokens, cost_usd) = totals.first().copied().unwrap_or((None, None));
-    publication.health = session_health_inputs(&publication, total_tokens, cost_usd);
+    publication.health = session_health_inputs(publication, total_tokens, cost_usd);
+    Ok(())
+}
+
+/// `publish_session_facts` convenience for ingest call sites holding the
+/// canonical `Conversation` instead of a packet.
+pub fn publish_facts_for_canonical(
+    db: &impl FactsDb,
+    conv: &Conversation,
+    conversation_id: i64,
+) -> Result<FactPublishOutcome> {
+    let mut publication = facts_for_canonical(conv);
+    fill_canonical_health(db, conversation_id, &mut publication)?;
     publish_session_facts(db, conversation_id, &publication)
 }
 

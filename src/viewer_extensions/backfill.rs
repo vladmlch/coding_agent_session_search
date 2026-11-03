@@ -89,10 +89,16 @@ pub struct BackfillStats {
     /// extractor_version)`.
     pub structure_skipped_unchanged: usize,
     /// Conversations whose publication failed and was rolled back to its
-    /// savepoint. They are retried by the next run.
+    /// savepoint — each also carries a durable `failed` ingest receipt in
+    /// `viewer_meta` (the exact reason) until a later run reconciles it.
+    /// They are retried by the next run.
     pub failures: usize,
     /// Canonical ids of the failed conversations (for operator review).
     pub failed_conversation_ids: Vec<i64>,
+    /// Sessions that carried a NON-`complete` ingest receipt (`pending`
+    /// or `failed`) before this run and are now durably `complete` — the
+    /// reconciliation signal for interrupted ingest publications.
+    pub reconciled: usize,
     /// `limit` was reached mid-archive; more work remains for a later run.
     pub limit_reached: bool,
 }
@@ -337,30 +343,101 @@ fn hydrate_messages(db: &impl FactsDb, conversation_id: i64) -> Result<Vec<Messa
 
 const CONVERSATION_SAVEPOINT: &str = "cass_viewer_backfill_conv";
 
-/// Publish facts + structure for one hydrated canonical conversation under
-/// a savepoint so a failure leaves nothing half-committed for that row.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Publish one coherent extension generation for a hydrated canonical
+/// conversation under a savepoint, through the SAME
+/// `publish_ingest_generation_in_tx` body the ingest hooks run — one
+/// shared replay, one `source_revision`, facts + structure + parent fixup
+/// + the `complete` receipt inside the generation unit. A durable
+/// `complete` receipt at this exact generation is the resumable skip key.
+///
+/// A failed conversation rolls back to its savepoint and leaves a DURABLE
+/// `failed` ingest receipt (written outside the savepoint but inside the
+/// batch transaction) with the exact reason — the pending/failed receipt
+/// set the next run reconciles.
 fn publish_one(
     tx: &crate::franken_sync::compat::Transaction<'_>,
     conv: &Conversation,
     conversation_id: i64,
     stats: &mut BackfillStats,
 ) -> Result<()> {
+    // Outer-scope so a failure mark can bind what was actually attempted.
+    let mut attempted_revision = 0_i64;
+    let mut attempted_attempts = 1_i64;
     tx.execute(&format!("SAVEPOINT {CONVERSATION_SAVEPOINT}"))?;
     let result = (|| -> Result<()> {
-        match facts::publish_facts_for_canonical(tx, conv, conversation_id)? {
+        // One shared replay → the coherent (source_revision) pair.
+        let generation = projection::generation_for_canonical(tx, conv, conversation_id)?;
+        let source_revision = generation.facts.source_revision;
+        attempted_revision = source_revision;
+
+        let previous = facts::ingest_receipt_for(tx, conversation_id)?;
+        attempted_attempts = previous
+            .as_ref()
+            .map(|receipt| receipt.attempts + 1)
+            .unwrap_or(1);
+        let was_incomplete = previous
+            .as_ref()
+            .is_some_and(|receipt| receipt.state != facts::RECEIPT_COMPLETE);
+        if let Some(receipt) = &previous
+            && receipt.state == facts::RECEIPT_COMPLETE
+            && receipt.source_revision == source_revision
+            && receipt.extractor_version == facts::FACTS_EXTRACTOR_VERSION
+            && receipt.projection_version == projection::PROJECTION_VERSION
+            // `complete` is only honest while both lane markers are durably
+            // visible — a receipt over deleted/lost rows is divergence the
+            // republish below repairs in the same commit.
+            && projection::generation_markers_visible(tx, conversation_id, source_revision)?
+        {
+            stats.facts_skipped_unchanged += 1;
+            stats.structure_skipped_unchanged += 1;
+            return Ok(());
+        }
+
+        let mut receipt = facts::IngestReceipt {
+            conversation_id,
+            state: facts::RECEIPT_PENDING.to_string(),
+            source_revision,
+            extractor_version: facts::FACTS_EXTRACTOR_VERSION,
+            projection_version: projection::PROJECTION_VERSION,
+            reason: None,
+            attempts: attempted_attempts,
+            updated_at_ms: now_ms(),
+        };
+        // The pending mark rides the savepoint: it is only durable when
+        // the rest of the generation is (a batch crash leaves no false
+        // state behind — this conversation simply retries next run).
+        facts::write_ingest_receipt(tx, &receipt)?;
+        receipt.state = facts::RECEIPT_COMPLETE.to_string();
+        let (facts_outcome, structure_outcome) = projection::publish_ingest_generation_in_tx(
+            tx,
+            conv,
+            conversation_id,
+            &generation,
+            &receipt,
+        )?;
+        match facts_outcome {
             FactPublishOutcome::Published => stats.facts_published += 1,
             FactPublishOutcome::SkippedUnchanged => stats.facts_skipped_unchanged += 1,
             FactPublishOutcome::ExtensionNotInstalled => {
                 bail!("viewer_session_facts missing inside an installed profile")
             }
         }
-        let structure = projection::structure_for_canonical(conv);
-        match projection::publish_session_structure(tx, conversation_id, &structure)? {
+        match structure_outcome {
             ProjectionPublishOutcome::Published => stats.structure_published += 1,
             ProjectionPublishOutcome::SkippedUnchanged => stats.structure_skipped_unchanged += 1,
             ProjectionPublishOutcome::ExtensionNotInstalled => {
                 bail!("viewer_session_projection missing inside an installed profile")
             }
+        }
+        if was_incomplete {
+            stats.reconciled += 1;
         }
         Ok(())
     })();
@@ -371,18 +448,35 @@ fn publish_one(
         }
         Err(error) => {
             // Roll the failed conversation back; the batch and its other
-            // conversations still commit. The idempotence keys make the
-            // skipped row a first-class candidate on the next run.
+            // conversations still commit. Then leave a durable `failed`
+            // receipt — outside the rolled-back savepoint, inside the
+            // batch transaction — so the interruption is auditable and
+            // the next run's incomplete-receipt set names it.
             let cleanup = tx.execute(&format!(
                 "ROLLBACK TO SAVEPOINT {CONVERSATION_SAVEPOINT}; \
                  RELEASE SAVEPOINT {CONVERSATION_SAVEPOINT}"
             ));
-            match cleanup {
-                Ok(_) => Err(error),
-                Err(rollback_error) => Err(error.context(format!(
+            if let Err(rollback_error) = cleanup {
+                return Err(error.context(format!(
                     "backfill savepoint rollback also failed: {rollback_error}"
-                ))),
+                )));
             }
+            let failed = facts::IngestReceipt {
+                conversation_id,
+                state: facts::RECEIPT_FAILED.to_string(),
+                source_revision: attempted_revision,
+                extractor_version: facts::FACTS_EXTRACTOR_VERSION,
+                projection_version: projection::PROJECTION_VERSION,
+                reason: Some(format!("{error:#}")),
+                attempts: attempted_attempts,
+                updated_at_ms: now_ms(),
+            };
+            if let Err(mark_error) = facts::write_ingest_receipt(tx, &failed) {
+                return Err(error.context(format!(
+                    "failed to record the publication failure durably: {mark_error}"
+                )));
+            }
+            Err(error)
         }
     }
 }

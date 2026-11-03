@@ -38854,17 +38854,11 @@ pub mod persist {
                     None
                 };
                 let outcome = franken.insert_conversation_tree(agent_id, workspace_id, internal)?;
-                // Task 7: derived viewer session facts ride the same ingest
-                // pass (adjacent idempotent transaction).
-                crate::viewer_extensions::facts::publish_facts_for_canonical_best_effort(
-                    franken.raw(),
-                    internal,
-                    outcome.conversation_id,
-                );
-                // Task 8: stable steps/turns/tools projection rides the same
-                // ingest pass (adjacent idempotent transaction; see
-                // viewer_extensions::projection).
-                crate::viewer_extensions::projection::publish_structure_for_canonical_best_effort(
+                // One coherent extension generation (facts + structural
+                // projection + durable viewer_meta receipt) rides the same
+                // ingest pass — pending → one transaction → complete, or a
+                // durable failed mark the backfill lane reconciles.
+                crate::viewer_extensions::projection::publish_ingest_generation_best_effort(
                     franken.raw(),
                     internal,
                     outcome.conversation_id,
@@ -39614,16 +39608,11 @@ pub mod persist {
 
             let outcome =
                 writer.insert_conversation_tree(agent_id, workspace_id, &internal_conv)?;
-            // Task 7: persist derived viewer session facts in the same ingest
-            // pass (adjacent idempotent transaction; see viewer_extensions::facts).
-            crate::viewer_extensions::facts::publish_facts_for_canonical_best_effort(
-                writer.raw(),
-                &internal_conv,
-                outcome.conversation_id,
-            );
-            // Task 8: stable steps/turns/tools projection in the same ingest
-            // pass (adjacent idempotent transaction).
-            crate::viewer_extensions::projection::publish_structure_for_canonical_best_effort(
+            // One coherent extension generation (facts + structural
+            // projection + durable viewer_meta receipt) in the same ingest
+            // pass — pending → one transaction → complete, or a durable
+            // failed mark the backfill lane reconciles.
+            crate::viewer_extensions::projection::publish_ingest_generation_best_effort(
                 writer.raw(),
                 &internal_conv,
                 outcome.conversation_id,
@@ -40475,20 +40464,13 @@ pub mod persist {
                     heartbeat.tick();
                 }
 
-                // Task 7: derived viewer session facts ride the same ingest
-                // pass — one adjacent transaction for the whole batch,
-                // idempotent on (extractor_version, source_revision).
-                crate::viewer_extensions::facts::publish_facts_for_canonical_batch_best_effort(
-                    writer.raw(),
-                    prepared
-                        .iter()
-                        .zip(&outcomes)
-                        .map(|((_, _, conv), outcome)| (*conv, outcome.conversation_id)),
-                );
-                // Task 8: stable steps/turns/tools projection — one adjacent
-                // transaction for the whole batch, idempotent on
-                // (projection_version, source_revision).
-                crate::viewer_extensions::projection::publish_structure_for_canonical_batch_best_effort(
+                // One coherent extension generation per conversation rides
+                // the same ingest pass — pending → one transaction →
+                // complete — each with its durable viewer_meta receipt so
+                // a failure names the reason instead of silently skipping
+                // the lane. Idempotent on the receipt's
+                // (source_revision, extractor_version, projection_version).
+                crate::viewer_extensions::projection::publish_ingest_generations_batch_best_effort(
                     writer.raw(),
                     prepared
                         .iter()

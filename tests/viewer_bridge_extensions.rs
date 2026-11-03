@@ -3486,3 +3486,687 @@ fn backfill_viewer_extensions_flag_repairs_preexisting_archive() -> Result<()> {
 
     bridge.shutdown()
 }
+
+// ===========================================================================
+// Ingest-lane extension generation publication. Production `cass index`
+// over isolated fixture sources must publish facts AND the structural
+// projection as ONE coherent extension generation — same
+// `source_revision`, durably receipted in `viewer_meta` — or honestly
+// record `pending`/`failed`. `complete` may only stand when both sides
+// committed; a partial or interrupted publication is never advertised
+// complete and is reconciled only by the explicit resumable backfill.
+// ===========================================================================
+
+/// Isolated ingest sandbox: HOME/XDG/CODEX_HOME/CLAUDE_CONFIG_DIR all under
+/// one tempdir so the production `cass` and `cass-viewer-bridge` binaries
+/// only ever see the fixture sources seeded here.
+struct IngestFixture {
+    _temp: tempfile::TempDir,
+    home: PathBuf,
+    data_dir: PathBuf,
+    db: PathBuf,
+    codex_home: PathBuf,
+    claude_config: PathBuf,
+}
+
+fn ingest_fixture() -> Result<IngestFixture> {
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let data_dir = temp.path().join("data");
+    let codex_home = home.join(".codex");
+    let claude_config = home.join(".claude");
+    for dir in [&home, &data_dir, &codex_home, &claude_config] {
+        std::fs::create_dir_all(dir)?;
+    }
+    Ok(IngestFixture {
+        db: data_dir.join("agent_search.db"),
+        _temp: temp,
+        home,
+        data_dir,
+        codex_home,
+        claude_config,
+    })
+}
+
+/// Shared environment for every production `cass` call in this section:
+/// pinned HOME/XDG/CODEX/CLAUDE roots plus the usual e2e quieting flags.
+fn cass_cmd(fixture: &IngestFixture) -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cass"));
+    cmd.env("HOME", &fixture.home)
+        .env("XDG_DATA_HOME", fixture.home.join(".local/share"))
+        .env("XDG_CONFIG_HOME", fixture.home.join(".config"))
+        .env("CODEX_HOME", &fixture.codex_home)
+        .env("CLAUDE_CONFIG_DIR", &fixture.claude_config)
+        .env("CASS_DATA_DIR", &fixture.data_dir)
+        .env("CASS_IGNORE_SOURCES_CONFIG", "1")
+        .env("CASS_AUTO_REFRESH", "0")
+        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
+        .env_remove("CASS_EXCLUDE_PATHS")
+        .env_remove("CASS_EXCLUDE_WORKSPACES")
+        .current_dir(&fixture.home);
+    cmd
+}
+
+/// Production ingest: `cass index --full` (a full connector scan so every
+/// persist path re-runs its extension publication hook).
+fn run_cass_index(fixture: &IngestFixture, extra_env: &[(&str, &str)]) -> Result<()> {
+    let mut cmd = cass_cmd(fixture);
+    cmd.arg("index")
+        .arg("--json")
+        .arg("--no-progress-events")
+        .arg("--full");
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    let output = cmd.stdin(Stdio::null()).output()?;
+    ensure!(
+        output.status.success(),
+        "cass index failed: {}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+/// Production `--init-extensions` writer pass (schema + canonical
+/// observers), the same flag an operator runs.
+fn run_init_extensions(fixture: &IngestFixture) -> Result<()> {
+    let status = Command::new(env!("CARGO_BIN_EXE_cass-viewer-bridge"))
+        .arg("--stdio")
+        .arg("--init-extensions")
+        .arg("--data-dir")
+        .arg(&fixture.data_dir)
+        .arg("--db")
+        .arg(&fixture.db)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()?;
+    ensure!(status.success(), "--init-extensions failed: {status}");
+    Ok(())
+}
+
+/// Production `--backfill-viewer-extensions` repair lane (the explicit,
+/// resumable reconcile path for pending/failed generations).
+fn run_backfill(fixture: &IngestFixture) -> Result<()> {
+    let status = Command::new(env!("CARGO_BIN_EXE_cass-viewer-bridge"))
+        .arg("--stdio")
+        .arg("--backfill-viewer-extensions")
+        .arg("--data-dir")
+        .arg(&fixture.data_dir)
+        .arg("--db")
+        .arg(&fixture.db)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .status()?;
+    ensure!(
+        status.success(),
+        "--backfill-viewer-extensions failed: {status}"
+    );
+    Ok(())
+}
+
+/// A real Codex rollout under `<codex_home>/sessions/2026/04/23/` — the
+/// connector only reads `rollout-*.jsonl`.
+fn seed_codex_rollout(fixture: &IngestFixture, name: &str, user_text: &str) -> Result<PathBuf> {
+    let sessions = fixture.codex_home.join("sessions/2026/04/23");
+    std::fs::create_dir_all(&sessions)?;
+    let path = sessions.join(format!("rollout-2026-04-23T12-00-00-{name}.jsonl"));
+    let lines = [
+        format!(
+            r#"{{"timestamp":"2026-04-23T12:00:00.000Z","type":"session_meta","payload":{{"id":"{name}","cwd":"/work/ingest-test","cli_version":"0.42.0"}}}}"#
+        ),
+        format!(
+            r#"{{"timestamp":"2026-04-23T12:00:01.000Z","type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"{user_text}"}}]}}}}"#
+        ),
+        format!(
+            r#"{{"timestamp":"2026-04-23T12:00:02.000Z","type":"response_item","payload":{{"type":"message","role":"assistant","content":[{{"type":"text","text":"acknowledged {user_text}"}}]}}}}"#
+        ),
+    ];
+    std::fs::write(&path, lines.join("\n") + "\n")?;
+    Ok(path)
+}
+
+/// A real Claude Code transcript: `<claude_config>/projects/<proj>/<name>.jsonl`.
+fn seed_claude_session(
+    fixture: &IngestFixture,
+    rel_path: &str,
+    session_id: &str,
+    user_text: &str,
+) -> Result<PathBuf> {
+    let path = fixture.claude_config.join("projects").join(rel_path);
+    std::fs::create_dir_all(path.parent().expect("session dir"))?;
+    let lines = [
+        format!(
+            r#"{{"type":"user","cwd":"/work/proj","sessionId":"{session_id}","gitBranch":"main","message":{{"role":"user","content":"{user_text}"}},"timestamp":"2026-04-23T12:00:00.000Z"}}"#
+        ),
+        format!(
+            r#"{{"type":"assistant","sessionId":"{session_id}","message":{{"role":"assistant","model":"claude-opus-4","content":[{{"type":"text","text":"ready {user_text}"}}]}},"timestamp":"2026-04-23T12:00:05.000Z"}}"#
+        ),
+    ];
+    std::fs::write(&path, lines.join("\n") + "\n")?;
+    Ok(path)
+}
+
+fn ingest_conn(fixture: &IngestFixture) -> Result<Connection> {
+    Ok(Connection::open(fixture.db.to_string_lossy().into_owned())?)
+}
+
+/// The canonical id of the fixture conversation — resolved from committed
+/// rows (never assumed to be `1`).
+fn canonical_id(conn: &Connection, source_path_match: &str) -> Result<i64> {
+    let rows = conn.query_with_params(
+        "SELECT id FROM conversations WHERE source_path LIKE ?1",
+        &param_slice_to_values(params![format!("%{source_path_match}%")]),
+    )?;
+    ensure!(
+        rows.len() == 1,
+        "expected one conversation matching {source_path_match}: {} rows",
+        rows.len()
+    );
+    Ok(rows[0].get_typed(0)?)
+}
+
+/// `viewer_meta` receipt payload for one session, decoded as JSON.
+fn ingest_receipt(conn: &Connection, conversation_id: i64) -> Result<Option<Value>> {
+    let rows = conn.query_with_params(
+        "SELECT value FROM viewer_meta WHERE key = ?1",
+        &param_slice_to_values(params![format!("ingest_receipt:{conversation_id}")]),
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let value: String = row.get_typed(0)?;
+    Ok(Some(serde_json::from_str(&value)?))
+}
+
+/// The verbatim generation-coherence assertion from the task brief: facts
+/// and projection must carry the SAME canonical source revision.
+fn assert_generation_coherent(conn: &Connection, conversation_id: i64) -> Result<()> {
+    let row = conn.query_row(&format!(
+        "SELECT f.source_revision,p.source_revision \
+         FROM viewer_session_facts f JOIN viewer_session_projection p \
+         ON p.conversation_id=f.conversation_id WHERE f.conversation_id={conversation_id}"
+    ))?;
+    ensure!(row.get_typed::<i64>(0)? == row.get_typed::<i64>(1)?);
+    Ok(())
+}
+
+/// `f.source_revision` of one session's facts row.
+fn facts_source_revision(conn: &Connection, conversation_id: i64) -> Result<i64> {
+    Ok(conn
+        .query_row(&format!(
+            "SELECT source_revision FROM viewer_session_facts WHERE conversation_id={conversation_id}"
+        ))?
+        .get_typed(0)?)
+}
+
+fn projection_revision(conn: &Connection) -> Result<i64> {
+    Ok(conn
+        .query_row("SELECT projection_revision FROM viewer_revisions WHERE id = 1")?
+        .get_typed(0)?)
+}
+
+/// No extra physical SQLite databases may appear next to the canonical
+/// archive — the one-db rule (WAL/SHM/journal companions are internals of
+/// the SAME `agent_search.db`, and the lexical index dir is not SQLite).
+fn assert_no_sidecar_db(fixture: &IngestFixture) -> Result<()> {
+    let mut stray = Vec::new();
+    for entry in std::fs::read_dir(&fixture.data_dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".db") && name != "agent_search.db" {
+            stray.push(name);
+        }
+    }
+    ensure!(
+        stray.is_empty(),
+        "a second physical database appeared: {stray:?}"
+    );
+    Ok(())
+}
+
+/// Extension-row presence for one canonical session, all lanes.
+fn extension_row_counts(conn: &Connection, conversation_id: i64) -> Result<(i64, i64, i64)> {
+    let facts_n: i64 = conn
+        .query_row(&format!(
+            "SELECT COUNT(*) FROM viewer_session_facts WHERE conversation_id={conversation_id}"
+        ))?
+        .get_typed(0)?;
+    let projection_n: i64 = conn
+        .query_row(&format!(
+            "SELECT COUNT(*) FROM viewer_session_projection WHERE conversation_id={conversation_id}"
+        ))?
+        .get_typed(0)?;
+    let steps_n: i64 = conn
+        .query_row(&format!(
+            "SELECT COUNT(*) FROM viewer_step_links WHERE conversation_id={conversation_id}"
+        ))?
+        .get_typed(0)?;
+    Ok((facts_n, projection_n, steps_n))
+}
+
+/// First ingest publishes the whole generation: same `source_revision` on
+/// both sides, structural rows present, and a durable `complete` receipt in
+/// `viewer_meta` naming the extractor/projection versions.
+#[test]
+fn ingest_publishes_coherent_extension_generation() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    seed_codex_rollout(&fixture, "gen-codex-1", "build the extension lane")?;
+
+    run_cass_index(&fixture, &[])?;
+    run_init_extensions(&fixture)?;
+
+    let conn = ingest_conn(&fixture)?;
+    let conversation_id = canonical_id(&conn, "rollout-")?;
+
+    // Exact assertion from the task brief (the fixture's real canonical id
+    // resolved from committed rows, never assumed).
+    let row = conn.query_row(&format!(
+        "SELECT f.source_revision,p.source_revision \
+         FROM viewer_session_facts f JOIN viewer_session_projection p \
+         ON p.conversation_id=f.conversation_id WHERE f.conversation_id={conversation_id}"
+    ))?;
+    ensure!(row.get_typed::<i64>(0)? == row.get_typed::<i64>(1)?);
+
+    // Structural projection rows actually landed.
+    let (_, projection_n, steps_n) = extension_row_counts(&conn, conversation_id)?;
+    ensure!(
+        projection_n == 1,
+        "projection marker missing: {projection_n}"
+    );
+    ensure!(
+        steps_n > 0,
+        "no step links projected for the fixture session"
+    );
+
+    // Durable publication receipt: complete, versioned, no failure reason.
+    let receipt =
+        ingest_receipt(&conn, conversation_id)?.expect("ingest publication receipt in viewer_meta");
+    ensure!(
+        receipt["state"] == "complete",
+        "receipt must be complete after a clean ingest: {receipt}"
+    );
+    ensure!(
+        receipt["source_revision"].as_i64() == Some(facts_source_revision(&conn, conversation_id)?),
+        "receipt must bind the same source_revision as the rows: {receipt}"
+    );
+    ensure!(
+        receipt["extractor_version"].as_i64() == Some(1)
+            && receipt["projection_version"].as_i64() == Some(1),
+        "receipt must name the current extractor/projection versions: {receipt}"
+    );
+    ensure!(
+        receipt["reason"].is_null(),
+        "clean ingest records no reason: {receipt}"
+    );
+
+    ensure!(
+        projection_revision(&conn)? >= 1,
+        "a committed generation bumps projection_revision"
+    );
+    assert_no_sidecar_db(&fixture)?;
+    drop(conn);
+    Ok(())
+}
+
+/// Unchanged reingest must not churn the generation: identical
+/// `source_revision` on both sides, `projection_revision` unmoved, receipt
+/// row untouched.
+#[test]
+fn ingest_unchanged_reingest_keeps_generation_and_revisions() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    seed_codex_rollout(&fixture, "gen-codex-2", "idempotent reingest")?;
+
+    run_cass_index(&fixture, &[])?;
+    run_init_extensions(&fixture)?;
+
+    let conn = ingest_conn(&fixture)?;
+    let conversation_id = canonical_id(&conn, "rollout-")?;
+    let revision_before = facts_source_revision(&conn, conversation_id)?;
+    let projection_revision_before = projection_revision(&conn)?;
+    let receipt_before = ingest_receipt(&conn, conversation_id)?.expect("receipt");
+    ensure!(receipt_before["state"] == "complete", "{receipt_before}");
+    drop(conn);
+
+    // Reingest the same sources — unchanged canonical content republishes
+    // nothing and touches no revision counter.
+    run_cass_index(&fixture, &[])?;
+    let conn = ingest_conn(&fixture)?;
+    assert_generation_coherent(&conn, conversation_id)?;
+    ensure!(
+        facts_source_revision(&conn, conversation_id)? == revision_before,
+        "unchanged content must keep the same source_revision"
+    );
+    ensure!(
+        projection_revision(&conn)? == projection_revision_before,
+        "unchanged reingest must not bump projection_revision: \
+         {projection_revision_before} -> {}",
+        projection_revision(&conn)?
+    );
+    let receipt_after = ingest_receipt(&conn, conversation_id)?.expect("receipt");
+    ensure!(
+        receipt_after == receipt_before,
+        "unchanged reingest must not rewrite the receipt: {receipt_after} vs {receipt_before}"
+    );
+    drop(conn);
+    Ok(())
+}
+
+/// Changed canonical content republishes BOTH sides at the new
+/// `source_revision` — never facts-new/projection-stale.
+#[test]
+fn ingest_changed_content_republishes_same_revision_on_both_sides() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    let session_path = seed_codex_rollout(&fixture, "gen-codex-3", "first body")?;
+
+    run_cass_index(&fixture, &[])?;
+    run_init_extensions(&fixture)?;
+
+    let conn = ingest_conn(&fixture)?;
+    let conversation_id = canonical_id(&conn, "rollout-")?;
+    let revision_before = facts_source_revision(&conn, conversation_id)?;
+    let projection_revision_before = projection_revision(&conn)?;
+    drop(conn);
+
+    // Append a new assistant message — the canonical merge changes
+    // semantic_hash, so a NEW generation must land on both sides.
+    let appended = format!(
+        "{}\n",
+        r#"{"timestamp":"2026-04-23T12:00:03.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"text","text":"second body"}]}}"#
+    );
+    std::fs::write(
+        &session_path,
+        format!("{}{appended}", std::fs::read_to_string(&session_path)?),
+    )?;
+    run_cass_index(&fixture, &[])?;
+
+    let conn = ingest_conn(&fixture)?;
+    assert_generation_coherent(&conn, conversation_id)?;
+    let revision_after = facts_source_revision(&conn, conversation_id)?;
+    ensure!(
+        revision_after != revision_before,
+        "changed content must produce a new source_revision"
+    );
+    ensure!(
+        projection_revision(&conn)? == projection_revision_before + 1,
+        "changed generation bumps projection_revision exactly once"
+    );
+    let receipt = ingest_receipt(&conn, conversation_id)?.expect("receipt");
+    ensure!(
+        receipt["state"] == "complete"
+            && receipt["source_revision"].as_i64() == Some(revision_after),
+        "receipt must move to the new generation complete: {receipt}"
+    );
+    drop(conn);
+    Ok(())
+}
+
+/// Canonical removal removes the whole extension generation with the
+/// session: facts, projection, structural links and the receipt — no
+/// orphan rows, no orphan receipt claiming coverage.
+#[test]
+fn ingest_removal_drops_extension_rows_and_receipt() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    seed_codex_rollout(&fixture, "gen-codex-4", "session to forget")?;
+
+    run_cass_index(&fixture, &[])?;
+    run_init_extensions(&fixture)?;
+
+    let conn = ingest_conn(&fixture)?;
+    let conversation_id = canonical_id(&conn, "rollout-")?;
+    let (facts_n, projection_n, steps_n) = extension_row_counts(&conn, conversation_id)?;
+    ensure!(
+        facts_n == 1 && projection_n == 1 && steps_n > 0,
+        "fixture must have extension rows before removal"
+    );
+    ensure!(ingest_receipt(&conn, conversation_id)?.is_some());
+    drop(conn);
+
+    // Production removal: `cass forget --apply` deletes the canonical row.
+    let mut cmd = cass_cmd(&fixture);
+    cmd.arg("forget")
+        .arg("--json")
+        .arg("--source-glob")
+        .arg("*rollout*")
+        .arg("--apply");
+    let output = cmd.stdin(Stdio::null()).output()?;
+    ensure!(
+        output.status.success(),
+        "cass forget failed: {}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let conn = ingest_conn(&fixture)?;
+    ensure!(
+        count(&conn, "SELECT COUNT(*) FROM conversations")? == 0,
+        "canonical row must be removed"
+    );
+    let (facts_n, projection_n, steps_n) = extension_row_counts(&conn, conversation_id)?;
+    ensure!(
+        facts_n == 0 && projection_n == 0 && steps_n == 0,
+        "removal must drop every extension row: {facts_n}/{projection_n}/{steps_n}"
+    );
+    ensure!(
+        ingest_receipt(&conn, conversation_id)?.is_none(),
+        "removal must drop the publication receipt — a deleted session \
+         can never claim coverage"
+    );
+    drop(conn);
+    Ok(())
+}
+
+/// Interrupted publication: a crash after the pending receipt commits but
+/// before the generation transaction lands leaves a durable `pending`
+/// receipt and NO rows — never a falsely complete archive. The explicit
+/// resumable backfill converges it to `complete` with no loss or
+/// duplication.
+#[test]
+fn ingest_interrupted_publication_leaves_pending_and_backfill_completes() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    seed_codex_rollout(&fixture, "gen-codex-5", "crash mid publication")?;
+
+    // Crash injection: pending receipt committed, generation transaction
+    // never attempted (process "dies" between the two adjacent commits).
+    run_cass_index(&fixture, &[("CASS_TEST_VIEWER_GENERATION_CRASH", "1")])?;
+    run_init_extensions(&fixture)?;
+
+    let conn = ingest_conn(&fixture)?;
+    let conversation_id = canonical_id(&conn, "rollout-")?;
+    let (facts_n, projection_n, steps_n) = extension_row_counts(&conn, conversation_id)?;
+    ensure!(
+        facts_n == 0 && projection_n == 0 && steps_n == 0,
+        "an interrupted publication must leave no partial rows: \
+         {facts_n}/{projection_n}/{steps_n}"
+    );
+    let receipt = ingest_receipt(&conn, conversation_id)?.expect("crash receipt");
+    ensure!(
+        receipt["state"] == "pending",
+        "interrupted publication must leave a pending receipt: {receipt}"
+    );
+    ensure!(
+        facts::list_incomplete_ingest_receipts(&conn)?
+            .iter()
+            .any(|receipt| receipt.conversation_id == conversation_id),
+        "the pending receipt must surface in the incomplete-receipt set"
+    );
+    drop(conn);
+
+    // Restart + explicit resumable backfill converges without loss or
+    // duplication.
+    run_backfill(&fixture)?;
+
+    let conn = ingest_conn(&fixture)?;
+    assert_generation_coherent(&conn, conversation_id)?;
+    let (facts_n, projection_n, steps_n) = extension_row_counts(&conn, conversation_id)?;
+    ensure!(
+        facts_n == 1 && projection_n == 1 && steps_n > 0,
+        "backfill must complete the generation exactly once: \
+         {facts_n}/{projection_n}/{steps_n}"
+    );
+    let receipt = ingest_receipt(&conn, conversation_id)?.expect("receipt");
+    ensure!(
+        receipt["state"] == "complete",
+        "backfill must mark the receipt complete: {receipt}"
+    );
+    ensure!(
+        facts::list_incomplete_ingest_receipts(&conn)?.is_empty(),
+        "no incomplete receipts may survive the reconcile"
+    );
+    drop(conn);
+    Ok(())
+}
+
+/// Failed publication: an error inside the generation transaction rolls
+/// the whole conversation back — no facts row without its structure — and
+/// the durable receipt records `failed` with the exact reason. A plain
+/// re-ingest of unchanged content does NOT silently repair it; only the
+/// explicit backfill converges it.
+#[test]
+fn ingest_failed_publication_records_reason_and_stays_incomplete() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    seed_codex_rollout(&fixture, "gen-codex-6", "fails mid transaction")?;
+
+    run_cass_index(&fixture, &[("CASS_TEST_VIEWER_GENERATION_FAIL", "1")])?;
+    run_init_extensions(&fixture)?;
+
+    let conn = ingest_conn(&fixture)?;
+    let conversation_id = canonical_id(&conn, "rollout-")?;
+    let (facts_n, projection_n, steps_n) = extension_row_counts(&conn, conversation_id)?;
+    ensure!(
+        facts_n == 0 && projection_n == 0 && steps_n == 0,
+        "a failed generation must roll back atomically — no facts row \
+         without structure: {facts_n}/{projection_n}/{steps_n}"
+    );
+    let receipt = ingest_receipt(&conn, conversation_id)?.expect("failure receipt");
+    ensure!(
+        receipt["state"] == "failed",
+        "a rolled-back publication must be marked failed: {receipt}"
+    );
+    ensure!(
+        receipt["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("CASS_TEST_VIEWER_GENERATION_FAIL")),
+        "the receipt must record the exact failure reason: {receipt}"
+    );
+    drop(conn);
+
+    // An unchanged re-ingest is the same generation the receipt already
+    // marks attempted — it retries the publication but this injected fault
+    // is deterministic, so it stays failed and never advertises complete.
+    run_cass_index(&fixture, &[("CASS_TEST_VIEWER_GENERATION_FAIL", "1")])?;
+    let conn = ingest_conn(&fixture)?;
+    let receipt = ingest_receipt(&conn, conversation_id)?.expect("receipt");
+    ensure!(
+        receipt["state"] == "failed",
+        "the deterministic fault must keep the receipt failed: {receipt}"
+    );
+    let (facts_n, _, _) = extension_row_counts(&conn, conversation_id)?;
+    ensure!(facts_n == 0, "still no partial coverage may be committed");
+    drop(conn);
+
+    // Explicit resumable backfill with the fault cleared converges.
+    run_backfill(&fixture)?;
+    let conn = ingest_conn(&fixture)?;
+    assert_generation_coherent(&conn, conversation_id)?;
+    let receipt = ingest_receipt(&conn, conversation_id)?.expect("receipt");
+    ensure!(receipt["state"] == "complete", "{receipt}");
+    ensure!(
+        facts::list_incomplete_ingest_receipts(&conn)?.is_empty(),
+        "reconcile must drain every incomplete receipt"
+    );
+    drop(conn);
+    Ok(())
+}
+
+/// Child-before-parent: a subagent transcript ingested before its parent
+/// records the parent evidence but leaves `parent_conversation_id` NULL
+/// (honest unresolved). When the parent session arrives on a later
+/// `cass index`, the targeted fixup resolves the child's parent link —
+/// same-transaction, no full-catalog rescan.
+#[test]
+fn ingest_child_before_parent_resolves_on_parent_arrival() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    let parent_session = "parent-sess-abc";
+    // Child first: `projects/proj/<parent>/subagents/agent-child.jsonl` —
+    // the connector derives `parentSessionId` = "<parent>" from the path.
+    seed_claude_session(
+        &fixture,
+        &format!("proj/{parent_session}/subagents/agent-child.jsonl"),
+        "child-sess-xyz",
+        "child prompt",
+    )?;
+    run_cass_index(&fixture, &[])?;
+    run_init_extensions(&fixture)?;
+
+    let conn = ingest_conn(&fixture)?;
+    let child_id = canonical_id(&conn, "agent-child")?;
+    let row = conn.query_row(&format!(
+        "SELECT parent_conversation_id, parent_external_id FROM viewer_session_facts \
+         WHERE conversation_id={child_id}"
+    ))?;
+    ensure!(
+        row.get_typed::<Option<i64>>(0)?.is_none(),
+        "child published before parent must leave parent_conversation_id NULL"
+    );
+    ensure!(
+        row.get_typed::<Option<String>>(1)?.as_deref() == Some(parent_session),
+        "the recorded parent evidence must be the path-derived session id"
+    );
+    let detail: String = conn
+        .query_row(&format!(
+            "SELECT coverage_detail_json FROM viewer_session_facts \
+             WHERE conversation_id={child_id}"
+        ))?
+        .get_typed(0)?;
+    let detail: Value = serde_json::from_str(&detail)?;
+    ensure!(
+        detail["parent"]["resolution"] == "unresolved",
+        "unresolved evidence stays honest: {detail}"
+    );
+    drop(conn);
+
+    // Parent arrives on a later ingest — the targeted fixup resolves the
+    // child's parent_conversation_id in the parent's own publication
+    // transaction (no child republish needed).
+    seed_claude_session(
+        &fixture,
+        &format!("proj/{parent_session}.jsonl"),
+        parent_session,
+        "parent prompt",
+    )?;
+    run_cass_index(&fixture, &[])?;
+
+    let conn = ingest_conn(&fixture)?;
+    let parent_id = canonical_id(&conn, &format!("{parent_session}.jsonl"))?;
+    let resolved: Option<i64> = conn
+        .query_row(&format!(
+            "SELECT parent_conversation_id FROM viewer_session_facts \
+             WHERE conversation_id={child_id}"
+        ))?
+        .get_typed(0)?;
+    ensure!(
+        resolved == Some(parent_id),
+        "parent arrival must resolve the child's parent link: \
+         resolved={resolved:?} parent_id={parent_id}"
+    );
+    let detail: String = conn
+        .query_row(&format!(
+            "SELECT coverage_detail_json FROM viewer_session_facts \
+             WHERE conversation_id={child_id}"
+        ))?
+        .get_typed(0)?;
+    let detail: Value = serde_json::from_str(&detail)?;
+    ensure!(
+        detail["parent"]["resolution"] == "resolved",
+        "fixup must refresh the coverage manifest honestly: {detail}"
+    );
+    assert_generation_coherent(&conn, child_id)?;
+    assert_generation_coherent(&conn, parent_id)?;
+    drop(conn);
+    Ok(())
+}

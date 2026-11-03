@@ -27,7 +27,11 @@ use crate::franken_sync::compat::RowExt;
 ///
 /// v2: the Task-8 structural projection tables (`viewer_session_projection`,
 /// `viewer_step_links`, `viewer_turn_links`, `viewer_tool_calls`).
-pub const EXTENSION_SCHEMA_VERSION: i64 = 2;
+/// v3: ingest-generation support — `viewer_session_facts.parent_external_id`
+/// (durable parent evidence for the child-before-parent fixup) plus the
+/// `viewer_ingest_receipt_cleanup` delete trigger so a removed canonical
+/// session can never leave a `viewer_meta` ingest receipt claiming coverage.
+pub const EXTENSION_SCHEMA_VERSION: i64 = 3;
 
 /// Additive viewer schema. Every statement is idempotent so re-running the
 /// profile on an initialized archive is a no-op.
@@ -76,6 +80,11 @@ CREATE TABLE IF NOT EXISTS viewer_session_facts (
     coverage_detail_json TEXT,
     is_subagent INTEGER,
     parent_conversation_id INTEGER REFERENCES conversations(id),
+    -- Schema v3: provider parent evidence (`parentSessionId`/`parent_id`)
+    -- persisted durably so the child-before-parent fixup can resolve the
+    -- link when the parent lands on a later ingest. Pre-v3 archives gain
+    -- this column through the guarded ALTER in migrate_facts_parent_evidence.
+    parent_external_id TEXT,
     task_category TEXT,
     turn_count INTEGER,
     step_count INTEGER,
@@ -229,6 +238,84 @@ INSERT OR REPLACE INTO viewer_meta (key, value)
 VALUES ('extension_schema_version', '2');
 ";
 
+/// Schema v3 — ingest-generation support.
+///
+/// `viewer_session_facts.parent_external_id` persists the provider parent
+/// evidence (`parentSessionId`/`parent_id`) alongside the resolved
+/// `parent_conversation_id`. A subagent transcript ingested BEFORE its
+/// parent keeps the evidence durably so the targeted fixup can resolve the
+/// link when the parent arrives on a later ingest — no catalog rescan, no
+/// evidence re-parse. The column itself lands via a guarded `ALTER TABLE`
+/// (see [`migrate_facts_parent_evidence`]); this batch carries the index,
+/// the receipt-cleanup trigger and the version marker.
+///
+/// `viewer_ingest_receipt_cleanup` is the explicit removal half of the
+/// ingest-receipt protocol: extension row tables cascade on
+/// `conversations(id)` already, but `viewer_meta` receipts are keyed
+/// strings, not FK rows — without this trigger a `cass forget` would leave
+/// a durable `complete` receipt claiming coverage for a deleted session.
+/// It is a schema object (not a `viewer_rev_*` observer): it journals
+/// nothing and bumps no revision.
+const VIEWER_SCHEMA_V3: &str = r"
+CREATE INDEX IF NOT EXISTS idx_viewer_session_facts_parent_ext
+    ON viewer_session_facts(parent_external_id);
+
+DROP TRIGGER IF EXISTS viewer_ingest_receipt_cleanup;
+CREATE TRIGGER viewer_ingest_receipt_cleanup AFTER DELETE ON conversations
+BEGIN
+    DELETE FROM viewer_meta WHERE key = 'ingest_receipt:' || OLD.id;
+END;
+
+INSERT OR REPLACE INTO viewer_meta (key, value)
+VALUES ('extension_schema_version', '3');
+";
+
+/// Guarded v3 column migration: `parent_external_id` cannot ride the
+/// `CREATE TABLE` statement (existing v2 archives keep their table), so it
+/// lands as an `ALTER TABLE` only when the column is absent — inside the
+/// same schema transaction as the rest of the profile.
+fn migrate_facts_parent_evidence(connection: &Connection) -> Result<()> {
+    let present = connection
+        .query("PRAGMA table_info(viewer_session_facts)")?
+        .iter()
+        .any(|row| {
+            row.get_typed::<String>(1)
+                .map(|name| name == "parent_external_id")
+                .unwrap_or(false)
+        });
+    if !present {
+        connection
+            .execute(
+                "ALTER TABLE viewer_session_facts \
+                 ADD COLUMN parent_external_id TEXT",
+            )
+            .context("adding viewer_session_facts.parent_external_id (schema v3)")?;
+    }
+    Ok(())
+}
+
+/// The ingest hook's cheap profile guard: `true` when the extension
+/// profile is installed at the current version, installing/upgrading it
+/// when missing or stale. One indexed `viewer_meta` read on the hot path;
+/// the full DDL batch only runs once per archive (and once more whenever
+/// `EXTENSION_SCHEMA_VERSION` moves).
+///
+/// This is the same `ensure_schema` the authorized `--init-extensions`
+/// pass runs — additive `IF NOT EXISTS`/guarded-`ALTER` DDL inside the
+/// canonical archive, never a sidecar, never a canonical-table write.
+/// Canonical observer triggers stay owned by the authorized maintenance
+/// lane (`revisions::ensure_observers`); ingest publication itself does
+/// not depend on them.
+pub fn ensure_profile_for_ingest(connection: &Connection) -> Result<bool> {
+    match installed_version(connection)? {
+        Some(version) if version >= EXTENSION_SCHEMA_VERSION => Ok(true),
+        _ => {
+            ensure_schema(connection)?;
+            Ok(true)
+        }
+    }
+}
+
 /// Initialize (or verify) the additive `viewer_*` extension profile inside
 /// the canonical archive.
 ///
@@ -250,10 +337,14 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
     connection
         .execute("BEGIN")
         .context("starting viewer extension schema transaction")?;
-    match connection
-        .execute_batch(VIEWER_SCHEMA_V1)
-        .and_then(|()| connection.execute_batch(VIEWER_SCHEMA_V2))
-    {
+    let applied = (|| -> Result<()> {
+        connection.execute_batch(VIEWER_SCHEMA_V1)?;
+        connection.execute_batch(VIEWER_SCHEMA_V2)?;
+        migrate_facts_parent_evidence(connection)?;
+        connection.execute_batch(VIEWER_SCHEMA_V3)?;
+        Ok(())
+    })();
+    match applied {
         Ok(()) => {
             connection
                 .execute("COMMIT")
