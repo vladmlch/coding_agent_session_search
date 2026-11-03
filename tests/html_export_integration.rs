@@ -15,6 +15,7 @@
 #![allow(clippy::collapsible_if)]
 
 use assert_cmd::Command;
+use coding_agent_search::storage::sqlite::SqliteStorage;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,6 +27,67 @@ fn fixture_path(category: &str, name: &str) -> PathBuf {
         .join("tests/fixtures/html_export")
         .join(category)
         .join(name)
+}
+
+// ----------------------------------------------------------------------------
+// Index-first staging
+//
+// `cass export` / `export-html` render only the indexed snapshot — the session
+// path is an opaque identity key, never a file the exporter opens. Every
+// fixture is therefore staged into a Claude-shaped `projects/` tree and
+// ingested by a real `cass index --watch-once` subprocess; the export arg is
+// the archived `source_path`, resolved via `--db`.
+// ----------------------------------------------------------------------------
+
+/// The exact `source_path` the archive stores for the conversation whose path
+/// contains `needle` — the identity `cass export` resolves.
+fn archived_identity(db: &Path, needle: &str) -> Option<String> {
+    let storage = SqliteStorage::open_readonly(db).expect("open archive read-only");
+    let convos = storage
+        .list_conversations(1000, 0)
+        .expect("list archived conversations");
+    let found = convos
+        .iter()
+        .find(|c| c.source_path.to_string_lossy().contains(needle))
+        .map(|c| c.source_path.to_string_lossy().into_owned());
+    storage.close().expect("close archive");
+    found
+}
+
+/// Stage `session` under `<tmp>/home/.claude/projects/<slug>/`, run a real
+/// `cass index --watch-once` subprocess (each run's file-handle churn stays
+/// out of the test process), and return `(db_path, identity)`. When ingest
+/// produced no conversation (empty or unparseable fixture) the staged path is
+/// returned — exporting it then exercises the not-indexed error path.
+fn stage_indexed_session(tmp: &TempDir, session: &Path, slug: &str) -> (PathBuf, String) {
+    let home = tmp.path().join("home");
+    let project = home.join(".claude/projects").join(slug);
+    fs::create_dir_all(&project).expect("create claude project dir");
+    let staged = project.join(session.file_name().expect("session file name"));
+    fs::copy(session, &staged).expect("stage session for indexing");
+    let data = tmp.path().join("cass-data");
+    let output = base_cmd()
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", tmp.path().join("xdg-config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("CASS_DATA_DIR", &data)
+        .env("CASS_INDEX_REDACTION", "off")
+        .env("CASS_AUTO_REFRESH", "0")
+        .env_remove("CASS_DB_PATH")
+        .args(["index", "--watch-once"])
+        .arg(&staged)
+        .output()
+        .expect("run cass index --watch-once");
+    assert!(
+        output.status.success(),
+        "index failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let db = data.join("agent_search.db");
+    let needle = staged.file_name().unwrap().to_str().unwrap().to_string();
+    let identity =
+        archived_identity(&db, &needle).unwrap_or_else(|| staged.to_string_lossy().into_owned());
+    (db, identity)
 }
 
 /// Create a minimal test session JSONL file.
@@ -58,12 +120,15 @@ fn base_cmd() -> Command {
 fn test_export_pipeline_complete_success() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
     let output_dir = tmp.path();
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             output_dir.to_str().unwrap(),
             "--robot",
@@ -101,11 +166,14 @@ fn test_export_pipeline_complete_success() {
 fn test_export_preserves_message_content() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -131,11 +199,14 @@ fn test_export_preserves_message_content() {
 fn test_export_all_message_types() {
     let session_path = fixture_path("edge_cases", "all_message_types.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -166,13 +237,16 @@ fn test_export_all_message_types() {
 fn test_export_large_session_performance() {
     let session_path = fixture_path("edge_cases", "large_session.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let start = std::time::Instant::now();
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -211,11 +285,14 @@ fn test_export_large_session_performance() {
 fn test_export_unicode_content() {
     let session_path = fixture_path("edge_cases", "unicode_heavy.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -247,12 +324,15 @@ fn test_export_unicode_content() {
 fn test_encrypted_export_flow() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
     let password = "test-password-secure-123";
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -317,11 +397,15 @@ fn test_encrypted_export_flow() {
 #[test]
 fn test_encrypted_export_hides_topic_in_default_name_and_html() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
-    let session = session_path.to_str().unwrap();
+    let staging_dir = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&staging_dir, &session_path, "-it");
+    let session = identity.as_str();
 
     let plain_dir = TempDir::new().unwrap();
     let plain = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
             session,
             "--output-dir",
@@ -356,6 +440,8 @@ fn test_encrypted_export_hides_topic_in_default_name_and_html() {
     let encrypted_dir = TempDir::new().unwrap();
     let encrypted = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
             session,
             "--output-dir",
@@ -511,11 +597,14 @@ fn test_encrypted_export_hides_topic_in_default_name_and_html() {
 fn test_encrypted_export_requires_password() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -542,11 +631,14 @@ fn test_encrypted_export_requires_password() {
 fn test_cli_export_basic() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -569,11 +661,14 @@ fn test_cli_export_basic() {
 fn test_cli_export_dry_run() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -601,9 +696,17 @@ fn test_cli_export_dry_run() {
 #[test]
 fn test_cli_export_explain() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
+    let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
-        .args(["export-html", session_path.to_str().unwrap(), "--explain"])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "export-html",
+            &identity,
+            "--explain",
+        ])
         .output()
         .unwrap();
 
@@ -619,8 +722,21 @@ fn test_cli_export_explain() {
 
 #[test]
 fn test_cli_export_session_not_found() {
+    // Index-first: a never-indexed path resolves against the archive and
+    // fails `conversation-not-indexed` (code 3) — the index-first analogue
+    // of the old file-first `session-not-found`.
+    let session_path = fixture_path("edge_cases", "single_message.jsonl");
+    let tmp = TempDir::new().unwrap();
+    let (db, _identity) = stage_indexed_session(&tmp, &session_path, "-it");
+
     let output = base_cmd()
-        .args(["export-html", "/nonexistent/path/session.jsonl", "--robot"])
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "export-html",
+            "/nonexistent/path/session.jsonl",
+            "--robot",
+        ])
         .output()
         .unwrap();
 
@@ -630,19 +746,22 @@ fn test_cli_export_session_not_found() {
     let json: Value = serde_json::from_str(&stdout).unwrap();
 
     assert_eq!(json["success"], false);
-    assert_eq!(json["error"]["kind"], "session-not-found");
+    assert_eq!(json["error"]["kind"], "conversation-not-indexed");
 }
 
 #[test]
 fn test_cli_export_with_custom_filename() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
     let custom_name = "my_export.html";
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--filename",
@@ -669,11 +788,14 @@ fn test_cli_export_with_custom_filename() {
 fn test_cli_export_with_options() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -712,14 +834,17 @@ fn test_cli_export_tools_and_timestamps_can_be_turned_off() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let export = |extra: &[&str]| -> String {
         let tmp = TempDir::new().unwrap();
+        let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
         let mut args = vec![
-            "export-html",
-            session_path.to_str().unwrap(),
-            "--output-dir",
-            tmp.path().to_str().unwrap(),
-            "--robot",
+            "--db".to_string(),
+            db.to_str().unwrap().to_string(),
+            "export-html".to_string(),
+            identity,
+            "--output-dir".to_string(),
+            tmp.path().to_str().unwrap().to_string(),
+            "--robot".to_string(),
         ];
-        args.extend_from_slice(extra);
+        args.extend(extra.iter().map(|arg| (*arg).to_string()));
         let output = base_cmd().args(&args).output().unwrap();
         assert!(
             output.status.success(),
@@ -762,11 +887,14 @@ fn test_cli_export_tools_and_timestamps_can_be_turned_off() {
 fn test_cli_export_no_cdn() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -797,11 +925,14 @@ fn test_cli_export_no_cdn() {
 fn test_export_empty_session() {
     let session_path = fixture_path("edge_cases", "empty_session.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -828,11 +959,14 @@ fn test_export_empty_session() {
 fn test_export_single_message() {
     let session_path = fixture_path("edge_cases", "single_message.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -857,11 +991,14 @@ fn test_export_single_message() {
 fn test_export_malformed_json_graceful_handling() {
     let session_path = fixture_path("malformed", "invalid_json.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -883,11 +1020,14 @@ fn test_export_malformed_json_graceful_handling() {
 fn test_export_truncated_file() {
     let session_path = fixture_path("malformed", "truncated.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -911,13 +1051,16 @@ fn test_export_truncated_file() {
 fn benchmark_export_small_session() {
     let session_path = fixture_path("edge_cases", "single_message.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let start = std::time::Instant::now();
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -939,13 +1082,16 @@ fn benchmark_export_small_session() {
 fn benchmark_export_medium_session() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let start = std::time::Instant::now();
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -971,12 +1117,15 @@ fn benchmark_export_medium_session() {
 fn test_export_creates_output_directory() {
     let session_path = fixture_path("edge_cases", "single_message.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
     let nested_dir = tmp.path().join("nested").join("output").join("dir");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             nested_dir.to_str().unwrap(),
             "--robot",
@@ -1000,13 +1149,18 @@ fn test_export_handles_special_characters_in_path() {
     let special_dir = tmp.path().join("test with spaces");
     fs::create_dir_all(&special_dir).unwrap();
 
-    // Create a test session in the special directory
+    // Create a test session in the special directory, then index it under a
+    // project slug that keeps the spaces — the archived `source_path`
+    // identity still exercises special characters end to end.
     let session_path = create_test_session(&special_dir, &[("user", "Hello world")]);
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "test with spaces");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -1025,11 +1179,14 @@ fn test_export_handles_special_characters_in_path() {
 fn test_export_html_structure() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -1065,11 +1222,14 @@ fn test_export_html_structure() {
 fn test_export_has_theme_toggle() {
     let session_path = fixture_path("edge_cases", "single_message.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -1095,11 +1255,14 @@ fn test_export_has_theme_toggle() {
 fn test_export_has_print_styles() {
     let session_path = fixture_path("edge_cases", "single_message.jsonl");
     let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
 
     let output = base_cmd()
         .args([
+            "--db",
+            db.to_str().unwrap(),
             "export-html",
-            session_path.to_str().unwrap(),
+            &identity,
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
@@ -1138,11 +1301,15 @@ fn test_export_multiple_sessions_sequentially() {
         if !session_path.exists() {
             continue;
         }
+        let slug = format!("-batch-{}", name.trim_end_matches(".jsonl"));
+        let (db, identity) = stage_indexed_session(&tmp, &session_path, &slug);
 
         let output = base_cmd()
             .args([
+                "--db",
+                db.to_str().unwrap(),
                 "export-html",
-                session_path.to_str().unwrap(),
+                &identity,
                 "--output-dir",
                 tmp.path().to_str().unwrap(),
                 "--robot",

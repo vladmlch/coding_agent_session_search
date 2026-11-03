@@ -15,6 +15,7 @@
 //! metadata, styles, scripts, and rendered message HTML.
 
 use assert_cmd::Command;
+use coding_agent_search::storage::sqlite::SqliteStorage;
 use regex::Regex;
 use serde_json::{Value, json};
 use std::fs;
@@ -35,6 +36,10 @@ fn cass_cmd(test_home: &Path) -> Command {
         .env("HOME", test_home)
         .env("XDG_CONFIG_HOME", test_home.join(".config"))
         .env("XDG_DATA_HOME", test_home.join(".local/share"))
+        .env("CASS_DATA_DIR", test_home.join("cass-data"))
+        .env("CASS_INDEX_REDACTION", "off")
+        .env("CASS_AUTO_REFRESH", "0")
+        .env_remove("CASS_DB_PATH")
         .env("NO_COLOR", "1");
     cmd
 }
@@ -87,16 +92,50 @@ fn write_fixture_session(test_home: &Path) -> PathBuf {
     session_path
 }
 
+/// Index `session_path` (already staged under `test_home`'s Claude project
+/// tree) into an isolated archive and return `(db_path, archived_identity)`
+/// — the canonical `source_path` the index-first exporter resolves.
+fn index_session(test_home: &Path, session_path: &Path) -> (PathBuf, String) {
+    let output = cass_cmd(test_home)
+        .arg("index")
+        .arg("--watch-once")
+        .arg(session_path)
+        .output()
+        .expect("run cass index --watch-once");
+    assert!(
+        output.status.success(),
+        "cass index exited non-zero: status={:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let db = test_home.join("cass-data").join("agent_search.db");
+    let storage = SqliteStorage::open_readonly(&db).expect("open indexed archive");
+    let convos = storage
+        .list_conversations(1000, 0)
+        .expect("list archived conversations");
+    let identity = convos
+        .iter()
+        .map(|c| c.source_path.to_string_lossy().into_owned())
+        .find(|path| path.ends_with("session-z2hck.jsonl"))
+        .unwrap_or_else(|| session_path.to_string_lossy().into_owned());
+    storage.close().expect("close archive");
+    (db, identity)
+}
+
 fn export_html(
     test_home: &Path,
-    session_path: &Path,
+    db: &Path,
+    identity: &str,
     output_dir: &Path,
     filename: &str,
     encrypted: bool,
 ) -> String {
     let mut cmd = cass_cmd(test_home);
-    cmd.arg("export-html")
-        .arg(session_path)
+    cmd.arg("--db")
+        .arg(db)
+        .arg("export-html")
+        .arg(identity)
         .arg("--output-dir")
         .arg(output_dir)
         .arg("--filename")
@@ -262,10 +301,12 @@ fn basic_export_html_matches_golden() {
     let test_home = TempDir::new().expect("create temp home");
     let output_dir = TempDir::new().expect("create output dir");
     let session_path = write_fixture_session(test_home.path());
+    let (db, identity) = index_session(test_home.path(), &session_path);
 
     let html = export_html(
         test_home.path(),
-        &session_path,
+        &db,
+        &identity,
         output_dir.path(),
         "basic_export.html",
         false,
@@ -289,17 +330,20 @@ fn encrypted_export_html_matches_golden() {
     let output_dir_a = TempDir::new().expect("create first output dir");
     let output_dir_b = TempDir::new().expect("create second output dir");
     let session_path = write_fixture_session(test_home.path());
+    let (db, identity) = index_session(test_home.path(), &session_path);
 
     let first = export_html(
         test_home.path(),
-        &session_path,
+        &db,
+        &identity,
         output_dir_a.path(),
         "encrypted_export.html",
         true,
     );
     let second = export_html(
         test_home.path(),
-        &session_path,
+        &db,
+        &identity,
         output_dir_b.path(),
         "encrypted_export.html",
         true,

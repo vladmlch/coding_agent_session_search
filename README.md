@@ -1339,6 +1339,13 @@ cass sessions --workspace /path/to/project --json --limit 5
 cass export /path/to/session.jsonl --format markdown -o conversation.md
 cass export /path/to/session.jsonl --format json --include-tools
 
+# Export reads the last indexed snapshot — the path is an identity key:
+# the original file may be moved/renamed/deleted after `cass index` and
+# is never re-read. Unindexed sessions fail with an actionable error;
+# --include-tools renders only tool detail the index captured
+# (see docs/index-retention.md for per-provider limits). When several
+# conversations share a path, disambiguate with --source / --conversation-id.
+
 # Export as self-contained HTML with encryption (recommended for sharing)
 cass export-html /path/to/session.jsonl                     # To Downloads folder
 printf '%s\n' "pwd" | cass export-html session.jsonl --encrypt --password-stdin

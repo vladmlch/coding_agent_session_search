@@ -27,7 +27,9 @@ use assert_cmd::Command;
 use coding_agent_search::franken_sync::Connection;
 use coding_agent_search::franken_sync::compat::ConnectionExt;
 use coding_agent_search::franken_sync::params;
+use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use coding_agent_search::search::tantivy::expected_index_dir;
+use coding_agent_search::storage::sqlite::FrankenStorage;
 use coding_agent_search::subsystem_coverage_matrix::matrix_report;
 use serde_json::{Value, json};
 use std::error::Error;
@@ -2402,6 +2404,70 @@ fn export_html_shape_matches_golden() {
         ),
     )
     .expect("write session fixture");
+
+    // Index-first contract: `cass export-html` reads the indexed snapshot,
+    // never the source file. Seed the archive the way `cass index` would
+    // have for this rollout so the golden exercises the success envelope.
+    let db_path = test_home
+        .path()
+        .join("coding-agent-search")
+        .join("agent_search.db");
+    fs::create_dir_all(db_path.parent().expect("db parent")).expect("create db dir");
+    {
+        let storage = FrankenStorage::open(&db_path).expect("open seed archive");
+        let agent_id = storage
+            .ensure_agent(&Agent {
+                id: None,
+                slug: "codex".to_string(),
+                name: "Codex".to_string(),
+                version: None,
+                kind: AgentKind::Cli,
+            })
+            .expect("ensure codex agent");
+        storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &Conversation {
+                    id: None,
+                    agent_slug: "codex".to_string(),
+                    workspace: Some(PathBuf::from("/tmp")),
+                    external_id: Some("export-golden".to_string()),
+                    title: Some("hello".to_string()),
+                    source_path: session_path.clone(),
+                    started_at: Some(1_713_916_800_000),
+                    ended_at: Some(1_713_916_802_000),
+                    approx_tokens: None,
+                    metadata_json: serde_json::json!({}),
+                    messages: vec![
+                        Message {
+                            id: None,
+                            idx: 0,
+                            role: MessageRole::User,
+                            author: None,
+                            created_at: Some(1_713_916_801_000),
+                            content: "hello".to_string(),
+                            extra_json: serde_json::Value::Null,
+                            snippets: Vec::new(),
+                        },
+                        Message {
+                            id: None,
+                            idx: 1,
+                            role: MessageRole::Agent,
+                            author: None,
+                            created_at: Some(1_713_916_802_000),
+                            content: "hi".to_string(),
+                            extra_json: serde_json::Value::Null,
+                            snippets: Vec::new(),
+                        },
+                    ],
+                    source_id: "local".to_string(),
+                    origin_host: None,
+                },
+            )
+            .expect("insert golden conversation");
+        storage.close().expect("close seed archive");
+    }
 
     let output_dir = test_home.path().join("export-out");
     fs::create_dir_all(&output_dir).expect("create output dir");

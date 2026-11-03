@@ -53,6 +53,9 @@ pub(crate) enum IndexedExportError {
     ConversationNotIndexed {
         source_path: PathBuf,
         source_id: Option<String>,
+        /// The requested `conversation_id`, when the selector carried one —
+        /// surfaced so callers can name the id that resolved to nothing.
+        conversation_id: Option<i64>,
     },
     /// A selector without `conversation_id` matched more than one indexed
     /// conversation. Never silently pick the newest row.
@@ -73,9 +76,10 @@ impl std::fmt::Display for IndexedExportError {
             Self::ConversationNotIndexed {
                 source_path,
                 source_id,
+                conversation_id,
             } => write!(
                 f,
-                "no indexed conversation for {} (source {source_id:?})",
+                "no indexed conversation for {} (source {source_id:?}, conversation_id {conversation_id:?})",
                 source_path.display()
             ),
             Self::AmbiguousIdentity {
@@ -229,12 +233,14 @@ fn resolve_by_conversation_id(
         return Err(IndexedExportError::ConversationNotIndexed {
             source_path: selector.source_path.clone(),
             source_id: normalized_source_id.map(str::to_string),
+            conversation_id: Some(conversation_id),
         });
     };
     if view.convo.source_path.to_string_lossy() != source_path {
         return Err(IndexedExportError::ConversationNotIndexed {
             source_path: selector.source_path.clone(),
             source_id: normalized_source_id.map(str::to_string),
+            conversation_id: Some(conversation_id),
         });
     }
     // `view.convo.source_id` is already normalized by the UI row mapper
@@ -244,6 +250,7 @@ fn resolve_by_conversation_id(
         return Err(IndexedExportError::ConversationNotIndexed {
             source_path: selector.source_path.clone(),
             source_id: normalized_source_id.map(str::to_string),
+            conversation_id: Some(conversation_id),
         });
     }
     Ok(view)
@@ -291,6 +298,7 @@ fn resolve_by_identity(
         [] => Err(IndexedExportError::ConversationNotIndexed {
             source_path: selector.source_path.clone(),
             source_id: normalized_source_id.map(str::to_string),
+            conversation_id: None,
         }),
         [only] => {
             let conversation_id = only.candidate.conversation_id.unwrap_or(-1);
@@ -304,6 +312,7 @@ fn resolve_by_identity(
             view.ok_or_else(|| IndexedExportError::ConversationNotIndexed {
                 source_path: selector.source_path.clone(),
                 source_id: normalized_source_id.map(str::to_string),
+                conversation_id: None,
             })
         }
         many => Err(IndexedExportError::AmbiguousIdentity {

@@ -2174,8 +2174,12 @@ fn pack_excludes_skill_payloads_without_losing_ordinary_evidence() {
     }
 
     // The shared policy must retain export's explicit operator opt-in.
+    // Export resolves the indexed snapshot from the same archive the pack
+    // calls above built; the source path is the opaque canonical identity.
     let source_path = codex_home.join("sessions/2026/04/23/rollout-skill-0.jsonl");
     let output = cass_cmd(home)
+        .arg("--db")
+        .arg(data_dir.join("agent_search.db"))
         .args(["export", "--format", "json", "--include-skills"])
         .arg(&source_path)
         .timeout(Duration::from_secs(20))

@@ -22999,10 +22999,14 @@ fn indexed_export_error_message(err: &crate::export::indexed::IndexedExportError
         IndexedExportError::ConversationNotIndexed {
             source_path,
             source_id,
+            conversation_id,
         } => format!(
-            "No indexed conversation found for {} (source: {}). Run 'cass index' to index it, then export again.",
+            "No indexed conversation found for {} (source: {}{}). Run 'cass index' to index it, then export again.",
             source_path.display(),
-            source_id.as_deref().unwrap_or("any")
+            source_id.as_deref().unwrap_or("any"),
+            conversation_id
+                .map(|id| format!(", conversation_id: {id}"))
+                .unwrap_or_default()
         ),
         IndexedExportError::AmbiguousIdentity {
             source_path,
@@ -23123,6 +23127,13 @@ fn export_session_task(
                 content
             }
         };
+
+        // Skill injections carry the full SKILL.md body as a user message;
+        // the TUI has no include-skills flag, so apply the CLI default and
+        // drop them unconditionally (CLI: `!include_skills` retain loop).
+        if crate::export::is_skill_injection(&content) {
+            continue;
+        }
 
         if content.is_empty() && tool_calls.is_empty() {
             continue;
@@ -23266,6 +23277,13 @@ fn export_session_markdown_task(
     let mut privacy = crate::export::ExportPrivacy::new(false);
     privacy.redact_messages(&mut messages);
     privacy.redact_optional_text(&mut session_title);
+
+    // Same skill-injection default as the CLI (`!include_skills` retain loop):
+    // the TUI exposes no opt-in flag, so skill bodies never reach the file.
+    messages.retain(|msg| {
+        let content = crate::extract_text_content(msg);
+        !crate::export::is_skill_injection(&content)
+    });
 
     if session_title.is_none() {
         for message in &messages {
@@ -30961,6 +30979,65 @@ mod tests {
             "existing",
             "original markdown export should remain untouched"
         );
+    }
+
+    #[test]
+    fn export_session_markdown_task_drops_skill_injections_like_cli_default() {
+        use crate::storage::sqlite::FrankenStorage;
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+
+        let session_path = tmp.path().join("session.jsonl");
+        std::fs::write(&session_path, "unused under index-first").expect("write session fixture");
+
+        let db_path = tmp.path().join("cass.db");
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        let conn = storage.raw();
+        conn.execute("INSERT INTO agents (id, slug, name, kind, created_at, updated_at) VALUES (1, 'claude_code', 'Claude Code', 'local', 0, 0)").unwrap();
+        {
+            use crate::franken_sync::compat::{ParamValue, param_slice_to_values};
+            let params = [
+                ParamValue::from(1_i64),
+                ParamValue::from(session_path.display().to_string()),
+            ];
+            conn.execute_with_params(
+                "INSERT INTO conversations (id, agent_id, external_id, title, source_path, source_id, approx_tokens) VALUES (?1, 1, 'ext', 'Session', ?2, 'local', 10)",
+                &param_slice_to_values(&params),
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, idx, role, content) VALUES (1, 1, 0, 'user', 'Base directory for this skill: /skills/demo\n# Demo Skill\nfull injected body')",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, idx, role, content) VALUES (2, 1, 1, 'user', 'real question')",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, idx, role, content) VALUES (3, 1, 2, 'assistant', 'real answer')",
+        )
+        .unwrap();
+
+        let output_path = tmp.path().join("session.md");
+        let export_hit = make_exact_hit(
+            &session_path.display().to_string(),
+            "local",
+            1,
+            "real question",
+        );
+        let msg = export_session_markdown_task(&db_path, &export_hit, &output_path, false);
+        let exported_path = match msg {
+            CassMsg::ExportCompleted { output_path, .. } => output_path,
+            other => panic!("expected ExportCompleted, got: {other:?}"),
+        };
+
+        let markdown = std::fs::read_to_string(&exported_path).expect("read exported markdown");
+        assert!(
+            !markdown.contains("Base directory for this skill:"),
+            "skill-injection body must not reach TUI markdown export:\n{markdown}"
+        );
+        assert!(markdown.contains("real question"), "{markdown}");
+        assert!(markdown.contains("real answer"), "{markdown}");
     }
 
     #[test]

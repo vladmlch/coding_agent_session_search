@@ -1399,9 +1399,13 @@ pub enum Commands {
         #[arg(long, visible_alias = "robot")]
         json: bool,
     },
-    /// Export a conversation to markdown or other formats
+    /// Export a conversation to markdown or other formats.
+    ///
+    /// Reads the last indexed snapshot from the archive: the path is an
+    /// identity key, the original source file is never opened, and an
+    /// unindexed session fails with an actionable error (run `cass index`).
     Export {
-        /// Path to session file
+        /// Path identifying the indexed session (opaque key, not read as a file)
         path: PathBuf,
         /// Exact source_id from search output (e.g. 'local', 'work-laptop')
         #[arg(long, alias = "source-id")]
@@ -1431,10 +1435,14 @@ pub enum Commands {
         #[arg(long)]
         include_secrets: bool,
     },
-    /// Export session as beautiful, self-contained HTML (with optional encryption)
+    /// Export session as beautiful, self-contained HTML (with optional encryption).
+    ///
+    /// Reads the last indexed snapshot from the archive: the path is an
+    /// identity key, the original source file is never opened, and an
+    /// unindexed session fails with an actionable error (run `cass index`).
     #[command(name = "export-html")]
     ExportHtml {
-        /// Path to session file
+        /// Path identifying the indexed session (opaque key, not read as a file)
         session: PathBuf,
 
         /// Exact source_id from search output (e.g. 'local', 'work-laptop')
@@ -113919,13 +113927,17 @@ fn indexed_export_cli_error(err: crate::export::indexed::IndexedExportError) -> 
         IndexedExportError::ConversationNotIndexed {
             source_path,
             source_id,
+            conversation_id,
         } => CliError {
             code: 3,
             kind: CliErrorKind::ConversationNotIndexed.kind_str(),
             message: format!(
-                "No indexed conversation found for {} (source: {})",
+                "No indexed conversation found for {} (source: {}{})",
                 source_path.display(),
-                source_id.as_deref().unwrap_or("any")
+                source_id.as_deref().unwrap_or("any"),
+                conversation_id
+                    .map(|id| format!(", conversation_id: {id}"))
+                    .unwrap_or_default()
             ),
             hint: Some("Run 'cass index' to index it, then export again.".to_string()),
             retryable: false,

@@ -2835,7 +2835,7 @@
       "arguments": [
         {
           "name": "path",
-          "description": "Path to session file",
+          "description": "Path identifying the indexed session (opaque key, not read as a file)",
           "arg_type": "positional",
           "value_type": "path",
           "required": true
@@ -2845,6 +2845,13 @@
           "description": "Exact source_id from search output (e.g. 'local', 'work-laptop')",
           "arg_type": "option",
           "value_type": "string",
+          "required": false
+        },
+        {
+          "name": "conversation-id",
+          "description": "Exact conversation_id from search (disambiguates shared source paths)",
+          "arg_type": "option",
+          "value_type": "integer",
           "required": false
         },
         {
@@ -2920,7 +2927,7 @@
       "arguments": [
         {
           "name": "session",
-          "description": "Path to session file",
+          "description": "Path identifying the indexed session (opaque key, not read as a file)",
           "arg_type": "positional",
           "value_type": "path",
           "required": true
@@ -2930,6 +2937,13 @@
           "description": "Exact source_id from search output (e.g. 'local', 'work-laptop')",
           "arg_type": "option",
           "value_type": "string",
+          "required": false
+        },
+        {
+          "name": "conversation-id",
+          "description": "Exact conversation_id from search (disambiguates shared source paths)",
+          "arg_type": "option",
+          "value_type": "integer",
           "required": false
         },
         {

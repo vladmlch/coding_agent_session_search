@@ -41,9 +41,11 @@ use std::error::Error;
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
+use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+use coding_agent_search::storage::sqlite::FrankenStorage;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -69,16 +71,81 @@ fn real_jsonl_session() -> PathBuf {
         .join("claude_session.jsonl")
 }
 
+/// Index-first contract: `cass export-html` reads the indexed snapshot, so
+/// the fixture session must exist in an isolated scratch archive passed via
+/// `--db` (a `--db` path outside the data dir keeps all derived assets under
+/// the temp dir — see Cli::db docs).
+fn seed_fixture_archive(db_path: &Path, session_path: &Path) {
+    let storage = FrankenStorage::open(db_path).expect("open scratch archive");
+    let agent_id = storage
+        .ensure_agent(&Agent {
+            id: None,
+            slug: "claude_code".to_string(),
+            name: "Claude Code".to_string(),
+            version: None,
+            kind: AgentKind::Cli,
+        })
+        .expect("ensure claude agent");
+    storage
+        .insert_conversation_tree(
+            agent_id,
+            None,
+            &Conversation {
+                id: None,
+                agent_slug: "claude_code".to_string(),
+                workspace: Some(PathBuf::from("/tmp/envelope-fixture")),
+                external_id: Some("envelope-fixture".to_string()),
+                title: Some("envelope fixture".to_string()),
+                source_path: session_path.to_path_buf(),
+                started_at: Some(1_713_916_800_000),
+                ended_at: Some(1_713_916_802_000),
+                approx_tokens: None,
+                metadata_json: serde_json::json!({}),
+                messages: vec![
+                    Message {
+                        id: None,
+                        idx: 0,
+                        role: MessageRole::User,
+                        author: None,
+                        created_at: Some(1_713_916_801_000),
+                        content: "envelope fixture user".to_string(),
+                        extra_json: serde_json::Value::Null,
+                        snippets: Vec::new(),
+                    },
+                    Message {
+                        id: None,
+                        idx: 1,
+                        role: MessageRole::Agent,
+                        author: None,
+                        created_at: Some(1_713_916_802_000),
+                        content: "envelope fixture assistant".to_string(),
+                        extra_json: serde_json::Value::Null,
+                        snippets: Vec::new(),
+                    },
+                ],
+                source_id: "local".to_string(),
+                origin_host: None,
+            },
+        )
+        .expect("insert envelope fixture conversation");
+    storage.close().expect("close scratch archive");
+}
+
 struct CmdOutcome {
     exit_code: Option<i32>,
     stdout: String,
     stderr: String,
 }
 
-fn run_export_html(args: &[&str]) -> Result<CmdOutcome, Box<dyn Error>> {
-    let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .args(["--color=never", "export-html"])
+fn run_export_html(args: &[&str], db: Option<&Path>) -> Result<CmdOutcome, Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("cass")?;
+    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
+        .arg("--color=never");
+    if let Some(db) = db {
+        cmd.arg("--db").arg(db);
+    }
+    let output = cmd
+        .arg("export-html")
         .args(args)
         .args(["--json"])
         .output()?;
@@ -114,12 +181,22 @@ fn assert_error_envelope(
             outcome.stderr
         ),
     )?;
-    let parsed: Value = serde_json::from_str(outcome.stderr.trim()).map_err(|err| {
-        test_error(format!(
-            "[{label}] stderr is not a JSON envelope: {err}\nstderr:\n{}",
-            outcome.stderr
-        ))
-    })?;
+    // stderr may carry a `note: export privacy: {...}` line before the bare
+    // error envelope (the privacy policy notice announces ahead of the
+    // write). Select the JSON line carrying the `error` key.
+    let parsed: Value = outcome
+        .stderr
+        .trim()
+        .lines()
+        .filter(|line| line.trim_start().starts_with('{'))
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|value| value.get("error").is_some())
+        .ok_or_else(|| {
+            test_error(format!(
+                "[{label}] stderr carries no JSON error envelope\nstderr:\n{}",
+                outcome.stderr
+            ))
+        })?;
     let envelope = parsed
         .get("error")
         .ok_or_else(|| test_error(format!("[{label}] stderr missing `error` key: {parsed}")))?;
@@ -145,11 +222,19 @@ fn assert_error_envelope(
 }
 
 #[test]
-fn export_html_nonexistent_session_returns_session_not_found_envelope() -> TestResult {
+fn export_html_nonexistent_session_returns_not_indexed_envelope() -> TestResult {
     let tmp = TempDir::new()?;
     let bogus = tmp.path().join("does_not_exist_for_export.jsonl");
-    let outcome = run_export_html(&[bogus.to_str().ok_or("non-utf8 path")?])?;
-    assert_error_envelope("export-html-nonexistent", &outcome, 3, "session-not-found")?;
+    // No --db: a never-indexed temp path cannot match any archive row.
+    // Index-first taxonomy reports `conversation-not-indexed` (code 3) where
+    // the file-first contract reported `session-not-found`.
+    let outcome = run_export_html(&[bogus.to_str().ok_or("non-utf8 path")?], None)?;
+    assert_error_envelope(
+        "export-html-nonexistent",
+        &outcome,
+        3,
+        "conversation-not-indexed",
+    )?;
     // Cross-check that the message mentions the rejected path so operators
     // can act without re-reading docs.
     let parsed: Value = serde_json::from_str(outcome.stderr.trim())?;
@@ -170,12 +255,17 @@ fn export_html_encrypt_without_password_returns_password_required_envelope() -> 
     let out_dir = tmp.path().join("out");
     fs::create_dir_all(&out_dir)?;
     let session = real_jsonl_session();
-    let outcome = run_export_html(&[
-        session.to_str().ok_or("non-utf8 path")?,
-        "--output-dir",
-        out_dir.to_str().ok_or("non-utf8 path")?,
-        "--encrypt",
-    ])?;
+    let db = tmp.path().join("envelope.db");
+    seed_fixture_archive(&db, &session);
+    let outcome = run_export_html(
+        &[
+            session.to_str().ok_or("non-utf8 path")?,
+            "--output-dir",
+            out_dir.to_str().ok_or("non-utf8 path")?,
+            "--encrypt",
+        ],
+        Some(&db),
+    )?;
     assert_error_envelope(
         "export-html-encrypt-no-password",
         &outcome,
@@ -190,9 +280,13 @@ fn empty_stdin_password_is_rejected_as_password_required() -> TestResult {
     let out_dir = tmp.path().join("out");
     fs::create_dir_all(&out_dir)?;
     let session = real_jsonl_session();
+    let db = tmp.path().join("envelope.db");
+    seed_fixture_archive(&db, &session);
     let output = Command::cargo_bin("cass")?
         .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .args(["--color=never", "export-html"])
+        .args(["--color=never", "--db"])
+        .arg(&db)
+        .arg("export-html")
         .arg(&session)
         .arg("--output-dir")
         .arg(&out_dir)
@@ -240,11 +334,16 @@ fn export_html_unwritable_output_dir_returns_output_not_writable_envelope() -> T
     }
 
     let session = real_jsonl_session();
-    let outcome = run_export_html(&[
-        session.to_str().ok_or("non-utf8 path")?,
-        "--output-dir",
-        out_dir.to_str().ok_or("non-utf8 path")?,
-    ])?;
+    let db = tmp.path().join("envelope.db");
+    seed_fixture_archive(&db, &session);
+    let outcome = run_export_html(
+        &[
+            session.to_str().ok_or("non-utf8 path")?,
+            "--output-dir",
+            out_dir.to_str().ok_or("non-utf8 path")?,
+        ],
+        Some(&db),
+    )?;
 
     // Restore write permission so the temp dir cleanup can succeed even
     // if assert_error_envelope returns early (the `?` would skip a manual
@@ -265,11 +364,16 @@ fn export_html_success_envelope_has_documented_keys() -> TestResult {
     let out_dir = tmp.path().join("out");
     fs::create_dir_all(&out_dir)?;
     let session = real_jsonl_session();
-    let outcome = run_export_html(&[
-        session.to_str().ok_or("non-utf8 path")?,
-        "--output-dir",
-        out_dir.to_str().ok_or("non-utf8 path")?,
-    ])?;
+    let db = tmp.path().join("envelope.db");
+    seed_fixture_archive(&db, &session);
+    let outcome = run_export_html(
+        &[
+            session.to_str().ok_or("non-utf8 path")?,
+            "--output-dir",
+            out_dir.to_str().ok_or("non-utf8 path")?,
+        ],
+        Some(&db),
+    )?;
     let code = outcome
         .exit_code
         .ok_or_else(|| test_error("killed by signal"))?;

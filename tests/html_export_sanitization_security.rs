@@ -221,11 +221,54 @@ fn export_command(home: &Path) -> Result<assert_cmd::Command, String> {
         .env("XDG_DATA_HOME", home.join("xdg-data"))
         .env("XDG_CONFIG_HOME", home.join("xdg-config"))
         .env("XDG_CACHE_HOME", home.join("xdg-cache"))
+        .env("CASS_DATA_DIR", home.join("cass-data"))
+        .env("CASS_INDEX_REDACTION", "off")
+        .env("CASS_AUTO_REFRESH", "0")
         .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("NO_COLOR", "1")
         .env_remove("CODEX_HOME")
+        .env_remove("CASS_DB_PATH")
         .timeout(EXPORT_TIMEOUT);
     Ok(cmd)
+}
+
+/// Index `session` into the isolated archive `export_command` points at and
+/// return `(db_path, archived_identity)` — the canonical `source_path` the
+/// index-first exporter resolves. The session must already sit under a
+/// Claude-shaped `<home>/.claude/projects/<slug>/` tree so the connector
+/// classifies it the same way the probe sessions were.
+fn index_session(home: &Path, session: &Path) -> Result<(PathBuf, String), String> {
+    let output = export_command(home)?
+        .arg("index")
+        .arg("--watch-once")
+        .arg(session)
+        .output()
+        .map_err(|e| format!("run cass index --watch-once: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cass index failed: status={:?}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        ));
+    }
+    let db = home.join("cass-data").join("agent_search.db");
+    let storage = coding_agent_search::storage::sqlite::SqliteStorage::open_readonly(&db)
+        .map_err(|e| format!("open indexed archive: {e}"))?;
+    let convos = storage
+        .list_conversations(1000, 0)
+        .map_err(|e| format!("list archived conversations: {e}"))?;
+    let needle = session
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| "session file name is not utf8".to_string())?;
+    let identity = convos
+        .iter()
+        .map(|c| c.source_path.to_string_lossy().into_owned())
+        .find(|path| path.ends_with(needle))
+        .unwrap_or_else(|| session.to_string_lossy().into_owned());
+    storage.close().map_err(|e| format!("close archive: {e}"))?;
+    Ok((db, identity))
 }
 
 /// The outcome of an export run: the robot envelope plus the raw stdout/stderr
@@ -250,19 +293,22 @@ fn read_export_html(envelope: &Value) -> Result<Option<String>, String> {
     Ok(Some(html))
 }
 
-/// Run `cass export-html <session> --output-dir <out> --json [--encrypt
-/// --password-stdin]` and capture the envelope + artifacts. `password` =
-/// `Some(pw)` encrypts via `--password-stdin` (the only supported password
-/// channel); `None` exports plaintext.
+/// Run `cass --db <db> export-html <identity> --output-dir <out> --json
+/// [--encrypt --password-stdin]` and capture the envelope + artifacts.
+/// `password` = `Some(pw)` encrypts via `--password-stdin` (the only supported
+/// password channel); `None` exports plaintext.
 fn run_export(
     home: &Path,
-    session: &Path,
+    db: &Path,
+    identity: &str,
     out_dir: &Path,
     password: Option<&str>,
 ) -> Result<ExportRun, String> {
     let mut cmd = export_command(home)?;
-    cmd.arg("export-html")
-        .arg(session)
+    cmd.arg("--db")
+        .arg(db)
+        .arg("export-html")
+        .arg(identity)
         .arg("--output-dir")
         .arg(out_dir)
         .arg("--json");
@@ -373,9 +419,12 @@ fn malicious_message_content_is_inert_in_unencrypted_export() -> Result<(), Stri
     let out_dir = home.path().join("out");
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("create out dir: {e}"))?;
     let cases = malicious_corpus();
-    let session = write_malicious_session(home.path(), &cases)?;
+    let project_dir = home.path().join(".claude/projects/sec-gate");
+    std::fs::create_dir_all(&project_dir).map_err(|e| format!("create project dir: {e}"))?;
+    let session = write_malicious_session(&project_dir, &cases)?;
+    let (db, identity) = index_session(home.path(), &session)?;
 
-    let run = run_export(home.path(), &session, &out_dir, None)?;
+    let run = run_export(home.path(), &db, &identity, &out_dir, None)?;
     if !matches!(
         run.envelope.get("success").and_then(Value::as_bool),
         Some(true)
@@ -429,9 +478,12 @@ fn encrypted_export_encrypts_body_and_never_leaks_password() -> Result<(), Strin
     let home = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let out_dir = home.path().join("out");
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("create out dir: {e}"))?;
-    let session = write_secret_body_session(home.path())?;
+    let project_dir = home.path().join(".claude/projects/sec-gate");
+    std::fs::create_dir_all(&project_dir).map_err(|e| format!("create project dir: {e}"))?;
+    let session = write_secret_body_session(&project_dir)?;
+    let (db, identity) = index_session(home.path(), &session)?;
 
-    let run = run_export(home.path(), &session, &out_dir, Some(LEAK_SENTINEL))?;
+    let run = run_export(home.path(), &db, &identity, &out_dir, Some(LEAK_SENTINEL))?;
     if !matches!(
         run.envelope.get("success").and_then(Value::as_bool),
         Some(true)
@@ -481,18 +533,30 @@ fn export_html_security_error_envelopes_are_stable() -> Result<(), String> {
     let home = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     let out_dir = home.path().join("out");
     std::fs::create_dir_all(&out_dir).map_err(|e| format!("create out dir: {e}"))?;
+    let project_dir = home.path().join(".claude/projects/sec-gate");
+    std::fs::create_dir_all(&project_dir).map_err(|e| format!("create project dir: {e}"))?;
+    let session = write_secret_body_session(&project_dir)?;
+    let (db, identity) = index_session(home.path(), &session)?;
 
-    // Missing session → session-not-found (code 3).
+    // Identity absent from the archive → conversation-not-indexed (code 3):
+    // the index-first resolver fails before any source file would be opened.
     let missing = home.path().join("does-not-exist.jsonl");
-    let run = run_export(home.path(), &missing, &out_dir, None)?;
-    check_error(&run.envelope, 3, "session-not-found")?;
+    let run = run_export(
+        home.path(),
+        &db,
+        missing.to_str().ok_or("missing path is not utf8")?,
+        &out_dir,
+        None,
+    )?;
+    check_error(&run.envelope, 3, "conversation-not-indexed")?;
 
     // --encrypt with no password → password-required (code 6): the export must
     // refuse rather than ship plaintext.
-    let session = write_secret_body_session(home.path())?;
     let mut cmd = export_command(home.path())?;
-    cmd.arg("export-html")
-        .arg(&session)
+    cmd.arg("--db")
+        .arg(&db)
+        .arg("export-html")
+        .arg(&identity)
         .arg("--output-dir")
         .arg(&out_dir)
         .arg("--encrypt")

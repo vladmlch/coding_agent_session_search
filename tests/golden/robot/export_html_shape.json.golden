@@ -40,7 +40,7 @@
           "type": "integer"
         },
         "agent": {
-          "type": "null"
+          "type": "string"
         },
         "workspace": {
           "type": "string"

@@ -2046,13 +2046,18 @@ fn tui_export_flow_with_logging() {
     let data_dir = tmp.path().join("data");
     fs::create_dir_all(&data_dir).unwrap();
 
-    let export_session_path = make_codex_fixture(&data_dir);
-    // Isolate HOME/XDG so spawned `cass` subprocesses only see the fixture
-    // corpus, never the host's real session archives
+    // The session must sit under a Codex-shaped CODEX_HOME so `index --full`
+    // ingests it into the archive `export-html` resolves.
+    let codex_home = tmp.path().join("codex_home");
+    fs::create_dir_all(&codex_home).unwrap();
+    let export_session_path = make_codex_fixture(&codex_home);
+    // Isolate HOME/XDG/CODEX_HOME so spawned `cass` subprocesses only see the
+    // fixture corpus, never the host's real session archives
     // (coding_agent_session_search-mwkw0).
     let command_env = tracker
         .command_environment()
         .with_home(&home)
+        .with_codex_home(&codex_home)
         .with_var("XDG_DATA_HOME", &xdg);
     tracker.end("setup", Some("Fixtures created"), setup_start);
 
@@ -2126,6 +2131,8 @@ fn tui_export_flow_with_logging() {
     );
     let mut command = command_env.cass_assert_command();
     let export_output = command
+        .arg("--db")
+        .arg(data_dir.join("agent_search.db"))
         .arg("export-html")
         .arg(&export_session_path)
         .arg("--output-dir")

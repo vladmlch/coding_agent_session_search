@@ -1269,11 +1269,11 @@ impl Iterator for WalkDirEntries {
 
     fn next(&mut self) -> Option<Self::Item> {
         let path = self.stack.pop()?;
-        if path.is_dir() {
-            if let Ok(read) = fs::read_dir(&path) {
-                for entry in read.flatten() {
-                    self.stack.push(entry.path());
-                }
+        if path.is_dir()
+            && let Ok(read) = fs::read_dir(&path)
+        {
+            for entry in read.flatten() {
+                self.stack.push(entry.path());
             }
         }
         Some(path)

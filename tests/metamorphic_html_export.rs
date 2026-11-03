@@ -19,6 +19,7 @@
 //! session data itself) is wired in case a future change adds one.
 
 use assert_cmd::Command;
+use coding_agent_search::storage::sqlite::SqliteStorage;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -37,13 +38,69 @@ fn cass_cmd() -> Command {
     cmd
 }
 
-/// Run `cass export-html <session> --output-dir <out_dir> --filename
-/// <filename>` and return the absolute path to the produced HTML.
-fn export_to(session_path: &Path, out_dir: &Path, filename: &str) -> PathBuf {
+/// Index `session` once into an isolated archive and return
+/// `(db_path, archived_identity)` — the canonical `source_path` the
+/// index-first exporter resolves. Staging runs through a real
+/// `cass index --watch-once` subprocess so the index is the same
+/// artifact production export reads.
+fn index_session(tmp: &TempDir, session: &Path) -> (PathBuf, String) {
+    let home = tmp.path().join("home");
+    let project = home.join(".claude/projects").join("-it");
+    fs::create_dir_all(&project).expect("create claude project dir");
+    let staged = project.join(session.file_name().expect("session file name"));
+    fs::copy(session, &staged).expect("stage session for indexing");
+    let data = tmp.path().join("cass-data");
+    let output = cass_cmd()
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", tmp.path().join("xdg-config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("CASS_DATA_DIR", &data)
+        .env("CASS_INDEX_REDACTION", "off")
+        .env("CASS_AUTO_REFRESH", "0")
+        .env_remove("CASS_DB_PATH")
+        .args(["index", "--watch-once"])
+        .arg(&staged)
+        .output()
+        .expect("run cass index --watch-once");
+    assert!(
+        output.status.success(),
+        "cass index failed: status={:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let db = data.join("agent_search.db");
+    let needle = staged
+        .file_name()
+        .expect("file name")
+        .to_str()
+        .expect("utf8 file name")
+        .to_string();
+    let storage = SqliteStorage::open_readonly(&db).expect("open indexed archive");
+    let conversations = storage
+        .list_conversations(1000, 0)
+        .expect("list conversations");
+    let identity = conversations
+        .iter()
+        .find_map(|c| {
+            let path = c.source_path.to_string_lossy().into_owned();
+            path.contains(&needle).then_some(path)
+        })
+        .unwrap_or_else(|| staged.to_string_lossy().into_owned());
+    storage.close().expect("close archive");
+    (db, identity)
+}
+
+/// Run `cass --db <db> export-html <identity> --output-dir <out_dir>
+/// --filename <filename>` and return the absolute path to the
+/// produced HTML.
+fn export_to(db: &Path, identity: &str, out_dir: &Path, filename: &str) -> PathBuf {
     let output = cass_cmd()
         .args([
+            "--db",
+            db.to_str().expect("utf8 db path"),
             "export-html",
-            session_path.to_str().expect("utf8 session path"),
+            identity,
             "--output-dir",
             out_dir.to_str().expect("utf8 out dir"),
             "--filename",
@@ -140,10 +197,15 @@ fn mr_html_export_byte_idempotent_for_same_source() {
         session_path.display()
     );
 
+    // Index once; both exports resolve the same canonical identity
+    // from the same archive, preserving the equivalence contract.
+    let index_tmp = TempDir::new().expect("index tempdir");
+    let (db, identity) = index_session(&index_tmp, &session_path);
+
     let tmp_a = TempDir::new().expect("tempdir a");
     let tmp_b = TempDir::new().expect("tempdir b");
-    let html_a = export_to(&session_path, tmp_a.path(), "first.html");
-    let html_b = export_to(&session_path, tmp_b.path(), "second.html");
+    let html_a = export_to(&db, &identity, tmp_a.path(), "first.html");
+    let html_b = export_to(&db, &identity, tmp_b.path(), "second.html");
 
     let bytes_a = fs::read_to_string(&html_a).expect("read first export");
     let bytes_b = fs::read_to_string(&html_b).expect("read second export");
