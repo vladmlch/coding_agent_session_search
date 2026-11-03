@@ -1680,12 +1680,33 @@ impl TantivyIndex {
     /// `pending_doc_deletes`), so a concurrent republish or meta-edit is
     /// left pending instead of being overwritten. Returns the number of
     /// sessions stamped (fewer than staged when the guard lost a race).
+    ///
+    /// Queued stale region identities are retired here, after the commit
+    /// that sealed their replacements: `delete_cass_document_ids` needs a
+    /// committed writer (it publishes its own successor generation), so
+    /// running it during staging would have committed the whole writer —
+    /// canonical batch included — ahead of the real boundary. A delete
+    /// error propagates WITHOUT stamping, leaving `docs_state`/`pending_
+    /// doc_deletes` honestly pending for the next converge pass.
     pub fn commit_region_doc_stamps(
         &mut self,
         db: &impl crate::viewer_extensions::facts::FactsDb,
     ) -> Result<usize> {
         let stamps = std::mem::take(&mut self.pending_region_doc_stamps);
         self.staged_region_doc_sessions.clear();
+        let mut stale_ids: Vec<String> = Vec::new();
+        for stamp in &stamps {
+            let ids: Vec<String> =
+                serde_json::from_str(&stamp.pending_doc_deletes).unwrap_or_default();
+            stale_ids.extend(ids);
+        }
+        stale_ids.sort();
+        stale_ids.dedup();
+        if !stale_ids.is_empty() {
+            self.inner
+                .delete_cass_document_ids(&stale_ids)
+                .context("deleting staged search-region stale identities")?;
+        }
         crate::viewer_extensions::search_regions::stamp_region_docs_published(db, &stamps)
     }
 
@@ -2205,6 +2226,19 @@ impl TantivyIndex {
             self.pending_region_doc_stamps.push(stamp);
         }
         Ok(docs)
+    }
+
+    /// Rescind a queued region-doc publication stamp for `conversation_id`
+    /// in the current uncommitted generation. Used when the lexical lane
+    /// skips a session's canonical staging after its region docs were
+    /// staged (mid-batch OOM/deferred update): the docs may already be
+    /// live via a peer session's replacement commit, but the persisted
+    /// mark must stay `pending` so reads gate honestly and a later run
+    /// re-converges the session.
+    pub fn unstage_search_region_docs(&mut self, conversation_id: i64) {
+        self.staged_region_doc_sessions.remove(&conversation_id);
+        self.pending_region_doc_stamps
+            .retain(|stamp| stamp.conversation_id != conversation_id);
     }
 
     /// Task 5: converge sessions whose region docs are still pending —

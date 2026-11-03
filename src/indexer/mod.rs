@@ -39354,9 +39354,34 @@ pub mod persist {
         }
         let mut rebuilt_conversation_ids = HashSet::new();
         let mut skip_inline_lexical_updates = false;
+        // Task 5 region-doc prelude: stage every admitted session's region
+        // documents — including the pending-mark convergence sweep — BEFORE
+        // any canonical staging. Quill's `upsert` publishes pending work
+        // when a re-staged identity already lives in the committed snapshot
+        // (a republish), so a region upsert issued after canonical staging
+        // would flush the batch mid-generation: a failed outer commit would
+        // then leave canonical docs searchable without their publication
+        // receipt. Region-only early commits stay honest — marks remain
+        // `pending` and session reads gate on them until the post-commit
+        // stamp. The per-conversation hooks inside the loop dedupe.
+        if !defer_lexical_updates
+            && let Some(index) = t_index.as_deref_mut()
+        {
+            index.converge_pending_search_region_docs(storage.raw(), 4096)?;
+            for (_, outcome) in &ordered {
+                index.stage_search_region_docs(storage.raw(), outcome.conversation_id)?;
+            }
+        }
         for (_, outcome) in ordered {
             batch_outcome.record_insert_outcome(&outcome);
             if defer_lexical_updates || skip_inline_lexical_updates {
+                // The prelude may already have staged this session's region
+                // docs; rescind the queued stamp so the persisted mark stays
+                // `pending` with the canonical debt instead of publishing
+                // region docs without their messages.
+                if let Some(index) = t_index.as_deref_mut() {
+                    index.unstage_search_region_docs(outcome.conversation_id);
+                }
                 if capture_semantic_delta {
                     let (inputs, max_message_id) =
                         packet_semantic_delta_for_outcome(storage, &outcome)?;
@@ -39426,6 +39451,15 @@ pub mod persist {
                                 if should_defer_incremental_lexical_update_after_error(&error) {
                                     batch_outcome.record_deferred_lexical_update(&error);
                                     skip_inline_lexical_updates = true;
+                                    // The prelude already staged this
+                                    // session's region docs; rescind its
+                                    // queued stamp so the mark stays
+                                    // `pending` with the canonical debt.
+                                    if let Some(index) = t_index.as_deref_mut() {
+                                        index.unstage_search_region_docs(
+                                            outcome.conversation_id,
+                                        );
+                                    }
                                     tracing::warn!(
                                         error = %error,
                                         "incremental lexical update ran out of memory; preserving SQLite ingest and deferring lexical repair"
@@ -39460,22 +39494,12 @@ pub mod persist {
                 batch_outcome.extend_semantic_delta(inputs, max_message_id);
             }
         }
-        // Task 5 convergence sweep: sessions whose region inventory was
-        // republished but whose Quill region documents are still pending —
-        // canonical edits with no message change, annotation-edit meta
-        // replacement (`meta_pending`) and any lane that skipped the
-        // per-session hook — reconcile inside this index run instead of
-        // leaving the search lane an honest-but-unreadable `pending`.
-        // A deferred lexical update (flag or mid-batch OOM) writes NOTHING
-        // to the index this run — staging only the region documents would
-        // ship meta docs without their canonical messages, so the marks
-        // stay pending with the canonical debt instead.
-        if let Some(index) = t_index.as_deref_mut()
-            && !defer_lexical_updates
-            && !skip_inline_lexical_updates
-        {
-            index.converge_pending_search_region_docs(storage.raw(), 4096)?;
-        }
+        // The pending-mark convergence sweep runs in the pre-canonical
+        // prelude above: sessions whose region inventory was republished
+        // but whose Quill region documents are still pending reconcile
+        // inside this index run. Sessions whose canonical staging was
+        // skipped (flag or mid-batch OOM) had their stamps rescinded in
+        // the loop and keep `pending` marks with the canonical debt.
         if rebuild_inline {
             // The commit seals the staged region documents; the queued
             // marks stamps land `published` only after it succeeds —
@@ -39863,6 +39887,18 @@ pub mod persist {
             Ok(outcome)
         })?;
 
+        // Task 5: the generation publication above already committed this
+        // session's region inventory; its region documents stage on the
+        // same writer and stamp `published` after this writer's commit
+        // (a no-op marks row — e.g. a lane without the extension profile —
+        // leaves docs_state absent and is skipped honestly by the
+        // persisted-mark lookup). Staged BEFORE the canonical documents:
+        // Quill's `upsert` publishes pending work when a re-staged
+        // identity already lives in the committed snapshot, so staging
+        // regions after canonical docs would flush this generation's
+        // messages ahead of the writer's real commit boundary.
+        t_index.stage_search_region_docs(storage.raw(), conversation_id)?;
+
         // Publish inserted messages and replace revised native messages.
         // Routed through the packet pipeline per
         // ibuuh.32 sink migration; equivalence guaranteed by
@@ -39886,13 +39922,6 @@ pub mod persist {
                 )?;
             }
         }
-        // Task 5: the generation publication above already committed this
-        // session's region inventory; its region documents stage on the
-        // same writer and stamp `published` after this writer's commit
-        // (a no-op marks row — e.g. a lane without the extension profile —
-        // leaves docs_state absent and is skipped honestly by the
-        // persisted-mark lookup).
-        t_index.stage_search_region_docs(storage.raw(), conversation_id)?;
         Ok(())
     }
 
@@ -40754,6 +40783,24 @@ pub mod persist {
                     .expect("inline rebuild requires Tantivy writer")
                     .commit_with_region_doc_stamps(storage.raw())?;
             }
+            // Task 5 region-doc prelude: stage every pending region
+            // document — the convergence sweep plus this batch's sessions —
+            // BEFORE any canonical staging. Quill's `upsert` publishes
+            // pending work when a re-staged identity already lives in the
+            // committed snapshot (a republish), so a region upsert issued
+            // after canonical staging would flush the batch
+            // mid-generation: a failed outer commit would leave canonical
+            // docs searchable without their publication receipt.
+            // Region-only early commits stay honest — marks remain
+            // `pending` and session reads gate on them until the
+            // post-commit stamp.
+            if let Some(index) = t_index.as_deref_mut() {
+                index.converge_pending_search_region_docs(storage.raw(), 4096)?;
+                for outcome in &outcomes {
+                    index
+                        .stage_search_region_docs(storage.raw(), outcome.conversation_id)?;
+                }
+            }
             // ibuuh.32 / 5b9p0: route the serial-batched lexical sink
             // through the packet pipeline. Build each packet ONCE and
             // reuse it for both InlineRebuildFromScan (full message
@@ -40768,6 +40815,14 @@ pub mod persist {
                 // giant conversation).
                 heartbeat.tick();
                 if skip_inline_lexical_updates {
+                    // The prelude may already have staged this session's
+                    // region docs; rescind the queued stamp so the
+                    // persisted mark stays `pending` with the canonical
+                    // debt instead of publishing region docs without
+                    // their messages.
+                    if let Some(index) = t_index.as_deref_mut() {
+                        index.unstage_search_region_docs(outcome.conversation_id);
+                    }
                     continue;
                 }
                 match lexical_strategy {
@@ -40813,6 +40868,14 @@ pub mod persist {
                                     if should_defer_incremental_lexical_update_after_error(&error) {
                                         batch_outcome.record_deferred_lexical_update(&error);
                                         skip_inline_lexical_updates = true;
+                                        // Rescind this session's queued
+                                        // region-doc stamp — its mark stays
+                                        // `pending` with the canonical debt.
+                                        if let Some(index) = t_index.as_deref_mut() {
+                                            index.unstage_search_region_docs(
+                                                outcome.conversation_id,
+                                            );
+                                        }
                                         tracing::warn!(
                                             error = %error,
                                             "incremental lexical update ran out of memory; preserving SQLite ingest and deferring lexical repair"
@@ -40826,20 +40889,11 @@ pub mod persist {
                     }
                 }
             }
-            // Task 5 convergence sweep: same contract as the outer batch
-            // lane — sessions whose region inventory republished while
-            // their documents stayed pending (canonical edits with no
-            // changed messages, meta replacement, skipped hooks) converge
-            // inside this run's writer before the batch commit. A
-            // mid-batch OOM defer writes nothing more this run; staging
-            // only the region documents would ship meta docs without
-            // their canonical messages, so the marks stay pending with
-            // the canonical debt instead.
-            if let Some(index) = t_index.as_deref_mut()
-                && !skip_inline_lexical_updates
-            {
-                index.converge_pending_search_region_docs(storage.raw(), 4096)?;
-            }
+            // The pending-mark convergence sweep runs in the
+            // pre-canonical prelude above — same contract as the other
+            // batch lane. Sessions skipped after the prelude (mid-batch
+            // OOM) had their stamps rescinded in the loop and keep
+            // `pending` marks with the canonical debt.
             if rebuild_inline {
                 // Same two-phase rule: the commit seals the staged
                 // documents, then the queued marks stamps land
@@ -41620,7 +41674,18 @@ pub mod persist {
             {
                 let reader = scan_index.reader().unwrap();
                 crate::search::quill_bridge::refresh_reader(&reader).unwrap();
-                assert_eq!(reader.doc_count().unwrap(), expected_docs);
+                // Task 5: the raw live count binds canonical messages AND
+                // materialized region documents — canonical expected count
+                // plus the persisted doc-backed region bound (the batch's
+                // stamp pass already drained the stale-delete queue).
+                assert_eq!(
+                    reader.doc_count().unwrap(),
+                    expected_docs
+                        + crate::viewer_extensions::search_regions::live_region_doc_bound(
+                            storage.raw()
+                        )
+                        .unwrap()
+                );
             }
             assert_eq!(tantivy_doc_count(&mut scan_index), expected_docs);
             persist_conversations_batched(
@@ -41640,7 +41705,12 @@ pub mod persist {
             );
             let rebuilt =
                 crate::indexer::rebuild_tantivy_from_db(&db_path, dir.path(), 1, None).unwrap();
-            assert_eq!(rebuilt.indexed_docs, expected_docs as usize);
+            // Task 5: `indexed_docs` binds every published document;
+            // `indexed_docs - indexed_region_docs` is the canonical share.
+            assert_eq!(
+                rebuilt.indexed_docs - rebuilt.indexed_region_docs,
+                expected_docs as usize
+            );
             assert_eq!(
                 marker_hit(&index_path),
                 incremental_hit,

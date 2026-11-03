@@ -1438,10 +1438,12 @@ pub fn stage_region_docs(
     let Some((region_version, source_revision, docs_state, pending_json)) = mark else {
         return Ok((0, None));
     };
-    let pending: Vec<String> = serde_json::from_str(&pending_json).unwrap_or_default();
-    index
-        .delete_cass_document_ids(&pending)
-        .context("deleting stale search-region documents")?;
+    // Stale-identity deletes are NOT executed here: `delete_cass_document_ids`
+    // requires a committed writer and would commit this writer mid-batch —
+    // certifying every document staged so far (canonical AND region) ahead
+    // of the real batch boundary. The stamp keeps the exact
+    // `pending_doc_deletes` JSON so the post-commit stamp pass can retire
+    // them and then compare-and-swap the queue away.
     let docs = region_docs(db, conversation_id)?;
     let doc_count = docs.len();
     index
