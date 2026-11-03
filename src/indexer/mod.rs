@@ -39396,6 +39396,69 @@ pub mod persist {
         map_to_internal_with_message_parallelism(conv, redactor, heartbeat, false)
     }
 
+    /// Persist `NormalizedMessage.invocations` into a message's `extra` under
+    /// the `cass.invocations` shape FAD's Antigravity connector dual-writes:
+    /// `{"cass":{"invocations":[NormalizedInvocation]}}`.
+    ///
+    /// FAD populates `invocations` for Claude `tool_use` blocks, Codex
+    /// `function_call`/`custom_tool_call`/`event_msg tool_call` items, Devin
+    /// `tool_calls[]`, Antigravity planner and MODEL steps, and the
+    /// Pi-family assistant messages, among other connectors — but the field
+    /// was never archived
+    /// (FAD's `planner_calls.rs` notes "CASS keeps `extra` but not
+    /// `NormalizedMessage.invocations`"). Merging here — the single seam
+    /// every persisted message crosses, *after* index-time extra
+    /// compaction (`compact_large_connector_extras` / FAD's own ≥32 MiB
+    /// compaction both reduce `extra` to `{cass:{..}}` without touching
+    /// `invocations`) and *before* redaction — makes tool calls durable
+    /// for every provider under one extraction shape without resurrecting
+    /// payloads the connectors or ingest compaction dropped: only what
+    /// `invocations` still carries is stored, and arguments flow through
+    /// the same `redact_json` pass as the rest of `extra`.
+    ///
+    /// `Cow::Borrowed` on every skip path means the overwhelmingly common
+    /// empty-invocations case adds no allocation beyond the clone the persist
+    /// path already performed.
+    fn merge_invocations_into_extra<'a>(
+        extra: &'a serde_json::Value,
+        invocations: &[franken_agent_detection::NormalizedInvocation],
+    ) -> std::borrow::Cow<'a, serde_json::Value> {
+        // Skip when there is nothing to persist; when `extra.cass.invocations`
+        // already exists (Antigravity's planner dual-write, or a source line
+        // re-ingested from a recovered archive); when `extra` is not an
+        // object/null and cannot host the `cass` subtree without inventing a
+        // wrapper shape; or when `extra.cass` exists as a non-object the
+        // merge would leave untouched anyway.
+        if invocations.is_empty()
+            || extra
+                .get("cass")
+                .and_then(|cass| cass.get("invocations"))
+                .is_some()
+            || (!extra.is_null() && !extra.is_object())
+            || extra.get("cass").is_some_and(|cass| !cass.is_object())
+        {
+            return std::borrow::Cow::Borrowed(extra);
+        }
+        // Serialize before mutating: a serialization failure leaves `extra`
+        // untouched rather than writing `invocations: []` a later reader
+        // would mistake for an authoritative empty list.
+        let Ok(serialized) = serde_json::to_value(invocations) else {
+            return std::borrow::Cow::Borrowed(extra);
+        };
+        let mut merged = extra.as_object().cloned().unwrap_or_default();
+        {
+            let cass_entry = merged
+                .entry("cass".to_string())
+                .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+            // A non-object `cass` value is upstream data; never clobber it —
+            // the entry is simply left as-is.
+            if let Some(cass_object) = cass_entry.as_object_mut() {
+                cass_object.insert("invocations".to_string(), serialized);
+            }
+        }
+        std::borrow::Cow::Owned(serde_json::Value::Object(merged))
+    }
+
     fn map_message_to_internal(
         m: &NormalizedMessage,
         mapped_message_index: usize,
@@ -39415,14 +39478,19 @@ pub mod persist {
         } else {
             m.content.clone()
         };
+        // Task 7 (index-first export): archive `m.invocations` under
+        // `extra.cass.invocations` so index-only export recovers tool calls
+        // for every provider — merged BEFORE redaction so invocation
+        // arguments flow through the same secret scan as the rest of `extra`.
+        let extra = merge_invocations_into_extra(&m.extra, &m.invocations);
         let extra_json = if should_redact {
             if let Some(r) = redactor.as_mut() {
-                r.redact_json(&m.extra)
+                r.redact_json(&extra)
             } else {
-                super::redact_secrets::redact_json(&m.extra)
+                super::redact_secrets::redact_json(&extra)
             }
         } else {
-            m.extra.clone()
+            extra.into_owned()
         };
         Message {
             id: None,
@@ -40796,6 +40864,240 @@ pub mod persist {
             // The heartbeat-free path stays a no-op (no progress handle).
             let unmapped = map_to_internal_with_redactor(&conv, None);
             assert_eq!(unmapped.messages.len(), message_count);
+        }
+
+        // --- Task 7: `NormalizedMessage.invocations` -> `extra.cass.invocations` ---
+        //
+        // The persisted shape must match FAD's Antigravity dual-write
+        // (`planner_calls::invocations_extra`) byte-for-key so the single
+        // `cass.invocations` extraction branch in export projection serves
+        // every provider.
+
+        fn invocation_fixture() -> Vec<franken_agent_detection::NormalizedInvocation> {
+            vec![franken_agent_detection::NormalizedInvocation {
+                kind: "tool".to_string(),
+                name: "read_file".to_string(),
+                raw_name: None,
+                call_id: Some("call_1".to_string()),
+                arguments: Some(serde_json::json!({"path": "/tmp/a.rs"})),
+            }]
+        }
+
+        fn message_with_extra_and_invocations(
+            extra: serde_json::Value,
+            invocations: Vec<franken_agent_detection::NormalizedInvocation>,
+        ) -> NormalizedMessage {
+            NormalizedMessage {
+                idx: 0,
+                role: "assistant".to_string(),
+                author: None,
+                created_at: Some(1_700_000_000_000),
+                content: "[Tool: read_file]".to_string(),
+                extra,
+                snippets: Vec::new(),
+                invocations,
+            }
+        }
+
+        #[test]
+        fn map_message_to_internal_persists_invocations_under_extra_cass() {
+            // Devin-style synthetic extra: no `cass` key yet.
+            let message = message_with_extra_and_invocations(
+                serde_json::json!({"message_id": "m-7"}),
+                invocation_fixture(),
+            );
+            let mapped = map_message_to_internal(&message, 0, false, None, PersistHeartbeat::NONE);
+            assert_eq!(mapped.extra_json["message_id"], "m-7");
+            let invocations = mapped.extra_json["cass"]["invocations"]
+                .as_array()
+                .expect("cass.invocations must be persisted");
+            assert_eq!(invocations.len(), 1);
+            assert_eq!(
+                invocations[0],
+                serde_json::json!({
+                    "kind": "tool",
+                    "name": "read_file",
+                    "call_id": "call_1",
+                    "arguments": {"path": "/tmp/a.rs"},
+                }),
+                "persisted invocation must keep the FAD NormalizedInvocation \
+                 field names verbatim (`raw_name` omitted when None)"
+            );
+        }
+
+        #[test]
+        fn map_message_to_internal_merges_invocations_under_existing_cass_metadata() {
+            // Compact-ingest shape (`{cass:{model, token_usage, ..}}` from
+            // Claude >=32 MiB / Codex >=16 MiB): invocations join the existing
+            // `cass` object instead of replacing it.
+            let message = message_with_extra_and_invocations(
+                serde_json::json!({"cass": {"model": "gpt-5", "token_usage": {"in": 1}}}),
+                invocation_fixture(),
+            );
+            let mapped = map_message_to_internal(&message, 0, false, None, PersistHeartbeat::NONE);
+            assert_eq!(mapped.extra_json["cass"]["model"], "gpt-5");
+            assert_eq!(mapped.extra_json["cass"]["token_usage"]["in"], 1);
+            assert_eq!(
+                mapped.extra_json["cass"]["invocations"][0]["name"],
+                "read_file"
+            );
+        }
+
+        #[test]
+        fn map_message_to_internal_keeps_source_written_cass_invocations() {
+            // Antigravity dual-writes planner invocations at normalization
+            // time; the indexer must never clobber or duplicate them.
+            let source_written = serde_json::json!({
+                "cass": {"invocations": [{"kind": "tool", "name": "planner_call"}]},
+                "thinking": "hmm",
+            });
+            let message =
+                message_with_extra_and_invocations(source_written.clone(), invocation_fixture());
+            let mapped = map_message_to_internal(&message, 0, false, None, PersistHeartbeat::NONE);
+            assert_eq!(
+                mapped.extra_json, source_written,
+                "a source-written cass.invocations array stays authoritative"
+            );
+        }
+
+        #[test]
+        fn map_message_to_internal_creates_cass_for_null_extra() {
+            let message =
+                message_with_extra_and_invocations(serde_json::Value::Null, invocation_fixture());
+            let mapped = map_message_to_internal(&message, 0, false, None, PersistHeartbeat::NONE);
+            assert_eq!(
+                mapped.extra_json["cass"]["invocations"][0]["call_id"],
+                "call_1"
+            );
+        }
+
+        #[test]
+        fn map_message_to_internal_without_invocations_leaves_extra_untouched() {
+            // Older archives / non-tool messages: no `cass` key is invented.
+            for extra in [
+                serde_json::json!({"message_id": "m-1"}),
+                serde_json::Value::Null,
+                serde_json::json!({"cass": {"model": "claude"}}),
+            ] {
+                let message = message_with_extra_and_invocations(extra.clone(), Vec::new());
+                let mapped =
+                    map_message_to_internal(&message, 0, false, None, PersistHeartbeat::NONE);
+                assert_eq!(mapped.extra_json, extra);
+            }
+            // A non-object extra cannot host `cass` and is left alone even
+            // when invocations exist (no wrapper shape is invented).
+            let scalar = message_with_extra_and_invocations(
+                serde_json::Value::String("opaque".to_string()),
+                invocation_fixture(),
+            );
+            let mapped = map_message_to_internal(&scalar, 0, false, None, PersistHeartbeat::NONE);
+            assert_eq!(
+                mapped.extra_json,
+                serde_json::Value::String("opaque".to_string())
+            );
+        }
+
+        #[test]
+        fn map_message_to_internal_invocations_flow_through_redaction() {
+            // `should_redact=true` exercises the production redact branch
+            // directly — `redact_json` itself is not env-gated.
+            let secret = "password=abcdefgh12345678"; // Synthetic redaction fixture.
+            let mut invocations = invocation_fixture();
+            invocations[0].arguments = Some(serde_json::json!({"cmd": secret}));
+            let message = message_with_extra_and_invocations(
+                serde_json::json!({"message_id": "m-9"}),
+                invocations,
+            );
+            let mapped = map_message_to_internal(&message, 0, true, None, PersistHeartbeat::NONE);
+            let arguments = mapped.extra_json["cass"]["invocations"][0]["arguments"]
+                .as_object()
+                .expect("arguments object");
+            let cmd = arguments["cmd"].as_str().expect("cmd string");
+            assert!(
+                !cmd.contains(secret) && cmd.contains("[REDACTED]"),
+                "invocation arguments must be secret-redacted like any other \
+                 extra_json string (got {cmd:?})"
+            );
+        }
+
+        /// Reindex regression: the persisted `cass.invocations` must survive
+        /// the storage round-trip (msgpack `extra_bin`) and come back through
+        /// `message_extra_to_source_jsonl_line` — the exact decode path the
+        /// export projection's `cass` branch reads — for a freshly indexed
+        /// message. Older archives simply lack the key and export unchanged.
+        #[test]
+        fn persisted_invocations_survive_storage_round_trip_to_export_decode() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let db_path = tmp.path().join("agent_search.db");
+            let storage = FrankenStorage::open(&db_path).unwrap();
+            let agent_id = storage
+                .ensure_agent(&Agent {
+                    id: None,
+                    slug: "devin".into(),
+                    name: "Devin".into(),
+                    version: None,
+                    kind: AgentKind::Cli,
+                })
+                .unwrap();
+            let conv = NormalizedConversation {
+                agent_slug: "devin".into(),
+                external_id: Some("task7-invocations".into()),
+                title: Some("Task 7 fixture".into()),
+                workspace: None,
+                source_path: PathBuf::from("/virtual/sessions.db/sess-1"),
+                started_at: Some(1_700_000_000_000),
+                ended_at: Some(1_700_000_000_100),
+                metadata: serde_json::json!({}),
+                messages: vec![
+                    NormalizedMessage {
+                        idx: 0,
+                        role: "user".into(),
+                        author: None,
+                        created_at: Some(1_700_000_000_000),
+                        content: "read the file".into(),
+                        extra: serde_json::json!({"message_id": "u-1"}),
+                        snippets: Vec::new(),
+                        invocations: Vec::new(),
+                    },
+                    {
+                        // `messages` is keyed on (conversation_id, idx) and FAD
+                        // `reindex_messages` always emits distinct idx values —
+                        // the fixture must too, or this row collides with the
+                        // user message's idx 0 and only one row persists.
+                        let mut assistant = message_with_extra_and_invocations(
+                            serde_json::json!({"message_id": "a-1", "thinking": "hmm"}),
+                            invocation_fixture(),
+                        );
+                        assistant.idx = 1;
+                        assistant
+                    },
+                ],
+            };
+            let outcome = storage
+                .insert_conversation_tree(agent_id, None, &map_to_internal(&conv))
+                .unwrap();
+            let fetched = storage.fetch_messages(outcome.conversation_id).unwrap();
+            assert_eq!(fetched.len(), 2);
+            assert_eq!(
+                fetched[0].extra_json["cass"]["invocations"],
+                serde_json::Value::Null,
+                "user message without invocations gains no cass key"
+            );
+            let invocations = fetched[1].extra_json["cass"]["invocations"]
+                .as_array()
+                .expect("persisted cass.invocations must survive extra_bin round-trip");
+            assert_eq!(invocations[0]["name"], "read_file");
+            assert_eq!(invocations[0]["call_id"], "call_1");
+            assert_eq!(invocations[0]["arguments"]["path"], "/tmp/a.rs");
+            // The export projection decodes `extra_json` via
+            // `message_extra_to_source_jsonl_line`; assert the persisted
+            // record is consumable through that exact seam.
+            let line =
+                crate::storage::sqlite::message_extra_to_source_jsonl_line(&fetched[1].extra_json)
+                    .expect("source line");
+            let event: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(event["cass"]["invocations"][0]["name"], "read_file");
+            assert_eq!(event["thinking"], "hmm");
         }
 
         #[test]
