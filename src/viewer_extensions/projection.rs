@@ -1989,10 +1989,20 @@ pub fn publish_ingest_generation(
 
     receipt.state = super::facts::RECEIPT_COMPLETE.to_string();
     let work = (|| -> Result<()> {
+        // Recompute the browse tie key (verified public identity) on the
+        // just-committed canonical row so its persisted value lands inside
+        // the same generation transaction as the facts/structure rows it
+        // orders browse alongside. A resolver refusal is durable sort state
+        // — `tie_error` — never a reason to abort the publication; engine
+        // failures DO abort it so the `failed` receipt stays honest.
+        let sort_tie = super::sort::resolve_published_tie(connection, conversation_id)
+            .context("resolving browse sort tie key")?;
         let mut tx = connection
             .transaction()
             .context("opening ingest generation transaction")?;
         publish_ingest_generation_in_tx(&tx, conv, conversation_id, &generation, &receipt)?;
+        super::sort::publish_sort_tie(&tx, conversation_id, &sort_tie)
+            .context("persisting browse sort tie key")?;
         if generation_fail_probe() {
             anyhow::bail!("CASS_TEST_VIEWER_GENERATION_FAIL injected publication fault");
         }

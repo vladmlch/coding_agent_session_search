@@ -34,7 +34,12 @@ use crate::franken_sync::compat::RowExt;
 /// v4: the `viewer_session_facts_parent_cleanup` delete trigger so a
 /// removed canonical parent cannot FK-refuse its own deletion or leave a
 /// child row pointing at a gone conversation.
-pub const EXTENSION_SCHEMA_VERSION: i64 = 4;
+/// v5: `viewer_session_sort` — persisted scalar browse sort keys (pin,
+/// knownness, sort value, verified public tie key) plus the single-table
+/// filter mirrors, the seven per-sort composite order indexes, and the
+/// `viewer_sort_*` maintenance triggers keeping every scalar column
+/// transactionally in step with its source table.
+pub const EXTENSION_SCHEMA_VERSION: i64 = 5;
 
 /// Additive viewer schema. Every statement is idempotent so re-running the
 /// profile on an initialized archive is a no-op.
@@ -297,6 +302,339 @@ INSERT OR REPLACE INTO viewer_meta (key, value)
 VALUES ('extension_schema_version', '4');
 ";
 
+/// Schema v5 — persisted browse sort keys.
+///
+/// `viewer_session_sort` carries, beside the existing extension facts, the
+/// missing scalar sort facts the browse ORDER BY needs: pin state, the
+/// per-axis knownness flags, each sort value (effective activity timestamp
+/// under tail-state precedence, created timestamp, workspace path, step and
+/// artifact counts), the verified public tie key, and the single-table
+/// filter mirrors (agent/source/workspace/classification) so a browse page
+/// is served by ONE indexed scan on this table — the engine's join sorter
+/// never sees the candidate set.
+///
+/// Column maintenance is split by what SQL can compute:
+/// * the `viewer_sort_*` triggers recompute every canonical/annotation/
+///   facts/workspace mirror transactionally inside whatever write produced
+///   them (any connection, any lane) and invalidate `tie_key` when
+///   identity-bearing canonical inputs move;
+/// * `tie_key` itself needs provider-native-ID recomputation over canonical
+///   rows plus `agents`/`sources` lookups — the ingest generation
+///   transaction writes it per publication and the
+///   `--init-extensions`/`--backfill-viewer-extensions` maintenance lanes
+///   converge any NULL remainder (`viewer_extensions::sort`).
+///
+/// The migration INSERT..SELECT below backfills every pre-v5 conversation
+/// inside the same schema transaction, so a successfully applied v5 means
+/// full sort-row coverage by construction.
+const VIEWER_SCHEMA_V5: &str = r"
+CREATE TABLE IF NOT EXISTS viewer_session_sort (
+    conversation_id INTEGER PRIMARY KEY
+        REFERENCES conversations(id) ON DELETE CASCADE,
+    is_pinned INTEGER NOT NULL DEFAULT 0,
+    activity_known INTEGER NOT NULL DEFAULT 0,
+    activity_ms INTEGER,
+    created_known INTEGER NOT NULL DEFAULT 0,
+    created_ms INTEGER,
+    project_known INTEGER NOT NULL DEFAULT 0,
+    project_path TEXT,
+    steps_known INTEGER NOT NULL DEFAULT 0,
+    step_count INTEGER,
+    artifacts_known INTEGER NOT NULL DEFAULT 0,
+    artifact_count INTEGER,
+    -- Verified public tie key ({provider}:{native}); NULL + NULL error is
+    -- 'pending' (the maintenance lanes resolve it), NULL + recorded kind is
+    -- the typed refusal browse surfaces instead of guessing an order.
+    tie_key TEXT,
+    tie_error TEXT,
+    -- Single-table filter mirrors (provider/project/tag stay resolvable:
+    -- agent_id+workspace_id for dimension predicates, tag via EXISTS).
+    agent_id INTEGER,
+    source_id TEXT,
+    workspace_id INTEGER,
+    is_subagent INTEGER,
+    task_category TEXT,
+    coverage_state TEXT
+);
+
+-- Per-sort order indexes: (pin DESC, knownness DESC, value, public tie key
+-- ASC) with the implicit rowid as the final stabilizer — the exact oracle
+-- tuple (pins first, known values ordered, unknowns last, public-ID tie
+-- order). `*_known` flags are 1=known, so DESC puts known rows first.
+CREATE INDEX IF NOT EXISTS idx_viewer_sort_activity_desc
+    ON viewer_session_sort(is_pinned DESC, activity_known DESC, activity_ms DESC, tie_key);
+CREATE INDEX IF NOT EXISTS idx_viewer_sort_activity_asc
+    ON viewer_session_sort(is_pinned DESC, activity_known DESC, activity_ms ASC, tie_key);
+CREATE INDEX IF NOT EXISTS idx_viewer_sort_created_desc
+    ON viewer_session_sort(is_pinned DESC, created_known DESC, created_ms DESC, tie_key);
+CREATE INDEX IF NOT EXISTS idx_viewer_sort_created_asc
+    ON viewer_session_sort(is_pinned DESC, created_known DESC, created_ms ASC, tie_key);
+CREATE INDEX IF NOT EXISTS idx_viewer_sort_project_asc
+    ON viewer_session_sort(is_pinned DESC, project_known DESC, project_path ASC, tie_key);
+CREATE INDEX IF NOT EXISTS idx_viewer_sort_steps_desc
+    ON viewer_session_sort(is_pinned DESC, steps_known DESC, step_count DESC, tie_key);
+CREATE INDEX IF NOT EXISTS idx_viewer_sort_artifacts_desc
+    ON viewer_session_sort(is_pinned DESC, artifacts_known DESC, artifact_count DESC, tie_key);
+-- NULL-tie probe: pending/conflicted identities seek this range only.
+CREATE INDEX IF NOT EXISTS idx_viewer_sort_tie_pending
+    ON viewer_session_sort(tie_key);
+
+-- Backfill one sort row per conversation that predates the profile (the
+-- conversations-INSERT trigger below covers everything written after).
+INSERT INTO viewer_session_sort (
+    conversation_id, is_pinned,
+    activity_known, activity_ms, created_known, created_ms,
+    project_known, project_path,
+    steps_known, step_count, artifacts_known, artifact_count,
+    agent_id, source_id, workspace_id,
+    is_subagent, task_category, coverage_state
+)
+SELECT c.id, COALESCE(va.is_pinned, 0),
+    (CASE WHEN t.conversation_id IS NOT NULL
+          THEN COALESCE(t.last_message_created_at, t.ended_at, c.started_at)
+          ELSE COALESCE(c.last_message_created_at, c.ended_at, c.started_at)
+     END) IS NOT NULL,
+    CASE WHEN t.conversation_id IS NOT NULL
+         THEN COALESCE(t.last_message_created_at, t.ended_at, c.started_at)
+         ELSE COALESCE(c.last_message_created_at, c.ended_at, c.started_at)
+    END,
+    c.started_at IS NOT NULL,
+    c.started_at,
+    w.path IS NOT NULL,
+    w.path,
+    f.step_count IS NOT NULL,
+    f.step_count,
+    f.artifact_count IS NOT NULL,
+    f.artifact_count,
+    c.agent_id, c.source_id, c.workspace_id,
+    f.is_subagent, f.task_category, f.coverage_state
+FROM conversations c
+LEFT JOIN conversation_tail_state t ON t.conversation_id = c.id
+LEFT JOIN viewer_annotations va ON va.conversation_id = c.id
+LEFT JOIN viewer_session_facts f ON f.conversation_id = c.id
+LEFT JOIN workspaces w ON w.id = c.workspace_id
+WHERE NOT EXISTS (
+    SELECT 1 FROM viewer_session_sort vs WHERE vs.conversation_id = c.id
+);
+
+-- --- conversations lifecycle ---------------------------------------------
+DROP TRIGGER IF EXISTS viewer_sort_conversations_ins;
+CREATE TRIGGER viewer_sort_conversations_ins AFTER INSERT ON conversations BEGIN
+    INSERT OR REPLACE INTO viewer_session_sort (
+        conversation_id, is_pinned,
+        activity_known, activity_ms, created_known, created_ms,
+        project_known, project_path,
+        agent_id, source_id, workspace_id
+    ) VALUES (
+        NEW.id, 0,
+        COALESCE(NEW.last_message_created_at, NEW.ended_at, NEW.started_at) IS NOT NULL,
+        COALESCE(NEW.last_message_created_at, NEW.ended_at, NEW.started_at),
+        NEW.started_at IS NOT NULL,
+        NEW.started_at,
+        (SELECT w.path FROM workspaces w WHERE w.id = NEW.workspace_id) IS NOT NULL,
+        (SELECT w.path FROM workspaces w WHERE w.id = NEW.workspace_id),
+        NEW.agent_id, NEW.source_id, NEW.workspace_id
+    );
+END;
+
+DROP TRIGGER IF EXISTS viewer_sort_conversations_upd;
+CREATE TRIGGER viewer_sort_conversations_upd AFTER UPDATE ON conversations BEGIN
+    UPDATE viewer_session_sort SET
+        activity_known = (
+            CASE WHEN (SELECT t.conversation_id FROM conversation_tail_state t
+                       WHERE t.conversation_id = NEW.id LIMIT 1) IS NOT NULL
+                 THEN COALESCE(
+                     (SELECT t.last_message_created_at FROM conversation_tail_state t
+                      WHERE t.conversation_id = NEW.id),
+                     (SELECT t.ended_at FROM conversation_tail_state t
+                      WHERE t.conversation_id = NEW.id),
+                     NEW.started_at)
+                 ELSE COALESCE(NEW.last_message_created_at, NEW.ended_at, NEW.started_at)
+            END) IS NOT NULL,
+        activity_ms =
+            CASE WHEN (SELECT t.conversation_id FROM conversation_tail_state t
+                       WHERE t.conversation_id = NEW.id LIMIT 1) IS NOT NULL
+                 THEN COALESCE(
+                     (SELECT t.last_message_created_at FROM conversation_tail_state t
+                      WHERE t.conversation_id = NEW.id),
+                     (SELECT t.ended_at FROM conversation_tail_state t
+                      WHERE t.conversation_id = NEW.id),
+                     NEW.started_at)
+                 ELSE COALESCE(NEW.last_message_created_at, NEW.ended_at, NEW.started_at)
+            END,
+        created_known = NEW.started_at IS NOT NULL,
+        created_ms = NEW.started_at,
+        project_known = (SELECT w.path FROM workspaces w WHERE w.id = NEW.workspace_id) IS NOT NULL,
+        project_path = (SELECT w.path FROM workspaces w WHERE w.id = NEW.workspace_id),
+        agent_id = NEW.agent_id,
+        source_id = NEW.source_id,
+        workspace_id = NEW.workspace_id
+    WHERE conversation_id = NEW.id;
+    -- Identity-bearing inputs moved: the stored public tie key is no longer
+    -- a verified identity for this row; the maintenance lanes re-resolve.
+    UPDATE viewer_session_sort SET tie_key = NULL, tie_error = NULL
+    WHERE conversation_id = NEW.id
+      AND (OLD.external_id IS NOT NEW.external_id
+           OR OLD.source_path IS NOT NEW.source_path
+           OR OLD.source_id IS NOT NEW.source_id
+           OR OLD.origin_host IS NOT NEW.origin_host
+           OR OLD.metadata_json IS NOT NEW.metadata_json
+           OR OLD.metadata_bin IS NOT NEW.metadata_bin
+           OR OLD.agent_id IS NOT NEW.agent_id);
+END;
+
+DROP TRIGGER IF EXISTS viewer_sort_conversations_del;
+CREATE TRIGGER viewer_sort_conversations_del AFTER DELETE ON conversations BEGIN
+    DELETE FROM viewer_session_sort WHERE conversation_id = OLD.id;
+END;
+
+-- --- tail-state precedence over the denormalized activity columns ---------
+DROP TRIGGER IF EXISTS viewer_sort_tail_ins;
+CREATE TRIGGER viewer_sort_tail_ins AFTER INSERT ON conversation_tail_state BEGIN
+    UPDATE viewer_session_sort SET
+        activity_known = COALESCE(
+            NEW.last_message_created_at, NEW.ended_at,
+            (SELECT c.started_at FROM conversations c WHERE c.id = NEW.conversation_id)
+        ) IS NOT NULL,
+        activity_ms = COALESCE(
+            NEW.last_message_created_at, NEW.ended_at,
+            (SELECT c.started_at FROM conversations c WHERE c.id = NEW.conversation_id)
+        )
+    WHERE conversation_id = NEW.conversation_id;
+END;
+
+DROP TRIGGER IF EXISTS viewer_sort_tail_upd;
+CREATE TRIGGER viewer_sort_tail_upd AFTER UPDATE ON conversation_tail_state BEGIN
+    UPDATE viewer_session_sort SET
+        activity_known = COALESCE(
+            NEW.last_message_created_at, NEW.ended_at,
+            (SELECT c.started_at FROM conversations c WHERE c.id = NEW.conversation_id)
+        ) IS NOT NULL,
+        activity_ms = COALESCE(
+            NEW.last_message_created_at, NEW.ended_at,
+            (SELECT c.started_at FROM conversations c WHERE c.id = NEW.conversation_id)
+        )
+    WHERE conversation_id = NEW.conversation_id;
+END;
+
+DROP TRIGGER IF EXISTS viewer_sort_tail_del;
+CREATE TRIGGER viewer_sort_tail_del AFTER DELETE ON conversation_tail_state BEGIN
+    UPDATE viewer_session_sort SET
+        activity_known = COALESCE(
+            (SELECT c.last_message_created_at FROM conversations c WHERE c.id = OLD.conversation_id),
+            (SELECT c.ended_at FROM conversations c WHERE c.id = OLD.conversation_id),
+            (SELECT c.started_at FROM conversations c WHERE c.id = OLD.conversation_id)
+        ) IS NOT NULL,
+        activity_ms = COALESCE(
+            (SELECT c.last_message_created_at FROM conversations c WHERE c.id = OLD.conversation_id),
+            (SELECT c.ended_at FROM conversations c WHERE c.id = OLD.conversation_id),
+            (SELECT c.started_at FROM conversations c WHERE c.id = OLD.conversation_id)
+        )
+    WHERE conversation_id = OLD.conversation_id;
+END;
+
+-- --- annotation pin mirror -------------------------------------------------
+DROP TRIGGER IF EXISTS viewer_sort_annotations_ins;
+CREATE TRIGGER viewer_sort_annotations_ins AFTER INSERT ON viewer_annotations BEGIN
+    UPDATE viewer_session_sort SET is_pinned = NEW.is_pinned
+    WHERE conversation_id = NEW.conversation_id;
+END;
+
+DROP TRIGGER IF EXISTS viewer_sort_annotations_upd;
+CREATE TRIGGER viewer_sort_annotations_upd AFTER UPDATE ON viewer_annotations BEGIN
+    UPDATE viewer_session_sort SET is_pinned = NEW.is_pinned
+    WHERE conversation_id = NEW.conversation_id;
+END;
+
+DROP TRIGGER IF EXISTS viewer_sort_annotations_del;
+CREATE TRIGGER viewer_sort_annotations_del AFTER DELETE ON viewer_annotations BEGIN
+    UPDATE viewer_session_sort SET is_pinned = 0
+    WHERE conversation_id = OLD.conversation_id;
+END;
+
+-- --- facts mirrors (classification + count sort values) -------------------
+DROP TRIGGER IF EXISTS viewer_sort_facts_ins;
+CREATE TRIGGER viewer_sort_facts_ins AFTER INSERT ON viewer_session_facts BEGIN
+    UPDATE viewer_session_sort SET
+        is_subagent = NEW.is_subagent,
+        task_category = NEW.task_category,
+        coverage_state = NEW.coverage_state,
+        steps_known = NEW.step_count IS NOT NULL,
+        step_count = NEW.step_count,
+        artifacts_known = NEW.artifact_count IS NOT NULL,
+        artifact_count = NEW.artifact_count
+    WHERE conversation_id = NEW.conversation_id;
+END;
+
+DROP TRIGGER IF EXISTS viewer_sort_facts_upd;
+CREATE TRIGGER viewer_sort_facts_upd AFTER UPDATE ON viewer_session_facts BEGIN
+    UPDATE viewer_session_sort SET
+        is_subagent = NEW.is_subagent,
+        task_category = NEW.task_category,
+        coverage_state = NEW.coverage_state,
+        steps_known = NEW.step_count IS NOT NULL,
+        step_count = NEW.step_count,
+        artifacts_known = NEW.artifact_count IS NOT NULL,
+        artifact_count = NEW.artifact_count
+    WHERE conversation_id = NEW.conversation_id;
+END;
+
+DROP TRIGGER IF EXISTS viewer_sort_facts_del;
+CREATE TRIGGER viewer_sort_facts_del AFTER DELETE ON viewer_session_facts BEGIN
+    UPDATE viewer_session_sort SET
+        is_subagent = NULL,
+        task_category = NULL,
+        coverage_state = NULL,
+        steps_known = 0,
+        step_count = NULL,
+        artifacts_known = 0,
+        artifact_count = NULL
+    WHERE conversation_id = OLD.conversation_id;
+END;
+
+-- --- workspace project mirror ---------------------------------------------
+DROP TRIGGER IF EXISTS viewer_sort_workspaces_upd;
+CREATE TRIGGER viewer_sort_workspaces_upd AFTER UPDATE ON workspaces BEGIN
+    UPDATE viewer_session_sort SET
+        project_known = NEW.path IS NOT NULL,
+        project_path = NEW.path
+    WHERE workspace_id = NEW.id
+      AND (OLD.path IS NOT NEW.path OR OLD.display_name IS NOT NEW.display_name);
+END;
+
+DROP TRIGGER IF EXISTS viewer_sort_workspaces_del;
+CREATE TRIGGER viewer_sort_workspaces_del AFTER DELETE ON workspaces BEGIN
+    UPDATE viewer_session_sort SET project_known = 0, project_path = NULL
+    WHERE workspace_id = OLD.id;
+END;
+
+-- --- tie-key invalidation on dimension edits --------------------------------
+DROP TRIGGER IF EXISTS viewer_sort_agents_upd;
+CREATE TRIGGER viewer_sort_agents_upd AFTER UPDATE ON agents BEGIN
+    UPDATE viewer_session_sort SET tie_key = NULL, tie_error = NULL
+    WHERE agent_id = NEW.id
+      AND (OLD.slug IS NOT NEW.slug);
+END;
+
+DROP TRIGGER IF EXISTS viewer_sort_sources_upd;
+CREATE TRIGGER viewer_sort_sources_upd AFTER UPDATE ON sources BEGIN
+    UPDATE viewer_session_sort SET tie_key = NULL, tie_error = NULL
+    WHERE source_id = OLD.id
+      AND (OLD.kind IS NOT NEW.kind
+           OR OLD.host_label IS NOT NEW.host_label
+           OR OLD.id IS NOT NEW.id);
+END;
+
+DROP TRIGGER IF EXISTS viewer_sort_sources_del;
+CREATE TRIGGER viewer_sort_sources_del AFTER DELETE ON sources BEGIN
+    UPDATE viewer_session_sort SET tie_key = NULL, tie_error = NULL
+    WHERE source_id = OLD.id;
+END;
+
+INSERT OR REPLACE INTO viewer_meta (key, value)
+VALUES ('extension_schema_version', '5');
+";
+
 /// Guarded v3 column migration: `parent_external_id` cannot ride the
 /// `CREATE TABLE` statement (existing v2 archives keep their table), so it
 /// lands as an `ALTER TABLE` only when the column is absent — inside the
@@ -387,6 +725,7 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
         migrate_facts_parent_evidence(connection)?;
         connection.execute_batch(VIEWER_SCHEMA_V3)?;
         connection.execute_batch(VIEWER_SCHEMA_V4)?;
+        connection.execute_batch(VIEWER_SCHEMA_V5)?;
         Ok(())
     })();
     match applied {

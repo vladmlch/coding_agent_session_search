@@ -91,6 +91,19 @@ fn init_extensions(db: &Path) -> Result<()> {
         coding_agent_search::franken_sync::Connection::open(db.to_string_lossy().as_ref())?;
     coding_agent_search::viewer_extensions::schema::ensure_schema(&connection)?;
     revisions::ensure_observers(&connection)?;
+    // Schema v5: the sort-row mirrors are trigger-maintained, but the
+    // public tie key needs the canonical-identity recomputation the
+    // triggers cannot express — converge every pending row now so the
+    // first browse page is never blocked on `facts_pending` ties.
+    let sort = coding_agent_search::viewer_extensions::sort::repair_sort_keys(&connection)
+        .context("converging browse sort tie keys")?;
+    if sort.resolved + sort.refused > 0 {
+        eprintln!(
+            "cass-viewer-bridge: resolved {} browse sort tie key(s); {} row(s) \
+             carry a persisted identity refusal (browse surfaces the typed kind)",
+            sort.resolved, sort.refused,
+        );
+    }
     // Discoverability for the Task-14 gap: schema install cannot populate
     // facts/projection for conversations indexed before it ran — that is
     // the explicit --backfill-viewer-extensions lane.

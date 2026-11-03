@@ -6,6 +6,11 @@
 // `#[allow(unsafe_code)]` + a SAFETY comment (startup env writes, unavoidable FFI per AGENTS.md).
 #![cfg_attr(not(test), deny(unsafe_code))]
 
+// Modules shared verbatim (via `#[path]`) between this crate and binaries
+// spell crate-internal paths as `coding_agent_search::…`; the alias makes
+// that spelling resolve inside the library too.
+extern crate self as coding_agent_search;
+
 pub mod analytics;
 pub mod bakeoff;
 pub mod bookmarks;

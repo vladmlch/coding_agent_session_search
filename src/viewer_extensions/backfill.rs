@@ -101,6 +101,13 @@ pub struct BackfillStats {
     pub reconciled: usize,
     /// `limit` was reached mid-archive; more work remains for a later run.
     pub limit_reached: bool,
+    /// Browse sort tie keys (`viewer_session_sort.tie_key`) the end-of-run
+    /// convergence resolved to a verified public identity.
+    pub sort_ties_resolved: usize,
+    /// Tie rows whose identity recomputation refused — the refusal kind is
+    /// persisted in `tie_error` so browse surfaces the same typed refusal
+    /// the oracle would.
+    pub sort_ties_refused: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -559,5 +566,14 @@ pub fn backfill_viewer_extensions(
             .context("committing extension backfill batch transaction")?;
         progress(&stats);
     }
+    // The publication loop republishes facts/structure only — browse sort
+    // mirrors are maintained by the schema-v5 triggers, but the public tie
+    // key needs the identity recomputation the triggers cannot express.
+    // Converge every NULL remainder here so a completed backfill leaves no
+    // `facts_pending`/`identity_conflict` browse refusals undiagnosed.
+    let sort =
+        super::sort::repair_sort_keys(connection).context("converging browse sort tie keys")?;
+    stats.sort_ties_resolved = sort.resolved;
+    stats.sort_ties_refused = sort.refused;
     Ok(stats)
 }

@@ -33,7 +33,7 @@ use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use coding_agent_search::franken_sync::compat::{RowExt, param_slice_to_values};
-use coding_agent_search::franken_sync::{Connection, Row, params};
+use coding_agent_search::franken_sync::{Connection, Row, SqliteValue, params};
 use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
@@ -45,6 +45,11 @@ use super::protocol::refuse;
 pub const REMOTE_PREFIX: &str = "cassremote:";
 
 const LOCAL_SOURCE_ID: &str = "local";
+
+/// `IN (…)` fanout bound for the batched canonical evidence probe —
+/// comfortably inside the engine's bound-parameter limit while keeping
+/// each statement's parse trivial.
+const IDENTITY_CHUNK: usize = 256;
 
 /// Built-in provider namespaces that own a qualified `provider:` key
 /// (mirrors `_KNOWN_KEY_PREFIXES`); runtime agent slugs extend this set.
@@ -746,17 +751,19 @@ pub fn resolve_public_id(
     })
 }
 
-/// Batch variant for the `list_sessions` overlay: dimension lookups load
-/// once, then one primary-key probe per emitted row (page-bounded). Each
-/// row's identity is recomputed from canonical evidence — an unverifiable
-/// row surfaces its typed refusal for the whole page, matching the oracle's
-/// catalog binding.
+/// Batch variant for the `list_sessions` overlay and the maintenance
+/// lanes: dimension lookups load once, then the canonical evidence comes
+/// from `IN (ids)` probes on the primary key — repeated `SeekRowid`
+/// lookups under FrankenSQLite, one bounded statement per chunk instead
+/// of one interpreted query per row. Each row's identity is still
+/// recomputed from canonical evidence — an unverifiable row surfaces its
+/// typed refusal for the whole page, matching the oracle's catalog
+/// binding.
 pub fn resolve_public_ids(
     connection: &Connection,
     conversation_ids: &[i64],
 ) -> Result<std::collections::BTreeMap<i64, VerifiedIdentity>> {
     let lookups = load_lookups(connection)?;
-    let mut resolved_map = std::collections::BTreeMap::new();
     for &conversation_id in conversation_ids {
         if conversation_id <= 0 {
             return Err(refuse(
@@ -764,7 +771,32 @@ pub fn resolve_public_ids(
                 "Nonpositive conversation identity",
             ));
         }
-        let resolved = resolve_one(connection, &lookups, conversation_id)?;
+    }
+    let mut evidence: std::collections::BTreeMap<i64, Row> = std::collections::BTreeMap::new();
+    for chunk in conversation_ids.chunks(IDENTITY_CHUNK) {
+        let params: Vec<SqliteValue> = chunk.iter().map(|id| SqliteValue::Integer(*id)).collect();
+        let placeholders = (1..=chunk.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT c.id, c.agent_id, c.source_id, c.external_id, c.source_path, \
+             c.origin_host, c.metadata_bin, c.metadata_json \
+             FROM conversations c WHERE c.id IN ({placeholders})"
+        );
+        for row in connection.query_with_params(&sql, &params)? {
+            evidence.insert(row.get_typed(0)?, row);
+        }
+    }
+    let mut resolved_map = std::collections::BTreeMap::new();
+    for &conversation_id in conversation_ids {
+        let Some(row) = evidence.get(&conversation_id) else {
+            return Err(refuse(
+                "session_not_found",
+                "No canonical conversation carries this ID",
+            ));
+        };
+        let resolved = resolve_row(row, &lookups)?;
         resolved_map.insert(
             conversation_id,
             VerifiedIdentity {

@@ -15,7 +15,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Result, ensure};
 use coding_agent_search::franken_sync::compat::RowExt;
 use coding_agent_search::franken_sync::compat::param_slice_to_values;
-use coding_agent_search::franken_sync::{Connection, params};
+use coding_agent_search::franken_sync::{Connection, SqliteValue, params};
 use coding_agent_search::model::types::{
     Agent, AgentKind, Conversation, Message, MessageRole, Snippet,
 };
@@ -1464,10 +1464,12 @@ fn list_sessions_sorts_and_cursor_integrity() -> Result<()> {
     ensure!(created["ok"] == true, "{created}");
     ensure!(item_ids(&created) == [4, 2, 5, 1, 3], "{created}");
 
-    // project_asc: pinned first, then workspace path asc, NULL last.
+    // project_asc: pinned first, then workspace path asc, NULL last —
+    // the NULL group orders by the verified public tie key, so
+    // claude:BBB(2) precedes gemini:fixture-1(1) and gemini:fixture-3(3).
     let project = bridge.exchange(json!({"op":"list_sessions","sort":"project_asc","limit":10}))?;
     ensure!(project["ok"] == true, "{project}");
-    ensure!(item_ids(&project) == [4, 5, 1, 2, 3], "{project}");
+    ensure!(item_ids(&project) == [4, 5, 2, 1, 3], "{project}");
 
     // pin_first=false drops the pin ordering key.
     let flat = bridge.exchange(json!({
@@ -1669,13 +1671,62 @@ fn list_sessions_tag_patch_reflected_without_reindex() -> Result<()> {
     bridge.shutdown()
 }
 
+/// Opcode-level plan audit: `EXPLAIN <sql>` returns the VDBE program, so a
+/// page whose order comes from a sorter shows `SorterOpen` (and `TEMP
+/// B-TREE` in the query plan). The persisted sort tuple exists precisely
+/// so neither appears on the browse path — this is the evidence that the
+/// page is index-bounded rather than a full-candidate sort.
+fn assert_index_bounded_plan(
+    connection: &Connection,
+    label: &str,
+    sql: &str,
+    expect_index: &str,
+) -> Result<()> {
+    let opcodes: Vec<String> = connection
+        .query(&format!("EXPLAIN {sql}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(1).unwrap_or_default())
+        .collect();
+    eprintln!("OPCODES [{label}]: {opcodes:?}");
+    ensure!(
+        !opcodes.iter().any(|op| op == "SorterOpen"),
+        "order scan must be index-satisfied, never a sorter pass [{label}]: {opcodes:?}"
+    );
+    let plan: Vec<String> = connection
+        .query(&format!("EXPLAIN QUERY PLAN {sql}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(3).unwrap_or_default())
+        .collect();
+    let joined = plan.join(" | ");
+    eprintln!("EQP [{label}]: {joined}");
+    ensure!(
+        !joined.to_uppercase().contains("TEMP B-TREE"),
+        "no materialized sorter table on the order scan [{label}]: {joined}"
+    );
+    ensure!(
+        joined.contains(expect_index),
+        "order scan must walk the persisted sort index [{label}]: {joined}"
+    );
+    Ok(())
+}
+
+/// `EXPLAIN QUERY PLAN` detail lines for the hydration probe, joined for
+/// assertion/error reporting.
+fn hydrate_sql_plan(connection: &Connection, sql: &str) -> Result<String> {
+    let plan: Vec<String> = connection
+        .query(&format!("EXPLAIN QUERY PLAN {sql}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(3).unwrap_or_default())
+        .collect();
+    Ok(plan.join(" | "))
+}
+
 #[test]
 fn list_sessions_query_plan_audit() -> Result<()> {
-    // Report the real plan for the default sort + a selective filter shape.
-    // Assertions pin what MUST NOT appear: no messages table on the browse
-    // path, no whole-catalog dependent scan that ignores LIMIT pushdown
-    // (the TEMP B-TREE for the computed activity sort is expected and
-    // reported, not hidden).
+    // The browse page is index-bounded: the order scan walks the persisted
+    // `viewer_session_sort` composite index (opcode-level proof: no
+    // `SorterOpen`, no TEMP B-TREE) and the payload hydration joins
+    // conversations for exactly the page's ids — never `messages`.
     let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
     init_extensions(&bridge)?;
     seed_annotations(&bridge)?;
@@ -1704,28 +1755,77 @@ fn list_sessions_query_plan_audit() -> Result<()> {
             None,
             Some(true),
         ),
+        (
+            "project_asc",
+            protocol::ListFilters::default(),
+            Some("project_asc"),
+            Some(true),
+        ),
+        (
+            "flat pin_first=false",
+            protocol::ListFilters::default(),
+            None,
+            Some(false),
+        ),
+        (
+            "step_desc",
+            protocol::ListFilters::default(),
+            Some("step_desc"),
+            Some(true),
+        ),
+        (
+            "artifact_desc",
+            protocol::ListFilters::default(),
+            Some("artifact_desc"),
+            Some(true),
+        ),
+        (
+            "created_asc",
+            protocol::ListFilters::default(),
+            Some("created_asc"),
+            Some(true),
+        ),
     ] {
-        let (sql, params) =
-            query::planned_page_sql(&connection, &filters, sort, pin_first, None, 10)?;
-        let plan = connection.query(&format!("EXPLAIN QUERY PLAN {sql}"))?;
-        let mut lines = Vec::new();
-        for row in &plan {
-            let detail: String = row.get_typed(3)?;
-            lines.push(detail);
+        let planned = query::planned_page_sql(&connection, &filters, sort, pin_first, None, 10)?;
+        let expected_index = match sort {
+            Some("project_asc") => "idx_viewer_sort_project_asc",
+            Some("step_desc") => "idx_viewer_sort_steps_desc",
+            Some("artifact_desc") => "idx_viewer_sort_artifacts_desc",
+            Some("created_asc") => "idx_viewer_sort_created_asc",
+            _ => "idx_viewer_sort_activity_desc",
+        };
+        for (i, (sql, params)) in planned.order_queries.iter().enumerate() {
+            eprintln!("ORDER SQL [{label}#{i}] ({} params): {sql}", params.len());
+            assert_index_bounded_plan(
+                &connection,
+                &format!("{label} order#{i}"),
+                sql,
+                expected_index,
+            )?;
         }
-        let joined = lines.join(" | ");
-        eprintln!("EXPLAIN [{label}] ({} params): {joined}", params.len());
+        // Hydration is a bounded `WHERE c.id IN (page ids)` probe —
+        // FrankenSQLite resolves a standalone-table IN list to repeated
+        // `SeekRowid` lookups (scratch probe `in-list`), and the audit
+        // pins that probe shape plus the no-messages guarantee.
+        ensure!(
+            planned
+                .hydrate_query
+                .contains("conversations c WHERE c.id IN ("),
+            "hydration must be a bounded primary-key IN probe: {}",
+            planned.hydrate_query
+        );
+        ensure!(
+            !planned.hydrate_query.to_uppercase().contains("MESSAGES"),
+            "browse hydration must never touch the messages table"
+        );
+        // The probe shape with a real page-id list: repeated rowid seeks.
+        let hydrated_probe = planned.hydrate_query.replace("?1..?N", "?1,?2");
+        let joined = hydrate_sql_plan(&connection, &hydrated_probe)?;
+        eprintln!("EQP [{label} hydrate]: {joined}");
         ensure!(
             !joined.to_uppercase().contains("MESSAGES"),
-            "browse path must never touch the messages table: {joined}"
+            "browse hydration must never touch the messages table: {joined}"
         );
-        ensure!(
-            joined.contains("conversations"),
-            "plan must scan/search conversations: {joined}"
-        );
-        if label == "category" {
-            eprintln!("category-filter plan detail: {joined}");
-        }
     }
     drop(connection);
 
@@ -1739,6 +1839,702 @@ fn list_sessions_query_plan_audit() -> Result<()> {
     eprintln!(
         "list_sessions limit=2 over 5 rows: {:?}/page (20 pages)",
         start.elapsed() / 20
+    );
+    bridge.shutdown()
+}
+
+// ---------------------------------------------------------------------------
+// Task 4: index-bounded browse at realistic scale (50k exact-order walk)
+// ---------------------------------------------------------------------------
+
+/// Mirror of one `viewer_session_sort` row for the test-side reference
+/// oracle: the small fixtures pin the shared order semantics against
+/// literal id sequences; this walk proves the SQL index scan returns
+/// exactly that declared order over a 50k candidate set — no drift, no
+/// duplicates, no gaps, cursor-resumable.
+#[derive(Debug)]
+struct ScaleSortRow {
+    id: i64,
+    pin: i64,
+    activity_known: i64,
+    activity_ms: Option<i64>,
+    created_known: i64,
+    created_ms: Option<i64>,
+    project_known: i64,
+    project_path: Option<String>,
+    steps_known: i64,
+    step_count: Option<i64>,
+    artifacts_known: i64,
+    artifact_count: Option<i64>,
+    tie: String,
+    is_subagent: Option<i64>,
+}
+
+/// Bulk-seed a 50k-scale canonical archive directly through SQL. Every row
+/// is engineered to stress the order tuple: interleaved providers make the
+/// public tie key disagree with internal insertion order, `started_at` and
+/// `last_message_created_at` collide hard (`i % 97`/`i % 131`) so equal
+/// values exercise `(tie, id)` tails on every page, every 11th row falls
+/// back to `ended_at`/`started_at` activity, every 23rd is fully unknown,
+/// and a third of the rows carry no workspace (project unknown).
+fn seed_sort_scale_canonical(db: &Path, count: usize) -> Result<()> {
+    let conn = Connection::open(db.to_string_lossy().into_owned())?;
+    conn.execute("BEGIN")?;
+    conn.execute(
+        "INSERT OR IGNORE INTO sources (id,kind,created_at,updated_at) \
+         VALUES ('local','local',0,0)",
+    )?;
+    for slug in ["claude_code", "gemini"] {
+        conn.execute_with_params(
+            "INSERT INTO agents (slug,name,kind,created_at,updated_at) \
+             VALUES (?1,?1,'cli',0,0)",
+            &param_slice_to_values(params![slug]),
+        )?;
+    }
+    for i in 0..8_i64 {
+        conn.execute_with_params(
+            "INSERT INTO workspaces (path,display_name) VALUES (?1,?2)",
+            &param_slice_to_values(params![format!("/scale/proj-{i}"), format!("proj-{i}")]),
+        )?;
+    }
+    // One prepared insert: at 50k rows the per-statement parse dominates.
+    let insert = conn.prepare(
+        "INSERT INTO conversations \
+         (id,agent_id,workspace_id,source_id,external_id,title,source_path,\
+          started_at,ended_at,metadata_json,last_message_idx,last_message_created_at) \
+         VALUES (?1,?2,?3,'local',?4,?5,?6,?7,?8,'{}',?9,?10)",
+    )?;
+    for i in 0..count as i64 {
+        let external = format!("sess-{i:06}");
+        let fully_unknown = i % 23 == 0;
+        let (started, ended, lmca) = if fully_unknown {
+            (None, None, None)
+        } else {
+            (
+                Some(1_000_000 + (i % 97)),
+                (i % 29 == 0).then_some(3_000_000 + (i % 53)),
+                if i % 11 == 0 {
+                    None
+                } else {
+                    Some(2_000_000 + (i % 131))
+                },
+            )
+        };
+        insert.execute_with_params(&param_slice_to_values(params![
+            i + 1,
+            if i % 2 == 0 { 1_i64 } else { 2_i64 },
+            if i % 3 == 0 {
+                SqliteValue::Null
+            } else {
+                SqliteValue::Integer((i % 8) + 1)
+            },
+            external,
+            format!("scale-{i}"),
+            format!("/scale/sess-{i:06}.jsonl"),
+            match started {
+                Some(v) => SqliteValue::Integer(v),
+                None => SqliteValue::Null,
+            },
+            match ended {
+                Some(v) => SqliteValue::Integer(v),
+                None => SqliteValue::Null,
+            },
+            match lmca {
+                Some(_) => SqliteValue::Integer(0),
+                None => SqliteValue::Null,
+            },
+            match lmca {
+                Some(v) => SqliteValue::Integer(v),
+                None => SqliteValue::Null,
+            },
+        ]))?;
+    }
+    conn.execute("COMMIT")?;
+    drop(conn);
+    Ok(())
+}
+
+/// Post-init facts/annotation writes at scale: the v5 triggers must mirror
+/// classification and count sort values into `viewer_session_sort` for
+/// every row, and the annotation trigger must flip `is_pinned` — this is
+/// the maintenance lane exercised at scale (the migration backfill covers
+/// the canonical columns; these writes cover the trigger path).
+fn seed_sort_scale_extensions(db: &Path, count: usize) -> Result<()> {
+    let conn = Connection::open(db.to_string_lossy().into_owned())?;
+    conn.execute("BEGIN")?;
+    let insert = conn.prepare(
+        "INSERT INTO viewer_session_facts \
+         (conversation_id,extractor_version,source_revision,coverage_state,\
+          is_subagent,task_category,step_count,artifact_count) \
+         VALUES (?1,1,1,'complete',?2,'chore',?3,?4)",
+    )?;
+    for i in 0..count as i64 {
+        if !(i % 5 == 0 || i % 7 == 0 || i % 13 == 0 || i % 37 == 0) {
+            continue;
+        }
+        insert.execute_with_params(&param_slice_to_values(params![
+            i + 1,
+            (i % 37 == 0) as i64,
+            if i % 5 == 0 {
+                SqliteValue::Integer(i % 41)
+            } else {
+                SqliteValue::Null
+            },
+            if i % 7 == 0 {
+                SqliteValue::Integer(i % 17)
+            } else {
+                SqliteValue::Null
+            },
+        ]))?;
+    }
+    for id in [100_i64, 25_001, 49_999] {
+        conn.execute_with_params(
+            "INSERT INTO viewer_annotations (conversation_id,is_pinned,revision) \
+             VALUES (?1,1,1)",
+            &param_slice_to_values(params![id]),
+        )?;
+    }
+    conn.execute("COMMIT")?;
+    drop(conn);
+    Ok(())
+}
+
+fn load_scale_sort_rows(db: &Path) -> Result<Vec<ScaleSortRow>> {
+    let conn = Connection::open(db.to_string_lossy().into_owned())?;
+    let mut rows = Vec::new();
+    for row in conn.query(
+        "SELECT conversation_id, is_pinned, \
+         activity_known, activity_ms, created_known, created_ms, \
+         project_known, project_path, steps_known, step_count, \
+         artifacts_known, artifact_count, tie_key, is_subagent \
+         FROM viewer_session_sort",
+    )? {
+        rows.push(ScaleSortRow {
+            id: row.get_typed(0)?,
+            pin: row.get_typed(1)?,
+            activity_known: row.get_typed(2)?,
+            activity_ms: row.get_typed(3)?,
+            created_known: row.get_typed(4)?,
+            created_ms: row.get_typed(5)?,
+            project_known: row.get_typed(6)?,
+            project_path: row.get_typed(7)?,
+            steps_known: row.get_typed(8)?,
+            step_count: row.get_typed(9)?,
+            artifacts_known: row.get_typed(10)?,
+            artifact_count: row.get_typed(11)?,
+            tie: row.get_typed::<Option<String>>(12)?.unwrap_or_default(),
+            is_subagent: row.get_typed(13)?,
+        });
+    }
+    drop(conn);
+    Ok(rows)
+}
+
+/// Sortable order value across the INTEGER and TEXT sort axes.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ScaleValue {
+    Int(i64),
+    Text(String),
+    Null,
+}
+
+/// The oracle's explicit order: `(pin, knownness DESC, value <dir>, public
+/// tie ASC, conversation_id ASC)` over the filtered candidate set
+/// (default browse excludes `is_subagent = 1`).
+fn expected_scale_order(rows: &[ScaleSortRow], sort: &str, pin_first: bool) -> Vec<i64> {
+    let key_of = |row: &ScaleSortRow| -> (i64, ScaleValue) {
+        match sort {
+            "updated_asc" => (
+                row.activity_known,
+                row.activity_ms
+                    .map(ScaleValue::Int)
+                    .unwrap_or(ScaleValue::Null),
+            ),
+            "created_desc" => (
+                row.created_known,
+                row.created_ms
+                    .map(ScaleValue::Int)
+                    .unwrap_or(ScaleValue::Null),
+            ),
+            "created_asc" => (
+                row.created_known,
+                row.created_ms
+                    .map(ScaleValue::Int)
+                    .unwrap_or(ScaleValue::Null),
+            ),
+            "project_asc" => (
+                row.project_known,
+                row.project_path
+                    .clone()
+                    .map(ScaleValue::Text)
+                    .unwrap_or(ScaleValue::Null),
+            ),
+            "step_desc" => (
+                row.steps_known,
+                row.step_count
+                    .map(ScaleValue::Int)
+                    .unwrap_or(ScaleValue::Null),
+            ),
+            "artifact_desc" => (
+                row.artifacts_known,
+                row.artifact_count
+                    .map(ScaleValue::Int)
+                    .unwrap_or(ScaleValue::Null),
+            ),
+            _ => (
+                row.activity_known,
+                row.activity_ms
+                    .map(ScaleValue::Int)
+                    .unwrap_or(ScaleValue::Null),
+            ),
+        }
+    };
+    let desc = matches!(
+        sort,
+        "created_desc" | "step_desc" | "artifact_desc" | "updated_desc"
+    );
+    let mut ordered: Vec<&ScaleSortRow> = rows
+        .iter()
+        .filter(|row| row.is_subagent.unwrap_or(0) == 0)
+        .collect();
+    ordered.sort_by(|a, b| {
+        if pin_first {
+            match b.pin.cmp(&a.pin) {
+                std::cmp::Ordering::Equal => {}
+                other => return other,
+            }
+        }
+        let (ka, va) = key_of(a);
+        let (kb, vb) = key_of(b);
+        match kb.cmp(&ka) {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
+        }
+        let directed = if desc { vb.cmp(&va) } else { va.cmp(&vb) };
+        match directed {
+            std::cmp::Ordering::Equal => {}
+            other => return other,
+        }
+        match a.tie.cmp(&b.tie) {
+            std::cmp::Ordering::Equal => a.id.cmp(&b.id),
+            other => other,
+        }
+    });
+    ordered.iter().map(|row| row.id).collect()
+}
+
+/// Diff two id sequences for diagnostics: report the first position they
+/// diverge plus the surrounding slice instead of dumping 50k ids.
+fn first_divergence(expected: &[i64], seen: &[i64]) -> String {
+    let len = expected.len().min(seen.len());
+    for i in 0..len {
+        if expected[i] != seen[i] {
+            let lo = i.saturating_sub(3);
+            return format!(
+                "first divergence at position {i}: expected[{lo}..]={:?} \
+                 seen[{lo}..]={:?} (expected len {}, seen len {})",
+                &expected[lo..(i + 4).min(expected.len())],
+                &seen[lo..(i + 4).min(seen.len())],
+                expected.len(),
+                seen.len()
+            );
+        }
+    }
+    format!(
+        "prefixes match over {len}; expected len {}, seen len {}",
+        expected.len(),
+        seen.len()
+    )
+}
+
+#[test]
+fn list_sessions_sort_index_50k_exact_order_and_bounded_work() -> Result<()> {
+    const COUNT: usize = 50_000;
+    let mut bridge = BridgeHarness::with_seed(&[], &[])?;
+    seed_sort_scale_canonical(&bridge.db, COUNT)?;
+
+    // The maintenance lane at scale: one v5 migration backfill plus the
+    // repair pass over 50k pending tie keys.
+    let init_start = std::time::Instant::now();
+    init_extensions(&bridge)?;
+    let init_ms = init_start.elapsed().as_millis();
+
+    seed_sort_scale_extensions(&bridge.db, COUNT)?;
+    let rows = load_scale_sort_rows(&bridge.db)?;
+    ensure!(rows.len() == COUNT, "sort rows: {} != {COUNT}", rows.len());
+    ensure!(
+        rows.iter().all(|row| !row.tie.is_empty()),
+        "every sort row must carry a resolved public tie key"
+    );
+
+    // ---- plan audit at scale: every supported sort walks its index ------
+    let connection = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    for (sort, expected_index) in [
+        (None, "idx_viewer_sort_activity_desc"),
+        (Some("updated_asc"), "idx_viewer_sort_activity_asc"),
+        (Some("created_desc"), "idx_viewer_sort_created_desc"),
+        (Some("created_asc"), "idx_viewer_sort_created_asc"),
+        (Some("project_asc"), "idx_viewer_sort_project_asc"),
+        (Some("step_desc"), "idx_viewer_sort_steps_desc"),
+        (Some("artifact_desc"), "idx_viewer_sort_artifacts_desc"),
+    ] {
+        let planned = query::planned_page_sql(
+            &connection,
+            &protocol::ListFilters::default(),
+            sort,
+            Some(true),
+            None,
+            200,
+        )?;
+        for (i, (sql, _params)) in planned.order_queries.iter().enumerate() {
+            assert_index_bounded_plan(
+                &connection,
+                &format!("50k {sort:?}#{i}"),
+                sql,
+                expected_index,
+            )?;
+        }
+    }
+
+    // ---- full cursor traversal of the default sort ---------------------
+    let expected = expected_scale_order(&rows, "updated_desc", true);
+    eprintln!("50k candidates: {}", expected.len());
+    let mut cursor: Option<String> = None;
+    let mut seen: Vec<i64> = Vec::with_capacity(expected.len());
+    let mut pages = 0_usize;
+    let mut first_ms = None;
+    let mut last_ms: std::time::Duration;
+    let mut slowest = std::time::Duration::ZERO;
+    loop {
+        let request = match &cursor {
+            Some(c) => json!({"op":"list_sessions","limit":200,"cursor":c}),
+            None => json!({"op":"list_sessions","limit":200}),
+        };
+        let start = std::time::Instant::now();
+        let page = bridge.exchange(request)?;
+        let elapsed = start.elapsed();
+        ensure!(page["ok"] == true, "walk page {pages}: {page}");
+        if pages == 0 {
+            first_ms = Some(elapsed);
+            ensure!(
+                page["result"]["warnings"]
+                    .as_array()
+                    .is_some_and(|w| w.iter().any(|v| v == "classification_pending")),
+                "unclassified rows must surface the browse warning: {page}"
+            );
+        }
+        seen.extend(item_ids(&page));
+        slowest = slowest.max(elapsed);
+        last_ms = elapsed;
+        match page["result"]["next_cursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+        pages += 1;
+    }
+    eprintln!(
+        "50k updated_desc walk: {pages} pages, {} rows, page1 {:?}, last page {:?}, slowest {:?}",
+        seen.len(),
+        first_ms.unwrap_or_default(),
+        last_ms,
+        slowest
+    );
+    ensure!(
+        seen == expected,
+        "50k walk must return the oracle order exactly: {}",
+        first_divergence(&expected, &seen)
+    );
+
+    // ---- spot-walks for the remaining sorts and flat merge -------------
+    for (sort, pin_first, label) in [
+        (Some("created_desc"), true, "created_desc"),
+        (Some("project_asc"), true, "project_asc"),
+        (Some("step_desc"), true, "step_desc"),
+        (Some("artifact_desc"), true, "artifact_desc"),
+        (None, false, "flat pin_first=false"),
+    ] {
+        let expected = expected_scale_order(&rows, sort.unwrap_or("updated_desc"), pin_first);
+        let mut seen = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..2 {
+            let mut request = json!({
+                "op":"list_sessions","limit":200,"pin_first":pin_first});
+            if let Some(sort) = sort {
+                request["sort"] = json!(sort);
+            }
+            if let Some(c) = &cursor {
+                request["cursor"] = json!(c);
+            }
+            let page = bridge.exchange(request)?;
+            ensure!(page["ok"] == true, "{label} page: {page}");
+            seen.extend(item_ids(&page));
+            cursor = page["result"]["next_cursor"].as_str().map(str::to_owned);
+        }
+        let head: Vec<i64> = expected[..400.min(expected.len())].to_vec();
+        ensure!(
+            seen == head,
+            "{label} first two pages must match the oracle: {}",
+            first_divergence(&head, &seen)
+        );
+    }
+
+    // ---- a mid-archive keyset resume: mint a cursor, continue exactly --
+    let first = bridge.exchange(json!({"op":"list_sessions","limit":200}))?;
+    let cursor = first["result"]["next_cursor"].as_str().map(str::to_owned);
+    let start = std::time::Instant::now();
+    let page = bridge.exchange(json!({
+        "op":"list_sessions","limit":200,
+        "cursor":cursor.as_deref().expect("page-1 cursor")
+    }))?;
+    let second_ms = start.elapsed();
+    ensure!(page["ok"] == true, "keyset page: {page}");
+    let head: Vec<i64> = expected[200..400.min(expected.len())].to_vec();
+    ensure!(
+        item_ids(&page) == head,
+        "the cursor resume must continue the oracle order exactly: {}",
+        first_divergence(&head, &item_ids(&page))
+    );
+    eprintln!("50k walk: init {init_ms}ms, keyset page latency {second_ms:?}");
+
+    // ---- keyset order scan at scale stays on the composite index -------
+    let connection2 = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let planned = query::planned_page_sql(
+        &connection2,
+        &protocol::ListFilters::default(),
+        None,
+        Some(true),
+        cursor.as_deref(),
+        200,
+    )?;
+    for (i, (sql, _)) in planned.order_queries.iter().enumerate() {
+        assert_index_bounded_plan(
+            &connection2,
+            &format!("50k keyset#{i}"),
+            sql,
+            "idx_viewer_sort_activity_desc",
+        )?;
+    }
+    drop(connection2);
+    drop(connection);
+    bridge.shutdown()
+}
+
+/// Smaller-scale engine-work evidence for the scaling comparison the
+/// brief asks for (1k/10k here, 50k in the exact-order test above — its
+/// per-page latencies print to stderr under `--nocapture`). Each scale
+/// asserts the same composite-index plan and records seed/init/page
+/// timings so the report can compare observed work honestly.
+#[test]
+fn list_sessions_sort_index_scaling_evidence() -> Result<()> {
+    for count in [1_000_usize, 10_000] {
+        let mut bridge = BridgeHarness::with_seed(&[], &[])?;
+        let seed_start = std::time::Instant::now();
+        seed_sort_scale_canonical(&bridge.db, count)?;
+        let seed_ms = seed_start.elapsed().as_millis();
+        let init_start = std::time::Instant::now();
+        init_extensions(&bridge)?;
+        let init_ms = init_start.elapsed().as_millis();
+        seed_sort_scale_extensions(&bridge.db, count)?;
+
+        let connection = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+        let planned = query::planned_page_sql(
+            &connection,
+            &protocol::ListFilters::default(),
+            None,
+            Some(true),
+            None,
+            200,
+        )?;
+        for (i, (sql, _)) in planned.order_queries.iter().enumerate() {
+            assert_index_bounded_plan(
+                &connection,
+                &format!("{count}k#{i}"),
+                sql,
+                "idx_viewer_sort_activity_desc",
+            )?;
+        }
+        drop(connection);
+
+        // Two pages through the live bridge — page latency is the
+        // scale-invariant unit of work the index bounds.
+        let start = std::time::Instant::now();
+        let first = bridge.exchange(json!({"op":"list_sessions","limit":200}))?;
+        let first_ms = start.elapsed();
+        ensure!(first["ok"] == true, "{count} page 1: {first}");
+        let cursor = first["result"]["next_cursor"].as_str().map(str::to_owned);
+        ensure!(cursor.is_some(), "{count} must have a second page");
+        let start = std::time::Instant::now();
+        let second = bridge.exchange(json!({
+            "op":"list_sessions","limit":200,
+            "cursor":cursor.as_deref().expect("page-1 cursor")
+        }))?;
+        let second_ms = start.elapsed();
+        ensure!(second["ok"] == true, "{count} page 2: {second}");
+        ensure!(
+            item_ids(&second).len() == 200,
+            "{count} page 2 must be full: {}",
+            item_ids(&second).len()
+        );
+        eprintln!(
+            "scale {count}: seed {seed_ms}ms, init {init_ms}ms, \
+             page1 {first_ms:?}, page2 {second_ms:?}"
+        );
+        bridge.shutdown()?;
+    }
+    Ok(())
+}
+
+#[test]
+fn list_sessions_browse_refuses_unresolved_tie_keys() -> Result<()> {
+    // The oracle's explicit order needs a verified public tie key for every
+    // candidate: a pending key is `facts_pending`, a persisted resolver
+    // refusal surfaces its own kind, and a filtered-out candidate cannot
+    // refuse for rows it never ordered.
+    let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
+    init_extensions(&bridge)?;
+    seed_annotations(&bridge)?;
+
+    let conn = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    conn.execute(
+        "UPDATE viewer_session_sort SET tie_key = NULL, tie_error = NULL \
+         WHERE conversation_id = 3",
+    )?;
+    let refused = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(refused["ok"] == false);
+    ensure!(
+        refused["error"]["kind"] == "facts_pending",
+        "pending tie key must refuse facts_pending: {refused}"
+    );
+
+    // A provider filter that excludes the pending row still serves —
+    // the refusal scope is the candidate set, not the table.
+    let claude = bridge.exchange(json!({
+        "op":"list_sessions","filters":{"provider":"claude"},"limit":10}))?;
+    ensure!(
+        claude["ok"] == true,
+        "filtered-out tie must not refuse: {claude}"
+    );
+    ensure!(item_ids(&claude) == [4, 2], "{claude}");
+
+    // A persisted resolver refusal surfaces its own kind.
+    conn.execute(
+        "UPDATE viewer_session_sort SET tie_error = 'identity_conflict' \
+         WHERE conversation_id = 3",
+    )?;
+    let refused = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(refused["ok"] == false);
+    ensure!(
+        refused["error"]["kind"] == "identity_conflict",
+        "persisted resolver kind must surface: {refused}"
+    );
+
+    // The maintenance lane repairs the row; browse serves again.
+    conn.execute(
+        "UPDATE viewer_session_sort \
+         SET tie_key = 'gemini:fixture-3', tie_error = NULL \
+         WHERE conversation_id = 3",
+    )?;
+    let page = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(page["ok"] == true, "repaired tie must serve: {page}");
+    ensure!(item_ids(&page) == [4, 5, 2, 1, 3], "{page}");
+    drop(conn);
+    bridge.shutdown()
+}
+
+#[test]
+fn list_sessions_sort_mirrors_pin_canonical_and_facts_changes() -> Result<()> {
+    // Trigger maintenance across every mirror source: an annotation pin
+    // moves the row to the pin partition immediately, a canonical
+    // started_at update moves it inside created_desc, a facts write moves
+    // it inside step_desc, and an identity-bearing canonical change
+    // invalidates the tie key until the repair lane runs.
+    let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &["--enable-viewer-writes"])?;
+    init_extensions(&bridge)?;
+    seed_annotations(&bridge)?;
+
+    // Pin conv 1 through the writer lane: the annotation trigger must flip
+    // the persisted sort key so the next browse page leads with it.
+    let patched = bridge.exchange(json!({
+        "op":"patch_annotations","conversation_id":1,"expected_revision":0,
+        "patch":{"is_pinned":true}
+    }))?;
+    ensure!(patched["ok"] == true, "pin patch refused: {patched}");
+    let page = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(item_ids(&page) == [4, 1, 5, 2, 3], "pin must lead: {page}");
+
+    // Unpin through the same lane: the row re-enters the unpinned
+    // partition at its activity position.
+    let patched = bridge.exchange(json!({
+        "op":"patch_annotations","conversation_id":1,"expected_revision":1,
+        "patch":{"is_pinned":false}
+    }))?;
+    ensure!(patched["ok"] == true, "unpin patch refused: {patched}");
+    let page = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(
+        item_ids(&page) == [4, 5, 2, 1, 3],
+        "unpin must restore: {page}"
+    );
+
+    // Canonical timestamp edit: the conversations trigger moves the row
+    // inside created_desc (and never touches the verified tie).
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    writer.execute("UPDATE conversations SET started_at = 9_999 WHERE id = 3")?;
+    let page = bridge.exchange(json!({
+        "op":"list_sessions","sort":"created_desc","limit":10}))?;
+    ensure!(page["ok"] == true, "{page}");
+    ensure!(item_ids(&page) == [4, 3, 2, 5, 1], "created mirror: {page}");
+
+    // Facts update through the fact mirror: conv 2 gains the largest step
+    // count and leads step_desc among unpinned rows.
+    writer.execute(
+        "INSERT INTO viewer_session_facts \
+         (conversation_id,extractor_version,source_revision,coverage_state,step_count) \
+         VALUES (2,1,1,'complete',9_000) \
+         ON CONFLICT(conversation_id) DO UPDATE SET step_count = 9_000",
+    )?;
+    let page = bridge.exchange(json!({
+        "op":"list_sessions","sort":"step_desc","limit":10}))?;
+    ensure!(page["ok"] == true, "{page}");
+    // Pinned conv4 still leads its partition; conv2's mirrored step count
+    // puts it at the head of the unpinned partition.
+    let ids = item_ids(&page);
+    ensure!(ids[0] == 4 && ids[1] == 2, "step mirror order: {page}");
+
+    // Identity-bearing canonical edit: the stored tie is invalidated,
+    // browse refuses until the repair lane re-resolves it.
+    writer.execute("UPDATE conversations SET external_id = 'renamed' WHERE id = 3")?;
+    drop(writer);
+    let refused = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(refused["ok"] == false, "{refused}");
+    ensure!(
+        refused["error"]["kind"] == "facts_pending",
+        "invalidated tie must refuse facts_pending: {refused}"
+    );
+    init_extensions(&bridge)?;
+    let page = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(page["ok"] == true, "repair must restore browse: {page}");
+    // 'renamed' re-resolves as gemini:renamed, and the earlier
+    // started_at=9999 edit flows through tail-state precedence into
+    // activity — conv 3 now leads the unpinned partition.
+    ensure!(item_ids(&page) == [4, 3, 5, 2, 1], "{page}");
+    bridge.shutdown()
+}
+
+#[test]
+fn list_sessions_stale_extension_profile_refused() -> Result<()> {
+    // A pre-v5 extension profile is stale for the sort-key lane: browse
+    // must refuse with the same typed kind as a missing profile instead of
+    // silently degrading to a full-candidate sort.
+    let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
+    init_extensions(&bridge)?;
+    let conn = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    conn.execute("UPDATE viewer_meta SET value = '4' WHERE key = 'extension_schema_version'")?;
+    drop(conn);
+    let refused = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(refused["ok"] == false);
+    ensure!(
+        refused["error"]["kind"] == "viewer_extensions_missing",
+        "stale extension profile must refuse explicitly: {refused}"
     );
     bridge.shutdown()
 }
@@ -3444,7 +4240,10 @@ fn backfill_fixture() -> Result<BackfillFixture> {
     let codex = backfill_codex_conversation("bf-codex", "codex fixture text", 3);
     let claude_id = insert_backfill_conversation(&storage, claude_agent, &claude)?;
     let codex_id = insert_backfill_conversation(&storage, codex_agent, &codex)?;
-    ensure!(claude_id == 1 && codex_id == 2, "fixture ids: {claude_id}/{codex_id}");
+    ensure!(
+        claude_id == 1 && codex_id == 2,
+        "fixture ids: {claude_id}/{codex_id}"
+    );
     drop(storage);
     Ok(BackfillFixture {
         _temp: temp,
@@ -3475,7 +4274,10 @@ fn backfill_replays_committed_canonical_into_extension_tables() -> Result<()> {
     // schema install alone cannot populate them.
     ensure!(
         count(&connection, "SELECT COUNT(*) FROM viewer_session_facts")? == 0
-            && count(&connection, "SELECT COUNT(*) FROM viewer_session_projection")? == 0,
+            && count(
+                &connection,
+                "SELECT COUNT(*) FROM viewer_session_projection"
+            )? == 0,
         "gap fixture must start without extension rows"
     );
 
@@ -3544,8 +4346,9 @@ fn backfill_replays_committed_canonical_into_extension_tables() -> Result<()> {
 
     // Backfill writes extension tables only: canonical_revision must not
     // move. projection_revision bumps once per published conversation.
-    let revisions = connection
-        .query_row("SELECT canonical_revision, projection_revision FROM viewer_revisions WHERE id = 1")?;
+    let revisions = connection.query_row(
+        "SELECT canonical_revision, projection_revision FROM viewer_revisions WHERE id = 1",
+    )?;
     ensure!(
         revisions.get_typed::<i64>(0)? == 0,
         "backfill must not move canonical_revision"
@@ -3560,10 +4363,16 @@ fn backfill_replays_committed_canonical_into_extension_tables() -> Result<()> {
         &backfill::BackfillOptions::default(),
         |_| {},
     )?;
-    ensure!(again.facts_published == 0 && again.structure_published == 0, "{again:?}");
-    ensure!(again.facts_skipped_unchanged == 2 && again.structure_skipped_unchanged == 2, "{again:?}");
-    let still = connection
-        .query_row("SELECT projection_revision FROM viewer_revisions WHERE id = 1")?;
+    ensure!(
+        again.facts_published == 0 && again.structure_published == 0,
+        "{again:?}"
+    );
+    ensure!(
+        again.facts_skipped_unchanged == 2 && again.structure_skipped_unchanged == 2,
+        "{again:?}"
+    );
+    let still =
+        connection.query_row("SELECT projection_revision FROM viewer_revisions WHERE id = 1")?;
     ensure!(still.get_typed::<i64>(0)? == 2, "skip must not bump");
     ensure!(
         count(&connection, "SELECT COUNT(*) FROM viewer_change_log")? == 0,
@@ -3583,8 +4392,14 @@ fn backfill_replays_committed_canonical_into_extension_tables() -> Result<()> {
         &backfill::BackfillOptions::default(),
         |_| {},
     )?;
-    ensure!(moved.facts_published == 1 && moved.structure_published == 1, "{moved:?}");
-    ensure!(moved.facts_skipped_unchanged == 1 && moved.structure_skipped_unchanged == 1, "{moved:?}");
+    ensure!(
+        moved.facts_published == 1 && moved.structure_published == 1,
+        "{moved:?}"
+    );
+    ensure!(
+        moved.facts_skipped_unchanged == 1 && moved.structure_skipped_unchanged == 1,
+        "{moved:?}"
+    );
     let canon: i64 = connection
         .query_row("SELECT canonical_revision FROM viewer_revisions WHERE id = 1")?
         .get_typed(0)?;
@@ -3621,7 +4436,10 @@ fn backfill_batches_and_limit_are_bounded_and_resumable() -> Result<()> {
     };
     let mut batches = 0_usize;
     let stats = backfill::backfill_viewer_extensions(&connection, &options, |_| batches += 1)?;
-    ensure!(stats.conversations_scanned == 3 && batches == 3, "{stats:?} batches={batches}");
+    ensure!(
+        stats.conversations_scanned == 3 && batches == 3,
+        "{stats:?} batches={batches}"
+    );
 
     // --backfill-limit N equivalent: a capped run stops mid-archive and a
     // later uncapped run finishes it (idempotent resume, no cursor table).
@@ -3636,7 +4454,10 @@ fn backfill_batches_and_limit_are_bounded_and_resumable() -> Result<()> {
     connection.execute("DELETE FROM viewer_turn_links")?;
     connection.execute("DELETE FROM viewer_tool_calls")?;
     let first = backfill::backfill_viewer_extensions(&connection, &limited, |_| {})?;
-    ensure!(first.conversations_scanned == 1 && first.limit_reached, "{first:?}");
+    ensure!(
+        first.conversations_scanned == 1 && first.limit_reached,
+        "{first:?}"
+    );
     ensure!(
         count(&connection, "SELECT COUNT(*) FROM viewer_session_facts")? == 1,
         "limit must bound the committed batch"
@@ -3647,10 +4468,16 @@ fn backfill_batches_and_limit_are_bounded_and_resumable() -> Result<()> {
         |_| {},
     )?;
     ensure!(resumed.conversations_scanned == 3, "{resumed:?}");
-    ensure!(resumed.facts_published == 2 && resumed.facts_skipped_unchanged == 1, "{resumed:?}");
+    ensure!(
+        resumed.facts_published == 2 && resumed.facts_skipped_unchanged == 1,
+        "{resumed:?}"
+    );
     ensure!(
         count(&connection, "SELECT COUNT(*) FROM viewer_session_facts")? == 3
-            && count(&connection, "SELECT COUNT(*) FROM viewer_session_projection")? == 3,
+            && count(
+                &connection,
+                "SELECT COUNT(*) FROM viewer_session_projection"
+            )? == 3,
         "resume must finish the archive"
     );
     Ok(())
@@ -3688,7 +4515,10 @@ fn backfill_viewer_extensions_flag_repairs_preexisting_archive() -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .status()?;
-    ensure!(status.success(), "--backfill-viewer-extensions failed: {status}");
+    ensure!(
+        status.success(),
+        "--backfill-viewer-extensions failed: {status}"
+    );
 
     let reader = Connection::open(bridge.db.to_string_lossy().into_owned())?;
     ensure!(
@@ -4587,5 +5417,276 @@ fn ingest_forget_parent_nulls_resolved_child_link() -> Result<()> {
         "the child conversation itself is untouched by the parent's removal"
     );
     drop(conn);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Engine capability probe (Task 4 audit evidence): pins the FrankenSQLite
+// plan/codegen behaviors the indexed browse design depends on — a
+// multi-column ORDER BY (ASC/DESC mix) satisfied from a composite index
+// with no SorterOpen, IN-list probes compiled to repeated SeekRowid, the
+// JOIN/IN codegen limitation that forced the per-table hydration shape,
+// and the trailing-rowid ORDER BY term that would force a sorter. Purely
+// diagnostic output; the hard assertions live in
+// list_sessions_query_plan_audit.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fsqlite_sort_index_capability_probe() -> Result<()> {
+    let dir = std::env::temp_dir().join(format!("sort-probe-{}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    let db = dir.join("probe.db");
+    let conn = Connection::open(db.to_string_lossy().into_owned())?;
+    conn.execute(
+        "CREATE TABLE vs (
+            conversation_id INTEGER PRIMARY KEY,
+            is_pinned INTEGER NOT NULL DEFAULT 0,
+            a_known INTEGER NOT NULL DEFAULT 1,
+            activity_ms INTEGER,
+            tie_key TEXT,
+            provider TEXT,
+            step_count INTEGER
+        )",
+    )?;
+    conn.execute(
+        "CREATE INDEX idx_act_desc ON vs(is_pinned DESC, a_known ASC, activity_ms DESC, tie_key ASC)",
+    )?;
+    conn.execute(
+        "CREATE INDEX idx_act_asc ON vs(is_pinned DESC, a_known ASC, activity_ms ASC, tie_key ASC)",
+    )?;
+    conn.execute("CREATE TABLE vt (conversation_id INTEGER, tag TEXT)")?;
+    conn.execute("CREATE INDEX idx_vt ON vt(conversation_id, tag)")?;
+    for i in 1..=200_i64 {
+        conn.execute(&format!(
+            "INSERT INTO vs (conversation_id, is_pinned, a_known, activity_ms, tie_key, provider, step_count) \
+             VALUES ({i}, {}, {}, {}, 'pid-{:05}', '{}', {i})",
+            i64::from(i % 7 == 0),
+            i64::from(i % 11 != 0),
+            if i % 11 == 0 { "NULL".to_owned() } else { (i % 13).to_string() },
+            (i * 7919) % 200,
+            if i % 2 == 0 { "claude" } else { "gemini" }
+        ))?;
+    }
+    conn.execute("INSERT INTO vt VALUES (3, 'release-blocker'), (17, 'release-blocker')")?;
+
+    // Probe 1: ORDER BY naming only the 4 index columns (rowid implicit tail).
+    let sql = "SELECT conversation_id FROM vs \
+               ORDER BY is_pinned DESC, a_known ASC, activity_ms DESC, tie_key ASC \
+               LIMIT 21";
+    let opcodes: Vec<String> = conn
+        .query(&format!("EXPLAIN {sql}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(1).unwrap_or_default())
+        .collect();
+    eprintln!("probe1 opcodes: {opcodes:?}");
+    let plan: Vec<String> = conn
+        .query(&format!("EXPLAIN QUERY PLAN {sql}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(3).unwrap_or_default())
+        .collect();
+    eprintln!("probe1 eqp: {plan:?}");
+
+    // Probe 2: same order, with residual predicates + IN-subquery.
+    let sql2 = "SELECT conversation_id FROM vs \
+                WHERE provider = 'claude' \
+                  AND conversation_id IN (SELECT conversation_id FROM vt WHERE tag = 'release-blocker') \
+                ORDER BY is_pinned DESC, a_known ASC, activity_ms DESC, tie_key ASC \
+                LIMIT 21";
+    let opcodes2: Vec<String> = conn
+        .query(&format!("EXPLAIN {sql2}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(1).unwrap_or_default())
+        .collect();
+    eprintln!("probe2 opcodes: {opcodes2:?}");
+    let plan2: Vec<String> = conn
+        .query(&format!("EXPLAIN QUERY PLAN {sql2}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(3).unwrap_or_default())
+        .collect();
+    eprintln!("probe2 eqp: {plan2:?}");
+
+    // Probe 3: pin equality + order (bounded prefix scan: SeekGE expected).
+    let sql3 = "SELECT conversation_id FROM vs \
+                WHERE is_pinned = 1 AND provider IN ('claude','gemini') \
+                ORDER BY is_pinned DESC, a_known ASC, activity_ms DESC, tie_key ASC \
+                LIMIT 21";
+    let plan3: Vec<String> = conn
+        .query(&format!("EXPLAIN QUERY PLAN {sql3}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(3).unwrap_or_default())
+        .collect();
+    let opcodes3: Vec<String> = conn
+        .query(&format!("EXPLAIN {sql3}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(1).unwrap_or_default())
+        .collect();
+    eprintln!("probe3 eqp: {plan3:?} opcodes: {opcodes3:?}");
+
+    // Probe 4: keyset-style WHERE clause + order (residual skip-walk).
+    let sql4 = "SELECT conversation_id FROM vs \
+                WHERE is_pinned = 0 AND (a_known = 1 OR activity_ms < 5 \
+                  OR (activity_ms = 5 AND tie_key > 'pid-00042') \
+                  OR (activity_ms = 5 AND tie_key = 'pid-00042' AND conversation_id > 50)) \
+                ORDER BY is_pinned DESC, a_known ASC, activity_ms DESC, tie_key ASC \
+                LIMIT 21";
+    let plan4: Vec<String> = conn
+        .query(&format!("EXPLAIN QUERY PLAN {sql4}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(3).unwrap_or_default())
+        .collect();
+    let opcodes4: Vec<String> = conn
+        .query(&format!("EXPLAIN {sql4}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(1).unwrap_or_default())
+        .collect();
+    eprintln!("probe4 eqp: {plan4:?} opcodes: {opcodes4:?}");
+    let rows4 = conn.query(sql4)?;
+    eprintln!(
+        "probe4 first ids: {:?}",
+        rows4
+            .iter()
+            .take(10)
+            .map(|r| r.get_typed::<i64>(0).unwrap_or(0))
+            .collect::<Vec<_>>()
+    );
+
+    // Probe 5: INDEXED BY (no ORDER BY) — stored-order walk per the codegen.
+    let sql5 = "SELECT conversation_id FROM vs INDEXED BY idx_act_desc \
+                WHERE is_pinned = 1 LIMIT 21";
+    let opcodes5: Vec<String> = conn
+        .query(&format!("EXPLAIN {sql5}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(1).unwrap_or_default())
+        .collect();
+    let rows5 = conn.query(sql5)?;
+    eprintln!(
+        "probe5 opcodes {opcodes5:?} pinned rows in order: {:?}",
+        rows5
+            .iter()
+            .map(|r| r.get_typed::<i64>(0).unwrap_or(0))
+            .collect::<Vec<_>>()
+    );
+
+    // Probe 6: ORDER BY with equality on non-index column (residual + walk).
+    let sql6 = "SELECT conversation_id FROM vs \
+                WHERE step_count > 100 \
+                ORDER BY is_pinned DESC, a_known ASC, activity_ms DESC, tie_key ASC \
+                LIMIT 21";
+    let opcodes6: Vec<String> = conn
+        .query(&format!("EXPLAIN {sql6}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(1).unwrap_or_default())
+        .collect();
+    eprintln!("probe6 opcodes: {opcodes6:?}");
+
+    // Probe 7 (production shape): ORDER BY with the trailing rowid-column
+    // term `conversation_id ASC` — does the index plan still satisfy the
+    // order, or does the extra term force a sorter?
+    let sql7 = "SELECT conversation_id, is_pinned, a_known, activity_ms, tie_key \
+                FROM vs \
+                ORDER BY is_pinned DESC, a_known ASC, activity_ms DESC, \
+                         tie_key ASC, conversation_id ASC \
+                LIMIT 21";
+    let opcodes7: Vec<String> = conn
+        .query(&format!("EXPLAIN {sql7}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(1).unwrap_or_default())
+        .collect();
+    eprintln!("probe7 opcodes (rowid tail): {opcodes7:?}");
+    let rows7 = conn.query(sql7)?;
+    eprintln!(
+        "probe7 first ids: {:?}",
+        rows7
+            .iter()
+            .take(8)
+            .map(|r| r.get_typed::<i64>(0).unwrap_or(0))
+            .collect::<Vec<_>>()
+    );
+
+    // Probe 8: trailing rowid term + a residual filter + keyset predicate.
+    let sql8 = "SELECT conversation_id, is_pinned, a_known, activity_ms, tie_key \
+                FROM vs \
+                WHERE provider = 'claude' \
+                  AND (a_known = 0 OR activity_ms < 5 \
+                    OR (activity_ms = 5 AND tie_key > 'pid-00042') \
+                    OR (activity_ms = 5 AND tie_key = 'pid-00042' AND conversation_id > 50)) \
+                ORDER BY is_pinned DESC, a_known ASC, activity_ms DESC, \
+                         tie_key ASC, conversation_id ASC \
+                LIMIT 21";
+    let opcodes8: Vec<String> = conn
+        .query(&format!("EXPLAIN {sql8}"))?
+        .iter()
+        .map(|row| row.get_typed::<String>(1).unwrap_or_default())
+        .collect();
+    eprintln!("probe8 opcodes (residual+keyset+rowid tail): {opcodes8:?}");
+
+    // Probe 9: hydration shapes on the rowid PK — IN-list vs OR-equalities
+    // vs UNION ALL arms. `SCAN` vs `SEARCH` decides the bounded-work claim.
+    for (label, sql9) in [
+        (
+            "in-list",
+            "SELECT conversation_id, provider FROM vs \
+                     WHERE conversation_id IN (3, 17, 42)"
+                .to_owned(),
+        ),
+        (
+            "or-eq",
+            "SELECT conversation_id, provider FROM vs \
+                  WHERE conversation_id = 3 OR conversation_id = 17 \
+                     OR conversation_id = 42"
+                .to_owned(),
+        ),
+        (
+            "union-arms",
+            "SELECT conversation_id, provider FROM vs \
+                       WHERE conversation_id = 3 UNION ALL \
+                       SELECT conversation_id, provider FROM vs \
+                       WHERE conversation_id = 17 UNION ALL \
+                       SELECT conversation_id, provider FROM vs \
+                       WHERE conversation_id = 42"
+                .to_owned(),
+        ),
+        // Joined hydration shapes — LEFT JOIN goes through the interpreted
+        // path (VDBE codegen refuses it), so EQP detail is the available
+        // evidence for whether the page-id set seeks or scans.
+        (
+            "join-in",
+            "SELECT vs.conversation_id FROM vs \
+                     LEFT JOIN vt ON vt.conversation_id = vs.conversation_id \
+                     WHERE vs.conversation_id IN (3, 17, 42)"
+                .to_owned(),
+        ),
+        (
+            "join-eq",
+            "SELECT vs.conversation_id FROM vs \
+                     LEFT JOIN vt ON vt.conversation_id = vs.conversation_id \
+                     WHERE vs.conversation_id = 3"
+                .to_owned(),
+        ),
+        (
+            "join-or",
+            "SELECT vs.conversation_id FROM vs \
+                     LEFT JOIN vt ON vt.conversation_id = vs.conversation_id \
+                     WHERE vs.conversation_id = 3 OR vs.conversation_id = 17 \
+                        OR vs.conversation_id = 42"
+                .to_owned(),
+        ),
+    ] {
+        let eqp: Vec<String> = conn
+            .query(&format!("EXPLAIN QUERY PLAN {sql9}"))?
+            .iter()
+            .map(|row| row.get_typed::<String>(3).unwrap_or_default())
+            .collect();
+        let ops: Vec<String> = conn
+            .query(&format!("EXPLAIN {sql9}"))
+            .map(|rows| {
+                rows.iter()
+                    .map(|row| row.get_typed::<String>(1).unwrap_or_default())
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_else(|e| vec![format!("EXPLAIN-FAILED: {e}")]);
+        eprintln!("probe9 [{label}] eqp: {eqp:?} ops: {ops:?}");
+    }
+
     Ok(())
 }

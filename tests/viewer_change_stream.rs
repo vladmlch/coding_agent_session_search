@@ -1450,7 +1450,14 @@ fn list_sessions_deep_pagination_survives_concurrent_inserts() -> Result<()> {
         for item in page["result"]["items"].as_array().expect("items") {
             seen.push(item["conversation_id"].as_i64().expect("conversation_id"));
         }
-        // A stock indexer commits mid-walk, between page 1 and page 2.
+        // A stock indexer commits mid-walk, between page 1 and page 2 —
+        // the canonical commit AND its post-commit extension publication
+        // (the `publish_ingest_generations_batch_best_effort` call the
+        // indexer itself runs): the conversations-INSERT trigger leaves
+        // each new sort row's public tie key pending, and the generation
+        // transaction resolves it. A browse page that cannot verify a
+        // candidate's public identity refuses `facts_pending` rather than
+        // guess the order, so the walker must see the finished story.
         if !inserted {
             let storage = FrankenStorage::open(&bridge.db)?;
             let agent = storage.ensure_agent(&Agent {
@@ -1460,14 +1467,22 @@ fn list_sessions_deep_pagination_survives_concurrent_inserts() -> Result<()> {
                 version: None,
                 kind: AgentKind::Cli,
             })?;
+            let mut published: Vec<(Conversation, i64)> = Vec::new();
             for id in 9..=11_i64 {
                 let mut conv = canned_conversation(id, "mid-walk", 1);
                 conv.agent_slug = "claude_code".into();
                 conv.external_id = Some(format!("mid-{id}"));
                 conv.source_path = format!("/sessions/mid-{id}.jsonl").into();
-                storage.insert_conversation_tree(agent, None, &conv)?;
+                let outcome = storage.insert_conversation_tree(agent, None, &conv)?;
+                published.push((conv, outcome.conversation_id));
             }
             drop(storage);
+            let conn = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+            coding_agent_search::viewer_extensions::projection::publish_ingest_generations_batch_best_effort(
+                &conn,
+                published.iter().map(|(conv, id)| (conv, *id)),
+            );
+            drop(conn);
             inserted = true;
         }
         match page["result"]["next_cursor"].as_str() {
