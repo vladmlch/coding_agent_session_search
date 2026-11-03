@@ -5,14 +5,19 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
-use coding_agent_search::franken_sync::compat::{OpenFlags, RowExt, open_with_flags};
 use coding_agent_search::franken_sync::Connection;
+use coding_agent_search::franken_sync::compat::{OpenFlags, RowExt, open_with_flags};
 use serde::Serialize;
 
 use super::protocol::refuse;
 
 const FULL_HASH_LIMIT: u64 = 16 * 1024 * 1024;
 const EDGE_HASH_BYTES: usize = 65_536;
+
+/// Canonical schema profile this strict reader is qualified against. Kept
+/// pinned on purpose: a newer canonical schema must fail qualification
+/// instead of being read under stale assumptions.
+pub(crate) const STRICT_SCHEMA_VERSION: i64 = 23;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ArchiveStamp {
@@ -23,10 +28,17 @@ pub struct ArchiveStamp {
 }
 
 fn hash_file_state(hasher: &mut blake3::Hasher, path: &Path) -> Result<()> {
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|e| refuse("canonical_db_missing", format!("Cannot inspect canonical archive: {e}")))?;
+    let meta = std::fs::symlink_metadata(path).map_err(|e| {
+        refuse(
+            "canonical_db_missing",
+            format!("Cannot inspect canonical archive: {e}"),
+        )
+    })?;
     if !meta.file_type().is_file() {
-        return Err(refuse("canonical_read_failed", "Archive must be a regular file, not a symlink"));
+        return Err(refuse(
+            "canonical_read_failed",
+            "Archive must be a regular file, not a symlink",
+        ));
     }
     let len = meta.len();
     hasher.update(&len.to_le_bytes());
@@ -46,23 +58,44 @@ fn hash_file_state(hasher: &mut blake3::Hasher, path: &Path) -> Result<()> {
         hasher.update(&meta.ctime().to_le_bytes());
         hasher.update(&meta.ctime_nsec().to_le_bytes());
     }
-    let mut file = File::open(path)
-        .map_err(|e| refuse("canonical_read_failed", format!("Cannot read canonical archive bytes: {e}")))?;
+    let mut file = File::open(path).map_err(|e| {
+        refuse(
+            "canonical_read_failed",
+            format!("Cannot read canonical archive bytes: {e}"),
+        )
+    })?;
     if len <= FULL_HASH_LIMIT {
         let mut buf = Vec::with_capacity(len as usize);
-        file.read_to_end(&mut buf)
-            .map_err(|e| refuse("canonical_read_failed", format!("Cannot read canonical archive: {e}")))?;
+        file.read_to_end(&mut buf).map_err(|e| {
+            refuse(
+                "canonical_read_failed",
+                format!("Cannot read canonical archive: {e}"),
+            )
+        })?;
         hasher.update(&buf);
     } else {
         let mut head = vec![0_u8; EDGE_HASH_BYTES];
-        let head_read = file.read(&mut head)
-            .map_err(|e| refuse("canonical_read_failed", format!("Cannot read canonical archive header: {e}")))?;
+        let head_read = file.read(&mut head).map_err(|e| {
+            refuse(
+                "canonical_read_failed",
+                format!("Cannot read canonical archive header: {e}"),
+            )
+        })?;
         hasher.update(&head[..head_read]);
         file.seek(SeekFrom::End(-(EDGE_HASH_BYTES as i64)))
-            .map_err(|e| refuse("canonical_read_failed", format!("Cannot seek canonical archive tail: {e}")))?;
+            .map_err(|e| {
+                refuse(
+                    "canonical_read_failed",
+                    format!("Cannot seek canonical archive tail: {e}"),
+                )
+            })?;
         let mut tail = vec![0_u8; EDGE_HASH_BYTES];
-        let tail_read = file.read(&mut tail)
-            .map_err(|e| refuse("canonical_read_failed", format!("Cannot read canonical archive tail: {e}")))?;
+        let tail_read = file.read(&mut tail).map_err(|e| {
+            refuse(
+                "canonical_read_failed",
+                format!("Cannot read canonical archive tail: {e}"),
+            )
+        })?;
         hasher.update(&tail[..tail_read]);
     }
     Ok(())
@@ -89,13 +122,23 @@ fn disk_revision(path: &Path) -> Result<String> {
 }
 
 fn stamp(path: &Path, schema_version: i64) -> Result<(ArchiveStamp, u64)> {
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|e| refuse("canonical_db_missing", format!("Cannot inspect canonical archive: {e}")))?;
+    let meta = std::fs::symlink_metadata(path).map_err(|e| {
+        refuse(
+            "canonical_db_missing",
+            format!("Cannot inspect canonical archive: {e}"),
+        )
+    })?;
     if !meta.file_type().is_file() {
-        return Err(refuse("canonical_read_failed", "Archive must be a regular file, not a symlink"));
+        return Err(refuse(
+            "canonical_read_failed",
+            "Archive must be a regular file, not a symlink",
+        ));
     }
     let canonical = std::fs::canonicalize(path)?;
-    let canonical_path = canonical.to_str().context("Archive path is not UTF-8")?.to_owned();
+    let canonical_path = canonical
+        .to_str()
+        .context("Archive path is not UTF-8")?
+        .to_owned();
     #[cfg(unix)]
     let (device, inode) = {
         use std::os::unix::fs::MetadataExt;
@@ -103,11 +146,19 @@ fn stamp(path: &Path, schema_version: i64) -> Result<(ArchiveStamp, u64)> {
     };
     #[cfg(not(unix))]
     let (device, inode) = (None, None);
-    Ok((ArchiveStamp { canonical_path, device, inode, schema_version }, meta.len()))
+    Ok((
+        ArchiveStamp {
+            canonical_path,
+            device,
+            inode,
+            schema_version,
+        },
+        meta.len(),
+    ))
 }
 
 pub fn strict_open(path: &Path) -> Result<Connection> {
-    stamp(path, 22)?;
+    stamp(path, STRICT_SCHEMA_VERSION)?;
     let text = path.to_str().context("Archive path is not UTF-8")?;
     let connection = open_with_flags(text, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .context("Open canonical archive strictly read-only")?;
@@ -119,13 +170,19 @@ pub fn strict_open(path: &Path) -> Result<Connection> {
 fn schema_version(connection: &Connection) -> Result<i64> {
     let rows = connection.query("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 2")?;
     if rows.len() != 1 {
-        return Err(refuse("incompatible_schema", "Missing or ambiguous canonical schema version"));
+        return Err(refuse(
+            "incompatible_schema",
+            "Missing or ambiguous canonical schema version",
+        ));
     }
     let text: String = rows[0].get_typed(0)?;
-    if text != "22" {
-        return Err(refuse("incompatible_schema", "Bridge requires the pinned schema-22 profile"));
+    if text != "23" {
+        return Err(refuse(
+            "incompatible_schema",
+            "Bridge requires the pinned schema-23 profile",
+        ));
     }
-    Ok(22)
+    Ok(STRICT_SCHEMA_VERSION)
 }
 
 pub struct StrictArchive {
@@ -138,27 +195,48 @@ pub struct StrictArchive {
     disk_revision: String,
 }
 
+/// Extension-lane visibility observed through the strict read connection.
+/// `generation` is `None` on unextended archives; `canonical_observers`
+/// reports that EVERY canonical-observer trigger is installed, which is the
+/// precondition for trusting `canonical_revision` as content-complete.
+pub struct ExtensionState {
+    pub installed: bool,
+    pub generation: Option<super::protocol::Generation>,
+    pub canonical_observers: bool,
+}
+
 impl StrictArchive {
     pub fn open(path: &Path) -> Result<Self> {
         for attempt in 0..4 {
-            let before = stamp(path, 22)?;
+            let before = stamp(path, STRICT_SCHEMA_VERSION)?;
             let before_disk = disk_revision(path)?;
             let connection = strict_open(path)?;
             schema_version(&connection)?;
-            super::catalog::check_schema(&connection)
-                .map_err(|e| refuse("incompatible_schema", format!("Canonical reader profile mismatch: {e}")))?;
-            let after = stamp(path, 22)?;
+            super::catalog::check_schema(&connection).map_err(|e| {
+                refuse(
+                    "incompatible_schema",
+                    format!("Canonical reader profile mismatch: {e}"),
+                )
+            })?;
+            let after = stamp(path, STRICT_SCHEMA_VERSION)?;
             let after_disk = disk_revision(path)?;
             if before.0 != after.0 || after.1 < before.1 || before_disk != after_disk {
                 if attempt < 3 {
                     continue;
                 }
-                return Err(refuse("stale_snapshot", "Archive replaced during strict open"));
+                return Err(refuse(
+                    "stale_snapshot",
+                    "Archive replaced during strict open",
+                ));
             }
             let data_version = connection.query_row("PRAGMA data_version")?.get_typed(0)?;
             return Ok(Self {
-                path: path.to_owned(), connection, stamp: after.0, size: after.1,
-                nonce: format!("{:032x}", rand::random::<u128>()), data_version,
+                path: path.to_owned(),
+                connection,
+                stamp: after.0,
+                size: after.1,
+                nonce: format!("{:032x}", rand::random::<u128>()),
+                data_version,
                 disk_revision: after_disk,
             });
         }
@@ -166,9 +244,12 @@ impl StrictArchive {
     }
 
     pub fn observe(&mut self) -> Result<String> {
-        let (observed, size) = stamp(&self.path, 22)?;
+        let (observed, size) = stamp(&self.path, STRICT_SCHEMA_VERSION)?;
         if observed != self.stamp || size < self.size {
-            return Err(refuse("stale_snapshot", "Canonical archive identity changed"));
+            return Err(refuse(
+                "stale_snapshot",
+                "Canonical archive identity changed",
+            ));
         }
         let current_disk = disk_revision(&self.path)?;
         if current_disk != self.disk_revision {
@@ -180,18 +261,28 @@ impl StrictArchive {
                 };
                 let connection = strict_open(&self.path)?;
                 schema_version(&connection)?;
-                super::catalog::check_schema(&connection)
-                    .map_err(|e| refuse("incompatible_schema", format!("Canonical reader profile mismatch: {e}")))?;
-                let (rechecked, rechecked_size) = stamp(&self.path, 22)?;
+                super::catalog::check_schema(&connection).map_err(|e| {
+                    refuse(
+                        "incompatible_schema",
+                        format!("Canonical reader profile mismatch: {e}"),
+                    )
+                })?;
+                let (rechecked, rechecked_size) = stamp(&self.path, STRICT_SCHEMA_VERSION)?;
                 let rechecked_disk = disk_revision(&self.path)?;
                 if rechecked != self.stamp || rechecked_size < size {
-                    return Err(refuse("stale_snapshot", "Canonical archive changed during refresh"));
+                    return Err(refuse(
+                        "stale_snapshot",
+                        "Canonical archive changed during refresh",
+                    ));
                 }
                 if rechecked_disk != target_disk {
                     if attempt < 3 {
                         continue;
                     }
-                    return Err(refuse("stale_snapshot", "Canonical archive changed during refresh"));
+                    return Err(refuse(
+                        "stale_snapshot",
+                        "Canonical archive changed during refresh",
+                    ));
                 }
                 self.connection = connection;
                 self.disk_revision = rechecked_disk;
@@ -202,22 +293,70 @@ impl StrictArchive {
             schema_version(&self.connection)?;
             self.size = size;
         }
-        self.data_version = self.connection.query_row("PRAGMA data_version")?.get_typed(0)?;
-        Ok(format!("{}:{}:{}", self.nonce, self.data_version, self.disk_revision))
+        self.data_version = self
+            .connection
+            .query_row("PRAGMA data_version")?
+            .get_typed(0)?;
+        Ok(format!(
+            "{}:{}:{}",
+            self.nonce, self.data_version, self.disk_revision
+        ))
     }
 
-    pub fn snapshot<T>(&mut self, read: impl FnOnce(&Connection) -> Result<T>) -> Result<(T, String)> {
+    /// Committed logical generation read through the strict connection, or
+    /// `None` on unextended archives. Pure read: it never refreshes the
+    /// connection, so callers decide where in the snapshot discipline it
+    /// belongs (`observe` refreshes first when the physical token moved).
+    pub fn read_generation(&self) -> Result<Option<super::protocol::Generation>> {
+        super::revisions::generation(&self.connection)
+    }
+
+    /// `true` only when every canonical-observer trigger is installed;
+    /// `canonical_revision` is content-complete only under this guard.
+    pub fn canonical_observers(&self) -> Result<bool> {
+        Ok(super::revisions::extensions_installed(&self.connection)?
+            && super::revisions::observers_installed(&self.connection)?)
+    }
+
+    /// Extension-lane state on the strict connection. Callers run
+    /// `observe()` first so a just-committed extension write is visible on
+    /// the refreshed connection before this read.
+    pub fn extension_state(&mut self) -> Result<ExtensionState> {
+        let installed = super::revisions::extensions_installed(&self.connection)?;
+        let generation = if installed {
+            self.read_generation()?
+        } else {
+            None
+        };
+        let canonical_observers = installed && self.canonical_observers()?;
+        Ok(ExtensionState {
+            installed,
+            generation,
+            canonical_observers,
+        })
+    }
+
+    pub fn snapshot<T>(
+        &mut self,
+        read: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<(T, String)> {
         let before = self.observe()?;
         self.connection.execute("BEGIN DEFERRED")?;
         let result = read(&self.connection);
         let release = self.connection.execute("ROLLBACK");
         if let Err(error) = release {
-            return Err(refuse("canonical_read_failed", format!("Strict snapshot cleanup failed: {error}")));
+            return Err(refuse(
+                "canonical_read_failed",
+                format!("Strict snapshot cleanup failed: {error}"),
+            ));
         }
         let value = result?;
         let after = self.observe()?;
         if before != after {
-            return Err(refuse("stale_snapshot", "Canonical archive changed while reading a page"));
+            return Err(refuse(
+                "stale_snapshot",
+                "Canonical archive changed while reading a page",
+            ));
         }
         Ok((value, before))
     }

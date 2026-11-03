@@ -11,7 +11,7 @@ fn strict_bridge_has_versioned_limits_and_does_not_claim_runtime_qualification()
     let before = bridge.tree()?;
     let hello = bridge.exchange(json!({"op":"hello","id":1}))?;
     assert_eq!(hello["result"]["bridge_protocol"], 1);
-    assert_eq!(hello["result"]["db_schema_version"], 22);
+    assert_eq!(hello["result"]["db_schema_version"], 23);
     assert_eq!(hello["result"]["exact_rank"], false);
     assert_eq!(hello["result"]["rank_enumeration_supported"], true);
     assert_eq!(hello["result"]["qualification"], "static_only");
@@ -116,7 +116,8 @@ fn schema_mismatch_and_oversized_canonical_body_are_explicit_refusals() -> Resul
     assert_eq!(body["ok"], false);
     assert_eq!(body["error"]["kind"], "canonical_payload_too_large");
     let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
-    writer.execute("UPDATE meta SET value='23' WHERE key='schema_version'")?;
+    // One past the pinned profile: simulates an archive from a newer CASS.
+    writer.execute("UPDATE meta SET value='24' WHERE key='schema_version'")?;
     drop(writer);
     let mismatch = bridge.exchange(json!({"op":"reload"}))?;
     assert_eq!(mismatch["ok"], false);
@@ -204,4 +205,47 @@ fn single_index_missing_schema_hash_is_refused_on_open_or_reload() -> Result<()>
     assert_eq!(rank["ok"], false);
     assert_eq!(rank["error"]["kind"], "index_unavailable");
     bridge.shutdown()
+}
+
+#[test]
+fn unextended_archive_reports_capability_unavailable_and_refuses_writes() -> Result<()> {
+    // Protocol-1 compatibility: an archive without the extension profile
+    // advertises `cass_owned_queries_v1` as unavailable, reports no logical
+    // generation, and refuses mutating RPC with a typed denial — the strict
+    // read-only lane is otherwise byte-identical.
+    let mut bridge = BridgeHarness::with_conversations(&[FixtureConversation::repeated(
+        1, "local", "fixture", 1,
+    )])?;
+    let before = bridge.tree()?;
+    let hello = bridge.exchange(json!({"op":"hello","id":1}))?;
+    assert_eq!(hello["ok"], true);
+    assert_eq!(hello["result"]["bridge_protocol"], 1);
+    let capability = &hello["result"]["capabilities"]["cass_owned_queries_v1"];
+    assert_eq!(capability["available"], false);
+    assert_eq!(capability["privileges"]["annotations_write"], false);
+    assert!(hello["result"]["generation"].is_null());
+
+    for value in [
+        json!({"op":"patch_annotations","id":2,"conversation_id":1,
+               "expected_revision":0,"patch":{"is_pinned":true}}),
+        json!({"op":"patch_annotations","id":3,"conversation_id":1,
+               "expected_revision":0,"patch":{"notes":"n"}}),
+    ] {
+        let result = bridge.exchange(value)?;
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["error"]["kind"], "capability_not_granted");
+    }
+    let annotations =
+        bridge.exchange(json!({"op":"get_annotations","id":4,"conversation_id":1}))?;
+    assert_eq!(annotations["ok"], true);
+    assert_eq!(annotations["result"]["installed"], false);
+    assert!(annotations["result"]["annotation"].is_null());
+
+    bridge.shutdown()?;
+    assert_eq!(
+        bridge.tree()?,
+        before,
+        "Refused write RPCs still changed canonical/index bytes"
+    );
+    Ok(())
 }

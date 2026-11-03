@@ -38853,7 +38853,35 @@ pub mod persist {
                 } else {
                     None
                 };
-                franken.insert_conversation_tree(agent_id, workspace_id, internal)
+                let outcome = franken.insert_conversation_tree(agent_id, workspace_id, internal)?;
+                // Task 7: derived viewer session facts ride the same ingest
+                // pass (adjacent idempotent transaction).
+                crate::viewer_extensions::facts::publish_facts_for_canonical_best_effort(
+                    franken.raw(),
+                    internal,
+                    outcome.conversation_id,
+                );
+                // Task 8: stable steps/turns/tools projection rides the same
+                // ingest pass (adjacent idempotent transaction; see
+                // viewer_extensions::projection).
+                crate::viewer_extensions::projection::publish_structure_for_canonical_best_effort(
+                    franken.raw(),
+                    internal,
+                    outcome.conversation_id,
+                );
+                // Task 11: post-commit change-journal notify — canonical
+                // events were already journaled by the observer triggers
+                // inside the ingest commit; this coalesces them and stamps
+                // index_ready (SQLite journal is truth, IPC is wakeup-only).
+                crate::viewer_extensions::changes::notify_committed_change_best_effort(
+                    franken.raw(),
+                );
+                // Task 12: wake any bridge event listener on this archive.
+                // Wakeup-only — a missed wake only delays the poll fallback.
+                if let Ok(db_path) = franken.database_path() {
+                    crate::viewer_extensions::changes::send_bridge_wakeup_best_effort(&db_path);
+                }
+                Ok(outcome)
             }) {
                 Ok(outcome) => outcomes.push((idx, outcome)),
                 Err(err) if is_retryable_franken_error(&err) => {
@@ -39584,7 +39612,30 @@ pub mod persist {
                 None
             };
 
-            writer.insert_conversation_tree(agent_id, workspace_id, &internal_conv)
+            let outcome =
+                writer.insert_conversation_tree(agent_id, workspace_id, &internal_conv)?;
+            // Task 7: persist derived viewer session facts in the same ingest
+            // pass (adjacent idempotent transaction; see viewer_extensions::facts).
+            crate::viewer_extensions::facts::publish_facts_for_canonical_best_effort(
+                writer.raw(),
+                &internal_conv,
+                outcome.conversation_id,
+            );
+            // Task 8: stable steps/turns/tools projection in the same ingest
+            // pass (adjacent idempotent transaction).
+            crate::viewer_extensions::projection::publish_structure_for_canonical_best_effort(
+                writer.raw(),
+                &internal_conv,
+                outcome.conversation_id,
+            );
+            // Task 11: post-commit change-journal notify (see the batch
+            // site below for the trigger-vs-notify split).
+            crate::viewer_extensions::changes::notify_committed_change_best_effort(writer.raw());
+            // Task 12: wake any bridge event listener (wakeup-only).
+            if let Ok(db_path) = writer.database_path() {
+                crate::viewer_extensions::changes::send_bridge_wakeup_best_effort(&db_path);
+            }
+            Ok(outcome)
         })?;
 
         // Publish inserted messages and replace revised native messages.
@@ -40422,6 +40473,38 @@ pub mod persist {
                     // the batch-level `current` bump waits for the whole
                     // persist call to return.
                     heartbeat.tick();
+                }
+
+                // Task 7: derived viewer session facts ride the same ingest
+                // pass — one adjacent transaction for the whole batch,
+                // idempotent on (extractor_version, source_revision).
+                crate::viewer_extensions::facts::publish_facts_for_canonical_batch_best_effort(
+                    writer.raw(),
+                    prepared
+                        .iter()
+                        .zip(&outcomes)
+                        .map(|((_, _, conv), outcome)| (*conv, outcome.conversation_id)),
+                );
+                // Task 8: stable steps/turns/tools projection — one adjacent
+                // transaction for the whole batch, idempotent on
+                // (projection_version, source_revision).
+                crate::viewer_extensions::projection::publish_structure_for_canonical_batch_best_effort(
+                    writer.raw(),
+                    prepared
+                        .iter()
+                        .zip(&outcomes)
+                        .map(|((_, _, conv), outcome)| (*conv, outcome.conversation_id)),
+                );
+                // Task 11: post-commit change-journal notify — canonical
+                // events were already journaled by the observer triggers
+                // inside the ingest commit; this coalesces them and stamps
+                // index_ready (SQLite journal is truth, IPC is wakeup-only).
+                crate::viewer_extensions::changes::notify_committed_change_best_effort(
+                    writer.raw(),
+                );
+                // Task 12: wake any bridge event listener (wakeup-only).
+                if let Ok(db_path) = writer.database_path() {
+                    crate::viewer_extensions::changes::send_bridge_wakeup_best_effort(&db_path);
                 }
 
                 Ok(outcomes)

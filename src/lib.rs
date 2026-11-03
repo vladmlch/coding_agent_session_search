@@ -83,6 +83,7 @@ pub mod topology_budget;
 pub mod tui_asciicast;
 pub mod ui;
 pub mod update_check;
+pub mod viewer_extensions;
 pub mod workflow_analytics;
 pub mod workflow_macros;
 
