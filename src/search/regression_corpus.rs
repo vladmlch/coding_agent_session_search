@@ -55,15 +55,6 @@ static CORPUS: &[IssueClassFixture] = &[
         proof_command: "cargo test --lib indexer::quarantine",
     },
     IssueClassFixture {
-        issue_id: "#120",
-        title: "remote auth fallback",
-        root_cause_family: RootCauseFamily::RemoteTransportAuth,
-        category: IncidentCategory::RemoteSyncAuth,
-        expected_behavior: "auth/transport failure surfaces a stable err.kind with a reconnect hint; no destructive local action",
-        safe_next_command: "cass sources list --json",
-        proof_command: "cargo test --test e2e_sources",
-    },
-    IssueClassFixture {
         issue_id: "#137",
         title: "current:0 stream misread as stalled",
         root_cause_family: RootCauseFamily::CassDerivedState,
@@ -190,7 +181,6 @@ mod tests {
     /// The issue classes the bead requires the corpus to cover.
     const REQUIRED: &[&str] = &[
         "#110",
-        "#120",
         "#137",
         "#196",
         "#247",
@@ -278,10 +268,6 @@ mod tests {
 
     #[test]
     fn report_specific_attributions_are_correct() {
-        assert_eq!(
-            issue_fixture("#120").unwrap().root_cause_family,
-            RootCauseFamily::RemoteTransportAuth
-        );
         assert_eq!(
             issue_fixture("#257").unwrap().category,
             IncidentCategory::Semantic

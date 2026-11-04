@@ -2,11 +2,10 @@
 // (bead cass-fleet-resilience-20260608-uojcg.13.3) is now wired live by
 // `cass support-bundle` (bead 6f1lm; see src/lib.rs::run_support_bundle, which
 // gathers the readiness summary, command envelope, source provenance,
-// quarantine, and root-cause attribution and emits the shareable bundle). Two
-// pieces remain forward API the local single-host surface does not yet
-// populate: the proof-log links (`ProofLogKind`/`ProofLogLink` — the bundle
-// passes an empty Vec) and multi-host `FleetSummary` (passed `None`), so the
-// module-wide allow stays until those are wired.
+// quarantine, and root-cause attribution and emits the shareable bundle). The
+// proof-log links (`ProofLogKind`/`ProofLogLink` — the bundle passes an empty
+// Vec) remain forward API the local single-host surface does not yet populate,
+// so the module-wide allow stays until those are wired.
 #![allow(dead_code)]
 
 //! Redacted recovery / support evidence bundle (bead
@@ -15,18 +14,17 @@
 //! When cass is degraded an operator (or agent) needs to share or inspect
 //! enough evidence to recover safely — but raw session text and private tool
 //! payloads must never leak by default. Today that evidence is scattered across
-//! ad hoc artifacts (`health`/`status`/`doctor` JSON, proof logs, fleet
-//! probes). This module is the single convergence point: it COMPOSES the
-//! existing canonical contracts into one supportable, redacted bundle rather
-//! than inventing a parallel story.
+//! ad hoc artifacts (`health`/`status`/`doctor` JSON, proof logs). This module
+//! is the single convergence point: it COMPOSES the existing canonical
+//! contracts into one supportable, redacted bundle rather than inventing a
+//! parallel story.
 //!
 //! It embeds, verbatim, the contracts other surfaces already emit — so the
 //! bundle can never contradict robot JSON:
 //! - [`ReadinessSummary`] (the canonical readiness projection),
 //! - [`NextCommandEnvelope`] (the safe/unsafe next-command guidance),
-//! - [`SourceDoctorReport`] (source/archive provenance + reachability),
+//! - [`SourceProvenance`] (local source/archive provenance facts),
 //! - [`QuarantineSummary`] (advisory exclusions),
-//! - [`FleetSummary`] (fleet reachability rollup, when applicable),
 //! - [`RootCauseAttribution`] (root-cause family + evidence + confidence).
 //!
 //! On top it adds a [`SupportBundleManifest`] (cass version, host/source id,
@@ -45,13 +43,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::fleet_doctor_schema::FleetSummary;
 use crate::root_cause_taxonomy::RootCauseAttribution;
 use crate::search::command_envelope::NextCommandEnvelope;
 use crate::search::incident_redaction::{HashStrategy, PrivateTextPolicy, RedactionPolicy};
 use crate::search::readiness::QuarantineSummary;
 use crate::search::readiness_projection::ReadinessSummary;
-use crate::source_doctor_health::SourceDoctorReport;
 
 /// Manifest schema version for the recovery/support bundle.
 pub(crate) const SUPPORT_BUNDLE_MANIFEST_VERSION: u32 = 1;
@@ -148,16 +144,28 @@ pub(crate) struct BundleRedactionReport {
     pub opt_in_flags: Vec<String>,
 }
 
+/// Local source/archive provenance facts for the single-host bundle. The
+/// remote `SourceDoctorReport` / `FleetSummary` dependencies were removed with
+/// the fleet surface; this keeps the local facts `cass support-bundle` gathers
+/// (binary presence/currency, archive DB and lexical-metadata presence)
+/// without claiming unprobed remote state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SourceProvenance {
+    pub source_id: String,
+    pub cass_present: bool,
+    pub cass_current: bool,
+    pub archive_db_present: bool,
+    pub lexical_metadata_present: bool,
+}
+
 /// The composed, redacted recovery/support evidence bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct RecoverySupportBundle {
     pub manifest: SupportBundleManifest,
     pub readiness: ReadinessSummary,
     pub command_envelope: NextCommandEnvelope,
-    pub source_provenance: SourceDoctorReport,
+    pub source_provenance: SourceProvenance,
     pub quarantine: QuarantineSummary,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fleet: Option<FleetSummary>,
     pub root_cause: RootCauseAttribution,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proof_logs: Vec<ProofLogLink>,
@@ -207,9 +215,8 @@ pub(crate) struct SupportBundleInputs {
     pub fixture_id: Option<String>,
     pub readiness: ReadinessSummary,
     pub command_envelope: NextCommandEnvelope,
-    pub source_provenance: SourceDoctorReport,
+    pub source_provenance: SourceProvenance,
     pub quarantine: QuarantineSummary,
-    pub fleet: Option<FleetSummary>,
     pub root_cause: RootCauseAttribution,
     pub proof_logs: Vec<ProofLogLink>,
 }
@@ -264,9 +271,6 @@ pub(crate) fn build_support_bundle(
         "quarantine".into(),
         "root_cause".into(),
     ];
-    if inputs.fleet.is_some() {
-        fields_included.push("fleet".into());
-    }
     if !inputs.proof_logs.is_empty() {
         fields_included.push("proof_log_links".into());
     }
@@ -352,7 +356,6 @@ pub(crate) fn build_support_bundle(
         command_envelope: inputs.command_envelope,
         source_provenance: inputs.source_provenance,
         quarantine: inputs.quarantine,
-        fleet: inputs.fleet,
         root_cause: inputs.root_cause,
         proof_logs: inputs.proof_logs,
         redaction,
@@ -362,15 +365,9 @@ pub(crate) fn build_support_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fleet_doctor_schema::ArchiveRisk;
     use crate::root_cause_taxonomy::{AttributionConfidence, RootCauseFamily};
     use crate::search::readiness::{DerivedAssetTruthTable, fleet_fixtures};
     use crate::search::readiness_projection::{SurfaceKind, project};
-    use crate::source_doctor_health::{
-        SOURCE_DOCTOR_SCHEMA_VERSION, SourceDoctorEntry, SourceDoctorReport, SourceDoctorState,
-        SourceDoctorSummary,
-    };
-    use std::collections::BTreeMap;
 
     const NOW_MS: i64 = 1_749_350_000_000;
 
@@ -382,45 +379,19 @@ mod tests {
             .1
     }
 
-    fn sample_source_report() -> SourceDoctorReport {
-        SourceDoctorReport {
-            schema_version: SOURCE_DOCTOR_SCHEMA_VERSION,
-            sources: vec![SourceDoctorEntry {
-                source_id: "laptop".into(),
-                host: Some("user@laptop".into()),
-                state: SourceDoctorState::Reachable,
-                host_reached: true,
-                connection_error: None,
-                safe_next_command: None,
-            }],
-            summary: SourceDoctorSummary {
-                total: 1,
-                healthy: 1,
-                unhealthy: 0,
-                unreached: 0,
-            },
-            mutation_free: true,
-        }
-    }
-
-    fn sample_fleet_summary() -> FleetSummary {
-        FleetSummary {
-            total_hosts: 3,
-            ok: 2,
-            degraded: 0,
-            timed_out: 0,
-            unreachable: 1,
-            cancelled: 0,
-            stale_data: 0,
-            highest_archive_risk: ArchiveRisk::Low,
-            root_cause_distribution: BTreeMap::new(),
-            dominant_root_cause: None,
+    fn sample_source_provenance() -> SourceProvenance {
+        SourceProvenance {
+            source_id: "local".into(),
+            cass_present: true,
+            cass_current: true,
+            archive_db_present: true,
+            lexical_metadata_present: true,
         }
     }
 
     /// Build representative inputs from the canonical `css_stale_existing_index`
     /// fleet fixture so the embedded readiness/envelope are real projections.
-    fn sample_inputs(fleet: bool, fixture_id: Option<&str>) -> SupportBundleInputs {
+    fn sample_inputs(fixture_id: Option<&str>) -> SupportBundleInputs {
         let t = table("css_stale_existing_index");
         SupportBundleInputs {
             bundle_id: "rsb-0001".into(),
@@ -435,9 +406,8 @@ mod tests {
             fixture_id: fixture_id.map(str::to_string),
             readiness: project(&t, SurfaceKind::Status),
             command_envelope: t.next_command_envelope(Some("/home/user/.local/share/cass")),
-            source_provenance: sample_source_report(),
+            source_provenance: sample_source_provenance(),
             quarantine: t.quarantine.clone(),
-            fleet: fleet.then(sample_fleet_summary),
             root_cause: RootCauseAttribution::new(
                 RootCauseFamily::CassDerivedState,
                 AttributionConfidence::Probable,
@@ -453,7 +423,7 @@ mod tests {
 
     fn default_bundle() -> RecoverySupportBundle {
         build_support_bundle(
-            sample_inputs(true, None),
+            sample_inputs(None),
             default_redaction_policy(),
             ExecutionMode::Live,
         )
@@ -475,14 +445,14 @@ mod tests {
     fn fixture_mode_requires_a_fixture_id() {
         // Fixture mode without an id is incomplete...
         let missing = build_support_bundle(
-            sample_inputs(false, None),
+            sample_inputs(None),
             default_redaction_policy(),
             ExecutionMode::Fixture,
         );
         assert!(!missing.manifest.is_complete(), "fixture needs an id");
         // ...with an id it is complete.
         let present = build_support_bundle(
-            sample_inputs(false, Some("css_stale_existing_index")),
+            sample_inputs(Some("css_stale_existing_index")),
             default_redaction_policy(),
             ExecutionMode::Fixture,
         );
@@ -552,7 +522,7 @@ mod tests {
             allow_full_paths: true,
             ..default_redaction_policy()
         };
-        let b = build_support_bundle(sample_inputs(true, None), policy, ExecutionMode::Live);
+        let b = build_support_bundle(sample_inputs(None), policy, ExecutionMode::Live);
         assert_eq!(
             b.manifest.data_dir.as_deref(),
             Some("/home/user/.local/share/coding-agent-search")
@@ -573,44 +543,13 @@ mod tests {
             private_text: PrivateTextPolicy::RawOptIn,
             ..default_redaction_policy()
         };
-        let b = build_support_bundle(sample_inputs(false, None), policy, ExecutionMode::Live);
+        let b = build_support_bundle(sample_inputs(None), policy, ExecutionMode::Live);
         assert!(
             b.redaction
                 .fields_included
                 .contains(&"raw_session_payload".to_string())
         );
         assert!(!b.is_share_safe(), "raw opt-in is not share-safe");
-    }
-
-    // ---- fleet present / absent ----
-
-    #[test]
-    fn fleet_is_optional_and_reflected_in_redaction_report() {
-        let with_fleet = build_support_bundle(
-            sample_inputs(true, None),
-            default_redaction_policy(),
-            ExecutionMode::Live,
-        );
-        assert!(with_fleet.fleet.is_some());
-        assert!(
-            with_fleet
-                .redaction
-                .fields_included
-                .contains(&"fleet".to_string())
-        );
-
-        let without_fleet = build_support_bundle(
-            sample_inputs(false, None),
-            default_redaction_policy(),
-            ExecutionMode::Live,
-        );
-        assert!(without_fleet.fleet.is_none());
-        assert!(
-            !without_fleet
-                .redaction
-                .fields_included
-                .contains(&"fleet".to_string())
-        );
     }
 
     // ---- consistency with robot JSON (the embedded contracts are verbatim) ----
@@ -647,12 +586,12 @@ mod tests {
     #[test]
     fn fixture_and_live_modes_are_distinguishable_in_logs() {
         let live = build_support_bundle(
-            sample_inputs(false, None),
+            sample_inputs(None),
             default_redaction_policy(),
             ExecutionMode::Live,
         );
         let fixture = build_support_bundle(
-            sample_inputs(false, Some("css_stale_existing_index")),
+            sample_inputs(Some("css_stale_existing_index")),
             default_redaction_policy(),
             ExecutionMode::Fixture,
         );

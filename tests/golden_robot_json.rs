@@ -1478,24 +1478,22 @@ fn models_status_shape_matches_golden() {
 
 #[test]
 fn fleet_upgrade_rehearsal_shape_matches_golden() {
-    // `cass fleet upgrade-rehearsal --json` (bead sc8sp) against an isolated
-    // empty data dir + config dir covers only the local host. The exact
-    // version/platform/disposition values depend on the build host and target,
-    // so we pin the JSON *shape* (field names + types) — deterministic across
-    // hosts and the canonical contract lock for this surface. Concrete values
-    // (disposition labels, safe commands, mode, verification) are asserted by
-    // tests/e2e_fleet_upgrade_rehearsal_gate.rs against the real binary.
+    // `cass fleet` was removed by the local-only task: the command now rejects
+    // through the removed-command path, so the rehearsal shape golden no longer
+    // applies. The pin keeps the removal contract visible.
     let test_home = tempfile::tempdir().expect("create temp home");
-    let rehearsal = capture_robot_json_value(
-        test_home.path(),
-        &["fleet", "upgrade-rehearsal", "--json"],
-        ExpectStatus::ExitOk,
+    let output = cass_cmd(test_home.path())
+        .args(["fleet", "upgrade-rehearsal", "--json"])
+        .output()
+        .unwrap_or_else(|err| panic!("run cass fleet upgrade-rehearsal: {err}"));
+    assert!(
+        !output.status.success(),
+        "removed fleet command must exit non-zero"
     );
-    let canonical =
-        serde_json::to_string_pretty(&json_value_schema(&rehearsal)).expect("pretty-print JSON");
-    assert_golden(
-        "robot/fleet_upgrade_rehearsal_shape.json.golden",
-        &canonical,
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("removed") || stderr.contains("fleet"),
+        "removed fleet command should explain the removal: {stderr}"
     );
 }
 

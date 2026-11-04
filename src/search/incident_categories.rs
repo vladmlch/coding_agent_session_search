@@ -57,7 +57,6 @@ pub(crate) enum IncidentCategory {
     SearchZeroWorkspace,
     QuarantineOom,
     StorageBusyCorrupt,
-    RemoteSyncAuth,
     Semantic,
     WatchSalvageIssues,
     HostPressure,
@@ -98,7 +97,6 @@ impl IncidentCategory {
             Self::SearchZeroWorkspace => "search_zero_workspace",
             Self::QuarantineOom => "quarantine_oom",
             Self::StorageBusyCorrupt => "storage_busy_corrupt",
-            Self::RemoteSyncAuth => "remote_sync_auth",
             Self::Semantic => "semantic",
             Self::WatchSalvageIssues => "watch_salvage_issues",
             Self::HostPressure => "host_pressure",
@@ -210,30 +208,6 @@ static CATEGORIES: &[IncidentCategoryDef] = &[
         root_cause_family: RootCauseFamily::FrankensqliteStorage,
         privacy_tier: PrivacyTier::Operational,
         recommended_next_probe: "cass doctor --json",
-    },
-    IncidentCategoryDef {
-        category: IncidentCategory::RemoteSyncAuth,
-        id: "remote_sync_auth",
-        description: "remote source sync failed on transport or authentication",
-        detection_signals: &[
-            "ssh",
-            "rsync",
-            "permission denied",
-            "host key",
-            "auth",
-            "timeout",
-        ],
-        example_terms: &[
-            "sync failed",
-            "ssh error",
-            "auth",
-            "permission denied",
-            "host unreachable",
-        ],
-        confidence: DetectionConfidence::High,
-        root_cause_family: RootCauseFamily::RemoteTransportAuth,
-        privacy_tier: PrivacyTier::Redacted,
-        recommended_next_probe: "cass sources list --json",
     },
     IncidentCategoryDef {
         category: IncidentCategory::Semantic,
@@ -460,7 +434,6 @@ fn strong_signal_matches(category: IncidentCategory, text: &str) -> bool {
             contains_any(text, &["upstream_fix_possibly_missing", "known_issue_ids"])
         }
         IncidentCategory::StorageBusyCorrupt
-        | IncidentCategory::RemoteSyncAuth
         | IncidentCategory::HostPressure
         | IncidentCategory::Other => false,
     }
@@ -505,22 +478,6 @@ fn matches_anchored_category(category: IncidentCategory, text: &str) -> bool {
             ) && contains_any(
                 text,
                 &["locked", "busy", "corrupt", "integrity", "wal", "openread"],
-            )
-        }
-        IncidentCategory::RemoteSyncAuth => {
-            contains_any(
-                text,
-                &["ssh", "rsync", "remote sync", "source sync", "host key"],
-            ) && contains_any(
-                text,
-                &[
-                    "permission denied",
-                    "auth",
-                    "timeout",
-                    "failed",
-                    "unreachable",
-                    "host key",
-                ],
             )
         }
         IncidentCategory::Semantic => contains_any(
@@ -625,7 +582,8 @@ mod tests {
         }
     }
 
-    /// The eleven required category ids from the report, in order.
+    /// The required category ids from the report, in order (remote_sync_auth
+    /// was removed with the fleet/remote machinery in Task 8, local-only).
     const REQUIRED: &[&str] = &[
         "cass_status_health",
         "index_stale_missing",
@@ -633,7 +591,6 @@ mod tests {
         "search_zero_workspace",
         "quarantine_oom",
         "storage_busy_corrupt",
-        "remote_sync_auth",
         "semantic",
         "watch_salvage_issues",
         "host_pressure",
@@ -706,10 +663,6 @@ mod tests {
             RootCauseFamily::FrankensqliteStorage
         );
         assert_eq!(
-            category_def("remote_sync_auth").unwrap().root_cause_family,
-            RootCauseFamily::RemoteTransportAuth
-        );
-        assert_eq!(
             category_def("semantic").unwrap().root_cause_family,
             RootCauseFamily::SemanticAssets
         );
@@ -732,10 +685,6 @@ mod tests {
     fn privacy_tiers_redact_path_and_host_bearing_categories() {
         assert_eq!(
             category_def("search_zero_workspace").unwrap().privacy_tier,
-            PrivacyTier::Redacted
-        );
-        assert_eq!(
-            category_def("remote_sync_auth").unwrap().privacy_tier,
             PrivacyTier::Redacted
         );
         assert_eq!(
@@ -825,10 +774,10 @@ mod tests {
 
     #[test]
     fn classifier_accepts_anchored_compound_failure_signals() {
-        assert_eq!(
-            classify_text("cass remote sync over ssh failed: permission denied"),
-            vec![IncidentCategory::RemoteSyncAuth]
-        );
+        // Remote-sync classification was removed with the fleet/remote
+        // machinery (Task 8, local-only): such prose no longer maps to any
+        // category rather than producing a false attribution.
+        assert!(classify_text("cass remote sync over ssh failed: permission denied").is_empty());
         assert_eq!(
             classify_text("cass frankensqlite pinned revision may miss upstream fix"),
             vec![IncidentCategory::DependencyAttribution]

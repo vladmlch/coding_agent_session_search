@@ -151,7 +151,7 @@ fn onboard(home: &Path, data_dir: &Path, db: &Path, confirm: bool) -> Value {
         .arg("--db")
         .arg(db);
     if confirm {
-        command.args(["--confirm-step", "3"]);
+        command.args(["--confirm-step", "2"]);
     }
     run(&mut command, data_dir).1
 }
@@ -168,14 +168,9 @@ fn live_onboarding_indexes_a_staged_remote_only_after_explicit_confirmation() {
     util::seed_codex_session(&mirror, "rollout-guide-remote.jsonl", PRIVATE_BODY, true);
     let config_before = std::fs::read(&config).expect("config bytes");
     let unconfirmed = onboard(home.path(), &data_dir, &db, false);
-    let preview = step(&unconfirmed, "sources.dry-sync");
+    let preview = step(&unconfirmed, "privacy.preview-exposure");
     assert_eq!(preview["proof_gate"]["result"], "passed", "{unconfirmed}");
-    assert_eq!(preview["observation"]["transport_started"], false);
-    assert_eq!(preview["observation"]["sources_registered"], false);
-    assert_eq!(
-        preview["environment"]["CASS_DATA_DIR"],
-        data_dir.to_string_lossy().as_ref()
-    );
+    assert_eq!(preview["result"], "proof-passed", "{unconfirmed}");
     assert_eq!(
         step(&unconfirmed, "index.incremental")["result"],
         "awaiting-confirmation"
@@ -236,26 +231,18 @@ fn live_onboarding_refuses_missing_or_invalid_config_and_unstaged_mirrors() {
         }
         let db = data_dir.join("agent_search.db");
         let output = onboard(home.path(), &data_dir, &db, true);
-        let preview = step(&output, "sources.dry-sync");
+        // With the configured-source sync-plan step removed, the only
+        // mutating step is `index.incremental`: it is allowed to run its
+        // bounded scan but the post-run verification must refuse to certify
+        // an empty archive, so nothing is ever applied.
+        let indexed = step(&output, "index.incremental");
+        assert_eq!(indexed["result"], "failed", "{scenario}: {output}");
+        assert_eq!(indexed["proof_gate"]["result"], "failed", "{scenario}");
+        assert_eq!(output["execution"]["applied_mutation_count"], 0, "{output}");
         assert_eq!(
-            preview["proof_gate"]["result"],
-            if scenario == "missing-mirror" {
-                "passed"
-            } else {
-                "failed"
-            },
-            "{scenario}: {output}"
-        );
-        assert_ne!(
-            step(&output, "index.incremental")["result"],
-            "executed",
+            output["mutation_contract"]["touches_network"], false,
             "{output}"
         );
-        assert_eq!(
-            output["execution"]["attempted_mutation_count"], 0,
-            "{output}"
-        );
-        assert!(!db.exists());
     }
 }
 

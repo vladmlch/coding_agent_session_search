@@ -83,9 +83,6 @@ pub fn run_tui_with_asciicast(recording_path: &Path, interactive: bool) -> Resul
     for arg in child_args {
         cmd.arg(arg);
     }
-    // Parent already handled update prompt check; avoid duplicate prompt in child.
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
-
     let mut child = pair
         .slave
         .spawn_command(cmd)

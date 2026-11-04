@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "subsystem_count": 15,
+  "subsystem_count": 14,
   "acceptance_checks": [
     "deterministic_json",
     "no_robot_stdout_pollution",
@@ -155,14 +155,6 @@
         ".13.2",
         ".13.4",
         ".12.6"
-      ]
-    },
-    {
-      "subsystem": "update_check",
-      "mode": "matrix-attested",
-      "evidence": "src/update_check.rs",
-      "owning_beads": [
-        ".15.4"
       ]
     }
   ]

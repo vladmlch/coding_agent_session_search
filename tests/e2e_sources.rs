@@ -18,7 +18,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 mod util;
-use util::e2e_log::{E2eCommandEnvironment, PhaseTracker};
+use util::e2e_log::PhaseTracker;
 
 fn tracker_for(test_name: &str) -> PhaseTracker {
     PhaseTracker::new("e2e_sources", test_name)
@@ -138,36 +138,6 @@ fn sources_setup_resume_retains_pending_sync_after_real_transport_failure() {
         assert_eq!(read_sources_config(&config), config_before);
     }
     tracker.complete();
-}
-
-fn read_optional_bytes(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err),
-    }
-}
-
-fn directory_member_label(kind: &str, name: &std::ffi::OsStr) -> String {
-    format!("{kind}:{}", name.to_string_lossy())
-}
-
-fn directory_membership(path: &Path) -> std::io::Result<Vec<String>> {
-    let mut members = Vec::new();
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let kind = if file_type.is_dir() {
-            "dir"
-        } else if file_type.is_file() {
-            "file"
-        } else {
-            "other"
-        };
-        members.push(directory_member_label(kind, &entry.file_name()));
-    }
-    members.sort();
-    Ok(members)
 }
 
 fn cass_data_dir(data_root: &Path) -> std::path::PathBuf {
@@ -2412,31 +2382,17 @@ paths = ["~/.claude/projects"]
         "verify_json",
         Some("Verify JSON array with laptop diagnostics"),
     );
-    // Should output valid JSON (even if connectivity fails). Bead uojcg.8.6:
-    // the envelope is now the source-doctor health report (flattened: explicit
-    // per-source state + safe next command + mutation_free) plus the detailed
-    // raw checks under `diagnostics`.
+    // Should output valid JSON. Local-only: the envelope is `diagnostics`
+    // (per-source local checks), `budget`, and `config_validation`; a
+    // configured remote host is a warning, not a probe target.
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("valid JSON output");
 
     assert!(
         json.is_object(),
-        "Expected source-doctor health object, got: {}",
+        "Expected sources doctor object, got: {}",
         String::from_utf8_lossy(&output.stdout)
     );
-    assert_eq!(json["schema_version"], 1, "stable schema version");
-    assert_eq!(json["mutation_free"], true, "diagnosis is read-only");
-
-    let sources = json["sources"]
-        .as_array()
-        .expect("sources array in health report");
-    assert_eq!(sources.len(), 1, "Expected one source in health report");
-    assert_eq!(sources[0]["source_id"], "laptop");
-    assert!(
-        sources[0]["state"].is_string(),
-        "each source carries an explicit doctor state"
-    );
-    assert_eq!(json["summary"]["total"], 1, "summary counts the source");
 
     let diagnostics = json["diagnostics"]
         .as_array()
@@ -2447,6 +2403,20 @@ paths = ["~/.claude/projects"]
         "raw checks retained under diagnostics"
     );
     assert_eq!(diagnostics[0]["source_id"], "laptop");
+    let checks = diagnostics[0]["checks"]
+        .as_array()
+        .expect("per-source checks array");
+    assert!(
+        checks
+            .iter()
+            .any(|check| check["name"] == "Remote Host" && check["status"] == "warn"),
+        "a configured remote host must be reported as a local-only warning: {diagnostics:?}"
+    );
+    assert!(json["budget"].is_object(), "robot budget block present");
+    assert!(
+        json["config_validation"].is_object(),
+        "config validation report present"
+    );
     tracker.end(
         "verify_json",
         Some("Verify JSON array with laptop diagnostics"),
@@ -2508,14 +2478,15 @@ paths = ["~/.claude/projects"]
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("valid JSON output");
 
-    // Bead uojcg.8.6: filtered output contains only the laptop source, in the
-    // health report's `sources` array (each entry keyed by `source_id`).
-    let sources = json["sources"]
-        .as_array()
-        .expect("sources array in health report");
-    assert_eq!(sources.len(), 1, "Should only have one source in output");
-    assert_eq!(sources[0]["source_id"], "laptop");
-    assert_eq!(json["summary"]["total"], 1);
+    // Filtered output contains only the laptop source, in the envelope's
+    // `diagnostics` array (each entry keyed by `source_id`).
+    let diagnostics = json["diagnostics"].as_array().expect("diagnostics array");
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "Should only have one source in output"
+    );
+    assert_eq!(diagnostics[0]["source_id"], "laptop");
     tracker.end(
         "verify_filtered_output",
         Some("Verify only laptop in output"),
@@ -2570,43 +2541,38 @@ paths = ["~/.claude/projects"]
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("valid JSON output");
 
-    assert_eq!(json["mutation_free"], true, "diagnosis must be read-only");
-
-    let sources = json["sources"].as_array().expect("sources array");
-    assert_eq!(sources.len(), 1, "one source diagnosed");
-    let entry = &sources[0];
+    let diagnostics = json["diagnostics"].as_array().expect("diagnostics array");
+    assert_eq!(diagnostics.len(), 1, "one source diagnosed");
+    let entry = &diagnostics[0];
     assert_eq!(entry["source_id"], "retired-laptop");
-    assert_eq!(
-        entry["host_reached"], false,
-        "an unreachable host must not be reported as reached"
-    );
-    let state = entry["state"].as_str().expect("explicit state string");
-    assert!(
-        matches!(state, "unreachable" | "timeout" | "auth_denied"),
-        "unreachable host must classify as an unreached state, got {state}"
-    );
 
-    // Unreached is counted in its own bucket, never as healthy.
-    assert_eq!(json["summary"]["unreached"], 1, "counted as unreached");
-    assert_eq!(json["summary"]["healthy"], 0, "never folded into healthy");
+    // Local-only: a configured remote host is reported as a warning that no
+    // network probe can resolve. It is never folded into a pass.
+    let checks = entry["checks"].as_array().expect("checks array");
+    let remote_check = checks
+        .iter()
+        .find(|check| check["name"] == "Remote Host")
+        .expect("remote host check present");
+    assert_eq!(remote_check["status"], "warn");
 
-    // The offered next command is preservation-safe (never destructive).
-    let next = entry["safe_next_command"]
-        .as_str()
-        .expect("safe next command for an unreached host");
-    let lower = next.to_ascii_lowercase();
-    for needle in [
-        "--delete",
-        "rm -rf",
-        "rm -r ",
-        "prune",
-        "shred",
-        "--remove-source-files",
-    ] {
-        assert!(
-            !lower.contains(needle),
-            "safe next command must not be destructive: {next:?}"
-        );
+    // Every offered remediation is preservation-safe (never destructive).
+    for check in checks {
+        if let Some(next) = check["remediation"].as_str() {
+            let lower = next.to_ascii_lowercase();
+            for needle in [
+                "--delete",
+                "rm -rf",
+                "rm -r ",
+                "prune",
+                "shred",
+                "--remove-source-files",
+            ] {
+                assert!(
+                    !lower.contains(needle),
+                    "remediation must not be destructive: {next:?}"
+                );
+            }
+        }
     }
     tracker.end(
         "verify",
@@ -2671,27 +2637,29 @@ paths = ["~/.claude/projects"]
     let json: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("valid JSON output");
 
-    assert_eq!(json["mutation_free"], true, "diagnosis must be read-only");
-
-    // The transport failure dominates: never a binary-derived state.
-    let entry = &json["sources"].as_array().expect("sources array")[0];
-    let state = entry["state"].as_str().expect("explicit state string");
+    // Local-only: remote hosts are never probed, so no remote-binary verdict
+    // can appear. The diagnostics entry carries local checks only — no
+    // host_report, no probed cass_version.
+    let entry = &json["diagnostics"].as_array().expect("diagnostics array")[0];
     assert!(
-        matches!(state, "unreachable" | "timeout" | "auth_denied"),
-        "an unreachable host must not be classified by an unprobed binary, got {state}"
+        entry.get("host_report").is_none(),
+        "no remote probe ran, so no host_report may be emitted: {entry}"
     );
-
-    // The diagnostics host_report must NOT carry a cass_version: an unreachable
-    // host is never binary-probed, so claiming one would be an overclaim.
-    let host_report = &json["diagnostics"].as_array().expect("diagnostics array")[0]["host_report"];
+    let checks = entry["checks"].as_array().expect("checks array");
     assert!(
-        host_report.get("cass_version").is_none(),
-        "unreachable host must not report a probed cass_version: {host_report}"
+        checks
+            .iter()
+            .any(|check| check["name"] == "Remote Host" && check["status"] == "warn"),
+        "a configured remote host must be reported as a local-only warning: {checks:?}"
     );
-    // Host identity (platform) is always present, even for an unreachable host.
     assert!(
-        host_report["platform"].is_object(),
-        "platform identity must be present regardless of reachability"
+        checks.iter().all(|check| {
+            !check["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("cass_version")
+        }),
+        "no check may claim a probed remote cass_version: {checks:?}"
     );
     tracker.end("verify", Some("Verify no remote-binary overclaim"), start);
 
@@ -2703,832 +2671,6 @@ paths = ["~/.claude/projects"]
     );
 
     tracker.complete();
-}
-
-/// A deliberately slow external-probe fixture drives the real binary past a
-/// one-millisecond fleet budget. Both robot and human surfaces must stop
-/// honestly, identify every skipped source, preserve all evidence byte-for-byte,
-/// and return a bounded partial diagnosis instead of hanging.
-#[test]
-fn sources_doctor_budget_exhaustion_is_bounded_explicit_and_mutation_free() {
-    let tracker =
-        tracker_for("sources_doctor_budget_exhaustion_is_bounded_explicit_and_mutation_free");
-
-    let setup_start = tracker.start(
-        "setup",
-        Some("Create two-source fixture with a probe slower than the total budget"),
-    );
-    let tmp = tempfile::TempDir::new().expect("create source-doctor budget fixture");
-    let config_dir = tmp.path().join("config");
-    let data_dir = tmp.path().join("data");
-    fs::create_dir_all(&config_dir).expect("create config directory");
-    fs::create_dir_all(&data_dir).expect("create data directory");
-    let archive_path = data_dir.join("agent_search.db");
-    let sync_status_path = data_dir.join("sync_status.json");
-    let first_mirror_dir = data_dir.join("remotes").join("budget-first").join("mirror");
-    let second_mirror_dir = data_dir
-        .join("remotes")
-        .join("budget-second")
-        .join("mirror");
-    fs::create_dir_all(&first_mirror_dir).expect("create first source mirror");
-    fs::create_dir_all(&second_mirror_dir).expect("create second source mirror");
-    fs::write(&archive_path, b"pre-existing archive evidence\n")
-        .expect("write archive evidence sentinel");
-    fs::write(
-        &sync_status_path,
-        serde_json::to_vec_pretty(&serde_json::json!({ "sources": {} }))
-            .expect("serialize sync-status evidence"),
-    )
-    .expect("write sync-status evidence sentinel");
-    let first_mirror_marker = first_mirror_dir.join("retained-first.jsonl");
-    let second_mirror_marker = second_mirror_dir.join("retained-second.jsonl");
-    fs::write(&first_mirror_marker, b"retained first mirror evidence\n")
-        .expect("write first mirror evidence sentinel");
-    fs::write(&second_mirror_marker, b"retained second mirror evidence\n")
-        .expect("write second mirror evidence sentinel");
-    create_sources_config(
-        &config_dir,
-        r#"
-[[sources]]
-name = "budget-first"
-type = "ssh"
-host = "fixture@budget.test"
-paths = ["~/.claude/projects"]
-
-[[sources]]
-name = "budget-second"
-type = "ssh"
-host = "fixture@budget.test"
-paths = ["~/.codex/sessions"]
-"#,
-    );
-    let probe_path = tmp.path().join("source-doctor-budget-probe.json");
-    fs::write(
-        &probe_path,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "host": "fixture@budget.test",
-            "os": "Linux",
-            "cass_version": env!("CARGO_PKG_VERSION"),
-            "remote_path": "nonempty",
-            "delay_ms": 5,
-        }))
-        .expect("serialize source-doctor budget probe"),
-    )
-    .expect("write source-doctor budget probe");
-    let config_path = config_dir.join("cass/sources.toml");
-    let config_before = fs::read(&config_path).expect("read source config before diagnosis");
-    let probe_before = fs::read(&probe_path).expect("read probe before diagnosis");
-    let archive_before = fs::read(&archive_path).expect("read archive evidence before diagnosis");
-    let sync_status_before =
-        fs::read(&sync_status_path).expect("read sync-status evidence before diagnosis");
-    let first_mirror_before =
-        fs::read(&first_mirror_marker).expect("read first mirror evidence before diagnosis");
-    let second_mirror_before =
-        fs::read(&second_mirror_marker).expect("read second mirror evidence before diagnosis");
-    let data_members_before =
-        directory_membership(&data_dir).expect("list data directory before diagnosis");
-    let first_mirror_members_before =
-        directory_membership(&first_mirror_dir).expect("list first mirror before diagnosis");
-    let second_mirror_members_before =
-        directory_membership(&second_mirror_dir).expect("list second mirror before diagnosis");
-    tracker.end(
-        "setup",
-        Some("Create two-source fixture with a probe slower than the total budget"),
-        setup_start,
-    );
-
-    let robot_start = tracker.start(
-        "robot_budget",
-        Some("Run real sources doctor JSON surface with a one-millisecond budget"),
-    );
-    let wall_start = std::time::Instant::now();
-    let mut robot_cmd = tracker.cass_std_command();
-    robot_cmd
-        .args([
-            "sources",
-            "doctor",
-            "--json",
-            "--budget-ms",
-            "1",
-            "--per-host-budget-ms",
-            "20",
-        ])
-        .current_dir(tmp.path())
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .env("CASS_DATA_DIR", &data_dir)
-        .env("CASS_TEST_SOURCES_DOCTOR_PROBE", &probe_path)
-        .env("CASS_FLEET_PER_HOST_BUDGET_MS", "60000")
-        .env("CASS_FLEET_BUDGET_MS", "60000")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .env("NO_COLOR", "1");
-    let robot_output = util::timeout::spawn_with_timeout_or_diag(
-        robot_cmd,
-        "sources_doctor_budget_robot",
-        Some(&data_dir),
-        std::time::Duration::from_secs(5),
-    );
-    let robot_wall = wall_start.elapsed();
-    tracker.end(
-        "robot_budget",
-        Some("Run real sources doctor JSON surface with a one-millisecond budget"),
-        robot_start,
-    );
-    assert_eq!(
-        robot_output.status.code(),
-        Some(1),
-        "budget-exhausted diagnosis must be non-healthy; stdout={}; stderr={}",
-        String::from_utf8_lossy(&robot_output.stdout),
-        String::from_utf8_lossy(&robot_output.stderr)
-    );
-    assert!(
-        robot_wall < std::time::Duration::from_secs(5),
-        "source doctor exceeded the E2E hard bound: {robot_wall:?}"
-    );
-    assert!(
-        robot_output.stdout.len() < 256 * 1024 && robot_output.stderr.len() < 256 * 1024,
-        "bounded diagnosis emitted unbounded output: stdout={} stderr={}",
-        robot_output.stdout.len(),
-        robot_output.stderr.len()
-    );
-
-    let verify_robot_start = tracker.start(
-        "verify_robot",
-        Some("Verify partial JSON truthfully reports timeout and skipped work"),
-    );
-    let payload: Value =
-        serde_json::from_slice(&robot_output.stdout).expect("budget output must be valid JSON");
-    assert_eq!(payload["mutation_free"], true);
-    assert_eq!(payload["budget"]["budget_ms"], 1);
-    assert_eq!(payload["budget"]["timed_out"], true);
-    assert!(
-        payload["budget"]["elapsed_ms"]
-            .as_u64()
-            .is_some_and(|elapsed| elapsed < 1_000),
-        "budget accounting must remain bounded: {}",
-        payload["budget"]
-    );
-    assert_eq!(
-        payload["budget"]["recommended_next_probe"],
-        "cass sources list --json"
-    );
-    let skipped = payload["budget"]["skipped_sections"]
-        .as_array()
-        .expect("skipped source list");
-    for source in ["budget-first", "budget-second"] {
-        assert!(
-            skipped
-                .iter()
-                .any(|entry| entry == &Value::String(format!("source:{source}"))),
-            "budget output must name skipped source {source}: {payload}"
-        );
-    }
-    let sources = payload["sources"].as_array().expect("health sources array");
-    assert_eq!(sources.len(), 2);
-    assert!(
-        sources.iter().all(|source| {
-            source["state"] == "timeout"
-                && source["host_reached"] == false
-                && source["connection_error"]
-                    .as_str()
-                    .is_some_and(|error| error.contains("timed out"))
-        }),
-        "every uncompleted source must be an explicit timeout: {payload}"
-    );
-    let diagnostics = payload["diagnostics"]
-        .as_array()
-        .expect("raw diagnostics array");
-    assert_eq!(diagnostics.len(), 2);
-    assert!(diagnostics.iter().all(|diagnostic| {
-        diagnostic["host_report"]["status"] == "timed-out"
-            && diagnostic["host_report"]["timed_out"] == true
-    }));
-    tracker.end(
-        "verify_robot",
-        Some("Verify partial JSON truthfully reports timeout and skipped work"),
-        verify_robot_start,
-    );
-
-    let human_start = tracker.start(
-        "human_budget",
-        Some("Run human surface and verify parity with the robot timeout contract"),
-    );
-    let mut human_cmd = tracker.cass_std_command();
-    human_cmd
-        .args([
-            "sources",
-            "doctor",
-            "--budget-ms",
-            "1",
-            "--per-host-budget-ms",
-            "20",
-        ])
-        .current_dir(tmp.path())
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .env("CASS_DATA_DIR", &data_dir)
-        .env("CASS_TEST_SOURCES_DOCTOR_PROBE", &probe_path)
-        .env("CASS_FLEET_PER_HOST_BUDGET_MS", "60000")
-        .env("CASS_FLEET_BUDGET_MS", "60000")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .env("NO_COLOR", "1");
-    let human_output = util::timeout::spawn_with_timeout_or_diag(
-        human_cmd,
-        "sources_doctor_budget_human",
-        Some(&data_dir),
-        std::time::Duration::from_secs(5),
-    );
-    tracker.end(
-        "human_budget",
-        Some("Run human surface and verify parity with the robot timeout contract"),
-        human_start,
-    );
-    assert_eq!(human_output.status.code(), Some(1));
-    let human = String::from_utf8(human_output.stdout).expect("human output is UTF-8");
-    for expected in [
-        "Checking source: budget-first",
-        "Checking source: budget-second",
-        "State codes: source=timeout host=timed-out",
-        "Budget:",
-        "skipped: source:budget-first, source:budget-second",
-        "Next bounded probe: cass sources list --json",
-    ] {
-        assert!(
-            human.contains(expected),
-            "human timeout output missing {expected:?}: {human}"
-        );
-    }
-
-    let mutation_start = tracker.start(
-        "verify_mutation_free",
-        Some("Prove config, probe, and data membership remained byte-identical"),
-    );
-    assert_eq!(
-        fs::read(&config_path).expect("read source config after diagnosis"),
-        config_before
-    );
-    assert_eq!(
-        fs::read(&probe_path).expect("read probe after diagnosis"),
-        probe_before
-    );
-    assert_eq!(
-        fs::read(&archive_path).expect("read archive evidence after diagnosis"),
-        archive_before
-    );
-    assert_eq!(
-        fs::read(&sync_status_path).expect("read sync-status evidence after diagnosis"),
-        sync_status_before
-    );
-    assert_eq!(
-        fs::read(&first_mirror_marker).expect("read first mirror evidence after diagnosis"),
-        first_mirror_before
-    );
-    assert_eq!(
-        fs::read(&second_mirror_marker).expect("read second mirror evidence after diagnosis"),
-        second_mirror_before
-    );
-    assert_eq!(
-        directory_membership(&data_dir).expect("list data directory after diagnosis"),
-        data_members_before
-    );
-    assert_eq!(
-        directory_membership(&first_mirror_dir).expect("list first mirror after diagnosis"),
-        first_mirror_members_before
-    );
-    assert_eq!(
-        directory_membership(&second_mirror_dir).expect("list second mirror after diagnosis"),
-        second_mirror_members_before
-    );
-    tracker.end(
-        "verify_mutation_free",
-        Some("Prove config, probe, and data membership remained byte-identical"),
-        mutation_start,
-    );
-    tracker.complete();
-}
-
-/// The slow-probe seam is intentionally tiny and test-only. Reject an
-/// excessive delay before any network operation, and preserve both the source
-/// configuration and the fixture that caused the error.
-#[test]
-fn sources_doctor_rejects_unbounded_fixture_delay_before_network_or_mutation() {
-    let tracker =
-        tracker_for("sources_doctor_rejects_unbounded_fixture_delay_before_network_or_mutation");
-
-    let tmp = tempfile::TempDir::new().expect("create invalid-delay fixture root");
-    let config_dir = tmp.path().join("config");
-    let data_dir = tmp.path().join("data");
-    fs::create_dir_all(&config_dir).expect("create config directory");
-    fs::create_dir_all(&data_dir).expect("create data directory");
-    create_sources_config(
-        &config_dir,
-        r#"
-[[sources]]
-name = "bounded-fixture"
-type = "ssh"
-host = "fixture@bounded.test"
-paths = ["~/.claude/projects"]
-"#,
-    );
-    let probe_path = tmp.path().join("invalid-delay.json");
-    fs::write(
-        &probe_path,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "host": "fixture@bounded.test",
-            "os": "Linux",
-            "cass_version": env!("CARGO_PKG_VERSION"),
-            "remote_path": "nonempty",
-            "delay_ms": 101,
-        }))
-        .expect("serialize invalid-delay probe"),
-    )
-    .expect("write invalid-delay probe");
-    let config_path = config_dir.join("cass/sources.toml");
-    let config_before = fs::read(&config_path).expect("read config before invalid probe");
-    let probe_before = fs::read(&probe_path).expect("read invalid probe before command");
-    let data_members_before =
-        directory_membership(&data_dir).expect("list data before invalid probe");
-
-    let start = tracker.start(
-        "reject",
-        Some("Run real binary and reject delay above the fixed fixture ceiling"),
-    );
-    let mut cmd = tracker.cass_std_command();
-    cmd.args(["sources", "doctor", "--json"])
-        .current_dir(tmp.path())
-        .env("HOME", tmp.path())
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .env("CASS_DATA_DIR", &data_dir)
-        .env("CASS_TEST_SOURCES_DOCTOR_PROBE", &probe_path)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .env("NO_COLOR", "1");
-    let output = util::timeout::spawn_with_timeout_or_diag(
-        cmd,
-        "sources_doctor_invalid_delay",
-        Some(&data_dir),
-        std::time::Duration::from_secs(5),
-    );
-    tracker.end(
-        "reject",
-        Some("Run real binary and reject delay above the fixed fixture ceiling"),
-        start,
-    );
-    assert!(
-        !output.status.success(),
-        "invalid fixture delay must fail closed"
-    );
-    let rendered = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        rendered.contains("delay_ms") && rendered.contains("100"),
-        "error must identify the bounded field and ceiling: {rendered}"
-    );
-    assert_eq!(
-        fs::read(&config_path).expect("read config after invalid probe"),
-        config_before
-    );
-    assert_eq!(
-        fs::read(&probe_path).expect("read invalid probe after command"),
-        probe_before
-    );
-    assert_eq!(
-        directory_membership(&data_dir).expect("list data after invalid probe"),
-        data_members_before
-    );
-    tracker.complete();
-}
-
-#[derive(Clone, Copy)]
-enum ReachableDoctorSyncFixture {
-    None,
-    Failed,
-    FutureSuccessful,
-}
-
-#[derive(Clone, Copy)]
-struct ReachableDoctorScenario {
-    expected_state: &'static str,
-    cass_version: Option<&'static str>,
-    remote_path: &'static str,
-    local_mirror_nonempty: bool,
-    sync: ReachableDoctorSyncFixture,
-}
-
-fn prove_reachable_source_doctor_scenario(
-    command_env: &E2eCommandEnvironment,
-    fixture_root: &Path,
-    scenario: ReachableDoctorScenario,
-) -> Result<(), String> {
-    let case_root = fixture_root.join(scenario.expected_state);
-    let config_dir = case_root.join("config");
-    let data_dir = case_root.join("data");
-    let mirror_dir = data_dir
-        .join("remotes")
-        .join("fixture-source")
-        .join("mirror");
-    fs::create_dir_all(&config_dir)
-        .map_err(|err| format!("{}: create config dir: {err}", scenario.expected_state))?;
-    fs::create_dir_all(&mirror_dir)
-        .map_err(|err| format!("{}: create mirror dir: {err}", scenario.expected_state))?;
-    create_sources_config(
-        &config_dir,
-        r#"
-[[sources]]
-name = "fixture-source"
-type = "ssh"
-host = "fixture@reachable.test"
-paths = ["~/.claude/projects"]
-"#,
-    );
-
-    let mirror_marker = mirror_dir.join("retained-session.jsonl");
-    if scenario.local_mirror_nonempty {
-        fs::write(&mirror_marker, b"retained source evidence\n")
-            .map_err(|err| format!("{}: write mirror marker: {err}", scenario.expected_state))?;
-    }
-
-    let db_path = data_dir.join("agent_search.db");
-    if matches!(scenario.sync, ReachableDoctorSyncFixture::FutureSuccessful) {
-        seed_archive_conversation(&db_path, "codex", "source-doctor-stale-index");
-    }
-    let db_before = read_optional_bytes(&db_path)
-        .map_err(|err| format!("{}: read fixture DB: {err}", scenario.expected_state))?;
-
-    let sync_status_path = data_dir.join("sync_status.json");
-    match scenario.sync {
-        ReachableDoctorSyncFixture::None => {}
-        ReachableDoctorSyncFixture::Failed => {
-            let payload = serde_json::json!({
-                "sources": {
-                    "fixture-source": {
-                        "last_sync": 1,
-                        "last_result": { "failed": "bounded fixture failure" },
-                        "files_synced": 0,
-                        "bytes_transferred": 0,
-                        "duration_ms": 1
-                    }
-                }
-            });
-            fs::write(
-                &sync_status_path,
-                serde_json::to_vec_pretty(&payload)
-                    .map_err(|err| format!("serialize failed-sync fixture: {err}"))?,
-            )
-            .map_err(|err| format!("{}: write sync status: {err}", scenario.expected_state))?;
-        }
-        ReachableDoctorSyncFixture::FutureSuccessful => {
-            let payload = serde_json::json!({
-                "sources": {
-                    "fixture-source": {
-                        "last_sync": i64::MAX,
-                        "last_result": "success",
-                        "files_synced": 1,
-                        "bytes_transferred": 1,
-                        "duration_ms": 1
-                    }
-                }
-            });
-            fs::write(
-                &sync_status_path,
-                serde_json::to_vec_pretty(&payload)
-                    .map_err(|err| format!("serialize stale-index fixture: {err}"))?,
-            )
-            .map_err(|err| format!("{}: write sync status: {err}", scenario.expected_state))?;
-        }
-    }
-    let sync_before = read_optional_bytes(&sync_status_path)
-        .map_err(|err| format!("{}: read sync status: {err}", scenario.expected_state))?;
-
-    let probe_path = case_root.join("source-doctor-probe.json");
-    let probe_payload = serde_json::json!({
-        "host": "fixture@reachable.test",
-        "os": "Linux",
-        "cass_version": scenario.cass_version,
-        "remote_path": scenario.remote_path,
-    });
-    fs::write(
-        &probe_path,
-        serde_json::to_vec_pretty(&probe_payload)
-            .map_err(|err| format!("serialize source-doctor probe: {err}"))?,
-    )
-    .map_err(|err| format!("{}: write probe: {err}", scenario.expected_state))?;
-
-    let config_before = fs::read(config_dir.join("cass/sources.toml"))
-        .map_err(|err| format!("{}: read config: {err}", scenario.expected_state))?;
-    let probe_before = fs::read(&probe_path)
-        .map_err(|err| format!("{}: read probe: {err}", scenario.expected_state))?;
-    let mirror_before = read_optional_bytes(&mirror_marker)
-        .map_err(|err| format!("{}: read mirror marker: {err}", scenario.expected_state))?;
-    let data_members_before = directory_membership(&data_dir)
-        .map_err(|err| format!("{}: list data dir: {err}", scenario.expected_state))?;
-    let remotes_members_before = directory_membership(&data_dir.join("remotes"))
-        .map_err(|err| format!("{}: list remotes dir: {err}", scenario.expected_state))?;
-    let mirror_members_before = directory_membership(&mirror_dir)
-        .map_err(|err| format!("{}: list mirror dir: {err}", scenario.expected_state))?;
-
-    let mut cmd = command_env.cass_std_command();
-    cmd.args(["sources", "doctor", "--json"])
-        .current_dir(&case_root)
-        .env("HOME", &case_root)
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .env("CASS_DATA_DIR", &data_dir)
-        .env("CASS_TEST_SOURCES_DOCTOR_PROBE", &probe_path)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .env("NO_COLOR", "1");
-    let output = util::timeout::spawn_with_timeout_or_diag(
-        cmd,
-        scenario.expected_state,
-        Some(&data_dir),
-        std::time::Duration::from_secs(10),
-    );
-    let exit = output
-        .status
-        .code()
-        .ok_or_else(|| format!("{}: cass terminated by signal", scenario.expected_state))?;
-    if exit != 1 {
-        return Err(format!(
-            "{}: unhealthy native source state must exit 1, got exit={exit}, stdout={}, stderr={}",
-            scenario.expected_state,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    let payload: Value = serde_json::from_slice(&output.stdout).map_err(|err| {
-        format!(
-            "{}: stdout was not JSON: {err}; stdout={}",
-            scenario.expected_state,
-            String::from_utf8_lossy(&output.stdout)
-        )
-    })?;
-    let entry = payload
-        .get("sources")
-        .and_then(Value::as_array)
-        .and_then(|sources| sources.first())
-        .ok_or_else(|| format!("{}: missing sources[0]", scenario.expected_state))?;
-    let state = entry.get("state").and_then(Value::as_str);
-    if state != Some(scenario.expected_state) {
-        return Err(format!(
-            "{}: observed state {state:?}; payload={payload}",
-            scenario.expected_state
-        ));
-    }
-    if entry.get("host_reached").and_then(Value::as_bool) != Some(true)
-        || payload.get("mutation_free").and_then(Value::as_bool) != Some(true)
-        || payload
-            .pointer("/summary/unhealthy")
-            .and_then(Value::as_u64)
-            != Some(1)
-        || payload
-            .pointer("/summary/unreached")
-            .and_then(Value::as_u64)
-            != Some(0)
-    {
-        return Err(format!(
-            "{}: reachable/mutation-free summary contract failed: {payload}",
-            scenario.expected_state
-        ));
-    }
-    let local_storage = payload
-        .pointer("/diagnostics/0/checks")
-        .and_then(Value::as_array)
-        .and_then(|checks| {
-            checks
-                .iter()
-                .find(|check| check.get("name").and_then(Value::as_str) == Some("Local Storage"))
-        })
-        .ok_or_else(|| {
-            format!(
-                "{}: missing Local Storage diagnostic",
-                scenario.expected_state
-            )
-        })?;
-    if local_storage.get("status").and_then(Value::as_str) != Some("pass")
-        || !local_storage
-            .get("message")
-            .and_then(Value::as_str)
-            .is_some_and(|message| {
-                message.contains("appears writable") && message.contains("no write attempted")
-            })
-    {
-        return Err(format!(
-            "{}: local storage diagnostic overclaimed its read-only probe: {local_storage}",
-            scenario.expected_state
-        ));
-    }
-    let safe_next = entry
-        .get("safe_next_command")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("{}: missing safe_next_command", scenario.expected_state))?;
-    let safe_lower = safe_next.to_ascii_lowercase();
-    if [
-        "--delete",
-        "rm -rf",
-        "rm -r ",
-        "shred",
-        "--remove-source-files",
-    ]
-    .iter()
-    .any(|needle| safe_lower.contains(needle))
-    {
-        return Err(format!(
-            "{}: destructive safe_next_command {safe_next:?}",
-            scenario.expected_state
-        ));
-    }
-
-    let host_status = payload
-        .pointer("/diagnostics/0/host_report/status")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("{}: missing host status", scenario.expected_state))?;
-    if matches!(scenario.expected_state, "cass_missing" | "old_cass") {
-        let expected_host_status = if scenario.expected_state == "cass_missing" {
-            "command-not-found"
-        } else {
-            "old-binary-skew"
-        };
-        let expected_root_cause = if scenario.expected_state == "cass_missing" {
-            "unknown"
-        } else {
-            "old-binary-skew"
-        };
-        if host_status != expected_host_status
-            || payload
-                .pointer("/diagnostics/0/host_report/cass_version")
-                .and_then(Value::as_str)
-                != scenario.cass_version
-            || payload
-                .pointer("/diagnostics/0/host_report/likely_root_cause")
-                .and_then(Value::as_str)
-                != Some(expected_root_cause)
-            || payload
-                .pointer("/diagnostics/0/host_report/root_cause/family")
-                .and_then(Value::as_str)
-                != Some(expected_root_cause)
-            || !payload
-                .pointer("/diagnostics/0/host_report/recommended_action")
-                .and_then(Value::as_str)
-                .is_some_and(|action| !action.trim().is_empty())
-        {
-            return Err(format!(
-                "{}: binary host report contradicts native source state: {payload}",
-                scenario.expected_state
-            ));
-        }
-    }
-
-    let mut human_cmd = command_env.cass_std_command();
-    human_cmd
-        .args(["sources", "doctor"])
-        .current_dir(&case_root)
-        .env("HOME", &case_root)
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .env("CASS_DATA_DIR", &data_dir)
-        .env("CASS_TEST_SOURCES_DOCTOR_PROBE", &probe_path)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .env("NO_COLOR", "1");
-    let human_output = util::timeout::spawn_with_timeout_or_diag(
-        human_cmd,
-        &format!("{}_human", scenario.expected_state),
-        Some(&data_dir),
-        std::time::Duration::from_secs(10),
-    );
-    let human_exit = human_output.status.code().ok_or_else(|| {
-        format!(
-            "{} human: cass terminated by signal",
-            scenario.expected_state
-        )
-    })?;
-    if human_exit != 1 {
-        return Err(format!(
-            "{} human: unhealthy native source state must exit 1, got exit={human_exit}, stdout={}, stderr={}",
-            scenario.expected_state,
-            String::from_utf8_lossy(&human_output.stdout),
-            String::from_utf8_lossy(&human_output.stderr)
-        ));
-    }
-    let human = String::from_utf8(human_output.stdout)
-        .map_err(|err| format!("{} human stdout not UTF-8: {err}", scenario.expected_state))?;
-    let expected_codes = format!(
-        "State codes: source={} host={host_status}",
-        scenario.expected_state
-    );
-    if !human.contains(&expected_codes)
-        || !human.contains(&format!("Next safe command: {safe_next}"))
-        || !human.contains("Readiness: attention-required")
-        || !human.contains("Host reached: yes")
-        || !human.contains("Why: ")
-    {
-        return Err(format!(
-            "{}: human/robot native-state parity failed; expected codes={expected_codes:?}, safe_next={safe_next:?}, stdout={human}",
-            scenario.expected_state
-        ));
-    }
-
-    let sync_after = read_optional_bytes(&sync_status_path)
-        .map_err(|err| format!("{}: re-read sync status: {err}", scenario.expected_state))?;
-    let db_after = read_optional_bytes(&db_path)
-        .map_err(|err| format!("{}: re-read fixture DB: {err}", scenario.expected_state))?;
-    let config_after = fs::read(config_dir.join("cass/sources.toml"))
-        .map_err(|err| format!("{}: re-read config: {err}", scenario.expected_state))?;
-    let probe_after = fs::read(&probe_path)
-        .map_err(|err| format!("{}: re-read probe: {err}", scenario.expected_state))?;
-    let mirror_after = read_optional_bytes(&mirror_marker)
-        .map_err(|err| format!("{}: re-read mirror marker: {err}", scenario.expected_state))?;
-    let data_members_after = directory_membership(&data_dir)
-        .map_err(|err| format!("{}: re-list data dir: {err}", scenario.expected_state))?;
-    let remotes_members_after = directory_membership(&data_dir.join("remotes"))
-        .map_err(|err| format!("{}: re-list remotes dir: {err}", scenario.expected_state))?;
-    let mirror_members_after = directory_membership(&mirror_dir)
-        .map_err(|err| format!("{}: re-list mirror dir: {err}", scenario.expected_state))?;
-    if !config_after.cmp(&config_before).is_eq()
-        || !probe_after.cmp(&probe_before).is_eq()
-        || !sync_after.cmp(&sync_before).is_eq()
-        || !db_after.cmp(&db_before).is_eq()
-        || !mirror_after.cmp(&mirror_before).is_eq()
-        || !data_members_after.cmp(&data_members_before).is_eq()
-        || !remotes_members_after.cmp(&remotes_members_before).is_eq()
-        || !mirror_members_after.cmp(&mirror_members_before).is_eq()
-    {
-        return Err(format!(
-            "{}: sources doctor mutated fixture evidence",
-            scenario.expected_state
-        ));
-    }
-
-    Ok(())
-}
-
-/// Bead hv29t: drive every reachable source-doctor failure state through the
-/// real `cass` binary while injecting only the external SSH probe facts. The
-/// live reducers still assess version skew, gather cass-owned local sync/index
-/// evidence, apply preservation precedence, build the health report, and
-/// serialize the robot envelope.
-#[test]
-fn sources_doctor_reachable_states_use_live_real_binary_reduction() -> Result<(), String> {
-    let tracker = tracker_for("sources_doctor_reachable_states_use_live_real_binary_reduction");
-    let command_env = tracker.command_environment();
-    let scenarios = [
-        ReachableDoctorScenario {
-            expected_state: "cass_missing",
-            cass_version: None,
-            remote_path: "nonempty",
-            local_mirror_nonempty: false,
-            sync: ReachableDoctorSyncFixture::None,
-        },
-        ReachableDoctorScenario {
-            expected_state: "old_cass",
-            cass_version: Some("0.0.1"),
-            remote_path: "nonempty",
-            local_mirror_nonempty: false,
-            sync: ReachableDoctorSyncFixture::None,
-        },
-        ReachableDoctorScenario {
-            expected_state: "mirror_ahead",
-            cass_version: Some(env!("CARGO_PKG_VERSION")),
-            remote_path: "empty",
-            local_mirror_nonempty: true,
-            sync: ReachableDoctorSyncFixture::None,
-        },
-        ReachableDoctorScenario {
-            expected_state: "mirror_behind",
-            cass_version: Some(env!("CARGO_PKG_VERSION")),
-            remote_path: "nonempty",
-            local_mirror_nonempty: false,
-            sync: ReachableDoctorSyncFixture::Failed,
-        },
-        ReachableDoctorScenario {
-            expected_state: "stale_index",
-            cass_version: Some(env!("CARGO_PKG_VERSION")),
-            remote_path: "nonempty",
-            local_mirror_nonempty: false,
-            sync: ReachableDoctorSyncFixture::FutureSuccessful,
-        },
-        ReachableDoctorScenario {
-            expected_state: "remote_pruned",
-            cass_version: Some(env!("CARGO_PKG_VERSION")),
-            remote_path: "missing",
-            local_mirror_nonempty: true,
-            sync: ReachableDoctorSyncFixture::Failed,
-        },
-        ReachableDoctorScenario {
-            expected_state: "source_root_unreadable",
-            cass_version: Some(env!("CARGO_PKG_VERSION")),
-            remote_path: "missing",
-            local_mirror_nonempty: false,
-            sync: ReachableDoctorSyncFixture::None,
-        },
-    ];
-    let tmp = tempfile::tempdir().map_err(|err| format!("create fixture root: {err}"))?;
-
-    for scenario in scenarios {
-        prove_reachable_source_doctor_scenario(&command_env, tmp.path(), scenario)?;
-    }
-
-    tracker.complete();
-    Ok(())
 }
 
 // =============================================================================
@@ -5172,19 +4314,6 @@ to = "/work/projects"
             fs::write(config_dir.join("cass/.sources.toml.tmp.4242"), b"partial")
                 .expect("write interrupted-write leftover");
         }
-        let probe_path = tmp.path().join("probe.json");
-        fs::write(
-            &probe_path,
-            serde_json::to_vec(&serde_json::json!({
-                "host": "fixture@box.test",
-                "os": "Linux",
-                "cass_version": env!("CARGO_PKG_VERSION"),
-                "remote_path": "nonempty",
-                "delay_ms": 0,
-            }))
-            .expect("serialize probe"),
-        )
-        .expect("write probe");
         let mut cmd = tracker.cass_std_command();
         cmd.args(["sources", "doctor", "--json"])
             .current_dir(tmp.path())
@@ -5193,8 +4322,6 @@ to = "/work/projects"
             .env("XDG_CACHE_HOME", tmp.path().join("cache"))
             .env("CASS_DATA_DIR", &data_dir)
             .env("PATH", &empty_bin)
-            .env("CASS_TEST_SOURCES_DOCTOR_PROBE", &probe_path)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("NO_COLOR", "1");
         let output = util::timeout::spawn_with_timeout_or_diag(
             cmd,

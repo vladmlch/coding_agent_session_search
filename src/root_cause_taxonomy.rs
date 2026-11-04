@@ -4,7 +4,7 @@
 //! ("Define root-cause attribution taxonomy for CASS diagnostics").
 //!
 //! This module is the single, stable, machine-consumable vocabulary that lets
-//! `status`, `doctor`, fleet probes, and incident mining attribute a failure to
+//! `status`, `doctor`, and incident mining attribute a failure to
 //! a *family* of root causes **without parsing human prose**. The motivating
 //! observation is that dependency and host issues routinely masquerade as CASS
 //! failures — frankensqlite `OpenRead`/FTS noise reads like a CASS bug, host
@@ -15,7 +15,7 @@
 //! distinction explicit and actionable.
 //!
 //! Consumers (the dependents of this bead — `9.2` projects the family into
-//! status/doctor/fleet output; `10.1` builds the incident-mining schema on top;
+//! status/doctor output; `10.1` builds the incident-mining schema on top;
 //! `14.1` layers a storage-integrity sub-taxonomy) should depend ONLY on the
 //! stable string values and the structured fields here, never on the `Debug`
 //! representation or any prose.
@@ -52,9 +52,6 @@ pub enum RootCauseFamily {
     /// The asupersync async runtime is the proximate cause (task starvation,
     /// blocking-on-runtime, cancellation/`Cx` propagation faults).
     AsupersyncRuntime,
-    /// Remote transport or authentication for sources/mirrors (rsync/scp/ssh2,
-    /// expired credentials, host-key/permission failures, network timeouts).
-    RemoteTransportAuth,
     /// Semantic assets are missing, partial, or incompatible (embedding model
     /// download, ONNX runtime, vector index build artifacts).
     SemanticAssets,
@@ -79,12 +76,11 @@ impl RootCauseFamily {
     /// Every family, in a stable, exhaustive order. The compiler-checked match
     /// in [`RootCauseFamily::as_str`] keeps this array honest: adding a variant
     /// without extending both sites fails to build.
-    pub const ALL: [RootCauseFamily; 11] = [
+    pub const ALL: [RootCauseFamily; 10] = [
         RootCauseFamily::CassDerivedState,
         RootCauseFamily::FrankensqliteStorage,
         RootCauseFamily::FrankensearchSearch,
         RootCauseFamily::AsupersyncRuntime,
-        RootCauseFamily::RemoteTransportAuth,
         RootCauseFamily::SemanticAssets,
         RootCauseFamily::WorkspaceProvenance,
         RootCauseFamily::HostDiskPressure,
@@ -102,7 +98,6 @@ impl RootCauseFamily {
             RootCauseFamily::FrankensqliteStorage => "frankensqlite-storage",
             RootCauseFamily::FrankensearchSearch => "frankensearch-search",
             RootCauseFamily::AsupersyncRuntime => "asupersync-runtime",
-            RootCauseFamily::RemoteTransportAuth => "remote-transport-auth",
             RootCauseFamily::SemanticAssets => "semantic-assets",
             RootCauseFamily::WorkspaceProvenance => "workspace-provenance",
             RootCauseFamily::HostDiskPressure => "host-disk-pressure",
@@ -123,7 +118,6 @@ impl RootCauseFamily {
             RootCauseFamily::FrankensqliteStorage
             | RootCauseFamily::FrankensearchSearch
             | RootCauseFamily::AsupersyncRuntime
-            | RootCauseFamily::RemoteTransportAuth
             | RootCauseFamily::SemanticAssets => FaultLocus::Dependency,
             RootCauseFamily::HostDiskPressure | RootCauseFamily::HostOomLoad => FaultLocus::Host,
             RootCauseFamily::OldBinarySkew => FaultLocus::BinarySkew,
@@ -219,24 +213,6 @@ semantic/lexical divergence beyond the documented fail-open contract.",
 a runtime fault. Attribute here only when work stalls with no underlying I/O \
 progress, or cancellation/timeout fails to take effect.",
             },
-            RootCauseFamily::RemoteTransportAuth => RootCauseDescriptor {
-                family: self,
-                title: "remote transport or authentication fault",
-                examples: &[
-                    "rsync/scp over system OpenSSH fails before the ssh2 fallback",
-                    "expired credentials or host-key mismatch on a remote mirror",
-                    "network timeout pulling a remote source",
-                ],
-                typical_evidence: &[
-                    "transport.ssh_exit_code",
-                    "transport.auth_failure",
-                    "transport.connect_timeout_ms",
-                ],
-                first_probe: "cass sources probe --json",
-                false_positive_guidance: "A locally-configured source with no remote does not \
-belong here. Distinguish transport/auth failure from a missing or misconfigured \
-source path (which is workspace-provenance).",
-            },
             RootCauseFamily::SemanticAssets => RootCauseDescriptor {
                 family: self,
                 title: "semantic assets missing or incompatible",
@@ -315,7 +291,7 @@ well above core count — not merely a busy machine.",
                 examples: &[
                     "running binary predates the on-disk schema or contract version",
                     "a requested flag is missing because the installed build is stale",
-                    "fleet nodes report different api-version values",
+                    "a stored record was written by a newer contract version",
                 ],
                 typical_evidence: &[
                     "binary.api_version",
@@ -325,7 +301,7 @@ well above core count — not merely a busy machine.",
                 first_probe: "cass api-version --json",
                 false_positive_guidance: "A version difference within the supported compatibility \
 window is not skew. Attribute here only when the binary's contract/api version is \
-behind what the on-disk state or the fleet requires.",
+behind what the on-disk state requires.",
             },
             RootCauseFamily::Unknown => RootCauseDescriptor {
                 family: self,
@@ -485,7 +461,7 @@ impl EvidenceRef {
 }
 
 /// The structured attribution record a diagnostic surface emits. This is the
-/// machine contract consumed by status/doctor/fleet/incident mining: a family,
+/// machine contract consumed by status/doctor/incident mining: a family,
 /// a confidence, the evidence behind it, a short summary, and the recommended
 /// next bounded probe. Serializes with stable snake_case field names and an
 /// embedded [`schema_version`](Self::schema_version).
@@ -568,13 +544,13 @@ mod tests {
 
     #[test]
     fn all_families_present_unique_and_include_unknown() {
-        // The bead requires exactly these eleven families.
+        // The bead required eleven families; remote-transport-auth was removed
+        // with the fleet/remote machinery (Task 8, local-only).
         let required = [
             "cass-derived-state",
             "frankensqlite-storage",
             "frankensearch-search",
             "asupersync-runtime",
-            "remote-transport-auth",
             "semantic-assets",
             "workspace-provenance",
             "host-disk-pressure",
@@ -665,7 +641,6 @@ mod tests {
             RootCauseFamily::FrankensqliteStorage,
             RootCauseFamily::FrankensearchSearch,
             RootCauseFamily::AsupersyncRuntime,
-            RootCauseFamily::RemoteTransportAuth,
             RootCauseFamily::SemanticAssets,
         ] {
             assert_eq!(

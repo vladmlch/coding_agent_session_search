@@ -971,38 +971,6 @@ mod tests {
         assert_eq!(fs::read(&bookmarks).unwrap(), pre.to_vec());
     }
 
-    /// fm-update_check-clock-rollback: `last_check_ts` is in the future
-    /// (clock rolled back). Doctor fix: rewrite the update_check cache file
-    /// with `last_check_ts: null`.
-    #[test]
-    fn pass5_fixture_fm_update_check_clock_rollback() {
-        let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().to_path_buf();
-        let cache = data_dir.join("update_check.json");
-        let pre = b"{\"last_check_ts\":99999999999,\"latest_version\":\"1.0\"}";
-        fs::write(&cache, pre).unwrap();
-        let run_id = RunId::from_parts("sha-uc", 1_700_000_000_000);
-        let _ = crate::doctor_runs::create_run_dir(&data_dir, &run_id).unwrap();
-
-        let new_content = b"{\"last_check_ts\":null,\"latest_version\":\"1.0\"}";
-        let receipt = mutate(MutationRequest {
-            run_id: run_id.clone(),
-            data_dir: data_dir.clone(),
-            fm_id: "fm-update_check-clock-rollback".into(),
-            path: cache.clone(),
-            op: Op::Write {
-                content: new_content.to_vec(),
-            },
-        })
-        .expect("write ok");
-        assert_eq!(fs::read(&cache).unwrap(), new_content.to_vec());
-        let run_dir = crate::doctor_runs::run_dir_for(&data_dir, &run_id);
-        let backup_full = run_dir
-            .join("backups")
-            .join(receipt.backup_relative_path.unwrap());
-        assert_eq!(fs::read(&backup_full).unwrap(), pre.to_vec());
-    }
-
     /// fm-html_export-output-not-writable: the output dir doesn't exist yet.
     /// Doctor fix: create the dir via Op::CreateDir (idempotent — second
     /// call is a no-op).
@@ -1660,27 +1628,6 @@ mod tests {
         })
         .expect("quarantine ok");
         assert!(!marker.exists());
-    }
-
-    /// fm-update_check-shell-injection-self-update: a regression detector.
-    /// Inform-only — refused via path scope.
-    #[test]
-    fn pass7_fixture_fm_update_check_shell_injection_regression() {
-        let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().to_path_buf();
-        let outside = tmp.path().join("../src/update_check.rs");
-        let run_id = RunId::from_parts("sha-shell", 1_700_000_000_000);
-        let _ = crate::doctor_runs::create_run_dir(&data_dir, &run_id).unwrap();
-        let res = mutate(MutationRequest {
-            run_id,
-            data_dir,
-            fm_id: "fm-update_check-shell-injection-self-update".into(),
-            path: outside,
-            op: Op::Write {
-                content: b"// canary".to_vec(),
-            },
-        });
-        assert!(matches!(res, Err(ChokepointError::PathOutOfScope(_))));
     }
 
     /// fm-cache-search-query-lock-poisoning: a regression detector.

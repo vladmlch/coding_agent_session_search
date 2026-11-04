@@ -21,7 +21,7 @@
 //!
 //! | Group       | Actions                                                    |
 //! |-------------|------------------------------------------------------------|
-//! | Chrome      | ToggleTheme, ToggleDensity, ToggleHelpStrip, OpenUpdate    |
+//! | Chrome      | ToggleTheme, ToggleDensity, ToggleHelpStrip                |
 //! | Filter      | FilterAgent, FilterWorkspace, FilterToday/Week/CustomDate  |
 //! | View        | OpenSavedViews, CycleGrouping, SaveViewSlot, LoadViewSlot, BulkActions, ReloadIndex |
 //! | Analytics   | AnalyticsDashboard..AnalyticsCoverage                      |
@@ -105,7 +105,7 @@ fn fuzzy_match(text: &str, pattern: &str) -> bool {
 /// icons, and migration validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PaletteGroup {
-    /// UI chrome toggles: theme, density, help strip, update banner.
+    /// UI chrome toggles: theme, density, help strip.
     Chrome,
     /// Data filters: agent, workspace, time-range.
     Filter,
@@ -153,7 +153,6 @@ pub enum PaletteAction {
     ToggleTheme,
     ToggleDensity,
     ToggleHelpStrip,
-    OpenUpdateBanner,
     FilterAgent,
     FilterWorkspace,
     FilterToday,
@@ -189,10 +188,7 @@ impl PaletteAction {
     /// Returns the categorical group this action belongs to.
     pub fn group(&self) -> PaletteGroup {
         match self {
-            Self::ToggleTheme
-            | Self::ToggleDensity
-            | Self::ToggleHelpStrip
-            | Self::OpenUpdateBanner => PaletteGroup::Chrome,
+            Self::ToggleTheme | Self::ToggleDensity | Self::ToggleHelpStrip => PaletteGroup::Chrome,
             Self::FilterAgent
             | Self::FilterWorkspace
             | Self::FilterToday
@@ -231,7 +227,6 @@ impl PaletteAction {
             Self::ToggleTheme => "ThemeToggled",
             Self::ToggleDensity => "DensityModeCycled",
             Self::ToggleHelpStrip => "HelpPinToggled",
-            Self::OpenUpdateBanner => "update_info inline (no CassMsg)",
             // Filter
             Self::FilterAgent => "InputModeEntered(Agent)",
             Self::FilterWorkspace => "InputModeEntered(Workspace)",
@@ -281,8 +276,6 @@ pub enum PaletteResult {
     CycleDensity,
     /// Toggle the help strip visibility.
     ToggleHelpStrip,
-    /// Open/check the update banner.
-    OpenUpdateBanner,
     /// Enter an input mode for filtering.
     EnterInputMode(InputModeTarget),
     /// Set a time filter (epoch seconds).
@@ -360,7 +353,6 @@ impl PaletteAction {
             Self::ToggleTheme => PaletteResult::ToggleTheme,
             Self::ToggleDensity => PaletteResult::CycleDensity,
             Self::ToggleHelpStrip => PaletteResult::ToggleHelpStrip,
-            Self::OpenUpdateBanner => PaletteResult::OpenUpdateBanner,
             // Filters
             Self::FilterAgent => PaletteResult::EnterInputMode(InputModeTarget::Agent),
             Self::FilterWorkspace => PaletteResult::EnterInputMode(InputModeTarget::Workspace),
@@ -525,11 +517,6 @@ pub fn default_actions() -> Vec<PaletteItem> {
             PaletteAction::ToggleHelpStrip,
             "Toggle help strip",
             shortcuts::HELP,
-        ),
-        item(
-            PaletteAction::OpenUpdateBanner,
-            "Check updates",
-            "Show update assistant",
         ),
         item(
             PaletteAction::FilterAgent,
@@ -1067,7 +1054,6 @@ mod tests {
             PaletteAction::ToggleTheme,
             PaletteAction::ToggleDensity,
             PaletteAction::ToggleHelpStrip,
-            PaletteAction::OpenUpdateBanner,
             PaletteAction::FilterAgent,
             PaletteAction::FilterWorkspace,
             PaletteAction::FilterToday,
@@ -1104,7 +1090,6 @@ mod tests {
             PaletteAction::ToggleTheme,
             PaletteAction::ToggleDensity,
             PaletteAction::ToggleHelpStrip,
-            PaletteAction::OpenUpdateBanner,
             PaletteAction::FilterAgent,
             PaletteAction::FilterWorkspace,
             PaletteAction::FilterToday,
@@ -1140,10 +1125,6 @@ mod tests {
         assert_eq!(PaletteAction::ToggleTheme.group(), PaletteGroup::Chrome);
         assert_eq!(PaletteAction::ToggleDensity.group(), PaletteGroup::Chrome);
         assert_eq!(PaletteAction::ToggleHelpStrip.group(), PaletteGroup::Chrome);
-        assert_eq!(
-            PaletteAction::OpenUpdateBanner.group(),
-            PaletteGroup::Chrome
-        );
     }
 
     #[test]
@@ -1218,7 +1199,6 @@ mod tests {
             PaletteAction::ToggleTheme,
             PaletteAction::ToggleDensity,
             PaletteAction::ToggleHelpStrip,
-            PaletteAction::OpenUpdateBanner,
             PaletteAction::FilterAgent,
             PaletteAction::FilterWorkspace,
             PaletteAction::FilterToday,
@@ -1290,10 +1270,6 @@ mod tests {
         assert_eq!(
             PaletteAction::ToggleHelpStrip.dispatch(),
             PaletteResult::ToggleHelpStrip
-        );
-        assert_eq!(
-            PaletteAction::OpenUpdateBanner.dispatch(),
-            PaletteResult::OpenUpdateBanner
         );
     }
 
@@ -1421,7 +1397,6 @@ mod tests {
             PaletteAction::ToggleTheme,
             PaletteAction::ToggleDensity,
             PaletteAction::ToggleHelpStrip,
-            PaletteAction::OpenUpdateBanner,
             PaletteAction::FilterAgent,
             PaletteAction::FilterWorkspace,
             PaletteAction::FilterToday,

@@ -3,14 +3,13 @@
 Bead: `coding_agent_session_search-cass-fleet-resilience-20260608-uojcg.15.5`.
 
 > Generated from `src/subsystem_coverage_matrix.rs`. Do not edit by hand —
-> run `UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target \
-> cargo test --lib subsystem_coverage_matrix` to regenerate after changing
-> the matrix, and review the diff.
+> run `UPDATE_GOLDENS=1 cargo test --lib subsystem_coverage_matrix` to
+> regenerate after changing the matrix, and review the diff.
 
 This is the **executable** counterpart of
 [`RESILIENCE_TEST_MATRIX.md`](RESILIENCE_TEST_MATRIX.md) (bead `.12.1`):
 the same coverage encoded as data that a test checks against the real
-repository. The closeout gate fails when any of the 15 report
+repository. The closeout gate fails when any of the 14 report
 subsystem failure-mode files has no owning bead, no mandatory proof
 level, no proof artifact, no logging expectation, or cites a proof
 artifact that does not exist on disk (the "only prose evidence"
@@ -175,12 +174,12 @@ be silently skipped during closeout.
 - **Owning beads:** .8, .8.1, .8.2, .8.4, .8.5
 - **Failure modes:** fm-sources-rsync-not-on-path, fm-sources-toml-malformed, fm-sources-toctou-existence-race
 - **Mandatory proofs:** unit, integration, golden
-- **Proof artifacts:** `src/source_doctor_health.rs`, `tests/e2e_sources.rs`, `tests/setup_workflow.rs`
+- **Proof artifacts:** `src/sources/config_validation.rs`, `tests/e2e_sources.rs`, `tests/setup_workflow.rs`
 - **Optional diagnostics:** live SSH source probe (opt-in)
 - **Fixture provenance:** synthetic sources.toml + mirror dirs; no SSH session opened at test time
 - **Log expectation:** deterministic --lib result line; structured logs for e2e source flows
 - **Redaction:** local-only
-- **Closure evidence:** cargo test --lib source_doctor_health + e2e_sources
+- **Closure evidence:** cargo test --test e2e_sources result line
 
 ### storage
 
@@ -205,18 +204,6 @@ be silently skipped during closeout.
 - **Log expectation:** structured proof-log over the human/robot parity gate
 - **Redaction:** redact-required
 - **Closure evidence:** cargo test --test e2e_human_robot_parity_gate result line
-
-### update_check
-
-- **Owning beads:** .15.4
-- **Failure modes:** fm-update-shell-injection, fm-update-clock-rollback
-- **Mandatory proofs:** unit
-- **Proof artifacts:** `src/update_check.rs`, `src/metric_integrity.rs`
-- **Optional diagnostics:** live update-channel probe (opt-in)
-- **Fixture provenance:** synthetic version strings + clock values; no network at test time
-- **Log expectation:** deterministic --lib result line for sanitized-arg and clock-rollback paths
-- **Redaction:** no-user-content
-- **Closure evidence:** cargo test --lib update_check result line
 
 ---
 

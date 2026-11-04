@@ -62,7 +62,6 @@ and inspect their fingerprints before any mutation.
    - `coverage_risk.status`
    - `source_authority.authority_level`
    - `raw_mirror.status`
-   - `remote_source_sync.status`
    - `storage_pressure.status`
    - `repair_failure_marker.status`
 
@@ -93,8 +92,9 @@ Important fields:
   remaining archival copy.
 - `source_authority` explains whether the live source, raw mirror, verified
   backup, or current DB is the authority for a repair.
-- `remote_source_sync` classifies remote gaps such as unavailable hosts, pruned
-  upstream paths, local archive ahead of remote, and verified remote copies.
+- Configured remote sources are reported as local warnings only: cass is
+  local-only and never probes them. Historical remote-origin records stay
+  readable from the archive and its local mirrors.
 
 Treat missing upstream files as a preservation warning, not proof that the cass
 archive is bad. If `sole_copy_warnings` is non-empty, take an archive export or
@@ -394,19 +394,15 @@ Install models only when the operator consents:
 cass models install --json
 ```
 
-### Remote Sync Gaps
+### Configured Remote Sources
 
-Symptom: `remote_source_sync.status` or `source_inventory` reports unavailable
-hosts, pruned paths, or local archive ahead of remote.
+Symptom: `cass sources doctor --json` warns about configured remote sources.
 
-Action: preserve local cass evidence, then run:
-
-```bash
-cass sources sync --all --json
-```
-
-If the remote harness pruned logs, do not assume a local archive row is invalid.
-Use `source_authority` and `coverage_summary`.
+Action: none inside cass. Remote transports were removed by the local-only
+conversion, so a configured remote host is diagnosed locally and never probed.
+Previously synced mirrors under the data dir and archived remote-origin rows
+remain searchable. If upstream logs were pruned, do not assume a local archive
+row is invalid — use `source_authority` and `coverage_summary`.
 
 ### Failed Post-Repair Probes
 

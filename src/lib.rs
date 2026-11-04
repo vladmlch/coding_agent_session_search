@@ -29,12 +29,6 @@ pub mod encryption;
 pub mod evidence_bundle;
 pub mod explainability;
 pub mod export;
-pub mod fleet_archive_coverage;
-pub mod fleet_doctor_schema;
-pub mod fleet_platform_compat;
-pub mod fleet_probe;
-pub mod fleet_upgrade_rehearsal;
-pub mod fleet_version_skew;
 mod followup_coordinates;
 pub mod franken_sync;
 pub mod ftui_harness;
@@ -55,7 +49,6 @@ pub mod query_cost_planner;
 pub mod raw_mirror;
 pub(crate) mod recipes_robot_docs;
 pub(crate) mod recovery_support_bundle;
-pub mod release_verify;
 pub mod resource_plan;
 pub mod robot_budget_envelope;
 pub mod root_cause_projection;
@@ -64,7 +57,6 @@ pub mod schedule;
 pub mod search;
 pub mod search_defaults;
 pub mod search_quality_eval;
-pub mod source_doctor_health;
 pub mod source_onboarding;
 pub mod sources;
 pub mod storage;
@@ -74,7 +66,6 @@ pub mod top_session_summary;
 pub mod topology_budget;
 pub mod tui_asciicast;
 pub mod ui;
-pub mod update_check;
 pub mod workflow_macros;
 
 /// Shut down synchronous bridge runtimes cached on the calling thread.
@@ -1028,12 +1019,11 @@ pub enum Commands {
     /// Dry-run is the default. `--apply` automatically evaluates only closed,
     /// read-only proof adapters and requires an explicit confirmation for each
     /// mutating step; macro strings are never evaluated by a shell. Maps an
-    /// operator intent (fix-ci, investigate-search-miss, prepare-release,
-    /// repair-assets, export-session, onboard-source, support-capsule) to an
-    /// exact safe command plan — steps, prerequisites, proof gates, forbidden
-    /// shortcuts, rch target-dir hints, cost/risk, privacy notes, and stop
-    /// conditions. Never launches a bare TUI. Omit the intent to list the known
-    /// intents.
+    /// operator intent (investigate-search-miss, repair-assets, export-session,
+    /// onboard-source, support-capsule) to an exact safe command plan — steps,
+    /// prerequisites, proof gates, forbidden shortcuts, cost/risk, privacy
+    /// notes, and stop conditions. Never launches a bare TUI. Omit the intent
+    /// to list the known intents.
     Guide {
         /// Operator intent to plan (omit to list the known intents). Multiple
         /// words are joined, e.g. `cass guide rebuild index`.
@@ -1065,10 +1055,6 @@ pub enum Commands {
         /// reviewing the resource what-if result.
         #[arg(long)]
         accept_cost_risk: Option<String>,
-        /// Permit steps whose macro policy requires rch offload. This does not
-        /// permit a shell or an unallowlisted executable.
-        #[arg(long, default_value_t = false)]
-        allow_rch: bool,
         /// Assert that every declared stop condition was checked and is clear.
         /// An observed triggered stop condition always wins over this assertion.
         #[arg(long, default_value_t = false)]
@@ -1354,39 +1340,6 @@ pub enum Commands {
         #[arg(long, default_value_t = false, conflicts_with = "json")]
         shell: bool,
         /// Output as JSON (for automation)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-    },
-    /// Check for a newer cass release and (optionally) install it.
-    ///
-    /// Without flags, prompts y/N before running the same checksum-
-    /// verified installer the TUI uses. Useful in headless environments
-    /// where `cass tui` would never fire its own update prompt.
-    ///
-    /// Examples:
-    ///
-    ///   cass upgrade                      # interactive prompt
-    ///   cass upgrade --check              # print versions, exit non-zero if outdated
-    ///   cass upgrade --yes                # install without asking
-    ///   cass upgrade --force --check      # skip the 1-hour cadence
-    Upgrade {
-        /// Print current vs latest version and exit. No install.
-        /// Exits 0 when up to date, 1 when an update is available.
-        #[arg(long, default_value_t = false, conflicts_with = "yes")]
-        check: bool,
-        /// Bypass the 1-hour update-check cadence and re-fetch the
-        /// GitHub release API immediately. Combine with `--check`
-        /// to refresh status without installing.
-        #[arg(long, default_value_t = false)]
-        force: bool,
-        /// Skip the interactive prompt and run the installer
-        /// immediately. Suitable for scripts; mutually exclusive
-        /// with `--check`.
-        #[arg(long, short = 'y', default_value_t = false)]
-        yes: bool,
-        /// Output as JSON (for automation). Combines naturally with
-        /// `--check`; ignored when an install actually runs because
-        /// the installer execs over the current process.
         #[arg(long, visible_alias = "robot")]
         json: bool,
     },
@@ -1784,9 +1737,6 @@ pub enum Commands {
     /// Manage semantic search models
     #[command(subcommand)]
     Models(ModelsCommand),
-    /// Fleet-safe upgrade rehearsal and bounded post-upgrade verification
-    #[command(subcommand)]
-    Fleet(FleetCommand),
     /// Import data from external sources
     #[command(subcommand)]
     Import(ImportCommand),
@@ -1804,46 +1754,6 @@ pub enum Commands {
     /// ```
     #[command(subcommand)]
     Analytics(AnalyticsCommand),
-
-    /// Verify release distribution channels (GitHub, Homebrew, Scoop, crates.io, installer).
-    ///
-    /// Robot-safe: `--from <file|->` evaluates a recorded observation JSON
-    /// offline (CI/agents), while `--live` gathers per-channel observations over
-    /// the network. Prints a ReleaseVerificationReport as JSON.
-    ReleaseVerify {
-        /// Read a ReleaseVerifyRequest JSON from a file (or `-` for stdin) and
-        /// evaluate it offline. Mutually exclusive with --live.
-        #[arg(long, value_hint = ValueHint::FilePath, conflicts_with = "live")]
-        from: Option<String>,
-
-        /// Gather live per-channel observations over the network (explicit opt-in).
-        #[arg(long)]
-        live: bool,
-
-        /// Expected release version under test (required for --live).
-        #[arg(long)]
-        expected_version: Option<String>,
-
-        /// GitHub owner/repo for the release channel (defaults to the cass repo).
-        #[arg(long)]
-        repo: Option<String>,
-
-        /// crates.io crate name (defaults to the cass crate).
-        #[arg(long)]
-        crate_name: Option<String>,
-
-        /// Raw URL of the Homebrew formula file (enables the homebrew channel).
-        #[arg(long)]
-        homebrew_formula_url: Option<String>,
-
-        /// Raw URL of the Scoop manifest JSON (enables the scoop channel).
-        #[arg(long)]
-        scoop_manifest_url: Option<String>,
-
-        /// Output as JSON (`--robot` also works). Default for this command.
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-    },
 
     /// Run the semantic model daemon (Unix only)
     #[cfg(unix)]
@@ -2439,50 +2349,6 @@ pub enum ModelsCommand {
         /// Output as JSON (`--robot` also works)
         #[arg(long, visible_alias = "robot")]
         json: bool,
-    },
-}
-
-/// Subcommands for fleet-safe upgrade rehearsal and bounded post-upgrade
-/// verification (bead coding_agent_session_search-sc8sp). This surfaces the pure
-/// composition core in [`crate::fleet_upgrade_rehearsal`] (beads 6.6/6.3/6.4)
-/// through a read-only, local-by-default CLI command. The rehearsal is a dry run
-/// that never mutates a host; `--live` opt-in adds bounded SSH probes of
-/// configured remote sources, and `--verify` drives the bounded post-upgrade
-/// check battery against the local binary via the shared E2E runner (bead 12.2),
-/// classifying each into a proof artifact (bead 12.3).
-#[derive(Subcommand, Debug, Clone)]
-pub enum FleetCommand {
-    /// Rehearse the fleet-safe upgrade journey (dry run): per-host plan with
-    /// archive-risk preflight, separately gated upgrade actions, and the bounded
-    /// post-upgrade checks each action must clear.
-    UpgradeRehearsal {
-        /// Version the fleet is converging to (default: this binary's version).
-        #[arg(long)]
-        target_version: Option<String>,
-        /// Opt in to live SSH probes of configured remote sources. Without it the
-        /// rehearsal covers the local host from cass-owned local evidence only and
-        /// never contacts a remote machine.
-        #[arg(long)]
-        live: bool,
-        /// With `--live`, limit the probe to a single configured source by name.
-        #[arg(long)]
-        source: Option<String>,
-        /// Also run the bounded post-upgrade check battery against the local host
-        /// and emit a classified `PostUpgradeVerification`.
-        #[arg(long)]
-        verify: bool,
-        /// Override data dir.
-        #[arg(long)]
-        data_dir: Option<PathBuf>,
-        /// Output as JSON (`--robot` also works).
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-        /// Overall wall-clock budget in milliseconds.
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        budget_ms: Option<u64>,
-        /// Per-remote-host wall-clock budget in milliseconds.
-        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
-        per_host_budget_ms: Option<u64>,
     },
 }
 
@@ -3187,7 +3053,6 @@ fn command_accepts_leading_structured_flag(command: &str) -> bool {
             | "doctor"
             | "expand"
             | "export-html"
-            | "fleet"
             | "guide"
             | "health"
             | "selftest"
@@ -3198,7 +3063,6 @@ fn command_accepts_leading_structured_flag(command: &str) -> bool {
             | "onboarding"
             | "pack"
             | "pages"
-            | "release-verify"
             | "resume"
             | "robot-docs"
             | "schedule"
@@ -3212,7 +3076,6 @@ fn command_accepts_leading_structured_flag(command: &str) -> bool {
             | "support-bundle"
             | "timeline"
             | "triage"
-            | "upgrade"
             | "view"
     )
 }
@@ -3247,10 +3110,9 @@ fn data_dir_insertion_index(rest: &[String], command_index: usize) -> Option<usi
                     .any(|candidate| action.eq_ignore_ascii_case(candidate))
             })
             .then_some(command_index + 2),
-        "fleet" => rest
-            .get(command_index + 1)
-            .is_some_and(|action| action.eq_ignore_ascii_case("upgrade-rehearsal"))
-            .then_some(command_index + 2),
+        // `fleet`, `release-verify`, and `upgrade` are removed commands: they
+        // never reach this rewrite because `removed_invocation_error` rejects
+        // them in `parse_cli` first, so they have no arm here.
         "analytics" => rest
             .get(command_index + 1)
             .is_some_and(|action| {
@@ -6222,10 +6084,8 @@ const CANONICAL_TOP_LEVEL_COMMANDS: &[&str] = &[
     "guide",
     "introspect",
     "api-version",
-    "release-verify",
     "robot-docs",
     "models",
-    "fleet",
     "quarantine",
     "sources",
     "analytics",
@@ -6243,7 +6103,6 @@ const CANONICAL_TOP_LEVEL_COMMANDS: &[&str] = &[
     "import",
     "daemon",
     "schedule",
-    "upgrade",
     "completions",
     "man",
     "tui",
@@ -6253,9 +6112,10 @@ const CANONICAL_TOP_LEVEL_COMMANDS: &[&str] = &[
 /// fuzzy typo attraction — only by exact spelling. `forget` deletes indexed
 /// data (its reparse failure also used to swallow the implicit-search
 /// fallback: `cass format` → "forget" → hard exit-2 instead of searching)
-/// and `upgrade` performs a release check / interactive install (`cass
-/// parade` executed it). Adversarial-review finding F1 on GH #367.
-const SIDE_EFFECT_EXACT_ONLY_COMMANDS: &[&str] = &["forget", "upgrade"];
+/// and `upgrade` used to perform a release check / interactive install
+/// (`cass parade` executed it) before the local-only port removed it.
+/// Adversarial-review finding F1 on GH #367.
+const SIDE_EFFECT_EXACT_ONLY_COMMANDS: &[&str] = &["forget"];
 
 /// A command invocation removed by the local-only port (cass-local plan,
 /// tasks 7–14).
@@ -6293,6 +6153,18 @@ const REMOVED_COMMANDS: &[RemovedCommand] = &[
         path: &["lessons"],
         hint: Some("cass search covers local session evidence"),
     },
+    RemovedCommand {
+        path: &["fleet"],
+        hint: Some("cass sources doctor covers local source diagnostics"),
+    },
+    RemovedCommand {
+        path: &["release-verify"],
+        hint: Some("cass runs fully local-only; no release channels are verified"),
+    },
+    RemovedCommand {
+        path: &["upgrade"],
+        hint: Some("reinstall with `cargo install --path . --locked`"),
+    },
 ];
 
 /// A flag (or specific flag values) removed from a command that otherwise
@@ -6315,7 +6187,12 @@ struct RemovedFlag {
 }
 
 /// Flags removed by the local-only port; see `RemovedFlag`.
-const REMOVED_FLAGS: &[RemovedFlag] = &[];
+const REMOVED_FLAGS: &[RemovedFlag] = &[RemovedFlag {
+    path: &["guide"],
+    flag: "allow-rch",
+    values: None,
+    hint: Some("the guide runs strictly local; there is no rch offload to permit"),
+}];
 
 /// Whether `name` is a removed *top-level* command: a one-word path in
 /// `removed_commands`. Removed names are excluded from fuzzy typo
@@ -6701,7 +6578,10 @@ mod canonical_top_level_command_tests {
     /// to `search "format"` and hard-failed on forget's required
     /// `--source-glob`; `cass parade` silently EXECUTED the upgrade
     /// release-check. Side-effectful commands dispatch on exact spelling
-    /// only.
+    /// only. The local-only port removed `upgrade` entirely: it is out of
+    /// the canonical list (the disjointness invariant pins that) and the
+    /// exact spelling now errors through `REMOVED_COMMANDS` instead of
+    /// dispatching.
     #[test]
     fn side_effectful_commands_are_never_typo_attractors() {
         for query_word in ["format", "forest", "forge", "forged", "fort"] {
@@ -6718,11 +6598,20 @@ mod canonical_top_level_command_tests {
                 "`cass {query_word}` must never execute the upgrade release-check"
             );
         }
-        // Exact spellings still dispatch (GH #367's actual fix is untouched).
+        // Exact spellings still dispatch (GH #367's actual fix is untouched)
+        // — but `upgrade` dispatches to the removed-command error, not to a
+        // release check.
         assert!(CANONICAL_TOP_LEVEL_COMMANDS.contains(&"forget"));
-        assert!(CANONICAL_TOP_LEVEL_COMMANDS.contains(&"upgrade"));
+        assert!(!CANONICAL_TOP_LEVEL_COMMANDS.contains(&"upgrade"));
         assert!(looks_like_top_level_command_or_typo("forget"));
-        assert!(looks_like_top_level_command_or_typo("upgrade"));
+        assert!(!looks_like_top_level_command_or_typo("upgrade"));
+        let args: Vec<String> = ["cass", "upgrade"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let error = removed_invocation_error(&args, REMOVED_COMMANDS, REMOVED_FLAGS)
+            .expect("`cass upgrade` must hit the removed-command table");
+        assert_eq!(error.kind, CliErrorKind::RemovedCommand.kind_str());
     }
 
     /// 2l1b0.51: an exact subcommand is never a typo. Before the fix every
@@ -9112,29 +9001,6 @@ async fn execute_cli(
                     let structured_format = resolve_subcommand_structured_format(cli, json);
                     run_api_version(structured_format)?;
                 }
-                Commands::ReleaseVerify {
-                    from,
-                    live,
-                    expected_version,
-                    repo,
-                    crate_name,
-                    homebrew_formula_url,
-                    scoop_manifest_url,
-                    json,
-                } => {
-                    let structured_format = resolve_subcommand_structured_format(cli, json);
-                    run_release_verify(
-                        structured_format,
-                        from.as_deref(),
-                        live,
-                        expected_version.as_deref(),
-                        repo.as_deref(),
-                        crate_name.as_deref(),
-                        homebrew_formula_url.as_deref(),
-                        scoop_manifest_url.as_deref(),
-                    )
-                    .await?;
-                }
                 Commands::State {
                     data_dir,
                     json,
@@ -9188,7 +9054,6 @@ async fn execute_cli(
                     confirm_fact,
                     accept_privacy_tier,
                     accept_cost_risk,
-                    allow_rch,
                     confirm_stop_conditions_clear,
                     json,
                 } => {
@@ -9204,7 +9069,6 @@ async fn execute_cli(
                         &confirm_fact,
                         accept_privacy_tier.as_deref(),
                         accept_cost_risk.as_deref(),
-                        allow_rch,
                         confirm_stop_conditions_clear,
                     )?;
                 }
@@ -9538,15 +9402,6 @@ async fn execute_cli(
                     let structured_format = resolve_subcommand_structured_format(cli, json);
                     run_resume(&path, agent.as_deref(), exec, shell, structured_format)?;
                 }
-                Commands::Upgrade {
-                    check,
-                    force,
-                    yes,
-                    json,
-                } => {
-                    let structured_format = resolve_subcommand_structured_format(cli, json);
-                    run_upgrade(check, force, yes, structured_format).await?;
-                }
                 Commands::Export {
                     path,
                     source,
@@ -9703,15 +9558,6 @@ async fn execute_cli(
                     let cli_clone = cli.clone();
                     let result = asupersync::runtime::spawn_blocking(move || {
                         run_models_command(subcmd, &cli_clone)
-                    })
-                    .await;
-                    result?;
-                }
-                Commands::Fleet(subcmd) => {
-                    let subcmd = subcmd.clone();
-                    let cli_clone = cli.clone();
-                    let result = asupersync::runtime::spawn_blocking(move || {
-                        run_fleet_command(subcmd, &cli_clone)
                     })
                     .await;
                     result?;
@@ -17516,7 +17362,6 @@ fn describe_command(cli: &Cli) -> String {
         Some(Commands::Bookmarks(_)) => "bookmarks".to_string(),
         Some(Commands::Capabilities { .. }) => "capabilities".to_string(),
         Some(Commands::ApiVersion { .. }) => "api-version".to_string(),
-        Some(Commands::ReleaseVerify { .. }) => "release-verify".to_string(),
         Some(Commands::State { .. }) => "state".to_string(),
         Some(Commands::Introspect { .. }) => "introspect".to_string(),
         Some(Commands::RobotDocs { topic }) => format!("robot-docs:{topic:?}"),
@@ -17528,7 +17373,6 @@ fn describe_command(cli: &Cli) -> String {
         Some(Commands::Context { .. }) => "context".to_string(),
         Some(Commands::Sessions { .. }) => "sessions".to_string(),
         Some(Commands::Resume { .. }) => "resume".to_string(),
-        Some(Commands::Upgrade { .. }) => "upgrade".to_string(),
         Some(Commands::Export { .. }) => "export".to_string(),
         Some(Commands::ExportHtml { .. }) => "export-html".to_string(),
         Some(Commands::Expand { .. }) => "expand".to_string(),
@@ -17538,7 +17382,6 @@ fn describe_command(cli: &Cli) -> String {
         Some(Commands::Mirror(..)) => "mirror".to_string(),
         Some(Commands::Sources(..)) => "sources".to_string(),
         Some(Commands::Models(..)) => "models".to_string(),
-        Some(Commands::Fleet(..)) => "fleet".to_string(),
         Some(Commands::Pages { .. }) => "pages".to_string(),
         #[cfg(unix)]
         Some(Commands::Daemon { .. }) => "daemon".to_string(),
@@ -19410,9 +19253,6 @@ fn is_robot_mode(command: &Commands, cli: &Cli) -> bool {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
         Commands::Resume { json, .. } => resolve_subcommand_structured_format(cli, *json).is_some(),
-        Commands::Upgrade { json, .. } => {
-            resolve_subcommand_structured_format(cli, *json).is_some()
-        }
         Commands::ExportHtml { json, .. } => {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
@@ -19424,7 +19264,6 @@ fn is_robot_mode(command: &Commands, cli: &Cli) -> bool {
         | Commands::Triage { json, .. }
         | Commands::SupportBundle { json, .. }
         | Commands::ApiVersion { json }
-        | Commands::ReleaseVerify { json, .. }
         | Commands::State { json, .. }
         | Commands::View { json, .. }
         | Commands::Capabilities { json }
@@ -19483,9 +19322,6 @@ fn is_robot_mode(command: &Commands, cli: &Cli) -> bool {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
         Commands::Models(ModelsCommand::BuildHnsw { json, .. }) => {
-            resolve_subcommand_structured_format(cli, *json).is_some()
-        }
-        Commands::Fleet(FleetCommand::UpgradeRehearsal { json, .. }) => {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
         Commands::Sources(_) => false,
@@ -19953,8 +19789,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
         ],
         RobotTopic::Env => vec![
             "env:".to_string(),
-            "  CODING_AGENT_SEARCH_NO_UPDATE_PROMPT=1   skip update prompt".to_string(),
-            "  TUI_HEADLESS=1                           skip update prompt".to_string(),
+            "  TUI_HEADLESS=1                           headless test runs (no interactive prompts)".to_string(),
             "  CASS_DATA_DIR                            override data dir".to_string(),
             "  CASS_DB_PATH                             override db path".to_string(),
             "  CASS_OUTPUT_FORMAT=json|jsonl|compact|sessions|toon  default structured output".to_string(),
@@ -19968,8 +19803,6 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "  CASS_SEARCH_BUDGET_MS=<N>                structured search worker budget in ms (default 120000; a positive effective search timeout overrides)".to_string(),
             "  CASS_TRIAGE_BUDGET_MS=<N>                robot triage probe budget in ms (default 8000; sheds incomplete readiness sections after expiry)".to_string(),
             "  CASS_PACK_BUDGET_MS=<N>                  structured pack budget in ms (default 10000; a positive effective search timeout overrides)".to_string(),
-            "  CASS_FLEET_PER_HOST_BUDGET_MS=<N>        per-host source/fleet probe budget in ms (default 8000)".to_string(),
-            "  CASS_FLEET_BUDGET_MS=<N>                 overall source/fleet probe budget in ms (default 60000)".to_string(),
             "  TOON_DEFAULT_FORMAT=toon|json            fallback structured output for all tools".to_string(),
             "  TOON_INDENT=<N>                           pretty-print TOON with indent".to_string(),
             "  TOON_KEY_FOLDING=off|safe                 TOON key folding mode".to_string(),
@@ -33187,7 +33020,6 @@ fn doctor_anomaly_for_check(name: &str, status: &str, message: &str) -> DoctorAn
             DoctorAnomaly::ConfigExclusionRisk
         }
         "sessions" => DoctorAnomaly::SourceAuthorityUnsafe,
-        "remote_source_sync" => DoctorAnomaly::SourceAuthorityUnsafe,
         "source_inventory" => {
             if message.contains("no longer have a visible upstream file")
                 || message.contains("Source coverage risk")
@@ -36292,25 +36124,24 @@ fn doctor_verification_contract_report() -> DoctorVerificationContractReport {
                 notes: "Semantic fallback is readiness information, not a destructive repair path.",
             },
             DoctorVerificationMatrixEntry {
-                scenario_id: "multi_machine_source_sync_coverage",
-                feature_area: "source mirrors and multi-machine archive coverage",
+                scenario_id: "local_mirror_source_coverage",
+                feature_area: "local mirrors and multi-machine archive provenance",
                 proof_layers: vec!["integration", "scripted_e2e"],
                 representative_commands: vec![
                     "cass sources list --json",
-                    "cass sources sync --all --json",
+                    "cass sources doctor --json",
                     "cass doctor --json",
                 ],
                 required_artifacts: vec![
                     "manifest.json",
                     "sources-before.json",
-                    "sync-output.json",
                     "coverage-ledger-after.json",
                     "doctor-output.json",
                 ],
                 mutation_audit_required: true,
                 redaction_required: true,
-                archive_preservation_assertion: "source sync tests prove coverage ledgers update without deleting local archive evidence",
-                notes: "This keeps remote-source health distinct from local archive safety.",
+                archive_preservation_assertion: "local mirror coverage ledgers update without deleting local archive evidence",
+                notes: "Remote transports were removed; this keeps configured-remote diagnosis local-only and distinct from local archive safety.",
             },
         ],
     }
@@ -37398,121 +37229,6 @@ struct DoctorSourceIdentityInventory {
     conversation_count: usize,
     missing_current_source_count: usize,
     unknown_mapping_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Default)]
-struct DoctorRemoteSourceSyncReport {
-    schema_version: u32,
-    status: String,
-    config_path: String,
-    redacted_config_path: String,
-    config_available: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    config_error: Option<String>,
-    sync_status_path: String,
-    redacted_sync_status_path: String,
-    sync_status_available: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sync_status_error: Option<String>,
-    live_remote_probe_attempted: bool,
-    remote_source_state: String,
-    sync_staleness: String,
-    local_mirror_state: String,
-    configured_source_count: usize,
-    configured_remote_source_count: usize,
-    configured_local_source_count: usize,
-    archive_remote_conversation_count: usize,
-    archive_remote_source_count: usize,
-    stale_sync_status_entry_count: usize,
-    missing_sync_status_count: usize,
-    never_synced_count: usize,
-    sync_due_count: usize,
-    failed_sync_count: usize,
-    partial_failure_count: usize,
-    auth_failed_count: usize,
-    backing_off_count: usize,
-    local_mirror_missing_count: usize,
-    local_mirror_empty_count: usize,
-    local_mirror_probe_error_count: usize,
-    unconfigured_archive_remote_source_count: usize,
-    sources: Vec<DoctorRemoteSourceSyncEntry>,
-    archive_remote_sources: Vec<DoctorRemoteArchiveSourceEntry>,
-    sync_gaps: Vec<DoctorRemoteSourceSyncGap>,
-    recommended_sync_commands: Vec<String>,
-    notes: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Default)]
-struct DoctorRemoteSourceSyncRuntimeSummary {
-    schema_version: u32,
-    status: String,
-    source: String,
-    checked: bool,
-    archive_checked: bool,
-    live_remote_probe_attempted: bool,
-    remote_source_state: String,
-    sync_staleness: String,
-    local_mirror_state: String,
-    configured_remote_source_count: usize,
-    archive_remote_conversation_count: Option<usize>,
-    sync_gap_count: usize,
-    highest_gap_severity: String,
-    recommended_action: String,
-    recommended_sync_commands: Vec<String>,
-    notes: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Default)]
-struct DoctorRemoteSourceSyncEntry {
-    source_id: String,
-    source_type: String,
-    host: Option<String>,
-    configured_path_count: usize,
-    path_mapping_count: usize,
-    sync_schedule: String,
-    local_mirror_path: String,
-    redacted_local_mirror_path: String,
-    local_mirror_exists: bool,
-    local_mirror_top_level_entry_count: usize,
-    local_mirror_entry_count_truncated: bool,
-    local_mirror_probe_error: Option<String>,
-    archived_conversation_count: usize,
-    sync_status_available: bool,
-    last_sync_ms: Option<i64>,
-    last_result: String,
-    last_error: Option<String>,
-    files_synced: u64,
-    bytes_transferred: u64,
-    consecutive_failures: u32,
-    sync_health_action: String,
-    sync_health: String,
-    sync_health_score: u8,
-    staleness_ms: Option<i64>,
-    stale_value_score: u8,
-    fallback_active: bool,
-    next_eligible_sync_ms: Option<i64>,
-    backoff_until_ms: Option<i64>,
-    reasons: Vec<String>,
-    gaps: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Default)]
-struct DoctorRemoteArchiveSourceEntry {
-    source_id: String,
-    origin_kind: String,
-    origin_host: Option<String>,
-    providers: Vec<String>,
-    conversation_count: usize,
-    configured: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Default)]
-struct DoctorRemoteSourceSyncGap {
-    source_id: String,
-    gap_kind: String,
-    severity: String,
-    evidence: Vec<String>,
-    recommended_action: String,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -40393,8 +40109,8 @@ fn doctor_check_scope_report(
         }),
         serde_json::json!({
             "name": "network_source_sync",
-            "status": "not_checked",
-            "next_action": "Use explicit `cass sources sync --json` after checking local archive safety."
+            "status": "removed",
+            "next_action": "Remote transports were removed by the local-only conversion; configured remote sources are diagnosed locally and never probed."
         }),
     ];
     if command_surface == doctor::DoctorCommandSurface::Check {
@@ -41019,348 +40735,6 @@ fn doctor_source_inventory_deferred(reason: &str) -> DoctorSourceInventoryReport
     }
 }
 
-fn doctor_remote_mirror_top_level_entry_count(
-    mirror_dir: &Path,
-    limit: usize,
-) -> (usize, bool, Option<String>) {
-    if !mirror_dir.exists() {
-        return (0, false, None);
-    }
-
-    let entries = match std::fs::read_dir(mirror_dir) {
-        Ok(entries) => entries,
-        Err(err) => return (0, false, Some(err.to_string())),
-    };
-
-    let mut count = 0usize;
-    let mut truncated = false;
-    for entry in entries {
-        match entry {
-            Ok(_) => {
-                count += 1;
-                if count >= limit {
-                    truncated = true;
-                    break;
-                }
-            }
-            Err(err) => return (count, false, Some(err.to_string())),
-        }
-    }
-
-    (count, truncated, None)
-}
-
-fn doctor_remote_mirror_file_fingerprint(
-    mirror_dir: &Path,
-    limit: usize,
-) -> (usize, bool, Option<String>, Option<String>) {
-    if !mirror_dir.exists() {
-        return (0, false, None, None);
-    }
-
-    let mut files = Vec::new();
-    let mut truncated = false;
-    for entry in walkdir::WalkDir::new(mirror_dir).follow_links(false) {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(err) => return (files.len(), false, None, Some(err.to_string())),
-        };
-        if entry.file_type().is_symlink() {
-            return (
-                files.len(),
-                false,
-                None,
-                Some(
-                    "local mirror contains symlink evidence that doctor will not follow"
-                        .to_string(),
-                ),
-            );
-        }
-        if entry.file_type().is_file() {
-            files.push(entry.path().to_path_buf());
-            if files.len() >= limit {
-                truncated = true;
-                break;
-            }
-        }
-    }
-
-    files.sort_by_cached_key(|path| doctor_path_to_slash_string(path));
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"cass-doctor-remote-mirror-file-fingerprint-v1");
-    for file in &files {
-        let relative = file.strip_prefix(mirror_dir).unwrap_or(file);
-        let relative = doctor_path_to_slash_string(relative);
-        let file_hash = match file_blake3_hex(file) {
-            Ok(hash) => hash,
-            Err(err) => return (files.len(), truncated, None, Some(err)),
-        };
-        hasher.update(relative.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(file_hash.as_bytes());
-        hasher.update(&[0]);
-    }
-
-    let fingerprint = (!files.is_empty()).then(|| hasher.finalize().to_hex().to_string());
-    (files.len(), truncated, fingerprint, None)
-}
-
-fn doctor_remote_source_sync_gap(
-    source_id: &str,
-    gap_kind: &str,
-    severity: &str,
-    evidence: Vec<String>,
-    recommended_action: String,
-) -> DoctorRemoteSourceSyncGap {
-    DoctorRemoteSourceSyncGap {
-        source_id: source_id.to_string(),
-        gap_kind: gap_kind.to_string(),
-        severity: severity.to_string(),
-        evidence,
-        recommended_action,
-    }
-}
-
-fn doctor_source_sync_result_label(result: &crate::sources::sync::SyncResult) -> &'static str {
-    match result {
-        crate::sources::sync::SyncResult::Success => "success",
-        crate::sources::sync::SyncResult::PartialFailure(_) => "partial_failure",
-        crate::sources::sync::SyncResult::Failed(_) => "failed",
-        crate::sources::sync::SyncResult::Skipped => "never",
-    }
-}
-
-fn doctor_remote_failed_sync_gap_kind(error: &str) -> (&'static str, &'static str) {
-    let error = error.to_ascii_lowercase();
-    if [
-        "no such file",
-        "not found",
-        "does not exist",
-        "missing remote path",
-        "source pruned",
-        "remote path pruned",
-    ]
-    .iter()
-    .any(|needle| error.contains(needle))
-    {
-        ("remote_source_pruned", "medium")
-    } else if [
-        "connection refused",
-        "timed out",
-        "timeout",
-        "could not resolve",
-        "no route to host",
-        "host unreachable",
-        "network is unreachable",
-        "ssh: connect",
-    ]
-    .iter()
-    .any(|needle| error.contains(needle))
-    {
-        ("remote_source_unavailable", "medium")
-    } else {
-        ("sync_failed", "medium")
-    }
-}
-
-struct DoctorRemoteCoverageGapInput<'a> {
-    source_id: &'a str,
-    archived_conversation_count: usize,
-    files_synced: u64,
-    mirror_file_count: usize,
-    mirror_fingerprint: Option<&'a str>,
-    mirror_scan_truncated: bool,
-}
-
-fn doctor_remote_coverage_comparison_gaps(
-    input: DoctorRemoteCoverageGapInput<'_>,
-) -> Vec<DoctorRemoteSourceSyncGap> {
-    let mut gaps = Vec::new();
-    let files_synced = usize::try_from(input.files_synced).unwrap_or(usize::MAX);
-    if input.archived_conversation_count > files_synced {
-        gaps.push(doctor_remote_source_sync_gap(
-            input.source_id,
-            "local_archive_ahead_of_remote",
-            "medium",
-            vec![
-                format!(
-                    "cass archive has {} remote conversation(s), while the last durable sync reported {} file(s) transferred",
-                    input.archived_conversation_count, input.files_synced
-                ),
-                "treat the cass archive as precious evidence; do not rebuild from remote sync output if it would reduce coverage".to_string(),
-            ],
-            "Preserve the cass archive and inspect source identity before any remote-backed repair.".to_string(),
-        ));
-    }
-
-    if input.mirror_file_count > input.archived_conversation_count {
-        let mut evidence = vec![
-            format!(
-                "local remote mirror has {} readable file(s), while the archive currently has {} conversation(s) for this source",
-                input.mirror_file_count, input.archived_conversation_count
-            ),
-            "doctor computed BLAKE3 checksums for readable local mirror files without opening SSH or mutating provider logs".to_string(),
-        ];
-        if let Some(fingerprint) = input.mirror_fingerprint {
-            evidence.push(format!("local-mirror-fingerprint-blake3={fingerprint}"));
-        }
-        if input.mirror_scan_truncated {
-            evidence.push(
-                "local mirror fingerprint scan hit the safety limit; inspect before treating this as complete coverage"
-                    .to_string(),
-            );
-        }
-        gaps.push(doctor_remote_source_sync_gap(
-            input.source_id,
-            "remote_copy_ahead_verified",
-            "low",
-            evidence,
-            "Inspect the checksum-fingerprinted local mirror before deciding whether to index or promote remote evidence.".to_string(),
-        ));
-    }
-
-    gaps
-}
-
-fn doctor_remote_source_state(report: &DoctorRemoteSourceSyncReport) -> &'static str {
-    if report.config_error.is_some() {
-        "config_error"
-    } else if report.sync_status_error.is_some() {
-        "sync_status_error"
-    } else if report.configured_remote_source_count == 0 && report.archive_remote_source_count == 0
-    {
-        "not_configured"
-    } else if report.unconfigured_archive_remote_source_count > 0 {
-        "archive_remote_source_unconfigured"
-    } else if report.local_mirror_missing_count > 0
-        || report.local_mirror_empty_count > 0
-        || report.local_mirror_probe_error_count > 0
-    {
-        "local_mirror_gap"
-    } else if !report.sync_gaps.is_empty() {
-        "sync_gaps"
-    } else {
-        "ok"
-    }
-}
-
-fn doctor_remote_sync_staleness(report: &DoctorRemoteSourceSyncReport) -> &'static str {
-    if report.config_error.is_some() || report.sync_status_error.is_some() {
-        "unknown"
-    } else if report.configured_remote_source_count == 0 && report.archive_remote_source_count == 0
-    {
-        "not_configured"
-    } else if report.configured_remote_source_count == 0 {
-        "unknown"
-    } else if report.auth_failed_count > 0 {
-        "auth_failed"
-    } else if report.backing_off_count > 0 {
-        "backing_off"
-    } else if report.failed_sync_count > 0 {
-        "failed"
-    } else if report.partial_failure_count > 0 {
-        "partial_failure"
-    } else if report.missing_sync_status_count > 0 || report.never_synced_count > 0 {
-        "never_synced"
-    } else if report.sync_due_count > 0 {
-        "sync_due"
-    } else if report.stale_sync_status_entry_count > 0 {
-        "stale_status_entry"
-    } else {
-        "fresh"
-    }
-}
-
-fn doctor_remote_local_mirror_state(report: &DoctorRemoteSourceSyncReport) -> &'static str {
-    if report.config_error.is_some() {
-        "unknown"
-    } else if report.configured_remote_source_count == 0 && report.archive_remote_source_count == 0
-    {
-        "not_configured"
-    } else if report.configured_remote_source_count == 0 {
-        "unknown"
-    } else if report.local_mirror_probe_error_count > 0 {
-        "probe_error"
-    } else if report.local_mirror_missing_count > 0 {
-        "missing"
-    } else if report.local_mirror_empty_count > 0 {
-        "empty"
-    } else {
-        "present"
-    }
-}
-
-fn doctor_remote_highest_gap_severity(report: &DoctorRemoteSourceSyncReport) -> &'static str {
-    if report
-        .sync_gaps
-        .iter()
-        .any(|gap| gap.severity.as_str() == "high")
-    {
-        "high"
-    } else if report
-        .sync_gaps
-        .iter()
-        .any(|gap| gap.severity.as_str() == "medium")
-    {
-        "medium"
-    } else if report
-        .sync_gaps
-        .iter()
-        .any(|gap| gap.severity.as_str() == "low")
-    {
-        "low"
-    } else {
-        "none"
-    }
-}
-
-fn doctor_remote_sync_recommended_action(report: &DoctorRemoteSourceSyncReport) -> String {
-    report
-        .recommended_sync_commands
-        .iter()
-        .find(|command| command.as_str() == "cass sources sync --all --json")
-        .or_else(|| report.recommended_sync_commands.first())
-        .cloned()
-        .or_else(|| {
-            report
-                .sync_gaps
-                .iter()
-                .map(|gap| gap.recommended_action.clone())
-                .find(|action| action.as_str() != "none")
-        })
-        .unwrap_or_else(|| "none".to_string())
-}
-
-fn doctor_remote_source_sync_runtime_summary(
-    report: &DoctorRemoteSourceSyncReport,
-    source: &'static str,
-    archive_checked: bool,
-) -> DoctorRemoteSourceSyncRuntimeSummary {
-    let mut notes = report.notes.clone();
-    notes.push(format!(
-        "{source} checked remote source config, sync status, and local cass mirrors without live SSH probes or provider log mutation"
-    ));
-    DoctorRemoteSourceSyncRuntimeSummary {
-        schema_version: 1,
-        status: report.status.clone(),
-        source: source.to_string(),
-        checked: true,
-        archive_checked,
-        live_remote_probe_attempted: report.live_remote_probe_attempted,
-        remote_source_state: report.remote_source_state.clone(),
-        sync_staleness: report.sync_staleness.clone(),
-        local_mirror_state: report.local_mirror_state.clone(),
-        configured_remote_source_count: report.configured_remote_source_count,
-        archive_remote_conversation_count: archive_checked
-            .then_some(report.archive_remote_conversation_count),
-        sync_gap_count: report.sync_gaps.len(),
-        highest_gap_severity: doctor_remote_highest_gap_severity(report).to_string(),
-        recommended_action: doctor_remote_sync_recommended_action(report),
-        recommended_sync_commands: report.recommended_sync_commands.clone(),
-        notes,
-    }
-}
-
 fn doctor_sources_config_path(data_dir: &Path) -> PathBuf {
     doctor_sources_config_path_from_config_result(
         data_dir,
@@ -41415,389 +40789,6 @@ fn doctor_sources_config_check(sources_path: &Path) -> DoctorSourcesConfigCheck 
             message: format!("Sources config parse error: {e}"),
         },
     }
-}
-
-fn collect_doctor_remote_source_sync_fast_report(
-    data_dir: &Path,
-    sources_path: &Path,
-) -> DoctorRemoteSourceSyncReport {
-    collect_doctor_remote_source_sync_report(
-        data_dir,
-        sources_path,
-        &DoctorSourceInventoryReport::default(),
-    )
-}
-
-fn collect_doctor_remote_source_sync_report(
-    data_dir: &Path,
-    sources_path: &Path,
-    source_inventory: &DoctorSourceInventoryReport,
-) -> DoctorRemoteSourceSyncReport {
-    use crate::sources::config::{SourcesConfig, source_names_equal};
-    use crate::sources::sync::{SourceHealthKind, SyncResult, SyncStatus, current_unix_ms};
-
-    let sync_status_path = data_dir.join("sync_status.json");
-    let mut report = DoctorRemoteSourceSyncReport {
-        schema_version: 1,
-        status: "ok".to_string(),
-        config_path: sources_path.display().to_string(),
-        redacted_config_path: doctor_redacted_path(&sources_path.display().to_string(), data_dir),
-        config_available: sources_path.exists(),
-        sync_status_path: sync_status_path.display().to_string(),
-        redacted_sync_status_path: doctor_redacted_path(
-            &sync_status_path.display().to_string(),
-            data_dir,
-        ),
-        sync_status_available: sync_status_path.exists(),
-        live_remote_probe_attempted: false,
-        notes: vec![
-            "remote_source_sync is read-only and local-only: it reads sources.toml, sync_status.json, local mirror directories, and archive provenance rows only.".to_string(),
-            "Missing or stale remote sync state is a freshness gap, not proof that archived cass conversations are lost.".to_string(),
-            "Doctor never opens SSH sessions or mutates provider session logs while building this report.".to_string(),
-        ],
-        ..DoctorRemoteSourceSyncReport::default()
-    };
-
-    let archive_remote_sources = source_inventory
-        .sources
-        .iter()
-        .filter(|source| source.is_remote)
-        .map(|source| DoctorRemoteArchiveSourceEntry {
-            source_id: source.source_id.clone(),
-            origin_kind: source.origin_kind.clone(),
-            origin_host: source.origin_host.clone(),
-            providers: source.providers.clone(),
-            conversation_count: source.conversation_count,
-            configured: false,
-        })
-        .collect::<Vec<_>>();
-    report.archive_remote_conversation_count = archive_remote_sources
-        .iter()
-        .map(|source| source.conversation_count)
-        .sum();
-    report.archive_remote_source_count = archive_remote_sources.len();
-
-    let config = if sources_path.exists() {
-        let sources_path_buf = sources_path.to_path_buf();
-        match SourcesConfig::load_from(&sources_path_buf) {
-            Ok(config) => config,
-            Err(err) => {
-                report.config_error = Some(err.to_string());
-                SourcesConfig::default()
-            }
-        }
-    } else {
-        SourcesConfig::default()
-    };
-    report.configured_source_count = config.sources.len();
-    report.configured_remote_source_count = config.remote_sources().count();
-    report.configured_local_source_count = report
-        .configured_source_count
-        .saturating_sub(report.configured_remote_source_count);
-
-    let sync_status = match SyncStatus::load(data_dir) {
-        Ok(status) => status,
-        Err(err) => {
-            report.sync_status_error = Some(err.to_string());
-            SyncStatus::default()
-        }
-    };
-
-    report.stale_sync_status_entry_count = sync_status
-        .sources
-        .keys()
-        .filter(|source_name| {
-            !config
-                .sources
-                .iter()
-                .any(|source| source_names_equal(&source.name, source_name))
-        })
-        .count();
-
-    let now_ms = current_unix_ms();
-    let mut recommended = BTreeSet::new();
-    let mut configured_remote_gap_seen = false;
-
-    for source in config.remote_sources() {
-        let mirror_dir = data_dir.join("remotes").join(&source.name).join("mirror");
-        let mirror_exists = mirror_dir.exists();
-        let (mirror_entry_count, mut mirror_truncated, mut mirror_error) =
-            doctor_remote_mirror_top_level_entry_count(&mirror_dir, 128);
-        let (mirror_file_count, mirror_file_truncated, mirror_fingerprint, mirror_file_error) =
-            doctor_remote_mirror_file_fingerprint(&mirror_dir, 512);
-        mirror_truncated |= mirror_file_truncated;
-        if mirror_error.is_none() {
-            mirror_error = mirror_file_error;
-        }
-        let info = sync_status.get(&source.name);
-        let decision = sync_status.decision_for_source_at(source, now_ms, false);
-        let archived_conversation_count = archive_remote_sources
-            .iter()
-            .filter(|archive| source_names_equal(&archive.source_id, &source.name))
-            .map(|archive| archive.conversation_count)
-            .sum();
-        let source_sync_command = format!("cass sources sync --source {} --json", source.name);
-        let mut entry_gaps = Vec::new();
-
-        if info.is_none() {
-            report.missing_sync_status_count += 1;
-            report.never_synced_count += 1;
-            let gap = doctor_remote_source_sync_gap(
-                &source.name,
-                "sync_status_missing",
-                "medium",
-                vec![
-                    "no durable sync_status.json entry exists for this configured remote source"
-                        .to_string(),
-                ],
-                source_sync_command.clone(),
-            );
-            entry_gaps.push(gap.gap_kind.clone());
-            report.sync_gaps.push(gap);
-            configured_remote_gap_seen = true;
-            recommended.insert(source_sync_command.clone());
-        }
-
-        if matches!(
-            decision.action,
-            crate::sources::sync::SourceSyncAction::Sync
-        ) {
-            report.sync_due_count += 1;
-            let gap = doctor_remote_source_sync_gap(
-                &source.name,
-                "sync_due",
-                "low",
-                decision.reasons.clone(),
-                source_sync_command.clone(),
-            );
-            entry_gaps.push(gap.gap_kind.clone());
-            report.sync_gaps.push(gap);
-            configured_remote_gap_seen = true;
-            recommended.insert(source_sync_command.clone());
-        }
-
-        if matches!(decision.health, SourceHealthKind::AuthFailed) {
-            report.auth_failed_count += 1;
-        }
-        if matches!(decision.health, SourceHealthKind::BackingOff) {
-            report.backing_off_count += 1;
-        }
-        if info.is_some() && matches!(decision.health, SourceHealthKind::NeverSynced) {
-            report.never_synced_count += 1;
-            let gap = doctor_remote_source_sync_gap(
-                &source.name,
-                "sync_never_completed",
-                "medium",
-                decision.reasons.clone(),
-                source_sync_command.clone(),
-            );
-            entry_gaps.push(gap.gap_kind.clone());
-            report.sync_gaps.push(gap);
-            configured_remote_gap_seen = true;
-            recommended.insert(source_sync_command.clone());
-        }
-
-        if !mirror_exists {
-            report.local_mirror_missing_count += 1;
-            let gap = doctor_remote_source_sync_gap(
-                &source.name,
-                "local_mirror_missing",
-                "medium",
-                vec![format!(
-                    "local remote mirror directory is absent: {}",
-                    doctor_redacted_path(&mirror_dir.display().to_string(), data_dir)
-                )],
-                source_sync_command.clone(),
-            );
-            entry_gaps.push(gap.gap_kind.clone());
-            report.sync_gaps.push(gap);
-            configured_remote_gap_seen = true;
-            recommended.insert(source_sync_command.clone());
-        } else if mirror_entry_count == 0 && mirror_error.is_none() {
-            report.local_mirror_empty_count += 1;
-            let gap = doctor_remote_source_sync_gap(
-                &source.name,
-                "local_mirror_empty",
-                "low",
-                vec![format!(
-                    "local remote mirror directory has no top-level entries: {}",
-                    doctor_redacted_path(&mirror_dir.display().to_string(), data_dir)
-                )],
-                source_sync_command.clone(),
-            );
-            entry_gaps.push(gap.gap_kind.clone());
-            report.sync_gaps.push(gap);
-            configured_remote_gap_seen = true;
-            recommended.insert(source_sync_command.clone());
-        }
-
-        if let Some(error) = mirror_error.as_deref() {
-            report.local_mirror_probe_error_count += 1;
-            let gap = doctor_remote_source_sync_gap(
-                &source.name,
-                "local_mirror_probe_error",
-                "medium",
-                vec![format!(
-                    "local remote mirror directory could not be inspected: {} ({error})",
-                    doctor_redacted_path(&mirror_dir.display().to_string(), data_dir)
-                )],
-                source_sync_command.clone(),
-            );
-            entry_gaps.push(gap.gap_kind.clone());
-            report.sync_gaps.push(gap);
-            configured_remote_gap_seen = true;
-            recommended.insert(source_sync_command.clone());
-        }
-
-        let (
-            last_sync_ms,
-            last_result,
-            last_error,
-            files_synced,
-            bytes_transferred,
-            consecutive_failures,
-        ) = match info {
-            Some(info) => {
-                match &info.last_result {
-                    SyncResult::PartialFailure(_) => report.partial_failure_count += 1,
-                    SyncResult::Failed(_) => report.failed_sync_count += 1,
-                    SyncResult::Success | SyncResult::Skipped => {}
-                }
-                if let Some(error) = info.last_result.error_message() {
-                    let (gap_kind, severity) = match &info.last_result {
-                        SyncResult::PartialFailure(_) => ("sync_partial_failure", "low"),
-                        SyncResult::Failed(error) => doctor_remote_failed_sync_gap_kind(error),
-                        SyncResult::Success | SyncResult::Skipped => ("sync_warning", "low"),
-                    };
-                    let mut evidence = vec![format!("last sync result: {error}")];
-                    if gap_kind == "remote_source_pruned" {
-                        evidence.push(
-                            "last sync reported a missing remote path; preserve cass archive and local mirror evidence before any rebuild from live sources"
-                                .to_string(),
-                        );
-                    }
-                    let gap = doctor_remote_source_sync_gap(
-                        &source.name,
-                        gap_kind,
-                        severity,
-                        evidence,
-                        source_sync_command.clone(),
-                    );
-                    entry_gaps.push(gap.gap_kind.clone());
-                    report.sync_gaps.push(gap);
-                    configured_remote_gap_seen = true;
-                    recommended.insert(source_sync_command.clone());
-                }
-                (
-                    info.last_sync,
-                    doctor_source_sync_result_label(&info.last_result).to_string(),
-                    info.last_result.error_message().map(ToOwned::to_owned),
-                    info.files_synced,
-                    info.bytes_transferred,
-                    info.consecutive_failures,
-                )
-            }
-            None => (None, "never".to_string(), None, 0, 0, 0),
-        };
-
-        if mirror_error.is_none() && mirror_exists {
-            for gap in doctor_remote_coverage_comparison_gaps(DoctorRemoteCoverageGapInput {
-                source_id: &source.name,
-                archived_conversation_count,
-                files_synced,
-                mirror_file_count,
-                mirror_fingerprint: mirror_fingerprint.as_deref(),
-                mirror_scan_truncated: mirror_truncated,
-            }) {
-                entry_gaps.push(gap.gap_kind.clone());
-                report.sync_gaps.push(gap);
-            }
-        }
-
-        report.sources.push(DoctorRemoteSourceSyncEntry {
-            source_id: source.name.clone(),
-            source_type: source.source_type.as_str().to_string(),
-            host: source.host.clone(),
-            configured_path_count: source.paths.len(),
-            path_mapping_count: source.path_mappings.len(),
-            sync_schedule: source.sync_schedule.to_string(),
-            local_mirror_path: mirror_dir.display().to_string(),
-            redacted_local_mirror_path: doctor_redacted_path(
-                &mirror_dir.display().to_string(),
-                data_dir,
-            ),
-            local_mirror_exists: mirror_exists,
-            local_mirror_top_level_entry_count: mirror_entry_count,
-            local_mirror_entry_count_truncated: mirror_truncated,
-            local_mirror_probe_error: mirror_error,
-            archived_conversation_count,
-            sync_status_available: info.is_some(),
-            last_sync_ms,
-            last_result,
-            last_error,
-            files_synced,
-            bytes_transferred,
-            consecutive_failures,
-            sync_health_action: decision.action.as_str().to_string(),
-            sync_health: decision.health.as_str().to_string(),
-            sync_health_score: decision.health_score,
-            staleness_ms: decision.staleness_ms,
-            stale_value_score: decision.stale_value_score,
-            fallback_active: decision.fallback_active,
-            next_eligible_sync_ms: decision.next_eligible_sync_ms,
-            backoff_until_ms: decision.backoff_until_ms,
-            reasons: decision.reasons,
-            gaps: entry_gaps,
-        });
-    }
-
-    let configured_remote_names = config
-        .remote_sources()
-        .map(|source| source.name.clone())
-        .collect::<Vec<_>>();
-    report.archive_remote_sources = archive_remote_sources
-        .into_iter()
-        .map(|mut archive| {
-            archive.configured = configured_remote_names
-                .iter()
-                .any(|source_name| source_names_equal(source_name, &archive.source_id));
-            if !archive.configured {
-                report.unconfigured_archive_remote_source_count += 1;
-                let recommended_action = if configured_remote_names.is_empty() {
-                    "cass sources add <ssh-host> --preset <platform> --json".to_string()
-                } else {
-                    "cass sources list --json".to_string()
-                };
-                report.sync_gaps.push(doctor_remote_source_sync_gap(
-                    &archive.source_id,
-                    "archive_remote_source_unconfigured",
-                    "medium",
-                    vec![format!(
-                        "{} archived remote conversation(s) reference source_id={} but sources.toml has no matching remote source",
-                        archive.conversation_count, archive.source_id
-                    )],
-                    recommended_action,
-                ));
-            }
-            archive
-        })
-        .collect();
-
-    if configured_remote_gap_seen {
-        recommended.insert("cass sources sync --all --json".to_string());
-    }
-    report.recommended_sync_commands = recommended.into_iter().collect();
-    if report.config_error.is_some()
-        || report.sync_status_error.is_some()
-        || !report.sync_gaps.is_empty()
-    {
-        report.status = "warn".to_string();
-    }
-    report.remote_source_state = doctor_remote_source_state(&report).to_string();
-    report.sync_staleness = doctor_remote_sync_staleness(&report).to_string();
-    report.local_mirror_state = doctor_remote_local_mirror_state(&report).to_string();
-
-    report
 }
 
 const DOCTOR_RAW_MIRROR_ROOT_DIR: &str = "raw-mirror";
@@ -46585,7 +45576,6 @@ struct DoctorRuntimeSummaryInput<'a> {
     coverage_risk: &'a DoctorCoverageRiskSummary,
     coverage_source: &'static str,
     coverage_checked: bool,
-    remote_source_sync_summary: Option<&'a DoctorRemoteSourceSyncRuntimeSummary>,
     quarantine_summary: Option<&'a DiagQuarantineSummary>,
     recommended_action: Option<&'a String>,
     data_dir: &'a Path,
@@ -46747,10 +45737,6 @@ fn build_doctor_runtime_summary(input: DoctorRuntimeSummaryInput<'_>) -> serde_j
         .quarantine_summary
         .and_then(|summary| serde_json::to_value(summary).ok())
         .unwrap_or(serde_json::Value::Null);
-    let remote_source_sync_summary = input
-        .remote_source_sync_summary
-        .and_then(|summary| serde_json::to_value(summary).ok())
-        .unwrap_or(serde_json::Value::Null);
     let coverage_known =
         input.coverage_checked && input.coverage_risk.confidence_tier != "unchecked";
     let coverage_delta = serde_json::json!({
@@ -46858,7 +45844,6 @@ fn build_doctor_runtime_summary(input: DoctorRuntimeSummaryInput<'_>) -> serde_j
         "doctor_check_recommended": doctor_check_recommended,
         "archive_coverage_state": coverage_state,
         "source_mirror_state": source_mirror_state,
-        "remote_source_sync": remote_source_sync_summary,
         "sole_copy_conversation_count": input.coverage_risk.sole_copy_warning_count,
         "cleanup_reclaimable_bytes": cleanup_reclaimable_bytes,
         "quarantine_summary": quarantine_summary,
@@ -52720,7 +51705,12 @@ fn run_doctor_emit_capabilities(structured_format: Option<RobotFormat>) -> CliRe
         // the "diagnose only" policy: report, never execute.
         "deprecated_env_vars": [
             {"name": "CASS_SWARM_AGENT_MAIL_URL", "status": "deprecated-ignored", "note": "Agent Mail was removed with the swarm coordination layer; the value is ignored. Local handoffs: use `cass search`/`cass pack`."},
-            {"name": "CASS_SWARM_AGENT_MAIL_TOKEN", "status": "deprecated-ignored", "note": "Agent Mail was removed with the swarm coordination layer; the value is ignored."}
+            {"name": "CASS_SWARM_AGENT_MAIL_TOKEN", "status": "deprecated-ignored", "note": "Agent Mail was removed with the swarm coordination layer; the value is ignored."},
+            {"name": "CASS_FLEET_BUDGET_MS", "status": "deprecated-ignored", "note": "Fleet commands were removed by the local-only conversion; the value is ignored."},
+            {"name": "CASS_FLEET_PER_HOST_BUDGET_MS", "status": "deprecated-ignored", "note": "Fleet commands were removed by the local-only conversion; the value is ignored."},
+            {"name": "CASS_SKIP_UPDATE", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; cass never phones home, so no opt-out is needed."},
+            {"name": "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; the prompt no longer exists, so the value is ignored."},
+            {"name": "CASS_UPDATE_API_BASE_URL", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; cass never contacts a release API, so the value is ignored."}
         ],
         "subcommands_added_by_world_class_doctor": [
             {"flag": "--ls", "added_in_pass": 2, "kind": "read-only"},
@@ -55161,8 +54151,6 @@ fn build_doctor_baseline_snapshot(
     let sources_path = doctor_sources_config_path(data_dir);
     let config_path = data_dir.join("config.toml");
     let source_inventory = collect_doctor_source_inventory(data_dir, db_path);
-    let remote_source_sync =
-        collect_doctor_remote_source_sync_report(data_dir, &sources_path, &source_inventory);
     let raw_mirror = collect_doctor_raw_mirror_report(data_dir);
     let raw_mirror_backfill =
         collect_doctor_raw_mirror_backfill_report(data_dir, db_path, &raw_mirror, false);
@@ -55222,7 +54210,6 @@ fn build_doctor_baseline_snapshot(
         "derived_generation": derived_generation,
         "backup_generation": backup_generation,
         "source_inventory": source_inventory,
-        "remote_source_sync": remote_source_sync,
         "raw_mirror": raw_mirror,
         "raw_mirror_backfill_summary": {
             "status": raw_mirror_backfill.status,
@@ -55249,7 +54236,6 @@ fn build_doctor_baseline_snapshot(
             &serde_json::to_value(&raw_mirror).unwrap_or(serde_json::Value::Null),
             &serde_json::to_value(&storage_pressure).unwrap_or(serde_json::Value::Null),
             &serde_json::to_value(&config_exclusion_risks).unwrap_or(serde_json::Value::Null),
-            &serde_json::to_value(&remote_source_sync).unwrap_or(serde_json::Value::Null),
         ),
         "recommendations": doctor_baseline_recommendations_from_parts(
             &serde_json::to_value(&coverage_risk).unwrap_or(serde_json::Value::Null),
@@ -55610,7 +54596,6 @@ fn doctor_baseline_anomaly_classes_from_parts(
     raw_mirror: &serde_json::Value,
     storage_pressure: &serde_json::Value,
     config_exclusion_risks: &serde_json::Value,
-    remote_source_sync: &serde_json::Value,
 ) -> Vec<String> {
     let mut classes = BTreeSet::new();
     if !db_exists {
@@ -55656,13 +54641,6 @@ fn doctor_baseline_anomaly_classes_from_parts(
     }
     if config_exclusion_risks.as_array().map_or(0, Vec::len) > 0 {
         classes.insert("config-exclusion-risk".to_string());
-    }
-    let remote_status = remote_source_sync
-        .get("status")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("unknown");
-    if !matches!(remote_status, "ok" | "clean" | "not-configured") {
-        classes.insert(format!("remote-source-sync-{remote_status}"));
     }
     classes.into_iter().collect()
 }
@@ -73119,626 +72097,6 @@ paths = ["~/.claude/projects"]
     }
 
     #[test]
-    fn doctor_remote_source_sync_report_flags_gaps_without_remote_probe() {
-        use crate::sources::config::{SourceDefinition, SourcesConfig, SyncSchedule};
-        use crate::sources::sync::{SourceSyncInfo, SyncResult, SyncStatus};
-
-        let temp = tempfile::TempDir::new().expect("tempdir");
-        let data_dir = temp.path().join("cass-data");
-        std::fs::create_dir_all(&data_dir).expect("create data dir");
-        let config_path = temp.path().join("config/cass/sources.toml");
-        let mut work_laptop = SourceDefinition::ssh("work-laptop", "user@work-laptop");
-        work_laptop.paths = vec!["~/.cline/tasks".to_string()];
-        work_laptop.sync_schedule = SyncSchedule::Hourly;
-        let mut stale_server = SourceDefinition::ssh("stale-server", "user@stale-server");
-        stale_server.paths = vec!["~/.codex/sessions".to_string()];
-        stale_server.sync_schedule = SyncSchedule::Daily;
-        let mut retired_laptop = SourceDefinition::ssh("retired-laptop", "user@retired-laptop");
-        retired_laptop.paths = vec!["~/.codex/old-sessions".to_string()];
-        retired_laptop.sync_schedule = SyncSchedule::Daily;
-        SourcesConfig {
-            sources: vec![work_laptop, stale_server, retired_laptop],
-            disabled_agents: Vec::new(),
-        }
-        .save_to(&config_path)
-        .expect("write fixture sources config");
-
-        let mirror_file = data_dir
-            .join("remotes")
-            .join("work-laptop")
-            .join("mirror")
-            .join("cline/session.jsonl");
-        std::fs::create_dir_all(mirror_file.parent().unwrap()).expect("create mirror dir");
-        std::fs::write(&mirror_file, b"remote mirror bytes\n").expect("write mirror file");
-        for extra in ["cline/session-2.jsonl", "cline/session-3.jsonl"] {
-            let extra_file = data_dir
-                .join("remotes")
-                .join("work-laptop")
-                .join("mirror")
-                .join(extra);
-            std::fs::write(&extra_file, b"extra remote mirror bytes\n")
-                .expect("write extra mirror file");
-        }
-        let retired_mirror_file = data_dir
-            .join("remotes")
-            .join("retired-laptop")
-            .join("mirror")
-            .join("codex/session.jsonl");
-        std::fs::create_dir_all(retired_mirror_file.parent().unwrap())
-            .expect("create retired mirror dir");
-        std::fs::write(&retired_mirror_file, b"retired remote mirror bytes\n")
-            .expect("write retired mirror file");
-
-        let mut sync_status = SyncStatus::default();
-        sync_status.set_info(
-            "work-laptop",
-            SourceSyncInfo {
-                last_sync: Some(1_733_000_000_000),
-                last_result: SyncResult::PartialFailure("rsync timed out".to_string()),
-                files_synced: 7,
-                bytes_transferred: 4096,
-                duration_ms: 15_000,
-                consecutive_failures: 2,
-            },
-        );
-        sync_status.set_info(
-            "retired-laptop",
-            SourceSyncInfo {
-                last_sync: Some(1_733_000_000_000),
-                last_result: SyncResult::Failed(
-                    "remote source path does not exist; source pruned".to_string(),
-                ),
-                files_synced: 0,
-                bytes_transferred: 0,
-                duration_ms: 2_000,
-                consecutive_failures: 1,
-            },
-        );
-        sync_status.set_info(
-            "removed-remote",
-            SourceSyncInfo {
-                last_sync: Some(1_733_000_000_000),
-                last_result: SyncResult::Success,
-                files_synced: 1,
-                bytes_transferred: 1,
-                duration_ms: 1,
-                consecutive_failures: 0,
-            },
-        );
-        sync_status.save(&data_dir).expect("write sync status");
-
-        let rows = vec![
-            DoctorSourceInventoryDbRow {
-                provider: "cline".to_string(),
-                source_path: Some("/remote/cline/session.jsonl".to_string()),
-                source_id: "work-laptop".to_string(),
-                origin_host: Some("user@work-laptop".to_string()),
-                origin_kind: Some("ssh".to_string()),
-                conversation_count: 2,
-            },
-            DoctorSourceInventoryDbRow {
-                provider: "codex".to_string(),
-                source_path: Some("/remote/codex/old-session.jsonl".to_string()),
-                source_id: "retired-laptop".to_string(),
-                origin_host: Some("user@retired-laptop".to_string()),
-                origin_kind: Some("ssh".to_string()),
-                conversation_count: 1,
-            },
-            DoctorSourceInventoryDbRow {
-                provider: "codex".to_string(),
-                source_path: Some("/remote/codex/session.jsonl".to_string()),
-                source_id: "orphan-remote".to_string(),
-                origin_host: Some("user@orphan-remote".to_string()),
-                origin_kind: Some("ssh".to_string()),
-                conversation_count: 1,
-            },
-        ];
-        let source_inventory =
-            build_doctor_source_inventory_report(&data_dir, true, None, rows, Vec::new());
-
-        let report =
-            collect_doctor_remote_source_sync_report(&data_dir, &config_path, &source_inventory);
-
-        assert_eq!(report.status, "warn");
-        assert!(report.config_available);
-        assert!(report.sync_status_available);
-        assert!(!report.live_remote_probe_attempted);
-        assert_eq!(report.configured_remote_source_count, 3);
-        assert_eq!(report.archive_remote_conversation_count, 4);
-        assert_eq!(
-            report.remote_source_state,
-            "archive_remote_source_unconfigured"
-        );
-        assert_eq!(report.sync_staleness, "failed");
-        assert_eq!(report.local_mirror_state, "missing");
-        assert_eq!(report.partial_failure_count, 1);
-        assert_eq!(report.failed_sync_count, 1);
-        assert_eq!(report.missing_sync_status_count, 1);
-        assert_eq!(report.local_mirror_missing_count, 1);
-        assert_eq!(report.unconfigured_archive_remote_source_count, 1);
-        assert_eq!(report.stale_sync_status_entry_count, 1);
-        assert!(
-            report
-                .sync_gaps
-                .iter()
-                .any(|gap| gap.gap_kind == "sync_partial_failure"
-                    && gap.source_id == "work-laptop"),
-            "partial sync failure should be a structured gap: {report:#?}"
-        );
-        assert!(
-            report.sync_gaps.iter().any(|gap| {
-                gap.gap_kind == "remote_source_pruned"
-                    && gap.source_id == "retired-laptop"
-                    && gap.evidence.iter().any(|evidence| {
-                        evidence.contains("preserve cass archive and local mirror evidence")
-                    })
-            }),
-            "remote-pruned source failures should preserve a distinct structured gap: {report:#?}"
-        );
-        assert!(
-            report.sync_gaps.iter().any(|gap| {
-                gap.gap_kind == "local_archive_ahead_of_remote"
-                    && gap.source_id == "retired-laptop"
-                    && gap
-                        .evidence
-                        .iter()
-                        .any(|evidence| evidence.contains("cass archive has 1 remote conversation"))
-            }),
-            "local archive ahead should be branchable and warn against coverage-reducing remote rebuilds: {report:#?}"
-        );
-        assert!(
-            report.sync_gaps.iter().any(|gap| {
-                gap.gap_kind == "remote_copy_ahead_verified"
-                    && gap.source_id == "work-laptop"
-                    && gap
-                        .evidence
-                        .iter()
-                        .any(|evidence| evidence.starts_with("local-mirror-fingerprint-blake3="))
-            }),
-            "remote mirror ahead should include checksum-fingerprinted local mirror evidence: {report:#?}"
-        );
-        assert!(
-            report
-                .sync_gaps
-                .iter()
-                .any(|gap| gap.gap_kind == "sync_status_missing"
-                    && gap.source_id == "stale-server"),
-            "missing durable status should be a structured gap: {report:#?}"
-        );
-        assert!(
-            report
-                .sync_gaps
-                .iter()
-                .any(|gap| gap.gap_kind == "archive_remote_source_unconfigured"
-                    && gap.source_id == "orphan-remote"),
-            "remote archive rows without matching config should be a structured gap: {report:#?}"
-        );
-        assert!(
-            report
-                .recommended_sync_commands
-                .iter()
-                .any(|command| command == "cass sources sync --all --json")
-        );
-    }
-
-    #[test]
-    fn doctor_remote_failed_sync_gap_kind_classifies_unavailable_and_pruned_sources() {
-        assert_eq!(
-            doctor_remote_failed_sync_gap_kind("ssh: connect to host timed out"),
-            ("remote_source_unavailable", "medium")
-        );
-        assert_eq!(
-            doctor_remote_failed_sync_gap_kind("remote source path does not exist; source pruned"),
-            ("remote_source_pruned", "medium")
-        );
-        assert_eq!(
-            doctor_remote_failed_sync_gap_kind("rsync exited with code 12"),
-            ("sync_failed", "medium")
-        );
-    }
-
-    #[test]
-    fn doctor_remote_source_sync_report_recommends_setup_for_archive_only_remotes() {
-        let temp = tempfile::TempDir::new().expect("tempdir");
-        let data_dir = temp.path().join("cass-data");
-        std::fs::create_dir_all(&data_dir).expect("create data dir");
-        let config_path = temp.path().join("missing-sources.toml");
-        let rows = vec![DoctorSourceInventoryDbRow {
-            provider: "codex".to_string(),
-            source_path: Some("/remote/codex/session.jsonl".to_string()),
-            source_id: "orphan-remote".to_string(),
-            origin_host: Some("user@orphan-remote".to_string()),
-            origin_kind: Some("ssh".to_string()),
-            conversation_count: 4,
-        }];
-        let source_inventory =
-            build_doctor_source_inventory_report(&data_dir, true, None, rows, Vec::new());
-
-        let report =
-            collect_doctor_remote_source_sync_report(&data_dir, &config_path, &source_inventory);
-
-        assert_eq!(report.status, "warn");
-        assert_eq!(report.configured_remote_source_count, 0);
-        assert_eq!(report.archive_remote_source_count, 1);
-        assert_eq!(
-            report.remote_source_state,
-            "archive_remote_source_unconfigured"
-        );
-        assert_eq!(report.sync_staleness, "unknown");
-        assert_eq!(report.local_mirror_state, "unknown");
-        assert!(report.recommended_sync_commands.is_empty());
-        let summary =
-            doctor_remote_source_sync_runtime_summary(&report, "status-inline-local-config", true);
-        assert_eq!(
-            summary.recommended_action,
-            "cass sources add <ssh-host> --preset <platform> --json"
-        );
-        assert_eq!(summary.highest_gap_severity, "medium");
-        assert_eq!(summary.archive_remote_conversation_count, Some(4));
-    }
-
-    #[test]
-    fn doctor_remote_source_sync_report_keeps_healthy_sources_non_actionable() {
-        use crate::sources::config::{SourceDefinition, SourcesConfig, SyncSchedule};
-        use crate::sources::sync::{SourceSyncInfo, SyncResult, SyncStatus, current_unix_ms};
-
-        let temp = tempfile::TempDir::new().expect("tempdir");
-        let data_dir = temp.path().join("cass-data");
-        std::fs::create_dir_all(&data_dir).expect("create data dir");
-        let config_path = temp.path().join("config/cass/sources.toml");
-        let mut healthy = SourceDefinition::ssh("healthy-server", "user@healthy-server");
-        healthy.paths = vec!["~/.codex/sessions".to_string()];
-        healthy.sync_schedule = SyncSchedule::Manual;
-        SourcesConfig {
-            sources: vec![healthy],
-            disabled_agents: Vec::new(),
-        }
-        .save_to(&config_path)
-        .expect("write fixture sources config");
-
-        let mirror_file = data_dir
-            .join("remotes")
-            .join("healthy-server")
-            .join("mirror")
-            .join("session.jsonl");
-        std::fs::create_dir_all(mirror_file.parent().unwrap()).expect("create mirror dir");
-        std::fs::write(&mirror_file, b"remote mirror bytes\n").expect("write mirror file");
-
-        let mut sync_status = SyncStatus::default();
-        sync_status.set_info(
-            "healthy-server",
-            SourceSyncInfo {
-                last_sync: Some(current_unix_ms()),
-                last_result: SyncResult::Success,
-                files_synced: 1,
-                bytes_transferred: 21,
-                duration_ms: 500,
-                consecutive_failures: 0,
-            },
-        );
-        sync_status.save(&data_dir).expect("write sync status");
-
-        let rows = vec![DoctorSourceInventoryDbRow {
-            provider: "codex".to_string(),
-            source_path: Some("/remote/codex/session.jsonl".to_string()),
-            source_id: "healthy-server".to_string(),
-            origin_host: Some("user@healthy-server".to_string()),
-            origin_kind: Some("ssh".to_string()),
-            conversation_count: 1,
-        }];
-        let source_inventory =
-            build_doctor_source_inventory_report(&data_dir, true, None, rows, Vec::new());
-
-        let report =
-            collect_doctor_remote_source_sync_report(&data_dir, &config_path, &source_inventory);
-
-        assert_eq!(report.status, "ok");
-        assert!(
-            report.sync_gaps.is_empty(),
-            "healthy source should be clean: {report:#?}"
-        );
-        assert!(
-            report.recommended_sync_commands.is_empty(),
-            "doctor should not recommend sync commands when no gap exists: {report:#?}"
-        );
-        assert_eq!(report.configured_remote_source_count, 1);
-        assert_eq!(report.archive_remote_conversation_count, 1);
-        assert_eq!(report.remote_source_state, "ok");
-        assert_eq!(report.sync_staleness, "fresh");
-        assert_eq!(report.local_mirror_state, "present");
-        assert_eq!(report.local_mirror_probe_error_count, 0);
-        let summary =
-            doctor_remote_source_sync_runtime_summary(&report, "status-inline-local-config", true);
-        assert_eq!(summary.status, "ok");
-        assert_eq!(summary.remote_source_state, "ok");
-        assert_eq!(summary.sync_staleness, "fresh");
-        assert_eq!(summary.archive_remote_conversation_count, Some(1));
-        assert_eq!(summary.recommended_action, "none");
-    }
-
-    #[test]
-    fn doctor_remote_source_sync_report_advice_is_additive_and_preservation_safe() {
-        use crate::sources::config::{SourceDefinition, SourcesConfig, SyncSchedule};
-        use crate::sources::sync::{SourceSyncInfo, SyncResult, SyncStatus, current_unix_ms};
-
-        // A pruned-remote source with a present local mirror and existing archive
-        // evidence is the highest-risk shape for a doctor recommending destructive
-        // "repair": this is exactly where additive/preservation guarantees matter.
-        let temp = tempfile::TempDir::new().expect("tempdir");
-        let data_dir = temp.path().join("cass-data");
-        let remotes_dir = data_dir.join("remotes");
-        std::fs::create_dir_all(&remotes_dir).expect("create remotes dir");
-        let config_path = temp.path().join("config/cass/sources.toml");
-        let mut source = SourceDefinition::ssh("retired-laptop", "user@retired-laptop");
-        source.paths = vec!["~/.codex/sessions".to_string()];
-        source.sync_schedule = SyncSchedule::Manual;
-        SourcesConfig {
-            sources: vec![source],
-            disabled_agents: Vec::new(),
-        }
-        .save_to(&config_path)
-        .expect("write fixture sources config");
-
-        // Local mirror has more readable files than the archive currently tracks,
-        // and the archive is ahead of the last (zero-file) durable sync — both the
-        // coverage-comparison gaps fire alongside the pruned-source failed-sync gap.
-        let mirror_dir = remotes_dir.join("retired-laptop").join("mirror");
-        std::fs::create_dir_all(&mirror_dir).expect("create mirror dir");
-        std::fs::write(mirror_dir.join("a.jsonl"), b"mirror bytes a\n").expect("mirror a");
-        std::fs::write(mirror_dir.join("b.jsonl"), b"mirror bytes b\n").expect("mirror b");
-
-        let mut sync_status = SyncStatus::default();
-        sync_status.set_info(
-            "retired-laptop",
-            SourceSyncInfo {
-                last_sync: Some(current_unix_ms()),
-                last_result: SyncResult::Failed(
-                    "remote source path does not exist; source pruned".to_string(),
-                ),
-                files_synced: 0,
-                bytes_transferred: 0,
-                duration_ms: 500,
-                consecutive_failures: 3,
-            },
-        );
-        sync_status.save(&data_dir).expect("write sync status");
-
-        let rows = vec![DoctorSourceInventoryDbRow {
-            provider: "codex".to_string(),
-            source_path: Some("/remote/codex/session.jsonl".to_string()),
-            source_id: "retired-laptop".to_string(),
-            origin_host: Some("user@retired-laptop".to_string()),
-            origin_kind: Some("ssh".to_string()),
-            conversation_count: 1,
-        }];
-        let source_inventory =
-            build_doctor_source_inventory_report(&data_dir, true, None, rows, Vec::new());
-
-        let report =
-            collect_doctor_remote_source_sync_report(&data_dir, &config_path, &source_inventory);
-
-        // Sanity: the high-risk shape actually produced the gaps we want to police.
-        assert_eq!(report.status, "warn");
-        let gap_kinds: Vec<&str> = report
-            .sync_gaps
-            .iter()
-            .map(|gap| gap.gap_kind.as_str())
-            .collect();
-        assert!(
-            gap_kinds.contains(&"remote_source_pruned"),
-            "pruned remote should surface a pruned gap: {gap_kinds:?}"
-        );
-        assert!(
-            gap_kinds.contains(&"local_archive_ahead_of_remote"),
-            "archive-ahead coverage gap should fire: {gap_kinds:?}"
-        );
-        assert!(
-            gap_kinds.contains(&"remote_copy_ahead_verified"),
-            "verified mirror coverage gap should fire: {gap_kinds:?}"
-        );
-
-        // Every user-facing string the doctor emits: gap evidence, gap advice,
-        // per-source reasons, and the recommended command set, plus the runtime
-        // summary advice. None of these may instruct destructive transfer.
-        let summary =
-            doctor_remote_source_sync_runtime_summary(&report, "status-inline-local-config", true);
-        let mut advice_strings: Vec<String> = Vec::new();
-        let mut all_strings: Vec<String> = Vec::new();
-        for gap in &report.sync_gaps {
-            advice_strings.push(gap.recommended_action.clone());
-            all_strings.push(gap.recommended_action.clone());
-            all_strings.extend(gap.evidence.iter().cloned());
-        }
-        for entry in &report.sources {
-            all_strings.extend(entry.reasons.iter().cloned());
-        }
-        advice_strings.extend(report.recommended_sync_commands.iter().cloned());
-        all_strings.extend(report.recommended_sync_commands.iter().cloned());
-        advice_strings.push(summary.recommended_action.clone());
-        all_strings.push(summary.recommended_action.clone());
-
-        // Destructive transfer flags / source-log mutation must never appear in any
-        // emitted string. rsync runs additive (no --delete); provider logs are never
-        // rewritten by a recommended action.
-        const DESTRUCTIVE_FLAGS: &[&str] = &[
-            "--delete",
-            "--delete-after",
-            "--delete-during",
-            "--delete-excluded",
-            "--remove-source-files",
-            "--remove-sent-files",
-        ];
-        // Tokenized command words (exact match against whitespace/punct-split tokens
-        // so benign words like "perform"/"transform"/"truncated" never false-match).
-        const DESTRUCTIVE_TOKENS: &[&str] = &["rm", "rmdir", "shred", "unlink", "wipe"];
-        const DESTRUCTIVE_PHRASES: &[&str] = &[
-            "delete the source",
-            "delete source log",
-            "remove the source",
-            "remove source log",
-            "prune the source log",
-            "rsync --delete",
-            "rm -rf",
-        ];
-        for s in &all_strings {
-            let lower = s.to_ascii_lowercase();
-            for flag in DESTRUCTIVE_FLAGS {
-                assert!(
-                    !lower.contains(flag),
-                    "doctor advice/evidence must not contain destructive flag {flag:?}: {s:?}"
-                );
-            }
-            for phrase in DESTRUCTIVE_PHRASES {
-                assert!(
-                    !lower.contains(phrase),
-                    "doctor advice/evidence must not contain destructive phrase {phrase:?}: {s:?}"
-                );
-            }
-            for token in lower.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
-                assert!(
-                    !DESTRUCTIVE_TOKENS.contains(&token),
-                    "doctor advice/evidence must not invoke destructive command {token:?}: {s:?}"
-                );
-            }
-        }
-
-        // Recommended actions are either gated additive cass subcommands, inert
-        // status tokens, or human-readable preservation prose. They must never be a
-        // raw transport/shell invocation (which could carry destructive flags) and
-        // must never redirect output over a source log.
-        const RAW_INVOCATION_BINARIES: &[&str] = &[
-            "rsync", "scp", "ssh", "sftp", "sh", "bash", "zsh", "rm", "rmdir", "shred",
-        ];
-        for advice in &advice_strings {
-            let trimmed = advice.trim();
-            if let Some(first_token) = trimmed.split_whitespace().next() {
-                assert!(
-                    !RAW_INVOCATION_BINARIES.contains(&first_token),
-                    "doctor advice must not be a raw transport/shell invocation: {advice:?}"
-                );
-            }
-            assert!(
-                !advice.contains(" > ") && !advice.contains(" >> "),
-                "doctor advice must not redirect output over a source log: {advice:?}"
-            );
-            // If advice ever mentions cleanup/prune, it must point at the explicit
-            // dry-run / fingerprinted flow rather than an automatic destructive repair.
-            let lower = advice.to_ascii_lowercase();
-            if lower.contains("prune") || lower.contains("cleanup") {
-                assert!(
-                    lower.contains("--dry-run") || lower.contains("fingerprint"),
-                    "cleanup/prune advice must point only at dry-run/fingerprinted flows: {advice:?}"
-                );
-            }
-        }
-
-        // Positive preservation signal: the pruned-source path explicitly tells the
-        // operator to preserve the archive and local mirror before any rebuild.
-        assert!(
-            report.sync_gaps.iter().any(|gap| gap
-                .evidence
-                .iter()
-                .any(|line| line.to_ascii_lowercase().contains("preserve"))),
-            "pruned/coverage gaps must carry an explicit preservation warning: {report:#?}"
-        );
-        // Recommended commands are present (the source needs attention) and are all
-        // additive cass sync/list/add invocations.
-        assert!(
-            !report.recommended_sync_commands.is_empty(),
-            "an actionable source should still receive additive recommendations"
-        );
-        assert!(
-            report
-                .recommended_sync_commands
-                .iter()
-                .all(|command| command.starts_with("cass sources ")),
-            "all recommended commands must be additive cass sources subcommands: {:?}",
-            report.recommended_sync_commands
-        );
-    }
-
-    #[test]
-    fn doctor_remote_source_sync_report_warns_on_mirror_probe_errors() {
-        use crate::sources::config::{SourceDefinition, SourcesConfig, SyncSchedule};
-        use crate::sources::sync::{SourceSyncInfo, SyncResult, SyncStatus, current_unix_ms};
-
-        let temp = tempfile::TempDir::new().expect("tempdir");
-        let data_dir = temp.path().join("cass-data");
-        let remotes_dir = data_dir.join("remotes");
-        std::fs::create_dir_all(&remotes_dir).expect("create remotes dir");
-        let config_path = temp.path().join("config/cass/sources.toml");
-        let mut source = SourceDefinition::ssh("broken-mirror", "user@broken-mirror");
-        source.paths = vec!["~/.claude/projects".to_string()];
-        source.sync_schedule = SyncSchedule::Manual;
-        SourcesConfig {
-            sources: vec![source],
-            disabled_agents: Vec::new(),
-        }
-        .save_to(&config_path)
-        .expect("write fixture sources config");
-
-        std::fs::create_dir_all(remotes_dir.join("broken-mirror")).expect("create source dir");
-        std::fs::write(
-            remotes_dir.join("broken-mirror").join("mirror"),
-            b"not a directory",
-        )
-        .expect("write mirror path as file");
-
-        let mut sync_status = SyncStatus::default();
-        sync_status.set_info(
-            "broken-mirror",
-            SourceSyncInfo {
-                last_sync: Some(current_unix_ms()),
-                last_result: SyncResult::Success,
-                files_synced: 1,
-                bytes_transferred: 15,
-                duration_ms: 500,
-                consecutive_failures: 0,
-            },
-        );
-        sync_status.save(&data_dir).expect("write sync status");
-
-        let source_inventory =
-            build_doctor_source_inventory_report(&data_dir, true, None, Vec::new(), Vec::new());
-
-        let report =
-            collect_doctor_remote_source_sync_report(&data_dir, &config_path, &source_inventory);
-
-        assert_eq!(report.status, "warn");
-        assert_eq!(report.local_mirror_probe_error_count, 1);
-        assert_eq!(report.local_mirror_missing_count, 0);
-        assert_eq!(report.remote_source_state, "local_mirror_gap");
-        assert_eq!(report.sync_staleness, "fresh");
-        assert_eq!(report.local_mirror_state, "probe_error");
-        assert!(
-            report.sync_gaps.iter().any(|gap| {
-                gap.source_id == "broken-mirror" && gap.gap_kind == "local_mirror_probe_error"
-            }),
-            "mirror probe failures must be promoted to structured gaps: {report:#?}"
-        );
-        assert!(
-            report
-                .sources
-                .first()
-                .and_then(|source| source.local_mirror_probe_error.as_deref())
-                .is_some(),
-            "per-source entry should preserve the probe error for diagnostics: {report:#?}"
-        );
-        assert!(
-            report
-                .recommended_sync_commands
-                .iter()
-                .any(|command| command == "cass sources sync --source broken-mirror --json")
-        );
-        assert!(
-            report
-                .recommended_sync_commands
-                .iter()
-                .any(|command| command == "cass sources sync --all --json")
-        );
-    }
-
-    #[test]
     fn doctor_structured_details_are_bounded_without_weakening_summary_counts() {
         let detail_count = DOCTOR_STRUCTURED_DETAIL_DEFAULT_LIMIT + 7;
         let mut bounded_backfill = DoctorRawMirrorBackfillReport {
@@ -76336,7 +74694,7 @@ paths = ["~/.claude/projects"]
             "restore_rehearsal_then_apply",
             "derived_cleanup_fingerprint_apply",
             "semantic_fallback_no_archive_damage",
-            "multi_machine_source_sync_coverage",
+            "local_mirror_source_coverage",
         ] {
             let scenario = contract
                 .matrix
@@ -79077,7 +77435,6 @@ fn run_guide(
     confirmed_facts: &[String],
     accepted_privacy_tier: Option<&str>,
     accepted_cost_risk: Option<&str>,
-    allow_rch: bool,
     stop_conditions_clear: bool,
 ) -> CliResult<()> {
     let mut intent = intent_words.join(" ");
@@ -79175,7 +77532,6 @@ fn run_guide(
             confirmed_facts,
             accepted_privacy_tier,
             accepted_cost_risk,
-            allow_rch,
             stop_conditions_clear,
             source_kind,
             fixture_context: fixture_context.as_ref(),
@@ -79995,60 +78351,43 @@ fn run_status(
         // rather than blocking. The core readiness above is cheap and always
         // present; operators are routed to `cass doctor check` for the rest.
         let mut skipped_sections: Vec<String> = Vec::new();
-        let (quarantine_value, coverage_value, remote_sync_value, doctor_summary_value) =
-            if status_budget.is_healthy() {
-                let quarantine_report = collect_diag_quarantine_report(
-                    &data_dir,
-                    &crate::search::tantivy::expected_index_dir(&data_dir),
-                );
-                let coverage_risk = doctor_fast_coverage_risk_unchecked(db_exists);
-                let sources_path = doctor_sources_config_path(&data_dir);
-                let remote_source_sync_report =
-                    collect_doctor_remote_source_sync_fast_report(&data_dir, &sources_path);
-                let remote_source_sync_summary = doctor_remote_source_sync_runtime_summary(
-                    &remote_source_sync_report,
-                    "status-inline-local-config",
-                    false,
-                );
-                let doctor_summary = build_doctor_runtime_summary(DoctorRuntimeSummaryInput {
-                    surface: "status-summary",
-                    state: &state,
-                    status,
-                    healthy,
-                    initialized: !not_initialized,
-                    db_exists,
-                    rebuild_active,
-                    coverage_risk: &coverage_risk,
-                    coverage_source: "status-fast-state",
-                    coverage_checked: false,
-                    remote_source_sync_summary: Some(&remote_source_sync_summary),
-                    quarantine_summary: Some(&quarantine_report.summary),
-                    recommended_action: recommended_action.as_ref(),
-                    data_dir: &data_dir,
-                });
-                (
-                    serde_json::to_value(&quarantine_report).unwrap_or(serde_json::Value::Null),
-                    serde_json::to_value(&coverage_risk).unwrap_or(serde_json::Value::Null),
-                    serde_json::to_value(&remote_source_sync_summary)
-                        .unwrap_or(serde_json::Value::Null),
-                    serde_json::to_value(&doctor_summary).unwrap_or(serde_json::Value::Null),
-                )
-            } else {
-                for section in [
-                    "quarantine",
-                    "coverage_risk",
-                    "remote_source_sync",
-                    "doctor_summary",
-                ] {
-                    skipped_sections.push(section.to_string());
-                }
-                (
-                    serde_json::Value::Null,
-                    serde_json::Value::Null,
-                    serde_json::Value::Null,
-                    serde_json::Value::Null,
-                )
-            };
+        let (quarantine_value, coverage_value, doctor_summary_value) = if status_budget.is_healthy()
+        {
+            let quarantine_report = collect_diag_quarantine_report(
+                &data_dir,
+                &crate::search::tantivy::expected_index_dir(&data_dir),
+            );
+            let coverage_risk = doctor_fast_coverage_risk_unchecked(db_exists);
+            let doctor_summary = build_doctor_runtime_summary(DoctorRuntimeSummaryInput {
+                surface: "status-summary",
+                state: &state,
+                status,
+                healthy,
+                initialized: !not_initialized,
+                db_exists,
+                rebuild_active,
+                coverage_risk: &coverage_risk,
+                coverage_source: "status-fast-state",
+                coverage_checked: false,
+                quarantine_summary: Some(&quarantine_report.summary),
+                recommended_action: recommended_action.as_ref(),
+                data_dir: &data_dir,
+            });
+            (
+                serde_json::to_value(&quarantine_report).unwrap_or(serde_json::Value::Null),
+                serde_json::to_value(&coverage_risk).unwrap_or(serde_json::Value::Null),
+                serde_json::to_value(&doctor_summary).unwrap_or(serde_json::Value::Null),
+            )
+        } else {
+            for section in ["quarantine", "coverage_risk", "doctor_summary"] {
+                skipped_sections.push(section.to_string());
+            }
+            (
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+            )
+        };
         let recommended_commands = readiness_recommended_commands(
             &data_dir,
             &db_path,
@@ -80102,7 +78441,6 @@ fn run_status(
             "topology_budget": topology_budget,
             "daemon_runtime": daemon_runtime,
             "doctor_summary": doctor_summary_value,
-            "remote_source_sync": remote_sync_value,
             "coverage_risk": coverage_value,
             "quarantine": quarantine_value,
             // uojcg.3.3: compact "is search missing known conversations?" verdict,
@@ -80962,20 +79300,15 @@ fn run_support_bundle(
     );
 
     // Local source provenance: a single read-only "local" observation derived
-    // from the live truth table — this surface performs no SSH probe, so remote
-    // fields stay at their reachable-local defaults.
-    let local_observation = crate::source_doctor_health::SourceDoctorObservation {
+    // from the live truth table — this surface performs no remote probe, so it
+    // only records local facts the bundle gathered.
+    let source_provenance = rsb::SourceProvenance {
         source_id: "local".to_string(),
-        host: None,
-        host_reachable: true,
-        cass_present: Some(true),
-        cass_current: Some(true),
-        source_root_readable: Some(db_path.exists()),
-        lexical_metadata_present: Some(table.lexical_metadata.present),
-        ..Default::default()
+        cass_present: true,
+        cass_current: true,
+        archive_db_present: db_path.exists(),
+        lexical_metadata_present: table.lexical_metadata.present,
     };
-    let source_provenance =
-        crate::source_doctor_health::SourceDoctorReport::build(&[local_observation]);
 
     let generated_at_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -81009,7 +79342,6 @@ fn run_support_bundle(
         command_envelope,
         source_provenance,
         quarantine,
-        fleet: None,
         root_cause,
         proof_logs: Vec::new(),
     };
@@ -81470,14 +79802,6 @@ fn run_health(
             .cloned()
             .unwrap_or(serde_json::Value::Null);
         let coverage_risk = doctor_fast_coverage_risk_unchecked(db_exists);
-        let sources_path = doctor_sources_config_path(&data_dir);
-        let remote_source_sync_report =
-            collect_doctor_remote_source_sync_fast_report(&data_dir, &sources_path);
-        let remote_source_sync_summary = doctor_remote_source_sync_runtime_summary(
-            &remote_source_sync_report,
-            "health-fast-local-config",
-            false,
-        );
         let doctor_summary = build_doctor_runtime_summary(DoctorRuntimeSummaryInput {
             surface: "health-summary",
             state: &state,
@@ -81489,7 +79813,6 @@ fn run_health(
             coverage_risk: &coverage_risk,
             coverage_source: "health-fast-state",
             coverage_checked: false,
-            remote_source_sync_summary: Some(&remote_source_sync_summary),
             quarantine_summary: None,
             recommended_action: recommended_action.as_ref(),
             data_dir: &data_dir,
@@ -81539,7 +79862,6 @@ fn run_health(
                     .unwrap_or(serde_json::Value::Bool(false))
             },
             "doctor_summary": doctor_summary,
-            "remote_source_sync": remote_source_sync_summary,
             "coverage_risk": coverage_risk,
             "policy_registry": policy_registry,
             "ingest_quarantine": state.get("ingest_quarantine").cloned().unwrap_or(serde_json::Value::Null),
@@ -87124,77 +85446,6 @@ pub(crate) fn run_doctor_impl(
         );
     }
 
-    let remote_source_sync_started = Instant::now();
-    let mut remote_source_sync =
-        collect_doctor_remote_source_sync_report(&data_dir, &sources_path, &source_inventory);
-    if let Some(reason) = archive_wide_collectors_deferred_reason.as_deref() {
-        remote_source_sync.status = "deferred".to_string();
-        remote_source_sync.remote_source_state = "unknown".to_string();
-        remote_source_sync
-            .notes
-            .push("Archive-derived remote counts are unknown because archive-wide collectors were deferred; configuration-only observations are not coverage evidence.".to_string());
-        remote_source_sync.notes.push(reason.to_string());
-    }
-    doctor_push_timing_span(
-        &mut timing_spans,
-        "remote_source_sync",
-        "remote_source_sync",
-        "remote_source_sync",
-        remote_source_sync_started,
-        DOCTOR_SLOW_OPERATION_DEFAULT_THRESHOLD_MS,
-        vec![
-            "configured remote sources, durable sync status, and local mirror presence were checked without SSH probes"
-                .to_string(),
-        ],
-    );
-    if let Some(reason) = archive_wide_collectors_deferred_reason.as_deref() {
-        add_check!(
-            "remote_source_sync",
-            "warn",
-            format!(
-                "Remote source configuration was inspected, but archive reconciliation is unchecked; {reason}"
-            ),
-            false
-        );
-    } else if let Some(error) = remote_source_sync.config_error.as_deref() {
-        add_check!(
-            "remote_source_sync",
-            "warn",
-            format!("Remote source sync diagnosis could not load sources.toml: {error}"),
-            false
-        );
-    } else if let Some(error) = remote_source_sync.sync_status_error.as_deref() {
-        add_check!(
-            "remote_source_sync",
-            "warn",
-            format!("Remote source sync diagnosis could not read sync_status.json: {error}"),
-            false
-        );
-    } else if !remote_source_sync.sync_gaps.is_empty() {
-        add_check!(
-            "remote_source_sync",
-            "warn",
-            format!(
-                "Remote source sync gaps: {} configured remote source(s), {} archived remote conversation(s), {} gap(s); no live remote probe was attempted",
-                remote_source_sync.configured_remote_source_count,
-                remote_source_sync.archive_remote_conversation_count,
-                remote_source_sync.sync_gaps.len()
-            ),
-            false
-        );
-    } else {
-        add_check!(
-            "remote_source_sync",
-            "pass",
-            format!(
-                "Remote source sync OK ({} configured remote source(s), {} archived remote conversation(s)); no live remote probe was attempted",
-                remote_source_sync.configured_remote_source_count,
-                remote_source_sync.archive_remote_conversation_count
-            ),
-            false
-        );
-    }
-
     let raw_mirror_scan_started = Instant::now();
     let mut raw_mirror = collect_doctor_raw_mirror_report_for_doctor(&data_dir, fix_can_mutate);
     doctor_push_timing_span(
@@ -89102,7 +87353,6 @@ pub(crate) fn run_doctor_impl(
             "repair_contract": doctor_repair_contract_report(),
             "config_exclusion_risks": config_exclusion_risks,
             "source_inventory": source_inventory,
-            "remote_source_sync": remote_source_sync,
             "raw_mirror": raw_mirror,
             "raw_mirror_backfill": output_backfill,
             "coverage_summary": coverage_summary,
@@ -90740,11 +88990,6 @@ fn env_var_capability(name: &str, default: Option<&str>, description: &str) -> E
 fn build_env_var_capabilities() -> Vec<EnvVarCapability> {
     vec![
         env_var_capability(
-            "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT",
-            Some("0"),
-            "Set to 1 to skip update prompts in automation.",
-        ),
-        env_var_capability(
             "TUI_HEADLESS",
             Some("0"),
             "Set to 1 for headless test runs and prompt-free TUI behavior.",
@@ -90815,16 +89060,6 @@ fn build_env_var_capabilities() -> Vec<EnvVarCapability> {
             "CASS_PACK_BUDGET_MS",
             Some("10000"),
             "Fallback structured pack execution budget in milliseconds when --timeout, CASS_SEARCH_TIMEOUT_MS, and [search].timeout_ms do not supply a positive effective timeout.",
-        ),
-        env_var_capability(
-            "CASS_FLEET_PER_HOST_BUDGET_MS",
-            Some("8000"),
-            "Maximum read-only probe budget per host, in milliseconds, for sources doctor and fleet upgrade rehearsal.",
-        ),
-        env_var_capability(
-            "CASS_FLEET_BUDGET_MS",
-            Some("60000"),
-            "Overall read-only probe budget, in milliseconds, for sources doctor and fleet upgrade rehearsal.",
         ),
         env_var_capability(
             "TOON_DEFAULT_FORMAT",
@@ -92098,328 +90333,6 @@ fn run_api_version(output_format: Option<RobotFormat>) -> CliResult<()> {
     Ok(())
 }
 
-/// Default GitHub owner/repo and crate name for the release channels.
-const RELEASE_VERIFY_DEFAULT_REPO: &str = "Dicklesworthstone/coding_agent_session_search";
-const RELEASE_VERIFY_DEFAULT_CRATE: &str = "coding-agent-search";
-const RELEASE_VERIFY_HTTP_TIMEOUT_SECS: u64 = 15;
-
-/// Resolved configuration for a live release-channel probe.
-struct LiveGatherConfig {
-    expected_version: String,
-    repo: String,
-    crate_name: String,
-    homebrew_formula_url: Option<String>,
-    scoop_manifest_url: Option<String>,
-}
-
-/// Robot-safe `cass release-verify`. Offline `--from` reuses the tested
-/// [`crate::release_verify::verify_from_json`] core; `--live` gathers explicit
-/// per-channel observations over the network. Prints a ReleaseVerificationReport.
-#[allow(clippy::too_many_arguments)]
-async fn run_release_verify(
-    output_format: Option<RobotFormat>,
-    from: Option<&str>,
-    live: bool,
-    expected_version: Option<&str>,
-    repo: Option<&str>,
-    crate_name: Option<&str>,
-    homebrew_formula_url: Option<&str>,
-    scoop_manifest_url: Option<&str>,
-) -> CliResult<()> {
-    let report = if let Some(path) = from {
-        let body = read_release_verify_input(path).map_err(|err| CliError {
-            code: 2,
-            kind: CliErrorKind::Usage.kind_str(),
-            message: format!("failed to read release-verify request from {path}: {err}"),
-            hint: Some(
-                "Provide a ReleaseVerifyRequest JSON file path or '-' for stdin.".to_string(),
-            ),
-            retryable: false,
-        })?;
-        crate::release_verify::verify_from_json(&body).map_err(|err| CliError {
-            code: 2,
-            kind: CliErrorKind::Usage.kind_str(),
-            message: format!("invalid release-verify request JSON: {err}"),
-            hint: Some(
-                "Expected {\"expected_version\":\"x.y.z\",\"channels\":[{\"channel\":\"github_release\",...}]}."
-                    .to_string(),
-            ),
-            retryable: false,
-        })?
-    } else if live {
-        let version = expected_version.ok_or_else(|| {
-            CliError::usage(
-                "--live requires --expected-version <v>",
-                Some(
-                    "Pass the release version under test, e.g. --expected-version 0.6.13."
-                        .to_string(),
-                ),
-            )
-        })?;
-        let config = LiveGatherConfig {
-            expected_version: version.to_string(),
-            repo: repo.unwrap_or(RELEASE_VERIFY_DEFAULT_REPO).to_string(),
-            crate_name: crate_name
-                .unwrap_or(RELEASE_VERIFY_DEFAULT_CRATE)
-                .to_string(),
-            homebrew_formula_url: homebrew_formula_url.map(str::to_string),
-            scoop_manifest_url: scoop_manifest_url.map(str::to_string),
-        };
-        let request =
-            asupersync::runtime::spawn_blocking(move || gather_live_release_observations(&config))
-                .await;
-        crate::release_verify::verify_request(request)
-    } else {
-        return Err(CliError::usage(
-            "release-verify requires --from <file|-> or --live",
-            Some(
-                "Use --from for offline/CI evaluation, or --live to probe channels over the network."
-                    .to_string(),
-            ),
-        ));
-    };
-
-    let payload = serde_json::to_value(&report).map_err(|err| CliError {
-        code: 1,
-        kind: CliErrorKind::Unknown.kind_str(),
-        message: format!("serializing release-verify report: {err}"),
-        hint: None,
-        retryable: false,
-    })?;
-
-    let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-        if matches!(fmt, RobotFormat::Sessions) {
-            RobotFormat::Compact
-        } else {
-            fmt
-        }
-    });
-    if let Some(fmt) = structured_format {
-        return output_structured_value(payload, fmt);
-    }
-
-    println!(
-        "Release {} channels: {}/{} ready (overall_ready={})",
-        report.expected_version, report.summary.ready, report.summary.total, report.overall_ready
-    );
-    for action in report.manual_actions() {
-        if let Some(next) = &action.manual_next_action {
-            println!("  {} -> {next}", action.channel.as_str());
-        }
-    }
-    Ok(())
-}
-
-/// Read a release-verify request body from a file path or `-` (stdin).
-fn read_release_verify_input(path: &str) -> std::io::Result<String> {
-    use std::io::Read;
-    if path == "-" {
-        let mut body = String::new();
-        std::io::stdin().read_to_string(&mut body)?;
-        Ok(body)
-    } else {
-        std::fs::read_to_string(path)
-    }
-}
-
-/// Gather explicit, best-effort per-channel observations over the network.
-/// Never fails: an unreachable channel becomes a `reachable: false` observation
-/// that [`crate::release_verify::evaluate_channel`] maps to `NetworkUnavailable`.
-fn gather_live_release_observations(
-    config: &LiveGatherConfig,
-) -> crate::release_verify::ReleaseVerifyRequest {
-    use crate::release_verify::{ChannelObservationInput, ReleaseChannel, ReleaseVerifyRequest};
-
-    ensure_rustls_crypto_provider();
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("cass/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(RELEASE_VERIFY_HTTP_TIMEOUT_SECS))
-        .build()
-        .ok();
-
-    let unreachable = |channel: ReleaseChannel| ChannelObservationInput {
-        channel,
-        configured: true,
-        reachable: false,
-        observed_version: None,
-        checksum_ok: None,
-        dispatch_ran: None,
-        installer_ok: None,
-    };
-    let not_configured = |channel: ReleaseChannel| ChannelObservationInput {
-        channel,
-        configured: false,
-        reachable: false,
-        observed_version: None,
-        checksum_ok: None,
-        dispatch_ran: None,
-        installer_ok: None,
-    };
-
-    let Some(client) = client else {
-        // Could not even build a client: report every channel as unreachable.
-        return ReleaseVerifyRequest {
-            expected_version: config.expected_version.clone(),
-            channels: vec![
-                unreachable(ReleaseChannel::GithubRelease),
-                unreachable(ReleaseChannel::Homebrew),
-                unreachable(ReleaseChannel::Scoop),
-                unreachable(ReleaseChannel::CratesIo),
-                not_configured(ReleaseChannel::InstallerScript),
-            ],
-        };
-    };
-
-    let mut channels = Vec::new();
-
-    // GitHub release (source of truth): latest published tag + asset presence.
-    channels.push(
-        probe_json_version(
-            &client,
-            ReleaseChannel::GithubRelease,
-            &format!(
-                "https://api.github.com/repos/{}/releases/latest",
-                config.repo
-            ),
-            "tag_name",
-        )
-        .unwrap_or_else(|| unreachable(ReleaseChannel::GithubRelease)),
-    );
-
-    // crates.io: max stable version.
-    channels.push(
-        probe_json_version(
-            &client,
-            ReleaseChannel::CratesIo,
-            &format!("https://crates.io/api/v1/crates/{}", config.crate_name),
-            "crate.max_stable_version",
-        )
-        .unwrap_or_else(|| unreachable(ReleaseChannel::CratesIo)),
-    );
-
-    // Homebrew formula (dispatch-driven): only when an explicit URL is supplied.
-    channels.push(match &config.homebrew_formula_url {
-        Some(url) => probe_text_version(&client, ReleaseChannel::Homebrew, url, true)
-            .unwrap_or_else(|| unreachable(ReleaseChannel::Homebrew)),
-        None => not_configured(ReleaseChannel::Homebrew),
-    });
-
-    // Scoop manifest (dispatch-driven): only when an explicit URL is supplied.
-    channels.push(match &config.scoop_manifest_url {
-        Some(url) => probe_json_version(&client, ReleaseChannel::Scoop, url, "version")
-            .map(|mut obs| {
-                obs.dispatch_ran = Some(true);
-                obs
-            })
-            .unwrap_or_else(|| unreachable(ReleaseChannel::Scoop)),
-        None => not_configured(ReleaseChannel::Scoop),
-    });
-
-    // Installer smoke is not auto-executed (it runs curl|bash); CI supplies it
-    // via --from. Marked not-configured for live probes.
-    channels.push(not_configured(ReleaseChannel::InstallerScript));
-
-    ReleaseVerifyRequest {
-        expected_version: config.expected_version.clone(),
-        channels,
-    }
-}
-
-/// GET a JSON document and read a (possibly dotted) string field as the observed
-/// version. Returns `None` on any network/parse failure (caller maps to
-/// unreachable).
-fn probe_json_version(
-    client: &reqwest::blocking::Client,
-    channel: crate::release_verify::ReleaseChannel,
-    url: &str,
-    field_path: &str,
-) -> Option<crate::release_verify::ChannelObservationInput> {
-    use crate::release_verify::ChannelObservationInput;
-    let response = client.get(url).send().ok()?;
-    if !response.status().is_success() {
-        // Reachable but no artifact (e.g. 404) -> configured, reachable, missing.
-        return Some(ChannelObservationInput {
-            channel,
-            configured: true,
-            reachable: true,
-            observed_version: None,
-            checksum_ok: None,
-            dispatch_ran: None,
-            installer_ok: None,
-        });
-    }
-    let json: serde_json::Value = response.json().ok()?;
-    let mut current = &json;
-    for key in field_path.split('.') {
-        current = current.get(key)?;
-    }
-    let observed = current.as_str().map(str::to_string);
-    Some(ChannelObservationInput {
-        channel,
-        configured: true,
-        reachable: true,
-        observed_version: observed,
-        checksum_ok: None,
-        dispatch_ran: None,
-        installer_ok: None,
-    })
-}
-
-/// GET a text document and extract the first `version "X"` / `version X`
-/// occurrence (Homebrew formula style). Returns `None` on failure.
-fn probe_text_version(
-    client: &reqwest::blocking::Client,
-    channel: crate::release_verify::ReleaseChannel,
-    url: &str,
-    dispatch_driven: bool,
-) -> Option<crate::release_verify::ChannelObservationInput> {
-    use crate::release_verify::ChannelObservationInput;
-    let response = client.get(url).send().ok()?;
-    if !response.status().is_success() {
-        return Some(ChannelObservationInput {
-            channel,
-            configured: true,
-            reachable: true,
-            observed_version: None,
-            checksum_ok: None,
-            dispatch_ran: dispatch_driven.then_some(false),
-            installer_ok: None,
-        });
-    }
-    let body = response.text().ok()?;
-    let observed = extract_formula_version(&body);
-    Some(ChannelObservationInput {
-        channel,
-        configured: true,
-        reachable: true,
-        observed_version: observed.clone(),
-        checksum_ok: None,
-        dispatch_ran: dispatch_driven.then_some(observed.is_some()),
-        installer_ok: None,
-    })
-}
-
-/// Extract a `version "X"` value from a Homebrew-style formula body.
-fn extract_formula_version(body: &str) -> Option<String> {
-    for line in body.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("version") {
-            let rest = rest.trim();
-            let inner = rest.trim_start_matches(['=', ' ']).trim();
-            let value = inner.trim_matches(['"', '\'']);
-            if !value.is_empty()
-                && value
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_ascii_digit() || c == 'v')
-            {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
-}
-
 /// Builds the clap trees of the subcommands the `cass` binary dispatches
 /// before [`parse_cli`] (`serve`, `archive`; see src/main.rs).
 static EXTERNAL_SUBCOMMANDS: std::sync::OnceLock<fn() -> Vec<Command>> = std::sync::OnceLock::new();
@@ -93298,7 +91211,6 @@ const DOCTOR_V2_RESPONSE_SCHEMA_KEYS: &[&str] = &[
     "doctor-failure-context",
     "doctor-health-summary",
     "doctor-reconstruct-dry-run",
-    "doctor-remote-source-sync-gaps",
     "doctor-repair-dry-run",
     "doctor-repair-receipt",
     "doctor-restore-rehearsal",
@@ -93372,7 +91284,6 @@ fn response_schema_doctor_v2_common_properties() -> serde_json::Map<String, serd
                 "archive-scan",
                 "archive-normalize",
                 "semantic-model-fallback",
-                "remote-source-sync-gaps",
                 "failure-context",
                 "error-envelope",
             ]),
@@ -93643,31 +91554,6 @@ fn response_schema_doctor_v2_surface(
     })
 }
 
-fn response_schema_doctor_remote_source_sync_runtime_summary() -> serde_json::Value {
-    serde_json::json!({
-        "type": ["object", "null"],
-        "description": "Compact read-only remote-source summary embedded by health/status. It uses local config, sync status, and cass mirror metadata only; live_remote_probe_attempted is always false.",
-        "properties": {
-            "schema_version": { "type": "integer" },
-            "status": { "type": "string" },
-            "source": { "type": "string" },
-            "checked": { "type": "boolean" },
-            "archive_checked": { "type": "boolean" },
-            "live_remote_probe_attempted": { "type": "boolean" },
-            "remote_source_state": { "type": "string" },
-            "sync_staleness": { "type": "string" },
-            "local_mirror_state": { "type": "string" },
-            "configured_remote_source_count": { "type": "integer" },
-            "archive_remote_conversation_count": { "type": ["integer", "null"] },
-            "sync_gap_count": { "type": "integer" },
-            "highest_gap_severity": { "type": "string" },
-            "recommended_action": { "type": "string" },
-            "recommended_sync_commands": { "type": "array", "items": { "type": "string" } },
-            "notes": { "type": "array", "items": { "type": "string" } }
-        }
-    })
-}
-
 fn response_schema_doctor_v2_summary(surface: &'static str) -> serde_json::Value {
     response_schema_doctor_v2_surface(
         DoctorV2SurfaceSchemaSpec {
@@ -93737,10 +91623,6 @@ fn response_schema_doctor_v2_summary(surface: &'static str) -> serde_json::Value
                     "type": "string",
                     "description": "Compact raw-mirror/source state derived from bounded evidence."
                 }),
-            ),
-            (
-                "remote_source_sync",
-                response_schema_doctor_remote_source_sync_runtime_summary(),
             ),
             (
                 "sole_copy_conversation_count",
@@ -94631,115 +92513,6 @@ fn response_schema_doctor_source_inventory() -> serde_json::Value {
             "providers",
             "sources",
             "detected_roots",
-            "notes"
-        ]
-    })
-}
-
-fn response_schema_doctor_remote_source_sync() -> serde_json::Value {
-    serde_json::json!({
-        "type": "object",
-        "description": "Read-only local diagnosis for configured remote sources, durable sync status, local mirror presence, and archived remote provenance rows. It never opens SSH connections or mutates provider logs.",
-        "properties": {
-            "schema_version": { "type": "integer" },
-            "status": { "type": "string", "description": "ok | warn" },
-            "config_path": { "type": "string" },
-            "redacted_config_path": { "type": "string" },
-            "config_available": { "type": "boolean" },
-            "config_error": { "type": "string" },
-            "sync_status_path": { "type": "string" },
-            "redacted_sync_status_path": { "type": "string" },
-            "sync_status_available": { "type": "boolean" },
-            "sync_status_error": { "type": "string" },
-            "live_remote_probe_attempted": { "type": "boolean" },
-            "remote_source_state": { "type": "string" },
-            "sync_staleness": { "type": "string" },
-            "local_mirror_state": { "type": "string" },
-            "configured_source_count": { "type": "integer" },
-            "configured_remote_source_count": { "type": "integer" },
-            "configured_local_source_count": { "type": "integer" },
-            "archive_remote_conversation_count": { "type": "integer" },
-            "archive_remote_source_count": { "type": "integer" },
-            "stale_sync_status_entry_count": { "type": "integer" },
-            "missing_sync_status_count": { "type": "integer" },
-            "never_synced_count": { "type": "integer" },
-            "sync_due_count": { "type": "integer" },
-            "failed_sync_count": { "type": "integer" },
-            "partial_failure_count": { "type": "integer" },
-            "auth_failed_count": { "type": "integer" },
-            "backing_off_count": { "type": "integer" },
-            "local_mirror_missing_count": { "type": "integer" },
-            "local_mirror_empty_count": { "type": "integer" },
-            "local_mirror_probe_error_count": { "type": "integer" },
-            "unconfigured_archive_remote_source_count": { "type": "integer" },
-            "sources": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "source_id": { "type": "string" },
-                        "source_type": { "type": "string" },
-                        "host": { "type": ["string", "null"] },
-                        "configured_path_count": { "type": "integer" },
-                        "path_mapping_count": { "type": "integer" },
-                        "sync_schedule": { "type": "string" },
-                        "local_mirror_path": { "type": "string" },
-                        "redacted_local_mirror_path": { "type": "string" },
-                        "local_mirror_exists": { "type": "boolean" },
-                        "local_mirror_top_level_entry_count": { "type": "integer" },
-                        "local_mirror_entry_count_truncated": { "type": "boolean" },
-                        "local_mirror_probe_error": { "type": ["string", "null"] },
-                        "archived_conversation_count": { "type": "integer" },
-                        "sync_status_available": { "type": "boolean" },
-                        "last_sync_ms": { "type": ["integer", "null"] },
-                        "last_result": { "type": "string" },
-                        "last_error": { "type": ["string", "null"] },
-                        "files_synced": { "type": "integer" },
-                        "bytes_transferred": { "type": "integer" },
-                        "consecutive_failures": { "type": "integer" },
-                        "sync_health_action": { "type": "string" },
-                        "sync_health": { "type": "string" },
-                        "sync_health_score": { "type": "integer" },
-                        "staleness_ms": { "type": ["integer", "null"] },
-                        "stale_value_score": { "type": "integer" },
-                        "fallback_active": { "type": "boolean" },
-                        "next_eligible_sync_ms": { "type": ["integer", "null"] },
-                        "backoff_until_ms": { "type": ["integer", "null"] },
-                        "reasons": { "type": "array", "items": { "type": "string" } },
-                        "gaps": { "type": "array", "items": { "type": "string" } }
-                    }
-                }
-            },
-            "archive_remote_sources": { "type": "array", "items": response_schema_opaque_object() },
-            "sync_gaps": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "source_id": { "type": "string" },
-                        "gap_kind": { "type": "string" },
-                        "severity": { "type": "string" },
-                        "evidence": { "type": "array", "items": { "type": "string" } },
-                        "recommended_action": { "type": "string" }
-                    }
-                }
-            },
-            "recommended_sync_commands": { "type": "array", "items": { "type": "string" } },
-            "notes": { "type": "array", "items": { "type": "string" } }
-        },
-        "required": [
-            "schema_version",
-            "status",
-            "config_available",
-            "sync_status_available",
-            "live_remote_probe_attempted",
-            "remote_source_state",
-            "sync_staleness",
-            "local_mirror_state",
-            "configured_remote_source_count",
-            "archive_remote_conversation_count",
-            "sync_gaps",
-            "recommended_sync_commands",
             "notes"
         ]
     })
@@ -96546,7 +94319,6 @@ fn build_response_schemas() -> std::collections::BTreeMap<String, serde_json::Va
                 "topology_budget": response_schema_topology_budget(),
                 "daemon_runtime": response_schema_opaque_object(),
                 "doctor_summary": response_schema_doctor_v2_summary("status-summary"),
-                "remote_source_sync": response_schema_doctor_remote_source_sync_runtime_summary(),
                 "coverage_risk": response_schema_doctor_coverage_risk(),
                 "quarantine": response_schema_opaque_object(),
                 "search_completeness": response_schema_search_completeness(),
@@ -96698,7 +94470,6 @@ fn build_response_schemas() -> std::collections::BTreeMap<String, serde_json::Va
                 "policy_registry": response_schema_policy_registry(),
                 "topology_budget": response_schema_topology_budget(),
                 "doctor_summary": response_schema_doctor_v2_summary("status-summary"),
-                "remote_source_sync": response_schema_doctor_remote_source_sync_runtime_summary(),
                 "coverage_risk": response_schema_doctor_coverage_risk(),
                 "quarantine": response_schema_opaque_object(),
                 "daemon_runtime": response_schema_opaque_object(),
@@ -97199,7 +94970,6 @@ fn build_response_schemas() -> std::collections::BTreeMap<String, serde_json::Va
                 "rebuild_progress": response_schema_rebuild_progress(),
                 "db": response_schema_health_db(),
                 "doctor_summary": response_schema_doctor_v2_summary("health-summary"),
-                "remote_source_sync": response_schema_doctor_remote_source_sync_runtime_summary(),
                 "coverage_risk": response_schema_doctor_coverage_risk(),
                 "policy_registry": response_schema_policy_registry(),
                 "ingest_quarantine": response_schema_ingest_quarantine(),
@@ -97412,7 +95182,6 @@ fn build_response_schemas() -> std::collections::BTreeMap<String, serde_json::Va
                 "items": response_schema_doctor_config_exclusion_risk()
             },
             "source_inventory": response_schema_doctor_source_inventory(),
-            "remote_source_sync": response_schema_doctor_remote_source_sync(),
             "raw_mirror": response_schema_doctor_raw_mirror(),
             "raw_mirror_backfill": response_schema_doctor_raw_mirror_backfill(),
             "coverage_summary": response_schema_doctor_coverage_summary(),
@@ -97780,30 +95549,6 @@ fn build_response_schemas() -> std::collections::BTreeMap<String, serde_json::Va
                 ("forensic_bundle", response_schema_doctor_forensic_bundle_metadata()),
                 ("promotion_allowed", serde_json::json!({ "type": "boolean" })),
                 ("promotion_blockers", serde_json::json!({ "type": "array", "items": { "type": "string" } })),
-            ],
-        ),
-    );
-    schemas.insert(
-        "doctor-remote-source-sync-gaps".to_string(),
-        response_schema_doctor_v2_surface(
-            DoctorV2SurfaceSchemaSpec {
-                description: "Remote-source and sync-gap diagnosis contract. Missing remote/provider rows are coverage state, not proof of local archive loss.",
-                surface: "remote-source-sync-gaps",
-                mode: "read-only-check",
-                status: "warn",
-                outcome_kind: "no_op",
-                asset_class: "external_upstream_source",
-                risk_level: "low",
-                fallback_mode: "read-only",
-                authority_status: "read_only",
-                recommended_action: "cass sources sync --all --json",
-            },
-            [
-                ("source_inventory", response_schema_doctor_source_inventory()),
-                ("remote_source_sync", response_schema_doctor_remote_source_sync()),
-                ("sync_gaps", serde_json::json!({ "type": "array", "items": response_schema_opaque_object() })),
-                ("source_authority", response_schema_doctor_source_authority()),
-                ("recommended_sync_commands", serde_json::json!({ "type": "array", "items": { "type": "string" } })),
             ],
         ),
     );
@@ -98420,7 +96165,6 @@ mod response_schema_tests {
             "redaction_status",
             "archive_coverage_state",
             "source_mirror_state",
-            "remote_source_sync",
             "doctor_check_recommended",
             "coverage_source",
             "quarantine_summary",
@@ -98452,7 +96196,6 @@ mod response_schema_tests {
             coverage_risk: &coverage_risk,
             coverage_source: "health-fast-state",
             coverage_checked: false,
-            remote_source_sync_summary: None,
             quarantine_summary: None,
             recommended_action: None,
             data_dir: temp.path(),
@@ -98462,80 +96205,10 @@ mod response_schema_tests {
         assert_eq!(summary["coverage_source"]["status"], "not_checked");
         assert_eq!(summary["coverage_source"]["source"], "health-fast-state");
         assert_eq!(summary["doctor_check_recommended"], true);
-        assert_eq!(summary["remote_source_sync"], serde_json::Value::Null);
         assert_eq!(summary["quarantine_summary"], serde_json::Value::Null);
         assert_eq!(
             summary["cleanup_reclaimable_bytes"],
             serde_json::Value::Null
-        );
-        assert_eq!(
-            summary["operation_outcome"]["action_not_taken"],
-            "did not run deep doctor collectors, source sync, rebuild, model verification, or filesystem-wide repair work"
-        );
-    }
-
-    #[test]
-    fn doctor_runtime_summary_embeds_remote_source_sync_state() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let state = serde_json::json!({
-            "semantic": { "fallback_mode": "lexical" },
-            "rebuild": { "active": false },
-        });
-        let coverage_risk = DoctorCoverageRiskSummary {
-            schema_version: 1,
-            status: "ok".to_string(),
-            confidence_tier: "archive_db_and_sources_checked".to_string(),
-            recommended_action: "none".to_string(),
-            ..DoctorCoverageRiskSummary::default()
-        };
-        let remote_source_sync = DoctorRemoteSourceSyncRuntimeSummary {
-            schema_version: 1,
-            status: "warn".to_string(),
-            source: "status-inline-local-config".to_string(),
-            checked: true,
-            archive_checked: true,
-            live_remote_probe_attempted: false,
-            remote_source_state: "local_mirror_gap".to_string(),
-            sync_staleness: "sync_due".to_string(),
-            local_mirror_state: "missing".to_string(),
-            configured_remote_source_count: 2,
-            archive_remote_conversation_count: Some(3),
-            sync_gap_count: 2,
-            highest_gap_severity: "medium".to_string(),
-            recommended_action: "cass sources sync --all --json".to_string(),
-            recommended_sync_commands: vec!["cass sources sync --all --json".to_string()],
-            notes: vec!["local-only".to_string()],
-        };
-
-        let summary = build_doctor_runtime_summary(DoctorRuntimeSummaryInput {
-            surface: "status-summary",
-            state: &state,
-            status: "healthy",
-            healthy: true,
-            initialized: true,
-            db_exists: true,
-            rebuild_active: false,
-            coverage_risk: &coverage_risk,
-            coverage_source: "status-inline-small-archive",
-            coverage_checked: true,
-            remote_source_sync_summary: Some(&remote_source_sync),
-            quarantine_summary: None,
-            recommended_action: None,
-            data_dir: temp.path(),
-        });
-
-        assert_eq!(
-            summary["remote_source_sync"]["remote_source_state"],
-            "local_mirror_gap"
-        );
-        assert_eq!(summary["remote_source_sync"]["sync_staleness"], "sync_due");
-        assert_eq!(
-            summary["remote_source_sync"]["archive_remote_conversation_count"],
-            3
-        );
-        assert_eq!(
-            summary["remote_source_sync"]["recommended_action"],
-            "cass sources sync --all --json"
         );
         assert_eq!(
             summary["operation_outcome"]["action_not_taken"],
@@ -98564,7 +96237,6 @@ mod response_schema_tests {
             coverage_risk: &coverage_risk,
             coverage_source: "health-fast-state",
             coverage_checked: false,
-            remote_source_sync_summary: None,
             quarantine_summary: None,
             recommended_action: Some(&recommended_action),
             data_dir: temp.path(),
@@ -98623,7 +96295,6 @@ mod response_schema_tests {
             coverage_risk: &coverage_risk,
             coverage_source: "status-inline-small-archive",
             coverage_checked: true,
-            remote_source_sync_summary: None,
             quarantine_summary: Some(&quarantine_summary),
             recommended_action: None,
             data_dir: temp.path(),
@@ -105645,164 +103316,6 @@ fn resolve_resume_target(path: &Path, agent_override: Option<&str>) -> CliResult
             retryable: false,
         }),
     }
-}
-
-/// `cass upgrade` — discover newer cass releases and (optionally) run
-/// the same checksum-verified installer the TUI prompts to launch.
-///
-/// The TUI was already wired into `crate::update_check`, but the only
-/// way to trigger an upgrade was to enter the TUI and respond to the
-/// prompt — useless for headless / SSH / scripted environments
-/// (issue #200). This subcommand re-uses every primitive already in
-/// `update_check.rs`; the new code is just plumbing.
-async fn run_upgrade(
-    check_only: bool,
-    force: bool,
-    yes: bool,
-    output_format: Option<RobotFormat>,
-) -> CliResult<()> {
-    let current = env!("CARGO_PKG_VERSION");
-
-    // `force_check` bypasses the 1-hour cadence; otherwise honor the
-    // standard interval so repeated `cass upgrade --check` invocations
-    // don't hammer the GitHub API. Either way we only need a single
-    // round-trip — no need to cycle through the prompt path.
-    let info = if force {
-        crate::update_check::force_check(current).await
-    } else {
-        crate::update_check::check_for_updates(current).await
-    };
-
-    // No `UpdateInfo` means: cadence skipped (only with !force), updates
-    // disabled by env, or the GitHub API was unreachable. Communicate
-    // each cleanly instead of pretending we're "up to date".
-    let Some(info) = info else {
-        if let Some(fmt) = output_format {
-            let payload = serde_json::json!({
-                "current_version": current,
-                "latest_version": null,
-                "is_newer": false,
-                "is_skipped": false,
-                "checked": false,
-                "reason": if force {
-                    "github_api_unreachable_or_disabled"
-                } else {
-                    "checked_recently_or_unreachable"
-                },
-            });
-            output_structured_value(payload, fmt)?;
-        } else if force {
-            eprintln!(
-                "Could not reach GitHub or update checks are disabled. Try again with network access."
-            );
-        } else {
-            eprintln!(
-                "No update check performed (recent check is still cached, or update checks are disabled)."
-            );
-            eprintln!("Re-run with `--force` to fetch the GitHub release API immediately.");
-        }
-        // `--check` exit semantics: 0 when there's nothing to install
-        // (and we have no information saying otherwise), so this is
-        // the conservative answer.
-        return Ok(());
-    };
-
-    if let Some(fmt) = output_format {
-        let payload = serde_json::json!({
-            "current_version": current,
-            "latest_version": info.latest_version,
-            "tag_name": info.tag_name,
-            "is_newer": info.is_newer,
-            "is_skipped": info.is_skipped,
-            "release_url": info.release_url,
-            "checked": true,
-        });
-        output_structured_value(payload, fmt)?;
-        if check_only && info.is_newer {
-            // Mirror the documented `--check` exit-code contract.
-            std::process::exit(1);
-        }
-        // In structured mode, only proceed to the install path when the
-        // caller explicitly passed `--yes`. Anything else (no update,
-        // `--check`, no `--yes` even on a TTY) returns now: prompting on
-        // stdin would write y/N text on top of the JSON envelope already
-        // emitted on stdout and break consumers like
-        // `cass upgrade --json | jq`. Earlier the check was
-        // `!yes && !is_terminal()`, which silently fell through to the
-        // prompt path on an attached TTY — fixed here so structured mode
-        // never prompts.
-        if check_only || !info.is_newer || !yes {
-            return Ok(());
-        }
-        // Fall through to the install path: structured mode + yes +
-        // is_newer. Past this point `run_self_update` execs the
-        // installer, which writes to the same stdout — but at that
-        // point the caller has explicitly asked for the install side
-        // effect, so the installer's output replacing the JSON envelope
-        // is the documented behaviour.
-    }
-
-    if !info.is_newer {
-        if output_format.is_none() {
-            println!(
-                "cass {current} is up to date (latest release: {}).",
-                info.tag_name
-            );
-        }
-        return Ok(());
-    }
-
-    if check_only {
-        if output_format.is_none() {
-            println!(
-                "Update available: {current} → {}.\nView the release notes: {}",
-                info.tag_name, info.release_url,
-            );
-        }
-        // Document the contract: --check exits non-zero when an update
-        // exists, so wrappers can `cass upgrade --check && echo current
-        // || cass upgrade --yes`.
-        std::process::exit(1);
-    }
-
-    // Decide whether to run the installer.
-    let should_install = if yes {
-        true
-    } else if !io::stdin().is_terminal() {
-        // No TTY → can't prompt → don't silently install. Tell the
-        // caller exactly what to add.
-        eprintln!(
-            "Update available: {current} → {}, but no TTY is attached so I can't ask.\nRe-run with `--yes` to install non-interactively, or `--check` to print status.",
-            info.tag_name
-        );
-        return Ok(());
-    } else {
-        print!(
-            "A newer version is available: current v{}, latest {}. Update now? (y/N): ",
-            current, info.tag_name
-        );
-        io::stdout().flush().ok();
-        let mut input = String::new();
-        if io::stdin().read_line(&mut input).is_err() {
-            return Ok(());
-        }
-        matches!(input.trim(), "y" | "Y" | "yes" | "YES")
-    };
-
-    if !should_install {
-        return Ok(());
-    }
-
-    info!(
-        target: "upgrade",
-        "starting self-update from {current} to {}",
-        info.tag_name
-    );
-    // run_self_update returns `!` — it execs the installer over the
-    // current process. Anything beyond this point is unreachable on
-    // success, but reachable on a malformed version string (which the
-    // function itself rejects with exit(1)).
-    crate::update_check::run_self_update(&info.tag_name);
 }
 
 /// `cass resume <path>` — resolve and optionally execute the native
@@ -114035,26 +111548,21 @@ struct DiagnosticCheck {
 #[derive(serde::Serialize)]
 struct SourceDiagnostics {
     source_id: String,
-    /// Bounded fleet-doctor host report (bead uojcg.8.2): reachability/transport
-    /// state + likely root cause + safe next command, in the 6.1 schema.
-    host_report: crate::fleet_doctor_schema::HostDoctorReport,
     checks: Vec<DiagnosticCheck>,
     passed: usize,
     warnings: usize,
     failed: usize,
 }
 
-/// The `sources doctor --json` envelope (bead uojcg.8.6): the
-/// `source_doctor_health` classification report (per-source explicit state +
-/// preservation-safe next command + `mutation_free` marker) flattened at the
-/// top level, with the detailed raw per-source checks under `diagnostics`.
+/// The `sources doctor --json` envelope: the detailed raw per-source checks
+/// under `diagnostics`, the robot budget block, and `sources.toml` validation
+/// findings. Local-only: remote host probes were removed with the fleet
+/// surface, so every check is derived from local evidence.
 #[derive(serde::Serialize)]
 struct SourcesDoctorOutput<'a> {
-    #[serde(flatten)]
-    health: &'a crate::source_doctor_health::SourceDoctorReport,
     diagnostics: &'a [SourceDiagnostics],
     budget: &'a crate::robot_budget_envelope::BudgetBlock,
-    /// Problems in `sources.toml` itself that no per-host probe can see.
+    /// Problems in `sources.toml` itself that no per-source check can see.
     config_validation: &'a crate::sources::config_validation::SourceConfigValidation,
 }
 
@@ -114103,287 +111611,18 @@ fn sources_doctor_config_validation(
     validate_sources_config(config, &ctx)
 }
 
-const SOURCE_DOCTOR_FIXTURE_MAX_BYTES: usize = 16 * 1024;
-const SOURCE_DOCTOR_FIXTURE_MAX_DELAY_MS: u64 = 100;
+/// Default wall-clock budget for `sources doctor` when `--budget-ms` is not
+/// given. All remaining checks are local metadata reads, so this is generous.
+const SOURCES_DOCTOR_DEFAULT_BUDGET_MS: u64 = 5_000;
 
-fn configured_fleet_probe_budget(
-    total_override_ms: Option<u64>,
-    per_host_override_ms: Option<u64>,
-) -> crate::fleet_probe::ProbeBudget {
-    let defaults = crate::fleet_probe::ProbeBudget::default();
-    let positive_env = |name: &str, default| {
-        dotenvy::var(name)
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .filter(|&milliseconds| milliseconds > 0)
-            .unwrap_or(default)
-    };
-    crate::fleet_probe::ProbeBudget {
-        per_host_ms: per_host_override_ms
-            .unwrap_or_else(|| positive_env("CASS_FLEET_PER_HOST_BUDGET_MS", defaults.per_host_ms)),
-        total_ms: total_override_ms
-            .unwrap_or_else(|| positive_env("CASS_FLEET_BUDGET_MS", defaults.total_ms)),
-    }
-}
-
-fn maybe_test_fleet_verify_delay(max_delay_ms: u64) -> bool {
-    if let Ok(raw) = dotenvy::var("CASS_TEST_FLEET_VERIFY_SLOW_MS")
-        && let Ok(milliseconds) = raw.parse::<u64>()
-        && milliseconds > 0
-    {
-        if max_delay_ms > 0 {
-            std::thread::sleep(Duration::from_millis(milliseconds.min(max_delay_ms)));
-        }
-        return milliseconds >= max_delay_ms;
-    }
-    false
-}
-
-fn record_remote_fleet_probe_skip(skipped_sections: &mut Vec<String>, source_name: &str) {
-    skipped_sections.push(format!("source:{source_name}:remote_probe"));
-}
-
-fn remaining_probe_timeout(
-    host_budget: &crate::robot_budget_envelope::RobotBudget,
-    total_budget: &crate::robot_budget_envelope::RobotBudget,
-) -> Duration {
-    Duration::from_millis(
-        host_budget
-            .remaining_ms()
-            .min(total_budget.remaining_ms())
-            .max(1),
-    )
-}
-
-fn source_probe_budget_exhausted(
-    host_budget: &crate::robot_budget_envelope::RobotBudget,
-    total_budget: &crate::robot_budget_envelope::RobotBudget,
-) -> bool {
-    host_budget.is_exhausted() || total_budget.is_exhausted()
-}
-
-fn skipped_source_probe(name: impl Into<String>) -> DiagnosticCheck {
-    DiagnosticCheck {
-        name: name.into(),
-        status: "warn".into(),
-        message: "Probe timed out before this check could run".into(),
-        remediation: Some(
-            "Retry with larger CASS_FLEET_PER_HOST_BUDGET_MS and CASS_FLEET_BUDGET_MS values"
-                .into(),
-        ),
-    }
-}
-
-/// Test-only external-probe facts for deterministic real-binary source-doctor
-/// E2E coverage. The seam replaces only the SSH-dependent observations; the
-/// live check-to-observation reduction, version-skew assessment, local sync
-/// evidence, state precedence, and JSON projection remain unchanged.
-#[derive(Clone, Copy, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum SourceDoctorFixtureRemotePath {
-    Nonempty,
-    Empty,
-    Missing,
-}
-
-#[derive(serde::Deserialize)]
-struct SourceDoctorFixtureProbe {
-    host: String,
-    os: String,
-    cass_version: Option<String>,
-    remote_path: SourceDoctorFixtureRemotePath,
-    #[serde(default)]
-    delay_ms: u64,
-}
-
-impl SourceDoctorFixtureProbe {
-    fn ssh_check(&self) -> DiagnosticCheck {
-        DiagnosticCheck {
-            name: "SSH Connectivity".into(),
-            status: "pass".into(),
-            message: format!("Connected to {} successfully", self.host),
-            remediation: None,
-        }
-    }
-
-    fn rsync_check(&self) -> DiagnosticCheck {
-        DiagnosticCheck {
-            name: "rsync Available".into(),
-            status: "pass".into(),
-            message: "rsync fixture 3.2.7".into(),
-            remediation: None,
-        }
-    }
-
-    fn remote_path_check(&self, path: &str) -> DiagnosticCheck {
-        let (status, message, remediation) = match self.remote_path {
-            SourceDoctorFixtureRemotePath::Nonempty => ("pass", "Path exists, 1 items found", None),
-            SourceDoctorFixtureRemotePath::Empty => (
-                "warn",
-                "Path exists but is empty",
-                Some("No agent sessions on this machine yet"),
-            ),
-            SourceDoctorFixtureRemotePath::Missing => (
-                "fail",
-                "Path does not exist",
-                Some("Remove this path or create it on the remote"),
-            ),
-        };
-        DiagnosticCheck {
-            name: format!("Remote Path: {path}"),
-            status: status.into(),
-            message: message.into(),
-            remediation: remediation.map(str::to_string),
-        }
-    }
-
-    fn remote_cass_probe(&self) -> RemoteCassProbe {
-        RemoteCassProbe {
-            os: Some(self.os.clone()),
-            cass_found: self.cass_version.is_some(),
-            cass_version: self.cass_version.clone(),
-            timed_out: false,
-        }
-    }
-}
-
-fn source_doctor_fixture_error(message: String) -> CliError {
-    CliError {
-        code: 9,
-        kind: CliErrorKind::Config.kind_str(),
-        message,
-        hint: Some("Fix or unset CASS_TEST_SOURCES_DOCTOR_PROBE".into()),
-        retryable: false,
-    }
-}
-
-/// Load an explicitly requested, size-bounded probe fixture. Invalid fixtures
-/// fail closed instead of silently falling through to a real SSH connection.
-fn load_source_doctor_fixture_probe(host: &str) -> CliResult<Option<SourceDoctorFixtureProbe>> {
-    let Ok(raw_path) = dotenvy::var("CASS_TEST_SOURCES_DOCTOR_PROBE") else {
-        return Ok(None);
-    };
-    let fixture_path = std::path::Path::new(raw_path.trim());
-    if raw_path.trim().is_empty() {
-        return Err(source_doctor_fixture_error(
-            "CASS_TEST_SOURCES_DOCTOR_PROBE is empty".into(),
-        ));
-    }
-    let metadata = std::fs::symlink_metadata(fixture_path).map_err(|err| {
-        source_doctor_fixture_error(format!(
-            "Failed to inspect source-doctor probe fixture {}: {err}",
-            fixture_path.display()
-        ))
-    })?;
-    let fixture_max_bytes = u64::try_from(SOURCE_DOCTOR_FIXTURE_MAX_BYTES).map_err(|_| {
-        source_doctor_fixture_error(
-            "Source-doctor probe fixture size limit exceeds this platform's file-size range".into(),
-        )
-    })?;
-    if !metadata.file_type().is_file() || metadata.len() > fixture_max_bytes {
-        return Err(source_doctor_fixture_error(format!(
-            "Source-doctor probe fixture must be a regular file no larger than {} bytes",
-            SOURCE_DOCTOR_FIXTURE_MAX_BYTES
-        )));
-    }
-    let file = std::fs::File::open(fixture_path).map_err(|err| {
-        source_doctor_fixture_error(format!(
-            "Failed to read source-doctor probe fixture {}: {err}",
-            fixture_path.display()
-        ))
-    })?;
-    let mut bytes = Vec::new();
-    file.take(fixture_max_bytes.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|err| {
-            source_doctor_fixture_error(format!(
-                "Failed to read source-doctor probe fixture {}: {err}",
-                fixture_path.display()
-            ))
-        })?;
-    if bytes.len() > SOURCE_DOCTOR_FIXTURE_MAX_BYTES {
-        return Err(source_doctor_fixture_error(format!(
-            "Source-doctor probe fixture grew beyond {} bytes while being read",
-            SOURCE_DOCTOR_FIXTURE_MAX_BYTES
-        )));
-    }
-    let fixture: SourceDoctorFixtureProbe = serde_json::from_slice(&bytes).map_err(|err| {
-        source_doctor_fixture_error(format!(
-            "Invalid source-doctor probe fixture {}: {err}",
-            fixture_path.display()
-        ))
-    })?;
-    if fixture.host != host {
-        return Err(source_doctor_fixture_error(format!(
-            "Source-doctor probe fixture host {:?} does not match configured host {host:?}",
-            fixture.host
-        )));
-    }
-    if fixture.delay_ms > SOURCE_DOCTOR_FIXTURE_MAX_DELAY_MS {
-        return Err(source_doctor_fixture_error(format!(
-            "Source-doctor probe fixture delay_ms must not exceed {}",
-            SOURCE_DOCTOR_FIXTURE_MAX_DELAY_MS
-        )));
-    }
-    Ok(Some(fixture))
-}
-
-/// Project the read-only per-source checks gathered by `run_sources_doctor` into
-/// a [`crate::source_doctor_health::SourceDoctorObservation`] (bead uojcg.8.6).
+/// Diagnose source configuration and local storage issues (P5.6).
 ///
-/// Only facts this slice actually observed are populated: SSH reachability and
-/// the resulting connection error, plus source-root readability from the remote
-/// path checks. A local source (no host) is reachable by definition. The deeper
-/// remote-binary/version, index, and mirror/sync observations are owned by bead
-/// uojcg.8.7; here they stay at their not-observed defaults so the report never
-/// claims a health dimension this slice did not check. Pure: no I/O, no mutation.
-fn source_doctor_observation_from_checks(
-    source: &crate::sources::config::SourceDefinition,
-    checks: &[DiagnosticCheck],
-) -> crate::source_doctor_health::SourceDoctorObservation {
-    let host = source.host.clone();
-    let is_remote = host.is_some();
-    let ssh = checks
-        .iter()
-        .find(|c| matches!(c.name.as_str(), "SSH Connectivity"));
-    let host_reachable = if is_remote {
-        ssh.is_some_and(|c| matches!(c.status.as_str(), "pass"))
-    } else {
-        true
-    };
-    let connection_error = if is_remote && !host_reachable {
-        ssh.map(|c| c.message.clone())
-    } else {
-        None
-    };
-    let source_root_readable = if is_remote && host_reachable {
-        let path_checks: Vec<&DiagnosticCheck> = checks
-            .iter()
-            .filter(|c| c.name.starts_with("Remote Path"))
-            .collect();
-        if path_checks.is_empty() {
-            None
-        } else {
-            Some(
-                path_checks
-                    .iter()
-                    .all(|c| !matches!(c.status.as_str(), "fail")),
-            )
-        }
-    } else {
-        None
-    };
-    crate::source_doctor_health::SourceDoctorObservation {
-        source_id: source.name.clone(),
-        host,
-        host_reachable,
-        connection_error,
-        source_root_readable,
-        ..Default::default()
-    }
-}
-
-/// Diagnose source connectivity and configuration issues (P5.6)
+/// Local-only: the remote SSH probes, fixture-probe seam, and fleet-doctor
+/// health projection were removed with the fleet surface, so every check is
+/// derived from cass-owned local evidence — `sources.toml` validation, source
+/// path syntax, local path readability for local sources, and local mirror
+/// storage writability. A configured remote host is reported as a warning:
+/// nothing on the network is contacted.
 fn run_sources_doctor(
     source_filter: Option<&str>,
     output_format: Option<RobotFormat>,
@@ -114393,9 +111632,14 @@ fn run_sources_doctor(
     use crate::sources::config::{SourcesConfig, source_names_equal, source_path_entry_error};
     use colored::Colorize;
 
-    let probe_limits =
-        configured_fleet_probe_budget(total_budget_override_ms, per_host_budget_override_ms);
-    let total_budget = crate::robot_budget_envelope::RobotBudget::new(probe_limits.total_ms);
+    // `--per-host-budget-ms` bounded the removed per-remote-host probes. The
+    // flag stays parseable for CLI compatibility but no longer scopes
+    // anything; likewise CASS_FLEET_BUDGET_MS / CASS_FLEET_PER_HOST_BUDGET_MS
+    // are tolerated and ignored (reported as deprecated by `cass diag`).
+    let _ = per_host_budget_override_ms;
+    let total_budget = crate::robot_budget_envelope::RobotBudget::new(
+        total_budget_override_ms.unwrap_or(SOURCES_DOCTOR_DEFAULT_BUDGET_MS),
+    );
     let config = SourcesConfig::load().map_err(|e| CliError {
         code: 9,
         kind: CliErrorKind::Config.kind_str(),
@@ -114428,7 +111672,7 @@ fn run_sources_doctor(
                 })
             );
         } else {
-            println!("No remote sources configured.");
+            println!("No sources configured.");
             println!("Run 'cass sources add <url>' to add one.");
         }
         return Ok(());
@@ -114454,71 +111698,41 @@ fn run_sources_doctor(
     }
 
     let mut all_diagnostics = Vec::new();
-    let mut observations = Vec::new();
-    let mut budget_skipped_sections = Vec::new();
 
     for source in sources_to_check {
-        let source_start = std::time::Instant::now();
-        let host_budget = crate::robot_budget_envelope::RobotBudget::new(probe_limits.per_host_ms);
         let mut checks = Vec::new();
 
-        // Check 1: SSH connectivity
-        let host = source.host.as_deref().unwrap_or("unknown");
-        let fixture_probe = load_source_doctor_fixture_probe(host)?;
-        if !source_probe_budget_exhausted(&host_budget, &total_budget)
-            && let Some(probe) = fixture_probe.as_ref()
-            && probe.delay_ms > 0
-        {
-            let bounded_delay_ms = probe
-                .delay_ms
-                .min(host_budget.remaining_ms())
-                .min(total_budget.remaining_ms());
-            if bounded_delay_ms > 0 {
-                std::thread::sleep(Duration::from_millis(bounded_delay_ms));
-            }
+        // A configured remote host cannot be probed in a local-only build:
+        // surface that explicitly instead of silently skipping the source.
+        if let Some(host) = source.host.as_deref() {
+            checks.push(DiagnosticCheck {
+                name: "Remote Host".into(),
+                status: "warn".into(),
+                message: format!(
+                    "Remote host {host} cannot be probed: remote connectivity was removed from cass"
+                ),
+                remediation: Some(
+                    "Remove this source or copy its sessions onto this machine".into(),
+                ),
+            });
         }
-        let ssh_check = if source_probe_budget_exhausted(&host_budget, &total_budget) {
-            skipped_source_probe("SSH Connectivity")
-        } else if let Some(probe) = fixture_probe.as_ref() {
-            probe.ssh_check()
-        } else {
-            check_ssh_connectivity(host, remaining_probe_timeout(&host_budget, &total_budget))
-        };
-        checks.push(ssh_check);
 
-        // Check 2: rsync availability on remote
-        let rsync_check = if source_probe_budget_exhausted(&host_budget, &total_budget) {
-            skipped_source_probe("rsync Available")
-        } else if let Some(probe) = fixture_probe.as_ref() {
-            probe.rsync_check()
-        } else {
-            check_rsync_available(host, remaining_probe_timeout(&host_budget, &total_budget))
-        };
-        checks.push(rsync_check);
-
-        // Check 3: Remote paths exist
+        // Per-path syntax validation; local (non-remote) sources additionally
+        // get a metadata-only existence check.
         for (idx, path) in source.paths.iter().enumerate() {
             if let Some(message) = source_path_entry_error(idx, path) {
                 checks.push(DiagnosticCheck {
-                    name: format!("Remote Path: paths[{idx}]"),
+                    name: format!("Source Path: paths[{idx}]"),
                     status: "fail".into(),
                     message: format!("Invalid source path: {message}"),
                     remediation: Some("Fix or remove this path in sources.toml".into()),
                 });
-            } else if source_probe_budget_exhausted(&host_budget, &total_budget) {
-                checks.push(skipped_source_probe(format!("Remote Path: {path}")));
-            } else if let Some(probe) = fixture_probe.as_ref() {
-                checks.push(probe.remote_path_check(path));
-            } else {
-                checks.push(check_remote_path(
-                    host,
-                    path,
-                    remaining_probe_timeout(&host_budget, &total_budget),
-                ));
+            } else if source.host.is_none() {
+                checks.push(check_local_source_path(path));
             }
         }
 
-        // Check 4: Local storage writable
+        // Local mirror storage writable
         let storage_check = check_local_storage(&source.name);
         checks.push(storage_check);
 
@@ -114527,155 +111741,8 @@ fn run_sources_doctor(
         let warnings = checks.iter().filter(|c| c.status == "warn").count();
         let failed = checks.iter().filter(|c| c.status == "fail").count();
 
-        // Bead uojcg.8.2: project the per-source checks into the bounded
-        // fleet-doctor HostDoctorReport (6.1 schema) so reachability/transport
-        // state, a likely root cause, and a safe next command are first-class and
-        // unreachable hosts are never silently omitted. (Remote platform/version/
-        // index/sync probing is tracked for the remaining 8.2 states.)
-        let source_checks: Vec<crate::fleet_doctor_schema::SourceCheck> = checks
-            .iter()
-            .map(|c| {
-                crate::fleet_doctor_schema::SourceCheck::new(
-                    c.name.clone(),
-                    c.status.clone(),
-                    c.remediation.clone(),
-                )
-            })
-            .collect();
-        let mut host_report = crate::fleet_doctor_schema::host_report_from_checks(
-            &source.name,
-            crate::fleet_doctor_schema::Platform::linux_x86_64(),
-            u64::try_from(source_start.elapsed().as_millis()).unwrap_or(u64::MAX),
-            &source_checks,
-        );
-
-        // Bead uojcg.8.6: project the read-only checks into the source-doctor
-        // health observation (built before `checks` is moved into the diagnostics
-        // entry) for the explicit per-source state + safe next command.
-        let mut observation = source_doctor_observation_from_checks(source, &checks);
-
-        // Bead uojcg.8.7: for a host we actually reached, populate the deeper
-        // states by composing the existing pure cores over a bounded, read-only
-        // probe — never mutating the host. Remote: one bounded SSH round trip for
-        // the cass binary version + platform (fed through fleet_version_skew), plus
-        // cass-owned LOCAL sync/mirror/index evidence. Local source: this binary is
-        // present and current by definition. Unreachable hosts stay at their
-        // not-observed defaults so the report never claims an unprobed axis.
-        if observation.host_reachable {
-            if source.host.is_some() {
-                let probe = if source_probe_budget_exhausted(&host_budget, &total_budget) {
-                    RemoteCassProbe {
-                        os: None,
-                        cass_version: None,
-                        cass_found: false,
-                        timed_out: true,
-                    }
-                } else if let Some(fixture) = fixture_probe.as_ref() {
-                    fixture.remote_cass_probe()
-                } else {
-                    check_remote_cass(host, remaining_probe_timeout(&host_budget, &total_budget))
-                };
-                if probe.timed_out {
-                    host_report.status = crate::fleet_doctor_schema::HostProbeStatus::TimedOut;
-                    host_report.timed_out = true;
-                    observation.host_reachable = false;
-                    observation.connection_error =
-                        Some("remote cass probe timed out within the source budget".into());
-                }
-                if let Some(uname) = probe.os.as_deref() {
-                    host_report.platform = platform_from_uname(uname);
-                }
-                host_report.cass_version = probe.cass_version.clone();
-                if !probe.cass_found && !probe.timed_out {
-                    host_report.status =
-                        crate::fleet_doctor_schema::HostProbeStatus::CommandNotFound;
-                }
-                if !probe.timed_out {
-                    let version_assessment = crate::fleet_version_skew::assess_host(
-                        &host_report,
-                        env!("CARGO_PKG_VERSION"),
-                    );
-                    let gap = version_assessment.capability_gap;
-                    crate::source_doctor_health::apply_remote_binary(
-                        &mut observation,
-                        crate::source_doctor_health::RemoteBinaryOutcome::from_capability_gap(gap),
-                    );
-                    if matches!(
-                        gap,
-                        crate::fleet_version_skew::CapabilityGap::Major
-                            | crate::fleet_version_skew::CapabilityGap::BinaryMissing
-                    ) {
-                        host_report.status =
-                            if gap == crate::fleet_version_skew::CapabilityGap::Major {
-                                crate::fleet_doctor_schema::HostProbeStatus::OldBinarySkew
-                            } else {
-                                crate::fleet_doctor_schema::HostProbeStatus::CommandNotFound
-                            };
-                        host_report.timed_out = false;
-                        host_report.unreachable = false;
-                        let attribution = if gap == crate::fleet_version_skew::CapabilityGap::Major
-                        {
-                            crate::root_cause_projection::project_root_cause(
-                                &crate::root_cause_projection::ProjectionSignals {
-                                    binary_behind_contract: true,
-                                    ..Default::default()
-                                },
-                            )
-                        } else {
-                            crate::root_cause_taxonomy::RootCauseAttribution::unattributed(
-                                "remote cass binary was not found on PATH; no running version was observed",
-                            )
-                        };
-                        host_report.likely_root_cause = Some(attribution.family);
-                        host_report.root_cause = Some(attribution);
-                        host_report.recommended_action =
-                            version_assessment.install_hint.command.clone().or_else(|| {
-                                version_assessment
-                                    .install_hint
-                                    .manual_steps
-                                    .first()
-                                    .cloned()
-                            });
-                    }
-                }
-                let evidence = gather_source_sync_evidence(source, &checks);
-                crate::source_doctor_health::apply_sync_evidence(&mut observation, &evidence);
-            } else {
-                // Local source: the running binary is the current version.
-                observation.cass_present = Some(true);
-                observation.cass_current = Some(true);
-            }
-        }
-        host_report = crate::fleet_probe::finalize_host(
-            host_report,
-            u64::try_from(source_start.elapsed().as_millis()).unwrap_or(u64::MAX),
-            probe_limits.per_host_ms,
-        );
-        if total_budget.is_exhausted() && !host_report.status.is_hard_failure() {
-            host_report.status = crate::fleet_doctor_schema::HostProbeStatus::TimedOut;
-            host_report.timed_out = true;
-            if !host_report
-                .skipped_sections
-                .iter()
-                .any(|section| matches!(section.as_str(), "remaining-probes"))
-            {
-                host_report.skipped_sections.push("remaining-probes".into());
-            }
-        }
-        if matches!(
-            host_report.status,
-            crate::fleet_doctor_schema::HostProbeStatus::TimedOut
-        ) {
-            observation.host_reachable = false;
-            observation.connection_error =
-                Some("source probe timed out within its bounded budget".into());
-            budget_skipped_sections.push(format!("source:{}", source.name));
-        }
-        observations.push(observation);
-
         all_diagnostics.push(SourceDiagnostics {
             source_id: source.name.clone(),
-            host_report,
             checks,
             passed,
             warnings,
@@ -114683,17 +111750,8 @@ fn run_sources_doctor(
         });
     }
 
-    // Bead uojcg.8.6: classify the read-only observations into the explicit
-    // source-doctor health report (per-source state, preservation-safe next
-    // command, mutation-free marker). Pure: building the report performs no I/O.
-    let health_report = crate::source_doctor_health::SourceDoctorReport::build(&observations);
-    let recommended_next_probe =
-        (!budget_skipped_sections.is_empty()).then(|| "cass sources list --json".to_string());
-    let budget = crate::robot_budget_envelope::BudgetBlock::from_budget(
-        &total_budget,
-        budget_skipped_sections,
-        recommended_next_probe,
-    );
+    let budget =
+        crate::robot_budget_envelope::BudgetBlock::from_budget(&total_budget, Vec::new(), None);
 
     // Output results
     let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
@@ -114706,7 +111764,6 @@ fn run_sources_doctor(
 
     if let Some(_fmt) = structured_format {
         let output = SourcesDoctorOutput {
-            health: &health_report,
             diagnostics: &all_diagnostics,
             budget: &budget,
             config_validation: &config_validation,
@@ -114716,20 +111773,7 @@ fn run_sources_doctor(
             serde_json::to_string_pretty(&output).unwrap_or_default()
         );
     } else {
-        if health_report.sources.len() != all_diagnostics.len() {
-            return Err(CliError::unknown(format!(
-                "source doctor projection mismatch: {} health entries for {} diagnostics",
-                health_report.sources.len(),
-                all_diagnostics.len()
-            )));
-        }
-        for (entry, diag) in health_report.sources.iter().zip(&all_diagnostics) {
-            if entry.source_id != diag.source_id {
-                return Err(CliError::unknown(format!(
-                    "source doctor projection mismatch: health source {:?} paired with diagnostic {:?}",
-                    entry.source_id, diag.source_id
-                )));
-            }
+        for diag in &all_diagnostics {
             println!();
             println!("{}", format!("Checking source: {}", diag.source_id).bold());
             println!();
@@ -114754,13 +111798,6 @@ fn run_sources_doctor(
                 }
             }
 
-            let human =
-                crate::source_doctor_health::project_source_human_summary(entry, &diag.host_report);
-            println!();
-            for line in human.render_lines() {
-                println!("  {line}");
-            }
-
             println!();
             println!(
                 "Summary: {} passed, {} warnings, {} failed",
@@ -114768,18 +111805,6 @@ fn run_sources_doctor(
                 diag.warnings.to_string().yellow(),
                 diag.failed.to_string().red()
             );
-        }
-        if budget.timed_out || !budget.skipped_sections.is_empty() {
-            println!();
-            println!(
-                "Budget: {}/{}ms; skipped: {}",
-                budget.elapsed_ms,
-                budget.budget_ms,
-                budget.skipped_sections.join(", ")
-            );
-            if let Some(next) = budget.recommended_next_probe.as_deref() {
-                println!("Next bounded probe: {next}");
-            }
         }
         if !config_validation.issues.is_empty() {
             use crate::sources::config_validation::ConfigIssueSeverity;
@@ -114801,248 +111826,46 @@ fn run_sources_doctor(
 
     // Set exit code based on results
     let total_failed: usize = all_diagnostics.iter().map(|d| d.failed).sum();
-    if total_failed > 0
-        || health_report.summary.unhealthy > 0
-        || health_report.summary.unreached > 0
-        || config_validation.has_errors()
-    {
+    if total_failed > 0 || config_validation.has_errors() {
         std::process::exit(1);
     }
 
     Ok(())
 }
 
-fn bounded_ssh_output(
-    args: &[String],
-    timeout: Duration,
-) -> std::io::Result<Option<std::process::Output>> {
-    let mut command = std::process::Command::new("ssh");
-    command
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    crate::sources::configure_child_process_group(&mut command);
-    let child = command.spawn()?;
-    crate::sources::wait_for_child_output_with_timeout(child, timeout)
-}
-
-/// Check SSH connectivity to a host within the caller's remaining host budget.
-fn check_ssh_connectivity(host: &str, timeout: Duration) -> DiagnosticCheck {
-    let mut ssh_args = crate::sources::strict_ssh_cli_tokens(5);
-    ssh_args.push("--".to_string());
-    ssh_args.push(host.to_string());
-    ssh_args.push(crate::sources::SSH_CONNECTIVITY_PROBE_COMMAND.to_string());
-
-    let output = bounded_ssh_output(&ssh_args, timeout);
-
-    match output {
-        Ok(Some(out)) if out.status.success() => DiagnosticCheck {
-            name: "SSH Connectivity".into(),
+/// Metadata-only existence check for a local (non-remote) source path.
+fn check_local_source_path(path: &str) -> DiagnosticCheck {
+    let expanded = if let Some(rest) = path.strip_prefix("~/") {
+        dirs::home_dir()
+            .map(|home| home.join(rest))
+            .unwrap_or_else(|| PathBuf::from(path))
+    } else {
+        PathBuf::from(path)
+    };
+    match std::fs::metadata(&expanded) {
+        Ok(metadata) if metadata.is_dir() => DiagnosticCheck {
+            name: format!("Source Path: {path}"),
             status: "pass".into(),
-            message: format!("Connected to {} successfully", host),
+            message: "Path exists (read-only check; contents not scanned)".into(),
             remediation: None,
         },
-        Ok(Some(out)) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let remediation = if crate::sources::is_host_key_verification_failure(&stderr) {
-                Some(crate::sources::host_key_verification_error(host))
-            } else if stderr.contains("Permission denied") {
-                Some("Ensure SSH key is added to remote authorized_keys".into())
-            } else if stderr.contains("Connection refused") {
-                Some("Verify SSH server is running on remote host".into())
-            } else if stderr.contains("Could not resolve") {
-                Some("Check hostname is correct and DNS resolves".into())
-            } else {
-                Some("Check SSH configuration and network connectivity".into())
-            };
-            DiagnosticCheck {
-                name: "SSH Connectivity".into(),
-                status: "fail".into(),
-                message: stderr.trim().to_string(),
-                remediation,
-            }
-        }
-        Ok(None) => DiagnosticCheck {
-            name: "SSH Connectivity".into(),
-            status: "warn".into(),
-            message: format!(
-                "SSH probe timed out after {}ms",
-                u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX)
-            ),
-            remediation: Some("Retry this host with a larger per-host fleet budget".into()),
-        },
-        Err(e) => DiagnosticCheck {
-            name: "SSH Connectivity".into(),
+        Ok(_) => DiagnosticCheck {
+            name: format!("Source Path: {path}"),
             status: "fail".into(),
-            message: format!("Failed to run ssh: {}", e),
-            remediation: Some("Ensure SSH client is installed and in PATH".into()),
+            message: "Path exists but is not a directory".into(),
+            remediation: Some("Point this source at a directory".into()),
         },
-    }
-}
-
-/// Check rsync availability on remote
-fn check_rsync_available(host: &str, timeout: Duration) -> DiagnosticCheck {
-    let args = vec![
-        "-o".to_string(),
-        "ConnectTimeout=5".to_string(),
-        "-o".to_string(),
-        "BatchMode=yes".to_string(),
-        "--".to_string(),
-        host.to_string(),
-        "rsync".to_string(),
-        "--version".to_string(),
-    ];
-    let output = bounded_ssh_output(&args, timeout);
-
-    match output {
-        Ok(Some(out)) if out.status.success() => {
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let version = stdout
-                .lines()
-                .next()
-                .unwrap_or("version unknown")
-                .to_string();
-            DiagnosticCheck {
-                name: "rsync Available".into(),
-                status: "pass".into(),
-                message: version,
-                remediation: None,
-            }
-        }
-        Ok(Some(out)) => {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            DiagnosticCheck {
-                name: "rsync Available".into(),
-                status: "fail".into(),
-                message: format!("rsync not found: {}", stderr.trim()),
-                remediation: Some("Install rsync on the remote host".into()),
-            }
-        }
-        Ok(None) => DiagnosticCheck {
-            name: "rsync Available".into(),
-            status: "warn".into(),
-            message: format!(
-                "rsync probe timed out after {}ms",
-                u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX)
-            ),
-            remediation: Some("Retry this host with a larger per-host fleet budget".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => DiagnosticCheck {
+            name: format!("Source Path: {path}"),
+            status: "fail".into(),
+            message: "Path does not exist".into(),
+            remediation: Some("Remove this path or create it locally".into()),
         },
-        Err(e) => DiagnosticCheck {
-            name: "rsync Available".into(),
+        Err(error) => DiagnosticCheck {
+            name: format!("Source Path: {path}"),
             status: "warn".into(),
-            message: format!("Could not check rsync: {}", e),
-            remediation: Some("SSH connectivity may have failed".into()),
-        },
-    }
-}
-
-fn sh_quote(value: &str) -> String {
-    if value.is_empty() {
-        "''".to_string()
-    } else {
-        format!("'{}'", value.replace('\'', "'\"'\"'"))
-    }
-}
-
-/// Check if a remote path exists
-fn check_remote_path(host: &str, path: &str, timeout: Duration) -> DiagnosticCheck {
-    let quoted = sh_quote(path);
-    let script = format!("test -d {quoted} && ls -1 {quoted} | wc -l");
-    // IMPORTANT (#190): `ssh` concatenates multiple post-host argv into a
-    // single remote command string before shipping to the server, separated
-    // by spaces — so passing `host, "sh", "-c", script` ends up running
-    //   sh -c test -d '...' && ls -1 '...' | wc -l
-    // on the remote, where `&&` and `|` are interpreted by the surrounding
-    // shell rather than by the `sh -c` argument, and `sh -c` only ever
-    // receives `test` as its command. Combine into a single argument so the
-    // quoted script survives the round trip intact.
-    let remote_cmd = format!("sh -c {}", sh_quote(&script));
-    let args = vec![
-        "-o".to_string(),
-        "ConnectTimeout=5".to_string(),
-        "-o".to_string(),
-        "BatchMode=yes".to_string(),
-        "--".to_string(),
-        host.to_string(),
-        remote_cmd,
-    ];
-    let output = bounded_ssh_output(&args, timeout);
-
-    match output {
-        Ok(Some(out)) if out.status.success() => {
-            let count = String::from_utf8_lossy(&out.stdout)
-                .trim()
-                .parse::<usize>()
-                .unwrap_or(0);
-            DiagnosticCheck {
-                name: format!("Remote Path: {}", path),
-                status: if count > 0 { "pass" } else { "warn" }.into(),
-                message: if count > 0 {
-                    format!("Path exists, {} items found", count)
-                } else {
-                    "Path exists but is empty".into()
-                },
-                remediation: if count == 0 {
-                    Some("No agent sessions on this machine yet".into())
-                } else {
-                    None
-                },
-            }
-        }
-        Ok(Some(out)) => {
-            // ssh exited non-zero. Distinguish SSH transport failures (which
-            // would make the "Path does not exist" message + "Remove this
-            // path" remediation actively misleading — the operator would
-            // delete a valid path because ssh can't even reach the remote)
-            // from the intended "remote shell returned non-zero because
-            // `test -d` failed" case. Inspect stderr for the usual ssh(1)
-            // transport-level error signatures.
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let stderr_lower = stderr.to_ascii_lowercase();
-            let looks_like_ssh_failure = stderr_lower.contains("connection refused")
-                || stderr_lower.contains("connection timed out")
-                || stderr_lower.contains("connection closed")
-                || stderr_lower.contains("permission denied")
-                || stderr_lower.contains("host key verification failed")
-                || stderr_lower.contains("could not resolve hostname")
-                || stderr_lower.contains("no route to host")
-                || stderr_lower.contains("network is unreachable")
-                || stderr_lower.contains("operation timed out");
-            if looks_like_ssh_failure {
-                DiagnosticCheck {
-                    name: format!("Remote Path: {}", path),
-                    status: "warn".into(),
-                    message: format!("SSH transport failed: {}", stderr.trim()),
-                    remediation: Some(
-                        "Check ssh connectivity, host keys, and credentials before \
-                         interpreting this path as missing"
-                            .into(),
-                    ),
-                }
-            } else {
-                DiagnosticCheck {
-                    name: format!("Remote Path: {}", path),
-                    status: "fail".into(),
-                    message: "Path does not exist".into(),
-                    remediation: Some("Remove this path or create it on the remote".into()),
-                }
-            }
-        }
-        Ok(None) => DiagnosticCheck {
-            name: format!("Remote Path: {}", path),
-            status: "warn".into(),
-            message: format!(
-                "Remote path probe timed out after {}ms",
-                u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX)
-            ),
-            remediation: Some("Retry this host with a larger per-host fleet budget".into()),
-        },
-        Err(e) => DiagnosticCheck {
-            name: format!("Remote Path: {}", path),
-            status: "warn".into(),
-            message: format!("Could not check path: {}", e),
-            remediation: Some("SSH connectivity may have failed".into()),
+            message: format!("Could not inspect path: {error}"),
+            remediation: Some("Check permissions on this path".into()),
         },
     }
 }
@@ -115189,161 +112012,6 @@ mod source_doctor_local_storage_tests {
             std::fs::read(&source_dir).expect("read fixture after check"),
             contents_before
         );
-    }
-}
-
-/// Result of the bounded, read-only remote `cass`/platform probe (bead 8.7).
-struct RemoteCassProbe {
-    /// `uname -s` output (e.g. `"Linux"`, `"Darwin"`), when collected.
-    os: Option<String>,
-    /// Reported `cass` version string, when the binary was found and printed one.
-    cass_version: Option<String>,
-    /// Whether `cass` was found on the host's PATH.
-    cass_found: bool,
-    /// The hard subprocess deadline expired before a complete response.
-    timed_out: bool,
-}
-
-/// Probe an already-reachable remote host for its platform and `cass` binary
-/// version in a single bounded SSH round trip (bead uojcg.8.7). Read-only: it
-/// runs only `uname` and `cass --version` — no writes, no index, no mutation. On
-/// any transport or parse failure it returns a not-found probe rather than
-/// guessing, so the classifier never over-claims a remote-binary state.
-fn check_remote_cass(host: &str, timeout: Duration) -> RemoteCassProbe {
-    let script = "printf 'OS=%s\\n' \"$(uname -s 2>/dev/null)\"; \
-if command -v cass >/dev/null 2>&1; then \
-printf 'CASS=%s\\n' \"$(cass --version 2>/dev/null | head -n1)\"; \
-else printf 'CASS=__MISSING__\\n'; fi";
-    let remote_cmd = format!("sh -c {}", sh_quote(script));
-    let mut ssh_args = crate::sources::strict_ssh_cli_tokens(5);
-    ssh_args.push("--".to_string());
-    ssh_args.push(host.to_string());
-    ssh_args.push(remote_cmd);
-
-    let mut probe = RemoteCassProbe {
-        os: None,
-        cass_version: None,
-        cass_found: false,
-        timed_out: false,
-    };
-
-    let output = match bounded_ssh_output(&ssh_args, timeout) {
-        Ok(Some(output)) => output,
-        Ok(None) => {
-            probe.timed_out = true;
-            return probe;
-        }
-        Err(_) => return probe,
-    };
-    if !output.status.success() {
-        return probe;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Some(rest) = line.strip_prefix("OS=") {
-            let trimmed = rest.trim();
-            if !trimmed.is_empty() {
-                probe.os = Some(trimmed.to_string());
-            }
-        } else if let Some(rest) = line.strip_prefix("CASS=") {
-            let trimmed = rest.trim();
-            if trimmed.starts_with("__MISSING__") {
-                probe.cass_found = false;
-            } else if !trimmed.is_empty() {
-                probe.cass_found = true;
-                // `cass --version` prints e.g. "cass 0.6.10"; keep the last token so
-                // fleet_version_skew::assess_host can parse the numeric core.
-                let version = trimmed.rsplit(' ').next().unwrap_or(trimmed).trim();
-                if !version.is_empty() {
-                    probe.cass_version = Some(version.to_string());
-                }
-            }
-        }
-    }
-    probe
-}
-
-/// Map a remote `uname -s` string to the fleet-doctor [`crate::fleet_doctor_schema::Platform`],
-/// noting BSD tool divergences for macOS so downstream repair guidance stays portable.
-fn platform_from_uname(uname_s: &str) -> crate::fleet_doctor_schema::Platform {
-    use crate::fleet_doctor_schema::{HostOs, PathStyle, Platform};
-    let lower = uname_s.to_ascii_lowercase();
-    let (os, path_style, tool_notes) = if lower.contains("darwin") {
-        (
-            HostOs::MacOs,
-            PathStyle::Posix,
-            vec!["coreutils=bsd".to_string(), "rsync=bsd".to_string()],
-        )
-    } else if lower.contains("linux") {
-        (HostOs::Linux, PathStyle::Posix, Vec::new())
-    } else if lower.contains("mingw") || lower.contains("msys") || lower.contains("windows") {
-        (HostOs::Windows, PathStyle::Windows, Vec::new())
-    } else {
-        (HostOs::Other, PathStyle::Posix, Vec::new())
-    };
-    Platform {
-        os,
-        arch: String::new(),
-        path_style,
-        tool_notes,
-    }
-}
-
-/// Archive DB last-modified time in epoch milliseconds, when the DB exists.
-fn archive_db_mtime_ms(data_dir: &std::path::Path) -> Option<i64> {
-    let modified = std::fs::metadata(data_dir.join("agent_search.db"))
-        .ok()?
-        .modified()
-        .ok()?;
-    let dur = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
-    i64::try_from(dur.as_millis()).ok()
-}
-
-/// Gather cass-owned LOCAL sync/mirror/index evidence for a source (bead uojcg.8.7).
-/// Reads only local state — the remote-path probe results already collected for
-/// reachability, `sync_status.json`, the local mirror dir, and the archive DB
-/// mtime. It opens no SSH session and mutates nothing.
-fn gather_source_sync_evidence(
-    source: &crate::sources::config::SourceDefinition,
-    checks: &[DiagnosticCheck],
-) -> crate::source_doctor_health::SourceSyncEvidence {
-    let remote_path_missing = checks
-        .iter()
-        .any(|c| c.name.starts_with("Remote Path") && c.message.contains("does not exist"));
-    let remote_path_empty = checks
-        .iter()
-        .any(|c| c.name.starts_with("Remote Path") && c.message.contains("exists but is empty"));
-
-    let data_dir = default_data_dir();
-    let mirror_dir = data_dir.join("remotes").join(&source.name).join("mirror");
-    let local_mirror_nonempty = std::fs::read_dir(&mirror_dir)
-        .map(|mut entries| entries.any(|entry| entry.is_ok()))
-        .unwrap_or(false);
-
-    let sync_status = crate::sources::SyncStatus::load(&data_dir).ok();
-    let info = sync_status.as_ref().and_then(|s| s.get(&source.name));
-    let has_sync_record = info.is_some();
-    let last_sync_incomplete = info.is_some_and(|i| {
-        matches!(
-            i.last_result,
-            crate::sources::SyncResult::PartialFailure(_) | crate::sources::SyncResult::Failed(_)
-        )
-    });
-    let index_behind_sync = match (
-        info.and_then(|i| i.last_sync),
-        archive_db_mtime_ms(&data_dir),
-    ) {
-        (Some(sync_ms), Some(db_ms)) => sync_ms > db_ms,
-        _ => false,
-    };
-
-    crate::source_doctor_health::SourceSyncEvidence {
-        remote_path_missing,
-        remote_path_empty,
-        local_mirror_nonempty,
-        has_sync_record,
-        last_sync_incomplete,
-        index_behind_sync,
     }
 }
 
@@ -116407,716 +113075,6 @@ fn run_models_command(cmd: ModelsCommand, cli: &Cli) -> CliResult<()> {
             run_models_check_update(&model, structured_format, data_dir)
         }
     }
-}
-
-/// Dispatch the `cass fleet` subcommand group (bead sc8sp).
-fn run_fleet_command(cmd: FleetCommand, cli: &Cli) -> CliResult<()> {
-    match cmd {
-        FleetCommand::UpgradeRehearsal {
-            target_version,
-            live,
-            source,
-            verify,
-            data_dir,
-            json,
-            budget_ms,
-            per_host_budget_ms,
-        } => {
-            let structured_format = resolve_subcommand_structured_format(cli, json);
-            run_fleet_upgrade_rehearsal(
-                target_version,
-                live,
-                source.as_deref(),
-                verify,
-                &data_dir,
-                structured_format,
-                FleetProbeBudgetOverrides {
-                    total_ms: budget_ms,
-                    per_host_ms: per_host_budget_ms,
-                },
-            )
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct FleetProbeBudgetOverrides {
-    total_ms: Option<u64>,
-    per_host_ms: Option<u64>,
-}
-
-/// The `cass fleet upgrade-rehearsal` envelope (bead sc8sp): the fleet upgrade
-/// rehearsal plan plus, when `--verify` is requested, a bounded local
-/// post-upgrade verification. Read-only and local-by-default — `mutation_free`
-/// is always true.
-#[derive(serde::Serialize)]
-struct FleetUpgradeRehearsalOutput {
-    schema_version: u32,
-    /// `"fixture"` (local-evidence only, the default) or `"live"` (probed remotes).
-    mode: &'static str,
-    target_version: String,
-    /// Whether any remote host was contacted over SSH (only happens with `--live`).
-    probed_remote_hosts: bool,
-    /// Remote sources skipped because `--live` was not requested — named here, so
-    /// the rehearsal never silently omits a configured host.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    deferred_remote_sources: Vec<String>,
-    rehearsal: crate::fleet_upgrade_rehearsal::FleetUpgradeRehearsal,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    local_verification: Option<crate::fleet_upgrade_rehearsal::PostUpgradeVerification>,
-    budget: crate::robot_budget_envelope::BudgetBlock,
-    mutation_free: bool,
-    generated_by: &'static str,
-}
-
-/// Run the fleet upgrade rehearsal surface (bead sc8sp): compose the bounded
-/// host probe -> version assessment (6.3) -> archive coverage (6.4) ->
-/// `rehearse_fleet`, and, with `--verify`, drive the bounded post-upgrade check
-/// battery against the local binary through the shared E2E runner (12.2),
-/// classified into proof artifacts (12.3) by `verify_post_upgrade`. The local
-/// host is always covered from cass-owned local evidence (no network); `--live`
-/// opts into bounded SSH probes of configured remote sources. Mutation-free.
-fn run_fleet_upgrade_rehearsal(
-    target_version: Option<String>,
-    live: bool,
-    source_filter: Option<&str>,
-    verify: bool,
-    data_dir_override: &Option<PathBuf>,
-    output_format: Option<RobotFormat>,
-    budget_overrides: FleetProbeBudgetOverrides,
-) -> CliResult<()> {
-    use crate::fleet_upgrade_rehearsal::{
-        FLEET_UPGRADE_REHEARSAL_SCHEMA_VERSION, HostRehearsalInput, RehearsalMode, rehearse_fleet,
-    };
-
-    let data_dir = data_dir_override.clone().unwrap_or_else(default_data_dir);
-    let probe_limits =
-        configured_fleet_probe_budget(budget_overrides.total_ms, budget_overrides.per_host_ms);
-    let overall_budget = crate::robot_budget_envelope::RobotBudget::new(probe_limits.total_ms);
-    let mut skipped_sections = Vec::<String>::new();
-    let target = target_version
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
-    let mode = if live {
-        RehearsalMode::Live
-    } else {
-        RehearsalMode::Fixture
-    };
-
-    // Per-host inputs own their data; `HostRehearsalInput` borrows from this vec.
-    let mut host_data: Vec<(
-        crate::fleet_doctor_schema::HostDoctorReport,
-        crate::fleet_version_skew::VersionAssessment,
-        crate::fleet_archive_coverage::ArchiveCoverageSummary,
-    )> = Vec::new();
-
-    // The local host is always covered, from cass-owned local evidence: the real
-    // running version + detected platform + cheap archive-coverage facts.
-    let local_report = local_host_report();
-    let local_cov = local_archive_coverage(&data_dir);
-    let local_coverage_state = local_cov.coverage_state;
-    let local_assessment = crate::fleet_version_skew::assess_host(&local_report, &target);
-    host_data.push((local_report, local_assessment, local_cov));
-
-    // Remote sources are probed live only with `--live`; otherwise they are named
-    // in `deferred_remote_sources` and never contacted.
-    let mut probed_remote_hosts = false;
-    let mut live_remote_hosts_requested = 0usize;
-    let mut live_remote_hosts_unreachable = 0usize;
-    let mut deferred_remote_sources: Vec<String> = Vec::new();
-    // A malformed sources.toml must fail loudly, not silently shrink the fleet
-    // to the local host: `load()` only errors on parse/validation failure (a
-    // missing file yields the default config), and reporting a clean
-    // single-host "fleet" on a typo'd config would violate the surface's
-    // "never silently dropped" contract.
-    let config = crate::sources::config::SourcesConfig::load().map_err(|error| CliError {
-        code: 11,
-        kind: CliErrorKind::Config.kind_str(),
-        message: format!("failed to load sources.toml for fleet rehearsal: {error:#}"),
-        hint: Some(
-            "Fix the sources configuration (see `cass sources list`) or move it aside; \
-             a missing sources.toml is fine and yields a local-only rehearsal"
-                .into(),
-        ),
-        retryable: false,
-    })?;
-    {
-        for source in &config.sources {
-            // Local-type sources are already represented by the local host.
-            let Some(host) = source.host.as_deref() else {
-                continue;
-            };
-            if source_filter
-                .is_some_and(|f| !crate::sources::config::source_names_equal(f, &source.name))
-            {
-                continue;
-            }
-            if !live {
-                deferred_remote_sources.push(source.name.clone());
-                continue;
-            }
-            live_remote_hosts_requested += 1;
-            let (report, coverage) = probe_remote_host_for_rehearsal(
-                &source.name,
-                host,
-                probe_limits.per_host_ms,
-                &overall_budget,
-            );
-            if report.timed_out {
-                record_remote_fleet_probe_skip(&mut skipped_sections, &source.name);
-            }
-            if report.unreachable {
-                live_remote_hosts_unreachable += 1;
-            }
-            probed_remote_hosts = true;
-            let assessment = crate::fleet_version_skew::assess_host(&report, &target);
-            host_data.push((report, assessment, coverage));
-        }
-    }
-
-    let inputs: Vec<HostRehearsalInput<'_>> = host_data
-        .iter()
-        .map(|(report, assessment, coverage)| HostRehearsalInput {
-            report,
-            assessment,
-            coverage,
-        })
-        .collect();
-    let rehearsal = rehearse_fleet(&inputs, &target, mode);
-
-    // Bounded local post-upgrade verification (opt-in): drive the check battery
-    // against this binary via the shared E2E runner, classified into proof
-    // artifacts. The local coverage state feeds the "still-stale derived assets"
-    // trap so a binary-only swap can never read as a true fix.
-    let fixture_forced_verification_timeout =
-        verify && maybe_test_fleet_verify_delay(overall_budget.remaining_ms());
-    let local_verification =
-        if verify && !fixture_forced_verification_timeout && overall_budget.is_healthy() {
-            Some(verify_local_post_upgrade(
-                &data_dir,
-                local_coverage_state,
-                &overall_budget,
-                &mut skipped_sections,
-            ))
-        } else if verify {
-            skipped_sections.push("local_verification".to_string());
-            None
-        } else {
-            None
-        };
-
-    let recommended_next_probe = (!skipped_sections.is_empty()).then(|| {
-        let mut args = vec![
-            "fleet".to_string(),
-            "upgrade-rehearsal".to_string(),
-            "--target-version".to_string(),
-            shell_quote_arg(&target),
-        ];
-        if live {
-            args.push("--live".to_string());
-        }
-        if let Some(source) = source_filter {
-            args.push("--source".to_string());
-            args.push(shell_quote_arg(source));
-        }
-        if verify {
-            args.push("--verify".to_string());
-        }
-        args.push("--json".to_string());
-        args.push("--budget-ms".to_string());
-        args.push(
-            probe_limits
-                .total_ms
-                .saturating_mul(2)
-                .clamp(1_000, 300_000)
-                .to_string(),
-        );
-        args.push("--per-host-budget-ms".to_string());
-        args.push(
-            probe_limits
-                .per_host_ms
-                .saturating_mul(2)
-                .clamp(1_000, 120_000)
-                .to_string(),
-        );
-        let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-        cass_dataset_command(&data_dir, &data_dir.join("agent_search.db"), &arg_refs)
-    });
-    let budget = crate::robot_budget_envelope::BudgetBlock::from_budget(
-        &overall_budget,
-        skipped_sections,
-        recommended_next_probe,
-    );
-
-    let output = FleetUpgradeRehearsalOutput {
-        schema_version: FLEET_UPGRADE_REHEARSAL_SCHEMA_VERSION,
-        mode: mode.as_str(),
-        target_version: target,
-        probed_remote_hosts,
-        deferred_remote_sources,
-        rehearsal,
-        local_verification,
-        budget,
-        mutation_free: true,
-        generated_by: "cass fleet upgrade-rehearsal",
-    };
-
-    if let Some(format) = output_format {
-        let payload = serde_json::to_value(&output).unwrap_or(serde_json::Value::Null);
-        output_structured_value(payload, format)?;
-    } else {
-        print_fleet_upgrade_rehearsal_human(&output);
-    }
-
-    // Emit the complete structured or human report before setting the process
-    // status. A requested proof battery that did not achieve a trustworthy
-    // pass, or a live run where every requested remote was unreachable, is an
-    // operational failure even though the rehearsal itself remained read-only.
-    if fleet_upgrade_rehearsal_failed(
-        live,
-        live_remote_hosts_requested,
-        live_remote_hosts_unreachable,
-        verify,
-        output
-            .local_verification
-            .as_ref()
-            .map(|report| report.overall_status),
-    ) {
-        std::process::exit(1);
-    }
-
-    Ok(())
-}
-
-fn fleet_upgrade_rehearsal_failed(
-    live: bool,
-    live_remote_hosts_requested: usize,
-    live_remote_hosts_unreachable: usize,
-    verification_requested: bool,
-    verification_status: Option<crate::proof_artifact::ProofStatus>,
-) -> bool {
-    let verification_failed = verification_requested
-        && verification_status.is_none_or(|status| !status.is_trustworthy_pass());
-    let all_requested_remotes_unreachable = live
-        && live_remote_hosts_requested > 0
-        && live_remote_hosts_unreachable == live_remote_hosts_requested;
-    verification_failed || all_requested_remotes_unreachable
-}
-
-#[cfg(test)]
-mod fleet_upgrade_rehearsal_exit_tests {
-    use super::*;
-    use crate::proof_artifact::ProofStatus;
-
-    #[test]
-    fn requested_verification_requires_a_trustworthy_pass() {
-        assert!(!fleet_upgrade_rehearsal_failed(
-            false,
-            0,
-            0,
-            true,
-            Some(ProofStatus::Pass),
-        ));
-        for status in [
-            ProofStatus::Fail,
-            ProofStatus::PartialProof,
-            ProofStatus::GeneratedOnly,
-            ProofStatus::Skipped,
-            ProofStatus::StaleArtifact,
-            ProofStatus::Timeout,
-        ] {
-            assert!(fleet_upgrade_rehearsal_failed(
-                false,
-                0,
-                0,
-                true,
-                Some(status),
-            ));
-        }
-        assert!(fleet_upgrade_rehearsal_failed(false, 0, 0, true, None));
-        assert!(!fleet_upgrade_rehearsal_failed(false, 0, 0, false, None));
-    }
-
-    #[test]
-    fn live_rehearsal_fails_only_when_every_requested_remote_is_unreachable() {
-        assert!(!fleet_upgrade_rehearsal_failed(true, 0, 0, false, None));
-        assert!(fleet_upgrade_rehearsal_failed(true, 2, 2, false, None));
-        assert!(!fleet_upgrade_rehearsal_failed(true, 2, 1, false, None));
-        assert!(!fleet_upgrade_rehearsal_failed(false, 2, 2, false, None));
-    }
-}
-
-/// Build the local host's bounded doctor report from cass-owned local evidence:
-/// the running binary's version and detected platform. No network.
-fn local_host_report() -> crate::fleet_doctor_schema::HostDoctorReport {
-    use crate::fleet_doctor_schema::{HostDoctorReport, HostProbeStatus};
-    let mut report = HostDoctorReport::skeleton("local", local_platform(), HostProbeStatus::Ok, 0);
-    report.cass_version = Some(env!("CARGO_PKG_VERSION").to_string());
-    report
-}
-
-/// Detect this host's platform for the rehearsal (honest os/arch, never guessed).
-fn local_platform() -> crate::fleet_doctor_schema::Platform {
-    use crate::fleet_doctor_schema::{HostOs, PathStyle, Platform};
-    let (os, path_style) = match std::env::consts::OS {
-        "macos" => (HostOs::MacOs, PathStyle::Posix),
-        "windows" => (HostOs::Windows, PathStyle::Windows),
-        "linux" => (HostOs::Linux, PathStyle::Posix),
-        _ => (HostOs::Other, PathStyle::Posix),
-    };
-    Platform {
-        os,
-        arch: std::env::consts::ARCH.to_string(),
-        path_style,
-        tool_notes: Vec::new(),
-    }
-}
-
-/// Cheap, read-only archive-coverage facts for the local data dir: just the
-/// presence of the canonical DB and a searchable lexical index. Approximate by
-/// construction (no full scan) and deterministic for a given data dir.
-fn local_archive_coverage(
-    data_dir: &Path,
-) -> crate::fleet_archive_coverage::ArchiveCoverageSummary {
-    use crate::fleet_archive_coverage::CoverageState;
-    use crate::fleet_doctor_schema::ArchiveRisk;
-    let db_present = data_dir.join("agent_search.db").is_file();
-    let index_present = crate::search::tantivy::searchable_index_exists(
-        &crate::search::tantivy::expected_index_dir(data_dir),
-    );
-    let (coverage_state, archive_risk) = if !db_present {
-        (CoverageState::Unknown, ArchiveRisk::Unknown)
-    } else if !index_present {
-        (CoverageState::MissingDerivedAssets, ArchiveRisk::Medium)
-    } else {
-        (CoverageState::Fresh, ArchiveRisk::Low)
-    };
-    archive_coverage_summary(coverage_state, archive_risk)
-}
-
-/// An "unknown" archive-coverage summary for a host whose archive was not
-/// deep-probed by this bounded surface (e.g. a live-probed remote: its version is
-/// real, but its archive state is not measured).
-fn unknown_archive_coverage() -> crate::fleet_archive_coverage::ArchiveCoverageSummary {
-    use crate::fleet_archive_coverage::CoverageState;
-    use crate::fleet_doctor_schema::ArchiveRisk;
-    archive_coverage_summary(CoverageState::Unknown, ArchiveRisk::Unknown)
-}
-
-/// Build an approximate coverage summary carrying only a derived state + risk.
-fn archive_coverage_summary(
-    coverage_state: crate::fleet_archive_coverage::CoverageState,
-    archive_risk: crate::fleet_doctor_schema::ArchiveRisk,
-) -> crate::fleet_archive_coverage::ArchiveCoverageSummary {
-    crate::fleet_archive_coverage::ArchiveCoverageSummary {
-        schema_version: crate::fleet_archive_coverage::ARCHIVE_COVERAGE_SCHEMA_VERSION,
-        root_kind_counts: std::collections::BTreeMap::new(),
-        total_estimated_sessions: 0,
-        total_estimated_bytes: 0,
-        approximate: true,
-        newest_index_ms: None,
-        newest_sync_ms: None,
-        provenance_gaps: Vec::new(),
-        coverage_state,
-        archive_risk,
-    }
-}
-
-/// Bounded SSH probe of one configured remote source for the rehearsal: one
-/// round trip for the remote `cass` version + `uname` platform (reusing the
-/// sources-doctor probe). The remote archive is not deep-probed, so coverage is
-/// reported as unknown rather than guessed.
-fn probe_remote_host_for_rehearsal(
-    name: &str,
-    host: &str,
-    per_host_budget_ms: u64,
-    overall_budget: &crate::robot_budget_envelope::RobotBudget,
-) -> (
-    crate::fleet_doctor_schema::HostDoctorReport,
-    crate::fleet_archive_coverage::ArchiveCoverageSummary,
-) {
-    use crate::fleet_doctor_schema::{HostDoctorReport, HostProbeStatus, Platform};
-    let start = std::time::Instant::now();
-    let host_budget =
-        crate::robot_budget_envelope::RobotBudget::with_start(per_host_budget_ms, start);
-    let probe = if host_budget.is_exhausted() || overall_budget.is_exhausted() {
-        RemoteCassProbe {
-            os: None,
-            cass_version: None,
-            cass_found: false,
-            timed_out: true,
-        }
-    } else {
-        check_remote_cass(
-            host,
-            Duration::from_millis(
-                host_budget
-                    .remaining_ms()
-                    .min(overall_budget.remaining_ms())
-                    .max(1),
-            ),
-        )
-    };
-    let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let platform = probe
-        .os
-        .as_deref()
-        .map(platform_from_uname)
-        .unwrap_or_else(Platform::linux_x86_64);
-    let status = if probe.timed_out {
-        HostProbeStatus::TimedOut
-    } else if probe.os.is_none() {
-        // No usable response: the host could not be reached for the probe.
-        HostProbeStatus::Unreachable
-    } else if !probe.cass_found {
-        HostProbeStatus::CommandNotFound
-    } else {
-        HostProbeStatus::Ok
-    };
-    let mut report = HostDoctorReport::skeleton(name, platform, status, elapsed);
-    report.cass_version = probe.cass_version.clone();
-    report.unreachable = matches!(status, HostProbeStatus::Unreachable);
-    report.timed_out = matches!(status, HostProbeStatus::TimedOut);
-    (
-        crate::fleet_probe::finalize_host(report, elapsed, per_host_budget_ms),
-        unknown_archive_coverage(),
-    )
-}
-
-fn skipped_post_upgrade_proof_run(
-    command: String,
-    binary_path: &str,
-    data_dir: &Path,
-) -> crate::proof_artifact::ProofRun {
-    crate::proof_artifact::ProofRun {
-        command,
-        binary_path: Some(binary_path.to_string()),
-        binary_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        data_dir_or_fixture: Some(data_dir.display().to_string()),
-        exit_code: None,
-        elapsed_ms: 0,
-        timeout_ms: 0,
-        timed_out: false,
-        skipped: true,
-        assertions_ran: false,
-        produced_artifact: false,
-        completed: false,
-        artifact_age_ms: None,
-        stdout_path: None,
-        stderr_path: None,
-    }
-}
-
-fn record_local_verification_skip(
-    skipped_sections: &mut Vec<String>,
-    check: crate::fleet_upgrade_rehearsal::PostUpgradeCheck,
-) {
-    let section = format!("local_verification:{}", check.as_str());
-    if !skipped_sections.iter().any(|item| item == &section) {
-        skipped_sections.push(section);
-    }
-}
-
-/// Drive the bounded post-upgrade check battery against the local binary and
-/// classify each into a proof artifact (bead sc8sp, composing 12.2 + 12.3). Each
-/// distinct check command runs once (facets sharing a command reuse the result),
-/// Every child timeout is capped by the fleet budget still remaining, and
-/// unstarted facets become explicit skipped proofs. Read-only: every battery
-/// command is a `--json` inspection of the local host.
-fn verify_local_post_upgrade(
-    data_dir: &Path,
-    coverage_state: crate::fleet_archive_coverage::CoverageState,
-    overall_budget: &crate::robot_budget_envelope::RobotBudget,
-    skipped_sections: &mut Vec<String>,
-) -> crate::fleet_upgrade_rehearsal::PostUpgradeVerification {
-    use crate::e2e_runner::{RunExpectation, RunMode, RunSpec, run};
-    use crate::fleet_archive_coverage::CoverageState;
-    use crate::fleet_doctor_schema::ReadinessState;
-    use crate::fleet_upgrade_rehearsal::{
-        PostUpgradeCheck, UpgradeBeforeAfter, verify_post_upgrade,
-    };
-    use crate::proof_artifact::{DEFAULT_STALE_AFTER_MS, ProofRun, ProofStatus, classify};
-    use std::collections::BTreeMap;
-    use std::time::Duration;
-
-    let binary_path = std::env::current_exe()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "cass".to_string());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut env_overrides: BTreeMap<String, String> = BTreeMap::new();
-    env_overrides.insert("CASS_DATA_DIR".to_string(), data_dir.display().to_string());
-
-    // Run each distinct check command once; facets that share a command (several
-    // read `cass status --json`) reuse the recorded run.
-    let mut run_cache: BTreeMap<String, ProofRun> = BTreeMap::new();
-    let mut checks: Vec<(PostUpgradeCheck, ProofRun)> = Vec::new();
-    for check in PostUpgradeCheck::battery() {
-        let command = check.command().to_string();
-        let proof_run = run_cache
-            .entry(command.clone())
-            .or_insert_with(|| {
-                let remaining_ms = overall_budget.remaining_ms();
-                if remaining_ms == 0 {
-                    return skipped_post_upgrade_proof_run(command, &binary_path, data_dir);
-                }
-                let timeout_ms = check.timeout_ms().min(remaining_ms);
-                let args: Vec<String> = command
-                    .split_whitespace()
-                    .skip(1) // drop the leading "cass"
-                    .map(str::to_string)
-                    .collect();
-                let spec = RunSpec {
-                    binary_path: binary_path.clone(),
-                    args,
-                    timeout: Duration::from_millis(timeout_ms),
-                    env_overrides: env_overrides.clone(),
-                    cwd: cwd.clone(),
-                    fixture_id: None,
-                    require_path: None,
-                    phase: "post-upgrade-verify".to_string(),
-                    mode: RunMode::Ci,
-                };
-                let expect = RunExpectation {
-                    expect_json: true,
-                    assertions: vec![(
-                        "stdout_non_empty".to_string(),
-                        Box::new(|stdout: &str, _stderr: &str| !stdout.trim().is_empty())
-                            as Box<dyn Fn(&str, &str) -> bool>,
-                    )],
-                };
-                let event = run(&spec, &expect, 0);
-                run_event_to_proof_run(&event, &command, &binary_path, timeout_ms)
-            })
-            .clone();
-        if proof_run.skipped || proof_run.timed_out {
-            record_local_verification_skip(skipped_sections, check);
-        }
-        checks.push((check, proof_run));
-    }
-
-    // Derive readiness from the health/status check (the only facet that proves
-    // readiness recovered). A trustworthy pass means the host is ready.
-    let health_pass = run_cache
-        .get(PostUpgradeCheck::HealthStatusReadiness.command())
-        .map(|run| matches!(classify(run, DEFAULT_STALE_AFTER_MS), ProofStatus::Pass))
-        .unwrap_or(false);
-    let after_readiness = if health_pass {
-        ReadinessState::Ready
-    } else {
-        ReadinessState::NotReady
-    };
-
-    let version = env!("CARGO_PKG_VERSION").to_string();
-    let before_after = UpgradeBeforeAfter {
-        before_version: Some(version.clone()),
-        after_version: Some(version),
-        binary_upgraded: false,
-        before_readiness: None,
-        after_readiness: Some(after_readiness),
-        readiness_improved: false,
-        derived_assets_still_stale: matches!(
-            coverage_state,
-            CoverageState::Stale | CoverageState::MissingDerivedAssets
-        ),
-        coverage_before: coverage_state,
-        coverage_after: coverage_state,
-    };
-
-    verify_post_upgrade("local", before_after, checks, DEFAULT_STALE_AFTER_MS)
-}
-
-/// Convert a bounded [`crate::e2e_runner::RunEvent`] into a
-/// [`crate::proof_artifact::ProofRun`]. The post-check command plus its
-/// exit/JSON expectation *is* the assertion, so `assertions_ran` is always true:
-/// a genuine non-zero exit classifies as `Fail`, never the "generated-only" trap.
-fn run_event_to_proof_run(
-    event: &crate::e2e_runner::RunEvent,
-    command: &str,
-    binary_path: &str,
-    timeout_ms: u64,
-) -> crate::proof_artifact::ProofRun {
-    use crate::e2e_runner::RunOutcome;
-    crate::proof_artifact::ProofRun {
-        command: command.to_string(),
-        binary_path: Some(binary_path.to_string()),
-        binary_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-        data_dir_or_fixture: event.env_overrides.get("CASS_DATA_DIR").cloned(),
-        exit_code: event.exit_code,
-        elapsed_ms: event.elapsed_ms,
-        timeout_ms,
-        timed_out: event.timed_out,
-        skipped: false,
-        assertions_ran: true,
-        produced_artifact: false,
-        completed: matches!(event.outcome, RunOutcome::Success),
-        artifact_age_ms: None,
-        stdout_path: None,
-        stderr_path: None,
-    }
-}
-
-/// Human-readable rendering of the fleet upgrade rehearsal.
-fn print_fleet_upgrade_rehearsal_human(output: &FleetUpgradeRehearsalOutput) {
-    use colored::Colorize;
-    println!("{}", "Fleet upgrade rehearsal".bold().cyan());
-    println!("  mode: {}", output.mode);
-    println!("  target version: {}", output.target_version);
-    let r = &output.rehearsal;
-    println!(
-        "  hosts: {} total · {} up-to-date · {} need upgrade · {} unreachable",
-        r.hosts.len(),
-        r.hosts_up_to_date,
-        r.hosts_needing_upgrade,
-        r.hosts_unreachable,
-    );
-    if !r.recommended_order.is_empty() {
-        println!(
-            "  recommended upgrade order: {}",
-            r.recommended_order.join(", ")
-        );
-    }
-    for host in &r.hosts {
-        println!(
-            "  - {} [{}] {}",
-            host.host_alias,
-            host.disposition.as_str(),
-            host.observed_version
-                .as_deref()
-                .unwrap_or("version-unknown"),
-        );
-        for cmd in &host.safe_next_commands {
-            println!("      next: {cmd}");
-        }
-        for blocked in &host.blocked_next_commands {
-            println!(
-                "      blocked: {}  (unblock: {})",
-                blocked.command, blocked.unblock_precondition
-            );
-        }
-    }
-    if !output.deferred_remote_sources.is_empty() {
-        println!(
-            "  remote sources deferred (run with --live to probe): {}",
-            output.deferred_remote_sources.join(", ")
-        );
-    }
-    if let Some(v) = &output.local_verification {
-        println!("{}", "Local post-upgrade verification".bold().cyan());
-        println!("  overall: {}", v.overall_status.as_str());
-        println!("  {}", v.summary);
-        for proof in &v.check_proofs {
-            println!(
-                "    - {}: {}",
-                proof.check.as_str(),
-                proof.proof.status.as_str()
-            );
-        }
-    }
-    println!(
-        "  {}",
-        "mutation-free: no host was modified by this rehearsal".dimmed()
-    );
 }
 
 /// Show semantic model installation status.

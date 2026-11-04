@@ -5439,23 +5439,23 @@ const REMOVED_COMMAND_CASES: &[RemovedCommandCase] = &[
         args: &["fleet", "doctor"],
         display: "cass fleet",
         task: 8,
-        pending: true,
-        // `fleet doctor` is not a live subcommand today (verified: exits
-        // 2) — the whole `fleet` tree is what task 8 removes.
+        pending: false,
+        // `fleet doctor` names no live subcommand — the whole `fleet`
+        // tree was removed in task 8.
         probe_args: None,
     },
     RemovedCommandCase {
         args: &["release-verify"],
         display: "cass release-verify",
         task: 8,
-        pending: true,
+        pending: false,
         probe_args: None,
     },
     RemovedCommandCase {
         args: &["upgrade", "--check"],
         display: "cass upgrade",
         task: 8,
-        pending: true,
+        pending: false,
         probe_args: None,
     },
     // Task 9 — remote sources. `sources` itself stays live: each row

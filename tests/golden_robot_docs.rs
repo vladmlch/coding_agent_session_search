@@ -392,7 +392,6 @@ fn doctor_runbook_documents_archive_first_safety_contract() {
         "coverage_risk.status",
         "source_authority.authority_level",
         "raw_mirror.status",
-        "remote_source_sync.status",
         "storage_pressure.status",
         "repair_failure_marker.status",
         "artifact_manifest_path",

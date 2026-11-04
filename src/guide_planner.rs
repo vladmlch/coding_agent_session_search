@@ -2,12 +2,12 @@
 //! `coding_agent_session_search-guided-ops-repro-trust-5u82n.1`).
 //!
 //! `cass guide [INTENT] --json` is a robot-first surface that turns an operator
-//! intent (`fix-ci`, `investigate-search-miss`, `prepare-release`,
-//! `repair-assets`, `export-session`, `onboard-source`, …) into an exact, safe,
+//! intent (`investigate-search-miss`, `repair-assets`, `export-session`,
+//! `onboard-source`, …) into an exact, safe,
 //! advisory command plan. It builds on the existing triage/health/status/doctor
 //! readiness surfaces and the workflow macro registry (bead `…5u82n.10`) — the
 //! macros are the source of truth for each journey's ordered steps, proof gates,
-//! privacy tier, rch rules, rollback notes, and stop conditions.
+//! privacy tier, rollback notes, and stop conditions.
 //!
 //! Contract: **read-only / no-mutation by default**. The planner renders what a
 //! journey *would* do, classifies live preflight readiness honestly (satisfied
@@ -45,16 +45,6 @@ const INTENT_CATALOG: &[IntentMapping] = &[
         summary: "Diagnose a search that returns no hits (readiness, two-tier explain, coverage).",
     },
     IntentMapping {
-        intent: "fix-ci",
-        macro_id: "fix-ci-regression",
-        summary: "Find the first failing gate, reproduce it locally, apply the minimal fix.",
-    },
-    IntentMapping {
-        intent: "prepare-release",
-        macro_id: "prepare-release",
-        summary: "Run the verification gauntlet, verify channels, review the changelog/tag plan.",
-    },
-    IntentMapping {
         intent: "repair-assets",
         macro_id: "repair-derived-assets",
         summary: "Classify derived assets, rebuild canonical lexical search, and verify it; source ingestion and semantic setup are separate operations.",
@@ -62,7 +52,7 @@ const INTENT_CATALOG: &[IntentMapping] = &[
     IntentMapping {
         intent: "onboard-source",
         macro_id: "onboard-source",
-        summary: "Preview privacy exposure, dry-sync a new source, then index it.",
+        summary: "Preview privacy exposure, then index a locally configured source.",
     },
     IntentMapping {
         intent: "export-session",
@@ -104,20 +94,13 @@ const CORE_FORBIDDEN_SHORTCUTS: &[ForbiddenShortcut] = &[
     },
 ];
 
-const BUILD_FORBIDDEN_SHORTCUT: ForbiddenShortcut = ForbiddenShortcut {
-    shortcut: "build-on-interactive-pane",
-    why: "Offload cargo build/test/clippy through rch with a per-agent CARGO_TARGET_DIR to avoid compilation storms.",
-};
-
 /// Map a workflow-macro id to a resource-plan `--action` value for a deeper,
 /// host-aware cost/risk estimate evaluated by the guide runner. `None` means
-/// the journey has no heavy resource action to model (e.g. a pure build/test
-/// loop).
+/// the journey has no heavy resource action to model.
 fn resource_action_for_macro(macro_id: &str) -> Option<&'static str> {
     match macro_id {
         "repair-derived-assets" | "onboard-source" => Some("full-index"),
         "investigate-no-hit-search" => Some("semantic-backfill"),
-        "prepare-release" => Some("release-verification"),
         "export-encrypted-session" => Some("html-export"),
         "create-support-capsule" => Some("support-capsule"),
         _ => None,
@@ -437,9 +420,7 @@ pub fn render_guide_plan(
         "ready"
     };
 
-    // --- Steps: carry the macro recipe verbatim, add order + rch target dir. ---
-    let suggested_target_dir = format!("/data/tmp/cass-{macro_id}-target");
-    let mut any_offload = false;
+    // --- Steps: carry the macro recipe verbatim, add order. ---
     let steps: Vec<Value> = m
         .get("steps")
         .and_then(Value::as_array)
@@ -447,17 +428,12 @@ pub fn render_guide_plan(
             arr.iter()
                 .enumerate()
                 .map(|(idx, step)| {
-                    let rch_rule = step.get("rch_rule").and_then(Value::as_str).unwrap_or("none");
-                    let offloads = rch_rule == "offload-build";
-                    any_offload = any_offload || offloads;
                     json!({
                         "order": idx + 1,
                         "intent": step.get("intent").cloned().unwrap_or(Value::Null),
                         "command": step.get("command").cloned().unwrap_or(Value::Null),
                         "proof_gate": step.get("proof_gate").cloned().unwrap_or(Value::Null),
                         "mutates": step.get("mutates").and_then(Value::as_bool).unwrap_or(false),
-                        "rch_rule": rch_rule,
-                        "rch_target_dir": if offloads { json!(suggested_target_dir) } else { Value::Null }
                     })
                 })
                 .collect()
@@ -468,17 +444,11 @@ pub fn render_guide_plan(
         .filter(|s| s.get("mutates").and_then(Value::as_bool) == Some(true))
         .count();
 
-    // --- Forbidden shortcuts: core set + a build-offload reminder if relevant. ---
-    let mut forbidden: Vec<Value> = CORE_FORBIDDEN_SHORTCUTS
+    // --- Forbidden shortcuts: the core set. ---
+    let forbidden: Vec<Value> = CORE_FORBIDDEN_SHORTCUTS
         .iter()
         .map(|f| json!({ "shortcut": f.shortcut, "why": f.why }))
         .collect();
-    if any_offload {
-        forbidden.push(json!({
-            "shortcut": BUILD_FORBIDDEN_SHORTCUT.shortcut,
-            "why": BUILD_FORBIDDEN_SHORTCUT.why
-        }));
-    }
 
     // --- Cost / risk: deterministic coarse band + pointer to the what-if surface. ---
     let risk_level = if privacy_tier == "sensitive" {
@@ -564,11 +534,6 @@ pub fn render_guide_plan(
             "steps": steps,
             "required_proof_gates": m.get("proof_gates").cloned().unwrap_or_else(|| json!([])),
             "forbidden_shortcuts": forbidden,
-            "rch": {
-                "rules": m.get("rch_rules").cloned().unwrap_or(Value::Null),
-                "offload_required": any_offload,
-                "suggested_target_dir": if any_offload { json!(suggested_target_dir) } else { Value::Null }
-            },
             "cost_risk": cost_risk,
             "privacy": privacy,
             "stop_conditions": m.get("stop_conditions").cloned().unwrap_or_else(|| json!([])),
@@ -604,9 +569,9 @@ mod tests {
 
     #[test]
     fn resolves_friendly_keyword() {
-        let r = resolve_intent("fix-ci");
+        let r = resolve_intent("repair-assets");
         assert!(r.recognized());
-        assert_eq!(r.macro_id.as_deref(), Some("fix-ci-regression"));
+        assert_eq!(r.macro_id.as_deref(), Some("repair-derived-assets"));
         assert_eq!(r.matched_via, Some("intent-keyword"));
     }
 
@@ -659,7 +624,7 @@ mod tests {
         assert_eq!(out["status"], json!("ok"));
         assert_eq!(out["recommended_action"], json!("select-an-intent"));
         assert_eq!(out["mutation_contract"]["read_only"], json!(true));
-        assert!(out["known_intents"].as_array().unwrap().len() >= 7);
+        assert!(out["known_intents"].as_array().unwrap().len() >= 5);
     }
 
     #[test]
@@ -714,28 +679,30 @@ mod tests {
 
     #[test]
     fn undeterminable_fact_is_needs_confirmation_not_unmet() {
-        // prepare-release needs git_clean_or_known + version_bumped; supply only
-        // git_clean_or_known so version_bumped is omitted (undeterminable).
-        let f = facts(&[("git_clean_or_known", true)]);
-        let out = render_guide_plan("prepare-release", Some(&f), "fixture", "guide-release");
+        // export-encrypted-session needs session_selected + export_key_available;
+        // supply only session_selected so export_key_available is omitted
+        // (undeterminable).
+        let f = facts(&[("session_selected", true)]);
+        let out = render_guide_plan("export-session", Some(&f), "fixture", "guide-export");
         assert_eq!(out["readiness"], json!("needs-confirmation"));
         assert_eq!(out["status"], json!("ok"));
         let prereqs = out["plan"]["prerequisites"].as_array().unwrap();
         assert!(
-            prereqs.iter().any(|p| p["fact"] == json!("version_bumped")
-                && p["status"] == json!("needs-confirmation"))
-        );
-        assert!(
             prereqs
                 .iter()
-                .any(|p| p["fact"] == json!("git_clean_or_known")
-                    && p["status"] == json!("satisfied"))
+                .any(|p| p["fact"] == json!("export_key_available")
+                    && p["status"] == json!("needs-confirmation"))
+        );
+        assert!(
+            prereqs.iter().any(
+                |p| p["fact"] == json!("session_selected") && p["status"] == json!("satisfied")
+            )
         );
     }
 
     #[test]
     fn no_facts_yields_unknown_readiness() {
-        let out = render_guide_plan("fix-ci", None, "live", "live");
+        let out = render_guide_plan("repair-assets", None, "live", "live");
         assert_eq!(out["readiness"], json!("unknown"));
         let prereqs = out["plan"]["prerequisites"].as_array().unwrap();
         assert!(
@@ -758,9 +725,9 @@ mod tests {
 
     #[test]
     fn plan_is_always_read_only_even_with_mutating_steps() {
-        // fix-ci-regression and others have mutating steps; the PLAN never mutates.
+        // Journeys have mutating steps; the PLAN itself never mutates.
         for intent in [
-            "fix-ci",
+            "investigate-search-miss",
             "repair-assets",
             "onboard-source",
             "export-session",
@@ -787,7 +754,7 @@ mod tests {
     #[test]
     fn steps_carry_dotted_intents_not_runnable_cli() {
         // The macro recipe must stay structured — no copy-pasteable cass/bv.
-        let out = render_guide_plan("fix-ci", None, "live", "live");
+        let out = render_guide_plan("onboard-source", None, "live", "live");
         let steps_text = serde_json::to_string(&out["plan"]["steps"]).unwrap();
         assert!(
             !steps_text.contains("cass "),
@@ -807,16 +774,6 @@ mod tests {
         assert!(forbidden.contains("hand-delete-derived-index"));
         assert!(!forbidden.contains("rm -rf"));
         assert!(!forbidden.to_ascii_lowercase().contains("git reset --hard"));
-    }
-
-    #[test]
-    fn offload_step_gets_target_dir_and_build_warning() {
-        let out = render_guide_plan("fix-ci", None, "live", "live");
-        assert_eq!(out["plan"]["rch"]["offload_required"], json!(true));
-        let dir = out["plan"]["rch"]["suggested_target_dir"].as_str().unwrap();
-        assert!(dir.starts_with("/data/tmp/cass-"));
-        let forbidden = serde_json::to_string(&out["plan"]["forbidden_shortcuts"]).unwrap();
-        assert!(forbidden.contains("build-on-interactive-pane"));
     }
 
     #[test]
@@ -858,7 +815,6 @@ mod tests {
                 "steps",
                 "required_proof_gates",
                 "forbidden_shortcuts",
-                "rch",
                 "cost_risk",
                 "privacy",
                 "stop_conditions",

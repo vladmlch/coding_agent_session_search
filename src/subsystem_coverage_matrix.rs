@@ -9,7 +9,9 @@
 //! enumerates fifteen generated subsystem failure-mode files: `analytics`,
 //! `bookmarks`, `cache`, `cli_robot`, `connectors`, `daemon`, `html_export`,
 //! `indexer`, `models`, `pages`, `search`, `sources`, `storage`, `tui`, and
-//! `update_check`. The whole point of converting that report into beads was to
+//! `update_check`. The `update_check` subsystem was removed with the update
+//! machinery (Task 8, local-only), leaving fourteen rows. The whole point of
+//! converting that report into beads was to
 //! make the Beads graph self-contained so a future agent never has to reopen the
 //! markdown plan. That only holds if *every* subsystem file has a named owner,
 //! a real proof path, a logging/redaction expectation, and a closure-evidence
@@ -34,9 +36,11 @@ use serde::Serialize;
 /// Stable schema version for the subsystem-coverage wire format.
 pub const SUBSYSTEM_COVERAGE_SCHEMA_VERSION: u32 = 1;
 
-/// The fifteen report subsystem failure-mode files, in canonical (alphabetical)
-/// order. The closeout gate requires exactly one matrix row per name.
-pub const REPORT_SUBSYSTEM_FILES: [&str; 15] = [
+/// The report subsystem failure-mode files, in canonical (alphabetical)
+/// order. `update_check` was dropped from the canonical set when the update
+/// machinery was removed (Task 8, local-only). The closeout gate requires
+/// exactly one matrix row per name.
+pub const REPORT_SUBSYSTEM_FILES: [&str; 14] = [
     "analytics",
     "bookmarks",
     "cache",
@@ -51,7 +55,6 @@ pub const REPORT_SUBSYSTEM_FILES: [&str; 15] = [
     "sources",
     "storage",
     "tui",
-    "update_check",
 ];
 
 /// The precursor design docs this matrix builds on. The gate asserts both still
@@ -403,7 +406,7 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
                 ProofLevel::Golden,
             ],
             proof_artifacts: &[
-                "src/source_doctor_health.rs",
+                "src/sources/config_validation.rs",
                 "tests/e2e_sources.rs",
                 "tests/setup_workflow.rs",
             ],
@@ -411,7 +414,7 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
             fixture_provenance: "synthetic sources.toml + mirror dirs; no SSH session opened at test time",
             log_expectation: "deterministic --lib result line; structured logs for e2e source flows",
             redaction: RedactionExpectation::LocalOnly,
-            closure_evidence: "cargo test --lib source_doctor_health + e2e_sources",
+            closure_evidence: "cargo test --test e2e_sources result line",
         },
         SubsystemCoverage {
             subsystem: "storage",
@@ -453,18 +456,6 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
             log_expectation: "structured proof-log over the human/robot parity gate",
             redaction: RedactionExpectation::RedactRequired,
             closure_evidence: "cargo test --test e2e_human_robot_parity_gate result line",
-        },
-        SubsystemCoverage {
-            subsystem: "update_check",
-            owning_beads: &[".15.4"],
-            failure_modes: &["fm-update-shell-injection", "fm-update-clock-rollback"],
-            mandatory_proofs: &[ProofLevel::Unit],
-            proof_artifacts: &["src/update_check.rs", "src/metric_integrity.rs"],
-            optional_diagnostics: &["live update-channel probe (opt-in)"],
-            fixture_provenance: "synthetic version strings + clock values; no network at test time",
-            log_expectation: "deterministic --lib result line for sanitized-arg and clock-rollback paths",
-            redaction: RedactionExpectation::NoUserContent,
-            closure_evidence: "cargo test --lib update_check result line",
         },
     ]
 }
@@ -646,9 +637,8 @@ pub fn render_markdown() -> String {
          Bead: `coding_agent_session_search-cass-fleet-resilience-20260608-uojcg.15.5`.\n\
          \n\
          > Generated from `src/subsystem_coverage_matrix.rs`. Do not edit by hand —\n\
-         > run `UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target \\\n\
-         > cargo test --lib subsystem_coverage_matrix` to regenerate after changing\n\
-         > the matrix, and review the diff.\n\
+         > run `UPDATE_GOLDENS=1 cargo test --lib subsystem_coverage_matrix` to\n\
+         > regenerate after changing the matrix, and review the diff.\n\
          \n\
          This is the **executable** counterpart of\n\
          [`RESILIENCE_TEST_MATRIX.md`](RESILIENCE_TEST_MATRIX.md) (bead `.12.1`):\n\

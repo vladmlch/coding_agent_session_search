@@ -470,96 +470,6 @@ static SCENARIOS: &[E2eScenario] = &[
         requires_live_host: false,
     },
     E2eScenario {
-        id: "remote_unreachable_old_host",
-        description: "source doctor preserves host identity across old-binary and bounded-unreachable/timeout states",
-        owning_bead: "coding_agent_session_search-cass-fleet-resilience-20260608-uojcg.8.6",
-        fixture_setup: "synthetic sources.toml plus a size-bounded external-probe fixture; no live SSH",
-        commands: &[
-            ScenarioCommand {
-                id: "old-host-source-doctor",
-                args: &["sources", "doctor", "--json"],
-                env: &[ScenarioEnv {
-                    key: "CASS_TEST_SOURCES_DOCTOR_PROBE",
-                    value: "{probe_path}",
-                }],
-                accepted_exit_codes: &[1],
-                json_assertions: &[
-                    JsonExpectation::EqualsString {
-                        pointer: "/sources/0/state",
-                        expected: "old_cass",
-                    },
-                    JsonExpectation::EqualsBool {
-                        pointer: "/sources/0/host_reached",
-                        expected: true,
-                    },
-                    JsonExpectation::EqualsBool {
-                        pointer: "/mutation_free",
-                        expected: true,
-                    },
-                    JsonExpectation::EqualsString {
-                        pointer: "/diagnostics/0/host_report/cass_version",
-                        expected: "0.0.1",
-                    },
-                    JsonExpectation::Exists {
-                        pointer: "/sources/0/safe_next_command",
-                    },
-                ],
-                forbidden_stream_markers: &["password", "private key"],
-                expected_extra_artifacts: &["{probe_path}"],
-                timeout_ms: 30_000,
-            },
-            ScenarioCommand {
-                id: "bounded-unreachable-source-doctor",
-                args: &["sources", "doctor", "--json"],
-                env: &[
-                    ScenarioEnv {
-                        key: "CASS_TEST_SOURCES_DOCTOR_PROBE",
-                        value: "{probe_path}",
-                    },
-                    ScenarioEnv {
-                        key: "CASS_FLEET_BUDGET_MS",
-                        value: "1",
-                    },
-                    ScenarioEnv {
-                        key: "CASS_FLEET_PER_HOST_BUDGET_MS",
-                        value: "20",
-                    },
-                ],
-                accepted_exit_codes: &[1],
-                json_assertions: &[
-                    JsonExpectation::EqualsString {
-                        pointer: "/sources/0/source_id",
-                        expected: "fixture-source",
-                    },
-                    JsonExpectation::OneOfStrings {
-                        pointer: "/sources/0/state",
-                        expected: &["timeout", "unreachable"],
-                    },
-                    JsonExpectation::EqualsBool {
-                        pointer: "/budget/timed_out",
-                        expected: true,
-                    },
-                    JsonExpectation::EqualsBool {
-                        pointer: "/mutation_free",
-                        expected: true,
-                    },
-                ],
-                forbidden_stream_markers: &["password", "private key"],
-                expected_extra_artifacts: &["{probe_path}"],
-                timeout_ms: 3_000,
-            },
-        ],
-        expected_log_artifacts: &[
-            "stdout.json",
-            "stderr.log",
-            "event.json",
-            "*.proof.json",
-            "source-doctor-probe.json",
-        ],
-        privacy_note: "synthetic host alias and version only; no credentials or live paths",
-        requires_live_host: false,
-    },
-    E2eScenario {
         id: "incident_mining_large_corpus",
         description: "bounded incident mining emits truthful partial metadata, ranked categories, redaction summary, and citable artifacts",
         owning_bead: "coding_agent_session_search-cass-fleet-resilience-20260608-uojcg.10.3",
@@ -619,33 +529,6 @@ static SCENARIOS: &[E2eScenario] = &[
         privacy_note: "raw synthetic message text is suppressed; basenames/fingerprints only",
         requires_live_host: false,
     },
-    E2eScenario {
-        id: "live_remote_replay",
-        description: "operator-only replay against explicitly supplied live source configuration",
-        owning_bead: "coding_agent_session_search-cass-fleet-resilience-20260608-uojcg.8.6",
-        fixture_setup: "operator supplies an isolated XDG_CONFIG_HOME and explicitly opts in; never part of deterministic CI",
-        commands: &[ScenarioCommand {
-            id: "live-source-doctor",
-            args: &["sources", "doctor", "--json"],
-            env: &[],
-            accepted_exit_codes: &[0, 1],
-            json_assertions: &[
-                JsonExpectation::EqualsBool {
-                    pointer: "/mutation_free",
-                    expected: true,
-                },
-                JsonExpectation::Exists {
-                    pointer: "/sources",
-                },
-            ],
-            forbidden_stream_markers: &["password", "private key"],
-            expected_extra_artifacts: &[],
-            timeout_ms: 120_000,
-        }],
-        expected_log_artifacts: &["stdout.json", "stderr.log", "event.json", "*.proof.json"],
-        privacy_note: "operator must review host/path metadata before retaining live artifacts",
-        requires_live_host: true,
-    },
 ];
 
 /// All report-derived E2E scenarios, in a stable order.
@@ -685,7 +568,6 @@ mod tests {
             "long_rebuild_watch_stall",
             "dependency_noise",
             "moved_workspace_archive_drilldown",
-            "remote_unreachable_old_host",
             "incident_mining_large_corpus",
         ] {
             if scenario(id).is_none() {
@@ -694,9 +576,9 @@ mod tests {
                 )));
             }
         }
-        if ci_scenarios().len() != 8 {
+        if ci_scenarios().len() != 7 {
             return Err(
-                "default deterministic matrix must contain exactly the eight required scenarios"
+                "default deterministic matrix must contain exactly the seven required scenarios"
                     .to_string(),
             );
         }
@@ -818,7 +700,6 @@ mod tests {
             "long_rebuild_watch_stall",
             "dependency_noise",
             "moved_workspace_archive_drilldown",
-            "remote_unreachable_old_host",
             "incident_mining_large_corpus",
         ] {
             assert!(
@@ -830,13 +711,9 @@ mod tests {
 
     #[test]
     fn live_replay_is_explicitly_separate_from_ci() {
+        // Local-only: no scenario may require a live remote host at all.
         let live: Vec<&str> = live_scenarios().iter().map(|s| s.id).collect();
-        assert_eq!(live, vec!["live_remote_replay"]);
-        assert!(
-            ci_scenarios()
-                .iter()
-                .all(|candidate| candidate.id != "live_remote_replay")
-        );
+        assert!(live.is_empty(), "unexpected live-host scenarios: {live:?}");
     }
 
     #[test]

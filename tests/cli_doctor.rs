@@ -2281,7 +2281,7 @@ fn doctor_json_surfaces_quarantine_gc_eligibility() {
         "restore_rehearsal_then_apply",
         "derived_cleanup_fingerprint_apply",
         "semantic_fallback_no_archive_damage",
-        "multi_machine_source_sync_coverage",
+        "local_mirror_source_coverage",
     ] {
         assert!(
             matrix
@@ -2684,9 +2684,9 @@ fn doctor_check_json_reports_read_only_truth_surface_without_writes() {
             .as_array()
             .is_some_and(|collectors| collectors.iter().any(|collector| {
                 collector["name"].as_str() == Some("network_source_sync")
-                    && collector["status"].as_str() == Some("not_checked")
+                    && collector["status"].as_str() == Some("removed")
             })),
-        "doctor check must report expensive facts as not_checked instead of guessing: {payload:#}"
+        "doctor check must report the removed network source-sync collector as removed: {payload:#}"
     );
     assert_eq!(
         payload["derived_semantic_assets"]["fallback_mode"].as_str(),

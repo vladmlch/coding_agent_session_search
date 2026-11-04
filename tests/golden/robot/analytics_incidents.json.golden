@@ -30,12 +30,6 @@
       "evidence_truncated": false,
       "evidence": [
         {
-          "file": "remote-session.jsonl",
-          "line": 1,
-          "category": "remote_sync_auth",
-          "reason": "content_fingerprint=3ed58f9549f8eeda18cd151ebb448edd71ffda372d99ab1096dbd610b0c882f6"
-        },
-        {
           "file": "codex-primary.jsonl",
           "line": 1,
           "category": "cass_status_health",
@@ -137,54 +131,10 @@
           ],
           "display": "cass --db [TEST_HOME]/analytics-incidents.db view [TEST_HOME]/sessions/codex-primary.jsonl --source local --conversation-id 1 --json"
         }
-      },
-      {
-        "conversation_id": 2,
-        "session_id": "remote-session",
-        "agent": "claude_code",
-        "host": "fixture-host",
-        "source_path": "/remote/archive/remote-session.jsonl",
-        "source_id": "remote-fixture",
-        "origin_host": "fixture-host",
-        "exists_state": "unknown",
-        "hit_count": 1,
-        "category_breadth": 1,
-        "dominant_categories": [
-          "remote_sync_auth"
-        ],
-        "redaction_status": "redacted",
-        "evidence_summaries": [
-          {
-            "category": "remote_sync_auth",
-            "hit_count": 1,
-            "content_fingerprints": [
-              "3ed58f9549f8eeda18cd151ebb448edd71ffda372d99ab1096dbd610b0c882f6"
-            ],
-            "evidence_paths": [
-              "remote-session.jsonl"
-            ]
-          }
-        ],
-        "suggested_command": {
-          "kind": "view",
-          "argv": [
-            "cass",
-            "--db",
-            "[TEST_HOME]/analytics-incidents.db",
-            "view",
-            "/remote/archive/remote-session.jsonl",
-            "--source",
-            "remote-fixture",
-            "--conversation-id",
-            "2",
-            "--json"
-          ],
-          "display": "cass --db [TEST_HOME]/analytics-incidents.db view /remote/archive/remote-session.jsonl --source remote-fixture --conversation-id 2 --json"
-        }
       }
     ],
-    "total_sessions": 2,
-    "total_hits": 5,
+    "total_sessions": 1,
+    "total_hits": 4,
     "top_sessions_truncated": false,
     "redaction": {
       "private_text_policy": "suppress_all",

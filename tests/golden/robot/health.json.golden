@@ -138,29 +138,6 @@
     "doctor_check_recommended": false,
     "archive_coverage_state": "not_initialized",
     "source_mirror_state": "not_initialized",
-    "remote_source_sync": {
-      "schema_version": 1,
-      "status": "ok",
-      "source": "health-fast-local-config",
-      "checked": true,
-      "archive_checked": false,
-      "live_remote_probe_attempted": false,
-      "remote_source_state": "not_configured",
-      "sync_staleness": "not_configured",
-      "local_mirror_state": "not_configured",
-      "configured_remote_source_count": 0,
-      "archive_remote_conversation_count": null,
-      "sync_gap_count": 0,
-      "highest_gap_severity": "none",
-      "recommended_action": "none",
-      "recommended_sync_commands": [],
-      "notes": [
-        "remote_source_sync is read-only and local-only: it reads sources.toml, sync_status.json, local mirror directories, and archive provenance rows only.",
-        "Missing or stale remote sync state is a freshness gap, not proof that archived cass conversations are lost.",
-        "Doctor never opens SSH sessions or mutates provider session logs while building this report.",
-        "health-fast-local-config checked remote source config, sync status, and local cass mirrors without live SSH probes or provider log mutation"
-      ]
-    },
     "sole_copy_conversation_count": 0,
     "cleanup_reclaimable_bytes": null,
     "quarantine_summary": null,
@@ -175,29 +152,6 @@
     },
     "health_status": "not_initialized",
     "db_exists": false
-  },
-  "remote_source_sync": {
-    "schema_version": 1,
-    "status": "ok",
-    "source": "health-fast-local-config",
-    "checked": true,
-    "archive_checked": false,
-    "live_remote_probe_attempted": false,
-    "remote_source_state": "not_configured",
-    "sync_staleness": "not_configured",
-    "local_mirror_state": "not_configured",
-    "configured_remote_source_count": 0,
-    "archive_remote_conversation_count": null,
-    "sync_gap_count": 0,
-    "highest_gap_severity": "none",
-    "recommended_action": "none",
-    "recommended_sync_commands": [],
-    "notes": [
-      "remote_source_sync is read-only and local-only: it reads sources.toml, sync_status.json, local mirror directories, and archive provenance rows only.",
-      "Missing or stale remote sync state is a freshness gap, not proof that archived cass conversations are lost.",
-      "Doctor never opens SSH sessions or mutates provider session logs while building this report.",
-      "health-fast-local-config checked remote source config, sync status, and local cass mirrors without live SSH probes or provider log mutation"
-    ]
   },
   "coverage_risk": {
     "schema_version": 1,

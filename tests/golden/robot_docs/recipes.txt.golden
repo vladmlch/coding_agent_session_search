@@ -42,22 +42,19 @@ error (exit 5), NOT `missing-index` (exit 3). Never treat a corrupt archive as a
 fresh install — that would discard recoverable rows. Run `cass doctor --check
 --json` and follow its backup-first plan.
 
-## 2. Bounded fleet preflight (per host)
+## 2. Bounded local preflight
 
-For each configured host, run a bounded, read-only preflight and record gaps —
-never silently omit a host that timed out or was unreachable:
+Run a bounded, read-only preflight on this host and record gaps:
 
     cass --version
     cass status --json          # bounded; readiness, index freshness, db stats
     cass doctor --check --json   # bounded read-only truth surface, when available
 
-  * Record an unreachable / timed-out host as an explicit access gap (do not
-    drop it from the report).
-  * A host that returns `missing-index` needs `cass index --full`; a host with
-    `archive_risk: high` needs backup-first handling (recipe 1).
-  * Remote source diagnostics are local-only: `remote_source_sync` is computed
-    from cass-owned evidence and never opens SSH while classifying. Run
-    `cass sources sync --all --json` only after reviewing the reported gaps.
+  * A result of `missing-index` needs `cass index --full`; `archive_risk: high`
+    needs backup-first handling (recipe 1).
+  * Remote source diagnostics are local-only: a configured remote host is
+    reported as a warning in `cass sources doctor --json`; nothing on the
+    network is contacted. Local mirrors under the data dir are read directly.
 
 ## 3. Raw-log fallback (bounded; avoid huge JSONL lines)
 
@@ -95,9 +92,10 @@ auto-deletes. Branch on the quarantine reason:
   * #110 — chunk FTS rebuilds; never wrap one giant FTS transaction. If a
     rebuild stalls, read `cass status --json` `rebuild.phase`; do not force one
     monolithic transaction.
-  * #120 — remote sync must prefer system OpenSSH / rsync / scp over the `ssh2`
-    SFTP fallback. Verify with `cass sources doctor --json`; a transport problem
-    is an SSH/rsync issue, not a cass-archive loss.
+  * #120 — remote transports were removed by the local-only conversion; a
+    configured remote source is a warning in `cass sources doctor --json` and
+    is never probed. A previously synced local mirror under the data dir is
+    still read as archive data; a transport problem is not a cass-archive loss.
   * #137 / #196 — `current: 0` with no forward progress means STALL DIAGNOSIS,
     not blind waiting. Inspect `cass status --json`
     `rebuild_progress.{processed_conversations,phase,stalled}`; if `stalled` is
@@ -139,7 +137,8 @@ failure surfaces, attribute it before reacting:
   * storage / "database is busy" / OpenRead -> likely `frankensqlite`.
   * lexical / vector / hybrid search -> likely `frankensearch` (Quill/vector).
   * runtime / scheduler / load stalls -> likely `asupersync` or host load.
-  * remote transport -> SSH / rsync / scp / SFTP.
+  * (removed) remote transport -> cass is local-only; remote transports no
+    longer exist, so never attribute a failure to SSH/rsync/SFTP.
 
 Dependency tracing belongs behind an explicit `--trace-file` or env flag, not in
 normal robot output. If a robot command leaks dependency logs onto stdout/stderr

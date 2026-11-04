@@ -3863,8 +3863,6 @@ pub fn default_doctor_e2e_scenarios() -> Vec<DoctorE2eScenarioSpec> {
             ["source-mirror", "multi-file", "read-only"],
         )
         .require_json_pointer("/source_inventory")
-        .require_json_pointer("/remote_source_sync")
-        .require_json_pointer("/remote_source_sync/sync_gaps")
         .require_json_pointer("/source_inventory/provider_counts/codex")
         .require_json_pointer("/source_inventory/provider_counts/cline")
         .require_json_pointer("/operation_outcome/kind")

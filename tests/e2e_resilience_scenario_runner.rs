@@ -396,7 +396,6 @@ fn prepare_fixture(
     let source_path =
         "/Users/synthetic/Library/Application Support/cass/moved-session.jsonl".to_string();
     let trace_path = root.join("trace.jsonl");
-    let probe_path = root.join("source-doctor-probe.json");
     let fixture_manifest_path = root.join("fixture-manifest.json");
     let mut placeholders = BTreeMap::from([
         ("data_dir".to_string(), data_dir.display().to_string()),
@@ -404,7 +403,6 @@ fn prepare_fixture(
         ("source_path".to_string(), source_path.clone()),
         ("config_dir".to_string(), config_dir.display().to_string()),
         ("trace_path".to_string(), trace_path.display().to_string()),
-        ("probe_path".to_string(), probe_path.display().to_string()),
         (
             "fixture_manifest_path".to_string(),
             fixture_manifest_path.display().to_string(),
@@ -464,34 +462,6 @@ fn prepare_fixture(
                 )],
             )?;
             fixture.setup_artifacts.push(db_path.clone());
-        }
-        "remote_unreachable_old_host" => {
-            let config_path = config_dir.join("cass/sources.toml");
-            fs::create_dir_all(
-                config_path
-                    .parent()
-                    .ok_or_else(|| "sources config missing parent".to_string())?,
-            )
-            .map_err(|error| format!("create sources config dir: {error}"))?;
-            fs::write(
-                &config_path,
-                r#"[[sources]]
-name = "fixture-source"
-type = "ssh"
-host = "fixture@reachable.test"
-paths = ["~/.claude/projects"]
-platform = "linux"
-"#,
-            )
-            .map_err(|error| format!("write sources config: {error}"))?;
-            fs::write(
-                &probe_path,
-                br#"{"host":"fixture@reachable.test","os":"Linux","cass_version":"0.0.1","remote_path":"nonempty","delay_ms":5}"#,
-            )
-            .map_err(|error| format!("write source doctor probe: {error}"))?;
-            fixture
-                .setup_artifacts
-                .extend([config_path, probe_path.clone()]);
         }
         "incident_mining_large_corpus" => {
             seed_archive(
@@ -633,19 +603,6 @@ fn command_expectation(
             }),
         ));
     }
-    if command.id.ends_with("source-doctor") {
-        let probe_path = PathBuf::from(fixture.resolve("{probe_path}")?);
-        assertions.push((
-            "source-probe-identifies-synthetic-host".to_string(),
-            Box::new(move |_stdout: &str, _stderr: &str| {
-                fs::read(&probe_path)
-                    .ok()
-                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-                    .is_some_and(|probe| probe["host"] == "fixture@reachable.test")
-            }),
-        ));
-    }
-
     Ok(RunExpectation {
         expect_json: true,
         assertions,
@@ -729,9 +686,6 @@ fn deterministic_resilience_matrix_emits_complete_current_redacted_proof() -> Re
                 .map(|argument| fixture.resolve(argument))
                 .collect::<Result<Vec<_>, _>>()?;
             let mut env = isolated_env(&fixture);
-            if scenario.id == "remote_unreachable_old_host" {
-                env.remove("CASS_IGNORE_SOURCES_CONFIG");
-            }
             for override_value in command.env {
                 env.insert(
                     override_value.key.to_string(),

@@ -511,12 +511,16 @@ fn capabilities_are_self_describing_for_agents() {
         "CASS_SEARCH_BUDGET_MS",
         "CASS_TRIAGE_BUDGET_MS",
         "CASS_PACK_BUDGET_MS",
-        "CASS_FLEET_PER_HOST_BUDGET_MS",
-        "CASS_FLEET_BUDGET_MS",
     ] {
         assert!(
             env_vars.iter().any(|env_var| env_var["name"] == expected),
             "capabilities should include env var {expected}"
+        );
+    }
+    for removed in ["CASS_FLEET_PER_HOST_BUDGET_MS", "CASS_FLEET_BUDGET_MS"] {
+        assert!(
+            !env_vars.iter().any(|env_var| env_var["name"] == removed),
+            "capabilities must not advertise removed fleet env var {removed}"
         );
     }
     for (name, expected_default) in [
@@ -527,8 +531,6 @@ fn capabilities_are_self_describing_for_agents() {
         ("CASS_SEARCH_BUDGET_MS", "120000"),
         ("CASS_TRIAGE_BUDGET_MS", "8000"),
         ("CASS_PACK_BUDGET_MS", "10000"),
-        ("CASS_FLEET_PER_HOST_BUDGET_MS", "8000"),
-        ("CASS_FLEET_BUDGET_MS", "60000"),
     ] {
         let capability = env_vars
             .iter()
@@ -2540,7 +2542,6 @@ fn robot_docs_env_lists_key_vars_and_no_ansi() {
         "robot-docs env should not emit ANSI when color=never"
     );
     for needle in &[
-        "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT",
         "CASS_DATA_DIR",
         "TUI_HEADLESS",
         "CASS_STATUS_BUDGET_MS",
@@ -2550,10 +2551,20 @@ fn robot_docs_env_lists_key_vars_and_no_ansi() {
         "CASS_SEARCH_BUDGET_MS",
         "CASS_TRIAGE_BUDGET_MS",
         "CASS_PACK_BUDGET_MS",
-        "CASS_FLEET_PER_HOST_BUDGET_MS",
-        "CASS_FLEET_BUDGET_MS",
     ] {
         assert!(stdout.contains(needle), "env topic should include {needle}");
+    }
+    for removed in [
+        "CASS_FLEET_PER_HOST_BUDGET_MS",
+        "CASS_FLEET_BUDGET_MS",
+        "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT",
+        "CASS_SKIP_UPDATE",
+        "CASS_UPDATE_API_BASE_URL",
+    ] {
+        assert!(
+            !stdout.contains(removed),
+            "env topic must not document removed fleet/update env var {removed}"
+        );
     }
 }
 

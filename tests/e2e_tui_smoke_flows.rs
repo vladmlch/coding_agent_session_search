@@ -524,8 +524,14 @@ fn tui_pty_launch_quit_and_terminal_cleanup() {
             true
         }
         Err(err) => {
-            let is_closed_macos_slave =
-                cfg!(target_os = "macos") && err.to_string().contains("Bad file descriptor");
+            // A dead PTY slave surfaces differently by macOS version: the fd
+            // may report EBADF ("Bad file descriptor") or the slave device
+            // node may already be reaped, which makes posix_spawn report
+            // ENOENT ("No such file or directory"). Either way the post-exit
+            // stty check cannot run — skip it like the EBADF case.
+            let is_closed_macos_slave = cfg!(target_os = "macos")
+                && (err.to_string().contains("Bad file descriptor")
+                    || err.to_string().contains("No such file or directory"));
             assert!(is_closed_macos_slave, "spawn stty check: {err}");
             eprintln!("skipping post-exit stty check on macOS closed PTY slave: {err}");
             false
@@ -581,16 +587,15 @@ fn spawn_release_endpoint(tag: &str) -> (std::net::SocketAddr, Arc<AtomicUsize>)
     (addr, requests)
 }
 
-/// 2l1b0.56: an interactive launch used to await the release check and then
-/// block on an "Update now? (y/N)" stdin prompt before the TUI drew, and that
-/// pre-TUI check spent the hourly slot the in-TUI banner needs. With a newer
-/// release available, the TUI must reach its own update banner without any
-/// pre-TUI prompt.
+/// Local-only conversion: the update machinery (pre-TUI prompt and in-TUI
+/// banner) was removed. With the release-API override still pointing at a
+/// local stub, the TUI must launch without any banner and must never contact
+/// the endpoint — no outbound release check of any kind remains.
 #[test]
-fn tui_pty_newer_release_surfaces_as_banner_not_a_blocking_prompt() {
+fn tui_pty_launches_without_update_banner_or_release_requests() {
     let _guard_lock = tui_flow_guard();
     let trace = trace_id();
-    let tracker = tracker_for("tui_pty_newer_release_surfaces_as_banner_not_a_blocking_prompt");
+    let tracker = tracker_for("tui_pty_launches_without_update_banner_or_release_requests");
     let env = prepare_ftui_pty_env(&trace, &tracker);
     let (endpoint, requests) = spawn_release_endpoint("v99.0.0");
 
@@ -608,13 +613,14 @@ fn tui_pty_newer_release_surfaces_as_banner_not_a_blocking_prompt() {
 
     let launch_start = tracker.start(
         "pty_update_banner",
-        Some("Launching TUI with a newer release"),
+        Some("Launching TUI with the update machinery removed"),
     );
     let mut tui_cmd = CommandBuilder::new(cass_bin_path());
     tui_cmd.arg("tui");
     apply_ftui_env(&mut tui_cmd, &env);
-    // Every switch that disables update checks must be absent, or neither the
-    // old prompt nor the banner would run and the test would prove nothing.
+    // The old update-check opt-out switches must be absent, and the release
+    // API override still points at the stub: after the local-only removal the
+    // TUI must ignore it and never contact the endpoint.
     for disabled in [
         "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT",
         "CASS_SKIP_UPDATE",
@@ -630,7 +636,7 @@ fn tui_pty_newer_release_surfaces_as_banner_not_a_blocking_prompt() {
         .expect("spawn ftui TUI in PTY");
 
     let saw_banner = wait_for_rendered_output(&captured, Duration::from_secs(20), |screen| {
-        // Both the top-strip banner and the status line name the target.
+        // The banner (and the old blocking prompt) must never appear.
         screen.contains("-> v99.0.0")
     });
     let rendered = {
@@ -641,7 +647,7 @@ fn tui_pty_newer_release_surfaces_as_banner_not_a_blocking_prompt() {
         quit_tui_with_escape(&mut *writer, &mut *tui_child, 8, Duration::from_millis(180));
     tracker.end(
         "pty_update_banner",
-        Some("update banner observed and TUI quit"),
+        Some("no update banner; TUI quit without touching the release stub"),
         launch_start,
     );
     drop(writer);
@@ -655,15 +661,19 @@ fn tui_pty_newer_release_surfaces_as_banner_not_a_blocking_prompt() {
     );
 
     assert!(
+        !saw_banner,
+        "the TUI still showed an update banner for v99.0.0: {}",
+        truncate_output(&raw, 1500)
+    );
+    assert!(
         !rendered.contains("Update now? (y/N)"),
         "a blocking pre-TUI update prompt appeared: {}",
         truncate_output(&raw, 1500)
     );
-    assert!(
-        saw_banner,
-        "the TUI never showed its update banner for v99.0.0 (release requests: {}): {}",
+    assert_eq!(
         requests.load(Ordering::SeqCst),
-        truncate_output(&raw, 1500)
+        0,
+        "the TUI contacted the release stub even though update checks are removed"
     );
     assert!(
         tui_status.success(),
@@ -2680,8 +2690,14 @@ fn tui_pty_inline_mode_no_altscreen() {
             true
         }
         Err(err) => {
-            let is_closed_macos_slave =
-                cfg!(target_os = "macos") && err.to_string().contains("Bad file descriptor");
+            // A dead PTY slave surfaces differently by macOS version: the fd
+            // may report EBADF ("Bad file descriptor") or the slave device
+            // node may already be reaped, which makes posix_spawn report
+            // ENOENT ("No such file or directory"). Either way the post-exit
+            // stty check cannot run — skip it like the EBADF case.
+            let is_closed_macos_slave = cfg!(target_os = "macos")
+                && (err.to_string().contains("Bad file descriptor")
+                    || err.to_string().contains("No such file or directory"));
             assert!(is_closed_macos_slave, "spawn stty check: {err}");
             eprintln!("skipping post-exit stty check on macOS closed PTY slave: {err}");
             false

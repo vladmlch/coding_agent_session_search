@@ -129,9 +129,6 @@ use crate::ui::data::{
 };
 use crate::ui::shortcuts;
 use crate::ui::time_parser::parse_time_input;
-use crate::update_check::{UpdateInfo, open_in_browser, skip_version};
-#[cfg(not(test))]
-use crate::update_check::{run_self_update, spawn_update_check};
 use crate::{
     html_export::{
         FilenameMetadata, FilenameOptions, generate_filename, get_downloads_dir, unique_filename,
@@ -4286,7 +4283,6 @@ pub struct DoctorHudSummary {
     pub active_repair: bool,
     pub active_index_maintenance: bool,
     pub repair_previously_failed: bool,
-    pub remote_source_state: Option<String>,
     pub sole_copy_conversation_count: u64,
 }
 
@@ -4322,7 +4318,6 @@ impl DoctorHudSummary {
                 .pointer("/repair_previously_failed")
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
-            remote_source_state: str_at("/remote_source_sync/remote_source_state"),
             sole_copy_conversation_count: summary
                 .pointer("/sole_copy_conversation_count")
                 .and_then(serde_json::Value::as_u64)
@@ -4361,14 +4356,6 @@ impl DoctorHudSummary {
         {
             return format!("mirror {}", Self::token(&self.source_mirror_state));
         }
-        if let Some(remote_state) = self.remote_source_state.as_deref()
-            && !matches!(
-                remote_state,
-                "ok" | "clean" | "none" | "not_configured" | "no_remote_sources"
-            )
-        {
-            return format!("source {}", Self::token(remote_state));
-        }
         if self.fallback_mode == "lexical" {
             return "lexical fallback".to_string();
         }
@@ -4394,12 +4381,6 @@ impl DoctorHudSummary {
             || self.fallback_mode == "lexical"
             || self.archive_coverage_state == "not_checked"
             || self.coverage_source_status == "not_checked"
-            || self.remote_source_state.as_deref().is_some_and(|state| {
-                !matches!(
-                    state,
-                    "ok" | "clean" | "none" | "not_configured" | "no_remote_sources"
-                )
-            })
         {
             1
         } else {
@@ -5286,15 +5267,6 @@ pub struct CassApp {
     pub show_palette_evidence: bool,
     /// Palette query latency instrumentation.
     pub palette_latency: PaletteLatencyStats,
-    /// Latest update check result (if any).
-    pub update_info: Option<UpdateInfo>,
-    /// Session-only dismissal toggle for update banner.
-    pub update_dismissed: bool,
-    /// Two-step guard: first upgrade request arms, second confirms.
-    pub update_upgrade_armed: bool,
-    /// One-shot update-check receiver started at app initialization.
-    pub update_check_rx: Option<std::sync::mpsc::Receiver<Option<UpdateInfo>>>,
-
     // -- Notifications ----------------------------------------------------
     /// Toast notification manager.
     pub toast_manager: ToastManager,
@@ -5577,19 +5549,6 @@ impl Default for CassApp {
             palette_match_mode: PaletteMatchMode::default(),
             show_palette_evidence: false,
             palette_latency: PaletteLatencyStats::default(),
-            update_info: None,
-            update_dismissed: false,
-            update_upgrade_armed: false,
-            update_check_rx: {
-                #[cfg(test)]
-                {
-                    None
-                }
-                #[cfg(not(test))]
-                {
-                    Some(spawn_update_check(env!("CARGO_PKG_VERSION").to_string()))
-                }
-            },
             toast_manager: ToastManager::default(),
             undo_history: UndoHistory::default(),
             terminal_focused: true,
@@ -5878,14 +5837,6 @@ impl CassApp {
         };
 
         let coverage_risk = crate::doctor_fast_coverage_risk_unchecked(db_exists);
-        let sources_path = crate::doctor_sources_config_path(&self.data_dir);
-        let remote_source_sync_report =
-            crate::collect_doctor_remote_source_sync_fast_report(&self.data_dir, &sources_path);
-        let remote_source_sync_summary = crate::doctor_remote_source_sync_runtime_summary(
-            &remote_source_sync_report,
-            "tui-cached-local-config",
-            false,
-        );
         let summary = crate::build_doctor_runtime_summary(crate::DoctorRuntimeSummaryInput {
             surface: "tui-footer-summary",
             state: &state,
@@ -5897,7 +5848,6 @@ impl CassApp {
             coverage_risk: &coverage_risk,
             coverage_source: "tui-cached-health-state",
             coverage_checked: false,
-            remote_source_sync_summary: Some(&remote_source_sync_summary),
             quarantine_summary: None,
             recommended_action: recommended_action.as_ref(),
             data_dir: &self.data_dir,
@@ -6430,25 +6380,6 @@ impl CassApp {
         MouseHitRegion::None
     }
 
-    fn update_banner_visible(&self) -> bool {
-        self.update_info
-            .as_ref()
-            .is_some_and(UpdateInfo::should_show)
-            && !self.update_dismissed
-    }
-
-    fn can_handle_update_shortcuts(&self) -> bool {
-        self.update_banner_visible()
-            && self.input_mode == InputMode::Query
-            && !self.show_help
-            && !self.show_detail_modal
-            && !self.show_bulk_modal
-            && !self.show_saved_views_modal
-            && !self.show_export_modal
-            && !self.source_filter_menu_open
-            && !self.command_palette.is_visible()
-    }
-
     fn footer_hint_context_key(&self) -> &'static str {
         if self.show_export_modal
             || self.show_bulk_modal
@@ -6491,35 +6422,12 @@ impl CassApp {
     /// Translate a [`PaletteResult`] into a concrete `Cmd<CassMsg>`.
     ///
     /// This is the app-side half of the palette adapter layer. Most results
-    /// map to a single `CassMsg`; `OpenUpdateBanner` requires `self` access.
+    /// map to a single `CassMsg`.
     fn palette_result_to_cmd(&mut self, result: PaletteResult) -> ftui::Cmd<CassMsg> {
         match result {
             PaletteResult::ToggleTheme => ftui::Cmd::msg(CassMsg::ThemeToggled),
             PaletteResult::CycleDensity => ftui::Cmd::msg(CassMsg::DensityModeCycled),
             PaletteResult::ToggleHelpStrip => ftui::Cmd::msg(CassMsg::HelpPinToggled),
-            PaletteResult::OpenUpdateBanner => {
-                if let Some(info) = &self.update_info {
-                    if info.should_show() {
-                        self.update_dismissed = false;
-                        self.update_upgrade_armed = false;
-                        self.status = format!(
-                            "Update available v{} -> v{} (Alt+U=upgrade, Alt+N=notes, Alt+I=ignore, Esc=dismiss)",
-                            info.current_version, info.latest_version
-                        );
-                    } else if info.is_skipped {
-                        self.status = format!(
-                            "v{} is currently skipped. Clear update_state.json to re-enable prompts.",
-                            info.latest_version
-                        );
-                    } else {
-                        self.status = "You're on the latest version.".to_string();
-                    }
-                } else {
-                    self.status =
-                        "No update information available yet. Check again shortly.".to_string();
-                }
-                ftui::Cmd::none()
-            }
             PaletteResult::EnterInputMode(target) => {
                 let mode = match target {
                     InputModeTarget::Agent => InputMode::Agent,
@@ -12604,19 +12512,6 @@ impl CassApp {
 
         add_section(
             &mut lines,
-            "Updates",
-            &[
-                "Checks GitHub releases hourly (offline-friendly, no auto-download)".into(),
-                "When available: banner shows at top with U/N/S/Esc options".into(),
-                "  U - Start upgrade flow (press U twice to confirm)".into(),
-                "  N - Open release notes in browser (Shift+N)".into(),
-                "  S - Skip this version permanently (Shift+S)".into(),
-                "  Esc - Dismiss banner for this session".into(),
-            ],
-        );
-
-        add_section(
-            &mut lines,
             "Search",
             &[
                 format!(
@@ -14272,18 +14167,6 @@ pub enum CassMsg {
     /// Select a source filter from the menu.
     SourceFilterSelected(SourceFilter),
 
-    // -- Update assistant -------------------------------------------------
-    /// Update check completed.
-    UpdateCheckCompleted(UpdateInfo),
-    /// User chose to upgrade.
-    UpdateUpgradeRequested,
-    /// User chose to skip this version.
-    UpdateSkipped,
-    /// User chose to view release notes.
-    UpdateReleaseNotesRequested,
-    /// User dismissed the update banner.
-    UpdateDismissed,
-
     // -- Did-you-mean suggestions -----------------------------------------
     /// Apply a did-you-mean suggestion by index (1, 2, or 3).
     SuggestionApplied(u8),
@@ -15782,15 +15665,6 @@ impl From<super::ftui_adapter::Event> for CassMsg {
                     KeyCode::Delete if ctrl && shift => CassMsg::StateResetRequested,
                     KeyCode::Delete if ctrl => CassMsg::FiltersClearAll,
 
-                    // -- Update banner --------------------------------------------
-                    KeyCode::Char('u') | KeyCode::Char('U') if alt => {
-                        CassMsg::UpdateUpgradeRequested
-                    }
-                    KeyCode::Char('n') | KeyCode::Char('N') if alt => {
-                        CassMsg::UpdateReleaseNotesRequested
-                    }
-                    KeyCode::Char('i') | KeyCode::Char('I') if alt => CassMsg::UpdateSkipped,
-
                     // -- Sources management -----------------------------------------
                     KeyCode::Char('s') if ctrl && shift => CassMsg::SourcesEntered,
                     KeyCode::Char('S') if ctrl && shift => CassMsg::SourcesEntered,
@@ -15984,15 +15858,6 @@ impl super::ftui_adapter::Model for CassApp {
             // Start polling the first-run index (2l1b0.56).
             cmds.push(Self::delayed_tick(FIRST_RUN_INDEX_POLL));
         }
-        // Deliver the background update check the moment it finishes. It was
-        // polled only on Tick, and an idle TUI never ticks, so the banner
-        // waited for the first keypress (2l1b0.56).
-        if let Some(rx) = self.update_check_rx.take() {
-            cmds.push(ftui::Cmd::task(move || match rx.recv() {
-                Ok(Some(info)) => CassMsg::UpdateCheckCompleted(info),
-                _ => CassMsg::Tick,
-            }));
-        }
         if cmds.len() == 1 {
             cmds.remove(0)
         } else {
@@ -16023,20 +15888,6 @@ impl super::ftui_adapter::Model for CassApp {
             && let Some(ref raw_event) = raw_event
         {
             recorder.record_event(raw_event.clone());
-        }
-
-        let raw_alt_update_shortcut = matches!(
-            &msg,
-            CassMsg::UpdateUpgradeRequested
-                | CassMsg::UpdateSkipped
-                | CassMsg::UpdateReleaseNotesRequested
-        ) && matches!(
-            raw_event.as_ref(),
-            Some(super::ftui_adapter::Event::Key(ke))
-                if ke.modifiers.contains(super::ftui_adapter::Modifiers::ALT)
-        );
-        if raw_alt_update_shortcut && !self.can_handle_update_shortcuts() {
-            return ftui::Cmd::none();
         }
 
         // Help overlay intercepts navigation keys for scrolling.
@@ -16157,17 +16008,6 @@ impl super::ftui_adapter::Model for CassApp {
                     // ExportModalOpened/Closed, etc.) fall through to normal handling.
                 }
             }
-        }
-
-        // Update banner shortcuts:
-        // - Alt+U: upgrade (two-step confirm)
-        // - Alt+N: open release notes
-        // - Alt+I: ignore/skip version
-        // - Esc: dismiss banner for this session
-        if self.can_handle_update_shortcuts()
-            && let CassMsg::QuitRequested = msg
-        {
-            return self.update(CassMsg::UpdateDismissed);
         }
 
         // ── Inspector overlay key intercept ─────────────────────────
@@ -19058,115 +18898,6 @@ impl super::ftui_adapter::Model for CassApp {
                 ftui::Cmd::msg(CassMsg::FilterSourceSet(filter))
             }
 
-            // -- Update assistant ---------------------------------------------
-            CassMsg::UpdateCheckCompleted(info) => {
-                let should_show = info.should_show();
-                let latest = info.latest_version.clone();
-                let current = info.current_version.clone();
-                let skipped = info.is_skipped;
-                self.update_info = Some(info);
-                self.update_upgrade_armed = false;
-                if should_show {
-                    self.update_dismissed = false;
-                    self.status = format!(
-                        "Update available v{} -> v{} (Alt+U=upgrade, Alt+N=notes, Alt+I=ignore, Esc=dismiss)",
-                        current, latest
-                    );
-                } else if skipped {
-                    self.status = format!(
-                        "Update v{} is skipped (open palette: Check updates for details).",
-                        latest
-                    );
-                }
-                ftui::Cmd::none()
-            }
-            CassMsg::UpdateUpgradeRequested => {
-                if let Some(info) = &self.update_info {
-                    if !info.should_show() {
-                        self.status = "You're on the latest version.".to_string();
-                        self.update_upgrade_armed = false;
-                        return ftui::Cmd::none();
-                    }
-                    if !self.update_upgrade_armed {
-                        self.update_upgrade_armed = true;
-                        self.status = format!(
-                            "Confirm upgrade to v{}: press Alt+U again. Esc cancels.",
-                            info.latest_version
-                        );
-                        return ftui::Cmd::none();
-                    }
-                    self.update_upgrade_armed = false;
-                    #[cfg(test)]
-                    {
-                        self.status = format!(
-                            "TEST mode: would launch self-update to v{}.",
-                            info.latest_version
-                        );
-                        ftui::Cmd::none()
-                    }
-                    #[cfg(not(test))]
-                    {
-                        self.status =
-                            format!("Launching installer for v{}...", info.latest_version);
-                        run_self_update(&info.tag_name);
-                    }
-                } else {
-                    self.status = "No update information available yet.".to_string();
-                    self.update_upgrade_armed = false;
-                    ftui::Cmd::none()
-                }
-            }
-            CassMsg::UpdateSkipped => {
-                self.update_upgrade_armed = false;
-                if let Some(info) = &self.update_info {
-                    if !info.should_show() {
-                        self.status = "Nothing to skip: no pending update.".to_string();
-                        return ftui::Cmd::none();
-                    }
-                    if cfg!(test) {
-                        self.update_dismissed = true;
-                        self.status = format!(
-                            "Skipped v{} (test mode, not persisted).",
-                            info.latest_version
-                        );
-                    } else if let Err(e) = skip_version(&info.latest_version) {
-                        self.status = format!("Failed to skip v{}: {e}", info.latest_version);
-                    } else {
-                        self.update_dismissed = true;
-                        self.status = format!("Skipped v{}.", info.latest_version);
-                    }
-                } else {
-                    self.status = "No update information available yet.".to_string();
-                }
-                ftui::Cmd::none()
-            }
-            CassMsg::UpdateReleaseNotesRequested => {
-                if let Some(info) = &self.update_info {
-                    if !info.should_show() {
-                        self.status = "You're on the latest version.".to_string();
-                        return ftui::Cmd::none();
-                    }
-                    match open_in_browser(&info.release_url) {
-                        Ok(()) => {
-                            self.status =
-                                format!("Opened release notes for v{}.", info.latest_version);
-                        }
-                        Err(e) => {
-                            self.status = format!("Failed to open release notes: {e}");
-                        }
-                    }
-                } else {
-                    self.status = "No update information available yet.".to_string();
-                }
-                ftui::Cmd::none()
-            }
-            CassMsg::UpdateDismissed => {
-                self.update_dismissed = true;
-                self.update_upgrade_armed = false;
-                self.status = "Update banner dismissed for this session.".to_string();
-                ftui::Cmd::none()
-            }
-
             // -- Did-you-mean suggestions -------------------------------------
             CassMsg::SuggestionApplied(idx) => {
                 let idx = idx.saturating_sub(1) as usize;
@@ -21131,16 +20862,6 @@ impl super::ftui_adapter::Model for CassApp {
         } else {
             plain
         };
-        let warning_style = if apply_style {
-            styles.style(style_system::STYLE_STATUS_WARNING)
-        } else {
-            plain
-        };
-        let danger_style = if apply_style {
-            styles.style(style_system::STYLE_STATUS_ERROR)
-        } else {
-            plain
-        };
         let pane_title_focused_style = if apply_style {
             styles.style(style_system::STYLE_PANE_TITLE_FOCUSED)
         } else {
@@ -21160,37 +20881,7 @@ impl super::ftui_adapter::Model for CassApp {
         // Paint root background across the entire terminal.
         Block::new().style(root_style).render(area, frame);
 
-        // Optional update banner shown as top strip.
         let mut layout_area = area;
-        if self.update_banner_visible()
-            && area.height >= 2
-            && let Some(info) = self.update_info.as_ref()
-        {
-            let banner_area = Rect::new(area.x, area.y, area.width, 1);
-            let mut banner_text = if self.update_upgrade_armed {
-                format!(
-                    "Update v{} -> v{} | Press Alt+U again to confirm upgrade | Alt+N notes | Alt+I ignore | Esc dismiss",
-                    info.current_version, info.latest_version
-                )
-            } else {
-                format!(
-                    "Update v{} -> v{} | Alt+U upgrade | Alt+N notes | Alt+I ignore | Esc dismiss",
-                    info.current_version, info.latest_version
-                )
-            };
-            if display_width(&banner_text) > banner_area.width as usize {
-                banner_text = elide_text(&banner_text, banner_area.width as usize);
-            }
-            Paragraph::new(banner_text)
-                .style(if self.update_upgrade_armed {
-                    danger_style
-                } else {
-                    warning_style
-                })
-                .render(banner_area, frame);
-            layout_area = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
-        }
-
         // Global shell strip: surface tabs + high-signal global shortcuts.
         // Only enabled when there's enough space to preserve tiny-terminal resilience.
         if layout_area.height >= 9 && layout_area.width >= 52 {
@@ -25265,17 +24956,6 @@ mod tests {
         }
     }
 
-    fn sample_update_info() -> UpdateInfo {
-        UpdateInfo {
-            latest_version: "9.9.9".to_string(),
-            tag_name: "v9.9.9".to_string(),
-            current_version: "1.0.0".to_string(),
-            release_url: "https://example.com/releases/v9.9.9".to_string(),
-            is_newer: true,
-            is_skipped: false,
-        }
-    }
-
     // ==================== Command palette tests ====================
 
     #[test]
@@ -25845,7 +25525,6 @@ mod tests {
             PaletteResult::ToggleTheme,
             PaletteResult::CycleDensity,
             PaletteResult::ToggleHelpStrip,
-            PaletteResult::OpenUpdateBanner,
             PaletteResult::EnterInputMode(InputModeTarget::Agent),
             PaletteResult::EnterInputMode(InputModeTarget::Workspace),
             PaletteResult::EnterInputMode(InputModeTarget::CreatedFrom),
@@ -27560,132 +27239,6 @@ mod tests {
         app.cursor_pos = 0;
         let _ = app.update(CassMsg::HistoryNavigated { forward: true });
         assert_eq!(app.cursor_pos, 15);
-    }
-
-    // ==================== Update assistant tests ====================
-
-    #[test]
-    fn update_check_completed_sets_banner_state() {
-        let mut app = CassApp::default();
-        assert!(!app.update_banner_visible());
-        let _ = app.update(CassMsg::UpdateCheckCompleted(sample_update_info()));
-        assert!(app.update_banner_visible());
-        assert!(!app.update_dismissed);
-        assert!(!app.update_upgrade_armed);
-        assert!(app.status.contains("Update available"));
-    }
-
-    #[test]
-    fn update_dismiss_hides_banner() {
-        let mut app = CassApp::default();
-        let _ = app.update(CassMsg::UpdateCheckCompleted(sample_update_info()));
-        assert!(app.update_banner_visible());
-        let _ = app.update(CassMsg::UpdateDismissed);
-        assert!(!app.update_banner_visible());
-        assert!(app.update_dismissed);
-        assert!(!app.update_upgrade_armed);
-    }
-
-    #[test]
-    fn update_upgrade_requires_double_confirm() {
-        let mut app = CassApp::default();
-        let _ = app.update(CassMsg::UpdateCheckCompleted(sample_update_info()));
-
-        let _ = app.update(CassMsg::UpdateUpgradeRequested);
-        assert!(app.update_upgrade_armed);
-        assert!(app.status.contains("Confirm upgrade"));
-
-        let _ = app.update(CassMsg::UpdateUpgradeRequested);
-        assert!(!app.update_upgrade_armed);
-        assert!(app.status.contains("TEST mode: would launch self-update"));
-    }
-
-    /// 2l1b0.56: the update check result reaches the TUI without any input.
-    /// Negative control: it used to be polled only on Tick, and an idle TUI
-    /// never ticks, so init returned no command that could deliver it.
-    #[test]
-    fn init_delivers_the_update_check_without_waiting_for_input() {
-        let mut app = CassApp::default();
-        let (tx, rx) = std::sync::mpsc::channel();
-        tx.send(Some(sample_update_info()))
-            .expect("send update info to test channel");
-        app.update_check_rx = Some(rx);
-
-        let cmds = match app.init() {
-            ftui::Cmd::Batch(cmds) => cmds,
-            other => vec![other],
-        };
-        assert!(app.update_check_rx.is_none(), "init takes the receiver");
-        let delivered = cmds
-            .into_iter()
-            .filter_map(|cmd| match cmd {
-                ftui::Cmd::Task(_, task) => Some(task()),
-                _ => None,
-            })
-            .find_map(|msg| match msg {
-                CassMsg::UpdateCheckCompleted(info) => Some(info),
-                _ => None,
-            })
-            .expect("init schedules a task that delivers the update check");
-
-        let _ = app.update(CassMsg::UpdateCheckCompleted(delivered));
-        assert!(app.update_banner_visible());
-    }
-
-    #[test]
-    fn update_shortcuts_use_alt_modifiers() {
-        use crate::ui::ftui_adapter::{Event, KeyCode, KeyEvent, Modifiers};
-
-        let event = Event::Key(KeyEvent::new(KeyCode::Char('u')).with_modifiers(Modifiers::ALT));
-        assert!(matches!(
-            CassMsg::from(event),
-            CassMsg::UpdateUpgradeRequested
-        ));
-
-        let event = Event::Key(KeyEvent::new(KeyCode::Char('n')).with_modifiers(Modifiers::ALT));
-        assert!(matches!(
-            CassMsg::from(event),
-            CassMsg::UpdateReleaseNotesRequested
-        ));
-
-        let event = Event::Key(KeyEvent::new(KeyCode::Char('i')).with_modifiers(Modifiers::ALT));
-        assert!(matches!(CassMsg::from(event), CassMsg::UpdateSkipped));
-    }
-
-    #[test]
-    fn update_shortcuts_ignore_raw_alt_keys_when_banner_cannot_handle_them() {
-        use crate::ui::ftui_adapter::{Event, KeyCode, KeyEvent, Modifiers};
-
-        let mut app = CassApp::default();
-        let _ = app.update(CassMsg::UpdateCheckCompleted(sample_update_info()));
-        app.show_export_modal = true;
-
-        stash_raw_event(&Event::Key(
-            KeyEvent::new(KeyCode::Char('u')).with_modifiers(Modifiers::ALT),
-        ));
-        let _ = app.update(CassMsg::UpdateUpgradeRequested);
-
-        assert!(
-            !app.update_upgrade_armed,
-            "raw Alt+U should be ignored while a modal blocks update shortcuts"
-        );
-        assert!(
-            !app.status.contains("Confirm upgrade"),
-            "blocked raw shortcut should not mutate update status"
-        );
-    }
-
-    #[test]
-    fn update_banner_does_not_hijack_query_input() {
-        let mut app = CassApp::default();
-        let _ = app.update(CassMsg::UpdateCheckCompleted(sample_update_info()));
-
-        let _ = app.update(CassMsg::QueryChanged("U".to_string()));
-        assert_eq!(app.query, "U");
-        assert!(
-            !app.update_upgrade_armed,
-            "query text should not trigger update action"
-        );
     }
 
     // ==================== Wildcard fallback toggle tests ====================
@@ -46899,7 +46452,6 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
             active_repair: false,
             active_index_maintenance: false,
             repair_previously_failed: false,
-            remote_source_state: Some("ok".to_string()),
             sole_copy_conversation_count: 0,
         }
     }

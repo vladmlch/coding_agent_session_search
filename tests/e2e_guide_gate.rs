@@ -190,9 +190,15 @@ fn guide_catalog_lists_intents_and_is_readonly() -> TestResult {
         payload
             .get("known_intents")
             .and_then(Value::as_array)
-            .is_some_and(|a| a.len() >= 7),
-        || "catalog must list >= 7 known intents".to_string(),
+            .is_some_and(|a| a.len() >= 5),
+        || "catalog must list >= 5 known intents".to_string(),
     )?;
+    for removed in ["fix-ci", "prepare-release"] {
+        ensure(
+            !payload.to_string().contains(&format!("\"{removed}\"")),
+            || format!("catalog must not list removed intent {removed}"),
+        )?;
+    }
     ensure(
         payload
             .pointer("/mutation_contract/read_only")
@@ -209,7 +215,7 @@ fn guide_catalog_lists_intents_and_is_readonly() -> TestResult {
 }
 
 #[test]
-fn guide_fix_ci_live_is_readonly_and_well_formed() -> TestResult {
+fn guide_fix_ci_is_unrecognized_after_ci_workflow_removal() -> TestResult {
     let (_tmp, home, data_dir) = isolated_home()?;
     let args = guide_argv(&["fix-ci"], &[], &data_dir);
     let (payload, argv) = run_guide(&home, &args)?;
@@ -218,32 +224,17 @@ fn guide_fix_ci_live_is_readonly_and_well_formed() -> TestResult {
         payload
             .pointer("/intent/recognized")
             .and_then(Value::as_bool)
-            == Some(true),
-        || "fix-ci must be recognized".to_string(),
+            == Some(false),
+        || "fix-ci must no longer be a recognized intent".to_string(),
     )?;
     ensure(
-        payload.pointer("/plan/macro_id").and_then(Value::as_str) == Some("fix-ci-regression"),
-        || "fix-ci must resolve to fix-ci-regression".to_string(),
+        payload.pointer("/plan/macro_id").and_then(Value::as_str) != Some("fix-ci-regression"),
+        || "fix-ci must not resolve to the removed fix-ci-regression macro".to_string(),
     )?;
-    ensure(
-        payload
-            .pointer("/plan/steps")
-            .and_then(Value::as_array)
-            .is_some_and(|s| !s.is_empty()),
-        || "plan must have steps".to_string(),
-    )?;
-    ensure(
-        payload
-            .pointer("/plan/forbidden_shortcuts")
-            .and_then(Value::as_array)
-            .is_some_and(|f| !f.is_empty()),
-        || "plan must enumerate forbidden shortcuts".to_string(),
-    )?;
-    check_read_only_contract(&payload)?;
     ensure(!data_dir.join("agent_search.db").exists(), || {
         "guide must not create an archive DB".to_string()
     })?;
-    log_scenario(&argv, &payload, "fix-ci well-formed + read-only");
+    log_scenario(&argv, &payload, "fix-ci unrecognized after removal");
     Ok(())
 }
 
@@ -386,20 +377,16 @@ fn guide_export_session_is_sensitive_high_risk() -> TestResult {
 }
 
 #[test]
-fn guide_release_and_onboard_intents_resolve() -> TestResult {
+fn guide_onboard_intent_resolves() -> TestResult {
     let (_tmp, home, data_dir) = isolated_home()?;
-    for (intent, macro_id) in [
-        ("prepare-release", "prepare-release"),
-        ("onboard-source", "onboard-source"),
-    ] {
-        let args = guide_argv(&[intent], &[], &data_dir);
-        let (payload, argv) = run_guide(&home, &args)?;
-        ensure(
-            payload.pointer("/plan/macro_id").and_then(Value::as_str) == Some(macro_id),
-            || format!("{intent} must resolve to {macro_id}"),
-        )?;
-        check_read_only_contract(&payload)?;
-        log_scenario(&argv, &payload, "intent resolves");
-    }
+    let (intent, macro_id) = ("onboard-source", "onboard-source");
+    let args = guide_argv(&[intent], &[], &data_dir);
+    let (payload, argv) = run_guide(&home, &args)?;
+    ensure(
+        payload.pointer("/plan/macro_id").and_then(Value::as_str) == Some(macro_id),
+        || format!("{intent} must resolve to {macro_id}"),
+    )?;
+    check_read_only_contract(&payload)?;
+    log_scenario(&argv, &payload, "intent resolves");
     Ok(())
 }

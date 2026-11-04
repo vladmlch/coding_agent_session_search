@@ -1932,7 +1932,7 @@
     },
     {
       "name": "guide",
-      "description": "Intent-to-command planner and gated runner for guided safe workflows. Dry-run is the default. `--apply` automatically evaluates only closed, read-only proof adapters and requires an explicit confirmation for each mutating step; macro strings are never evaluated by a shell. Maps an operator intent (fix-ci, investigate-search-miss, prepare-release, repair-assets, export-session, onboard-source, support-capsule) to an exact safe command plan — steps, prerequisites, proof gates, forbidden shortcuts, rch target-dir hints, cost/risk, privacy notes, and stop conditions. Never launches a bare TUI. Omit the intent to list the known intents",
+      "description": "Intent-to-command planner and gated runner for guided safe workflows. Dry-run is the default. `--apply` automatically evaluates only closed, read-only proof adapters and requires an explicit confirmation for each mutating step; macro strings are never evaluated by a shell. Maps an operator intent (investigate-search-miss, repair-assets, export-session, onboard-source, support-capsule) to an exact safe command plan — steps, prerequisites, proof gates, forbidden shortcuts, cost/risk, privacy notes, and stop conditions. Never launches a bare TUI. Omit the intent to list the known intents",
       "arguments": [
         {
           "name": "intent",
@@ -1996,17 +1996,6 @@
           "arg_type": "option",
           "value_type": "string",
           "required": false
-        },
-        {
-          "name": "allow-rch",
-          "description": "Permit steps whose macro policy requires rch offload. This does not permit a shell or an unallowlisted executable",
-          "arg_type": "flag",
-          "required": false,
-          "default": "false",
-          "enum_values": [
-            "true",
-            "false"
-          ]
         },
         {
           "name": "confirm-stop-conditions-clear",
@@ -2378,71 +2367,6 @@
         {
           "name": "json",
           "description": "Output as JSON (for automation)",
-          "arg_type": "flag",
-          "required": false,
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "robot-format",
-          "description": "Output format for robot mode (overrides --json when specified)",
-          "arg_type": "option",
-          "value_type": "enum",
-          "required": false,
-          "enum_values": [
-            "json",
-            "jsonl",
-            "compact",
-            "sessions",
-            "toon"
-          ]
-        }
-      ],
-      "has_json_output": true
-    },
-    {
-      "name": "upgrade",
-      "description": "Check for a newer cass release and (optionally) install it",
-      "arguments": [
-        {
-          "name": "check",
-          "description": "Print current vs latest version and exit. No install. Exits 0 when up to date, 1 when an update is available",
-          "arg_type": "flag",
-          "required": false,
-          "default": "false",
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "force",
-          "description": "Bypass the 1-hour update-check cadence and re-fetch the GitHub release API immediately. Combine with `--check` to refresh status without installing",
-          "arg_type": "flag",
-          "required": false,
-          "default": "false",
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "yes",
-          "short": "y",
-          "description": "Skip the interactive prompt and run the installer immediately. Suitable for scripts; mutually exclusive with `--check`",
-          "arg_type": "flag",
-          "required": false,
-          "default": "false",
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "json",
-          "description": "Output as JSON (for automation). Combines naturally with `--check`; ignored when an install actually runs because the installer execs over the current process",
           "arg_type": "flag",
           "required": false,
           "enum_values": [
@@ -3380,27 +3304,6 @@
       "has_json_output": true
     },
     {
-      "name": "fleet",
-      "description": "Fleet-safe upgrade rehearsal and bounded post-upgrade verification",
-      "arguments": [
-        {
-          "name": "robot-format",
-          "description": "Output format for robot mode (overrides --json when specified)",
-          "arg_type": "option",
-          "value_type": "enum",
-          "required": false,
-          "enum_values": [
-            "json",
-            "jsonl",
-            "compact",
-            "sessions",
-            "toon"
-          ]
-        }
-      ],
-      "has_json_output": true
-    },
-    {
       "name": "import",
       "description": "Import data from external sources",
       "arguments": [
@@ -3425,89 +3328,6 @@
       "name": "analytics",
       "description": "Token usage, tool, and model analytics",
       "arguments": [
-        {
-          "name": "robot-format",
-          "description": "Output format for robot mode (overrides --json when specified)",
-          "arg_type": "option",
-          "value_type": "enum",
-          "required": false,
-          "enum_values": [
-            "json",
-            "jsonl",
-            "compact",
-            "sessions",
-            "toon"
-          ]
-        }
-      ],
-      "has_json_output": true
-    },
-    {
-      "name": "release-verify",
-      "description": "Verify release distribution channels (GitHub, Homebrew, Scoop, crates.io, installer)",
-      "arguments": [
-        {
-          "name": "from",
-          "description": "Read a ReleaseVerifyRequest JSON from a file (or `-` for stdin) and evaluate it offline. Mutually exclusive with --live",
-          "arg_type": "option",
-          "value_type": "path",
-          "required": false
-        },
-        {
-          "name": "live",
-          "description": "Gather live per-channel observations over the network (explicit opt-in)",
-          "arg_type": "flag",
-          "required": false,
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "expected-version",
-          "description": "Expected release version under test (required for --live)",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false
-        },
-        {
-          "name": "repo",
-          "description": "GitHub owner/repo for the release channel (defaults to the cass repo)",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false
-        },
-        {
-          "name": "crate-name",
-          "description": "crates.io crate name (defaults to the cass crate)",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false
-        },
-        {
-          "name": "homebrew-formula-url",
-          "description": "Raw URL of the Homebrew formula file (enables the homebrew channel)",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false
-        },
-        {
-          "name": "scoop-manifest-url",
-          "description": "Raw URL of the Scoop manifest JSON (enables the scoop channel)",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false
-        },
-        {
-          "name": "json",
-          "description": "Output as JSON (`--robot` also works). Default for this command",
-          "arg_type": "flag",
-          "required": false,
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
         {
           "name": "robot-format",
           "description": "Output format for robot mode (overrides --json when specified)",
@@ -4098,11 +3918,6 @@
   ],
   "env_vars": [
     {
-      "name": "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT",
-      "default": "0",
-      "description": "Set to 1 to skip update prompts in automation."
-    },
-    {
       "name": "TUI_HEADLESS",
       "default": "0",
       "description": "Set to 1 for headless test runs and prompt-free TUI behavior."
@@ -4173,16 +3988,6 @@
       "name": "CASS_PACK_BUDGET_MS",
       "default": "10000",
       "description": "Fallback structured pack execution budget in milliseconds when --timeout, CASS_SEARCH_TIMEOUT_MS, and [search].timeout_ms do not supply a positive effective timeout."
-    },
-    {
-      "name": "CASS_FLEET_PER_HOST_BUDGET_MS",
-      "default": "8000",
-      "description": "Maximum read-only probe budget per host, in milliseconds, for sources doctor and fleet upgrade rehearsal."
-    },
-    {
-      "name": "CASS_FLEET_BUDGET_MS",
-      "default": "60000",
-      "description": "Overall read-only probe budget, in milliseconds, for sources doctor and fleet upgrade rehearsal."
     },
     {
       "name": "TOON_DEFAULT_FORMAT",

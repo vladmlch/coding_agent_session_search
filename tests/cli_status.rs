@@ -736,7 +736,7 @@ fn status_and_health_json_escalate_recent_ingest_quarantine_bursts() {
 }
 
 #[test]
-fn status_and_health_json_surface_remote_source_sync_summary_without_live_probe() {
+fn status_and_health_json_omit_remote_source_sync_after_local_only() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let data_dir = test_home.path().join("cass-data");
     fs::create_dir_all(&data_dir).expect("create data dir");
@@ -763,36 +763,15 @@ fn status_and_health_json_surface_remote_source_sync_summary_without_live_probe(
 
     let status_payload: serde_json::Value =
         serde_json::from_slice(&status_out.stdout).expect("status JSON");
-    let status_remote = &status_payload["remote_source_sync"];
-    assert_eq!(status_remote["checked"].as_bool(), Some(true));
-    assert_eq!(status_remote["archive_checked"].as_bool(), Some(false));
-    assert_eq!(
-        status_remote["live_remote_probe_attempted"].as_bool(),
-        Some(false)
+    assert!(
+        status_payload.get("remote_source_sync").is_none(),
+        "status must not emit the removed remote_source_sync report: {status_payload}"
     );
-    assert_eq!(
-        status_remote["remote_source_state"].as_str(),
-        Some("local_mirror_gap")
-    );
-    assert_eq!(
-        status_remote["sync_staleness"].as_str(),
-        Some("never_synced")
-    );
-    assert_eq!(
-        status_remote["local_mirror_state"].as_str(),
-        Some("missing")
-    );
-    assert_eq!(
-        status_remote["configured_remote_source_count"].as_u64(),
-        Some(1)
-    );
-    assert_eq!(
-        status_remote["recommended_action"].as_str(),
-        Some("cass sources sync --all --json")
-    );
-    assert_eq!(
-        status_payload["doctor_summary"]["remote_source_sync"]["remote_source_state"].as_str(),
-        Some("local_mirror_gap")
+    assert!(
+        status_payload["doctor_summary"]
+            .get("remote_source_sync")
+            .is_none(),
+        "status doctor_summary must not embed remote_source_sync: {status_payload}"
     );
 
     let health_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
@@ -810,21 +789,15 @@ fn status_and_health_json_surface_remote_source_sync_summary_without_live_probe(
         .expect("run cass health --json");
     let health_payload: serde_json::Value =
         serde_json::from_slice(&health_out.stdout).expect("health JSON");
-    assert_eq!(
-        health_payload["remote_source_sync"]["remote_source_state"].as_str(),
-        Some("local_mirror_gap")
+    assert!(
+        health_payload.get("remote_source_sync").is_none(),
+        "health must not emit the removed remote_source_sync report: {health_payload}"
     );
-    assert_eq!(
-        health_payload["remote_source_sync"]["source"].as_str(),
-        Some("health-fast-local-config")
-    );
-    assert_eq!(
-        health_payload["remote_source_sync"]["live_remote_probe_attempted"].as_bool(),
-        Some(false)
-    );
-    assert_eq!(
-        health_payload["doctor_summary"]["remote_source_sync"]["recommended_action"].as_str(),
-        Some("cass sources sync --all --json")
+    assert!(
+        health_payload["doctor_summary"]
+            .get("remote_source_sync")
+            .is_none(),
+        "health doctor_summary must not embed remote_source_sync: {health_payload}"
     );
 }
 

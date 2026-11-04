@@ -23,11 +23,8 @@ tests/doctor_fixtures/
 ├── fm-tui-state-json-corrupt/
 │   ├── corrupt.rs
 │   └── expected_after_fix.txt
-├── fm-cli_robot-schema-version-missing/
-│   └── README.md                               (regression spec; no on-disk fixture needed)
-└── fm-update_check-clock-rollback/
-    ├── corrupt.rs
-    └── expected_after_fix.txt
+└── fm-cli_robot-schema-version-missing/
+    └── README.md                               (regression spec; no on-disk fixture needed)
 ```
 
 ## Round-trip contract

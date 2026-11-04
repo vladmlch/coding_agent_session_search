@@ -1068,65 +1068,6 @@
         "source_mirror_state": {
           "type": "string"
         },
-        "remote_source_sync": {
-          "type": "object",
-          "properties": {
-            "schema_version": {
-              "type": "integer"
-            },
-            "status": {
-              "type": "string"
-            },
-            "source": {
-              "type": "string"
-            },
-            "checked": {
-              "type": "boolean"
-            },
-            "archive_checked": {
-              "type": "boolean"
-            },
-            "live_remote_probe_attempted": {
-              "type": "boolean"
-            },
-            "remote_source_state": {
-              "type": "string"
-            },
-            "sync_staleness": {
-              "type": "string"
-            },
-            "local_mirror_state": {
-              "type": "string"
-            },
-            "configured_remote_source_count": {
-              "type": "integer"
-            },
-            "archive_remote_conversation_count": {
-              "type": "null"
-            },
-            "sync_gap_count": {
-              "type": "integer"
-            },
-            "highest_gap_severity": {
-              "type": "string"
-            },
-            "recommended_action": {
-              "type": "string"
-            },
-            "recommended_sync_commands": {
-              "type": "array",
-              "items": {
-                "type": "unknown"
-              }
-            },
-            "notes": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            }
-          }
-        },
         "sole_copy_conversation_count": {
           "type": "integer"
         },
@@ -1269,65 +1210,6 @@
         },
         "db_exists": {
           "type": "boolean"
-        }
-      }
-    },
-    "remote_source_sync": {
-      "type": "object",
-      "properties": {
-        "schema_version": {
-          "type": "integer"
-        },
-        "status": {
-          "type": "string"
-        },
-        "source": {
-          "type": "string"
-        },
-        "checked": {
-          "type": "boolean"
-        },
-        "archive_checked": {
-          "type": "boolean"
-        },
-        "live_remote_probe_attempted": {
-          "type": "boolean"
-        },
-        "remote_source_state": {
-          "type": "string"
-        },
-        "sync_staleness": {
-          "type": "string"
-        },
-        "local_mirror_state": {
-          "type": "string"
-        },
-        "configured_remote_source_count": {
-          "type": "integer"
-        },
-        "archive_remote_conversation_count": {
-          "type": "null"
-        },
-        "sync_gap_count": {
-          "type": "integer"
-        },
-        "highest_gap_severity": {
-          "type": "string"
-        },
-        "recommended_action": {
-          "type": "string"
-        },
-        "recommended_sync_commands": {
-          "type": "array",
-          "items": {
-            "type": "unknown"
-          }
-        },
-        "notes": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
         }
       }
     },

@@ -3,7 +3,7 @@
 //!
 //! These scenarios use fixtures intentionally: fixture apply is permanently
 //! non-mutating, which makes the complete gate/transcript contract repeatable
-//! while still proving that readiness, privacy, cost, rch, stop conditions,
+//! while still proving that readiness, privacy, cost, stop conditions,
 //! and exact per-step confirmation are enforced before a mutation adapter can
 //! run. Closed-allowlist and shell-metacharacter rejection are unit-tested in
 //! `guide_runner` because the workflow registry itself cannot inject commands.
@@ -357,48 +357,6 @@ fn observed_stop_condition_cannot_be_overridden() -> TestResult {
 }
 
 #[test]
-fn offloaded_mutation_requires_rch_and_exact_cost_acceptance() -> TestResult {
-    let (_home_guard, home, data_dir) = isolated_home()?;
-    let mut context =
-        healthy_context(json!({"git_clean_or_known": true, "ci_logs_available": true}));
-    let context_map = context
-        .as_object_mut()
-        .ok_or("healthy context must be an object")?;
-    context_map.insert(
-        "proof_results".to_string(),
-        json!({"first-failure-found": true, "repro-confirmed": true}),
-    );
-    let (_fixture_guard, fixture) = fixture_file(&context)?;
-    let payload = run(
-        &home,
-        &data_dir,
-        &fixture,
-        &[
-            "fix-ci",
-            "--apply",
-            "--confirm-step",
-            "3",
-            "--accept-cost-risk",
-            "low",
-            "--confirm-stop-conditions-clear",
-        ],
-    )?;
-    ensure(
-        gate_result(&payload, "rch") == Some("needs-confirmation"),
-        || "offloaded mutation must require --allow-rch".to_string(),
-    )?;
-    ensure(
-        gate_result(&payload, "cost-risk") == Some("needs-confirmation"),
-        || "wrong cost-risk acceptance must not pass".to_string(),
-    )?;
-    ensure(
-        mutation_step(&payload).and_then(|step| step.get("result")) == Some(&json!("blocked")),
-        || "rch/cost gates must prevent mutation".to_string(),
-    )?;
-    Ok(())
-}
-
-#[test]
 fn local_lexical_repair_requires_exact_cost_acceptance_without_build_offload() -> TestResult {
     let (_home_guard, home, data_dir) = isolated_home()?;
     let mut context = healthy_context(json!({"db_present": true, "disk_headroom_ok": true}));
@@ -418,9 +376,6 @@ fn local_lexical_repair_requires_exact_cost_acceptance_without_build_offload() -
             "--confirm-stop-conditions-clear",
         ],
     )?;
-    ensure(gate_result(&payload, "rch") == Some("passed"), || {
-        "local archive repair must not require compiler offload".to_string()
-    })?;
     ensure(
         gate_result(&payload, "cost-risk") == Some("needs-confirmation"),
         || "wrong cost-risk acceptance must not authorize archive repair".to_string(),
@@ -436,7 +391,7 @@ fn local_lexical_repair_requires_exact_cost_acceptance_without_build_offload() -
 fn confirmed_onboarding_fixture_cannot_run_the_live_index_adapter() -> TestResult {
     let (_home_guard, home, data_dir) = isolated_home()?;
     let mut context = healthy_context(json!({"sources_config_writable": true}));
-    context["proof_results"] = json!({"exposure-reviewed": true, "dry-sync-ok": true});
+    context["proof_results"] = json!({"exposure-reviewed": true});
     let (_fixture_guard, fixture) = fixture_file(&context)?;
     let planned = run(&home, &data_dir, &fixture, &["onboard-source"])?;
     let privacy = planned
@@ -455,7 +410,7 @@ fn confirmed_onboarding_fixture_cannot_run_the_live_index_adapter() -> TestResul
             "onboard-source",
             "--apply",
             "--confirm-step",
-            "3",
+            "2",
             "--accept-privacy-tier",
             privacy,
             "--accept-cost-risk",
@@ -463,9 +418,6 @@ fn confirmed_onboarding_fixture_cannot_run_the_live_index_adapter() -> TestResul
             "--confirm-stop-conditions-clear",
         ],
     )?;
-    ensure(gate_result(&payload, "rch") == Some("passed"), || {
-        "installed local index adapter must not require compiler offload".into()
-    })?;
     ensure(
         mutation_step(&payload).and_then(|step| step.get("result"))
             == Some(&json!("fixture-protected")),

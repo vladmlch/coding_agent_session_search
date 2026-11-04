@@ -6,7 +6,7 @@
 //! Bead `9.1` defines the attribution *contract* ([`RootCauseAttribution`],
 //! [`RootCauseFamily`], [`EvidenceRef`], [`AttributionConfidence`]). This module
 //! is the pure **classifier** that fills it: it maps a read-only
-//! [`ProjectionSignals`] snapshot (the structured facts status/doctor/fleet and
+//! [`ProjectionSignals`] snapshot (the structured facts status/doctor and
 //! incident mining already observe) to the single most likely family, with a
 //! confidence that reflects how dominant and unambiguous the evidence is, the
 //! supporting [`EvidenceRef`]s, and the cheap next probe.
@@ -47,14 +47,6 @@ pub struct ProjectionSignals {
     /// Work stalled with no underlying I/O progress, or cancellation failed.
     pub runtime_task_stall: bool,
 
-    // --- remote transport / auth ---
-    /// Remote authentication failed (publickey/permission denied).
-    pub transport_auth_failure: bool,
-    /// Remote ssh/transport non-zero exit, when known.
-    pub transport_ssh_exit_code: Option<i32>,
-    /// Remote connect timed out.
-    pub transport_connect_timeout: bool,
-
     // --- semantic assets ---
     /// Semantic mode was requested/enabled but its assets are missing/partial
     /// (disabled-by-config is NOT a fault).
@@ -76,7 +68,7 @@ pub struct ProjectionSignals {
     pub host_load_ratio: Option<f64>,
 
     // --- old binary / contract skew ---
-    /// The running binary's contract/api version is behind on-disk/fleet need.
+    /// The running binary's contract/api version is behind on-disk need.
     pub binary_behind_contract: bool,
 }
 
@@ -150,33 +142,6 @@ fn collect_hits(s: &ProjectionSignals) -> Vec<FamilyHit> {
             evidence: vec![EvidenceRef::new("asupersync.task_stall_ms", "status")],
             direct: false,
         });
-    }
-
-    // remote transport / auth.
-    {
-        let mut ev = Vec::new();
-        let mut direct = false;
-        if s.transport_auth_failure {
-            ev.push(EvidenceRef::new("transport.auth_failure", "sources"));
-            direct = true;
-        }
-        if let Some(code) = s.transport_ssh_exit_code {
-            ev.push(
-                EvidenceRef::new("transport.ssh_exit_code", "sources")
-                    .with_detail(code.to_string()),
-            );
-        }
-        if s.transport_connect_timeout {
-            ev.push(EvidenceRef::new("transport.connect_timeout_ms", "sources"));
-        }
-        if !ev.is_empty() {
-            hits.push(FamilyHit {
-                family: RootCauseFamily::RemoteTransportAuth,
-                score: if direct { 2 } else { 1 },
-                evidence: ev,
-                direct,
-            });
-        }
     }
 
     // semantic assets — requested-but-missing only.
@@ -375,23 +340,6 @@ mod tests {
         assert_eq!(a.locus, FaultLocus::Cass);
         assert_ne!(a.family, RootCauseFamily::HostDiskPressure);
         assert_ne!(a.family, RootCauseFamily::HostOomLoad);
-    }
-
-    #[test]
-    fn auth_failure_attributes_remote_transport() {
-        let s = ProjectionSignals {
-            transport_auth_failure: true,
-            transport_ssh_exit_code: Some(255),
-            ..Default::default()
-        };
-        let a = project_root_cause(&s);
-        assert_eq!(a.family, RootCauseFamily::RemoteTransportAuth);
-        assert_eq!(a.confidence, AttributionConfidence::Confirmed);
-        assert!(
-            a.evidence_refs
-                .iter()
-                .any(|e| e.kind == "transport.auth_failure")
-        );
     }
 
     #[test]

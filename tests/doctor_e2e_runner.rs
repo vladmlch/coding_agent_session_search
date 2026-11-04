@@ -3246,8 +3246,6 @@ fn doctor_e2e_runner_records_multi_file_source_artifacts() {
         ["source-mirror", "multi-file"],
     )
     .require_json_pointer("/source_inventory")
-    .require_json_pointer("/remote_source_sync")
-    .require_json_pointer("/remote_source_sync/sync_gaps")
     .require_json_pointer("/source_inventory/provider_counts/codex")
     .require_json_pointer("/source_inventory/provider_counts/cline")
     .require_json_pointer("/operation_outcome/kind")
@@ -3305,182 +3303,9 @@ fn doctor_e2e_runner_records_multi_file_source_artifacts() {
         &std::fs::read(result.artifact_dir.join("parsed-json/doctor-json.json")).unwrap(),
     )
     .expect("doctor json artifact");
-    assert_eq!(
-        payload["remote_source_sync"]["live_remote_probe_attempted"].as_bool(),
-        Some(false),
-        "remote source diagnosis must stay local/read-only"
-    );
-    assert_eq!(
-        payload["remote_source_sync"]["configured_remote_source_count"].as_u64(),
-        Some(4),
-        "fixture should include archived remotes plus one configured-but-unsynced remote"
-    );
-    assert_eq!(
-        payload["remote_source_sync"]["archive_remote_conversation_count"].as_u64(),
-        Some(2),
-        "fixture should count archived remote conversations from the source ledger"
-    );
-    assert_eq!(
-        payload["remote_source_sync"]["remote_source_state"].as_str(),
-        Some("local_mirror_gap"),
-        "configured-but-unsynced remotes should be visible as local mirror gaps"
-    );
-    assert_eq!(
-        payload["remote_source_sync"]["sync_staleness"].as_str(),
-        Some("failed"),
-        "failed remote source syncs should be branchable in robot JSON"
-    );
-    assert_eq!(
-        payload["remote_source_sync"]["local_mirror_state"].as_str(),
-        Some("missing"),
-        "the stale-server fixture should keep missing mirror state explicit"
-    );
-    let sync_gaps = payload["remote_source_sync"]["sync_gaps"]
-        .as_array()
-        .expect("remote sync gaps");
-    for expected_gap in [
-        ("sync_partial_failure", "work-laptop"),
-        ("remote_copy_ahead_verified", "work-laptop"),
-        ("remote_source_pruned", "retired-laptop"),
-        ("local_archive_ahead_of_remote", "retired-laptop"),
-        ("remote_source_unavailable", "offline-server"),
-        ("sync_status_missing", "stale-server"),
-        ("local_mirror_missing", "stale-server"),
-    ] {
-        assert!(
-            sync_gaps.iter().any(|gap| {
-                gap["gap_kind"].as_str() == Some(expected_gap.0)
-                    && gap["source_id"].as_str() == Some(expected_gap.1)
-            }),
-            "remote source sync gap {expected_gap:?} should be present: {sync_gaps:#?}"
-        );
-    }
     assert!(
-        payload["remote_source_sync"]["sources"]
-            .as_array()
-            .expect("remote source entries")
-            .iter()
-            .any(|source| {
-                source["source_id"].as_str() == Some("retired-laptop")
-                    && source["archived_conversation_count"].as_u64() == Some(1)
-                    && source["local_mirror_exists"].as_bool() == Some(true)
-                    && source["gaps"].as_array().is_some_and(|gaps| {
-                        gaps.iter()
-                            .any(|gap| gap.as_str() == Some("remote_source_pruned"))
-                    })
-            }),
-        "remote-pruned source should retain its local mirror and archive evidence: {:#}",
-        payload["remote_source_sync"]
-    );
-    assert!(
-        payload["remote_source_sync"]["sources"]
-            .as_array()
-            .expect("remote source entries")
-            .iter()
-            .any(|source| {
-                source["source_id"].as_str() == Some("work-laptop")
-                    && source["archived_conversation_count"].as_u64() == Some(1)
-                    && source["gaps"].as_array().is_some_and(|gaps| {
-                        gaps.iter()
-                            .any(|gap| gap.as_str() == Some("remote_copy_ahead_verified"))
-                    })
-            }),
-        "remote-copy-ahead source should be visible as checksum-fingerprinted local mirror evidence: {:#}",
-        payload["remote_source_sync"]
-    );
-    assert!(
-        sync_gaps.iter().any(|gap| {
-            gap["gap_kind"].as_str() == Some("remote_copy_ahead_verified")
-                && gap["source_id"].as_str() == Some("work-laptop")
-                && gap["evidence"].as_array().is_some_and(|evidence| {
-                    evidence.iter().any(|entry| {
-                        entry.as_str().is_some_and(|entry| {
-                            entry.starts_with("local-mirror-fingerprint-blake3=")
-                        })
-                    })
-                })
-        }),
-        "remote-copy-ahead evidence should include a local mirror BLAKE3 fingerprint: {sync_gaps:#?}"
-    );
-    assert!(
-        payload["remote_source_sync"]["recommended_sync_commands"]
-            .as_array()
-            .is_some_and(|commands| commands
-                .iter()
-                .any(|command| command.as_str() == Some("cass sources sync --all --json"))),
-        "remote source report should include a directly runnable sync command"
-    );
-    // Additive/preservation contract on the robot surface: no recommended command,
-    // gap advice, or evidence string may instruct a destructive transfer or
-    // source-log mutation. rsync stays additive (no --delete); provider logs are
-    // never rewritten by a recommended action.
-    {
-        let mut robot_strings: Vec<String> = Vec::new();
-        if let Some(commands) =
-            payload["remote_source_sync"]["recommended_sync_commands"].as_array()
-        {
-            robot_strings.extend(
-                commands
-                    .iter()
-                    .filter_map(|c| c.as_str().map(str::to_string)),
-            );
-        }
-        for gap in sync_gaps {
-            if let Some(action) = gap["recommended_action"].as_str() {
-                robot_strings.push(action.to_string());
-            }
-            if let Some(evidence) = gap["evidence"].as_array() {
-                robot_strings.extend(
-                    evidence
-                        .iter()
-                        .filter_map(|e| e.as_str().map(str::to_string)),
-                );
-            }
-        }
-        const ROBOT_DESTRUCTIVE_FLAGS: &[&str] = &[
-            "--delete",
-            "--delete-after",
-            "--delete-during",
-            "--delete-excluded",
-            "--remove-source-files",
-            "--remove-sent-files",
-        ];
-        const ROBOT_DESTRUCTIVE_TOKENS: &[&str] = &["rm", "rmdir", "shred", "unlink", "wipe"];
-        const ROBOT_DESTRUCTIVE_PHRASES: &[&str] = &[
-            "delete the source",
-            "delete source log",
-            "rsync --delete",
-            "rm -rf",
-        ];
-        for s in &robot_strings {
-            let lower = s.to_ascii_lowercase();
-            for flag in ROBOT_DESTRUCTIVE_FLAGS {
-                assert!(
-                    !lower.contains(flag),
-                    "robot remote_source_sync must not emit destructive flag {flag:?}: {s:?}"
-                );
-            }
-            for phrase in ROBOT_DESTRUCTIVE_PHRASES {
-                assert!(
-                    !lower.contains(phrase),
-                    "robot remote_source_sync must not emit destructive phrase {phrase:?}: {s:?}"
-                );
-            }
-            for token in lower.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
-                assert!(
-                    !ROBOT_DESTRUCTIVE_TOKENS.contains(&token),
-                    "robot remote_source_sync must not invoke destructive command {token:?}: {s:?}"
-                );
-            }
-        }
-    }
-    assert!(
-        payload["remote_source_sync"]["notes"]
-            .as_array()
-            .is_some_and(|notes| notes.iter().any(|note| note
-                .as_str()
-                .is_some_and(|note| note.contains("never opens SSH sessions")))),
-        "remote source report should explain that doctor does not mutate live remotes"
+        payload.get("remote_source_sync").is_none(),
+        "local-only doctor must not emit the removed remote_source_sync report: {payload:#}"
     );
     assert!(
         payload["source_authority"]["rejected_authorities"]
@@ -3509,9 +3334,8 @@ fn doctor_e2e_runner_records_multi_file_source_artifacts() {
     assert!(
         payload["checks"].as_array().is_some_and(|checks| checks
             .iter()
-            .any(|check| check["name"].as_str() == Some("remote_source_sync")
-                && check["status"].as_str() == Some("warn"))),
-        "doctor checks should include a structured remote_source_sync warning"
+            .all(|check| check["name"].as_str() != Some("remote_source_sync"))),
+        "doctor checks must not include the removed remote_source_sync check"
     );
 
     let execution_flow =

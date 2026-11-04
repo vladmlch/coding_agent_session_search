@@ -26,7 +26,6 @@ pub struct GuideRunRequest<'a> {
     pub confirmed_facts: &'a [String],
     pub accepted_privacy_tier: Option<&'a str>,
     pub accepted_cost_risk: Option<&'a str>,
-    pub allow_rch: bool,
     pub stop_conditions_clear: bool,
     pub source_kind: &'a str,
     pub fixture_context: Option<&'a Value>,
@@ -52,7 +51,6 @@ enum Adapter {
     KeyPolicy,
     SupportBundle,
     LexicalRepair,
-    SourcesDrySync,
     IncrementalIndex,
     ObservationOnly,
 }
@@ -89,21 +87,6 @@ const ALLOWLIST: &[AllowedCommand] = &[
         adapter: Adapter::ObservationOnly,
     },
     AllowedCommand {
-        id: "verify.release-gauntlet",
-        mutation_class: "read-only-proof",
-        adapter: Adapter::ObservationOnly,
-    },
-    AllowedCommand {
-        id: "release.verify-channels",
-        mutation_class: "read-only-proof",
-        adapter: Adapter::ObservationOnly,
-    },
-    AllowedCommand {
-        id: "release.changelog-review",
-        mutation_class: "read-only-proof",
-        adapter: Adapter::ObservationOnly,
-    },
-    AllowedCommand {
         id: "doctor.asset-truth-table",
         mutation_class: "read-only-proof",
         adapter: Adapter::DoctorTruth,
@@ -122,11 +105,6 @@ const ALLOWLIST: &[AllowedCommand] = &[
         id: "privacy.preview-exposure",
         mutation_class: "read-only-proof",
         adapter: Adapter::PrivacyPreview,
-    },
-    AllowedCommand {
-        id: "sources.dry-sync",
-        mutation_class: "read-only-proof",
-        adapter: Adapter::SourcesDrySync,
     },
     AllowedCommand {
         id: "index.incremental",
@@ -252,14 +230,6 @@ fn allowlisted_argv(
             "--no-progress-events",
             "--json",
         ],
-        Adapter::SourcesDrySync => vec![
-            "cass",
-            "sources",
-            "sync",
-            "--dry-run",
-            "--no-index",
-            "--json",
-        ],
         Adapter::IncrementalIndex => vec![
             "cass",
             "index",
@@ -366,9 +336,6 @@ fn evaluate_read_only_proof(
     cost_accepted: bool,
     deadline: Instant,
 ) -> ProofResult {
-    if request.source_kind != "fixture" && command.adapter == Adapter::SourcesDrySync {
-        return evaluate_sources_dry_sync(command, request, deadline);
-    }
     if request.source_kind != "fixture"
         && matches!(
             command.adapter,
@@ -467,7 +434,6 @@ fn evaluate_read_only_proof(
         Adapter::SearchCoverage
         | Adapter::SupportBundle
         | Adapter::LexicalRepair
-        | Adapter::SourcesDrySync
         | Adapter::IncrementalIndex
         | Adapter::ObservationOnly => ProofResult {
             result: "not-run",
@@ -541,8 +507,7 @@ fn run_bounded_cass_with_scope(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .env("CASS_AUTO_REFRESH", "0")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
+        .env("CASS_AUTO_REFRESH", "0");
     if let Some(data_dir) = source_data_dir {
         child.env("CASS_DATA_DIR", data_dir);
     }
@@ -582,127 +547,6 @@ fn fingerprint_sources(
     let bytes = serde_json::to_vec(config)
         .map_err(|_| "configured source scope could not be identified")?;
     Ok(blake3::hash(&bytes).to_hex().to_string())
-}
-
-fn failed_sources_proof(detail: impl Into<String>) -> ProofResult {
-    ProofResult {
-        result: "failed",
-        source: "source-config",
-        detail: detail.into(),
-        observation: None,
-    }
-}
-
-/// A dry sync proves a locally valid plan, never remote reachability, transfer
-/// completion, or registration. In particular its path successes must be null.
-fn classify_sources_dry_sync(exit_code: Option<i32>, payload: &Value) -> ProofResult {
-    if exit_code != Some(0)
-        || payload.get("status").and_then(Value::as_str) != Some("complete")
-        || payload.get("dry_run").and_then(Value::as_bool) != Some(true)
-        || payload.get("will_reindex").and_then(Value::as_bool) != Some(false)
-        || [
-            "sources_attempted",
-            "sources_with_failures",
-            "sources_fully_failed",
-            "total_files",
-            "total_bytes",
-        ]
-        .into_iter()
-        .any(|key| payload.get(key).and_then(Value::as_u64) != Some(0))
-        || ["error", "err"]
-            .into_iter()
-            .any(|key| payload.get(key).is_some_and(|v| !v.is_null()))
-    {
-        return failed_sources_proof(
-            "dry sync requires configured remote sources and a complete, non-mutating preview",
-        );
-    }
-    let Some(sources) = payload
-        .get("sources")
-        .and_then(Value::as_array)
-        .filter(|s| !s.is_empty())
-    else {
-        return failed_sources_proof(
-            "configure a remote source with cass sources add before onboarding",
-        );
-    };
-    let mut path_count = 0usize;
-    for source in sources {
-        let Some(paths) = source
-            .get("paths")
-            .and_then(Value::as_array)
-            .filter(|p| !p.is_empty())
-        else {
-            return failed_sources_proof("configured source has no previewable paths");
-        };
-        if source.get("status").and_then(Value::as_str) != Some("dry_run")
-            || source.get("method").and_then(Value::as_str) != Some("not_run")
-            || paths.iter().any(|path| {
-                !path.get("success").is_some_and(Value::is_null)
-                    || !path.get("error").is_some_and(Value::is_null)
-                    || !path.get("failure_reason").is_some_and(Value::is_null)
-                    || path.get("files").and_then(Value::as_u64) != Some(0)
-                    || path.get("bytes").and_then(Value::as_u64) != Some(0)
-            })
-        {
-            return failed_sources_proof(
-                "source preview contains invalid paths or an executed transport",
-            );
-        }
-        path_count = path_count.saturating_add(paths.len());
-    }
-    ProofResult {
-        result: "passed",
-        source: "live-command",
-        detail: "configured-source sync plan validated locally; no source registered, SSH attempted or files transferred".into(),
-        observation: Some(json!({
-            "configured_remote_sources": sources.len(),
-            "configured_paths": path_count,
-            "transport_started": false,
-            "sources_registered": false,
-            "files_transferred": 0,
-            "reindexed": false
-        })),
-    }
-}
-
-fn evaluate_sources_dry_sync(
-    command: AllowedCommand,
-    request: &GuideRunRequest<'_>,
-    deadline: Instant,
-) -> ProofResult {
-    let before = match sources_fingerprint() {
-        Ok(value) => value,
-        Err(detail) => return failed_sources_proof(detail),
-    };
-    let Some(timeout) = deadline.checked_duration_since(Instant::now()) else {
-        return unavailable_live_proof("source preview deadline exhausted; no child started");
-    };
-    let Some(argv) = allowlisted_argv(command, request.data_dir, request.db_path) else {
-        return failed_sources_proof(
-            "configured source preview scope cannot be represented by safe argv",
-        );
-    };
-    let output = match run_bounded_cass_with_scope(&argv, timeout, false, Some(request.data_dir)) {
-        Ok(output) => output,
-        Err(error) => return failed_sources_proof(error.detail),
-    };
-    let payload = match serde_json::from_slice(&output.stdout) {
-        Ok(payload) => payload,
-        Err(_) => {
-            return failed_sources_proof(
-                "dry sync returned malformed output; preview is unverified",
-            );
-        }
-    };
-    if sources_fingerprint().as_ref() != Ok(&before) {
-        return failed_sources_proof("configured sources changed during preview; rerun the guide");
-    }
-    let mut proof = classify_sources_dry_sync(output.status.code(), &payload);
-    if let Some(observation) = proof.observation.as_mut().and_then(Value::as_object_mut) {
-        observation.insert("source_config_blake3".into(), json!(before));
-    }
-    proof
 }
 
 fn evaluate_live_proof(
@@ -1313,23 +1157,19 @@ fn verify_incremental_index(
     }
 }
 
-fn execute_incremental_index(
-    data_dir: &Path,
-    db_path: Option<&Path>,
-    source_preview_fingerprint: Option<&str>,
-) -> MutationResult {
-    let Some(expected) = source_preview_fingerprint else {
-        return failed_mutation(
-            false,
-            "incremental indexing requires a verified configured-source preview",
-        );
+fn execute_incremental_index(data_dir: &Path, db_path: Option<&Path>) -> MutationResult {
+    // The configured-source fingerprint is captured now and re-verified after
+    // indexing so a mid-run config change is reported as unverified instead of
+    // silently indexing a different scope.
+    let expected = match sources_fingerprint() {
+        Ok(fingerprint) => fingerprint,
+        Err(_) => {
+            return failed_mutation(
+                false,
+                "configured sources could not be fingerprinted; no indexing started",
+            );
+        }
     };
-    if sources_fingerprint().as_deref() != Ok(expected) {
-        return failed_mutation(
-            false,
-            "configured sources changed after preview; no indexing started",
-        );
-    }
     let data_dir = match data_dir
         .canonicalize()
         .or_else(|_| std::path::absolute(data_dir))
@@ -1341,7 +1181,7 @@ fn execute_incremental_index(
         Ok(config) => config,
         Err(_) => return failed_mutation(false, "configured sources could not be revalidated"),
     };
-    if fingerprint_sources(&config).as_deref() != Ok(expected) {
+    if fingerprint_sources(&config).as_deref() != Ok(expected.as_str()) {
         return failed_mutation(
             false,
             "configured source scope changed; no indexing started",
@@ -1414,7 +1254,7 @@ fn execute_incremental_index(
             return failed;
         }
     };
-    if sources_fingerprint().as_deref() != Ok(expected) {
+    if sources_fingerprint().as_deref() != Ok(expected.as_str()) {
         return failed_mutation(
             true,
             "configured sources changed during indexing; completion is unverified",
@@ -1429,7 +1269,7 @@ fn execute_incremental_index(
         Ok(snapshot) => snapshot,
         Err(detail) => return failed_mutation(true, detail),
     };
-    verify_incremental_index(observation, &after, expected)
+    verify_incremental_index(observation, &after, &expected)
 }
 
 fn execute_mutation(
@@ -1437,14 +1277,11 @@ fn execute_mutation(
     argv: &[String],
     data_dir: &Path,
     db_path: Option<&Path>,
-    source_preview_fingerprint: Option<&str>,
 ) -> MutationResult {
     match command.adapter {
         Adapter::SupportBundle => execute_support_bundle(argv, data_dir),
         Adapter::LexicalRepair => execute_lexical_repair(data_dir, db_path),
-        Adapter::IncrementalIndex => {
-            execute_incremental_index(data_dir, db_path, source_preview_fingerprint)
-        }
+        Adapter::IncrementalIndex => execute_incremental_index(data_dir, db_path),
         _ => MutationResult {
             status: "adapter-unavailable",
             proof_result: "not-run",
@@ -1549,11 +1386,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let offload_mutation = steps.iter().any(|step| {
-        step.get("mutates").and_then(Value::as_bool) == Some(true)
-            && step.get("rch_rule").and_then(Value::as_str) == Some("offload-build")
-    });
-
     let mut global_gates = vec![
         gate(
             "readiness",
@@ -1612,19 +1444,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
                 resource.as_deref().unwrap_or("not-applicable")
             ),
         ),
-        gate(
-            "rch",
-            if !offload_mutation || request.allow_rch {
-                "passed"
-            } else {
-                "needs-confirmation"
-            },
-            if offload_mutation {
-                "mutating offload step requires --allow-rch"
-            } else {
-                "no mutating offload step"
-            },
-        ),
     ];
     let mutating_steps = steps
         .iter()
@@ -1652,7 +1471,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
         && !privacy_blocked
         && cost_accepted
         && !resource_blocked
-        && (!offload_mutation || request.allow_rch)
         && invalid_confirmations.is_empty();
     let mut prior_proofs_passed = true;
     let mut transcript = Vec::with_capacity(steps.len());
@@ -1662,8 +1480,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
     let mut attempted_db_mutation = false;
     let mut awaiting_confirmation = false;
     let mut blocked_step = false;
-    let mut source_preview_fingerprint = None;
-
     let proof_deadline = Instant::now() + Duration::from_secs(15);
     for step in &steps {
         let order = step
@@ -1680,10 +1496,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
             .get("mutates")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let rch_rule = step
-            .get("rch_rule")
-            .and_then(Value::as_str)
-            .unwrap_or("none");
         let Some(command) = allowed_command(structured) else {
             transcript.push(json!({
                 "step": order,
@@ -1693,7 +1505,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
                 "allowlist_result": "rejected",
                 "mutation_class": if declared_mutates { "unknown-mutation" } else { "unknown-read-only" },
                 "confirmation": { "required": declared_mutates, "provided": confirmed_steps.contains(&order) },
-                "rch": { "rule": rch_rule, "result": "blocked" },
                 "proof_gate": { "name": proof_gate, "result": "not-run", "source": "none" },
                 "result": "blocked",
                 "detail": "structured command is not in the closed guide-runner allowlist"
@@ -1714,7 +1525,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
                 "allowlist_result": "rejected",
                 "mutation_class": command.mutation_class,
                 "confirmation": { "required": declared_mutates, "provided": confirmed_steps.contains(&order) },
-                "rch": { "rule": rch_rule, "result": "blocked" },
                 "proof_gate": { "name": proof_gate, "result": "not-run", "source": "none" },
                 "result": "blocked",
                 "detail": "macro mutation bit disagrees with the closed allowlist classification"
@@ -1733,7 +1543,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
                 "allowlist_result": "allowed",
                 "mutation_class": command.mutation_class,
                 "confirmation": { "required": declared_mutates, "provided": false },
-                "rch": { "rule": rch_rule, "result": "not-run" },
                 "proof_gate": { "name": proof_gate, "result": "not-run", "source": "dry-run" },
                 "result": "planned",
                 "detail": "dry-run: no step executed"
@@ -1756,14 +1565,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
                 && let Some(entry) = transcript.last_mut().and_then(Value::as_object_mut)
             {
                 entry.insert("execution_scope".into(), incremental_index_scope());
-            }
-            if command.adapter == Adapter::SourcesDrySync
-                && let Some(entry) = transcript.last_mut().and_then(Value::as_object_mut)
-            {
-                entry.insert(
-                    "environment".into(),
-                    json!({"CASS_DATA_DIR": request.data_dir}),
-                );
             }
             continue;
         }
@@ -1789,14 +1590,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
                 "proof-unavailable"
             };
             prior_proofs_passed &= proof.result == "passed";
-            if command.adapter == Adapter::SourcesDrySync && proof.result == "passed" {
-                source_preview_fingerprint = proof
-                    .observation
-                    .as_ref()
-                    .and_then(|value| value.get("source_config_blake3"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-            }
             transcript.push(json!({
                 "step": order,
                 "structured_command": structured,
@@ -1805,7 +1598,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
                 "allowlist_result": "allowed",
                 "mutation_class": command.mutation_class,
                 "confirmation": { "required": false, "provided": false },
-                "rch": { "rule": rch_rule, "result": if rch_rule == "offload-build" && !request.allow_rch { "not-run" } else { "passed" } },
                 "proof_gate": { "name": proof_gate, "result": proof.result, "source": proof.source },
                 "result": result,
                 "detail": proof.detail
@@ -1815,19 +1607,10 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
             {
                 entry.insert("observation".to_string(), observation);
             }
-            if command.adapter == Adapter::SourcesDrySync
-                && let Some(entry) = transcript.last_mut().and_then(Value::as_object_mut)
-            {
-                entry.insert(
-                    "environment".into(),
-                    json!({"CASS_DATA_DIR": request.data_dir}),
-                );
-            }
             continue;
         }
 
         let confirmed = confirmed_steps.contains(&order);
-        let step_rch_ready = rch_rule != "offload-build" || request.allow_rch;
         let mut mutation_observation = None;
         let mut mutation_started = false;
         let (result, proof_result, detail) = if !global_mutation_ready {
@@ -1835,7 +1618,7 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
             (
                 "blocked",
                 "not-run",
-                "one or more readiness/privacy/cost/rch/stop-condition gates did not pass".into(),
+                "one or more readiness/privacy/cost/stop-condition gates did not pass".into(),
             )
         } else if !prior_proofs_passed {
             blocked_step = true;
@@ -1871,7 +1654,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
                 argv.as_deref().unwrap_or_default(),
                 request.data_dir,
                 request.db_path,
-                source_preview_fingerprint.as_deref(),
             );
             mutation_started = mutation.started;
             if mutation_started {
@@ -1898,7 +1680,6 @@ pub fn render_execution(mut plan: Value, request: &GuideRunRequest<'_>) -> Value
             "allowlist_result": "allowed",
             "mutation_class": command.mutation_class,
             "confirmation": { "required": true, "provided": confirmed },
-            "rch": { "rule": rch_rule, "result": if step_rch_ready { "passed" } else { "needs-confirmation" } },
             "proof_gate": { "name": proof_gate, "result": proof_result, "source": "mutation-adapter" },
             "result": result,
             "detail": detail
@@ -2007,7 +1788,6 @@ mod tests {
             confirmed_facts: &[],
             accepted_privacy_tier: None,
             accepted_cost_risk: None,
-            allow_rch: false,
             stop_conditions_clear: false,
             source_kind: "fixture",
             fixture_context: None,
@@ -2042,62 +1822,6 @@ mod tests {
             return Err("allowlisted argv was not safely tokenized".into());
         }
         Ok(())
-    }
-
-    fn dry_sync_receipt() -> Value {
-        json!({
-            "status": "complete", "dry_run": true, "will_reindex": false,
-            "sources_attempted": 0, "sources_with_failures": 0, "sources_fully_failed": 0,
-            "total_files": 0, "total_bytes": 0,
-            "sources": [{"status": "dry_run", "method": "not_run", "paths": [{
-                "success": null, "error": null, "failure_reason": null, "files": 0, "bytes": 0
-            }]}]
-        })
-    }
-
-    #[test]
-    fn dry_sync_requires_an_unexecuted_valid_path_plan() {
-        let valid = dry_sync_receipt();
-        let proof = super::classify_sources_dry_sync(Some(0), &valid);
-        assert_eq!(proof.result, "passed");
-        assert_eq!(
-            proof.observation.expect("measurement")["transport_started"],
-            false
-        );
-        for (pointer, value) in [
-            ("/status", json!("no_sources")),
-            ("/dry_run", json!(false)),
-            ("/will_reindex", json!(true)),
-            ("/sources_attempted", json!(1)),
-            ("/sources", json!([])),
-            ("/sources/0/status", json!("invalid_config")),
-            ("/sources/0/method", json!("rsync")),
-            ("/sources/0/paths", json!([])),
-            ("/sources/0/paths/0/success", json!(true)),
-            ("/sources/0/paths/0/error", json!("unreadable")),
-            ("/sources/0/paths/0/failure_reason", json!("invalid_config")),
-            ("/sources/0/paths/0/files", json!(1)),
-        ] {
-            let mut invalid = valid.clone();
-            *invalid.pointer_mut(pointer).expect("receipt field") = value;
-            assert_eq!(
-                super::classify_sources_dry_sync(Some(0), &invalid).result,
-                "failed",
-                "{pointer}"
-            );
-        }
-        for code in [None, Some(1), Some(7)] {
-            assert_eq!(
-                super::classify_sources_dry_sync(code, &valid).result,
-                "failed"
-            );
-        }
-        for incomplete in [Value::Null, json!({}), json!({"status": "complete"})] {
-            assert_eq!(
-                super::classify_sources_dry_sync(Some(0), &incomplete).result,
-                "failed"
-            );
-        }
     }
 
     #[test]
@@ -2172,11 +1896,12 @@ mod tests {
             assert!(classify(code, &valid).is_err());
         }
         assert!(classify(Some(0), &json!({"success": true})).is_err());
-        let missing_preview = super::execute_incremental_index(&data, Some(&db), None);
-        assert!(!missing_preview.started);
+        // With the configured-source sync-plan step removed, the adapter may
+        // start its bounded scan even on an empty scope; the post-run
+        // verification is what must refuse to certify the run.
+        let missing_preview = super::execute_incremental_index(&data, Some(&db));
         assert_eq!(missing_preview.status, "failed");
-        assert!(!db.exists());
-        assert!(!data.exists());
+        assert_eq!(missing_preview.proof_result, "failed");
     }
 
     #[test]
@@ -2772,7 +2497,7 @@ mod tests {
             "plan": {"privacy_tier": "low", "cost_risk": {"risk_level": "low"},
                 "stop_conditions": [], "steps": [{"order": 3,
                     "command": "doctor.rebuild-stale-assets", "mutates": true,
-                    "proof_gate": "lexical-ready", "rch_rule": "none"}]}});
+                    "proof_gate": "lexical-ready"}]}});
         let db = Path::new("/custom archive/canonical.db");
         let mut request = request(Path::new("/archive with spaces"));
         request.db_path = Some(db);
@@ -2823,7 +2548,7 @@ mod tests {
             "plan": {"privacy_tier": "low", "cost_risk": {"risk_level": "low"},
                 "stop_conditions": ["required evidence unavailable"],
                 "steps": [{"order": 1, "command": "support.produce-capsule",
-                    "mutates": true, "proof_gate": "capsule-produced", "rch_rule": "none"}]}});
+                    "mutates": true, "proof_gate": "capsule-produced"}]}});
         let output = render_execution(plan, &request);
         assert_eq!(
             output.pointer("/execution/overall_status"),
