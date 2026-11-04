@@ -3,8 +3,8 @@ use std::path::Path;
 
 use anyhow::Result;
 use coding_agent_search::search::quill_bridge::{
-    QuillCassFields, QuillLexicalPage, open_cass_reader, search_paginated,
-    stored_i64, stored_text, stored_u64,
+    QuillCassFields, QuillLexicalPage, open_cass_reader, search_paginated, stored_i64, stored_text,
+    stored_u64,
 };
 use coding_agent_search::search::tantivy::{
     expected_index_dir, open_federated_search_readers, searchable_index_fingerprint,
@@ -28,20 +28,37 @@ pub struct ReaderSet {
 impl ReaderSet {
     pub fn open(data_dir: &Path, worker_epoch: &str) -> Result<Self> {
         let path = expected_index_dir(data_dir);
-        let before = searchable_index_fingerprint(&path)?
-            .ok_or_else(|| refuse("index_unavailable", "No published lexical index at the selected data directory"))?;
+        let before = searchable_index_fingerprint(&path)?.ok_or_else(|| {
+            refuse(
+                "index_unavailable",
+                "No published lexical index at the selected data directory",
+            )
+        })?;
         let readers = if let Some(readers) = open_federated_search_readers(&path)? {
-            readers.into_iter().map(|(reader, _)| reader).collect::<Vec<_>>()
+            readers
+                .into_iter()
+                .map(|(reader, _)| reader)
+                .collect::<Vec<_>>()
         } else {
-            validate_searchable_index_contract(&path)
-                .map_err(|e| refuse("index_unavailable", format!("Lexical index failed contract validation: {e}")))?;
+            validate_searchable_index_contract(&path).map_err(|e| {
+                refuse(
+                    "index_unavailable",
+                    format!("Lexical index failed contract validation: {e}"),
+                )
+            })?;
             vec![open_cass_reader(&path)?]
         };
         if readers.is_empty() || readers.len() > 32 {
-            return Err(refuse("ranking_budget_exceeded", "Reader set is empty or exceeds the 32-shard profile"));
+            return Err(refuse(
+                "ranking_budget_exceeded",
+                "Reader set is empty or exceeds the 32-shard profile",
+            ));
         }
         if searchable_index_fingerprint(&path)?.as_ref() != Some(&before) {
-            return Err(refuse("stale_snapshot", "Index published while opening the reader set"));
+            return Err(refuse(
+                "stale_snapshot",
+                "Index published while opening the reader set",
+            ));
         }
         let index_epoch = format!("{worker_epoch}:{}:{before}", rand::random::<u64>());
         let keys = (0..readers.len())
@@ -57,27 +74,27 @@ impl ReaderSet {
 
 pub fn engine_filters(filters: &BridgeFilters) -> CassQueryFilters {
     CassQueryFilters {
-        agents: filters.agents.iter().cloned().collect(),
-        workspaces: filters.workspaces.iter().cloned().collect(),
+        agents: filters.agents.to_vec(),
+        workspaces: filters.workspaces.to_vec(),
         created_from: filters.created_from,
         created_to: filters.created_to,
-        source_filter: filters.source_id.as_ref().map_or(CassSourceFilter::All, |id| {
-            // Match the reserved local spelling accepted by CASS lexical
-            // filters; remote source identifiers retain their exact case.
-            let local = coding_agent_search::sources::provenance::LOCAL_SOURCE_ID;
-            CassSourceFilter::SourceId(if id.eq_ignore_ascii_case(local) {
-                local.to_owned()
-            } else {
-                id.clone()
-            })
-        }),
+        source_filter: filters
+            .source_id
+            .as_ref()
+            .map_or(CassSourceFilter::All, |id| {
+                // Match the reserved local spelling accepted by CASS lexical
+                // filters; remote source identifiers retain their exact case.
+                let local = coding_agent_search::sources::provenance::LOCAL_SOURCE_ID;
+                CassSourceFilter::SourceId(if id.eq_ignore_ascii_case(local) {
+                    local.to_owned()
+                } else {
+                    id.clone()
+                })
+            }),
     }
 }
 
-pub fn parse_lexical_query(
-    text: &str,
-    filters: &CassQueryFilters,
-) -> Result<(Query, Vec<String>)> {
+pub fn parse_lexical_query(text: &str, filters: &CassQueryFilters) -> Result<(Query, Vec<String>)> {
     let parser = CassQueryParser::new(CASS_SEMANTIC_SCHEMA)
         .map_err(|e| anyhow::anyhow!("Building CASS lexical query parser: {e}"))?;
     let unfiltered = parser.parse(text, &CassQueryFilters::default());
@@ -106,7 +123,10 @@ pub fn raw_page(
     let (query, _) = parse_lexical_query(text, filters)?;
     search_paginated(reader, &query, limit, offset, true).map_err(|error| {
         if coding_agent_search::search::quill_bridge::is_query_fuel_exhausted(&error) {
-            refuse("ranking_budget_exceeded", "Quill query fuel exhausted; no complete ranking receipt")
+            refuse(
+                "ranking_budget_exceeded",
+                "Quill query fuel exhausted; no complete ranking receipt",
+            )
         } else {
             error
         }
@@ -128,12 +148,22 @@ pub fn decode_hit(
     reader_key: &str,
 ) -> Result<RawRankHit> {
     let fields = QuillCassFields::compiled();
-    let missing = || refuse("unmappable_hit", "A raw hit has no unambiguous stored canonical coordinates");
+    let missing = || {
+        refuse(
+            "unmappable_hit",
+            "A raw hit has no unambiguous stored canonical coordinates",
+        )
+    };
     let source_id = stored_text(reader, fields.source_id, hit.global_docid)?.ok_or_else(missing)?;
-    let conversation_id = stored_i64(reader, fields.conversation_id, hit.global_docid)?.ok_or_else(missing)?;
-    let message_index_zero_based = stored_u64(reader, fields.msg_idx, hit.global_docid)?.ok_or_else(missing)?;
-    if source_id.is_empty() || source_id.len() > 4096 || conversation_id <= 0
-        || message_index_zero_based > i64::MAX as u64 || !hit.bm25_score.is_finite()
+    let conversation_id =
+        stored_i64(reader, fields.conversation_id, hit.global_docid)?.ok_or_else(missing)?;
+    let message_index_zero_based =
+        stored_u64(reader, fields.msg_idx, hit.global_docid)?.ok_or_else(missing)?;
+    if source_id.is_empty()
+        || source_id.len() > 4096
+        || conversation_id <= 0
+        || message_index_zero_based > i64::MAX as u64
+        || !hit.bm25_score.is_finite()
     {
         return Err(missing());
     }

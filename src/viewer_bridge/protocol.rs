@@ -19,7 +19,11 @@ pub struct Refusal {
 }
 
 pub fn refuse(kind: &'static str, message: impl Into<String>) -> anyhow::Error {
-    Refusal { kind, message: message.into() }.into()
+    Refusal {
+        kind,
+        message: message.into(),
+    }
+    .into()
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -36,12 +40,20 @@ pub struct BridgeFilters {
 
 impl BridgeFilters {
     pub fn validate(&self) -> anyhow::Result<()> {
-        let mut values = self.agents.iter().chain(&self.workspaces).chain(self.source_id.iter());
-        if self.agents.len() > 32 || self.workspaces.len() > 32
+        let mut values = self
+            .agents
+            .iter()
+            .chain(&self.workspaces)
+            .chain(self.source_id.iter());
+        if self.agents.len() > 32
+            || self.workspaces.len() > 32
             || values.any(|s| s.is_empty() || s.len() > 4096 || s.trim() != s.as_str())
             || matches!((self.created_from, self.created_to), (Some(a), Some(b)) if a > b)
         {
-            return Err(refuse("invalid_request", "Invalid or excessive engine filters"));
+            return Err(refuse(
+                "invalid_request",
+                "Invalid or excessive engine filters",
+            ));
         }
         Ok(())
     }
@@ -56,13 +68,22 @@ pub struct ScanBudget {
     pub deadline_ms: u64,
 }
 
-fn default_raw_hits() -> usize { MAX_RAW_HITS }
-fn default_timeout() -> u64 { TIMEOUT_MS }
-fn default_page() -> usize { PAGE_LIMIT }
+fn default_raw_hits() -> usize {
+    MAX_RAW_HITS
+}
+fn default_timeout() -> u64 {
+    TIMEOUT_MS
+}
+fn default_page() -> usize {
+    PAGE_LIMIT
+}
 
 impl Default for ScanBudget {
     fn default() -> Self {
-        Self { max_raw_hits: MAX_RAW_HITS, deadline_ms: TIMEOUT_MS }
+        Self {
+            max_raw_hits: MAX_RAW_HITS,
+            deadline_ms: TIMEOUT_MS,
+        }
     }
 }
 
@@ -71,7 +92,10 @@ impl ScanBudget {
         if !(1..=MAX_RAW_HITS).contains(&self.max_raw_hits)
             || !(1..=TIMEOUT_MS).contains(&self.deadline_ms)
         {
-            return Err(refuse("invalid_request", "Scan budgets may only lower the profile limits"));
+            return Err(refuse(
+                "invalid_request",
+                "Scan budgets may only lower the profile limits",
+            ));
         }
         Ok(())
     }
@@ -80,31 +104,67 @@ impl ScanBudget {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
-    Hello { id: u64 },
-    Status { id: u64 },
-    CatalogPage { id: u64, after_id: Option<i64>, #[serde(default = "default_page")] limit: usize },
-    Session { id: u64, conversation_id: i64 },
+    Hello {
+        id: u64,
+    },
+    Status {
+        id: u64,
+    },
+    CatalogPage {
+        id: u64,
+        after_id: Option<i64>,
+        #[serde(default = "default_page")]
+        limit: usize,
+    },
+    Session {
+        id: u64,
+        conversation_id: i64,
+    },
     MessagesPage {
-        id: u64, conversation_id: i64, after_idx: Option<i64>,
-        #[serde(default = "default_page")] limit: usize,
+        id: u64,
+        conversation_id: i64,
+        after_idx: Option<i64>,
+        #[serde(default = "default_page")]
+        limit: usize,
     },
     RankBegin {
-        id: u64, query: String, #[serde(default)] filters: BridgeFilters,
-        #[serde(default)] budget: ScanBudget,
+        id: u64,
+        query: String,
+        #[serde(default)]
+        filters: BridgeFilters,
+        #[serde(default)]
+        budget: ScanBudget,
     },
-    RankNext { id: u64, cursor: String, max_hits: usize },
-    RankCancel { id: u64, cursor: String },
-    Reload { id: u64 },
-    Shutdown { id: u64 },
+    RankNext {
+        id: u64,
+        cursor: String,
+        max_hits: usize,
+    },
+    RankCancel {
+        id: u64,
+        cursor: String,
+    },
+    Reload {
+        id: u64,
+    },
+    Shutdown {
+        id: u64,
+    },
 }
 
 impl Request {
     pub fn id(&self) -> u64 {
         match self {
-            Self::Hello { id } | Self::Status { id } | Self::CatalogPage { id, .. }
-            | Self::Session { id, .. } | Self::MessagesPage { id, .. }
-            | Self::RankBegin { id, .. } | Self::RankNext { id, .. }
-            | Self::RankCancel { id, .. } | Self::Reload { id } | Self::Shutdown { id } => *id,
+            Self::Hello { id }
+            | Self::Status { id }
+            | Self::CatalogPage { id, .. }
+            | Self::Session { id, .. }
+            | Self::MessagesPage { id, .. }
+            | Self::RankBegin { id, .. }
+            | Self::RankNext { id, .. }
+            | Self::RankCancel { id, .. }
+            | Self::Reload { id }
+            | Self::Shutdown { id } => *id,
         }
     }
 }
@@ -121,28 +181,46 @@ pub fn success(id: u64, result: Value) -> Value {
 }
 
 pub fn failure(id: u64, error: &anyhow::Error) -> Value {
-    let kind = error.downcast_ref::<Refusal>().map_or("backend_read_failed", |e| e.kind);
-    let incomplete = matches!(kind, "ranking_budget_exceeded" | "stale_snapshot" | "unmappable_hit");
+    let kind = error
+        .downcast_ref::<Refusal>()
+        .map_or("backend_read_failed", |e| e.kind);
+    let incomplete = matches!(
+        kind,
+        "ranking_budget_exceeded" | "stale_snapshot" | "unmappable_hit"
+    );
     json!({"schema_version":1,"id":id,"ok":false,"error":{
         "kind":kind,"message":error.to_string(),"enumeration_complete":if incomplete { Some(false) } else { None },
     }})
 }
 
-pub enum Frame { Line(Vec<u8>), End, TooLarge, Unterminated }
+pub enum Frame {
+    Line(Vec<u8>),
+    End,
+    TooLarge,
+    Unterminated,
+}
 
 pub fn read_frame(input: &mut impl BufRead) -> io::Result<Frame> {
     let mut line = Vec::new();
     loop {
         let available = input.fill_buf()?;
         if available.is_empty() {
-            return Ok(if line.is_empty() { Frame::End } else { Frame::Unterminated });
+            return Ok(if line.is_empty() {
+                Frame::End
+            } else {
+                Frame::Unterminated
+            });
         }
         let newline = available.iter().position(|byte| *byte == b'\n');
         let count = newline.unwrap_or(available.len());
-        if count > REQUEST_BYTES - line.len() { return Ok(Frame::TooLarge); }
+        if count > REQUEST_BYTES - line.len() {
+            return Ok(Frame::TooLarge);
+        }
         line.extend_from_slice(&available[..count]);
         input.consume(count + usize::from(newline.is_some()));
-        if newline.is_some() { return Ok(Frame::Line(line)); }
+        if newline.is_some() {
+            return Ok(Frame::Line(line));
+        }
     }
 }
 
@@ -155,7 +233,9 @@ impl Write for BoundedBuffer {
         self.0.extend_from_slice(bytes);
         Ok(bytes.len())
     }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub fn encode_line(value: &impl Serialize) -> io::Result<Vec<u8>> {

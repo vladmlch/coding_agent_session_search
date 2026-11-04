@@ -1,10 +1,10 @@
 //! GitHub Actions is permanently off (owner, 2026-10-09: "NO GH ACTIONS,
-//! PERIOD!!! EVER!!! we ONLY ever use /dsr"). Verification runs through
-//! `scripts/gate.sh` on the rch fleet; Windows/macOS proof and releases go
-//! through dsr hosts. Workflow files kept arriving after that rule anyway
-//! (21 commits by 2026-10-21), and finished fixes parked in them for a job
-//! that never runs sat unapplied on main (bead nqbwq). These tests fail if a
-//! workflow reappears or the UBS pin leaves the place the gate reads it.
+//! PERIOD!!! EVER!!!"). The project has no remote CI: verification runs
+//! through `scripts/gate.sh` locally. Workflow files kept arriving after
+//! that rule anyway (21 commits by 2026-10-21), and finished fixes parked in
+//! them for a job that never runs sat unapplied on main (bead nqbwq). These
+//! tests fail if a workflow reappears or the UBS pin leaves the place the
+//! gate reads it.
 
 use std::path::PathBuf;
 
@@ -30,7 +30,7 @@ fn no_github_actions_workflows_exist() {
     };
     assert!(
         present.is_empty(),
-        "GitHub Actions is off: verify with scripts/gate.sh, release with dsr; remove {present:?} from .github/workflows"
+        "GitHub Actions is off (the project has no remote CI): verify with scripts/gate.sh; remove {present:?} from .github/workflows"
     );
 }
 

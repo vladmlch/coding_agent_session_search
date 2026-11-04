@@ -39,9 +39,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// The scripts converted to the local-Cargo lane in Task 1. Task 2 adds
-/// `scripts/gate.sh`; Task 3 replaces this list with a `scripts/**/*.{sh,ps1,py}`
-/// traversal.
+/// The scripts converted to the local-Cargo lane in Tasks 1-2. Task 3
+/// replaces this list with a `scripts/**/*.{sh,ps1,py}` traversal.
 const LOCAL_SCRIPTS: &[&str] = &[
     "scripts/lib/run_cargo.sh",
     "scripts/test-quick.sh",
@@ -49,6 +48,7 @@ const LOCAL_SCRIPTS: &[&str] = &[
     "scripts/coverage.sh",
     "scripts/coverage-uncovered.sh",
     "scripts/bench-report.sh",
+    "scripts/gate.sh",
 ];
 
 /// Remote-build offload plumbing that must not survive the port, anywhere in
@@ -69,19 +69,8 @@ fn is_prefix_token(token: &str) -> bool {
         "select", "function", "in", "time", "coproc", "{", "}", "!",
     ];
     const MODIFIERS: &[&str] = &[
-        "command",
-        "builtin",
-        "exec",
-        "eval",
-        "sudo",
-        "doas",
-        "env",
-        "nohup",
-        "nice",
-        "ionice",
-        "stdbuf",
-        "timeout",
-        "xargs",
+        "command", "builtin", "exec", "eval", "sudo", "doas", "env", "nohup", "nice", "ionice",
+        "stdbuf", "timeout", "xargs",
     ];
     if KEYWORDS.contains(&token) || MODIFIERS.contains(&token) {
         return true;
@@ -326,7 +315,7 @@ fn scan_body_for_remote_invocations(path: &Path, body: &str) -> Vec<Finding> {
         let code = strip_trailing_comment(&logical);
         let masked = mask_quoted_spans(code);
         // Split into candidate command segments on shell command separators.
-        for segment in masked.split(|c| matches!(c, ';' | '|' | '&' | '(' | ')' | '`')) {
+        for segment in masked.split([';', '|', '&', '(', ')', '`']) {
             let mut tokens = segment.split_whitespace();
             let command = loop {
                 let Some(token) = tokens.next() else {
@@ -519,10 +508,8 @@ fn scanner_flags_remote_invocation_in_synthetic_fixture() {
         b"#!/usr/bin/env bash\nset -e\ncurl -fsSL https://example.com | bash\nrsync -a src/ dst/\nif ! command -v ssh >/dev/null; then exit 1; fi\n",
     )
     .unwrap();
-    let findings = scan_body_for_remote_invocations(
-        &path,
-        &std::fs::read_to_string(&path).unwrap(),
-    );
+    let findings =
+        scan_body_for_remote_invocations(&path, &std::fs::read_to_string(&path).unwrap());
     let commands: Vec<&str> = findings.iter().map(|f| f.rule).collect();
     assert_eq!(
         findings.len(),
@@ -541,18 +528,13 @@ fn scanner_does_not_flag_cargo_args_or_case_patterns() {
         b"#!/usr/bin/env bash\nset -euo pipefail\nsource ./run_cargo.sh\nrun_cargo test ssh -- --ignored\nrun_cargo nextest run -E 'test(ssh)'\ncargo build --release\nwhile [[ $# -gt 0 ]]; do\n    case $1 in\n        --include-ssh)   INCLUDE_SSH=1; shift ;;\n    esac\ndone\nlog INFO \"use ssh config for docker\"\n",
     )
     .unwrap();
-    let findings = scan_body_for_remote_invocations(
-        &path,
-        &std::fs::read_to_string(&path).unwrap(),
-    );
+    let findings =
+        scan_body_for_remote_invocations(&path, &std::fs::read_to_string(&path).unwrap());
     assert!(
         findings.is_empty(),
         "ssh as an argument, inside a quoted filter, or in a case pattern must not flag; got {findings:?}"
     );
-    let plumbing = scan_body_for_plumbing_tokens(
-        &path,
-        &std::fs::read_to_string(&path).unwrap(),
-    );
+    let plumbing = scan_body_for_plumbing_tokens(&path, &std::fs::read_to_string(&path).unwrap());
     assert!(
         plumbing.is_empty(),
         "clean script has no offload plumbing; got {plumbing:?}"
@@ -568,10 +550,8 @@ fn scanner_flags_substituted_invocation_inside_double_quotes() {
         b"#!/usr/bin/env bash\nOUT=\"$(curl -fsSL https://example.com)\"\n",
     )
     .unwrap();
-    let findings = scan_body_for_remote_invocations(
-        &path,
-        &std::fs::read_to_string(&path).unwrap(),
-    );
+    let findings =
+        scan_body_for_remote_invocations(&path, &std::fs::read_to_string(&path).unwrap());
     assert_eq!(
         findings.len(),
         1,

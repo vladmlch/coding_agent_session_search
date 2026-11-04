@@ -123,6 +123,38 @@ cass_cargo_resolve() {
     CASS_CARGO_RESOLVED=1
 }
 
+# sha256 [<file> ...] — portable SHA-256 digest. Prefers GNU sha256sum and
+# falls back to the stock-macOS `shasum -a 256` (same shape as
+# scripts/browser_e2e_lane.sh). With no file operands both tools read
+# standard input, so pipelines behave identically under either backend.
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$@"
+    else
+        shasum -a 256 "$@"
+    fi
+}
+
+# run_with_timeout <stage> <seconds> <cmd> [arg ...] — run <cmd> bounded by
+# <seconds>, via GNU timeout or its coreutils alias gtimeout (the name on
+# macOS installs). When neither is present the stage cannot be bounded:
+# report a clear diagnostic plus the STAGE=<stage> EXIT=127 verdict and
+# return 127, so the caller's receipt still records the stage failure.
+run_with_timeout() {
+    local stage="$1" seconds="$2"
+    shift 2
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$seconds" "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then
+        gtimeout "$seconds" "$@"
+    else
+        printf 'gate: neither timeout(1) nor gtimeout(1) is on PATH; cannot bound stage %s (install coreutils)\n' \
+            "$stage" >&2
+        printf 'STAGE=%s EXIT=127\n' "$stage" >&2
+        return 127
+    fi
+}
+
 # run_cargo: log one structured line to stderr, then run cargo locally with
 # the resolved defaults in the environment.
 run_cargo() {
@@ -134,6 +166,8 @@ run_cargo() {
     cargo "$@"
 }
 
-# Export so subshells inherit the function (POSIX `export -f` is a bashism;
-# this script is bash-targeted, which AGENTS.md already mandates).
-export -f run_cargo 2>/dev/null || true
+# Export so subshells inherit the functions (POSIX `export -f` is a bashism;
+# this script is bash-targeted, which AGENTS.md already mandates). sha256 is
+# exported so `xargs -0 bash -c 'sha256 "$@"' _` can batch per-file digests
+# through the same fallback logic used for single files.
+export -f run_cargo sha256 run_with_timeout 2>/dev/null || true

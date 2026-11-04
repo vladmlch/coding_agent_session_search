@@ -44,12 +44,18 @@ struct Session {
 
 impl Session {
     fn archive(&mut self) -> Result<&mut StrictArchive> {
-        if self.archive.is_none() { self.archive = Some(StrictArchive::open(&self.db)?); }
-        self.archive.as_mut().ok_or_else(|| refuse("canonical_db_missing", "Archive not loaded"))
+        if self.archive.is_none() {
+            self.archive = Some(StrictArchive::open(&self.db)?);
+        }
+        self.archive
+            .as_mut()
+            .ok_or_else(|| refuse("canonical_db_missing", "Archive not loaded"))
     }
 
     fn readers(&mut self) -> Result<Rc<ReaderSet>> {
-        if let Some(readers) = &self.readers { return Ok(Rc::clone(readers)); }
+        if let Some(readers) = &self.readers {
+            return Ok(Rc::clone(readers));
+        }
         let readers = Rc::new(ReaderSet::open(&self.data_dir, &self.worker_epoch)?);
         self.readers = Some(Rc::clone(&readers));
         Ok(readers)
@@ -83,22 +89,49 @@ impl Session {
     fn handle(&mut self, request: Request) -> Result<(Value, bool)> {
         let result = match request {
             Request::Hello { .. } | Request::Status { .. } => self.hello()?,
-            Request::CatalogPage { after_id, limit, .. } => self.archive()?.read_catalog_page(after_id, limit)?,
-            Request::Session { conversation_id, .. } => self.archive()?.session(conversation_id)?,
-            Request::MessagesPage { conversation_id, after_idx, limit, .. } => self.archive()?.read_messages_page(conversation_id, after_idx, limit)?,
-            Request::RankBegin { query, filters, budget, .. } => {
+            Request::CatalogPage {
+                after_id, limit, ..
+            } => self.archive()?.read_catalog_page(after_id, limit)?,
+            Request::Session {
+                conversation_id, ..
+            } => self.archive()?.session(conversation_id)?,
+            Request::MessagesPage {
+                conversation_id,
+                after_idx,
+                limit,
+                ..
+            } => self
+                .archive()?
+                .read_messages_page(conversation_id, after_idx, limit)?,
+            Request::RankBegin {
+                query,
+                filters,
+                budget,
+                ..
+            } => {
                 filters.validate()?;
                 budget.validate()?;
                 if query.trim().is_empty() || query.len() > 4096 {
-                    return Err(refuse("invalid_request", "Lexical query must contain 1..4096 UTF-8 bytes"));
+                    return Err(refuse(
+                        "invalid_request",
+                        "Lexical query must contain 1..4096 UTF-8 bytes",
+                    ));
                 }
                 self.archive()?;
                 let readers = self.readers()?;
-                let archive = self.archive.as_mut().ok_or_else(|| refuse("canonical_db_missing", "Archive not loaded"))?;
-                self.cursors.begin(readers, archive, query, filters, budget)?
+                let archive = self
+                    .archive
+                    .as_mut()
+                    .ok_or_else(|| refuse("canonical_db_missing", "Archive not loaded"))?;
+                self.cursors
+                    .begin(readers, archive, query, filters, budget)?
             }
-            Request::RankNext { cursor, max_hits, .. } => {
-                let archive = self.archive.as_mut().ok_or_else(|| refuse("stale_snapshot", "Raw cursor has no retained archive"))?;
+            Request::RankNext {
+                cursor, max_hits, ..
+            } => {
+                let archive = self.archive.as_mut().ok_or_else(|| {
+                    refuse("stale_snapshot", "Raw cursor has no retained archive")
+                })?;
                 self.cursors.next(archive, &cursor, max_hits)?
             }
             Request::RankCancel { cursor, .. } => json!({"cancelled":self.cursors.cancel(&cursor)}),
@@ -123,13 +156,25 @@ fn serve(session: &mut Session, input: &mut impl BufRead, output: &mut impl Writ
         let line = match protocol::read_frame(input)? {
             Frame::End => return Ok(()),
             Frame::Unterminated => {
-                let error = refuse("invalid_request", "EOF before the JSONL newline; the worker is closing");
-                protocol::write_frame(output, &protocol::encode_line(&protocol::failure(0, &error))?)?;
+                let error = refuse(
+                    "invalid_request",
+                    "EOF before the JSONL newline; the worker is closing",
+                );
+                protocol::write_frame(
+                    output,
+                    &protocol::encode_line(&protocol::failure(0, &error))?,
+                )?;
                 return Err(error);
             }
             Frame::TooLarge => {
-                let error = refuse("request_too_large", "Request exceeds 64 KiB; the worker is closing");
-                protocol::write_frame(output, &protocol::encode_line(&protocol::failure(0, &error))?)?;
+                let error = refuse(
+                    "request_too_large",
+                    "Request exceeds 64 KiB; the worker is closing",
+                );
+                protocol::write_frame(
+                    output,
+                    &protocol::encode_line(&protocol::failure(0, &error))?,
+                )?;
                 return Err(error);
             }
             Frame::Line(line) => line,
@@ -137,10 +182,18 @@ fn serve(session: &mut Session, input: &mut impl BufRead, output: &mut impl Writ
         let request = match serde_json::from_slice::<Request>(&line) {
             Ok(request) => request,
             Err(_) => {
-                let id = serde_json::from_slice::<Value>(&line).ok()
-                    .and_then(|value| value.get("id").and_then(Value::as_u64)).unwrap_or(0);
-                let error = refuse("invalid_request", "Invalid UTF-8/JSON, unknown operation/field, or malformed typed request");
-                protocol::write_frame(output, &protocol::encode_line(&protocol::failure(id, &error))?)?;
+                let id = serde_json::from_slice::<Value>(&line)
+                    .ok()
+                    .and_then(|value| value.get("id").and_then(Value::as_u64))
+                    .unwrap_or(0);
+                let error = refuse(
+                    "invalid_request",
+                    "Invalid UTF-8/JSON, unknown operation/field, or malformed typed request",
+                );
+                protocol::write_frame(
+                    output,
+                    &protocol::encode_line(&protocol::failure(id, &error))?,
+                )?;
                 continue;
             }
         };
@@ -156,10 +209,16 @@ fn serve(session: &mut Session, input: &mut impl BufRead, output: &mut impl Writ
         let (response, stop) = match session.handle(request) {
             Ok((result, stop)) => (protocol::success(id, result), stop),
             Err(error) => {
-                if error.downcast_ref::<protocol::Refusal>().is_some_and(|e| e.kind == "stale_snapshot") {
+                if error
+                    .downcast_ref::<protocol::Refusal>()
+                    .is_some_and(|e| e.kind == "stale_snapshot")
+                {
                     session.cursors.clear();
                 }
-                if error.downcast_ref::<protocol::Refusal>().is_some_and(|e| e.kind == "canonical_read_failed") {
+                if error
+                    .downcast_ref::<protocol::Refusal>()
+                    .is_some_and(|e| e.kind == "canonical_read_failed")
+                {
                     session.cursors.clear();
                     session.archive = None;
                 }
@@ -168,18 +227,29 @@ fn serve(session: &mut Session, input: &mut impl BufRead, output: &mut impl Writ
         };
         let bytes = protocol::encode_line(&response).or_else(|_| {
             session.cursors.clear();
-            protocol::encode_line(&protocol::failure(id, &refuse("response_too_large", "Response exceeds 1 MiB; request fewer rows")))
+            protocol::encode_line(&protocol::failure(
+                id,
+                &refuse(
+                    "response_too_large",
+                    "Response exceeds 1 MiB; request fewer rows",
+                ),
+            ))
         })?;
         protocol::write_frame(output, &bytes)?;
         watchdog.done();
-        if stop { return Ok(()); }
+        if stop {
+            return Ok(());
+        }
     }
 }
 
 pub fn run(args: Vec<OsString>) -> ExitCode {
     let args = match Args::try_parse_from(args) {
         Ok(args) => args,
-        Err(error) => { eprintln!("{error}"); return ExitCode::from(2); }
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::from(2);
+        }
     };
     if !args.stdio {
         eprintln!("cass-viewer-bridge: --stdio is required");
@@ -187,13 +257,24 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
     }
     let data_dir = match std::fs::canonicalize(&args.data_dir) {
         Ok(path) if path.is_dir() => path,
-        _ => { eprintln!("cass-viewer-bridge: data directory must already exist"); return ExitCode::from(2); }
+        _ => {
+            eprintln!("cass-viewer-bridge: data directory must already exist");
+            return ExitCode::from(2);
+        }
     };
     let mut session = Session {
-        data_dir, db: args.db, worker_epoch: format!("{:032x}", rand::random::<u128>()),
-        archive: None, readers: None, cursors: CursorStore::default(),
+        data_dir,
+        db: args.db,
+        worker_epoch: format!("{:032x}", rand::random::<u128>()),
+        archive: None,
+        readers: None,
+        cursors: CursorStore::default(),
     };
-    let result = serve(&mut session, &mut io::stdin().lock(), &mut io::stdout().lock());
+    let result = serve(
+        &mut session,
+        &mut io::stdin().lock(),
+        &mut io::stdout().lock(),
+    );
     drop(session);
     if !coding_agent_search::shutdown_thread_local_bridge_runtimes() {
         eprintln!("cass-viewer-bridge: engine runtime cleanup did not complete");
@@ -201,6 +282,9 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
     }
     match result {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => { eprintln!("cass-viewer-bridge: {error}"); ExitCode::FAILURE }
+        Err(error) => {
+            eprintln!("cass-viewer-bridge: {error}");
+            ExitCode::FAILURE
+        }
     }
 }

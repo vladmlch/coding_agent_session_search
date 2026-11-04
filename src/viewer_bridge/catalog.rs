@@ -38,7 +38,8 @@ const CONV_GUARDED_COLUMNS: &str = "id,agent_id,source_id,\
     COALESCE(length(CAST(primary_model AS BLOB)),0)+\
     COALESCE(length(metadata_bin),0)+\
     COALESCE(length(CAST(metadata_json AS BLOB)),0)";
-const MESSAGE_COLUMNS: &str = "id,conversation_id,idx,role,author,created_at,content,extra_bin,extra_json";
+const MESSAGE_COLUMNS: &str =
+    "id,conversation_id,idx,role,author,created_at,content,extra_bin,extra_json";
 const MSG_GUARDED_COLUMNS: &str = "id,conversation_id,idx,\
     CASE WHEN COALESCE(length(CAST(role AS BLOB)),0)<=524288 THEN role ELSE NULL END,\
     CASE WHEN COALESCE(length(CAST(author AS BLOB)),0)<=524288 THEN author ELSE NULL END,\
@@ -54,19 +55,28 @@ const MSG_GUARDED_COLUMNS: &str = "id,conversation_id,idx,\
 
 pub fn check_schema(connection: &Connection) -> Result<()> {
     // These fixed projections verify every required column without reading bodies.
-    connection.query(&format!("SELECT {CONV_COLUMNS} FROM conversations WHERE id = 0 LIMIT 0"))?;
+    connection.query(&format!(
+        "SELECT {CONV_COLUMNS} FROM conversations WHERE id = 0 LIMIT 0"
+    ))?;
     connection.query("SELECT id,slug FROM agents WHERE id = 0 LIMIT 0")?;
     connection.query("SELECT id,path FROM workspaces WHERE id = 0 LIMIT 0")?;
     connection.query("SELECT id,kind,host_label FROM sources WHERE id = '' LIMIT 0")?;
     connection.query(
         "SELECT conversation_id,ended_at,last_message_idx,last_message_created_at          FROM conversation_tail_state WHERE conversation_id = 0 LIMIT 0",
     )?;
-    connection.query(&format!("SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = 0 LIMIT 0"))?;
+    connection.query(&format!(
+        "SELECT {MESSAGE_COLUMNS} FROM messages WHERE id = 0 LIMIT 0"
+    ))?;
     let migrations = connection.query("PRAGMA table_info(\"_schema_migrations\")")?;
     if !migrations.is_empty() {
-        let version: Option<i64> = connection.query_row("SELECT MAX(version) FROM _schema_migrations")?.get_typed(0)?;
+        let version: Option<i64> = connection
+            .query_row("SELECT MAX(version) FROM _schema_migrations")?
+            .get_typed(0)?;
         if version != Some(22) {
-            return Err(refuse("incompatible_schema", "Canonical schema tracking disagrees with meta version"));
+            return Err(refuse(
+                "incompatible_schema",
+                "Canonical schema tracking disagrees with meta version",
+            ));
         }
     }
     Ok(())
@@ -74,13 +84,21 @@ pub fn check_schema(connection: &Connection) -> Result<()> {
 
 fn required_text(row: &Row, index: usize) -> Result<Value> {
     let value: String = row.get_typed(index)?;
-    if value.is_empty() { return Err(refuse("canonical_coordinates_invalid", "Required canonical identity is empty")); }
+    if value.is_empty() {
+        return Err(refuse(
+            "canonical_coordinates_invalid",
+            "Required canonical identity is empty",
+        ));
+    }
     Ok(value.into())
 }
 
 fn nonnegative_val(value: Option<i64>) -> Result<Value> {
     if value.is_some_and(|n| n < 0) {
-        return Err(refuse("canonical_coordinates_invalid", "Negative canonical counter"));
+        return Err(refuse(
+            "canonical_coordinates_invalid",
+            "Negative canonical counter",
+        ));
     }
     Ok(json!(value))
 }
@@ -102,18 +120,32 @@ struct SessionLookup {
 impl SessionLookup {
     fn preload(conn: &Connection, min_id: i64, max_id: i64) -> Result<Self> {
         let mut lookup = Self::default();
-        for row in conn.query("SELECT id, slug, COALESCE(length(CAST(slug AS BLOB)),0) FROM agents")? {
+        for row in
+            conn.query("SELECT id, slug, COALESCE(length(CAST(slug AS BLOB)),0) FROM agents")?
+        {
             let id: i64 = row.get_typed(0)?;
             let slug: Option<String> = row.get_typed(1)?;
             let len: i64 = row.get_typed(2)?;
             if lookup.agents.insert(id, slug.map(|s| (s, len))).is_some() {
-                return Err(refuse("canonical_coordinates_invalid", "Ambiguous canonical row"));
+                return Err(refuse(
+                    "canonical_coordinates_invalid",
+                    "Ambiguous canonical row",
+                ));
             }
         }
-        for row in conn.query("SELECT id, path, COALESCE(length(CAST(path AS BLOB)),0) FROM workspaces")? {
+        for row in
+            conn.query("SELECT id, path, COALESCE(length(CAST(path AS BLOB)),0) FROM workspaces")?
+        {
             let id: i64 = row.get_typed(0)?;
-            if lookup.workspaces.insert(id, (row.get_typed(1)?, row.get_typed(2)?)).is_some() {
-                return Err(refuse("canonical_coordinates_invalid", "Ambiguous canonical row"));
+            if lookup
+                .workspaces
+                .insert(id, (row.get_typed(1)?, row.get_typed(2)?))
+                .is_some()
+            {
+                return Err(refuse(
+                    "canonical_coordinates_invalid",
+                    "Ambiguous canonical row",
+                ));
             }
         }
         for row in conn.query(
@@ -137,21 +169,32 @@ impl SessionLookup {
     }
 
     fn agent(&self, id: Option<i64>) -> (Option<String>, i64) {
-        id.and_then(|k| self.agents.get(&k)).and_then(Clone::clone).map_or((None, 0), |(s, n)| (Some(s), n))
+        id.and_then(|k| self.agents.get(&k))
+            .and_then(Clone::clone)
+            .map_or((None, 0), |(s, n)| (Some(s), n))
     }
 
     fn workspace(&self, id: Option<i64>) -> (Option<String>, i64) {
-        id.and_then(|k| self.workspaces.get(&k)).cloned().unwrap_or((None, 0))
+        id.and_then(|k| self.workspaces.get(&k))
+            .cloned()
+            .unwrap_or((None, 0))
     }
 
     fn source(&self, id: Option<&str>) -> (Option<String>, Option<String>, i64) {
-        id.and_then(|k| self.sources.get(k)).cloned().unwrap_or((None, None, 0))
+        id.and_then(|k| self.sources.get(k))
+            .cloned()
+            .unwrap_or((None, None, 0))
     }
 }
 
 fn decode_session_row(row: &Row, lookup: &SessionLookup) -> Result<Value> {
     let row_id: i64 = row.get_typed(0)?;
-    if row_id <= 0 { return Err(refuse("canonical_coordinates_invalid", "Nonpositive conversation identity")); }
+    if row_id <= 0 {
+        return Err(refuse(
+            "canonical_coordinates_invalid",
+            "Nonpositive conversation identity",
+        ));
+    }
     let agent_id: Option<i64> = row.get_typed(1)?;
     let source_id_opt: Option<String> = row.get_typed(2)?;
     let workspace_id: Option<i64> = row.get_typed(5)?;
@@ -161,13 +204,25 @@ fn decode_session_row(row: &Row, lookup: &SessionLookup) -> Result<Value> {
     let (source_kind, host_label, source_bytes) = lookup.source(source_id_opt.as_deref());
     let total_bytes = conv_bytes + agent_bytes + workspace_bytes + source_bytes;
     if !(0..=ROW_BYTES).contains(&total_bytes) {
-        return Err(refuse("canonical_payload_too_large", "Canonical row exceeds the strict bridge byte profile"));
+        return Err(refuse(
+            "canonical_payload_too_large",
+            "Canonical row exceeds the strict bridge byte profile",
+        ));
     }
     let slug = agent_slug.ok_or_else(|| anyhow::anyhow!("Missing required agent slug"))?;
-    if slug.is_empty() { return Err(refuse("canonical_coordinates_invalid", "Required canonical identity is empty")); }
+    if slug.is_empty() {
+        return Err(refuse(
+            "canonical_coordinates_invalid",
+            "Required canonical identity is empty",
+        ));
+    }
     let (ended_at, last_message_idx, last_message_created_at) = match lookup.tails.get(&row_id) {
         Some(ts) => *ts,
-        None => (row.get_typed::<Option<i64>>(9)?, row.get_typed::<Option<i64>>(10)?, row.get_typed::<Option<i64>>(11)?),
+        None => (
+            row.get_typed::<Option<i64>>(9)?,
+            row.get_typed::<Option<i64>>(10)?,
+            row.get_typed::<Option<i64>>(11)?,
+        ),
     };
     let mut value = Map::new();
     value.insert("id".into(), json!(row_id));
@@ -175,27 +230,59 @@ fn decode_session_row(row: &Row, lookup: &SessionLookup) -> Result<Value> {
     value.insert("source_id".into(), required_text(row, 2)?);
     value.insert("source_path".into(), required_text(row, 4)?);
     value.insert("source_kind".into(), json!(source_kind));
-    value.insert("external_id".into(), json!(row.get_typed::<Option<String>>(3)?));
+    value.insert(
+        "external_id".into(),
+        json!(row.get_typed::<Option<String>>(3)?),
+    );
     value.insert("workspace_path".into(), json!(workspace_path));
-    value.insert("origin_host".into(), json!(row.get_typed::<Option<String>>(6)?.or(host_label)));
+    value.insert(
+        "origin_host".into(),
+        json!(row.get_typed::<Option<String>>(6)?.or(host_label)),
+    );
     value.insert("title".into(), json!(row.get_typed::<Option<String>>(7)?));
-    value.insert("primary_model".into(), json!(row.get_typed::<Option<String>>(19)?));
-    value.insert("started_at_ms".into(), json!(row.get_typed::<Option<i64>>(8)?));
+    value.insert(
+        "primary_model".into(),
+        json!(row.get_typed::<Option<String>>(19)?),
+    );
+    value.insert(
+        "started_at_ms".into(),
+        json!(row.get_typed::<Option<i64>>(8)?),
+    );
     value.insert("ended_at_ms".into(), json!(ended_at));
-    value.insert("last_message_created_at_ms".into(), json!(last_message_created_at));
-    value.insert("last_message_idx".into(), nonnegative_val(last_message_idx)?);
-    for (key, index) in [("approx_tokens",12),("total_input_tokens",13),
-        ("total_output_tokens",14),("total_cache_read_tokens",15),("total_cache_creation_tokens",16),
-        ("grand_total_tokens",17),("api_call_count",20),("tool_call_count",21),
-        ("user_message_count",22),("assistant_message_count",23)] {
+    value.insert(
+        "last_message_created_at_ms".into(),
+        json!(last_message_created_at),
+    );
+    value.insert(
+        "last_message_idx".into(),
+        nonnegative_val(last_message_idx)?,
+    );
+    for (key, index) in [
+        ("approx_tokens", 12),
+        ("total_input_tokens", 13),
+        ("total_output_tokens", 14),
+        ("total_cache_read_tokens", 15),
+        ("total_cache_creation_tokens", 16),
+        ("grand_total_tokens", 17),
+        ("api_call_count", 20),
+        ("tool_call_count", 21),
+        ("user_message_count", 22),
+        ("assistant_message_count", 23),
+    ] {
         value.insert(key.into(), nonnegative(row, index)?);
     }
     let cost: Option<f64> = row.get_typed(18)?;
     if cost.is_some_and(|cost| !cost.is_finite() || cost < 0.0) {
-        return Err(refuse("canonical_coordinates_invalid", "Invalid canonical cost"));
+        return Err(refuse(
+            "canonical_coordinates_invalid",
+            "Invalid canonical cost",
+        ));
     }
     value.insert("estimated_cost_usd".into(), json!(cost));
-    value.insert("metadata".into(), serde_json::to_value(extra::decode(row.get_typed(24)?, row.get_typed(25)?))?);
+    value.insert(
+        "metadata".into(),
+        serde_json::to_value(extra::decode(row.get_typed(24)?, row.get_typed(25)?))?,
+    );
     Ok(Value::Object(value))
 }
 
@@ -204,8 +291,15 @@ fn read_session(connection: &Connection, id: i64) -> Result<Option<Value>> {
         &format!("SELECT {CONV_GUARDED_COLUMNS} FROM conversations WHERE id=?1 LIMIT 2"),
         &param_slice_to_values(params![id]),
     )?;
-    if rows.len() > 1 { return Err(refuse("canonical_coordinates_invalid", "Ambiguous canonical row")); }
-    let Some(row) = rows.first() else { return Ok(None); };
+    if rows.len() > 1 {
+        return Err(refuse(
+            "canonical_coordinates_invalid",
+            "Ambiguous canonical row",
+        ));
+    }
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
     let lookup = SessionLookup::preload(connection, id, id)?;
     Ok(Some(decode_session_row(row, &lookup)?))
 }
@@ -213,13 +307,19 @@ fn read_session(connection: &Connection, id: i64) -> Result<Option<Value>> {
 fn decode_message_row(row: &Row) -> Result<Value> {
     let bytes: i64 = row.get_typed(9)?;
     if !(0..=ROW_BYTES).contains(&bytes) {
-        return Err(refuse("canonical_payload_too_large", "Canonical row exceeds the strict bridge byte profile"));
+        return Err(refuse(
+            "canonical_payload_too_large",
+            "Canonical row exceeds the strict bridge byte profile",
+        ));
     }
     let id: i64 = row.get_typed(0)?;
     let conversation_id: i64 = row.get_typed(1)?;
     let idx: i64 = row.get_typed(2)?;
     if id <= 0 || conversation_id <= 0 || idx < 0 {
-        return Err(refuse("canonical_coordinates_invalid", "Invalid canonical message coordinates"));
+        return Err(refuse(
+            "canonical_coordinates_invalid",
+            "Invalid canonical message coordinates",
+        ));
     }
     Ok(json!({
         "id":id,"conversation_id":conversation_id,"idx":idx,"role":required_text(row,3)?,
@@ -232,7 +332,10 @@ fn push_bounded(rows: &mut Vec<Value>, row: Value, bytes: &mut usize) -> Result<
     let row_bytes = serde_json::to_vec(&row)?.len() + 2;
     if *bytes + row_bytes > RESPONSE_BYTES - 8192 {
         if rows.is_empty() {
-            return Err(refuse("canonical_payload_too_large", "Page exceeds bridge response budget; request fewer rows"));
+            return Err(refuse(
+                "canonical_payload_too_large",
+                "Page exceeds bridge response budget; request fewer rows",
+            ));
         }
         return Ok(false);
     }
@@ -244,7 +347,9 @@ fn push_bounded(rows: &mut Vec<Value>, row: Value, bytes: &mut usize) -> Result<
 impl StrictArchive {
     pub fn read_catalog_page(&mut self, after_id: Option<i64>, limit: usize) -> Result<Value> {
         page_limit(limit)?;
-        if after_id.is_some_and(|id| id < 1) { return Err(refuse("invalid_request", "after_id must be positive")); }
+        if after_id.is_some_and(|id| id < 1) {
+            return Err(refuse("invalid_request", "after_id must be positive"));
+        }
         let (mut page, revision) = self.snapshot(|connection| {
             let limit_plus_one = (limit + 1) as i64;
             let conv_rows = if let Some(after) = after_id {
@@ -284,15 +389,29 @@ impl StrictArchive {
     }
 
     pub fn session(&mut self, conversation_id: i64) -> Result<Value> {
-        if conversation_id <= 0 { return Err(refuse("invalid_request", "conversation_id must be positive")); }
-        let (row, revision) = self.snapshot(|connection| read_session(connection, conversation_id))?;
+        if conversation_id <= 0 {
+            return Err(refuse(
+                "invalid_request",
+                "conversation_id must be positive",
+            ));
+        }
+        let (row, revision) =
+            self.snapshot(|connection| read_session(connection, conversation_id))?;
         Ok(json!({"row":row,"archive_stamp":self.stamp,"catalog_revision":revision}))
     }
 
-    pub fn read_messages_page(&mut self, conversation_id: i64, after_idx: Option<i64>, limit: usize) -> Result<Value> {
+    pub fn read_messages_page(
+        &mut self,
+        conversation_id: i64,
+        after_idx: Option<i64>,
+        limit: usize,
+    ) -> Result<Value> {
         page_limit(limit)?;
         if conversation_id <= 0 || after_idx.is_some_and(|idx| idx < 0) {
-            return Err(refuse("invalid_request", "Invalid conversation/message coordinates"));
+            return Err(refuse(
+                "invalid_request",
+                "Invalid conversation/message coordinates",
+            ));
         }
         let (mut page, revision) = self.snapshot(|connection| {
             let limit_plus_one = (limit + 1) as i64;
