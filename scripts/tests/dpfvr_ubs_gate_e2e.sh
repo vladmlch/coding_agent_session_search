@@ -116,14 +116,14 @@ RECEIPT
     # production and test sources must remain selected.
     scope_root="$proof_dir/scope"
     mkdir -p "$scope_root/scripts/lib" "$scope_root/src" "$scope_root/tests" \
-        "$scope_root/.rch-tmp/cass-gate-ubs.example/modules"
+        "$scope_root/.aider.tags.cache.v3/cass-gate-ubs.example/modules"
     cp "$gate" "$scope_root/scripts/gate.sh"
     cp "$PROJECT_ROOT/scripts/lib/run_cargo.sh" "$scope_root/scripts/lib/run_cargo.sh"
     cp "$PROJECT_ROOT/scripts/ubs-version.txt" "$scope_root/scripts/ubs-version.txt"
     cp "$PROJECT_ROOT/.ubsignore" "$scope_root/.ubsignore"
     printf '%s\n' 'pub fn parse(raw: &str) -> u64 { raw.parse().unwrap() }' > "$scope_root/src/production.rs"
     printf '%s\n' '#[test] fn selected_test() { assert!(true); }' > "$scope_root/tests/selected.rs"
-    printf '%s\n' 'raise RuntimeError("retained scanner fixture")' > "$scope_root/.rch-tmp/cass-gate-ubs.example/modules/scanner.py"
+    printf '%s\n' 'raise RuntimeError("retained scanner fixture")' > "$scope_root/.aider.tags.cache.v3/cass-gate-ubs.example/modules/scanner.py"
     git -C "$scope_root" init -q --initial-branch=main
     git -C "$scope_root" add scripts/gate.sh scripts/lib/run_cargo.sh scripts/ubs-version.txt .ubsignore
     git -C "$scope_root" -c user.name=gate-test -c user.email=gate-test@example.invalid \
@@ -133,8 +133,8 @@ RECEIPT
     check_exit test-source-still-selected 0 rg -x -F 'tests/selected.rs' "$proof_dir/ubs-scope-printed.log"
     # check_exit combines stdout/stderr, so match a bare listed-path line
     # rather than the separate stderr note announcing the skipped path.
-    check_exit ignored-scanner-not-selected 1 rg -x -F '.rch-tmp/cass-gate-ubs.example/modules/scanner.py' "$proof_dir/ubs-scope-printed.log"
-    check_exit ignored-path-announced 0 rg -F 'gate: UBS skips .ubsignore path .rch-tmp/' "$proof_dir/ubs-scope-printed.log"
+    check_exit ignored-scanner-not-selected 1 rg -x -F '.aider.tags.cache.v3/cass-gate-ubs.example/modules/scanner.py' "$proof_dir/ubs-scope-printed.log"
+    check_exit ignored-path-announced 0 rg -F 'gate: UBS skips .ubsignore path .aider.tags.cache.v3/' "$proof_dir/ubs-scope-printed.log"
     check_exit repeated-integration-target 2 env GATE_BASE=HEAD bash "$scope_root/scripts/gate.sh" --integration 'e2e_lexical_fail_open:a,e2e_lexical_fail_open:b'
 
     # When every changed file is .ubsignore-covered, the surviving set is an

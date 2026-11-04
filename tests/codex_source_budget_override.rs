@@ -363,8 +363,8 @@ mod budget_override {
         use std::os::unix::process::CommandExt;
 
         // Under /tmp, not TMPDIR: the uid-65534 child must traverse every
-        // ancestor, and a runner's TMPDIR can be private to root (rch:
-        // `<project>/.rch-tmp`, mode 1700, where the spawn failed with EACCES).
+        // ancestor, and a runner's TMPDIR can be private to root (a mode-1700
+        // scratch dir where the spawn failed with EACCES).
         let root = tempfile::Builder::new()
             .prefix("cass-codex-unreadable-")
             .tempdir_in("/tmp")?;

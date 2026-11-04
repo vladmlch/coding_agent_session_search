@@ -14,9 +14,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/cass-vz9t8-3-target}"
-LOG="$RCH_TARGET_DIR/regenerate-plans-snapshots.log"
-mkdir -p "$RCH_TARGET_DIR"
+# shellcheck source=../lib/run_cargo.sh
+source "$SCRIPT_DIR/../lib/run_cargo.sh"
+CASS_WORK_DIR="${CASS_WORK_DIR:-${TMPDIR:-/tmp}/cass-vz9t8-3}"
+LOG="$CASS_WORK_DIR/regenerate-plans-snapshots.log"
+mkdir -p "$CASS_WORK_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 cleanup() {
@@ -50,8 +52,9 @@ if [ -z "${ALLOW_REGEN_WITHOUT_FIXTURES:-}" ]; then
 fi
 
 # Real regeneration path (only when fixtures are present).
+cd "$PROJECT_ROOT"
 echo "[regen_plans] running cargo test ftui_harness_snapshots cassapp_plans"
-rch exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" UPDATE_GOLDENS=1 \
-    cargo test --test ftui_harness_snapshots cassapp_plans -- --nocapture
+UPDATE_GOLDENS=1 run_cargo \
+    test --test ftui_harness_snapshots cassapp_plans -- --nocapture
 
 echo "[regen_plans] DONE. Re-stage and commit the regenerated .snap files."

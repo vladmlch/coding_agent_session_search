@@ -146,7 +146,7 @@ run_unit_tests() {
     local exit_code=0
 
     if [[ $USE_NEXTEST -eq 1 ]]; then
-        if run_cargo nextest run --profile ci --workspace -E 'kind(lib)' --color=always 2>&1 | tee -a "$LOG_FILE"; then
+        if run_cargo nextest run --profile full --workspace -E 'kind(lib)' --color=always 2>&1 | tee -a "$LOG_FILE"; then
             log INFO "Unit tests passed"
         else
             log ERROR "Unit tests failed"
@@ -184,7 +184,7 @@ run_connector_tests() {
         local filter="binary(connector_${conn})"
 
         if [[ $USE_NEXTEST -eq 1 ]]; then
-            if run_cargo nextest run --profile ci -E "$filter" --color=always 2>&1 | tee -a "$LOG_FILE"; then
+            if run_cargo nextest run --profile full -E "$filter" --color=always 2>&1 | tee -a "$LOG_FILE"; then
                 log INFO "  $conn connector passed"
             else
                 log ERROR "  $conn connector failed"
@@ -268,8 +268,8 @@ run_ui_tests() {
     local exit_code=0
 
     if [[ $USE_NEXTEST -eq 1 ]]; then
-        # UI tests are run with the ci profile which has proper thread overrides
-        if run_cargo nextest run --profile ci -E 'test(ui_)' --color=always 2>&1 | tee -a "$LOG_FILE"; then
+        # UI tests are run with the full profile which has proper thread overrides
+        if run_cargo nextest run --profile full -E 'test(ui_)' --color=always 2>&1 | tee -a "$LOG_FILE"; then
             log INFO "UI tests passed"
         else
             log ERROR "UI tests failed"
@@ -419,7 +419,7 @@ print_summary() {
     echo "  JSON: $JSON_LOG_FILE"
 
     if [[ $USE_NEXTEST -eq 1 ]]; then
-        local junit_path="${PROJECT_ROOT}/target/nextest/ci/junit.xml"
+        local junit_path="${PROJECT_ROOT}/target/nextest/full/junit.xml"
         if [[ -f "$junit_path" ]]; then
             echo "  JUnit: $junit_path"
         fi

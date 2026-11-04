@@ -9,7 +9,7 @@
 //! ## Regenerate
 //!
 //! ```bash
-//! UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=${TMPDIR:-/tmp}/rch_target_cass_golden_docs cargo test --test golden_robot_docs
+//! UPDATE_GOLDENS=1 cargo test --test golden_robot_docs
 //! git diff tests/golden/robot_docs/
 //! ```
 
@@ -57,7 +57,7 @@ fn assert_golden(name: &str, actual: &str) {
     let expected = std::fs::read_to_string(&golden_path).unwrap_or_else(|err| {
         panic!(
             "Golden missing: {}\n{err}\n\n\
-             UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=${{TMPDIR:-/tmp}}/rch_target_cass_golden_docs cargo test --test golden_robot_docs\n\
+             UPDATE_GOLDENS=1 cargo test --test golden_robot_docs\n\
              git diff tests/golden/ && git add tests/golden/",
             golden_path.display(),
         )

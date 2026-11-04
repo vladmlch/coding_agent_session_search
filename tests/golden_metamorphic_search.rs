@@ -6,7 +6,7 @@
 //! diff rather than a silent behavioral change.
 //!
 //! Regenerate:
-//!   UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test golden_metamorphic_search
+//!   UPDATE_GOLDENS=1 cargo test --test golden_metamorphic_search
 //!
 //! Then review:
 //!   git diff tests/golden/metamorphic/
@@ -90,7 +90,7 @@ fn assert_golden(name: &str, actual: &str) {
     let expected = std::fs::read_to_string(&golden_path).unwrap_or_else(|err| {
         panic!(
             "Golden file missing: {}\n{err}\n\n\
-             Run: UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test golden_metamorphic_search",
+             Run: UPDATE_GOLDENS=1 cargo test --test golden_metamorphic_search",
             golden_path.display(),
         )
     });
@@ -102,7 +102,7 @@ fn assert_golden(name: &str, actual: &str) {
             "GOLDEN MISMATCH: {name}\n\
              Expected: {}\n\
              Actual:   {}\n\n\
-             Regenerate: UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test golden_metamorphic_search",
+             Regenerate: UPDATE_GOLDENS=1 cargo test --test golden_metamorphic_search",
             golden_path.display(),
             actual_path.display(),
         );

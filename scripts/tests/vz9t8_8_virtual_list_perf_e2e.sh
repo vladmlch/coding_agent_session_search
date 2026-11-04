@@ -7,10 +7,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/cass-vz9t8-8-target}"
-LOG="$RCH_TARGET_DIR/virtual-list-perf-e2e.log"
-SUMMARY="$RCH_TARGET_DIR/virtual-list-summary.md"
-mkdir -p "$RCH_TARGET_DIR"
+CASS_WORK_DIR="${CASS_WORK_DIR:-${TMPDIR:-/tmp}/cass-vz9t8-8}"
+LOG="$CASS_WORK_DIR/virtual-list-perf-e2e.log"
+SUMMARY="$CASS_WORK_DIR/virtual-list-summary.md"
+mkdir -p "$CASS_WORK_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 cleanup() {
@@ -25,7 +25,7 @@ cleanup() {
 trap cleanup EXIT
 
 cd "$PROJECT_ROOT/tests"
-TEST_OUT="$RCH_TARGET_DIR/playwright.out"
+TEST_OUT="$CASS_WORK_DIR/playwright.out"
 echo "[vz9t8_8_e2e] running playwright spec virtual-list-perf.spec.ts"
 PASS=0
 FAIL=0

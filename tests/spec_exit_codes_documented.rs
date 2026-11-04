@@ -71,7 +71,7 @@ fn documented_exit_codes() -> Result<BTreeSet<i32>, Box<dyn Error>> {
 
 /// Every source file that constructs `CliError { code: N, kind: .. }`.
 /// Embedded at compile time so the test has no filesystem dependency at run
-/// time and stays correct under `rch` remote execution.
+/// time and stays correct when the suite runs under local Cargo.
 const SOURCES: &[(&str, &str)] = &[
     ("src/lib.rs", include_str!("../src/lib.rs")),
     ("src/doctor.rs", include_str!("../src/doctor.rs")),

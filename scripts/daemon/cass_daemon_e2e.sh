@@ -13,19 +13,20 @@
 # - target/e2e-daemon/run_<id>/run.log           (Human-readable log)
 #
 # Environment:
-# - RCH_BIN         rch executable (default: rch)
-# - RCH_TARGET_DIR  cargo target dir for offloaded cass build
+# - CARGO_TARGET_DIR / CARGO_BUILD_JOBS / RUST_TEST_THREADS
+#                 shared Cargo defaults resolved by scripts/lib/run_cargo.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_daemon_e2e}"
 
 # Source standard E2E logging library (emits to test-results/e2e/)
 # shellcheck disable=SC1091
 source "${PROJECT_ROOT}/scripts/lib/e2e_log.sh"
+# shellcheck source=../lib/run_cargo.sh
+source "${PROJECT_ROOT}/scripts/lib/run_cargo.sh"
+cass_cargo_resolve
 e2e_init "shell" "daemon_fallback"
 
 RUN_ID="$(date +"%Y%m%d_%H%M%S")_${RANDOM}"
@@ -259,23 +260,7 @@ run_step() {
 }
 
 # shellcheck disable=SC2317
-ensure_rch() {
-    if ! command -v "$RCH_BIN" >/dev/null 2>&1; then
-        log "FAIL" "rch binary not found; daemon E2E cass build must be offloaded"
-        emit_run_end 1
-        e2e_run_end 0 0 0 0 "$(e2e_duration_since_start)"
-        exit 1
-    fi
-}
-
-# shellcheck disable=SC2317
-run_cargo() {
-    "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
-}
-
-# shellcheck disable=SC2317
 build_cass_binary() {
-    ensure_rch
     (cd "$PROJECT_ROOT" && run_cargo build)
 }
 
@@ -304,7 +289,7 @@ fi
 
 if [[ -z "${CASS_BIN:-}" ]]; then
     if [[ $NO_BUILD -eq 0 ]]; then
-        CASS_BIN="${RCH_TARGET_DIR}/debug/cass"
+        CASS_BIN="${CASS_CARGO_TARGET_DIR}/debug/cass"
     else
         CASS_BIN="${PROJECT_ROOT}/target/debug/cass"
     fi

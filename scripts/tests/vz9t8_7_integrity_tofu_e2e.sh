@@ -8,10 +8,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/cass-vz9t8-7-target}"
-LOG="$RCH_TARGET_DIR/integrity-tofu-e2e.log"
-SUMMARY="$RCH_TARGET_DIR/integrity-tofu-summary.md"
-mkdir -p "$RCH_TARGET_DIR"
+CASS_WORK_DIR="${CASS_WORK_DIR:-${TMPDIR:-/tmp}/cass-vz9t8-7}"
+LOG="$CASS_WORK_DIR/integrity-tofu-e2e.log"
+SUMMARY="$CASS_WORK_DIR/integrity-tofu-summary.md"
+mkdir -p "$CASS_WORK_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 cleanup() {
@@ -32,7 +32,7 @@ FAIL=0
 # configuration; we just point at the spec.
 echo "[vz9t8_7_e2e] running playwright spec integrity-tofu.spec.ts"
 cd "$PROJECT_ROOT/tests"
-TEST_OUT="$RCH_TARGET_DIR/playwright.out"
+TEST_OUT="$CASS_WORK_DIR/playwright.out"
 if npx playwright test e2e/encryption/integrity-tofu.spec.ts \
     --reporter=list \
     > "$TEST_OUT" 2>&1; then

@@ -14,7 +14,7 @@
 //! ## Regenerating a golden
 //!
 //! ```bash
-//! UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test golden_robot_json
+//! UPDATE_GOLDENS=1 cargo test --test golden_robot_json
 //! git diff tests/golden/        # review EVERY change
 //! git add tests/golden/
 //! git commit -m "Update robot-mode goldens: <reason>"
@@ -76,8 +76,8 @@ fn cass_cmd(test_home: &std::path::Path) -> Command {
         .env_remove("PI_CONFIG_DIR")
         .env_remove("PI_PROFILE")
         // WS-A.6: stale-on-read auto-refresh is suppressed only for data dirs
-        // under the OS temp dir, and rch workers place `tempfile` dirs beneath
-        // the checkout, so a golden `search`/`stats` could spawn a detached
+        // under the OS temp dir, and test runners may place `tempfile` dirs
+        // beneath the checkout, so a golden `search`/`stats` could spawn a detached
         // `cass index --background` into the fixture copy. (The 2026-09-01
         // leak itself came from `tests/cli_robot.rs` refreshing the committed
         // fixture in place before these tests copied it; both writers are now
@@ -95,7 +95,7 @@ fn cass_cmd(test_home: &std::path::Path) -> Command {
 }
 
 /// Keep doctor fixtures independent of a repository that happens to contain
-/// the platform temp directory. RCH workers may place `tempfile` directories
+/// the platform temp directory. Test runners may place `tempfile` directories
 /// beneath the checkout; without this inner repository boundary, doctor sees
 /// the checkout's `.gitignore` as policy for the synthetic archive.
 fn isolate_doctor_fixture_from_parent_repo(test_home: &Path) -> io::Result<()> {
@@ -1196,7 +1196,7 @@ fn assert_golden(name: &str, actual: &str) {
         panic!(
             "Golden file missing or unreadable: {}\n{err}\n\n\
              Run with UPDATE_GOLDENS=1 to create it, then review and commit:\n\
-             \tUPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test golden_robot_json\n\
+             \tUPDATE_GOLDENS=1 cargo test --test golden_robot_json\n\
              \tgit diff tests/golden/\n\
              \tgit add tests/golden/",
             golden_path.display(),
@@ -1216,7 +1216,7 @@ fn assert_golden(name: &str, actual: &str) {
              Actual:   {} (first difference: {first_difference})\n\n\
              diff the two files to see the drift, then either:\n\
              \t- fix the code if this was unintentional, or\n\
-             \t- regenerate: UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test golden_robot_json \\\n\
+             \t- regenerate: UPDATE_GOLDENS=1 cargo test --test golden_robot_json \\\n\
              \t              && git diff tests/golden/ && git add tests/golden/",
             golden_path.display(),
             actual_path.display(),
@@ -1263,31 +1263,29 @@ fn robot_json_goldens_do_not_embed_repo_paths_or_raw_session_content() {
     }
 }
 
-fn should_scan_for_bare_golden_regeneration_recipe(rel_path: &str) -> bool {
-    if rel_path == "AGENTS.md" || rel_path == "README.md" {
-        return true;
-    }
-    if rel_path.starts_with("docs/artifacts/") || rel_path == "docs/planning/UPGRADE_LOG.md" {
-        return false;
-    }
-    if rel_path.starts_with("docs/") {
-        return rel_path.ends_with(".md");
-    }
-    if rel_path.starts_with("tests/golden/") {
-        return rel_path.ends_with(".golden")
-            || rel_path.ends_with(".json")
-            || rel_path.ends_with(".md");
-    }
+fn should_scan_for_offloaded_golden_regeneration_recipe(rel_path: &str) -> bool {
+    // Only the ported test files are in scope here: regen instructions in
+    // tests/*.rs were rewritten to local `cargo test` by the local-only
+    // scripts port. Docs, README/AGENTS.md and golden data still carry their
+    // own provenance and are covered by the dedicated docs sweep, so they are
+    // not gated by this contract.
     rel_path.starts_with("tests/") && rel_path.ends_with(".rs")
 }
 
 #[test]
-fn golden_regeneration_hints_do_not_use_bare_cargo() {
+fn golden_regeneration_hints_do_not_use_remote_offload() {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let forbidden = concat!("UPDATE_GOLDENS=1 ", "cargo test");
+    // Golden regeneration hints must run under local Cargo. Offload-shaped
+    // regen instructions (the UPDATE_GOLDENS=1 + remote-exec prefix, and the
+    // remote wrapper bypass variable) are exactly what the local-only port
+    // removed and must not reappear.
+    let forbidden = [
+        concat!("UPDATE_GOLDENS=1 ", "rch"),
+        concat!("RCH_CARGO_", "WRAPPER_BYPASS"),
+    ];
     let mut violations = Vec::new();
 
-    for root in ["AGENTS.md", "README.md", "docs", "tests"] {
+    for root in ["tests"] {
         let root = repo_root.join(root);
         for entry in WalkDir::new(&root) {
             let entry = entry.expect("walk golden recipe policy files");
@@ -1301,13 +1299,13 @@ fn golden_regeneration_hints_do_not_use_bare_cargo() {
                 .expect("entry under repo root")
                 .to_string_lossy()
                 .replace('\\', "/");
-            if !should_scan_for_bare_golden_regeneration_recipe(&rel_path) {
+            if !should_scan_for_offloaded_golden_regeneration_recipe(&rel_path) {
                 continue;
             }
 
             let contents = fs::read_to_string(entry.path())
                 .unwrap_or_else(|err| panic!("read {}: {err}", entry.path().display()));
-            if contents.contains(forbidden) {
+            if forbidden.iter().any(|needle| contents.contains(needle)) {
                 violations.push(rel_path);
             }
         }
@@ -1315,7 +1313,7 @@ fn golden_regeneration_hints_do_not_use_bare_cargo() {
 
     assert!(
         violations.is_empty(),
-        "golden regeneration hints must use rch offload, not bare cargo:\n{}",
+        "golden regeneration hints must run under local Cargo, not remote offload:\n{}",
         violations.join("\n")
     );
 }

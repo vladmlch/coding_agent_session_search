@@ -9,9 +9,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/cass-d4r65-target}"
-LOG="$RCH_TARGET_DIR/cass-flags-e2e.log"
-mkdir -p "$RCH_TARGET_DIR"
+CASS_WORK_DIR="${CASS_WORK_DIR:-/tmp/cass-d4r65-target}"
+LOG="$CASS_WORK_DIR/cass-flags-e2e.log"
+mkdir -p "$CASS_WORK_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 cleanup() {
@@ -28,8 +28,8 @@ trap cleanup EXIT
 # Locate or build cass.
 CASS_BIN=""
 for candidate in \
-    "$RCH_TARGET_DIR/release/cass" \
-    "$RCH_TARGET_DIR/debug/cass" \
+    "$CASS_WORK_DIR/release/cass" \
+    "$CASS_WORK_DIR/debug/cass" \
     "$PROJECT_ROOT/target/release/cass" \
     "$PROJECT_ROOT/target/debug/cass" \
     "$(command -v cass 2>/dev/null || true)"; do
@@ -40,7 +40,7 @@ for candidate in \
 done
 
 if [ -z "$CASS_BIN" ]; then
-    echo "[d4r65_e2e] cass not found; build via 'rch exec -- env CARGO_TARGET_DIR=$RCH_TARGET_DIR cargo build --bin cass'"
+    echo "[d4r65_e2e] cass not found; build locally via 'env CARGO_TARGET_DIR=$CASS_WORK_DIR cargo build --bin cass'"
     exit 1
 fi
 echo "[d4r65_e2e] cass binary: $CASS_BIN"

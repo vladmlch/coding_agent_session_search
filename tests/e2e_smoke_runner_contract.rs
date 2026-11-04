@@ -41,16 +41,16 @@ fn smoke_runner_script_is_executable() {
 }
 
 #[test]
-fn smoke_runner_uses_rch_for_cargo_invocations() {
-    tracing::info!(target: "8m208_test", check = "uses_rch");
+fn smoke_runner_uses_local_cargo_for_cargo_invocations() {
+    tracing::info!(target: "8m208_test", check = "uses_local_cargo");
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("scripts")
         .join("tests")
         .join("run_e2e_smoke.sh");
     let body = std::fs::read_to_string(&path).expect("readable");
     assert!(
-        body.contains("rch exec --"),
-        "smoke runner must rch-wrap cargo invocations per AGENTS.md"
+        body.contains("run_cargo test") || body.contains("cargo test"),
+        "smoke runner must invoke cargo locally (run_cargo or cargo test)"
     );
 }
 

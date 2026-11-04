@@ -17,7 +17,7 @@ fn cass_bin_path() -> &'static str {
 /// A cass invocation isolated from the developer's real environment.
 fn cass_cmd(home: &Path) -> Command {
     // Stop dotenvy's ancestor search at this disposable fixture home, even
-    // when the test runner places it underneath the repository's .rch-tmp.
+    // when the test runner places it underneath a repository-local temp dir.
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)

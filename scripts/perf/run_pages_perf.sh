@@ -8,14 +8,15 @@
 # Usage:
 #   ./scripts/perf/run_pages_perf.sh
 #   ./scripts/perf/run_pages_perf.sh --preset large --lighthouse
-#   RCH_TARGET_DIR=/tmp/rch_target_cass_pages_perf ./scripts/perf/run_pages_perf.sh
+#   CARGO_TARGET_DIR=/tmp/cass_pages_perf_target ./scripts/perf/run_pages_perf.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_pages_perf}"
+# shellcheck source=../lib/run_cargo.sh
+source "${PROJECT_ROOT}/scripts/lib/run_cargo.sh"
+cass_cargo_resolve
 
 PRESET_FILTER=""
 RUN_LIGHTHOUSE=0
@@ -40,8 +41,8 @@ while [[ $# -gt 0 ]]; do
 Usage: $0 [--preset <name>] [--lighthouse] [--fail-fast]
 
 Environment:
-  RCH_BIN         rch executable (default: rch)
-  RCH_TARGET_DIR  cargo target dir for offloaded helper build (default: \${TMPDIR:-/tmp}/rch_target_cass_pages_perf)
+  CARGO_TARGET_DIR  cargo target dir for the local helper build
+                    (resolved by scripts/lib/run_cargo.sh)
 EOF
       exit 0
       ;;
@@ -50,17 +51,6 @@ EOF
       ;;
   esac
  done
-
-ensure_rch() {
-  if ! command -v "$RCH_BIN" >/dev/null 2>&1; then
-    log "ERROR" "rch binary not found; pages perf helper build must be offloaded"
-    exit 1
-  fi
-}
-
-run_cargo() {
-  "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
-}
 
 LOG_ROOT="${PROJECT_ROOT}/target/perf"
 RUN_ID="$(date +"%Y%m%d_%H%M%S")_${RANDOM}"
@@ -113,16 +103,14 @@ run_step() {
 }
 
 log "INFO" "Run dir: ${RUN_DIR}"
-log "INFO" "RCH binary: ${RCH_BIN}"
-log "INFO" "RCH target dir: ${RCH_TARGET_DIR}"
+log "INFO" "Cargo target dir: ${CASS_CARGO_TARGET_DIR}"
 
 cd "${PROJECT_ROOT}"
-ensure_rch
 
-BUNDLE_BIN="${RCH_TARGET_DIR}/debug/cass-pages-perf-bundle"
+BUNDLE_BIN="${CASS_CARGO_TARGET_DIR}/debug/cass-pages-perf-bundle"
 run_step "build_bundle_helper" run_cargo build --quiet --bin cass-pages-perf-bundle
 if [[ ! -x "$BUNDLE_BIN" ]]; then
-  log "ERROR" "cass-pages-perf-bundle not found at ${BUNDLE_BIN} after rch build"
+  log "ERROR" "cass-pages-perf-bundle not found at ${BUNDLE_BIN} after local cargo build"
   exit 1
 fi
 

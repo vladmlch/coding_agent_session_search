@@ -19,10 +19,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=../lib/run_cargo.sh
+source "${PROJECT_ROOT}/scripts/lib/run_cargo.sh"
 LOG_FILE="$SCRIPT_DIR/cass_rerank_results.log"
 VERBOSE="${1:-}"
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/rch_target_cass_rerank_e2e}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -70,7 +70,7 @@ if [[ ! -f "$CASS_BIN" ]]; then
 fi
 
 if [[ -z "$CASS_BIN" || ! -f "$CASS_BIN" ]]; then
-    log_fail "cass binary not found. Build via rch, then rerun this script with CASS_BIN=/path/to/cass"
+    log_fail "cass binary not found. Build with cargo (run_cargo build --bin cass), then rerun this script with CASS_BIN=/path/to/cass"
     exit 1
 fi
 
@@ -181,16 +181,11 @@ TOTAL_TESTS=$((TOTAL_TESTS + 1))
 cd "$PROJECT_ROOT"
 TEST_STATUS=1
 TEST_OUTPUT=""
-if ! command -v "$RCH_BIN" >/dev/null 2>&1; then
-    log_fail "rch binary not found; reranker unit tests must be offloaded"
-    CRITICAL_FAILURES=$((CRITICAL_FAILURES + 1))
-else
-    set +e
-    TEST_OUTPUT=$("$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo test reranker:: --lib -- --nocapture 2>&1)
-    TEST_STATUS=$?
-    set -e
-    log_verbose "$TEST_OUTPUT"
-fi
+set +e
+TEST_OUTPUT=$(run_cargo test reranker:: --lib -- --nocapture 2>&1)
+TEST_STATUS=$?
+set -e
+log_verbose "$TEST_OUTPUT"
 
 if [[ "$TEST_STATUS" -eq 0 ]] && echo "$TEST_OUTPUT" | grep -q "test result: ok"; then
     log_success "Reranker unit tests passed"

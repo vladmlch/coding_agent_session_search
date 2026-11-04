@@ -12,7 +12,7 @@
 //! ```
 //!
 //! GitHub Actions is permanently off, so nothing runs them automatically:
-//! run them on a dsr build host against a real release binary.
+//! run them on a local build host against a real release binary.
 //!
 //! ## Artifact Storage
 //!

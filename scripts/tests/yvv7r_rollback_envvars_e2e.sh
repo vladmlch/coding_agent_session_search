@@ -12,11 +12,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# shellcheck source=../lib/run_cargo.sh
+source "$SCRIPT_DIR/../lib/run_cargo.sh"
+cass_cargo_resolve
 
-# Locate the cass binary. Prefer rch target, fall back to local.
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/cass-yvv7r-target}"
-LOG="$RCH_TARGET_DIR/yvv7r-e2e.log"
-mkdir -p "$RCH_TARGET_DIR"
+# Locate the cass binary. Prefer the resolved Cargo target dir, fall back to
+# the project-local target/ or an installed cass on PATH.
+CASS_WORK_DIR="${CASS_WORK_DIR:-${TMPDIR:-/tmp}/cass-yvv7r}"
+LOG="$CASS_WORK_DIR/yvv7r-e2e.log"
+mkdir -p "$CASS_WORK_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 cleanup() {
@@ -32,8 +36,8 @@ trap cleanup EXIT
 
 CASS_BIN=""
 for candidate in \
-    "$RCH_TARGET_DIR/release/cass" \
-    "$RCH_TARGET_DIR/debug/cass" \
+    "$CASS_CARGO_TARGET_DIR/release/cass" \
+    "$CASS_CARGO_TARGET_DIR/debug/cass" \
     "$PROJECT_ROOT/target/release/cass" \
     "$PROJECT_ROOT/target/debug/cass" \
     "$(command -v cass 2>/dev/null || true)"; do
@@ -44,9 +48,9 @@ for candidate in \
 done
 
 if [ -z "$CASS_BIN" ]; then
-    echo "[yvv7r_e2e] cass binary not found; building via rch..."
-    rch exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo build --bin cass
-    CASS_BIN="$RCH_TARGET_DIR/debug/cass"
+    echo "[yvv7r_e2e] cass binary not found; building locally..."
+    (cd "$PROJECT_ROOT" && run_cargo build --bin cass)
+    CASS_BIN="$CASS_CARGO_TARGET_DIR/debug/cass"
     [ -x "$CASS_BIN" ] || {
         echo "[yvv7r_e2e] FAIL: build did not produce $CASS_BIN" >&2
         exit 1

@@ -20,7 +20,7 @@ HOOK="$PROJECT_ROOT/scripts/git-hooks/pre-push.sh"
 }
 
 WORK_ROOT="$(mktemp -d -t cuu3f-prepush-XXXXXXXX)"
-LOG="${RCH_TARGET_DIR:-/tmp/cass-cuu3f-target}/prepush-hook-e2e.log"
+LOG="${CASS_WORK_DIR:-${TMPDIR:-/tmp}/cass-cuu3f}/prepush-hook-e2e.log"
 mkdir -p "$(dirname "$LOG")"
 exec > >(tee -a "$LOG") 2>&1
 

@@ -21,44 +21,44 @@ retries = 0
 slow-timeout = { period = "30s", terminate-after = 2 }
 
 # =============================================================================
-# CI Profile - Continuous Integration
+# Full Profile - Complete local validation runs
 # =============================================================================
-[profile.ci]
-# Don't fail fast in CI - run all tests to get complete results
+[profile.full]
+# Don't fail fast - run all tests to get complete results
 fail-fast = false
-# Use all CPUs
-test-threads = "num-cpus"
-# Verbose output for CI logs
+# Shared local default: 2 test threads
+test-threads = 2
+# Verbose output for gate logs
 status-level = "all"
 final-status-level = "all"
-# Retry flaky tests once in CI
+# Retry flaky tests once in a full gate run
 retries = 1
-# Longer timeout for CI (may be slower)
+# Longer timeout for a full run
 slow-timeout = { period = "60s", terminate-after = 2 }
 
-# JUnit XML output for CI integration
-[profile.ci.junit]
+# JUnit XML output for local gate runs
+[profile.full.junit]
 # Output path for JUnit XML report (relative to store dir)
 path = "junit.xml"
-# Report name shown in CI systems
+# Report name shown in results
 report-name = "cass-test-results"
 # Store output on failure for debugging
 store-success-output = false
 store-failure-output = true
 
 # =============================================================================
-# CI Coverage Profile - Coverage runs
+# Coverage Profile - Local coverage runs
 # =============================================================================
-[profile.ci-coverage]
-# Same settings as CI
+[profile.coverage]
+# Same settings as full
 fail-fast = false
-test-threads = "num-cpus"
+test-threads = 2
 status-level = "all"
 final-status-level = "all"
 retries = 0
 slow-timeout = { period = "120s", terminate-after = 2 }
 
-[profile.ci-coverage.junit]
+[profile.coverage.junit]
 path = "junit.xml"
 report-name = "cass-coverage-test-results"
 store-success-output = false
@@ -98,6 +98,6 @@ store-failure-output = true
 filter = "test(ui_)"
 threads-required = "num-cpus"
 
-[[profile.ci.overrides]]
+[[profile.full.overrides]]
 filter = "test(ui_)"
 threads-required = "num-cpus"

@@ -1,14 +1,15 @@
 //! Deterministic fixture and golden checks for the planned `cass swarm status`
 //! robot contract.
 //!
-//! These tests intentionally do not run live Agent Mail, git remotes, rch jobs,
-//! cargo, cass indexing, or private session-log reads. They pin the fixture
-//! surface that implementation beads can consume once the command exists.
+//! These tests intentionally do not run live Agent Mail, git remotes, build
+//! jobs, cargo, cass indexing, or private session-log reads. They pin the
+//! fixture surface that implementation beads can consume once the command
+//! exists.
 //!
 //! ## Regenerate
 //!
 //! ```bash
-//! UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-swarm-status-golden-target cargo test --test swarm_status_contract
+//! UPDATE_GOLDENS=1 cargo test --test swarm_status_contract
 //! git diff -- tests/fixtures/swarm_status tests/golden/swarm_status tests/swarm_status_contract.rs
 //! ```
 
@@ -24,7 +25,7 @@ use tempfile::TempDir;
 
 const FIXTURE_ROOT: &str = "tests/fixtures/swarm_status";
 const MANIFEST_PATH: &str = "tests/fixtures/swarm_status/manifest.json";
-const GOLDEN_UPDATE_COMMAND_SHAPE: &str = "UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-swarm-status-golden-target cargo test --test swarm_status_contract";
+const GOLDEN_UPDATE_COMMAND_SHAPE: &str = "UPDATE_GOLDENS=1 cargo test --test swarm_status_contract";
 const GOLDEN_REVIEW_COMMAND_SHAPE: &str = "git diff -- tests/fixtures/swarm_status tests/golden/swarm_status tests/swarm_status_contract.rs";
 const STRESS_SAMPLE_COUNT: usize = 5;
 
@@ -575,7 +576,7 @@ fn swarm_status_golden_update_workflow_is_pinned() {
     assert_eq!(
         update_workflow.get("command_shape").and_then(Value::as_str),
         Some(GOLDEN_UPDATE_COMMAND_SHAPE),
-        "golden update workflow must require UPDATE_GOLDENS=1 and rch"
+        "golden update workflow must require UPDATE_GOLDENS=1 and local cargo"
     );
     assert_eq!(
         update_workflow

@@ -10,7 +10,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/cass-4z5uc-target}"
+# shellcheck source=../lib/run_cargo.sh
+source "$SCRIPT_DIR/../lib/run_cargo.sh"
 LOG_DIR="$PROJECT_ROOT/test-results"
 LOG_FILE="$LOG_DIR/connector_edge_cases.log"
 mkdir -p "$LOG_DIR"
@@ -41,9 +42,9 @@ EOF
 
 START_TS="$(date +%s)"
 RC=0
+cd "$PROJECT_ROOT"
 echo "[regenerate] Running cargo test --lib connectors..." | tee -a "$LOG_FILE"
-if rch exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" \
-    cargo test --lib connectors -- --nocapture --test-threads=1 \
+if run_cargo test --lib connectors -- --nocapture --test-threads=1 \
     >> "$LOG_FILE" 2>&1; then
     echo "[regenerate] cargo test --lib connectors PASSED" | tee -a "$LOG_FILE"
 else
@@ -56,8 +57,7 @@ echo "[regenerate] Running integration connector tests..." | tee -a "$LOG_FILE"
 for test_file in "$PROJECT_ROOT/tests/connector_"*.rs; do
     test_name="$(basename "$test_file" .rs)"
     echo "[regenerate]   integration: $test_name" | tee -a "$LOG_FILE"
-    rch exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" \
-        cargo test --test "$test_name" -- --nocapture \
+    run_cargo test --test "$test_name" -- --nocapture \
         >> "$LOG_FILE" 2>&1 || RC=$?
 done
 

@@ -9,10 +9,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/cass-vz9t8-1-target}"
-LOG="$RCH_TARGET_DIR/wcag-aa-e2e.log"
-REPORT="$RCH_TARGET_DIR/wcag-report.md"
-mkdir -p "$RCH_TARGET_DIR"
+# shellcheck source=../lib/run_cargo.sh
+source "$SCRIPT_DIR/../lib/run_cargo.sh"
+CASS_WORK_DIR="${CASS_WORK_DIR:-${TMPDIR:-/tmp}/cass-vz9t8-1}"
+LOG="$CASS_WORK_DIR/wcag-aa-e2e.log"
+REPORT="$CASS_WORK_DIR/wcag-report.md"
+mkdir -p "$CASS_WORK_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 cleanup() {
@@ -30,10 +32,11 @@ PASS=0
 FAIL=0
 
 # Run the cargo test under RUST_LOG=info so the structured tracing rows are captured.
-TEST_OUT="$RCH_TARGET_DIR/wcag-aa-test.out"
+cd "$PROJECT_ROOT"
+TEST_OUT="$CASS_WORK_DIR/wcag-aa-test.out"
 echo "[vz9t8_1_e2e] running cargo test ui_high_contrast_wcag_aa"
-if rch exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" RUST_LOG=info \
-    cargo test --test ui_high_contrast_wcag_aa -- --nocapture --test-threads=1 \
+if RUST_LOG=info run_cargo \
+    test --test ui_high_contrast_wcag_aa -- --nocapture --test-threads=1 \
     > "$TEST_OUT" 2>&1; then
     if grep -q "test result: ok" "$TEST_OUT"; then
         echo "[vz9t8_1_e2e] OK: WCAG tests passed"

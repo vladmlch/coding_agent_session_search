@@ -1,11 +1,12 @@
 //! Strict, run-scoped E2E execution and immutable evidence verification.
 //!
-//! This binary is intentionally separate from the shipped `cass` CLI. RCH runs
-//! it on one explicitly pinned worker; it launches the real Cargo E2E targets,
-//! captures bounded stdout/stderr, validates only that run's JSONL, and seals a
-//! digest manifest. The repository acceptance script independently verifies the
-//! retrieved bytes with shell, jq, and SHA-256 before publishing a report; the
-//! large remote debug binary is not part of the evidence bundle.
+//! This binary is intentionally separate from the shipped `cass` CLI. The
+//! repository acceptance script runs it on the local machine with an explicit
+//! run label; it launches the real Cargo E2E targets, captures bounded
+//! stdout/stderr, validates only that run's JSONL, and seals a digest
+//! manifest. The acceptance script independently verifies the produced bytes
+//! with shell, jq, and SHA-256 before publishing a report; the large local
+//! debug binary is not part of the evidence bundle.
 
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
@@ -34,7 +35,7 @@ const CLEAN_SOURCE_DIFF_SHA256: &str =
 #[derive(Debug, Parser)]
 #[command(
     name = "e2e-run-bundle",
-    about = "Run or verify one immutable strict-RCH E2E evidence bundle"
+    about = "Run or verify one immutable run-scoped E2E evidence bundle"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -43,7 +44,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum BundleCommand {
-    /// Execute real Cargo E2E targets and seal their remote artifacts.
+    /// Execute real Cargo E2E targets and seal their artifacts locally.
     Run(RunArgs),
     /// Verify a retrieved bundle's complete file set, hashes, and provenance.
     Verify(VerifyArgs),

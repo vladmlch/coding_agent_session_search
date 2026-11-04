@@ -76,15 +76,15 @@ artifact path in the evidence index before release.
 
 ### Build, Lint, and Format
 
-- [ ] `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass_release_check cargo fmt --check`
-- [ ] `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass_release_check cargo check --all-targets`
-- [ ] `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass_release_check cargo clippy --all-targets -- -D warnings`
+- [ ] `cargo fmt --check`
+- [ ] `cargo check --all-targets`
+- [ ] `cargo clippy --all-targets -- -D warnings`
 - [ ] If a shared target dir is locked, record the lock owner and rerun rather
   than silently skipping.
 
 ### Golden Contracts
 
-- [ ] `UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass_release_check cargo test --test golden_robot_json --test golden_robot_docs`
+- [ ] `UPDATE_GOLDENS=1 cargo test --test golden_robot_json --test golden_robot_docs`
 - [ ] Review `git diff tests/golden/` manually.
 - [ ] Confirm changed doctor fields are intentional, stable, redacted, and
   documented in robot-docs or introspect schemas.

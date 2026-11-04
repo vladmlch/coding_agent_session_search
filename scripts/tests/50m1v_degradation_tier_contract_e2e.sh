@@ -5,9 +5,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/cass-50m1v-target}"
-LOG="$RCH_TARGET_DIR/degradation-tier-contract-e2e.log"
-mkdir -p "$RCH_TARGET_DIR"
+# shellcheck source=../lib/run_cargo.sh
+source "$SCRIPT_DIR/../lib/run_cargo.sh"
+CASS_WORK_DIR="${CASS_WORK_DIR:-${TMPDIR:-/tmp}/cass-50m1v}"
+LOG="$CASS_WORK_DIR/degradation-tier-contract-e2e.log"
+mkdir -p "$CASS_WORK_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 cleanup() {
@@ -19,11 +21,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+cd "$PROJECT_ROOT"
 echo "[50m1v_e2e] running cargo test degradation_tier_contract"
-TEST_OUT="$RCH_TARGET_DIR/test.out"
+TEST_OUT="$CASS_WORK_DIR/test.out"
 PASS=0; FAIL=0
-if rch exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" \
-    cargo test --test degradation_tier_contract -- --nocapture > "$TEST_OUT" 2>&1; then
+if run_cargo test --test degradation_tier_contract -- --nocapture > "$TEST_OUT" 2>&1; then
     if grep -q "test result: ok" "$TEST_OUT"; then
         echo "[50m1v_e2e] OK: contract tests passed"
         PASS=$((PASS + 1))

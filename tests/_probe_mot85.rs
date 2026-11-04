@@ -8,7 +8,7 @@
 //! Run manually:
 //!
 //! ```bash
-//! CARGO_TARGET_DIR=/tmp/rch_target_cass_cc1 cargo test --test _probe_mot85 -- --ignored --nocapture
+//! cargo test --test _probe_mot85 -- --ignored --nocapture
 //! ```
 //!
 //! When this test *passes*, close mot85 and bump the fsqlite rev in

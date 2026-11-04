@@ -7,19 +7,20 @@
 #   ./scripts/test-report.sh --e2e     # Run E2E tests only
 #   ./scripts/test-report.sh --open    # Open HTML report after generation
 #
-# Reports are generated in ${RCH_TARGET_DIR}/nextest/<profile>/
+# Reports are generated in ${CARGO_TARGET_DIR}/nextest/<profile>/
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_test_report}"
+# shellcheck source=lib/run_cargo.sh
+source "${PROJECT_ROOT}/scripts/lib/run_cargo.sh"
+cass_cargo_resolve
 
 QUICK_MODE=false
 E2E_ONLY=false
 OPEN_REPORT=false
-PROFILE="ci"
+PROFILE="full"
 
 # Parse arguments
 for arg in "$@"; do
@@ -43,14 +44,14 @@ for arg in "$@"; do
             echo "  --open     Open HTML report in browser (requires junit2html)"
             echo ""
             echo "Profiles:"
-            echo "  ci   - Full test suite with JUnit XML output"
+            echo "  full - Full test suite with JUnit XML output (local default)"
             echo "  e2e  - E2E tests with sequential execution"
             echo ""
             echo "Environment:"
-            echo "  RCH_BIN         rch executable (default: rch)"
-            echo "  RCH_TARGET_DIR  cargo target dir for offloaded tests (default: \${TMPDIR:-/tmp}/rch_target_cass_test_report)"
+            echo "  CARGO_TARGET_DIR  local cargo target dir"
+            echo "                    (resolved by scripts/lib/run_cargo.sh)"
             echo ""
-            echo "Reports generated in: \$RCH_TARGET_DIR/nextest/<profile>/junit.xml"
+            echo "Reports generated in: \$CARGO_TARGET_DIR/nextest/<profile>/junit.xml"
             echo ""
             exit 0
             ;;
@@ -59,24 +60,11 @@ done
 
 cd "$PROJECT_ROOT"
 
-ensure_rch() {
-    if ! command -v "$RCH_BIN" &> /dev/null; then
-        echo "Error: rch binary not found; test-report cargo work must be offloaded"
-        exit 1
-    fi
-}
-
-run_cargo() {
-    "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
-}
-
-ensure_rch
-
-# Check if cargo-nextest is available through the offloaded cargo toolchain.
+# Check if cargo-nextest is available in the local cargo toolchain.
 if ! run_cargo nextest --version > /dev/null 2>&1; then
-    echo "Error: cargo-nextest is unavailable through rch"
+    echo "Error: cargo-nextest is unavailable locally"
     echo ""
-    echo "Install it on the rch worker toolchain, or use a worker image that includes cargo-nextest."
+    echo "Install it with: cargo install cargo-nextest --locked"
     echo ""
     exit 1
 fi
@@ -104,7 +92,7 @@ else
 fi
 
 echo "Profile: $PROFILE"
-echo "Target dir: $RCH_TARGET_DIR"
+echo "Target dir: $CASS_CARGO_TARGET_DIR"
 echo ""
 
 # Run tests
@@ -118,7 +106,7 @@ echo "-----------------------------------"
 echo "Test Report"
 echo "-----------------------------------"
 
-JUNIT_PATH="$RCH_TARGET_DIR/nextest/$PROFILE/junit.xml"
+JUNIT_PATH="$CASS_CARGO_TARGET_DIR/nextest/$PROFILE/junit.xml"
 
 if [ -f "$JUNIT_PATH" ]; then
     echo "JUnit XML report: $JUNIT_PATH"
@@ -142,7 +130,7 @@ if [ -f "$JUNIT_PATH" ]; then
     # Generate HTML report if junit2html is available
     if [ "$OPEN_REPORT" = true ]; then
         if command -v junit2html &> /dev/null; then
-            HTML_PATH="$RCH_TARGET_DIR/nextest/$PROFILE/report.html"
+            HTML_PATH="$CASS_CARGO_TARGET_DIR/nextest/$PROFILE/report.html"
             echo ""
             echo "Generating HTML report..."
             junit2html "$JUNIT_PATH" "$HTML_PATH"

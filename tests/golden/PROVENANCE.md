@@ -7,18 +7,18 @@ that requires re-approval.
 
 ## Regeneration
 
-Cargo-based golden regeneration is CPU-heavy in this repo. Run it through
-`rch` and pin `CARGO_TARGET_DIR` so local agents do not contend for the shared
-machine target cache.
+Golden regeneration runs under local Cargo. Run it on the development
+machine with plain `cargo test`; `scripts/lib/run_cargo.sh` resolves a shared
+`CARGO_TARGET_DIR` for scripted runs.
 
 ```bash
 # Regenerate every golden
-UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test golden_robot_json
-UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test pages_export_golden
+UPDATE_GOLDENS=1 cargo test --test golden_robot_json
+UPDATE_GOLDENS=1 cargo test --test pages_export_golden
 
 # Regenerate a specific test
-UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test golden_robot_json -- capabilities_json
-UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test pages_export_golden -- basic_export_html
+UPDATE_GOLDENS=1 cargo test --test golden_robot_json -- capabilities_json
+UPDATE_GOLDENS=1 cargo test --test pages_export_golden -- basic_export_html
 
 # After regeneration, review and commit
 git diff tests/golden/
@@ -49,9 +49,9 @@ treated as shape drift.
 
 Bead `coding_agent_session_search-uuwye.6` tracks future goldens for
 `cass pack`. Those goldens must follow the same review loop as existing robot
-goldens: generate through `rch`, canonicalize dynamic values before freezing,
-review every `tests/golden/` diff, and commit the test plus golden update
-together.
+goldens: generate under local Cargo, canonicalize dynamic values before
+freezing, review every `tests/golden/` diff, and commit the test plus golden
+update together.
 
 Expected answer-pack golden families:
 
@@ -147,12 +147,10 @@ reports, and assertion summaries remain exact.
 same scenarios and artifact contract. Neither golden may contain a fixture's
 synthetic private-session markers or an ambient host path.
 
-Regenerate only through the focused remote gate, then review every byte:
+Regenerate only through the focused golden gate, then review every byte:
 
 ```sh
-UPDATE_GUIDED_OPS_GOLDENS=1 rch exec -- \
-  env CARGO_TARGET_DIR=/data/tmp/cass-guided-golden-target \
-  cargo test --test e2e_guided_ops_golden_gate
+UPDATE_GUIDED_OPS_GOLDENS=1 cargo test --test e2e_guided_ops_golden_gate
 git diff -- tests/golden/guided_ops/
 ```
 
@@ -170,9 +168,7 @@ resume signal, safe next command, and top-level `schema_version`, `applied`,
 Regenerate and review only through the focused golden test:
 
 ```sh
-UPDATE_GOLDENS=1 rch exec -- \
-  env CARGO_TARGET_DIR=/data/tmp/cass-quarantine-retry-golden-target \
-  cargo test --test golden_robot_json -- quarantine_retry_shape_matches_golden
+UPDATE_GOLDENS=1 cargo test --test golden_robot_json -- quarantine_retry_shape_matches_golden
 git diff -- tests/golden/robot/quarantine_retry_shape.json.golden
 ```
 

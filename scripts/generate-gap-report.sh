@@ -31,7 +31,7 @@ if [ ! -f "$COVERAGE_JSON" ]; then
     echo "Error: Coverage file not found: $COVERAGE_JSON"
     echo ""
     echo "Generate it first with:"
-    echo "  rch exec -- env CARGO_TARGET_DIR=\${TMPDIR:-/tmp}/rch_target_cass_gap_report cargo llvm-cov --lib --json --output-path $COVERAGE_JSON"
+    echo "  cargo llvm-cov --lib --json --output-path $COVERAGE_JSON"
     exit 1
 fi
 

@@ -6,7 +6,7 @@ fn doctor_v2_release_checklist_records_required_release_gates() {
         "cargo fmt --check",
         "cargo check --all-targets",
         "cargo clippy --all-targets -- -D warnings",
-        "UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass_release_check cargo test --test golden_robot_json --test golden_robot_docs",
+        "UPDATE_GOLDENS=1 cargo test --test golden_robot_json --test golden_robot_docs",
         "scripts/e2e/doctor_v2.sh run --label quick",
         "scripts/e2e/doctor_v2.sh run --label safe-auto",
         "scripts/e2e/doctor_v2.sh run --label promotion",

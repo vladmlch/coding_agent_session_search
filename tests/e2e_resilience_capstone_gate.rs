@@ -555,8 +555,7 @@ fn subsystem_coverage_matrix_is_gap_free_and_every_artifact_exists() -> TestResu
 
 /// Golden: the integrated coverage descriptor names every matrix subsystem and
 /// matches its pinned snapshot. Regenerate after a deliberate change with:
-/// `UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target
-/// cargo test --test e2e_resilience_capstone_gate`.
+/// `UPDATE_GOLDENS=1 cargo test --test e2e_resilience_capstone_gate`.
 #[test]
 fn integrated_coverage_descriptor_matches_golden_and_covers_every_subsystem() -> TestResult {
     let started = Instant::now();
@@ -600,21 +599,20 @@ fn integrated_coverage_descriptor_matches_golden_and_covers_every_subsystem() ->
         }
         std::fs::write(&golden, &rendered)?;
         eprintln!("[GOLDEN] Updated: {}", golden.display());
-        // Builds for this repo run on remote rch workers whose source-tree
-        // writes are not synced back; emit the rendered golden to stderr so a
-        // remote `UPDATE_GOLDENS=1` run can regenerate the on-disk golden too.
+        // Emit the rendered golden to stderr as well, so a `UPDATE_GOLDENS=1`
+        // run log retains the exact bytes that were written to disk.
         eprintln!("===CAPSTONE-GOLDEN-START===\n{rendered}===CAPSTONE-GOLDEN-END===");
         return Ok(());
     }
     let on_disk = std::fs::read_to_string(&golden).map_err(|e| {
         format!(
-            "missing coverage golden {}: {e}; create it with UPDATE_GOLDENS=1 (rch offload)",
+            "missing coverage golden {}: {e}; create it with UPDATE_GOLDENS=1",
             golden.display()
         )
     })?;
     ensure(on_disk.cmp(&rendered).is_eq(), || {
         format!(
-            "coverage golden {} is stale; regenerate with UPDATE_GOLDENS=1 (rch offload) and review the diff",
+            "coverage golden {} is stale; regenerate with UPDATE_GOLDENS=1 and review the diff",
             golden.display()
         )
     })?;

@@ -8,9 +8,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/cass-8tgic-target}"
-LOG="$RCH_TARGET_DIR/simd-tests-e2e.log"
-mkdir -p "$RCH_TARGET_DIR"
+# shellcheck source=../lib/run_cargo.sh
+source "$SCRIPT_DIR/../lib/run_cargo.sh"
+CASS_WORK_DIR="${CASS_WORK_DIR:-${TMPDIR:-/tmp}/cass-8tgic}"
+LOG="$CASS_WORK_DIR/simd-tests-e2e.log"
+mkdir -p "$CASS_WORK_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 cleanup() {
@@ -29,8 +31,8 @@ run_test() {
     local start
     start=$(date +%s%N)
     local out
-    if out="$(rch exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" \
-        cargo test --test simd_tests "$name" -- --nocapture --test-threads=1 2>&1)"; then
+    if out="$(cd "$PROJECT_ROOT" && run_cargo \
+        test --test simd_tests "$name" -- --nocapture --test-threads=1 2>&1)"; then
         local elapsed_ns=$(($(date +%s%N) - start))
         local elapsed_ms=$((elapsed_ns / 1000000))
         echo "[8tgic_e2e] OK: $name (${elapsed_ms}ms)"

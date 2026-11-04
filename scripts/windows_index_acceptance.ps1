@@ -1,6 +1,7 @@
 # Native Windows indexing acceptance for one cass.exe (beads aegfi / GH #429
-# and 4w0ma / GH #406). Run it on a dsr Windows build host (wlap, wsurf)
-# against a published release and against a source build.
+# and 4w0ma / GH #406). Run it on a local Windows machine against a published
+# release or a local source build (`cargo build --release --bin cass`; pass the
+# resulting cass.exe as -Cass).
 #
 # Proves, in fresh processes on a real NTFS data dir:
 #   1. a full index of a Claude Code fixture exits 0 with JSON on stdout;

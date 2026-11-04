@@ -9,9 +9,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/cass-vz9t8-4-target}"
-LOG="$RCH_TARGET_DIR/crypto-tracing-e2e.log"
-mkdir -p "$RCH_TARGET_DIR"
+# shellcheck source=../lib/run_cargo.sh
+source "$SCRIPT_DIR/../lib/run_cargo.sh"
+CASS_WORK_DIR="${CASS_WORK_DIR:-${TMPDIR:-/tmp}/cass-vz9t8-4}"
+LOG="$CASS_WORK_DIR/crypto-tracing-e2e.log"
+mkdir -p "$CASS_WORK_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 cleanup() {
@@ -28,10 +30,11 @@ trap cleanup EXIT
 PASS=0
 FAIL=0
 
+cd "$PROJECT_ROOT"
 echo "[vz9t8_4_e2e] running cargo test crypto_tracing_safety"
-TEST_OUT="$RCH_TARGET_DIR/crypto-tracing-test.out"
-if rch exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" RUST_LOG=debug \
-    cargo test --test crypto_tracing_safety -- --nocapture --test-threads=1 \
+TEST_OUT="$CASS_WORK_DIR/crypto-tracing-test.out"
+if RUST_LOG=debug run_cargo \
+    test --test crypto_tracing_safety -- --nocapture --test-threads=1 \
     > "$TEST_OUT" 2>&1; then
     if grep -q "test result: ok" "$TEST_OUT"; then
         echo "[vz9t8_4_e2e] OK: cargo test passed"

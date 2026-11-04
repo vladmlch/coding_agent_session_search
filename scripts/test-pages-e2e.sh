@@ -15,6 +15,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# shellcheck source=lib/run_cargo.sh
+source "${PROJECT_ROOT}/scripts/lib/run_cargo.sh"
 LOG_DIR="${PROJECT_ROOT}/test-logs"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="${LOG_DIR}/pages_e2e_${TIMESTAMP}.log"
@@ -38,8 +40,6 @@ VERBOSE=${VERBOSE:-0}
 USE_NEXTEST=${USE_NEXTEST:-1}
 FAIL_FAST=${FAIL_FAST:-0}
 INCLUDE_MASTER=${INCLUDE_MASTER:-0}
-RCH_BIN=${RCH_BIN:-rch}
-RCH_TARGET_DIR=${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_pages_e2e}
 
 # =============================================================================
 # Logging Functions
@@ -87,23 +87,12 @@ log_section() {
 # Test Runner Functions
 # =============================================================================
 
-ensure_rch() {
-    if ! command -v "$RCH_BIN" &> /dev/null; then
-        log ERROR "rch binary not found; pages E2E cargo tests must be offloaded"
-        return 1
-    fi
-}
-
-run_cargo() {
-    "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
-}
-
 check_nextest() {
     if [[ $USE_NEXTEST -eq 1 ]]; then
         if run_cargo nextest --version > /dev/null 2>&1; then
             return 0
         else
-            log WARN "cargo-nextest unavailable through rch, falling back to run_cargo test"
+            log WARN "cargo-nextest unavailable locally, falling back to run_cargo test"
             USE_NEXTEST=0
         fi
     fi
@@ -166,7 +155,7 @@ run_pages_accessibility_tests() {
     log_section "Pages Accessibility Tests"
 
     if [[ $USE_NEXTEST -eq 1 ]]; then
-        if run_cargo nextest run --profile ci -E "binary(pages_accessibility_e2e)" --color=always 2>&1 | tee -a "$LOG_FILE"; then
+        if run_cargo nextest run --profile full -E "binary(pages_accessibility_e2e)" --color=always 2>&1 | tee -a "$LOG_FILE"; then
             log INFO "Accessibility tests PASSED"
             return 0
         else
@@ -188,7 +177,7 @@ run_pages_error_handling_tests() {
     log_section "Pages Error Handling Tests"
 
     if [[ $USE_NEXTEST -eq 1 ]]; then
-        if run_cargo nextest run --profile ci -E "binary(pages_error_handling_e2e)" --color=always 2>&1 | tee -a "$LOG_FILE"; then
+        if run_cargo nextest run --profile full -E "binary(pages_error_handling_e2e)" --color=always 2>&1 | tee -a "$LOG_FILE"; then
             log INFO "Error handling tests PASSED"
             return 0
         else
@@ -228,8 +217,8 @@ Environment Variables:
   FAIL_FAST=1         Same as --fail-fast
   INCLUDE_MASTER=1    Same as --include-master
   USE_NEXTEST=0       Same as --no-nextest
-  RCH_BIN=rch         Remote compilation helper binary
-  RCH_TARGET_DIR=...  Remote Cargo target dir (default: \${TMPDIR:-/tmp}/rch_target_cass_pages_e2e)
+  CARGO_TARGET_DIR=... / CARGO_BUILD_JOBS=... / RUST_TEST_THREADS=...
+                      Shared local Cargo defaults (scripts/lib/run_cargo.sh)
 
 Output:
   Text log: test-logs/pages_e2e_TIMESTAMP.log
@@ -260,9 +249,8 @@ main() {
     log INFO "Timestamp: $TIMESTAMP"
 
     cd "$PROJECT_ROOT"
-    ensure_rch || exit 1
-    log INFO "RCH binary: $RCH_BIN"
-    log INFO "RCH target dir: $RCH_TARGET_DIR"
+    cass_cargo_resolve
+    log INFO "Cargo target dir: $CASS_CARGO_TARGET_DIR"
 
     # Check for nextest
     check_nextest

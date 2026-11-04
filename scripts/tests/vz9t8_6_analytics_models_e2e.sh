@@ -7,9 +7,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/cass-vz9t8-6-target}"
-LOG="$RCH_TARGET_DIR/analytics-models-e2e.log"
-mkdir -p "$RCH_TARGET_DIR"
+# shellcheck source=../lib/run_cargo.sh
+source "$SCRIPT_DIR/../lib/run_cargo.sh"
+CASS_WORK_DIR="${CASS_WORK_DIR:-${TMPDIR:-/tmp}/cass-vz9t8-6}"
+LOG="$CASS_WORK_DIR/analytics-models-e2e.log"
+mkdir -p "$CASS_WORK_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 cleanup() {
@@ -26,10 +28,10 @@ trap cleanup EXIT
 PASS=0
 FAIL=0
 
+cd "$PROJECT_ROOT"
 echo "[vz9t8_6_e2e] running cargo test e2e_analytics_models"
-TEST_OUT="$RCH_TARGET_DIR/e2e-analytics-models.out"
-if rch exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" \
-    cargo test --test e2e_analytics_models -- --nocapture --test-threads=1 \
+TEST_OUT="$CASS_WORK_DIR/e2e-analytics-models.out"
+if run_cargo test --test e2e_analytics_models -- --nocapture --test-threads=1 \
     > "$TEST_OUT" 2>&1; then
     if grep -q "test result: ok" "$TEST_OUT"; then
         echo "[vz9t8_6_e2e] OK: e2e_analytics_models passed"

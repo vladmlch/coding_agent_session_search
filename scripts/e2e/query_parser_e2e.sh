@@ -8,8 +8,8 @@
 # Usage: ./scripts/e2e/query_parser_e2e.sh
 #
 # Environment:
-#   RCH_BIN         rch executable (default: rch)
-#   RCH_TARGET_DIR  cargo target dir for offloaded cass build
+#   CARGO_TARGET_DIR / CARGO_BUILD_JOBS / RUST_TEST_THREADS
+#                 shared Cargo defaults resolved by scripts/lib/run_cargo.sh
 #
 # Part of br-wwl0: Create query_parser_e2e.sh E2E Script
 
@@ -17,12 +17,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_query_parser_e2e}"
 
 # Source the E2E logging library
 # shellcheck disable=SC1091
 source "${PROJECT_ROOT}/scripts/lib/e2e_log.sh"
+# shellcheck source=../lib/run_cargo.sh
+source "${PROJECT_ROOT}/scripts/lib/run_cargo.sh"
+cass_cargo_resolve
 
 # Initialize logging
 e2e_init "shell" "query_parser_e2e"
@@ -37,24 +38,12 @@ SUITE="query_parser"
 
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
-CASS_BIN="${CASS_BIN:-${RCH_TARGET_DIR}/debug/cass}"
+CASS_BIN="${CASS_BIN:-${CASS_CARGO_TARGET_DIR}/debug/cass}"
 SANDBOX_DIR=""
-
-ensure_rch() {
-    if ! command -v "$RCH_BIN" >/dev/null 2>&1; then
-        e2e_error "rch binary not found; query parser E2E cass build must be offloaded"
-        exit 1
-    fi
-}
-
-run_cargo() {
-    "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
-}
 
 ensure_cass_binary() {
     if [[ ! -x "$CASS_BIN" ]]; then
-        e2e_info "Building cass binary through rch..."
-        ensure_rch
+        e2e_info "Building cass binary locally..."
         (cd "$PROJECT_ROOT" && run_cargo build --quiet --bin cass 2>/dev/null)
     fi
     if [[ ! -x "$CASS_BIN" ]]; then

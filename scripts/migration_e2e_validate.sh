@@ -8,8 +8,8 @@
 #   ./scripts/migration_e2e_validate.sh --quick    # Skip benchmarks and slow checks
 #
 # Environment:
-#   RCH_BIN         rch executable (default: rch)
-#   RCH_TARGET_DIR  cargo target dir for offloaded validation commands
+#   CARGO_TARGET_DIR / CARGO_BUILD_JOBS / RUST_TEST_THREADS
+#                   shared Cargo defaults resolved by scripts/lib/run_cargo.sh
 #   CASS_ROUTINE_FEATURES
 #                   cass feature set for routine gates, excluding
 #                   strict-path-dep-validation unless explicitly overridden
@@ -27,8 +27,8 @@ CASS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FS_ROOT="/data/projects/frankensearch"
 FAD_ROOT="/data/projects/franken_agent_detection"
 BASELINE_DIR="${CASS_ROOT}/docs/artifacts/migration-baseline"
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_migration_e2e_validate}"
+# shellcheck source=lib/run_cargo.sh
+source "${CASS_ROOT}/scripts/lib/run_cargo.sh"
 CASS_ROUTINE_FEATURES="${CASS_ROUTINE_FEATURES:-qr encryption backtrace}"
 
 # Colors (only when stdout is a terminal)
@@ -50,13 +50,11 @@ for arg in "$@"; do
         --quick) QUICK_MODE=1 ;;
         --help)
             echo "Usage: $0 [--quick]"
-            echo "  --local    Unsupported; agent builds must use rch"
+            echo "  --local    Accepted for compatibility; all cargo commands run locally"
             echo "  --quick    Skip benchmarks and slow checks"
             exit 0
             ;;
         --local)
-            echo "Error: --local is unsupported; migration validation cargo commands must be offloaded through rch" >&2
-            exit 2
             ;;
     esac
 done
@@ -109,11 +107,7 @@ warn() {
 }
 
 cargo_cmd() {
-    if ! command -v "$RCH_BIN" >/dev/null 2>&1; then
-        echo "Error: rch is required for offloaded Cargo execution" >&2
-        return 127
-    fi
-    "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
+    run_cargo "$@"
 }
 
 elapsed_since() {
@@ -257,12 +251,12 @@ else
 
 section "4. Binary Size"
 
-# Find release binary: check CARGO_TARGET_DIR, then standard, then rch
+# Find release binary: check the resolved CARGO_TARGET_DIR, then the standard path
+cass_cargo_resolve
 CASS_BINARY=""
 for candidate in \
-    "${CARGO_TARGET_DIR:-}/release/cass" \
-    "${CASS_ROOT}/target/release/cass" \
-    "${CASS_ROOT}/target_amber_rch/release/cass"; do
+    "${CASS_CARGO_TARGET_DIR:-}/release/cass" \
+    "${CASS_ROOT}/target/release/cass"; do
     if [[ -f "$candidate" ]]; then
         CASS_BINARY="$candidate"
         break

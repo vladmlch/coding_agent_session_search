@@ -28,6 +28,8 @@ TIMESTAMP=$(date -u +"%Y%m%d_%H%M%S")
 # Source the e2e logging library
 # shellcheck disable=SC1091
 source "${PROJECT_ROOT}/scripts/lib/e2e_log.sh"
+# shellcheck source=../lib/run_cargo.sh
+source "${PROJECT_ROOT}/scripts/lib/run_cargo.sh"
 
 # =============================================================================
 # Configuration
@@ -46,8 +48,6 @@ else
 fi
 FAIL_FAST=${FAIL_FAST:-0}
 VERBOSE=${VERBOSE:-0}
-RCH_BIN=${RCH_BIN:-rch}
-RCH_TARGET_DIR=${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_tests_run_all}
 CASS_ROUTINE_FEATURES="${CASS_ROUTINE_FEATURES:-qr encryption backtrace}"
 
 # Colors
@@ -74,7 +74,7 @@ Usage:
     ./scripts/tests/run_all.sh [OPTIONS]
 
 Options:
-    --rust-only       Run only Rust E2E tests (rch exec -- env CARGO_TARGET_DIR=... cargo test e2e_*)
+    --rust-only       Run only Rust E2E tests (cargo test e2e_* via run_cargo)
     --shell-only      Run only shell script tests (scripts/test-*.sh)
     --playwright-only Run only Playwright E2E tests on GitHub Actions
     --fail-fast       Stop execution on first suite failure
@@ -82,8 +82,8 @@ Options:
     --help            Show this help message
 
 Environment:
-    RCH_BIN          rch executable to use for Rust E2E tests (default: rch)
-    RCH_TARGET_DIR   remote Cargo target dir for Rust E2E tests
+    CARGO_TARGET_DIR / CARGO_BUILD_JOBS / RUST_TEST_THREADS
+                     Shared Cargo defaults resolved by scripts/lib/run_cargo.sh
     CASS_ROUTINE_FEATURES
                      Cass features for Rust E2E tests; defaults to
                      "qr encryption backtrace" and intentionally excludes
@@ -232,13 +232,6 @@ skip_suite() {
     ((TOTAL_SKIPPED += 1))
 }
 
-ensure_rch() {
-    if ! command -v "$RCH_BIN" >/dev/null 2>&1; then
-        echo "rch binary not found: ${RCH_BIN}" >&2
-        return 1
-    fi
-}
-
 # =============================================================================
 # Generate Summary
 # =============================================================================
@@ -316,6 +309,7 @@ EOF
 # =============================================================================
 
 main() {
+    cd "$PROJECT_ROOT"
     mkdir -p "$OUTPUT_DIR"
 
     # Initialize orchestrator logging
@@ -357,15 +351,7 @@ main() {
             for t in "${rust_tests[@]}"; do
                 args+=(--test "$t")
             done
-            if ! ensure_rch; then
-                failed=1
-                SUITE_NAMES+=("rust_e2e")
-                SUITE_RESULTS+=("fail")
-                SUITE_DURATIONS+=("0")
-                ((TOTAL_FAILED += 1))
-                log_result "rust_e2e" "fail" "0"
-                [[ "$FAIL_FAST" -eq 1 ]] && { generate_summary; exit 1; }
-            elif run_suite "rust_e2e" "rust" "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" E2E_LOG=1 cargo test --features "$CASS_ROUTINE_FEATURES" --verbose "${args[@]}" -- --test-threads=1 --nocapture; then
+            if E2E_LOG=1 run_suite "rust_e2e" "rust" run_cargo test --features "$CASS_ROUTINE_FEATURES" --verbose "${args[@]}" -- --test-threads=1 --nocapture; then
                 :
             else
                 failed=1

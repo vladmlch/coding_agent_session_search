@@ -99,7 +99,7 @@ if [[ -z "${CASS_BIN:-}" ]]; then
     elif command -v cass >/dev/null 2>&1; then
         CASS_BIN="$(command -v cass)"
     else
-        log_fail "cass binary not found. Build via rch, then rerun this script with CASS_BIN=/path/to/cass"
+        log_fail "cass binary not found. Build with cargo (cargo build --bin cass), then rerun this script with CASS_BIN=/path/to/cass"
         exit 1
     fi
 fi

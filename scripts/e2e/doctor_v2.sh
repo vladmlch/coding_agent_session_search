@@ -7,8 +7,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_doctor_v2_e2e}"
+# shellcheck source=../lib/run_cargo.sh
+source "${PROJECT_ROOT}/scripts/lib/run_cargo.sh"
 
 MODE="run"
 if [[ $# -gt 0 ]]; then
@@ -50,8 +50,8 @@ Artifacts:
   test-results/e2e/doctor-v2/run-*/scenario-manifest.json
 
 Environment:
-  RCH_BIN         rch executable used for Cargo commands (default: rch)
-  RCH_TARGET_DIR  remote Cargo target dir for doctor v2 E2E commands
+  CARGO_TARGET_DIR / CARGO_BUILD_JOBS / RUST_TEST_THREADS
+                shared Cargo defaults resolved by scripts/lib/run_cargo.sh
 
   --artifact-dir names a base directory; each invocation creates a fresh
   run-* child so repeated runs preserve earlier evidence. Use --run-root only
@@ -181,18 +181,6 @@ run_golden_tests() {
   run_cargo test --locked --test golden_robot_docs robot_docs_guide_matches_golden -- --nocapture
   run_cargo test --locked --test golden_robot_json introspect_json_matches_golden -- --nocapture
   run_cargo test --locked --test golden_robot_json introspect_shape_matches_golden -- --nocapture
-}
-
-ensure_rch() {
-  if ! command -v "$RCH_BIN" >/dev/null 2>&1; then
-    echo "rch binary not found: ${RCH_BIN}" >&2
-    return 1
-  fi
-}
-
-run_cargo() {
-  ensure_rch
-  "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
 }
 
 run_cargo_logged() {

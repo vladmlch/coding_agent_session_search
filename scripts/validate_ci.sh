@@ -1,15 +1,20 @@
 #!/bin/bash
 # scripts/validate_ci.sh
+# Local gate validation: artifact hygiene, no-mock policy, formatting,
+# clippy, tests, optional audit, and E2E logging compliance. All Cargo
+# gates run locally through scripts/lib/run_cargo.sh.
 
 set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/run_cargo.sh
+source "${SCRIPT_DIR}/lib/run_cargo.sh"
 
 # Parse arguments
 NO_MOCK_ONLY=false
 ARTIFACT_HYGIENE_ONLY=false
 NO_MOCK_FAILED=false
 E2E_COMPLIANCE_FAILED=false
-RCH_BIN=${RCH_BIN:-rch}
-RCH_TARGET_DIR=${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_validate_ci}
 CASS_ROUTINE_FEATURES="${CASS_ROUTINE_FEATURES:-qr encryption backtrace}"
 
 usage() {
@@ -17,23 +22,13 @@ usage() {
 Usage: scripts/validate_ci.sh [--no-mock-only|--artifact-hygiene-only]
 
 Environment:
-  RCH_BIN=rch         Remote compilation helper binary for heavy Cargo gates
-  RCH_TARGET_DIR=...  Remote Cargo target dir for heavy gates
+  CARGO_TARGET_DIR / CARGO_BUILD_JOBS / RUST_TEST_THREADS
+                      Shared local Cargo defaults resolved by
+                      scripts/lib/run_cargo.sh
   CASS_ROUTINE_FEATURES="qr encryption backtrace"
                        Cass features for routine gates; excludes
                        strict-path-dep-validation by default
 USAGE
-}
-
-ensure_rch() {
-    if ! command -v "$RCH_BIN" &> /dev/null; then
-        echo "ERROR: rch binary not found; validate_ci Cargo gates must be offloaded" >&2
-        return 1
-    fi
-}
-
-run_cargo() {
-    "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -64,7 +59,7 @@ if [ "$NO_MOCK_ONLY" = true ] && [ "$ARTIFACT_HYGIENE_ONLY" = true ]; then
     exit 2
 fi
 
-echo "=== Validating CI Pipeline ==="
+echo "=== Validating Local Gates ==="
 
 # ============================================================
 # Repository Artifact Hygiene Check
@@ -221,9 +216,9 @@ if [ "$NO_MOCK_ONLY" = true ]; then
     exit 0
 fi
 
-echo "2. Running local CI simulation..."
-ensure_rch
-echo "  - Using rch target dir: $RCH_TARGET_DIR"
+echo "2. Running local gate checks..."
+cass_cargo_resolve
+echo "  - Using cargo target dir: $CASS_CARGO_TARGET_DIR"
 echo "  - Using cass features: $CASS_ROUTINE_FEATURES"
 echo "  - Checking formatting..."
 run_cargo fmt --all -- --check
@@ -241,7 +236,7 @@ echo "  - Running cargo audit (if installed)..."
 if run_cargo audit --version >/dev/null 2>&1; then
     run_cargo audit
 else
-    echo "    (Skipping cargo audit: cargo-audit not available through rch)"
+    echo "    (Skipping cargo audit: cargo-audit not installed locally)"
 fi
 
 if [ -f "web/package.json" ]; then
@@ -300,16 +295,16 @@ fi
 # Final check for deferred no-mock failures
 if [ "$NO_MOCK_FAILED" = true ]; then
     echo ""
-    echo "=== CI Validation FAILED ==="
+    echo "=== Local Gate Validation FAILED ==="
     echo "No-mock policy violations found. See output above."
     exit 1
 fi
 
 if [ "$E2E_COMPLIANCE_FAILED" = true ]; then
     echo ""
-    echo "=== CI Validation FAILED ==="
+    echo "=== Local Gate Validation FAILED ==="
     echo "E2E logging compliance violations found. See output above."
     exit 1
 fi
 
-echo "=== CI Validation Complete ==="
+echo "=== Local Gate Validation Complete ==="

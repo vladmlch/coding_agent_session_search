@@ -15,16 +15,16 @@
 # Environment:
 #   CASS_BIN       - path to cass binary (default: target/release/cass,
 #                    target/debug/cass, or cass on PATH)
-#   RCH_BIN        - rch executable (default: rch)
-#   RCH_TARGET_DIR - remote cargo target directory
+#   CARGO_TARGET_DIR / CARGO_BUILD_JOBS / RUST_TEST_THREADS
+#                  - shared Cargo defaults resolved by scripts/lib/run_cargo.sh
 #   VERBOSE        - set to 1 for detailed output
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/rch_target_cass_embedder_e2e}"
+# shellcheck source=../lib/run_cargo.sh
+source "${REPO_ROOT}/scripts/lib/run_cargo.sh"
 VERBOSE="${VERBOSE:-0}"
 CASS_BIN="${CASS_BIN:-${REPO_ROOT}/target/release/cass}"
 if [[ ! -f "$CASS_BIN" ]]; then
@@ -86,7 +86,7 @@ echo "========================================"
 echo ""
 
 if [[ -z "$CASS_BIN" || ! -f "$CASS_BIN" ]]; then
-    log_fail "cass binary not found. Build via rch, then rerun this script with CASS_BIN=/path/to/cass"
+    log_fail "cass binary not found. Build with cargo (run_cargo build --bin cass), then rerun this script with CASS_BIN=/path/to/cass"
     exit 1
 fi
 
@@ -98,13 +98,8 @@ test_unit_tests() {
     local output
     local status
 
-    if ! command -v "$RCH_BIN" >/dev/null 2>&1; then
-        log_warn "rch binary not found; embedder registry unit tests must be offloaded"
-        return 1
-    fi
-
     set +e
-    output=$("$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo test embedder_registry --lib -- --nocapture 2>&1)
+    output=$(run_cargo test embedder_registry --lib -- --nocapture 2>&1)
     status=$?
     set -e
 

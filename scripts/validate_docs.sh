@@ -17,8 +17,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_validate_docs}"
+# shellcheck source=lib/run_cargo.sh
+source "${PROJECT_ROOT}/scripts/lib/run_cargo.sh"
+cass_cargo_resolve
 
 # Colors
 RED='\033[0;31m'
@@ -53,17 +54,6 @@ log_warn() {
 
 log_info() {
     echo -e "  $1"
-}
-
-ensure_rch() {
-    if ! command -v "$RCH_BIN" &> /dev/null; then
-        log_fail "rch binary not found; validate_docs cargo work must be offloaded"
-        return 1
-    fi
-}
-
-run_cargo() {
-    "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
 }
 
 section() {
@@ -118,7 +108,7 @@ check_links() {
 
         # Check for valid URL patterns in external links
         local urls
-        urls=$(grep -oE 'https?://[^)"\s>]+' "$file" 2>/dev/null || true)
+        urls=$(grep -oE 'https?://[^)">[:space:]]+' "$file" 2>/dev/null || true)
 
         while IFS= read -r url; do
             [[ -z "$url" ]] && continue
@@ -192,9 +182,9 @@ check_help() {
     section "CLI Help Validation"
 
     # Check if binary exists
-    local binary="$RCH_TARGET_DIR/release/cass"
+    local binary="$CASS_CARGO_TARGET_DIR/release/cass"
     if [[ ! -x "$binary" ]]; then
-        binary="$RCH_TARGET_DIR/debug/cass"
+        binary="$CASS_CARGO_TARGET_DIR/debug/cass"
     fi
     if [[ ! -x "$binary" ]]; then
         binary="target/release/cass"
@@ -204,13 +194,12 @@ check_help() {
     fi
 
     if [[ ! -x "$binary" ]]; then
-        log_warn "cass binary not found, building through rch..."
-        ensure_rch || return
+        log_warn "cass binary not found, building locally..."
         run_cargo build --quiet --bin cass 2>/dev/null || {
             log_fail "Could not build cass binary"
             return
         }
-        binary="$RCH_TARGET_DIR/debug/cass"
+        binary="$CASS_CARGO_TARGET_DIR/debug/cass"
         if [[ ! -x "$binary" ]]; then
             log_fail "Built cass binary not found at $binary"
             return
@@ -314,7 +303,7 @@ check_security() {
 
 resolve_cass_binary() {
     local candidate
-    for candidate in "${CASS_BIN:-}" "$RCH_TARGET_DIR/release/cass" "$RCH_TARGET_DIR/debug/cass" \
+    for candidate in "${CASS_BIN:-}" "$CASS_CARGO_TARGET_DIR/release/cass" "$CASS_CARGO_TARGET_DIR/debug/cass" \
         "target/release/cass" "target/debug/cass"; do
         if [[ -n "$candidate" && -x "$candidate" ]]; then
             echo "$candidate"
@@ -498,7 +487,7 @@ check_env() {
     # env::var, or a named constant). `cass robot-docs env` is a curated subset
     # for agents, so a README variable it omits is only a warning.
     if binary=$(resolve_cass_binary); then
-        robot_known=$("$binary" robot-docs env 2>/dev/null | grep -o -E '^\s+[A-Z][A-Z0-9_]+' | tr -d ' ' | sort -u)
+        robot_known=$("$binary" robot-docs env 2>/dev/null | grep -o -E '^[[:space:]]+[A-Z][A-Z0-9_]+' | tr -d ' ' | sort -u)
     fi
     # Connector root overrides (`CASS_<AGENT>_DATA_ROOT`) are read by the
     # franken_agent_detection crate, not by src/; look in its checkout or the
@@ -582,8 +571,6 @@ check_cargo_docs() {
     section "Cargo Documentation"
 
     log_info "Building documentation..."
-
-    ensure_rch || return
 
     if run_cargo doc --no-deps --quiet 2>/dev/null; then
         log_pass "cargo doc builds successfully"

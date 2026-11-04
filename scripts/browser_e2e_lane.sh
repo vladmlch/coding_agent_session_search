@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Browser E2E lane (bead browser-e2e-lane-bnueb): run the Playwright HTML-export and Pages specs
 # against a freshly built cass and write a receipt. GitHub Actions is off, so this script is the
-# lane. Run it on a dsr build host, never on ts1 or another shared development machine
+# lane. Run it locally; it builds cass and the Pages perf bundle with plain cargo
 # (AGENTS.md "E2E Browser Tests"), and cite the receipt it writes.
 #
 # Usage: scripts/browser_e2e_lane.sh [--project NAME] [--skip-build] [SPEC ...]

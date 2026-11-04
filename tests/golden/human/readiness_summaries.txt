@@ -1,5 +1,5 @@
 # Golden: human readiness summaries (bead 13.2)
-# Regenerate: RCH_CARGO_WRAPPER_BYPASS=1 UPDATE_GOLDENS=1 cargo test \
+# Regenerate: UPDATE_GOLDENS=1 cargo test \
 #   --lib search::human_readiness_summary::tests::golden_human_summaries
 
 ========================================

@@ -4,9 +4,10 @@
 //! or through `run_cargo` — plus the `set -e` + `((VAR++))` arithmetic-abort
 //! idiom stays banned in every shell script under `scripts/`.
 //!
-//! ## Compliance rule 1: no remote execution plumbing in ported scripts
+//! ## Compliance rule 1: no remote execution plumbing in any script
 //!
-//! For every file in `LOCAL_SCRIPTS`:
+//! For every `*.sh`, `*.ps1` and `*.py` file under `scripts/` (Task 3 widened
+//! the scan from a hand-maintained allowlist to the whole scripts tree):
 //!   - Any leftover offload-plumbing token — a word starting with `rch`
 //!     (`rch`, `RCH_BIN`, `RCH_TARGET_DIR`, `rch_exec`, ...), a word starting
 //!     with `dsr`, or `ensure_rch` — is a violation anywhere in the file,
@@ -30,7 +31,7 @@
 //! the shell aborts. This caused the zlzpk bug. The scanner flags any
 //! `((VAR++))` or `((VAR--))` pattern in a script that also has `set -e` (or
 //! `set -euo pipefail`) earlier in the file. Rule 2 scans every `*.sh` file
-//! under `scripts/`, not only `LOCAL_SCRIPTS`.
+//! under `scripts/` (PowerShell and Python have no such idiom).
 //!
 //! ## Logging
 //!
@@ -39,17 +40,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// The scripts converted to the local-Cargo lane in Tasks 1-2. Task 3
-/// replaces this list with a `scripts/**/*.{sh,ps1,py}` traversal.
-const LOCAL_SCRIPTS: &[&str] = &[
-    "scripts/lib/run_cargo.sh",
-    "scripts/test-quick.sh",
-    "scripts/test-all.sh",
-    "scripts/coverage.sh",
-    "scripts/coverage-uncovered.sh",
-    "scripts/bench-report.sh",
-    "scripts/gate.sh",
-];
+/// File extensions that count as scripts for compliance rule 1. Task 3
+/// widened the scan from a hand-maintained allowlist to every `*.sh`,
+/// `*.ps1` and `*.py` file under `scripts/`.
+const SCRIPT_EXTENSIONS: &[&str] = &["sh", "ps1", "py"];
 
 /// Remote-build offload plumbing that must not survive the port, anywhere in
 /// the file (comments and help text included).
@@ -99,25 +93,23 @@ fn project_root() -> PathBuf {
 }
 
 fn local_script_paths() -> Vec<PathBuf> {
-    LOCAL_SCRIPTS
-        .iter()
-        .map(|rel| project_root().join(rel))
-        .collect()
+    list_scripts(&["scripts"], SCRIPT_EXTENSIONS)
 }
 
-fn list_shell_scripts(roots: &[&str]) -> Vec<PathBuf> {
+fn list_scripts(roots: &[&str], extensions: &[&str]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     for root in roots {
         let root_path = project_root().join(root);
         if !root_path.is_dir() {
             continue;
         }
-        walk_dir(&root_path, &mut out);
+        walk_dir(&root_path, extensions, &mut out);
     }
+    out.sort();
     out
 }
 
-fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) {
+fn walk_dir(dir: &Path, extensions: &[&str], out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -130,8 +122,10 @@ fn walk_dir(dir: &Path, out: &mut Vec<PathBuf>) {
             continue;
         }
         if path.is_dir() {
-            walk_dir(&path, out);
-        } else if path.extension().and_then(|s| s.to_str()) == Some("sh") {
+            walk_dir(&path, extensions, out);
+        } else if let Some(ext) = path.extension().and_then(|s| s.to_str())
+            && extensions.contains(&ext)
+        {
             out.push(path);
         }
     }
@@ -279,11 +273,21 @@ fn scan_for_plumbing_tokens(path: &Path) -> Vec<Finding> {
     scan_body_for_plumbing_tokens(path, &body)
 }
 
+/// Tokens that look like offload plumbing under the `\brch\w*` rule but are
+/// not: `rchar` is the Linux `/proc/<pid>/io` counter name and appears in
+/// benchmark/reporting scripts as data, never as a command or remote wrapper.
+fn is_plumbing_false_positive(token: &str) -> bool {
+    token.eq_ignore_ascii_case("rchar")
+}
+
 fn scan_body_for_plumbing_tokens(path: &Path, body: &str) -> Vec<Finding> {
     let re = plumbing_re();
     let mut findings = Vec::new();
     for (idx, raw) in body.lines().enumerate() {
-        if re.is_match(raw) {
+        let real_match = re
+            .find_iter(raw)
+            .any(|m| !is_plumbing_false_positive(m.as_str()));
+        if real_match {
             findings.push(Finding {
                 path: path.to_path_buf(),
                 line: idx + 1,
@@ -411,13 +415,17 @@ fn panic_on_findings(check: &str, findings: &[Finding]) {
 #[test]
 fn local_cargo_compliance_scripts_exist() {
     tracing::info!(target: "scripts_local_cargo_compliance", check = "scripts_present");
-    for path in local_script_paths() {
-        assert!(
-            path.is_file(),
-            "LOCAL_SCRIPTS entry {} is missing; keep the list in sync with the ported scripts",
-            path.display()
-        );
-    }
+    let scripts = local_script_paths();
+    assert!(
+        scripts.len() >= 30,
+        "expected the scripts tree walk to find many scripts, found {}; \
+         is the traversal missing files under scripts/?",
+        scripts.len()
+    );
+    assert!(
+        scripts.iter().any(|p| p.ends_with("scripts/lib/run_cargo.sh")),
+        "the scripts tree walk must include scripts/lib/run_cargo.sh"
+    );
 }
 
 #[test]
@@ -447,7 +455,7 @@ fn local_cargo_compliance_no_remote_invocations() {
 #[test]
 fn local_cargo_compliance_no_set_e_arithmetic() {
     tracing::info!(target: "scripts_local_cargo_compliance", check = "set_e_arithmetic");
-    let scripts = list_shell_scripts(&["scripts"]);
+    let scripts = list_scripts(&["scripts"], &["sh"]);
     let mut all_findings = Vec::new();
     for s in &scripts {
         let findings = scan_for_set_e_arithmetic(s);

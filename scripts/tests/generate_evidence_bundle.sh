@@ -7,8 +7,8 @@
 #   ./scripts/tests/generate_evidence_bundle.sh --quick    # Subset (stress + e2e only)
 #
 # Environment:
-#   RCH_BIN         rch executable (default: rch)
-#   RCH_TARGET_DIR  cargo target dir for offloaded evidence tests
+#   CARGO_TARGET_DIR / CARGO_BUILD_JOBS / RUST_TEST_THREADS
+#                 shared Cargo defaults resolved by scripts/lib/run_cargo.sh
 #
 # Outputs:
 #   test-results/evidence-bundle.json   - Structured JSON manifest
@@ -24,8 +24,8 @@ OUTPUT_DIR="${PROJECT_ROOT}/test-results"
 BUNDLE_FILE="${OUTPUT_DIR}/evidence-bundle.json"
 SUMMARY_FILE="${OUTPUT_DIR}/evidence-summary.md"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_evidence_bundle}"
+# shellcheck source=../lib/run_cargo.sh
+source "$SCRIPT_DIR/../lib/run_cargo.sh"
 QUICK=0
 
 # Colors
@@ -49,24 +49,14 @@ for arg in "$@"; do
             echo "  --quick  Run subset of test categories (faster)"
             echo ""
             echo "Environment:"
-            echo "  RCH_BIN         rch executable (default: rch)"
-            echo "  RCH_TARGET_DIR  cargo target dir for offloaded evidence tests"
+            echo "  CARGO_TARGET_DIR  shared Cargo target dir (default: main checkout's target/)"
             exit 0 ;;
     esac
 done
 
 mkdir -p "$OUTPUT_DIR"
 
-ensure_rch() {
-    if ! command -v "$RCH_BIN" >/dev/null 2>&1; then
-        echo "ERROR: rch binary not found; evidence bundle tests must be offloaded" >&2
-        exit 1
-    fi
-}
-
-run_cargo() {
-    "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
-}
+# run_cargo is provided by scripts/lib/run_cargo.sh (sourced above).
 
 # =============================================================================
 # Test Category Runner
@@ -122,11 +112,10 @@ run_category() {
 # Run Test Categories
 # =============================================================================
 
+cd "$PROJECT_ROOT"
 echo -e "${BOLD}Evidence Bundle Generator${NC}"
 echo "Output: ${BUNDLE_FILE}"
-echo "RCH target: ${RCH_TARGET_DIR}"
 echo ""
-ensure_rch
 
 # P0 categories — must all pass for release gate
 run_category "stress_tests"              "P0" "stress_"

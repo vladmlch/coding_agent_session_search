@@ -801,7 +801,7 @@ mod tests {
     fn render_golden_document() -> String {
         let mut out = String::new();
         out.push_str("# Golden: human readiness summaries (bead 13.2)\n");
-        out.push_str("# Regenerate: RCH_CARGO_WRAPPER_BYPASS=1 UPDATE_GOLDENS=1 cargo test \\\n");
+        out.push_str("# Regenerate: UPDATE_GOLDENS=1 cargo test \\\n");
         out.push_str("#   --lib search::human_readiness_summary::tests::golden_human_summaries\n");
         for (name, table) in golden_cases() {
             let human = project_human_summary(&table, SurfaceKind::Status);

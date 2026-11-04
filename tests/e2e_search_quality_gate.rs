@@ -477,7 +477,7 @@ fn search_quality_suite_meets_qrels_and_emits_clean_artifacts() -> TestResult {
         "markdown artifact leaked the privacy fixture's body email".to_string()
     })?;
 
-    // A one-line summary so a remote (rch) run surfaces the outcome on stderr.
+    // A one-line summary so a scripted run surfaces the outcome on stderr.
     eprintln!(
         "[search-quality] queries={} passed={} mean_recall={:.3} mean_precision={:.3} mean_mrr={:.3} trust_dist={:?}",
         report.aggregate.query_count,
