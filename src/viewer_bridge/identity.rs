@@ -865,10 +865,13 @@ fn provider_namespaces(connection: &Connection) -> Result<BTreeSet<String>> {
     Ok(providers)
 }
 
-/// Split a public session ID into its verified parts. Qualified
-/// `provider:cid` interpretation wins when the prefix is a registered
-/// provider namespace; otherwise the whole input is a bare local CID.
-fn parse_public_id(connection: &Connection, input: &str) -> Result<ParsedPublicId> {
+/// `parse_public_id` with the namespace set supplied lazily by the caller —
+/// the revision-bound reverse index carries its own build-time snapshot of
+/// the provider registry so a cached resolution never re-queries `agents`.
+fn parse_public_id_with(
+    namespaces: impl FnOnce() -> Result<BTreeSet<String>>,
+    input: &str,
+) -> Result<ParsedPublicId> {
     if input.is_empty() || input.chars().any(|c| (c as u32) < 32) {
         return Err(refuse(
             "invalid_request",
@@ -880,7 +883,7 @@ fn parse_public_id(connection: &Connection, input: &str) -> Result<ParsedPublicI
             return Err(refuse("invalid_request", "Public session id is malformed"));
         }
         if let Ok(provider) = normalize_agent_slug(prefix)
-            && provider_namespaces(connection)?.contains(&provider)
+            && namespaces()?.contains(&provider)
         {
             if cid.is_empty() {
                 return Err(refuse("invalid_request", "Public session id is malformed"));
@@ -912,6 +915,14 @@ fn parse_public_id(connection: &Connection, input: &str) -> Result<ParsedPublicI
     })
 }
 
+/// Split a public session ID into its verified parts. Qualified
+/// `provider:cid` interpretation wins when the prefix is a registered
+/// provider namespace; otherwise the whole input is a bare local CID.
+#[allow(dead_code)] // Live through `resolve_conversation_id`'s test lane.
+fn parse_public_id(connection: &Connection, input: &str) -> Result<ParsedPublicId> {
+    parse_public_id_with(|| provider_namespaces(connection), input)
+}
+
 /// A candidate row that *claims* the queried native ID (external_id match or
 /// the ID embedded in its source path) but failed verification: its error is
 /// the honest answer, not a silent miss.
@@ -934,6 +945,12 @@ fn plausibly_claims(row: &Row, native_id: &str) -> Result<bool> {
 /// When several rows verify to the same public ID, they must agree on the
 /// logical source and bind to the lowest `conversation_id` — the same
 /// collapse the catalog registry performs for chunk-continued sessions.
+///
+/// Retained as the reference per-call implementation: the bridge's hot
+/// lane is [`resolve_conversation_id_cached`], whose revision-bound index
+/// preserves this exact parse/scope/collapse/error surface. The identity
+/// integration test exercises this uncached path directly.
+#[allow(dead_code)]
 pub fn resolve_conversation_id(connection: &Connection, public_id: &str) -> Result<Option<i64>> {
     let parsed = parse_public_id(connection, public_id)?;
     let (scope_source_id, native_id) = match &parsed {
@@ -972,6 +989,146 @@ pub fn resolve_conversation_id(connection: &Connection, public_id: &str) -> Resu
                     return Err(error);
                 }
             }
+        }
+    }
+    let Some(first) = matched.first() else {
+        return Ok(None);
+    };
+    if matched.iter().any(|item| item.1 != first.1) {
+        return Err(refuse(
+            "identity_conflict",
+            "Bare session ID belongs to more than one provider",
+        ));
+    }
+    if matched.iter().any(|item| item.2 != first.2) {
+        return Err(refuse(
+            "identity_conflict",
+            "Conflicting logical sources for session identity",
+        ));
+    }
+    Ok(Some(
+        matched.iter().map(|item| item.0).min().expect("nonempty"),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Revision-bound reverse index.
+// ---------------------------------------------------------------------------
+
+/// Every canonical conversation resolved once, keyed to the strict-snapshot
+/// revision it was read under. The uncached resolver scans a whole
+/// `source_id` range and re-verifies each candidate (`resolve_row` plus
+/// `extra::decode` on the metadata evidence) per call — quadratic across
+/// the read→CAS→read flow a metadata edit performs. Built once per
+/// physical archive revision, this index turns later `public_id`
+/// resolutions on that revision into in-memory lookups; the snapshot
+/// `before` token is the key, so the index can never bind an identity the
+/// archive no longer proves.
+pub struct ReverseIdentityIndex {
+    /// The `snapshot_stamped` `before` token this index was built under.
+    revision: String,
+    /// Provider namespaces at build time — `KNOWN_PROVIDERS` plus the
+    /// normalized agent slugs, the same set `provider_namespaces` queries.
+    namespaces: BTreeSet<String>,
+    /// Every row that verified, in canonical `id` order — the same
+    /// relative order the provenance index's per-source range scan yields
+    /// (rowid order within each `source_id`).
+    resolved: Vec<ResolvedIdentity>,
+    /// Rows that failed verification, retained so the plausible-claim path
+    /// can re-resolve the exact stored error on demand — error values are
+    /// never flattened or re-typed.
+    failed: Vec<Row>,
+    /// The dimension lookups the index was built against — re-resolution
+    /// of a failed row must see the same registry the build saw.
+    lookups: IdentityLookups,
+}
+
+/// One whole-catalog verification pass in canonical row order — the
+/// superset of every per-`source_id` range scan the uncached resolver
+/// performs, so any parsed scope resolves from the same build.
+fn build_reverse_index(connection: &Connection, revision: &str) -> Result<ReverseIdentityIndex> {
+    let lookups = load_lookups(connection)?;
+    let mut namespaces: BTreeSet<String> =
+        KNOWN_PROVIDERS.iter().map(|s| s.to_string()).collect();
+    for slug in lookups.agents.values() {
+        if let Ok(provider) = normalize_agent_slug(slug) {
+            namespaces.insert(provider);
+        }
+    }
+    let rows = connection.query(
+        "SELECT c.id, c.agent_id, c.source_id, c.external_id, c.source_path, \
+         c.origin_host, c.metadata_bin, c.metadata_json \
+         FROM conversations c ORDER BY c.id",
+    )?;
+    let mut resolved = Vec::with_capacity(rows.len());
+    let mut failed = Vec::new();
+    for row in rows {
+        match resolve_row(&row, &lookups) {
+            Ok(identity) => resolved.push(identity),
+            Err(_) => failed.push(row),
+        }
+    }
+    Ok(ReverseIdentityIndex {
+        revision: revision.to_owned(),
+        namespaces,
+        resolved,
+        failed,
+        lookups,
+    })
+}
+
+/// [`resolve_conversation_id`] over a revision-bound index, building the
+/// index inside the caller's snapshot when the slot is empty or keyed to
+/// an older `observe` token. Same parse, same scope filter, same
+/// plausible-claim error surface, same multi-match collapse — only the
+/// per-call scan is amortized.
+pub fn resolve_conversation_id_cached(
+    connection: &Connection,
+    public_id: &str,
+    slot: &mut Option<ReverseIdentityIndex>,
+    revision: &str,
+) -> Result<Option<i64>> {
+    if slot.as_ref().is_none_or(|index| index.revision != revision) {
+        *slot = Some(build_reverse_index(connection, revision)?);
+    }
+    let index = slot.as_ref().expect("just built");
+    let parsed = parse_public_id_with(|| Ok(index.namespaces.clone()), public_id)?;
+    let (scope_source_id, native_id) = match &parsed {
+        ParsedPublicId::Qualified {
+            source_id,
+            native_id,
+            ..
+        } => (source_id.as_str(), native_id.as_str()),
+        ParsedPublicId::Bare { native_id } => (LOCAL_SOURCE_ID, native_id.as_str()),
+    };
+    let mut matched: Vec<(i64, String, String)> = Vec::new();
+    for resolved in &index.resolved {
+        if resolved.source_id != scope_source_id {
+            continue;
+        }
+        let hit = match &parsed {
+            ParsedPublicId::Qualified { provider, .. } => {
+                resolved.provider == *provider && resolved.public_id == public_id
+            }
+            ParsedPublicId::Bare { .. } => resolved.native_id == *native_id,
+        };
+        if hit {
+            matched.push((
+                resolved.conversation_id,
+                resolved.public_id.clone(),
+                resolved.logical_key.clone(),
+            ));
+        }
+    }
+    for row in &index.failed {
+        let row_source: String = row.get_typed(2)?;
+        if row_source != scope_source_id {
+            continue;
+        }
+        if plausibly_claims(row, native_id)?
+            && let Err(error) = resolve_row(row, &index.lookups)
+        {
+            return Err(error);
         }
     }
     let Some(first) = matched.first() else {

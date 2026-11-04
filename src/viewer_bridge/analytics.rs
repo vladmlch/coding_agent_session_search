@@ -402,6 +402,11 @@ struct Core {
     /// Per `(name)`: (sum, known) — `sum` is SQL SUM (NULL over all-NULL).
     sums: Map<String, Value>,
     known: Map<String, Value>,
+    /// Single-row folds carried piggyback on the core scan: the uncertain
+    /// classification count and the scope's `MIN(w.path)` — previously two
+    /// further full join-scans of the same scoped universe.
+    uncertain: Option<i64>,
+    project_path: Option<String>,
 }
 
 fn core_aggregates(connection: &Connection, metrics: bool, scope: &ResolvedScope) -> Result<Core> {
@@ -411,6 +416,13 @@ fn core_aggregates(connection: &Connection, metrics: bool, scope: &ResolvedScope
     }
     select.push_str(&format!(", SUM({DURATION_SQL}), COUNT({DURATION_SQL})"));
     select.push_str(&format!(", AVG({HIT_RATE_SQL}), AVG(m.one_shot_rate)"));
+    // Piggyback folds on the SAME single-row scan: the classification
+    // count is a plain SUM over scoped rows, and `MIN` ignores NULLs, so
+    // the prior `w.path IS NOT NULL AND w.path != ''` extra-WHERE is a
+    // CASE guard inside the aggregate — byte-identical results without a
+    // second scan of the joined universe.
+    select.push_str(&format!(", {UNCERTAIN_CLASSIFICATION_SQL}"));
+    select.push_str(", MIN(CASE WHEN w.path != '' THEN w.path END)");
     let rows = run_scoped(connection, metrics, &select, scope, &[], "")?;
     let row = rows
         .first()
@@ -441,6 +453,8 @@ fn core_aggregates(connection: &Connection, metrics: bool, scope: &ResolvedScope
     let one_shot_avg: Option<f64> = row.get_typed(index + 3)?;
     core.sums
         .insert("one_shot_avg".to_owned(), json!(one_shot_avg));
+    core.uncertain = row.get_typed(index + 4)?;
+    core.project_path = row.get_typed(index + 5)?;
     Ok(core)
 }
 
@@ -492,32 +506,83 @@ fn metric_coverage(core: &Core, extra: &[(&str, &str)]) -> Value {
 // Median TTFE (bounded sorted numeric fold)
 // ---------------------------------------------------------------------------
 
-fn median_ttfe(
+/// One per-session fold row feeding EVERY per-session Rust fold of the
+/// dashboard — median TTFE, categories, provider/model histograms, and
+/// the JSON1-absent tool/churn fallbacks. Previously each helper paid its
+/// own full scan of the six-table joined universe; one shared scan now
+/// materializes the column union (bounded by the same
+/// [`ANALYTICS_ROW_LIMIT`] every prior fold enforced) and the folds run in
+/// memory. Column order is fixed by the `SHARED_*` indexes below.
+const SHARED_FOLD_SELECT: &str = "\
+c.id, a.slug, c.primary_model, c.estimated_cost_usd, m.one_shot_rate, \
+f.task_category, f.step_count, m.tools_used_json, m.task_breakdown_json, \
+m.ttfe_seconds";
+
+/// Index map of [`SHARED_FOLD_SELECT`].
+mod shared_col {
+    pub const A_SLUG: usize = 1;
+    pub const C_MODEL: usize = 2;
+    pub const C_COST: usize = 3;
+    pub const M_ONE_SHOT: usize = 4;
+    pub const F_CATEGORY: usize = 5;
+    pub const F_STEP: usize = 6;
+    pub const M_TOOLS_JSON: usize = 7;
+    pub const M_BREAKDOWN_JSON: usize = 8;
+    pub const M_TTFE: usize = 9;
+}
+
+fn shared_fold_rows(
     connection: &Connection,
     metrics: bool,
     scope: &ResolvedScope,
-) -> Result<Option<f64>> {
+) -> Result<Vec<coding_agent_search::franken_sync::Row>> {
     let rows = run_scoped(
         connection,
         metrics,
-        "m.ttfe_seconds",
+        SHARED_FOLD_SELECT,
         scope,
-        &["m.ttfe_seconds IS NOT NULL", "m.ttfe_seconds >= 0"],
-        &format!("ORDER BY m.ttfe_seconds LIMIT {ANALYTICS_ROW_LIMIT}"),
+        &[],
+        &format!("ORDER BY c.id LIMIT {ANALYTICS_ROW_LIMIT}"),
     )?;
     if rows.len() as i64 >= ANALYTICS_ROW_LIMIT {
         return Err(refuse(
             "canonical_payload_too_large",
-            "TTFE median input exceeds the analytics row bound",
+            "Analytics fold input exceeds the row bound",
         ));
     }
-    let values: Vec<f64> = rows
-        .iter()
-        .map(|row| row.get_typed::<f64>(0))
-        .collect::<Result<_, _>>()?;
+    Ok(rows)
+}
+
+fn median_ttfe(
+    connection: &Connection,
+    metrics: bool,
+    scope: &ResolvedScope,
+    shared: Option<&[coding_agent_search::franken_sync::Row]>,
+) -> Result<Option<f64>> {
+    let owned;
+    let rows = match shared {
+        Some(rows) => rows,
+        None => {
+            owned = shared_fold_rows(connection, metrics, scope)?;
+            &owned
+        }
+    };
+    // The scoped query's `m.ttfe_seconds IS NOT NULL AND >= 0` gate and its
+    // ORDER BY move to an in-memory filter/sort over the shared row set —
+    // the exact same value set reaches the median.
+    let mut values = Vec::new();
+    for row in rows {
+        let ttfe: Option<f64> = row.get_typed(shared_col::M_TTFE)?;
+        if let Some(value) = ttfe
+            && value >= 0.0
+        {
+            values.push(value);
+        }
+    }
     if values.is_empty() {
         return Ok(None);
     }
+    values.sort_by(f64::total_cmp);
     let mid = values.len() / 2;
     let median = if values.len() % 2 == 1 {
         values[mid]
@@ -598,56 +663,13 @@ fn reworked_of(breakdown: Option<&str>) -> Map<String, Value> {
     }
 }
 
-fn file_churn(connection: &Connection, metrics: bool, scope: &ResolvedScope) -> Result<Vec<Value>> {
-    if metrics && json1_qualified(connection) {
-        let json = "CASE WHEN m.task_breakdown_json IS NOT NULL \
-             AND json_valid(m.task_breakdown_json) \
-             AND json_type(m.task_breakdown_json, '$.reworked_files') = 'object' \
-             THEN json_extract(m.task_breakdown_json, '$.reworked_files') \
-             ELSE '{}' END";
-        let mut params = Vec::new();
-        let mut clauses = Vec::new();
-        scope_where(scope, &mut params, &mut clauses);
-        clauses.push("j.key IS NOT NULL".to_owned());
-        clauses.push("j.key != ''".to_owned());
-        let where_sql = clauses.join(" AND ");
-        let limit_bind = bind(&mut params, SqliteValue::Integer(FILE_CHURN_LIMIT));
-        let sql = format!(
-            "SELECT j.key, COUNT(DISTINCT c.id), SUM(CAST(j.value AS INTEGER)) \
-             {}, json_each({json}) j WHERE {where_sql} \
-             GROUP BY j.key ORDER BY 3 DESC, 2 DESC LIMIT {limit_bind}",
-            from_sql(metrics)
-        );
-        let rows = connection.query_with_params(&sql, &params)?;
-        return rows
-            .iter()
-            .map(|row| {
-                Ok(json!({
-                    "file_path": row.get_typed::<String>(0)?,
-                    "sessions_count": row.get_typed::<i64>(1)?,
-                    "edits_count": row.get_typed::<i64>(2)?,
-                }))
-            })
-            .collect();
-    }
-    // Rust fold — same guard and ordering over a bounded row set.
-    let rows = run_scoped(
-        connection,
-        metrics,
-        "c.id, m.task_breakdown_json",
-        scope,
-        &[],
-        &format!("ORDER BY c.id LIMIT {ANALYTICS_ROW_LIMIT}"),
-    )?;
-    if rows.len() as i64 >= ANALYTICS_ROW_LIMIT {
-        return Err(refuse(
-            "canonical_payload_too_large",
-            "File churn input exceeds the analytics row bound",
-        ));
-    }
+/// The Rust fold half of `file_churn` over a [`SHARED_FOLD_SELECT`] row
+/// set — the same `reworked_of` guard and the same edit/sessions sort the
+/// prior per-helper query fed.
+fn fold_file_churn(rows: &[coding_agent_search::franken_sync::Row]) -> Result<Vec<Value>> {
     let mut churn: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     for row in rows {
-        let breakdown: Option<String> = row.get_typed(1)?;
+        let breakdown: Option<String> = row.get_typed(shared_col::M_BREAKDOWN_JSON)?;
         for (path, edits) in reworked_of(breakdown.as_deref()) {
             if path.is_empty() {
                 continue;
@@ -684,10 +706,83 @@ fn file_churn(connection: &Connection, metrics: bool, scope: &ResolvedScope) -> 
     Ok(items)
 }
 
+fn file_churn(
+    connection: &Connection,
+    metrics: bool,
+    scope: &ResolvedScope,
+    shared: Option<&[coding_agent_search::franken_sync::Row]>,
+) -> Result<Vec<Value>> {
+    if metrics && json1_qualified(connection) {
+        let json = "CASE WHEN m.task_breakdown_json IS NOT NULL \
+             AND json_valid(m.task_breakdown_json) \
+             AND json_type(m.task_breakdown_json, '$.reworked_files') = 'object' \
+             THEN json_extract(m.task_breakdown_json, '$.reworked_files') \
+             ELSE '{}' END";
+        let mut params = Vec::new();
+        let mut clauses = Vec::new();
+        scope_where(scope, &mut params, &mut clauses);
+        clauses.push("j.key IS NOT NULL".to_owned());
+        clauses.push("j.key != ''".to_owned());
+        let where_sql = clauses.join(" AND ");
+        let limit_bind = bind(&mut params, SqliteValue::Integer(FILE_CHURN_LIMIT));
+        let sql = format!(
+            "SELECT j.key, COUNT(DISTINCT c.id), SUM(CAST(j.value AS INTEGER)) \
+             {}, json_each({json}) j WHERE {where_sql} \
+             GROUP BY j.key ORDER BY 3 DESC, 2 DESC LIMIT {limit_bind}",
+            from_sql(metrics)
+        );
+        let rows = connection.query_with_params(&sql, &params)?;
+        return rows
+            .iter()
+            .map(|row| {
+                Ok(json!({
+                    "file_path": row.get_typed::<String>(0)?,
+                    "sessions_count": row.get_typed::<i64>(1)?,
+                    "edits_count": row.get_typed::<i64>(2)?,
+                }))
+            })
+            .collect();
+    }
+    // Rust fold — same guard and ordering over a bounded row set.
+    let owned;
+    let rows = match shared {
+        Some(rows) => rows,
+        None => {
+            owned = shared_fold_rows(connection, metrics, scope)?;
+            &owned
+        }
+    };
+    fold_file_churn(rows)
+}
+
+/// The Rust fold half of `tools_frequency` over a [`SHARED_FOLD_SELECT`]
+/// row set — identical JSON-array walk and count merge.
+fn fold_tools_frequency(
+    rows: &[coding_agent_search::franken_sync::Row],
+    sessions_per_tool: &mut BTreeMap<String, i64>,
+) -> Result<()> {
+    for row in rows {
+        let text: Option<String> = row.get_typed(shared_col::M_TOOLS_JSON)?;
+        let Some(text) = text else { continue };
+        let Ok(Value::Array(names)) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        for name in names {
+            let Some(name) = name.as_str() else { continue };
+            if name.is_empty() {
+                continue;
+            }
+            *sessions_per_tool.entry(name.to_string()).or_insert(0) += 1;
+        }
+    }
+    Ok(())
+}
+
 fn tools_frequency(
     connection: &Connection,
     metrics: bool,
     scope: &ResolvedScope,
+    shared: Option<&[coding_agent_search::franken_sync::Row]>,
 ) -> Result<(Map<String, Value>, Vec<String>)> {
     let mut sessions_per_tool: BTreeMap<String, i64> = BTreeMap::new();
     if metrics && json1_qualified(connection) {
@@ -711,34 +806,15 @@ fn tools_frequency(
             sessions_per_tool.insert(name, row.get_typed(1)?);
         }
     } else {
-        let rows = run_scoped(
-            connection,
-            metrics,
-            "c.id, m.tools_used_json",
-            scope,
-            &[],
-            &format!("ORDER BY c.id LIMIT {ANALYTICS_ROW_LIMIT}"),
-        )?;
-        if rows.len() as i64 >= ANALYTICS_ROW_LIMIT {
-            return Err(refuse(
-                "canonical_payload_too_large",
-                "Tool frequency input exceeds the analytics row bound",
-            ));
-        }
-        for row in rows {
-            let text: Option<String> = row.get_typed(1)?;
-            let Some(text) = text else { continue };
-            let Ok(Value::Array(names)) = serde_json::from_str::<Value>(&text) else {
-                continue;
-            };
-            for name in names {
-                let Some(name) = name.as_str() else { continue };
-                if name.is_empty() {
-                    continue;
-                }
-                *sessions_per_tool.entry(name.to_string()).or_insert(0) += 1;
+        let owned;
+        let rows = match shared {
+            Some(rows) => rows,
+            None => {
+                owned = shared_fold_rows(connection, metrics, scope)?;
+                &owned
             }
-        }
+        };
+        fold_tools_frequency(rows, &mut sessions_per_tool)?;
     }
     // Per-TOOL SESSION counts (the dashboard `tools_frequency`), ordered
     // count-desc then name — `tools_used` is the sorted union.
@@ -760,22 +836,10 @@ fn tools_frequency(
 // `session_metrics.py::aggregate_dashboard` and the SQL CTE it mirrors).
 // ---------------------------------------------------------------------------
 
-fn categories(connection: &Connection, metrics: bool, scope: &ResolvedScope) -> Result<Vec<Value>> {
-    let rows = run_scoped(
-        connection,
-        metrics,
-        "c.id, c.estimated_cost_usd, m.one_shot_rate, f.task_category, f.step_count, \
-         m.task_breakdown_json",
-        scope,
-        &[],
-        &format!("ORDER BY c.id LIMIT {ANALYTICS_ROW_LIMIT}"),
-    )?;
-    if rows.len() as i64 >= ANALYTICS_ROW_LIMIT {
-        return Err(refuse(
-            "canonical_payload_too_large",
-            "Category fold input exceeds the analytics row bound",
-        ));
-    }
+/// The per-session category explosion over a [`SHARED_FOLD_SELECT`] row
+/// set — same fallback-category rule, pro-rated cost and one-shot mean the
+/// prior per-helper query fed.
+fn fold_categories(rows: &[coding_agent_search::franken_sync::Row]) -> Result<Vec<Value>> {
     struct Bucket {
         turns: f64,
         cost: f64,
@@ -783,12 +847,12 @@ fn categories(connection: &Connection, metrics: bool, scope: &ResolvedScope) -> 
     }
     let mut exploded: BTreeMap<String, Bucket> = BTreeMap::new();
     for row in rows {
-        let cost: Option<f64> = row.get_typed(1)?;
+        let cost: Option<f64> = row.get_typed(shared_col::C_COST)?;
         let session_cost = cost.unwrap_or(0.0);
-        let one_shot: Option<f64> = row.get_typed(2)?;
-        let task_category: Option<String> = row.get_typed(3)?;
-        let step_count: Option<i64> = row.get_typed(4)?;
-        let breakdown: Option<String> = row.get_typed(5)?;
+        let one_shot: Option<f64> = row.get_typed(shared_col::M_ONE_SHOT)?;
+        let task_category: Option<String> = row.get_typed(shared_col::F_CATEGORY)?;
+        let step_count: Option<i64> = row.get_typed(shared_col::F_STEP)?;
+        let breakdown: Option<String> = row.get_typed(shared_col::M_BREAKDOWN_JSON)?;
         let mut cats: Vec<(String, f64)> = Vec::new();
         if let Some(breakdown) = breakdown
             && let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&breakdown)
@@ -872,34 +936,27 @@ fn categories(connection: &Connection, metrics: bool, scope: &ResolvedScope) -> 
 // Provider/model distribution + recent sessions
 // ---------------------------------------------------------------------------
 
-fn provider_model_distribution(
-    connection: &Connection,
-    metrics: bool,
-    scope: &ResolvedScope,
+/// The provider/model histograms over a [`SHARED_FOLD_SELECT`] row set —
+/// each row weighs exactly one scoped session, so per-row counting is the
+/// `GROUP BY a.slug, c.primary_model` + `COUNT(*)` the prior helper ran,
+/// without a second joined-universe scan.
+fn fold_provider_model(
+    rows: &[coding_agent_search::franken_sync::Row],
 ) -> Result<(Map<String, Value>, Map<String, Value>, i64)> {
-    let rows = run_scoped(
-        connection,
-        metrics,
-        "a.slug, c.primary_model, COUNT(*)",
-        scope,
-        &[],
-        "GROUP BY a.slug, c.primary_model",
-    )?;
     let mut providers: BTreeMap<String, i64> = BTreeMap::new();
     let mut models: BTreeMap<String, i64> = BTreeMap::new();
     let mut unknown_model = 0_i64;
     for row in rows {
-        let slug: Option<String> = row.get_typed(0)?;
-        let model: Option<String> = row.get_typed(1)?;
-        let count: i64 = row.get_typed(2)?;
+        let slug: Option<String> = row.get_typed(shared_col::A_SLUG)?;
+        let model: Option<String> = row.get_typed(shared_col::C_MODEL)?;
         if let Some(slug) = slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             let provider =
                 identity::normalize_agent_slug(slug).unwrap_or_else(|_| slug.to_string());
-            *providers.entry(provider).or_insert(0) += count;
+            *providers.entry(provider).or_insert(0) += 1;
         }
         match model.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            Some(model) => *models.entry(model.to_string()).or_insert(0) += count,
-            None => unknown_model += count,
+            Some(model) => *models.entry(model.to_string()).or_insert(0) += 1,
+            None => unknown_model += 1,
         }
     }
     let providers: Map<String, Value> = providers.into_iter().map(|(k, v)| (k, json!(v))).collect();
@@ -1362,7 +1419,11 @@ pub fn dashboard(connection: &Connection, scope: &AnalyticsScope) -> Result<Valu
         "total_user_messages": sum_f64(&core, "user_msg").map(|v| v as i64),
         "total_assistant_messages": sum_f64(&core, "assistant_msg").map(|v| v as i64),
     });
-    let med_ttfe = median_ttfe(connection, metrics, &scope)?;
+    // One materialized per-session row set feeds every Rust-fold
+    // explosion below — the same scoped universe scanned ONCE instead of
+    // once per aggregate helper.
+    let shared = shared_fold_rows(connection, metrics, &scope)?;
+    let med_ttfe = median_ttfe(connection, metrics, &scope, Some(&shared))?;
     let quality = json!({
         "avg_one_shot_rate": if total_sessions > 0 {
             sum_f64(&core, "one_shot_avg").map(round1).map_or(Value::Null, Value::from)
@@ -1376,43 +1437,23 @@ pub fn dashboard(connection: &Connection, scope: &AnalyticsScope) -> Result<Valu
     });
 
     let punchcard = punchcard(connection, metrics, &scope)?;
-    let churn = file_churn(connection, metrics, &scope)?;
-    let categories = categories(connection, metrics, &scope)?;
-    let (tools_frequency, tools_used) = tools_frequency(connection, metrics, &scope)?;
-    let (providers_dist, model_dist, unknown_model) =
-        provider_model_distribution(connection, metrics, &scope)?;
+    let churn = file_churn(connection, metrics, &scope, Some(&shared))?;
+    let categories = fold_categories(&shared)?;
+    let (tools_frequency, tools_used) = tools_frequency(connection, metrics, &scope, Some(&shared))?;
+    let (providers_dist, model_dist, unknown_model) = fold_provider_model(&shared)?;
     let recent = recent_sessions(connection, metrics, &scope)?;
 
     // Measured classification coverage over the FULL selected universe
     // (Task 7): `complete` only when every eligible session's persisted
-    // verdict is known — one scoped fold, never a constant and never
-    // bounded to the recent-sessions page.
-    let uncertain_rows = run_scoped(
-        connection,
-        metrics,
-        UNCERTAIN_CLASSIFICATION_SQL,
-        &scope,
-        &[],
-        "",
-    )?;
-    let uncertain: i64 = uncertain_rows
-        .first()
-        .and_then(|row| row.get_typed::<Option<i64>>(0).ok().flatten())
-        .unwrap_or(0);
+    // verdict is known — folded inside the core scan, unbounded as before.
+    let uncertain: i64 = core.uncertain.unwrap_or(0);
 
     // project_path: first non-empty workspace path in scope (oracle
-    // `_project_path_query`), or the scope argument's resolved name.
-    let project_path_row = run_scoped(
-        connection,
-        metrics,
-        "MIN(w.path)",
-        &scope,
-        &["w.path IS NOT NULL", "w.path != ''"],
-        "",
-    )?;
-    let project_path: String = project_path_row
-        .first()
-        .and_then(|row| row.get_typed::<Option<String>>(0).ok().flatten())
+    // `_project_path_query`), folded inside the core scan — or the scope
+    // argument's resolved name.
+    let project_path: String = core
+        .project_path
+        .clone()
         .or_else(|| scope.project_arg.clone())
         .unwrap_or_default();
     let project_name = scope
@@ -1508,7 +1549,7 @@ pub fn health(connection: &Connection, scope: &AnalyticsScope) -> Result<Value> 
         None
     };
     let hit_rate = cache_hit_rate(&core);
-    let churn = file_churn(connection, metrics, &scope)?;
+    let churn = file_churn(connection, metrics, &scope, None)?;
     let total_retries = sum_f64(&core, "retries").unwrap_or(0.0) as i64;
     let top_churn = churn.first().and_then(|item| {
         Some((

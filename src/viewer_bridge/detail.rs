@@ -92,10 +92,17 @@ const PENDING_SECTIONS: &[(&str, &str)] = &[
 
 /// Address exactly one of `conversation_id`/`public_id` inside the caller's
 /// snapshot so identity resolution and the page share one generation.
+///
+/// `slot` carries the session's revision-bound
+/// [`identity::ReverseIdentityIndex`]; `revision` is the `snapshot_stamped`
+/// `before` token — a hit serves the same verified answer the per-call scan
+/// would, built once per physical archive revision instead of per call.
 pub fn resolve_target(
     connection: &Connection,
     conversation_id: Option<i64>,
     public_id: Option<&str>,
+    slot: &mut Option<identity::ReverseIdentityIndex>,
+    revision: &str,
 ) -> Result<i64> {
     match (conversation_id, public_id) {
         (Some(id), None) => {
@@ -107,13 +114,15 @@ pub fn resolve_target(
             }
             Ok(id)
         }
-        (None, Some(public_id)) => identity::resolve_conversation_id(connection, public_id)?
-            .ok_or_else(|| {
-                refuse(
-                    "session_not_found",
-                    "No canonical conversation verifies to this public ID",
-                )
-            }),
+        (None, Some(public_id)) => {
+            identity::resolve_conversation_id_cached(connection, public_id, slot, revision)?
+                .ok_or_else(|| {
+                    refuse(
+                        "session_not_found",
+                        "No canonical conversation verifies to this public ID",
+                    )
+                })
+        }
         _ => Err(refuse(
             "invalid_request",
             "Address exactly one of conversation_id or public_id",

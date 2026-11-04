@@ -121,6 +121,70 @@ fn disk_revision(path: &Path) -> Result<String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
+/// Metadata-only revision token covering the same file set as
+/// [`disk_revision`] — the canonical db plus its `-wal`/`-journal`
+/// sidecars — mixed from `(dev, ino, len, mtime_ns, ctime_ns)` per present
+/// file, read by `lstat` alone (no opens, no byte reads).
+///
+/// Soundness of the fast path: every successful content write to a regular
+/// file must move `mtime`; restoring `mtime` via `utimens(2)` stamps a
+/// FRESH `ctime` — inode change-time is never writable through a syscall,
+/// so an unchanged `(ctime, mtime, len, ino, dev)` tuple proves no write
+/// touched the file since the token was captured. On non-Unix targets the
+/// token deliberately falls back to a per-call unique marker so
+/// [`StrictArchive::observe`] always takes the full content-hash path
+/// (same behavior as before this token existed).
+#[cfg(unix)]
+fn meta_revision(path: &Path) -> Result<String> {
+    fn feed(hasher: &mut blake3::Hasher, meta: &std::fs::Metadata, tag: &[u8]) {
+        use std::os::unix::fs::MetadataExt;
+        hasher.update(tag);
+        hasher.update(&meta.len().to_le_bytes());
+        hasher.update(&meta.dev().to_le_bytes());
+        hasher.update(&meta.ino().to_le_bytes());
+        hasher.update(&meta.mtime().to_le_bytes());
+        hasher.update(&meta.mtime_nsec().to_le_bytes());
+        hasher.update(&meta.ctime().to_le_bytes());
+        hasher.update(&meta.ctime_nsec().to_le_bytes());
+    }
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"meta:");
+    let db_meta = std::fs::symlink_metadata(path).map_err(|e| {
+        refuse(
+            "canonical_db_missing",
+            format!("Cannot inspect canonical archive: {e}"),
+        )
+    })?;
+    if !db_meta.file_type().is_file() {
+        return Err(refuse(
+            "canonical_read_failed",
+            "Archive must be a regular file, not a symlink",
+        ));
+    }
+    feed(&mut hasher, &db_meta, b"db");
+    for suffix in ["-wal", "-journal"] {
+        let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
+        match std::fs::symlink_metadata(&sidecar) {
+            Ok(meta) if meta.file_type().is_file() => feed(&mut hasher, &meta, suffix.as_bytes()),
+            _ => {
+                hasher.update(b"none:");
+                hasher.update(suffix.as_bytes());
+            }
+        }
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// Non-Unix fallback: without an unforgeable inode change-time the metadata
+/// token cannot prove "no write happened", so every call yields a distinct
+/// marker and [`StrictArchive::observe`] always verifies content the slow
+/// way — identical to the pre-token behavior.
+#[cfg(not(unix))]
+fn meta_revision(path: &Path) -> Result<String> {
+    let _ = path;
+    Ok(format!("uncached:{}", rand::random::<u128>()))
+}
+
 fn stamp(path: &Path, schema_version: i64) -> Result<(ArchiveStamp, u64)> {
     let meta = std::fs::symlink_metadata(path).map_err(|e| {
         refuse(
@@ -193,6 +257,10 @@ pub struct StrictArchive {
     nonce: String,
     data_version: i64,
     disk_revision: String,
+    /// Last observed [`meta_revision`] token — the cheap staleness proof
+    /// that lets [`StrictArchive::observe`] skip the full content hash
+    /// when nothing on disk could have changed.
+    meta_revision: String,
 }
 
 /// Extension-lane visibility observed through the strict read connection.
@@ -238,6 +306,10 @@ impl StrictArchive {
                 nonce: format!("{:032x}", rand::random::<u128>()),
                 data_version,
                 disk_revision: after_disk,
+                // If the file moved between the stability check and this
+                // probe, the next `observe` sees a meta mismatch and takes
+                // the full hash path — self-healing, never a false "fresh".
+                meta_revision: meta_revision(path)?,
             });
         }
         unreachable!()
@@ -251,46 +323,71 @@ impl StrictArchive {
                 "Canonical archive identity changed",
             ));
         }
-        let current_disk = disk_revision(&self.path)?;
-        if current_disk != self.disk_revision {
-            for attempt in 0..4 {
-                let target_disk = if attempt == 0 {
-                    current_disk.clone()
-                } else {
-                    disk_revision(&self.path)?
-                };
-                let connection = strict_open(&self.path)?;
-                schema_version(&connection)?;
-                super::catalog::check_schema(&connection).map_err(|e| {
-                    refuse(
-                        "incompatible_schema",
-                        format!("Canonical reader profile mismatch: {e}"),
-                    )
-                })?;
-                let (rechecked, rechecked_size) = stamp(&self.path, STRICT_SCHEMA_VERSION)?;
-                let rechecked_disk = disk_revision(&self.path)?;
-                if rechecked != self.stamp || rechecked_size < size {
-                    return Err(refuse(
-                        "stale_snapshot",
-                        "Canonical archive changed during refresh",
-                    ));
-                }
-                if rechecked_disk != target_disk {
-                    if attempt < 3 {
-                        continue;
+        // Cheap staleness gate: an unchanged metadata token proves no write
+        // touched the archive family (see `meta_revision`), so the full
+        // content hash — the per-RPC cost this replaces — is skipped only
+        // when it is provably redundant. Metadata churn takes the same
+        // refresh path the hash did.
+        let current_meta = meta_revision(&self.path)?;
+        if current_meta != self.meta_revision {
+            let current_disk = disk_revision(&self.path)?;
+            if current_disk != self.disk_revision {
+                for attempt in 0..4 {
+                    let target_disk = if attempt == 0 {
+                        current_disk.clone()
+                    } else {
+                        disk_revision(&self.path)?
+                    };
+                    let connection = strict_open(&self.path)?;
+                    schema_version(&connection)?;
+                    super::catalog::check_schema(&connection).map_err(|e| {
+                        refuse(
+                            "incompatible_schema",
+                            format!("Canonical reader profile mismatch: {e}"),
+                        )
+                    })?;
+                    let (rechecked, rechecked_size) = stamp(&self.path, STRICT_SCHEMA_VERSION)?;
+                    let rechecked_meta = meta_revision(&self.path)?;
+                    // The stability proof the hash supplied is redundant
+                    // when the metadata token still matches `current_meta`
+                    // (no write could have landed); only fresh metadata
+                    // churn pays for another content read.
+                    let rechecked_disk = if rechecked_meta == current_meta {
+                        target_disk.clone()
+                    } else {
+                        disk_revision(&self.path)?
+                    };
+                    if rechecked != self.stamp || rechecked_size < size {
+                        return Err(refuse(
+                            "stale_snapshot",
+                            "Canonical archive changed during refresh",
+                        ));
                     }
-                    return Err(refuse(
-                        "stale_snapshot",
-                        "Canonical archive changed during refresh",
-                    ));
+                    if rechecked_disk != target_disk {
+                        if attempt < 3 {
+                            continue;
+                        }
+                        return Err(refuse(
+                            "stale_snapshot",
+                            "Canonical archive changed during refresh",
+                        ));
+                    }
+                    self.connection = connection;
+                    self.disk_revision = rechecked_disk;
+                    self.meta_revision = rechecked_meta;
+                    self.size = rechecked_size;
+                    break;
                 }
-                self.connection = connection;
-                self.disk_revision = rechecked_disk;
-                self.size = rechecked_size;
-                break;
+            } else {
+                // Metadata churn without a content move (e.g. a WAL-index
+                // touch): the retained connection stays qualified — the
+                // schema probe it re-ran here before was redundant then and
+                // stays redundant now — and the token is refreshed so the
+                // next observe re-enters the fast path.
+                self.meta_revision = current_meta;
+                self.size = size;
             }
         } else {
-            schema_version(&self.connection)?;
             self.size = size;
         }
         self.data_version = self
@@ -340,9 +437,23 @@ impl StrictArchive {
         &mut self,
         read: impl FnOnce(&Connection) -> Result<T>,
     ) -> Result<(T, String)> {
+        self.snapshot_stamped(|connection, _revision| read(connection))
+    }
+
+    /// Same strict read discipline as [`snapshot`], additionally handing
+    /// the read closure the pre-read `observe` token so callers can key
+    /// revision-scoped memos to exactly the snapshot state the closure
+    /// sees. The token is this archive's `nonce:data_version:disk_revision`
+    /// — it changes exactly when the observable archive does, so a memo
+    /// keyed to it can never bind stale content (the `before == after`
+    /// check below still rejects a mid-read change).
+    pub fn snapshot_stamped<T>(
+        &mut self,
+        read: impl FnOnce(&Connection, &str) -> Result<T>,
+    ) -> Result<(T, String)> {
         let before = self.observe()?;
         self.connection.execute("BEGIN DEFERRED")?;
-        let result = read(&self.connection);
+        let result = read(&self.connection, &before);
         let release = self.connection.execute("ROLLBACK");
         if let Err(error) = release {
             return Err(refuse(

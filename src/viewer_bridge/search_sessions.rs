@@ -1106,11 +1106,117 @@ struct HydrateStats {
     /// Reads spent on ungated (non-ASCII) chat verification — bounded by
     /// [`MAX_UNGATED_CHAT_HYDRATIONS`].
     ungated_chat_hydrations: usize,
+    /// Request-scoped `messages.content` memo keyed by canonical
+    /// `messages.id`. The strict snapshot already proves the archive is
+    /// quiescent for the whole read, so a row fetched once can answer every
+    /// later region anchored to it — including page snippets — without a
+    /// second point read. [`prefetch_gated_message_texts`] pre-populates it
+    /// with one `IN()`-chunked read per request instead of one point read
+    /// per gated region. Diagnostics keep counting hydration *calls*
+    /// (`messages_hydrated`), the wire contract tests bound — the memo only
+    /// removes redundant engine round-trips, never a region's accounted
+    /// materialization.
+    text_memo: HashMap<i64, Option<String>>,
+}
+
+/// UTF-8-safe bound on hydrated region text — a raw byte slice panics when
+/// the budget lands inside a multibyte scalar.
+fn bound_region_text(text: &str) -> String {
+    let mut end = text.len().min(MAX_REGION_TEXT);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_owned()
+}
+
+/// Chunk bound for the prefetched `IN (...)` hydration read — the same
+/// 256-slot probing shape the identity lane already exercises.
+const HYDRATE_CHUNK: usize = 256;
+
+/// Prefetch the exact set of `messages.content` rows the gated literals
+/// can hydrate this request — one chunked set read instead of one point
+/// read per gated region. The set mirrors `eval_literal`'s gate byte for
+/// byte: ASCII literals only (non-ASCII evaluates ungated on demand), a
+/// `matcher.never` literal's gate is never consulted, an absent
+/// `(literal, session)` gate admits no regions, and only chat regions
+/// without a persisted fragment hydrate. Plan short-circuiting can leave a
+/// prefetched row unconsumed; that is an accounted speculative read, never
+/// a semantic one — the row set is still bounded by the index-proven
+/// gates, and hydration counters still measure calls.
+fn prefetch_gated_message_texts(
+    connection: &Connection,
+    sessions: &[SessionCtx],
+    literals: &[(String, bool)],
+    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    quill_possible: &HashMap<String, HashMap<i64, HashSet<i64>>>,
+    stats: &mut HydrateStats,
+) -> Result<()> {
+    let mut pending: BTreeSet<i64> = BTreeSet::new();
+    for session in sessions {
+        for (value, exact) in literals {
+            if !value.is_ascii() {
+                continue;
+            }
+            if matchers
+                .get(&(value.clone(), *exact))
+                .is_some_and(|matcher| matcher.never)
+            {
+                continue;
+            }
+            let Some(gate) = quill_possible
+                .get(&format!("{value}|{exact}"))
+                .and_then(|by_session| by_session.get(&session.conversation_id))
+            else {
+                continue;
+            };
+            for region in &session.regions {
+                if gate.contains(&region.quill_idx)
+                    && region.indexed_text.is_none()
+                    && region.text_source
+                        == coding_agent_search::viewer_extensions::search_regions::TEXT_SOURCE_CHAT
+                    && let Some(message_id) = region.message_id
+                {
+                    pending.insert(message_id);
+                }
+            }
+        }
+    }
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<i64> = pending.into_iter().collect();
+    let mut seen: HashSet<i64> = HashSet::with_capacity(ids.len());
+    for chunk in ids.chunks(HYDRATE_CHUNK) {
+        let placeholders = (1..=chunk.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let params: Vec<SqliteValue> = chunk.iter().map(|id| SqliteValue::Integer(*id)).collect();
+        let rows = connection.query_with_params(
+            &format!("SELECT id, content FROM messages WHERE id IN ({placeholders})"),
+            &params,
+        )?;
+        for row in &rows {
+            let id: i64 = row.get_typed(0)?;
+            let content: Option<String> = row.get_typed(1)?;
+            seen.insert(id);
+            stats.text_memo.insert(id, content.map(|t| bound_region_text(&t)));
+        }
+    }
+    // Absent anchors memo as a proven miss — identical outcome to the
+    // point read returning zero rows, without re-probing per region.
+    for id in ids {
+        if !seen.contains(&id) {
+            stats.text_memo.insert(id, None);
+        }
+    }
+    Ok(())
 }
 
 /// Bounded text for one persisted region — `chat` reads the canonical
-/// `messages.content` row it anchors (one indexed point read per hydrated
-/// region); `derived`/`meta` return the persisted fragment.
+/// `messages.content` row it anchors (memoized per request; the gated
+/// prefetch already materialized every gated candidate in one chunked set
+/// read); `derived`/`meta` return the persisted fragment.
 fn region_text(
     connection: &Connection,
     region: &Region,
@@ -1125,21 +1231,18 @@ fn region_text(
         let Some(message_id) = region.message_id else {
             return Ok(None);
         };
+        if let Some(memo) = stats.text_memo.get(&message_id) {
+            return Ok(memo.clone());
+        }
         let rows = connection.query_with_params(
             "SELECT content FROM messages WHERE id = ?1 LIMIT 1",
             &[SqliteValue::Integer(message_id)],
         )?;
         let content: Option<String> =
             rows.first().map(|row| row.get_typed(0)).transpose()?.flatten();
-        return Ok(content.map(|text| {
-            // UTF-8-safe bound — a raw byte slice panics when the budget
-            // lands inside a multibyte scalar.
-            let mut end = text.len().min(MAX_REGION_TEXT);
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            text[..end].to_owned()
-        }));
+        let bounded = content.map(|text| bound_region_text(&text));
+        stats.text_memo.insert(message_id, bounded.clone());
+        return Ok(bounded);
     }
     Ok(region.indexed_text.clone())
 }
@@ -2740,6 +2843,17 @@ pub fn search_sessions(
         &universe,
         &id_subquery,
         &id_params,
+        &mut stats,
+    )?;
+    // One chunked set read for every `messages.content` row the gated
+    // literals can touch — replacing a point read per gated region with an
+    // O(1)-queries-per-request hydration memo.
+    prefetch_gated_message_texts(
+        connection,
+        &sessions,
+        &plan.literals,
+        &matchers,
+        &quill_possible,
         &mut stats,
     )?;
     for session in sessions {

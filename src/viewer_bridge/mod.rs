@@ -190,6 +190,161 @@ fn backfill_viewer_extensions(db: &Path, limit: Option<u64>) -> Result<()> {
     Ok(())
 }
 
+/// Deferred region-doc converge lane: the post-edit Quill converge is
+/// real, bounded work — publish pending region docs, verify segments,
+/// certify — previously paid inline by every `patch_annotations`. It now
+/// runs off the serialized request path on the worker's OWN writable
+/// connection (`franken_sync` connections are thread-affine, so the only
+/// safe shape is a second `OwnedWriter` bound inside the worker thread).
+/// The worker is PERSISTENT: it keeps its writer (and the schema ensure
+/// its open pays) across converges, so a patch stream pays the lane-open
+/// cost once. The `viewer_search_region_marks` table remains the durable
+/// record: a patch's `meta_pending` marks survive a crash or an early
+/// exit, every converge pass folds the whole pending set — deferral
+/// delays certification, it can never skip it, and `index_ready` is
+/// still minted exclusively by a real committed publication.
+enum ConvergeCmd {
+    /// Drain the pending marks set and certify the publication.
+    Converge,
+    /// Drop the worker's writable handle — after a reload the archive
+    /// inode may have been replaced and the handle would pin the dead
+    /// file; the next `Converge` reopens on the current one.
+    Rebind,
+    /// Acknowledge that every command queued BEFORE this one has fully
+    /// completed — the FIFO join point the observable invariant needs.
+    /// `true` reports every queued `Converge` ran its pass to a real
+    /// commit-or-legitimate-skip; `false` means work is still owed (the
+    /// caller folds it inline so `converge_needed` never lies).
+    Flush(std::sync::mpsc::SyncSender<bool>),
+    /// Exit the worker loop (bridge shutdown).
+    Quit,
+}
+
+struct ConvergeWorker {
+    tx: std::sync::mpsc::SyncSender<ConvergeCmd>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+/// Bounded drain per `Converge` command: each pass folds the whole
+/// pending marks set, so a patch committed mid-pass is caught by the
+/// next; the bound leaves a persistently hot patch stream to the next
+/// queued command.
+const CONVERGE_MAX_PASSES: usize = 4;
+
+/// Command queue depth — commands are scheduling hints, never the
+/// durable record; a full queue still carries a pending `Converge` whose
+/// drain folds the entire marks set.
+const CONVERGE_QUEUE: usize = 16;
+
+/// Worker loop: bind the writable lane eagerly (its ensure-schema open
+/// cost overlaps the triggering patch's response and the client
+/// turnaround), then serve commands FIFO. Every failure only ever leaves
+/// the durable marks pending — the next command retries from them.
+fn converge_worker_main(
+    db: PathBuf,
+    index_dir: PathBuf,
+    rx: std::sync::mpsc::Receiver<ConvergeCmd>,
+) {
+    let mut writer = match writer::OwnedWriter::open(&db) {
+        Ok(writer) => Some(writer),
+        Err(error) => {
+            tracing::warn!(
+                error = %format!("{error:#}"),
+                "converge worker writer open deferred to first command"
+            );
+            None
+        }
+    };
+    // `true` once a Converge pass errors mid-way — reported through the
+    // next Flush so the session folds the still-owed work inline instead
+    // of clearing `converge_needed` on a lane failure it cannot see.
+    let mut failed_since_flush = false;
+    while let Ok(cmd) = rx.recv() {
+        match cmd {
+            ConvergeCmd::Converge => {
+                // Skip cleanly with no published index — the same early
+                // return `converge_search_region_docs` performs; a
+                // fabricated region-only index is never created.
+                let index_ready = coding_agent_search::search::tantivy::searchable_index_fingerprint(
+                    &index_dir,
+                )
+                .map(|fingerprint| fingerprint.is_some())
+                .unwrap_or(false);
+                if !index_ready {
+                    continue;
+                }
+                if writer.is_none() {
+                    match writer::OwnedWriter::open(&db) {
+                        Ok(opened) => writer = Some(opened),
+                        Err(error) => {
+                            tracing::warn!(
+                                error = %format!("{error:#}"),
+                                "converge worker writer open failed; durable marks stay pending"
+                            );
+                            failed_since_flush = true;
+                            continue;
+                        }
+                    }
+                }
+                let Some(writer) = writer.as_mut() else {
+                    failed_since_flush = true;
+                    continue;
+                };
+                // The pass runs the converge UNCONDITIONALLY first —
+                // pre-deferral each accepted patch paid one converge
+                // inline, and `commit_with_region_doc_stamps` seals +
+                // certifies a real manifest generation even when the
+                // pending set is empty (a conversation with no marks row
+                // still earned its publication boundary). Gating the
+                // first pass on `region_docs_pending` would silently drop
+                // that certification — the pending probe only bounds the
+                // DRAIN for marks that landed mid-pass. A command counts
+                // drained once a probe sees the pending set empty;
+                // exhausting the pass budget with marks still arriving
+                // reports not-drained so the session folds it inline.
+                let mut pass_failed = false;
+                let mut drained = false;
+                for pass in 0..CONVERGE_MAX_PASSES {
+                    if pass > 0 {
+                        match writer.region_docs_pending() {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                drained = true;
+                                break;
+                            }
+                            Err(error) => {
+                                tracing::warn!(
+                                    error = %format!("{error:#}"),
+                                    "pending region-doc probe failed in worker; retry deferred"
+                                );
+                                pass_failed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if let Err(error) = writer.converge_search_region_docs(&index_dir) {
+                        tracing::warn!(
+                            error = %format!("{error:#}"),
+                            "deferred region-doc converge failed; durable marks stay pending"
+                        );
+                        pass_failed = true;
+                        break;
+                    }
+                }
+                failed_since_flush |= pass_failed || !drained;
+            }
+            ConvergeCmd::Rebind => {
+                writer = None;
+            }
+            ConvergeCmd::Flush(ack) => {
+                let _ = ack.send(!failed_since_flush);
+                failed_since_flush = false;
+            }
+            ConvergeCmd::Quit => return,
+        }
+    }
+}
+
 struct Session {
     data_dir: PathBuf,
     db: PathBuf,
@@ -199,6 +354,16 @@ struct Session {
     readers: Option<Rc<ReaderSet>>,
     cursors: CursorStore,
     writer: Option<writer::OwnedWriter>,
+    /// Revision-bound reverse identity index: built inside a snapshot on
+    /// first `public_id` use, keyed to that snapshot's `observe` token so
+    /// it can never serve an identity the archive no longer proves.
+    identity_index: Option<identity::ReverseIdentityIndex>,
+    /// `true` after any accepted annotation write — the durable
+    /// `meta_pending` marks row is the real record; this flag only decides
+    /// whether a converge pass should be running/flushed.
+    converge_needed: bool,
+    /// In-flight deferred converge pass, if any.
+    converge_worker: Option<ConvergeWorker>,
     /// Opt-in Task-12 push channel: loopback event listener + pump threads,
     /// fully independent of this serialized request/response FIFO.
     events: Option<event_stream::EventStreamHandle>,
@@ -234,6 +399,189 @@ impl Session {
         self.writer
             .as_mut()
             .ok_or_else(|| refuse("writer_unavailable", "Extension writer lane not loaded"))
+    }
+
+    /// Drop a dead converge lane (finished handle or closed channel) so a
+    /// later kick respawns it. The durable marks set is unaffected.
+    fn reap_dead_converge(&mut self) {
+        let dead = self
+            .converge_worker
+            .as_ref()
+            .is_some_and(|worker| worker.handle.is_finished());
+        if dead
+            && let Some(worker) = self.converge_worker.take()
+        {
+            let _ = worker.handle.join();
+        }
+    }
+
+    /// Spawn the persistent converge lane; `false` means the caller must
+    /// run the pre-deferral inline converge on the same request so the
+    /// write is never stranded.
+    fn ensure_converge_worker(&mut self) -> bool {
+        self.reap_dead_converge();
+        if self.converge_worker.is_some() {
+            return true;
+        }
+        let db = self.db.clone();
+        let index_dir = coding_agent_search::search::tantivy::expected_index_dir(&self.data_dir);
+        let (tx, rx) = std::sync::mpsc::sync_channel::<ConvergeCmd>(CONVERGE_QUEUE);
+        match std::thread::Builder::new()
+            .name("viewer-region-doc-converge".to_owned())
+            .spawn(move || converge_worker_main(db, index_dir, rx))
+        {
+            Ok(handle) => {
+                self.converge_worker = Some(ConvergeWorker { tx, handle });
+                true
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %format!("{error:#}"),
+                    "converge worker spawn failed; converging inline"
+                );
+                false
+            }
+        }
+    }
+
+    /// Queue a converge pass after an accepted annotation write. The
+    /// `viewer_search_region_marks` rows the CAS committed are the durable
+    /// request; this only schedules the work — certification still comes
+    /// exclusively from `commit_with_region_doc_stamps`.
+    fn kick_converge(&mut self) {
+        if !self.converge_needed {
+            return;
+        }
+        if !self.ensure_converge_worker() {
+            let index_dir =
+                coding_agent_search::search::tantivy::expected_index_dir(&self.data_dir);
+            match self
+                .writer()
+                .and_then(|writer| writer.converge_search_region_docs(&index_dir))
+            {
+                Ok(()) => {
+                    self.readers = None;
+                    self.converge_needed = false;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %format!("{error:#}"),
+                        "search-region doc convergence after annotation edit deferred"
+                    );
+                }
+            }
+            return;
+        }
+        let Some(worker) = &self.converge_worker else {
+            return;
+        };
+        // `try_send`: a full queue already carries an unstarted Converge
+        // that folds the entire pending set; a dead lane is reaped here so
+        // the next kick respawns.
+        if worker.tx.try_send(ConvergeCmd::Converge).is_err() {
+            self.reap_dead_converge();
+        }
+    }
+
+    /// FIFO join of the converge lane: wait until every command queued
+    /// before this call has completed — the post-patch observable
+    /// invariant ("no subsequent op observes a certification still being
+    /// committed") that inline convergence gave for free. Bounded by the
+    /// queued work; a dead lane is reaped instead of waited on. When the
+    /// lane reports every queued Converge finished (real commit or the
+    /// legitimate no-index skip), `converge_needed` is cleared — the
+    /// worker's completion, never the pending probe, is the signal that
+    /// the owed publication happened.
+    fn flush_converge_lane(&mut self) {
+        self.reap_dead_converge();
+        let Some(worker) = &self.converge_worker else {
+            return;
+        };
+        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel::<bool>(0);
+        match worker
+            .tx
+            .send(ConvergeCmd::Flush(ack_tx))
+            .ok()
+            .and_then(|()| ack_rx.recv().ok())
+        {
+            Some(true) => {
+                if self.converge_needed {
+                    self.converge_needed = false;
+                    // The completed Converge committed a real publication
+                    // under the pinned `ReaderSet` — the same staleness
+                    // the pre-deferral inline converge invalidated for.
+                    // Rebind so the next index read pins the converged
+                    // generation instead of refusing/hitting stale docs.
+                    self.readers = None;
+                }
+            }
+            Some(false) | None => {
+                // Lane dead or mid-pass failure: a dead lane is reaped so
+                // the next kick respawns; either way the flag stays set
+                // and `flush_converge`/the next patch folds the owed work
+                // inline.
+                if self
+                    .converge_worker
+                    .as_ref()
+                    .is_some_and(|worker| worker.handle.is_finished())
+                    && let Some(worker) = self.converge_worker.take()
+                {
+                    let _ = worker.handle.join();
+                }
+            }
+        }
+    }
+
+    /// Ensure pending region-doc work is published before an op reads the
+    /// lexical index: join the lane's queued work, then pay the owed
+    /// converge inline when the lane could not finish it. The converge
+    /// itself runs unconditionally — the pre-deferral patch paid exactly
+    /// one, and `commit_with_region_doc_stamps` certifies a real manifest
+    /// generation even when the durable marks set is empty — while the
+    /// marks table remains the record of truth a raced or failed pass is
+    /// retried from. `index_ready` is still emitted only by
+    /// `certify_lexical_publication` after a real commit.
+    fn flush_converge(&mut self) {
+        self.flush_converge_lane();
+        if !self.converge_needed {
+            return;
+        }
+        let index_dir =
+            coding_agent_search::search::tantivy::expected_index_dir(&self.data_dir);
+        match self
+            .writer()
+            .and_then(|writer| writer.converge_search_region_docs(&index_dir))
+        {
+            Ok(()) => {
+                self.readers = None;
+                self.converge_needed = false;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %format!("{error:#}"),
+                    "search-region doc convergence before read deferred"
+                );
+            }
+        }
+    }
+
+    /// Tell the lane its writable handle may pin a replaced archive inode
+    /// (Reload / canonical read failure); it reopens on the next Converge.
+    fn converge_rebind(&mut self) {
+        if let Some(worker) = &self.converge_worker
+            && worker.tx.try_send(ConvergeCmd::Rebind).is_err()
+        {
+            self.reap_dead_converge();
+        }
+    }
+
+    /// Orderly lane teardown: `Quit` after the queued work, then join —
+    /// a certification already in flight is not abandoned mid-commit.
+    fn shutdown_converge(&mut self) {
+        if let Some(worker) = self.converge_worker.take() {
+            let _ = worker.tx.send(ConvergeCmd::Quit);
+            let _ = worker.handle.join();
+        }
     }
 
     fn hello(&mut self) -> Result<Value> {
@@ -305,10 +653,26 @@ impl Session {
                 Ok(id)
             }
             (None, Some(public_id)) => {
+                // Move the session's index slot out so the closure can
+                // borrow it while `self.archive` is borrowed; keyed to the
+                // snapshot's `before` token it rebuilds on any archive
+                // change, so it cannot serve a stale identity.
+                let mut slot = self.identity_index.take();
                 let archive = self.archive()?;
-                let (resolved, _) = archive.snapshot(|connection| {
-                    identity::resolve_conversation_id(connection, &public_id)
-                })?;
+                let result = archive.snapshot_stamped(|connection, revision| {
+                    identity::resolve_conversation_id_cached(
+                        connection,
+                        &public_id,
+                        &mut slot,
+                        revision,
+                    )
+                });
+                // The index is keyed to the `before` token it was built
+                // under, so keeping it after a failed snapshot is still
+                // safe — the next snapshot either reuses it only when the
+                // archive has not moved, or rebuilds.
+                self.identity_index = slot;
+                let (resolved, _) = result?;
                 resolved.ok_or_else(|| {
                     refuse(
                         not_found_kind,
@@ -384,13 +748,22 @@ impl Session {
         limit: usize,
     ) -> Result<Value> {
         protocol::page_limit(limit)?;
+        let mut slot = self.identity_index.take();
         let archive = self.archive()?;
-        let (mut page, revision) = archive.snapshot(|connection| {
-            let id = detail::resolve_target(connection, conversation_id, public_id.as_deref())?;
+        let result = archive.snapshot_stamped(|connection, revision| {
+            let id = detail::resolve_target(
+                connection,
+                conversation_id,
+                public_id.as_deref(),
+                &mut slot,
+                revision,
+            )?;
             detail::session_details(connection, id, sections, cursor, limit)
-        })?;
+        });
+        let (mut page, revision) = result?;
         page["archive_stamp"] = serde_json::to_value(&archive.stamp)?;
         page["catalog_revision"] = revision.into();
+        self.identity_index = slot;
         Ok(page)
     }
 
@@ -433,17 +806,34 @@ impl Session {
         expected_revision: i64,
         byte_offset: i64,
     ) -> Result<Value> {
+        let mut slot = self.identity_index.take();
         let archive = self.archive()?;
-        let (mut page, revision) = archive.snapshot(|connection| {
-            let id = detail::resolve_target(connection, conversation_id, public_id.as_deref())?;
+        let result = archive.snapshot_stamped(|connection, revision| {
+            let id = detail::resolve_target(
+                connection,
+                conversation_id,
+                public_id.as_deref(),
+                &mut slot,
+                revision,
+            )?;
             detail::tool_output(connection, id, anchor, expected_revision, byte_offset)
-        })?;
+        });
+        let (mut page, revision) = result?;
         page["archive_stamp"] = serde_json::to_value(&archive.stamp)?;
         page["catalog_revision"] = revision.into();
+        self.identity_index = slot;
         Ok(page)
     }
 
     fn handle(&mut self, request: Request) -> Result<(Value, bool)> {
+        // Observable-invariant preservation: before the deferral, every op
+        // following a patch saw the converged publication because the
+        // patch paid it inline. Joining the in-flight pass here restores
+        // exactly that invariant — the worker overlaps the client's
+        // turnaround and the patch response, while no subsequent op (and
+        // no external observer racing one) can observe a certification
+        // still being committed.
+        self.flush_converge_lane();
         let result = match request {
             Request::Hello { .. } | Request::Status { .. } => self.hello()?,
             Request::CatalogPage {
@@ -475,6 +865,10 @@ impl Session {
                     ));
                 }
                 self.archive()?;
+                // A lexical scan must see the annotation meta documents
+                // any earlier accepted patch marks as pending — the same
+                // immediate-visibility contract the search op holds.
+                self.flush_converge();
                 let readers = self.readers()?;
                 let archive = self
                     .archive
@@ -523,34 +917,27 @@ impl Session {
                     public_id,
                     "unknown_conversation",
                 )?;
+                // Finish any still-running converge BEFORE this write: a
+                // prior accepted patch's certification must be durable
+                // before a dependent read can observe a later generation,
+                // and serializing converges keeps the WAL boundary
+                // single-writer-shaped for fsqlite.
+                self.flush_converge_lane();
                 let result =
                     self.writer()?
                         .patch_annotations(conversation_id, expected_revision, &patch)?;
-                // Task 5: fold the just-committed meta replacement into the
-                // published index now. Best-effort — a contended or absent
-                // index leaves `meta_pending`, and the marks row degrades
-                // the session to honest `unknown` rather than stale hits.
-                let index_dir =
-                    coding_agent_search::search::tantivy::expected_index_dir(&self.data_dir);
-                if let Err(error) = self
-                    .writer()?
-                    .converge_search_region_docs(&index_dir)
-                {
-                    tracing::warn!(
-                        error = %format!("{error:#}"),
-                        "search-region doc convergence after annotation edit deferred"
-                    );
-                } else {
-                    // The write lane just changed the published index —
-                    // the cached reader set is pinned to the pre-edit
-                    // snapshot and would keep surfacing the REPLACED meta
-                    // documents (a stale hit hydrates the new fragment and
-                    // degrades the session to a reasonless `unknown`).
-                    // Drop it so the next search reopens on the converged
-                    // index; generation-bound cursors expire honestly
-                    // through the moved `index_epoch`, never mix pages.
-                    self.readers = None;
-                }
+                // Task 5, deferred: the CAS already journaled the
+                // `meta_pending` marks — the durable record of the work —
+                // so the response no longer pays the O(source-scope)
+                // identity scan plus Quill converge inline. The worker
+                // drains the pending set and certifies a real publication;
+                // the next index-reading op's `flush_converge` joins it
+                // (or folds whatever remains inline), which preserves the
+                // test contract that a patch is visible to the very next
+                // search. `index_ready` is still minted exclusively by
+                // `certify_lexical_publication` — never by scheduling.
+                self.converge_needed = true;
+                self.kick_converge();
                 // Task 12: the commit already journaled annotations_updated
                 // via the extension triggers; the wakeup merely shortens a
                 // listening pump's (possibly another bridge's) poll wait.
@@ -617,6 +1004,12 @@ impl Session {
                 protocol::page_limit(limit)?;
                 let max_matches = max_matches_per_session.unwrap_or(32).min(64);
                 self.archive()?;
+                // Immediate-visibility contract: the very next search must
+                // see an accepted patch's meta documents. Join/fold the
+                // deferred converge BEFORE pinning `ReaderSet` so the
+                // readers bind the converged publication, not the
+                // pre-edit generation.
+                self.flush_converge();
                 let readers = self.readers()?;
                 let archive = self
                     .archive
@@ -670,6 +1063,15 @@ impl Session {
                 self.cursors.clear();
                 self.readers = None;
                 self.archive = None;
+                // The revision-bound identity index keyed to the dropped
+                // archive's nonce token can never match a reopened
+                // archive's `before` token — drop it explicitly.
+                self.identity_index = None;
+                // The worker's writable handle may pin a replaced archive
+                // inode — have it rebind on the next Converge, and leave
+                // `converge_needed` set so the next flush re-probes the
+                // marks on the rebound archive.
+                self.converge_rebind();
                 // Re-verify the extension profile and observers on the next
                 // write instead of trusting a stale writable handle.
                 self.writer = None;
@@ -695,6 +1097,11 @@ impl Session {
             }
             Request::Shutdown { .. } => {
                 self.cursors.clear();
+                // Quit after the queued work, then join: a certification
+                // in flight is not abandoned mid-commit — the marks stay
+                // durable regardless, but a completed publish avoids a
+                // startup replay for the next bridge.
+                self.shutdown_converge();
                 return Ok((json!({"shutdown":true}), true));
             }
         };
@@ -773,6 +1180,9 @@ fn serve(session: &mut Session, input: &mut impl BufRead, output: &mut impl Writ
                 {
                     session.cursors.clear();
                     session.archive = None;
+                    // The dropped archive's nonce token can never match a
+                    // reopened archive's — drop the keyed index anyway.
+                    session.identity_index = None;
                     // The writable handle may point at a replaced archive
                     // inode; re-open it against the current file next write.
                     session.writer = None;
@@ -863,6 +1273,9 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         readers: None,
         cursors: CursorStore::default(),
         writer: None,
+        identity_index: None,
+        converge_needed: false,
+        converge_worker: None,
         events,
         event_poll,
     };

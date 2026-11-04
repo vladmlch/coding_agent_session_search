@@ -289,4 +289,19 @@ impl OwnedWriter {
             .commit_with_region_doc_stamps(&self.connection)
             .context("committing converged search-region documents")
     }
+
+    /// `true` while any `viewer_search_region_marks` row still awaits doc
+    /// (re)publication — the bounded probe the deferred-converge drain
+    /// loop and the pre-search flush share. One `LIMIT 1` read; the marks
+    /// set itself remains the durable record of pending work.
+    pub fn region_docs_pending(&self) -> Result<bool> {
+        let rows = self
+            .connection
+            .query(
+                "SELECT 1 FROM viewer_search_region_marks \
+                 WHERE docs_state != 'published' LIMIT 1",
+            )
+            .context("probing pending search-region doc marks")?;
+        Ok(!rows.is_empty())
+    }
 }
