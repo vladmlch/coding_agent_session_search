@@ -22,6 +22,18 @@ Error codes follow the format `E<category><number>`:
 - **E4xxx**: Network errors
 - **E5xxx**: Export errors
 
+## CLI error kinds (`err.kind` in the robot error envelope)
+
+The `E`-codes above belong to the Pages viewer. CLI failures are reported
+as `{"error": {"code", "kind", "message", "hint", "retryable"}}`; the full
+kind vocabulary lives in `src/model/cli_error_kind.rs` and in
+`tests/golden/robot/error_envelope_kinds.json.golden`. Kinds added by the
+local-only port:
+
+| `err.kind` | Exit | Meaning |
+| ---------- | ---- | ------- |
+| `removed-command` | 2 (usage) | The invocation named a command, `command subcommand` pair, flag, or flag value removed because cass now runs fully local-only. The rejection fires before argument normalization and typo correction, so no other command runs in its place. `hint` (when present) names a local equivalent — it is a suggestion, never executed. |
+
 ## Decryption Errors (E1xxx)
 
 ### E1001: Authentication Failed

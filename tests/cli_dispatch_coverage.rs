@@ -5371,3 +5371,281 @@ fn analytics_rebuild_parses_track_flag() {
         }
     }
 }
+
+/// cass-local plan, task 6: the negative table for commands, subcommand
+/// pairs and flags removed by the local-only port. Each row activates when
+/// the owning task (7–14) lands its `REMOVED_COMMANDS`/`REMOVED_FLAGS`
+/// entry in src/lib.rs — flip `pending` to `false` in the same commit. The
+/// matcher and its contract are unit-tested in `removed_invocation_tests`;
+/// this table is the end-to-end proof that a removed invocation fails
+/// without executing anything else.
+struct RemovedCommandCase {
+    /// argv after `cass` (structured-output flags are appended by the test).
+    args: &'static [&'static str],
+    /// Canonical `cass …` spelling asserted inside the human message.
+    display: &'static str,
+    /// Local-only plan task that owns the row.
+    task: u8,
+    /// `true` while the command is still live — the row is only checked
+    /// for "not yet rejected" via a cheap `--help` probe, never executed.
+    pending: bool,
+}
+
+const REMOVED_COMMAND_CASES: &[RemovedCommandCase] = &[
+    // Task 7 — swarm/lessons coordination surfaces.
+    RemovedCommandCase {
+        args: &["swarm", "status"],
+        display: "cass swarm",
+        task: 7,
+        pending: true,
+    },
+    RemovedCommandCase {
+        args: &["lessons", "list"],
+        display: "cass lessons",
+        task: 7,
+        pending: true,
+    },
+    // Case-variant and typo of a removed top-level command.
+    RemovedCommandCase {
+        args: &["Swarm"],
+        display: "cass swarm",
+        task: 7,
+        pending: true,
+    },
+    RemovedCommandCase {
+        args: &["swarn"],
+        display: "cass swarm",
+        task: 7,
+        pending: true,
+    },
+    // Task 8 — fleet, release verification, self-upgrade.
+    RemovedCommandCase {
+        args: &["fleet", "doctor"],
+        display: "cass fleet",
+        task: 8,
+        pending: true,
+    },
+    RemovedCommandCase {
+        args: &["release-verify"],
+        display: "cass release-verify",
+        task: 8,
+        pending: true,
+    },
+    RemovedCommandCase {
+        args: &["upgrade", "--check"],
+        display: "cass upgrade",
+        task: 8,
+        pending: true,
+    },
+    // Task 9 — remote sources.
+    RemovedCommandCase {
+        args: &["sources", "sync"],
+        display: "cass sources sync",
+        task: 9,
+        pending: true,
+    },
+    RemovedCommandCase {
+        args: &["sources", "setup"],
+        display: "cass sources setup",
+        task: 9,
+        pending: true,
+    },
+    RemovedCommandCase {
+        args: &["sources", "discover"],
+        display: "cass sources discover",
+        task: 9,
+        pending: true,
+    },
+    RemovedCommandCase {
+        args: &["sources", "reingest"],
+        display: "cass sources reingest",
+        task: 9,
+        pending: true,
+    },
+    RemovedCommandCase {
+        args: &["sources", "artifact-manifest"],
+        display: "cass sources artifact-manifest",
+        task: 9,
+        pending: true,
+    },
+    RemovedCommandCase {
+        args: &["sources", "schedule"],
+        display: "cass sources schedule",
+        task: 9,
+        pending: true,
+    },
+    // Task 12 — model download/acquisition surfaces.
+    RemovedCommandCase {
+        args: &["models", "check-update"],
+        display: "cass models check-update",
+        task: 12,
+        pending: true,
+    },
+    RemovedCommandCase {
+        args: &["models", "install", "--mirror", "X"],
+        display: "--mirror` on `cass models install",
+        task: 12,
+        pending: true,
+    },
+    RemovedCommandCase {
+        args: &["models", "verify", "--repair"],
+        display: "--repair` on `cass models verify",
+        task: 12,
+        pending: true,
+    },
+    // Task 14 — hosted pages deploy targets.
+    RemovedCommandCase {
+        args: &["pages", "--target", "github"],
+        display: "--target` on `cass pages",
+        task: 14,
+        pending: true,
+    },
+];
+
+/// Every active row must fail with exit 2, robot kind `removed-command`,
+/// the canonical `cass … was removed: cass runs fully local-only` message,
+/// an untouched data dir, and no spawned helper — `PATH` is emptied so a
+/// hypothetical `ssh`/`curl` exec could never resolve. Pending rows are
+/// probed only via `<args> --help` (exit 0 today), which keeps them honest
+/// documentation without running network-touching commands like
+/// `cass upgrade --check`.
+#[test]
+fn removed_commands_error_without_redirection() {
+    // Tasks must never flip `pending` without landing the matching
+    // REMOVED_* entry — the per-row message asserts name the task.
+    for case in REMOVED_COMMAND_CASES {
+        let label = format!("cass {}", case.args.join(" "));
+        let temp_home = tempfile::TempDir::new().expect("removed-command temp home");
+        let data_dir = temp_home.path().join(".local/share/coding-agent-search");
+        fs::create_dir_all(&data_dir).expect("create isolated data dir");
+        // A PATH with no executables at all: any child spawn (ssh, curl,
+        // gh) would fail outright, so a passing rejection proves nothing
+        // external ran.
+        let empty_path = temp_home.path().join("empty-path");
+        fs::create_dir_all(&empty_path).expect("create empty PATH dir");
+
+        let run = |args: &[&str]| {
+            let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
+            cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
+                .env("HOME", temp_home.path())
+                .env("XDG_DATA_HOME", temp_home.path().join(".local/share"))
+                .env("CASS_DATA_DIR", &data_dir)
+                .env("XDG_CONFIG_HOME", temp_home.path().join(".config"))
+                .env("CODEX_HOME", temp_home.path().join(".codex"))
+                .env("NO_COLOR", "1")
+                .env("PATH", &empty_path);
+            cmd.args(args);
+            cmd.output().expect("spawn cass")
+        };
+
+        if case.pending {
+            // Still-live surface: `<top-level word> --help` must exit 0
+            // and must not be turned into a removal error. The probe uses
+            // only the first word because rows like `fleet doctor` name a
+            // subcommand that does not exist even today (the whole `fleet`
+            // tree is what task 8 removes); flag rows likewise only prove
+            // their command still exists until they activate.
+            let output = run(&[case.args[0], "--help"]);
+            assert!(
+                output.status.success(),
+                "task {}: `cass {} --help` must still work while the row is pending; \
+                 land the REMOVED_* entry and flip `pending` together\nstderr: {}",
+                case.task,
+                case.args[0],
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                !String::from_utf8_lossy(&output.stderr).contains("removed-command"),
+                "task {}: `{label}` must not be rejected before its task lands",
+                case.task
+            );
+            continue;
+        }
+
+        // Human path: usage exit, canonical removed message, stdout empty.
+        let human = run(case.args);
+        assert_eq!(
+            human.status.code(),
+            Some(2),
+            "task {}: `{label}` must exit 2 (usage)\nstderr: {}",
+            case.task,
+            String::from_utf8_lossy(&human.stderr)
+        );
+        assert!(
+            human.stdout.is_empty(),
+            "task {}: `{label}` must not write stdout",
+            case.task
+        );
+        let human_stderr = String::from_utf8_lossy(&human.stderr);
+        assert!(
+            human_stderr.contains(case.display) && human_stderr.contains("was removed"),
+            "task {}: `{label}` human message must name `{}` as removed, got: {human_stderr}",
+            case.task,
+            case.display
+        );
+        assert!(
+            human_stderr.contains("local-only"),
+            "task {}: `{label}` human message must cite local-only, got: {human_stderr}",
+            case.task
+        );
+
+        // Robot path: one structured envelope on stderr.
+        let mut robot_args = case.args.to_vec();
+        robot_args.push("--json");
+        let robot = run(&robot_args);
+        assert_eq!(
+            robot.status.code(),
+            Some(2),
+            "task {}: `{label} --json` must exit 2\nstderr: {}",
+            case.task,
+            String::from_utf8_lossy(&robot.stderr)
+        );
+        let envelope: Value = serde_json::from_str(String::from_utf8_lossy(&robot.stderr).trim())
+            .unwrap_or_else(|err| {
+                panic!(
+                    "task {}: `{label} --json` stderr is not one JSON envelope: {err}",
+                    case.task
+                )
+            });
+        assert_eq!(
+            envelope["error"]["kind"],
+            json!("removed-command"),
+            "task {}: `{label}`",
+            case.task
+        );
+        assert_eq!(
+            envelope["error"]["code"],
+            json!(2),
+            "task {}: `{label}`",
+            case.task
+        );
+        assert_eq!(
+            envelope["error"]["retryable"],
+            json!(false),
+            "task {}: `{label}`",
+            case.task
+        );
+
+        // The rejection happens before dispatch: the data dir stays empty.
+        let mut created = Vec::new();
+        for entry in walkdir::WalkDir::new(&data_dir) {
+            let entry = entry.expect("walk data dir");
+            if entry.file_type().is_file() {
+                created.push(entry.path().to_path_buf());
+            }
+        }
+        assert!(
+            created.is_empty(),
+            "task {}: `{label}` created files in the data dir: {created:?}",
+            case.task
+        );
+    }
+
+    // The table is the plan's contract — silently empty rows would let a
+    // task skip the whole rejection surface.
+    assert_eq!(
+        REMOVED_COMMAND_CASES.len(),
+        17,
+        "the negative table lists every removal promised by tasks 7–14"
+    );
+}

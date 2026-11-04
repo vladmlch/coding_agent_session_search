@@ -105,3 +105,103 @@ Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
 | 2026-11-04 | `cargo test --locked --test golden_robot_json agents_md_does_not_recommend_remote_offload` | ok: 1 passed (rewritten docs-consistency test — pins local cargo, forbids rch/dsr/warp_grep/MCP tokens in AGENTS.md) |
 | 2026-11-04 | `cargo check --all-targets` | ok (rc=0; only the pre-existing `nix v0.28.0` future-incompat note) |
 | 2026-11-04 | `scripts/validate_docs.sh` | rc=1 — failure set byte-identical to the pre-change baseline (166 errors: 125 `README key … no matching arm` from BSD `grep` lacking `-P`, 41 `[text](#anchor)` TOC false positives). Zero introduced by this change. |
+
+## Mandatory checklist: every manually-maintained command list (Tasks 7–14)
+
+Task 6 built the single rejection mechanism (`REMOVED_COMMANDS` /
+`REMOVED_FLAGS` in `src/lib.rs`, kind `removed-command`). Removing a
+command from clap is **not** enough — the surfaces below enumerate
+commands, flags and workflows by hand and must be updated **in the same
+commit** that lands a `REMOVED_*` entry, plus the matching
+`REMOVED_COMMAND_CASES` row in `tests/cli_dispatch_coverage.rs` flips
+`pending: false`. Line numbers are the 2026-11-04 snapshot — locate by
+name.
+
+### `src/lib.rs`
+
+- `Commands` enum variant + clap attributes — removing it automatically
+  drops the command from CLI parse, `--help`, `cass completions`,
+  `cass man`, and capabilities `commands[]` (all clap-derived).
+- `REMOVED_COMMANDS` / `REMOVED_FLAGS` (~line 6691) — append the entry;
+  `hint` may name a local equivalent (reported, never executed).
+- `CANONICAL_TOP_LEVEL_COMMANDS` (~line 6605) — drop the name;
+  `removed_invocation_tests::removed_tables_stay_disjoint_from_live_lists`
+  pins the disjointness invariant.
+- `SIDE_EFFECT_EXACT_ONLY_COMMANDS` (~line 6664) — drop if present.
+- `SUBCOMMAND_ALIASES` (inside `normalize_args`, ~line 5664) — drop every
+  alias whose target is now removed.
+- `KNOWN_LONG_FLAGS` (inside `normalize_args`, ~line 5499) — drop removed
+  flags so `-mirror`/`--MIRROR`/`--mirror_x` stop normalizing into live
+  flags.
+- `describe_command` (~line 25390) — drop the variant arm.
+- `format_missing_subcommand_error` (~line 6243) — drop removed
+  groups/subcommands from its listings.
+- `robot_docs_topic_shorthand` + `recover_structured_help_requests`
+  (~lines 3752, 4060) — drop shorthand words routing to removed topics.
+- `print_robot_help` + `print_robot_docs` (~line 27750) — the `commands`,
+  `env`, `sources`, `guide`, `examples`, `exit-codes` topic bodies are
+  hand-written line lists: remove every removed invocation/flag mention.
+- `heuristic_parse_recovery` `known_flags` (~line 7185) — drop removed
+  flags so a flag typo cannot correct into a removed flag.
+- Dispatch arms: `execute_cli`, `try_run_with_parsed_fast` (e.g. the swarm
+  observer fast path), `command_uses_current_thread` in `src/main.rs`.
+- Capabilities builders: `build_workflow_capabilities` (~99067),
+  `build_mistake_recovery_capabilities` (~99171),
+  `build_env_var_capabilities` (~98712), `build_global_flag_schemas`
+  (~98445), `build_exit_code_capabilities` (~98572), the `features` list
+  (~99500), `capabilities_connector_names` (~86701).
+- Triage/readiness: `readiness_recommended_commands` (~24667),
+  `triage_recovery_recommended_commands` (~88490), `starter_workflows`
+  (~88773), `response_schema_recommended_commands` (~100713).
+- Introspect: every `response_schema_*` describing the removed surface
+  (~100596–102203+) and its registration in the introspect payload.
+- `src/main.rs` `raw_command_name` flag lists and the early-dispatch
+  commands (`serve`, `archive`, `codex-layout-migrate`,
+  `lexical-quarantine`, semantic-reclaim args) — only if one of those
+  names is removed.
+
+### Robot-docs topic modules
+
+- `src/recipes_robot_docs.rs` — recipes naming removed commands/flags.
+- `src/doctor_robot_docs.rs` — doctor topic text for removed surfaces.
+
+### TUI
+
+- `src/ui/components/palette.rs` — palette entries (e.g. `OpenSwarm`).
+- `src/ui/shortcuts.rs` — shortcut list entries.
+- `src/ui/app.rs` — help overlay lines, `AppSurface` variants and nav
+  order, update-banner actions.
+- `src/ui/components/help_strip.rs` — help strip entries.
+
+### Tests that pin these lists (drift guards)
+
+- `tests/spec_starter_workflows_drift.rs`
+- `tests/spec_recommended_commands_drift.rs`
+- `tests/spec_mistake_recoveries_contract.rs`
+- `tests/spec_robot_docs_topics.rs` (`DOCUMENTED_TOPICS`)
+- `tests/spec_introspect_envelope_completeness.rs`,
+  `tests/spec_introspect_schema_integrity.rs`
+- `tests/spec_exit_codes_documented.rs`,
+  `tests/spec_aliases_resolve.rs`,
+  `tests/spec_auto_correction_contracts.rs`
+- `tests/cli_dispatch_coverage.rs` `REMOVED_COMMAND_CASES` — flip the row.
+- Golden files under `tests/golden/robot/` and `tests/golden/` that embed
+  the command (capabilities, introspect, onboarding, diag, doctor, …) —
+  regenerate only with `UPDATE_GOLDENS=1`, read every diff line, explain
+  it in the commit message.
+
+### Docs
+
+- `SKILL.md`, `README.md`, `docs/ROBOT_MODE.md`,
+  `docs/ERROR_CODES.md` (new kinds), this file's journal.
+
+## Task 6 — unified rejection for removed commands (2026-11-04)
+
+Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
+
+|| Date (UTC) | Command | Result |
+|| ---------- | ------- | ------ |
+|| 2026-11-04 | `cargo test --locked --lib removed_invocation_tests` | ok: 8 passed, 0 failed (synthetic tables: exact/case/pair/flag/flag-value rejection, typo resolves-to-removed, live-typo precedence, `--` boundary) |
+|| 2026-11-04 | `cargo test --locked --test cli_dispatch_coverage removed_commands_error_without_redirection` | ok: 1 passed (17 pending rows probed live via `<cmd> --help`, empty `PATH`, empty data dir) |
+|| 2026-11-04 | `UPDATE_GOLDENS=1 cargo test --locked --test golden_error_envelope` | golden regen: +`removed-command` kind `[2]`, `total_kinds` 87→88 — only change |
+|| 2026-11-04 | `cargo test --locked --test cli_dispatch_coverage --test spec_auto_correction_contracts --test golden_error_envelope --test spec_robot_docs_topics` | ok — see commit message |

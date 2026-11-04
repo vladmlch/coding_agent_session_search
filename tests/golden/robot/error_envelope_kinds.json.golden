@@ -2,10 +2,15 @@
   "_meta": {
     "description": "Canonical error kind taxonomy for cass robot-mode error envelopes",
     "rule": "All err.kind values MUST be kebab-case per AGENTS.md",
-    "total_kinds": 87,
+    "total_kinds": 89,
     "regenerate": "UPDATE_GOLDENS=1 cargo test --test golden_error_envelope"
   },
   "kinds": {
+    "ambiguous-identity": {
+      "exit_codes": [
+        3
+      ]
+    },
     "ambiguous-source": {
       "exit_codes": [
         2
@@ -47,6 +52,11 @@
         9,
         10,
         11
+      ]
+    },
+    "conversation-not-indexed": {
+      "exit_codes": [
+        3
       ]
     },
     "cursor-decode": {
@@ -161,6 +171,16 @@
         7
       ]
     },
+    "index-read-failure": {
+      "exit_codes": [
+        9
+      ]
+    },
+    "index-unavailable": {
+      "exit_codes": [
+        9
+      ]
+    },
     "indexed-session-required": {
       "exit_codes": [
         9
@@ -238,6 +258,11 @@
         21
       ]
     },
+    "no-renderable-messages": {
+      "exit_codes": [
+        9
+      ]
+    },
     "not-found": {
       "exit_codes": [
         4,
@@ -245,16 +270,6 @@
       ]
     },
     "open-index": {
-      "exit_codes": [
-        9
-      ]
-    },
-    "opencode-parse": {
-      "exit_codes": [
-        9
-      ]
-    },
-    "opencode-sqlite-parse": {
       "exit_codes": [
         9
       ]
@@ -314,6 +329,11 @@
     "rebuild-error": {
       "exit_codes": [
         9
+      ]
+    },
+    "removed-command": {
+      "exit_codes": [
+        2
       ]
     },
     "repair-error": {
@@ -378,16 +398,6 @@
         5
       ]
     },
-    "session-not-found": {
-      "exit_codes": [
-        3
-      ]
-    },
-    "session-parse": {
-      "exit_codes": [
-        9
-      ]
-    },
     "sessions-from": {
       "exit_codes": [
         2
@@ -448,6 +458,7 @@
     },
     "unknown-agent": {
       "exit_codes": [
+        2,
         3
       ]
     },

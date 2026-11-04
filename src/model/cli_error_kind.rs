@@ -122,6 +122,11 @@ pub enum ErrorKind {
     PasswordRequired,
     RebuildError,
     RepairError,
+    /// Emitted when argv names a command, subcommand pair, flag or flag
+    /// value deleted by the local-only port. The rejection fires before
+    /// normalization, alias expansion and typo correction, so nothing else
+    /// runs in its place (cass-local plan, task 6).
+    RemovedCommand,
     ResumeEmptyCommand,
     ResumeExecFailed,
     /// Snake-case wire literal (legacy): `retained_publish_backup`.
@@ -230,6 +235,7 @@ impl ErrorKind {
             Self::PasswordRequired => "password-required",
             Self::RebuildError => "rebuild-error",
             Self::RepairError => "repair-error",
+            Self::RemovedCommand => "removed-command",
             Self::ResumeEmptyCommand => "resume-empty-command",
             Self::ResumeExecFailed => "resume-exec-failed",
             Self::RetainedPublishBackup => "retained-publish-backup",
@@ -336,6 +342,7 @@ impl ErrorKind {
             "password-required" => Self::PasswordRequired,
             "rebuild-error" => Self::RebuildError,
             "repair-error" => Self::RepairError,
+            "removed-command" => Self::RemovedCommand,
             "resume-empty-command" => Self::ResumeEmptyCommand,
             "resume-exec-failed" => Self::ResumeExecFailed,
             "retained-publish-backup" => Self::RetainedPublishBackup,
@@ -442,6 +449,7 @@ impl ErrorKind {
             Self::PasswordRequired,
             Self::RebuildError,
             Self::RepairError,
+            Self::RemovedCommand,
             Self::ResumeEmptyCommand,
             Self::ResumeExecFailed,
             Self::RetainedPublishBackup,

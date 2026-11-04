@@ -6663,6 +6663,271 @@ const CANONICAL_TOP_LEVEL_COMMANDS: &[&str] = &[
 /// parade` executed it). Adversarial-review finding F1 on GH #367.
 const SIDE_EFFECT_EXACT_ONLY_COMMANDS: &[&str] = &["forget", "upgrade"];
 
+/// A command invocation removed by the local-only port (cass-local plan,
+/// tasks 7–14).
+///
+/// `path` holds the invocation words: one for a top-level command
+/// (`&["swarm"]` rejects `cass swarm <anything>`), two for a
+/// `command subcommand` pair (`&["sources", "sync"]` rejects only that
+/// pair — `cass sources list` stays live). Matching runs case-insensitively
+/// on raw argv inside `parse_cli`, before `normalize_args` rewrites
+/// anything and before `heuristic_parse_recovery` tries typo correction,
+/// so a removed name errors out instead of being corrected into a
+/// different live command or folded into an implicit search query.
+///
+/// `hint` names a local equivalent for the same intent when one exists
+/// (for example `cass models install --from-file DIR`); it is reported to
+/// the caller, never executed.
+struct RemovedCommand {
+    path: &'static [&'static str],
+    hint: Option<&'static str>,
+}
+
+/// Commands removed by the local-only port. Tasks 7–14 append entries as
+/// each surface is deleted, dropping the same names from
+/// `CANONICAL_TOP_LEVEL_COMMANDS` and `SUBCOMMAND_ALIASES` in the same
+/// commit — `removed_invocation_tests` pins that a name may never sit in
+/// the live and the removed list at once.
+const REMOVED_COMMANDS: &[RemovedCommand] = &[];
+
+/// A flag (or specific flag values) removed from a command that otherwise
+/// stays live.
+///
+/// `path` is the command path the flag is removed from (`&["pages"]`,
+/// `&["models", "install"]`); an empty `path` removes the flag under every
+/// command (task 13's `--embedder external`). `flag` is the long flag name
+/// without dashes — both `--mirror` and the single-dash `-mirror` spellings
+/// match, as does `--mirror=VALUE`. `values: None` rejects the flag
+/// outright; `values: Some(..)` rejects only the listed values
+/// (case-insensitive), so a surviving flag loses only its network-facing
+/// choices (`pages --target github` while `--target local` parses on).
+/// `hint` behaves like `RemovedCommand::hint`.
+struct RemovedFlag {
+    path: &'static [&'static str],
+    flag: &'static str,
+    values: Option<&'static [&'static str]>,
+    hint: Option<&'static str>,
+}
+
+/// Flags removed by the local-only port; see `RemovedFlag`.
+const REMOVED_FLAGS: &[RemovedFlag] = &[];
+
+/// Whether `name` is the top-level word of a removed command path. Removed
+/// names are excluded from fuzzy typo attraction even while a stale
+/// `CANONICAL_TOP_LEVEL_COMMANDS` entry still lists them (the disjointness
+/// test makes that state a hard failure, the filter makes it harmless in
+/// the meantime).
+fn is_removed_command_name(name: &str) -> bool {
+    REMOVED_COMMANDS.iter().any(|entry| {
+        entry
+            .path
+            .first()
+            .is_some_and(|top| top.eq_ignore_ascii_case(name))
+    })
+}
+
+/// Positional argv words in order, program name excluded. Flag tokens are
+/// skipped, and so is the separate value of the leading flags that take
+/// one (`--db PATH`, `--data-dir DIR`, `--format FMT`, …); `--` ends the
+/// scan because nothing after it can be a subcommand. Kept deliberately
+/// small: a subcommand-level option with a separate value sitting between
+/// the command word and the subcommand can still hide a removed pair
+/// (`cass sources --agent x sync`), but clap rejects that invocation once
+/// the pair is gone — the mechanism only has to catch canonical spellings
+/// before correction does.
+fn removed_invocation_positionals(raw_args: &[String]) -> Vec<&str> {
+    const VALUE_TAKING_FLAGS: &[&str] = &[
+        "--color",
+        "--progress",
+        "--wrap",
+        "--db",
+        "--trace-file",
+        "--data-dir",
+        "--stale-threshold",
+        "--robot-format",
+        "--format",
+        "--output",
+        "--output-format",
+        "--output_format",
+        "--agent",
+        "--workspace",
+        "--model",
+        "--source",
+        "--fields",
+        "--file",
+    ];
+    let mut words = Vec::new();
+    let mut index = 1;
+    while index < raw_args.len() {
+        let arg = raw_args[index].as_str();
+        if arg == "--" {
+            break;
+        }
+        if arg.starts_with('-') {
+            if !arg.contains('=') && VALUE_TAKING_FLAGS.contains(&arg) {
+                index += 1;
+            }
+            index += 1;
+            continue;
+        }
+        words.push(arg);
+        index += 1;
+    }
+    words
+}
+
+/// The structured error for a rejected invocation: exit 2 (usage), kind
+/// `removed-command`, never retryable. `typed` is set when the caller's
+/// word only fuzzy-matched the removed name — the message then names both
+/// so `cass swarn` still reports `cass swarm` as removed.
+fn removed_command_error(
+    path: &[&str],
+    typed: Option<&str>,
+    hint: Option<&'static str>,
+) -> CliError {
+    let canonical = path.join(" ");
+    let message = match typed {
+        Some(arg) => format!(
+            "`cass {arg}` resolves to the removed `cass {canonical}`: cass runs fully local-only"
+        ),
+        None => format!("`cass {canonical}` was removed: cass runs fully local-only"),
+    };
+    CliError {
+        code: 2,
+        kind: CliErrorKind::RemovedCommand.kind_str(),
+        message,
+        hint: hint.map(|equivalent| format!("local equivalent: {equivalent}")),
+        retryable: false,
+    }
+}
+
+/// Whether `command`/`sub` name the command path an entry applies to. An
+/// empty entry path matches every command (flag removed suite-wide).
+fn removed_path_matches(path: &[&str], command: &str, sub: &str) -> bool {
+    match path {
+        [] => true,
+        [top] => command == *top,
+        [top, second] => command == *top && sub == *second,
+        _ => false,
+    }
+}
+
+/// Rejection for `raw_args` under `removed_commands`/`removed_flags`, or
+/// `None` when the invocation is live. Taken as parameters (not the
+/// module consts) so unit tests exercise the matcher with synthetic
+/// tables while the real lists are still empty.
+fn removed_invocation_error(
+    raw_args: &[String],
+    removed_commands: &[RemovedCommand],
+    removed_flags: &[RemovedFlag],
+) -> Option<CliError> {
+    if removed_commands.is_empty() && removed_flags.is_empty() {
+        return None;
+    }
+    let words = removed_invocation_positionals(raw_args);
+    let command = words.first().copied().unwrap_or_default();
+    if command.is_empty() {
+        return None;
+    }
+    let command_lc = command.to_ascii_lowercase();
+    let sub = words.get(1).copied().unwrap_or_default();
+    let sub_lc = sub.to_ascii_lowercase();
+
+    // 1. Exact (case-insensitive) command path: `cass swarm status` hits
+    //    `["swarm"]`, `cass sources sync` hits `["sources","sync"]`.
+    for entry in removed_commands {
+        if removed_path_matches(entry.path, &command_lc, &sub_lc) {
+            return Some(removed_command_error(entry.path, None, entry.hint));
+        }
+    }
+
+    // 2. Typo of a removed top-level command: `cass swarn` must report the
+    //    removed `swarm`, not correct into a live command. A live
+    //    candidate wins only when it is strictly closer — on ties the
+    //    invocation still fails instead of redirecting intent.
+    let closest_removed = removed_commands
+        .iter()
+        .filter(|entry| entry.path.len() == 1)
+        .map(|entry| (entry, strsim::levenshtein(&command_lc, entry.path[0])))
+        .filter(|(_, distance)| *distance <= 2)
+        .min_by_key(|(_, distance)| *distance);
+    if let Some((entry, removed_distance)) = closest_removed {
+        let live_distance = closest_top_level_command(&command_lc)
+            .map(|name| strsim::levenshtein(&command_lc, name));
+        if live_distance.is_none_or(|distance| removed_distance <= distance) {
+            return Some(removed_command_error(entry.path, Some(command), entry.hint));
+        }
+    }
+
+    // 3. Removed flags on live command paths. Tokens are scanned raw
+    //    (normalize_args has not run): `--flag`, `--flag=value` and the
+    //    single-dash `-flag` spelling all match.
+    for entry in removed_flags {
+        if !entry.path.is_empty() && !removed_path_matches(entry.path, &command_lc, &sub_lc) {
+            continue;
+        }
+        let mut index = 1;
+        while index < raw_args.len() {
+            let token = &raw_args[index];
+            index += 1;
+            if token == "--" {
+                break;
+            }
+            let Some(flag_body) = token.strip_prefix('-').filter(|_| token.len() > 1) else {
+                continue;
+            };
+            let flag_body = flag_body.strip_prefix('-').unwrap_or(flag_body);
+            let (name, inline_value) = match flag_body.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (flag_body, None),
+            };
+            if !name.eq_ignore_ascii_case(entry.flag) {
+                continue;
+            }
+            let Some(removed_values) = entry.values else {
+                return Some(removed_flag_error(entry));
+            };
+            let value = inline_value.map(str::to_string).or_else(|| {
+                raw_args
+                    .get(index)
+                    .filter(|next| !next.starts_with('-'))
+                    .cloned()
+            });
+            if value.is_some_and(|value| {
+                removed_values
+                    .iter()
+                    .any(|removed| removed.eq_ignore_ascii_case(&value))
+            }) {
+                return Some(removed_flag_error(entry));
+            }
+        }
+    }
+
+    None
+}
+
+/// The structured error for a removed flag: same envelope contract as a
+/// removed command (exit 2, kind `removed-command`).
+fn removed_flag_error(entry: &RemovedFlag) -> CliError {
+    let on = if entry.path.is_empty() {
+        String::new()
+    } else {
+        format!(" on `cass {}`", entry.path.join(" "))
+    };
+    CliError {
+        code: 2,
+        kind: CliErrorKind::RemovedCommand.kind_str(),
+        message: format!(
+            "`--{}`{on} was removed: cass runs fully local-only",
+            entry.flag
+        ),
+        hint: entry
+            .hint
+            .map(|equivalent| format!("local equivalent: {equivalent}")),
+        retryable: false,
+    }
+}
+
 /// Nearest canonical subcommand for a mistyped first argument.
 ///
 /// An argument that already names a canonical subcommand is never a typo:
@@ -6679,6 +6944,10 @@ fn closest_top_level_command(arg: &str) -> Option<&'static str> {
         .iter()
         .copied()
         .filter(|candidate| !SIDE_EFFECT_EXACT_ONLY_COMMANDS.contains(candidate))
+        // A removed name must never be a correction candidate either: the
+        // disjointness invariant in `removed_invocation_tests` keeps this a
+        // no-op while REMOVED_COMMANDS stays disjoint from CANONICAL_*.
+        .filter(|candidate| !is_removed_command_name(candidate))
         .map(|candidate| (candidate, strsim::levenshtein(&lower, candidate)))
         .filter(|(_, distance)| *distance <= 2)
         .min_by_key(|(_, distance)| *distance)
@@ -7102,6 +7371,261 @@ mod canonical_top_level_command_tests {
     }
 }
 
+#[cfg(test)]
+mod removed_invocation_tests {
+    use super::*;
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(ToString::to_string).collect()
+    }
+
+    const DEMO_COMMANDS: &[RemovedCommand] = &[
+        RemovedCommand {
+            path: &["swarm"],
+            hint: None,
+        },
+        RemovedCommand {
+            path: &["upgrade"],
+            hint: Some("`cargo install --path . --locked`"),
+        },
+        RemovedCommand {
+            path: &["sources", "sync"],
+            hint: None,
+        },
+    ];
+
+    const DEMO_FLAGS: &[RemovedFlag] = &[
+        RemovedFlag {
+            path: &["pages"],
+            flag: "target",
+            values: Some(&["github", "cloudflare"]),
+            hint: Some("`cass pages --export-only` for a local archive"),
+        },
+        RemovedFlag {
+            path: &["models", "install"],
+            flag: "mirror",
+            values: None,
+            hint: Some("`cass models install --from-file DIR`"),
+        },
+    ];
+
+    #[test]
+    fn empty_tables_never_reject() {
+        for args in [
+            argv(&["cass", "swarm", "status"]),
+            argv(&["cass", "sources", "sync"]),
+            argv(&["cass", "pages", "--target", "github"]),
+            argv(&["cass", "search", "swarm"]),
+        ] {
+            assert!(
+                removed_invocation_error(&args, &[], &[]).is_none(),
+                "empty tables must not reject {args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_and_case_variant_commands_reject() {
+        for args in [
+            argv(&["cass", "swarm"]),
+            argv(&["cass", "swarm", "status", "--json"]),
+            argv(&["cass", "Swarm", "status"]),
+            argv(&["cass", "--json", "swarm", "status"]),
+            argv(&["cass", "--data-dir", "/tmp/x", "swarm"]),
+            argv(&["cass", "upgrade", "--check"]),
+        ] {
+            let error = removed_invocation_error(&args, DEMO_COMMANDS, &[])
+                .unwrap_or_else(|| panic!("{args:?} must be rejected"));
+            assert_eq!(error.code, 2);
+            assert_eq!(error.kind, CliErrorKind::RemovedCommand.kind_str());
+            assert!(!error.retryable);
+        }
+        let error =
+            removed_invocation_error(&argv(&["cass", "swarm", "status"]), DEMO_COMMANDS, &[])
+                .expect("swarm status rejected");
+        assert_eq!(
+            error.message,
+            "`cass swarm` was removed: cass runs fully local-only"
+        );
+        // The removed path is named, not the extra arguments.
+        assert!(error.hint.is_none());
+    }
+
+    #[test]
+    fn command_pairs_reject_only_the_named_pair() {
+        let rejected =
+            removed_invocation_error(&argv(&["cass", "sources", "sync"]), DEMO_COMMANDS, &[]);
+        assert!(rejected.is_some(), "sources sync must be rejected");
+        assert_eq!(
+            rejected.unwrap().message,
+            "`cass sources sync` was removed: cass runs fully local-only"
+        );
+        for args in [
+            argv(&["cass", "sources"]),
+            argv(&["cass", "sources", "list"]),
+            argv(&["cass", "sources", "syncer"]),
+        ] {
+            assert!(
+                removed_invocation_error(&args, DEMO_COMMANDS, &[]).is_none(),
+                "{args:?} is a live invocation and must not be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn typos_of_removed_names_resolve_to_the_removed_error() {
+        let error = removed_invocation_error(&argv(&["cass", "swarn"]), DEMO_COMMANDS, &[])
+            .expect("swarn resolves to removed swarm");
+        assert_eq!(error.kind, CliErrorKind::RemovedCommand.kind_str());
+        assert_eq!(
+            error.message,
+            "`cass swarn` resolves to the removed `cass swarm`: cass runs fully local-only"
+        );
+    }
+
+    #[test]
+    fn typos_closer_to_live_commands_are_not_rejected() {
+        // `serach` is distance 1 from live `search` and distance >= 4 from
+        // every demo removal — the live correction must still win.
+        assert!(
+            removed_invocation_error(&argv(&["cass", "serach"]), DEMO_COMMANDS, &[]).is_none(),
+            "a typo closer to a live command keeps the live typo-recovery path"
+        );
+    }
+
+    #[test]
+    fn removed_name_as_search_argument_is_not_rejected() {
+        // `swarm` here is a query word, not the command position.
+        assert!(
+            removed_invocation_error(&argv(&["cass", "search", "swarm"]), DEMO_COMMANDS, &[])
+                .is_none(),
+            "a removed name in argument position must not reject the live command"
+        );
+        assert!(
+            removed_invocation_error(
+                &argv(&["cass", "pack", "sources", "sync"]),
+                DEMO_COMMANDS,
+                &[]
+            )
+            .is_none(),
+            "removed pair words under a different command must not reject"
+        );
+    }
+
+    #[test]
+    fn removed_flags_reject_by_presence_or_value() {
+        // Value-restricted flag: only the listed values are rejected.
+        for args in [
+            argv(&["cass", "pages", "--target", "github"]),
+            argv(&["cass", "pages", "--target=github"]),
+            argv(&["cass", "pages", "--target", "CLOUDFLARE"]),
+            argv(&["cass", "pages", "-target", "github"]),
+        ] {
+            let error = removed_invocation_error(&args, &[], DEMO_FLAGS)
+                .unwrap_or_else(|| panic!("{args:?} must be rejected"));
+            assert_eq!(error.code, 2);
+            assert_eq!(error.kind, CliErrorKind::RemovedCommand.kind_str());
+        }
+        let error = removed_invocation_error(
+            &argv(&["cass", "pages", "--target", "github"]),
+            &[],
+            DEMO_FLAGS,
+        )
+        .expect("pages --target github rejected");
+        assert_eq!(
+            error.message,
+            "`--target` on `cass pages` was removed: cass runs fully local-only"
+        );
+        assert_eq!(
+            error.hint.as_deref(),
+            Some("local equivalent: `cass pages --export-only` for a local archive")
+        );
+        // Surviving values of the same flag stay live.
+        assert!(
+            removed_invocation_error(
+                &argv(&["cass", "pages", "--target", "local"]),
+                &[],
+                DEMO_FLAGS
+            )
+            .is_none(),
+            "an allowed --target value must not be rejected"
+        );
+        // Presence rejection: `models install --mirror X`.
+        for args in [
+            argv(&["cass", "models", "install", "--mirror", "X"]),
+            argv(&["cass", "models", "install", "--mirror=X"]),
+        ] {
+            let error = removed_invocation_error(&args, &[], DEMO_FLAGS)
+                .unwrap_or_else(|| panic!("{args:?} must be rejected"));
+            assert_eq!(
+                error.hint.as_deref(),
+                Some("local equivalent: `cass models install --from-file DIR`")
+            );
+        }
+        // The flag is only removed on its own path.
+        assert!(
+            removed_invocation_error(
+                &argv(&["cass", "models", "verify", "--mirror", "X"]),
+                &[],
+                DEMO_FLAGS
+            )
+            .is_none(),
+            "--mirror on a different command path must not reject"
+        );
+        assert!(
+            removed_invocation_error(
+                &argv(&["cass", "pages", "--target", "github", "--", "x"]),
+                &[],
+                DEMO_FLAGS
+            )
+            .is_some()
+                || removed_invocation_error(
+                    &argv(&["cass", "pages", "--", "--target", "github"]),
+                    &[],
+                    DEMO_FLAGS
+                )
+                .is_none(),
+            "tokens after `--` are never flags"
+        );
+    }
+
+    #[test]
+    fn removed_tables_stay_disjoint_from_live_lists() {
+        // The same commit that adds a REMOVED_COMMANDS entry must drop the
+        // name from CANONICAL_TOP_LEVEL_COMMANDS — a name in both lists
+        // would both reject and still advertise/correct to the command.
+        for entry in REMOVED_COMMANDS {
+            let top = entry.path[0];
+            assert!(
+                !CANONICAL_TOP_LEVEL_COMMANDS
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(top)),
+                "removed command `{top}` still listed in CANONICAL_TOP_LEVEL_COMMANDS"
+            );
+            assert!(
+                !SIDE_EFFECT_EXACT_ONLY_COMMANDS
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(top)),
+                "removed command `{top}` still listed in SIDE_EFFECT_EXACT_ONLY_COMMANDS"
+            );
+        }
+        // Fuzzy correction can never return a removed name.
+        for entry in REMOVED_COMMANDS {
+            let top = entry.path[0];
+            for probe in [
+                top.to_string(),
+                top[..top.len().saturating_sub(1)].to_string(),
+            ] {
+                assert_ne!(
+                    closest_top_level_command(&probe),
+                    Some(top),
+                    "removed command `{top}` is still a typo-correction candidate"
+                );
+            }
+        }
+    }
+}
+
 /// Heuristic recovery for command-line errors to help agents.
 /// Returns `(corrected_args, correction_note)` if a likely intent is found.
 fn heuristic_parse_recovery(
@@ -7302,6 +7826,13 @@ pub struct ParsedCli {
 }
 
 pub fn parse_cli(raw_args: Vec<String>) -> CliResult<ParsedCli> {
+    // A removed command or flag errors here, before normalization, alias
+    // expansion, implicit-search folding or typo recovery can rewrite the
+    // invocation into a different live command (cass-local plan, task 6).
+    if let Some(error) = removed_invocation_error(&raw_args, REMOVED_COMMANDS, REMOVED_FLAGS) {
+        return Err(error);
+    }
+
     // First normalization pass (global flags lift)
     let (normalized_args, parse_note) = normalize_args(raw_args.clone());
 
