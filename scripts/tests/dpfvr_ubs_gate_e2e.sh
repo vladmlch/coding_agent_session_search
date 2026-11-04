@@ -137,6 +137,24 @@ RECEIPT
     check_exit ignored-path-announced 0 rg -F 'gate: UBS skips .ubsignore path .rch-tmp/' "$proof_dir/ubs-scope-printed.log"
     check_exit repeated-integration-target 2 env GATE_BASE=HEAD bash "$scope_root/scripts/gate.sh" --integration 'e2e_lexical_fail_open:a,e2e_lexical_fail_open:b'
 
+    # When every changed file is .ubsignore-covered, the surviving set is an
+    # empty array: under `set -u` its "${arr[@]}" expansions (the ubs_kept
+    # reassignment and the validation loop) must expand to zero words, not
+    # abort. This path is exactly what bash < 4.4 could not run.
+    empty_root="$proof_dir/scope-empty"
+    mkdir -p "$empty_root/scripts/lib" "$empty_root/src"
+    cp "$gate" "$empty_root/scripts/gate.sh"
+    cp "$PROJECT_ROOT/scripts/lib/run_cargo.sh" "$empty_root/scripts/lib/run_cargo.sh"
+    cp "$PROJECT_ROOT/scripts/ubs-version.txt" "$empty_root/scripts/ubs-version.txt"
+    printf '%s\n' 'src/' > "$empty_root/.ubsignore"
+    printf '%s\n' 'pub fn ignored() {}' > "$empty_root/src/ignored.rs"
+    git -C "$empty_root" init -q --initial-branch=main
+    git -C "$empty_root" add scripts/gate.sh scripts/lib/run_cargo.sh scripts/ubs-version.txt .ubsignore
+    git -C "$empty_root" -c user.name=gate-test -c user.email=gate-test@example.invalid \
+        -c commit.gpgsign=false commit -q -m 'isolated empty-scope baseline'
+    check_exit empty-scope-clean-exit 0 env GATE_BASE=HEAD bash "$empty_root/scripts/gate.sh" --print-ubs-files
+    check_exit empty-scope-announced 0 rg -x -F 'gate: no scanner-supported source files changed' "$proof_dir/empty-scope-clean-exit.log"
+
     # Removed remote-execution switches are hard errors, never silent no-ops.
     check_exit local-flag-refused 2 bash "$gate" --local
     check_exit local-flag-named 0 rg -F 'unknown argument: --local' "$proof_dir/local-flag-refused.log"
@@ -194,6 +212,17 @@ RECEIPT
     check_exit timeout-passthrough 0 bash -c 'source "$1" && run_with_timeout probe-stage 5 true' _ "$PROJECT_ROOT/scripts/lib/run_cargo.sh"
     check_exit timeout-expiry 124 bash -c 'source "$1" && run_with_timeout probe-stage 1 sleep 5' _ "$PROJECT_ROOT/scripts/lib/run_cargo.sh"
 
+    # A bash older than 4.4 must be refused up front with a clear diagnostic,
+    # not a mid-run 'arr[@]: unbound variable' abort — the gate expands
+    # possibly-empty arrays throughout under set -u. Runs only on hosts whose
+    # stock /bin/bash predates 4.4 (e.g. macOS's 3.2.57).
+    if /bin/bash -c 'exit $(( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) ? 0 : 1 ))' 2>/dev/null; then
+        check_exit unsupported-bash-refused 2 /bin/bash "$gate" --help
+        check_exit unsupported-bash-named 0 rg -F 'gate: bash >= 4.4 required' "$proof_dir/unsupported-bash-refused.log"
+    else
+        echo "SKIP unsupported-bash cases (/bin/bash is >= 4.4)"
+    fi
+
     # Editing a tracked input mid-run must fail source-stability.
     printf '%s\n' '# mid-run probe edit' >> "$scope_root/scripts/gate.sh"
     check_exit modified-input-refused 1 bash -c 'cd "$1" && shift && exec bash scripts/gate.sh --verify-source-stability "$@"' \
@@ -217,8 +246,11 @@ RECEIPT
     check_exit moved-head-reason 0 rg -F 'HEAD moved' "$proof_dir/moved-head-refused.log"
 
     # UBS is mandatory and pinned; missing or wrong bytes must fail the stage.
+    # "$BASH" pins the interpreter: the stubbed PATH must hide ubs without
+    # also downgrading the shell below the gate's bash >= 4.4 floor (a bare
+    # `bash` in that PATH resolves to the stock /bin/bash, e.g. 3.2 on macOS).
     check_exit ubs-missing-refused 1 env -u UBS_BIN -u UBS_MODULE_DIR PATH=/usr/bin:/bin \
-        bash "$gate" --verify-ubs
+        "$BASH" "$gate" --verify-ubs
     check_exit ubs-missing-reports-stage 0 rg -x -F 'STAGE=ubs EXIT=1' "$proof_dir/ubs-missing-refused.log"
     check_exit ubs-missing-install-hint 0 rg -F \
         'git clone --depth 1 --branch v5.4.4 https://github.com/Dicklesworthstone/ultimate_bug_scanner' \

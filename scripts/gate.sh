@@ -25,6 +25,17 @@
 
 set -uo pipefail
 
+# Under `set -u`, bash < 4.4 expands an empty "${arr[@]}" as an unbound
+# variable and aborts; this script relies on the empty-array expansion
+# throughout (and `declare -A` below already rules out bash 3.x). Refuse
+# early with a clear diagnostic instead of dying mid-run on
+# 'arr[@]: unbound variable'.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] \
+    || { [ "${BASH_VERSINFO[0]:-0}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -lt 4 ]; }; then
+    echo "gate: bash >= 4.4 required (running ${BASH_VERSION:-unknown}); install a newer bash (on macOS: brew install bash) and re-run" >&2
+    exit 2
+fi
+
 _GATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)" || exit 1
 # Shared local cargo helpers: run_cargo, cass_cargo_resolve (jobs, test
 # threads, target dir), sha256 and run_with_timeout.
