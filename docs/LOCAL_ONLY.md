@@ -29,6 +29,17 @@ Ledger for D1: every path deleted by the local-only port, grouped by task.
 **On merge conflict with upstream, keep the deletion.** Newest task first;
 each task appends its own group.
 
+### Task 8 — fleet, release verification, self-update and remote doctor surfaces (2026-11-04)
+
+- `src/fleet_archive_coverage.rs`, `src/fleet_doctor_schema.rs`, `src/fleet_platform_compat.rs`, `src/fleet_probe.rs`, `src/fleet_upgrade_rehearsal.rs`, `src/fleet_version_skew.rs` — fleet command tree: archive coverage, doctor schema, platform compat, live probe, upgrade rehearsal, version skew
+- `src/search/fleet_cheap_probes.rs` — cheap fleet-probe evidence feeders for search incidents
+- `src/release_verify.rs` — release-channel verification (`release-verify`)
+- `src/source_doctor_health.rs` — remote source-doctor health probes
+- `src/update_check.rs` — update checker (GitHub release polling, `update_state.json`, TUI banner)
+- `tests/release_verify_cli.rs`, `tests/e2e_fleet_upgrade_rehearsal_gate.rs` — CLI/e2e suites for the removed flows
+- `tests/golden/robot/fleet_upgrade_rehearsal_shape.json.golden` — orphaned golden
+- `tests/doctor_fixtures/fm-update_check-clock-rollback/` — update-check clock-rollback doctor fixture
+
 ### Task 7 — swarm, Agent Mail, Beads, lessons and operations dashboards (2026-11-04)
 
 - `src/swarm_status.rs`, `src/swarm_replay_fixture.rs` — swarm operations snapshot and its replay-fixture harness
@@ -236,3 +247,30 @@ Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
 || 2026-11-04 | `cargo test --test cli_robot` | 324 passed, 1 pre-existing failure: `html_export_aliases_route_to_export_html_command` — depends on ambient default data dir (fixture must be pre-indexed); identical on HEAD (see Task 2 journal row) |
 || 2026-11-04 | `cargo test --test spec_exit_codes_documented` | pre-existing failure `every_documented_exit_code_is_emitted`: capabilities documents exit 70 (index stall watchdog, `src/indexer/checkpoint_deadline.rs`), but the spec's `SOURCES` list (lib.rs + doctor*.rs) has never included the emitting file — unemitted={70} on HEAD too |
 || 2026-11-04 | `cargo test --test spec_starter_workflows_drift --test spec_recommended_commands_drift --test spec_mistake_recoveries_contract --test spec_robot_docs_topics --test spec_introspect_envelope_completeness --test spec_introspect_schema_integrity --test spec_aliases_resolve --test spec_auto_correction_contracts` | ok |
+
+## Task 8 — fleet/release-verify/upgrade/update machinery removed (2026-11-04)
+
+Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
+
+| Date (UTC) | Command | Result |
+| ---------- | ------- | ------ |
+| 2026-11-04 | `cargo clippy --all-targets --locked -- -D warnings` | ok |
+| 2026-11-04 | `cargo fmt --all -- --check` | ok |
+| 2026-11-04 | `cargo test --locked --test cli_dispatch_coverage` | ok: 110 passed — `fleet`, `release-verify`, `upgrade` rows active (`pending: false`), each rejects through the structured `removed-command` error with a local-equivalent hint |
+| 2026-11-04 | `cargo test --locked --test cli_doctor` | ok: 117 passed — `remote_source_sync` report block gone; `network_source_sync` reports `"status": "removed"`; `local_mirror_source_coverage` scenario replaces multi-machine sync coverage |
+| 2026-11-04 | `cargo test --locked --test doctor_e2e_runner` | ok: 99 passed — remote/sync/fleet root-cause families removed |
+| 2026-11-04 | `cargo test --locked --test cli_status` | ok: 10 passed — `remote_source_sync` asserted absent from `status --json`/`health --json` |
+| 2026-11-04 | `cargo test --locked --test e2e_sources` | ok: 115 passed — `sources sync`/`sources discover`/Tailscale discovery kept live (separate sources workstream) |
+| 2026-11-04 | `cargo test --locked --test e2e_guide_gate` | ok: 65 passed — remote steps dropped; `fix-ci-regression`/`prepare-release` macros removed |
+| 2026-11-04 | `cargo test --locked --test e2e_guide_apply_gate` | ok: 65 passed |
+| 2026-11-04 | `cargo test --locked --test e2e_guide_live_proofs` | ok: 67 passed |
+| 2026-11-04 | `cargo test --locked --test e2e_tui_smoke_flows` | ok: 77 passed — replacement test `tui_pty_launches_without_update_banner_or_release_requests` points `CASS_UPDATE_API_BASE_URL` at a 127.0.0.1 stub and asserts zero requests, no banner/prompt |
+| 2026-11-04 | `cargo test --locked --test tui_flows` | ok: 6 passed |
+| 2026-11-04 | `cargo test --locked --test golden_robot_json` | ok: 52 passed — goldens regenerated sans removed commands/env vars |
+| 2026-11-04 | `cargo test --locked --test golden_robot_docs` | ok: 16 passed |
+| 2026-11-04 | `cargo test --locked --test e2e_resilience_capstone_gate` | ok: 65 passed — coverage golden regenerated for the 15 → 14 subsystem matrix (`update_check` row removed) |
+| 2026-11-04 | `cargo test --locked --test cli_robot` | 325/326 — one pre-existing environmental failure `html_export_aliases_route_to_export_html_command` (ambient default data dir; identical on HEAD, see Task 2 journal row). `CASS_FLEET_*`/`CASS_SKIP_UPDATE`/`CODING_AGENT_SEARCH_NO_UPDATE_PROMPT`/`CASS_UPDATE_API_BASE_URL` all reported `deprecated-ignored`, never honored |
+
+One flaky observation: `cli_dispatch_coverage::
+gh519_export_indexed_source_live_wal_exits_successfully_repeatedly` failed once
+under parallel load and passed on re-run and in the final full run.

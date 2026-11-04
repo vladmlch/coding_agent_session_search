@@ -7770,8 +7770,8 @@ async fn execute_cli(
                 )
                 .init();
 
-            // No update check here: the TUI runs its own in a background
-            // thread and surfaces it as a dismissible banner. A pre-TUI
+            // No update check anywhere: the checker and its TUI banner were
+            // removed by the local-only conversion. The historical pre-TUI
             // check awaited the network and then blocked on a stdin prompt
             // before the first frame (2l1b0.56).
             if let Commands::Tui {
@@ -20002,7 +20002,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "  cass pack \"checkout timeout after redirect\" --robot --max-tokens 4000 --max-evidence 8 --max-sessions 3 --max-excerpt-chars 600".to_string(),
             "  cass pack \"checkout timeout after redirect\" --robot --fields summary,health,freshness,privacy,warnings --max-tokens 4000".to_string(),
             "  # Read warnings[] plus health/freshness/privacy before copying a pack into another prompt.".to_string(),
-            "  # Contributor check for docs/goldens: rch exec -- env CARGO_TARGET_DIR=${TMPDIR:-/tmp}/rch_target_cass_answer_pack_docs cargo test --test golden_robot_docs".to_string(),
+            "  # Contributor check for docs/goldens: cargo test --test golden_robot_docs".to_string(),
             "# Token-budgeted search with cursor + request-id".to_string(),
             "  cass search \"error\" --robot --max-tokens 200 --request-id run-1 --limit 2 --robot-meta".to_string(),
             "  cass search \"error\" --robot --cursor <_meta.next_cursor> --request-id run-1b --robot-meta".to_string(),

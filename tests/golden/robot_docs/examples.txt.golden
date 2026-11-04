@@ -28,7 +28,7 @@ examples:
   cass pack "checkout timeout after redirect" --robot --max-tokens 4000 --max-evidence 8 --max-sessions 3 --max-excerpt-chars 600
   cass pack "checkout timeout after redirect" --robot --fields summary,health,freshness,privacy,warnings --max-tokens 4000
   # Read warnings[] plus health/freshness/privacy before copying a pack into another prompt.
-  # Contributor check for docs/goldens: rch exec -- env CARGO_TARGET_DIR=${TMPDIR:-/tmp}/rch_target_cass_answer_pack_docs cargo test --test golden_robot_docs
+  # Contributor check for docs/goldens: cargo test --test golden_robot_docs
 # Token-budgeted search with cursor + request-id
   cass search "error" --robot --max-tokens 200 --request-id run-1 --limit 2 --robot-meta
   cass search "error" --robot --cursor <_meta.next_cursor> --request-id run-1b --robot-meta

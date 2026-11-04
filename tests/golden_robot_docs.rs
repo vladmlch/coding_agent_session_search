@@ -232,7 +232,7 @@ fn pack_robot_docs_contract_matrix_is_current() {
                 "--freshness-policy strict --freshness-window-seconds 604800 --require-evidence",
                 "--max-tokens 4000 --max-evidence 8 --max-sessions 3 --max-excerpt-chars 600",
                 "--fields summary,health,freshness,privacy,warnings",
-                "rch exec -- env CARGO_TARGET_DIR=${TMPDIR:-/tmp}/rch_target_cass_answer_pack_docs cargo test --test golden_robot_docs",
+                "cargo test --test golden_robot_docs",
             ][..],
         ),
         (
@@ -299,7 +299,7 @@ fn answer_pack_workflow_docs_cover_agent_and_operator_paths() {
                 "privacy_redactions_applied",
                 "Use `search` when you are still exploring candidate sessions. Use `pack`",
                 "export-html",
-                "rch exec -- env CARGO_TARGET_DIR=${TMPDIR:-/tmp}/rch_target_cass_answer_pack_docs",
+                "cargo test --test golden_robot_docs",
             ][..],
         ),
         (

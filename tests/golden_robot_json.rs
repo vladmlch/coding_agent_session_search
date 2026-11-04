@@ -1477,7 +1477,7 @@ fn models_status_shape_matches_golden() {
 }
 
 #[test]
-fn fleet_upgrade_rehearsal_shape_matches_golden() {
+fn fleet_upgrade_rehearsal_rejects_as_removed_command() {
     // `cass fleet` was removed by the local-only task: the command now rejects
     // through the removed-command path, so the rehearsal shape golden no longer
     // applies. The pin keeps the removal contract visible.

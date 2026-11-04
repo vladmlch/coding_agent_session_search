@@ -102,7 +102,7 @@ a long JSONL record in an agent prompt.
 - A derived (SQLite fallback) FTS repair that fails **identically on 5 consecutive `cass index` runs** escalates from a warning to a non-zero exit ([#434](https://github.com/Dicklesworthstone/coding_agent_session_search/issues/434)): the counter persists in `<data_dir>/index/.fts-repair-failure-streak.json`, watch daemons log the escalation instead of exiting, and any run whose repair succeeds — or fails differently — resets it. Canonical rows and the Tantivy index are unaffected; run `cass doctor --rebuild-canonical-fts --yes --json` for the explicit repair.
 
 **Schema stability guarantees**
-- JSON contract surfaces are pinned by golden-file regression tests under `tests/golden/robot/`: `capabilities`, `selftest`, `health`, `status`, `diag`, `models status`/`verify`/`check-update`, `introspect`, `doctor`, `api-version`, `stats`, `search`, `export-html`, `onboarding`, the `quarantine` and `dedup` commands and `analytics incidents`, plus `sessions` and `pack` on their missing-database and error paths only. `triage` has no golden file; its shape is covered only by assertion tests. A change to any field name, type, or nullability fails the golden test suite and requires a deliberate regeneration pass (`UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test golden_robot_json --test golden_robot_docs`).
+- JSON contract surfaces are pinned by golden-file regression tests under `tests/golden/robot/`: `capabilities`, `selftest`, `health`, `status`, `diag`, `models status`/`verify`/`check-update`, `introspect`, `doctor`, `api-version`, `stats`, `search`, `export-html`, `onboarding`, the `quarantine` and `dedup` commands and `analytics incidents`, plus `sessions` and `pack` on their missing-database and error paths only. `triage` has no golden file; its shape is covered only by assertion tests. A change to any field name, type, or nullability fails the golden test suite and requires a deliberate regeneration pass (`UPDATE_GOLDENS=1 cargo test --test golden_robot_json --test golden_robot_docs`).
 - `cass introspect --json`'s `response_schemas` block enumerates every schema in a stable alphabetical order (`BTreeMap`-backed — see bead coding_agent_session_search-8sl73).
 - Error envelopes (`{error: {code, kind, message, hint, retryable}}`) have a fixed shape. `kind` values are kebab-case; branch on `err.kind`, not on the numeric code, for codes ≥ 10 (see the Error Handling section below).
 
@@ -454,7 +454,7 @@ cass sources setup --non-interactive --hosts myserver --skip-install
 
 **Resumable state:** If setup is interrupted (Ctrl+C, connection lost), state is saved to the cache directory (`~/.cache/cass/setup_state.json` on Linux). Resume with `--resume`.
 
-#### Testing your real fleet
+#### Tailscale discovery
 
 Tailscale discovery is optional: `cass sources discover --tailscale --json` adds
 online tailnet peers to SSH-config discovery, and `cass sources setup --tailscale`
@@ -466,48 +466,6 @@ is not required. Matching SSH aliases retain their user/key configuration;
 otherwise SSH uses its normal defaults. IPv6-only peers are currently omitted.
 Tailscale ACLs, SSH authorization and host-key checks still apply; discovery does
 not log in, install Tailscale, or change either SSH or tailnet configuration.
-
-The local fixture and Docker tests do not prove that your machines can sync and
-search each other's sessions. The opt-in live harness uses actual SSH connections
-and `cass sources discover`, `sources add`, `sources sync`, and `search`. It creates isolated synthetic
-Codex sessions on each machine, checks source provenance and filters, repeats a
-sync to detect duplicates, and appends messages. It checks both lexical and default
-hybrid search, requires one JSON response per sync, holds the real indexing lock to
-test busy refusal, and recovers transferred sessions through `sources reingest`.
-A refused SSH connection must leave the other sources searchable.
-
-Keep the inventory and SSH configuration **outside this repository**. For example,
-create a mode-0600 JSON file containing:
-
-```json
-{
-  "ssh_config": "/private/path/to/ssh_config",
-  "hosts": [{"ssh": "workstation"}, {"ssh": "laptop"}]
-}
-```
-
-Then run with an explicit binary:
-
-```bash
-python3 scripts/e2e/live_fleet_search.py \
-  --inventory /private/path/to/fleet.json \
-  --cass-bin /path/to/cass
-```
-
-Python 3 and authenticated SSH access are required on the remote machines.
-The Unix runner needs Python 3.9+, rsync, and a CASS binary supporting the tested
-commands. Each inventory alias must appear in the supplied SSH configuration;
-included configuration files are supported. Host-key verification stays enabled.
-To exercise actual tailnet discovery and transport, add `--tailscale` to the
-harness command and use tailnet IPv4 addresses as the private inventory targets.
-Keep any required SSH users, keys and trusted host-key aliases in the private SSH
-configuration. For a discovery test independent of explicit aliases, use SSH
-`Match originalhost` entries rather than literal `Host` entries for those addresses.
-The harness retains fresh test directories and raw
-receipts privately outside git; it never changes existing session archives or
-deletes test data. Console results use ordinal labels. An unreachable machine
-keeps the overall result failed, even if the other machines pass. Do not attach
-raw receipts or inventories to public issues: they contain machine identities.
 
 #### Remote Installation Methods
 
@@ -954,7 +912,7 @@ AI agents sometimes make syntax mistakes. `cass` aggressively normalizes input t
 | `cass search --limt 5` | `cass search --limit 5` | Flag typos within Levenshtein distance ≤2 corrected |
 
 The CLI applies multiple normalization layers:
-1. **Typo correction**: when parsing fails, long flag names within Levenshtein distance 2 of a known flag are corrected (e.g. `--limt` → `--limit`), and a first word within distance 2 of a subcommand is corrected to it (e.g. `serach` → `search`). A word that already names a subcommand is never changed, so `cass status --jsn` runs `status --json`. `forget` and `upgrade` are reached only by exact spelling.
+1. **Typo correction**: when parsing fails, long flag names within Levenshtein distance 2 of a known flag are corrected (e.g. `--limt` → `--limit`), and a first word within distance 2 of a subcommand is corrected to it (e.g. `serach` → `search`). A word that already names a subcommand is never changed, so `cass status --jsn` runs `status --json`. `forget` is reached only by exact spelling. Removed command names (for example `upgrade`) are never correction targets either — the exact spelling hits the structured `removed-command` error with a local-equivalent hint.
 2. **Case normalization**: `--Robot`, `--LIMIT` → `--robot`, `--limit`
 3. **Snake-case flag recovery**: `--max_results`, `--data_dir`, and other known snake_case long flags become canonical kebab-case before alias recovery runs
 4. **Single-dash recovery**: `-robot` → `--robot` (common LLM mistake)
@@ -1026,7 +984,7 @@ cass search "error" --robot --robot-meta
 #     "schema_version": 1,
 #     "trust_tier": "unverified",     // trusted | likely | unverified | stale | failed
 #     "confidence": "medium",         // low | medium | high
-#     "provenance_refs": [],          // e.g. ["commit:ab0d12ef90ab", "bead:xyz", "release:v0.6.15"]
+#     "provenance_refs": [],          // e.g. ["commit:ab0d12ef90ab"]
 #     "stale_reason": "aged_out",     // present only when not fully trusted
 #     "recommended_followup": "..."   // advisory next step (never a destructive command)
 #   }
@@ -1128,11 +1086,10 @@ LLMs have context limits. `cass` provides multiple levers to control output size
 
 Truncated fields include a `*_truncated: true` indicator so agents know when they're seeing partial content.
 
-Contributor verification for docs or contract changes should use `rch`, for example:
+Contributor verification for docs or contract changes runs cargo locally, for example:
 
 ```bash
-rch exec -- env CARGO_TARGET_DIR=${TMPDIR:-/tmp}/rch_target_cass_answer_pack_docs \
-  cargo test --test golden_robot_docs
+cargo test --test golden_robot_docs
 ```
 
 ### Error Handling for Agents
@@ -1828,7 +1785,6 @@ palette and is preserved with ranking and filters in saved views.
 | `Alt+E` | Bookmark the selected hit (`cass bookmarks list` shows bookmarks) |
 | `Ctrl+E` | Open the export modal |
 | `Ctrl+Shift+E` | Export Markdown immediately |
-| `Alt+U` / `Alt+N` / `Alt+I` | Update banner: upgrade now / show release notes / skip this version |
 
 ### Detail Pane
 
@@ -2973,7 +2929,6 @@ Other subcommands (all present in the `Commands` enum in `src/lib.rs`):
 |---------|---------|
 | `pages` | Export an encrypted, searchable static-site archive with GitHub Pages / Cloudflare Pages deploy; runs the interactive wizard by default, with `--export-only DIR`, `--verify BUNDLE`, `--preview BUNDLE`, and `--scan-secrets` as non-wizard modes. `--share-profile public\|team\|personal` (config: `bundle.share_profile`; wizard: step 4) redacts every exported text, including titles, paths, metadata values, message bodies, their search indexes and snippets. `public` covers home paths, usernames, project names, hostnames, emails, phone numbers, IP addresses, social-security and card numbers, and internal URLs; `team` covers home paths, emails, social-security and card numbers; `personal` rewrites nothing. No profile rewrites a credential (API keys, private keys, connection strings): the staged secret scan rejects an export that contains one, so it fails closed instead of publishing a rewritten secret. The default is `public` for a plaintext export and `team` when encrypted. The bundle's `export_meta` records the profile and per-kind redaction counts, never the values. For a plaintext bundle, `--verify` (which every export also runs before it reports success) reads the declared profile and rescans every exported text surface, including both search indexes, with that profile's rules. It fails if any value the profile removes remains, reporting counts per surface. The home-path and username rules use the verifying account's home directory. An encrypted bundle keeps its profile inside the payload, which `--verify` does not open. |
 | `pages key list\|add-password\|add-recovery\|revoke\|rotate --archive BUNDLE` | Manage the key slots of an exported encrypted bundle (LUKS-style: several independently wrapped copies of one data key). Passwords come from an interactive prompt or `--password-stdin` (current password on line 1, new password on line 2), never from argv; `--json` for automation; recovery secrets are printed once and never stored. See `docs/RECOVERY.md` |
-| `upgrade` | Check for a newer release and optionally run the checksum-verified upgrade flow (`--check`, `--yes`, `--force`) |
 | `man` | Generate the man page to stdout |
 | `storage` | On-disk storage footprint by component (DB, WAL, lexical index, raw mirror, semantic, quarantine) |
 | `dedup` | Collapse pre-existing duplicate conversation rows (`projects/<rel>` vs `<rel>` external-id twins); dry-run unless `--apply` |
@@ -2983,16 +2938,14 @@ Other subcommands (all present in the `Commands` enum in `src/lib.rs`):
 | `quarantine` | Inspect and manage the conversation-ingest quarantine: `list` (each excluded conversation, plus a `status` grouping by cause, version and retry eligibility with the next command), `retry` (bounded re-ingest plan; `--apply` runs it), `clear` |
 | `forget` | Prune archived conversations with `--source-glob '<glob>'`, `--workspace-glob '<glob>'`, and/or `--older-than 90d`; at least one selector is required, and supplied selectors are ANDed. Preview is strictly read-only; add `--apply` to delete canonical rows and rebuild FTS, analytics and the lexical index under the indexing maintenance lock. Age means the last message time, strictly before the reported `before_ms` cutoff; sessions with missing message times are kept. Shared stores such as OpenCode/Devin SQLite databases use durable session identities, so forgotten sessions stay out when siblings change while retained siblings keep updating. Single-session files retain size/mtime tombstones: an unchanged file stays forgotten across incremental/full indexing, and a changed file is indexed again. Source files and raw-mirror captures remain. Use `CASS_EXCLUDE_PATHS` or `CASS_EXCLUDE_WORKSPACES` for prospective exclusion, and `cass mirror prune` for explicit raw-capture retention. Semantic vectors are not rewritten: explicit semantic search reports `semantic-unavailable` and hybrid falls back to lexical until `cass index --semantic` catches up. A previously opened `cass serve` keeps its pinned snapshot until `reload`; the TUI drops forgotten hits on its next search. If lexical rebuilding fails, forget exits 5 (`lexical-rebuild`) and the next index repairs the derived data |
 | `forget --list` / `forget --reinclude` | Inspect recorded exclusions or explicitly release matching records. Use literal `--source-path`, `--source-glob`, or exact `--source-id`, `--agent`, and `--external-id` selectors; supplied selectors are ANDed. Re-inclusion requires a selector and previews by default; add `--apply`, then run `cass index`. Other exclusions and current workspace/path policies remain in force. Historical exclusion records cannot be selected by workspace or age. |
-| `fleet upgrade-rehearsal` | Fleet-safe upgrade rehearsal (dry run) with bounded post-upgrade verification; `--live` opts in to SSH probes of configured remotes |
 | `import chatgpt` | Split a ChatGPT web export (`conversations.json`) into files the ChatGPT connector can index |
-| `release-verify` | Verify release distribution channels from a recorded observation (`--from`) or live (`--live`) |
 | `sources discover` | Auto-discover SSH hosts from `~/.ssh/config` |
 | `sources reingest` | Re-ingest an already-synced mirror into the canonical archive without re-running rsync |
 | `sources artifact-manifest` | Build or verify a lexical-artifact evidence manifest for remote exchange |
 
 `cass guide repair-assets --apply` can rebuild the lexical index from the selected canonical database after the plan's step confirmation, cost acceptance, resource checks and stop-condition acknowledgement. It uses the existing bounded rebuild path and refuses missing or empty archives before source discovery. A successful receipt requires a fresh, complete lexical generation with unchanged canonical identity and conversation/message counts. Already-current assets are reported as `already-ready`; semantic enrichment remains a separate operation. Inspect the dry-run plan first for the exact confirmation flags and step number.
 
-`cass guide onboard-source --apply` validates the configured remote-source sync plan locally, then requires explicit confirmation before incremental indexing. Configure sources with `cass sources add` and stage their mirrors with `cass sources sync` first. The guide performs no registration, SSH transfer or model download. Indexing scans staged configured sources and normal local discovery roots, honors `--db` and `--data-dir`, and uses the existing index lock with a 120-second deadline. Completion requires an unchanged source configuration, a complete scan and a fresh canonical/lexical status check. The receipt separates indexer count observations from archive totals measured by that status check. Missing mirrors, scan errors, deferred work or a busy indexer fail the operation; a started operation may already have updated the archive. Review the dry-run plan for its exact privacy, cost, resource, stop-condition and step confirmations.
+`cass guide onboard-source --apply` previews privacy exposure, then requires explicit confirmation before incremental indexing. Configure sources with `cass sources add` and stage their mirrors with `cass sources sync` first. The guide performs no registration, SSH transfer or model download. Indexing scans staged configured sources and normal local discovery roots, honors `--db` and `--data-dir`, and uses the existing index lock with a 120-second deadline. Completion requires an unchanged source configuration, a complete scan and a fresh canonical/lexical status check. The receipt separates indexer count observations from archive totals measured by that status check. Missing mirrors, scan errors, deferred work or a busy indexer fail the operation; a started operation may already have updated the archive. Review the dry-run plan for its exact privacy, cost, resource, stop-condition and step confirmations.
 
 Five more commands are dispatched before the main parser (registered via `allow_external_subcommands` in `src/main.rs`); use their own `--help`:
 
@@ -3293,62 +3246,11 @@ were removed with release publishing.
   checkout (uses the dated nightly pinned by `rust-toolchain.toml`).
 - **Build only**: `cargo build --release --locked`.
 - **Upgrade**: pull the checkout and re-run the same `cargo install` command.
-
-
-
-## 🔄 Automatic Update Checking
-
-`cass` includes a built-in update checker that notifies you when new versions are available, without interrupting your workflow.
-
-### How It Works
-
-1. **Background Check**: On TUI startup, a background thread queries GitHub releases
-2. **Rate Limiting**: Checks run at most once per hour to avoid API rate limits
-3. **Non-Blocking**: Update checks never slow down TUI startup or search operations; nothing is asked before the TUI draws
-4. **Offline-Safe**: Failed network requests are silently ignored
-
-### Update Notifications
-
-When a new version is available, a one-line banner appears at the top of the TUI:
-
-```
-Update v<current> -> v<latest> | Alt+U upgrade | Alt+N notes | Alt+I ignore | Esc dismiss
-```
-
-- **Alt+U** arms the upgrade; press **Alt+U** again to confirm
-- **Alt+N** opens the release page in your browser
-- **Alt+I** skips this version
-- **Esc** hides the banner for this session
-
-### Self-Update Installation
-
-The installer scripts Alt+U used to execute were removed with release
-publishing; self-update is being reworked as part of the local-only
-conversion. Until it lands, upgrade by reinstalling from the checkout:
-
-```bash
-cargo install --path . --locked --bin cass
-```
-
-### Skip Version
-
-If you're not ready to update, **Alt+I** records the skipped version in persistent state. That specific version won't trigger notifications again, but future versions will.
-
-### Disable Update Checks
-
-For automated environments or personal preference, set any of these:
-
-```bash
-export CODING_AGENT_SEARCH_NO_UPDATE_PROMPT=1   # or CASS_SKIP_UPDATE=1
-# Checks are also off when CI or TUI_HEADLESS is set
-```
-
-### State Persistence
-
-Update check state is stored in `update_state.json` in the data directory:
-- `last_check_ts`: Unix timestamp of the last successful check (for rate limiting)
-- `skipped_version`: Version you chose to skip
-- Delete `update_state.json` to reset both
+  There is no update checker or self-updater — cass never contacts a release
+  API, and the legacy opt-out variables (`CODING_AGENT_SEARCH_NO_UPDATE_PROMPT`,
+  `CASS_SKIP_UPDATE`, `CASS_UPDATE_API_BASE_URL`) are `deprecated-ignored`.
+  A stale `update_state.json` left in the data directory is only diagnosed,
+  never read for update decisions.
 
 ---
 
@@ -3365,8 +3267,6 @@ Update check state is stored in `update_state.json` in the data directory:
   Encrypted conversations require keychain access which isn't available to third-party apps. Legacy unencrypted conversations are indexed automatically.
 
 - **Logs**: Written to `cass.log` (daily rotating) in the data directory.
-
-- **Updates**: Interactive TUI checks for GitHub releases on startup. Skip with `CODING_AGENT_SEARCH_NO_UPDATE_PROMPT=1` or `TUI_HEADLESS=1`.
 
 - **Cache tuning**: `CASS_CACHE_SHARD_CAP` (per-shard entries, default 256) and `CASS_CACHE_TOTAL_CAP` (total cached hits across shards, default 2048) control prefix cache size; raise cautiously to avoid memory bloat.
 
@@ -3531,8 +3431,11 @@ Forgetting is always an explicit operation. CASS does not automatically delete o
 | `CASS_ALLOW_DUMB_TERM` | unset | Allow TUI startup even when `TERM=dumb` |
 | `CASS_DISABLE_ANIMATIONS` | unset | Disable UI animations |
 | `EDITOR` | then `$VISUAL`, then `code` | External editor command (line-number flags are chosen per editor) |
-| **Updates** | | |
-| `CODING_AGENT_SEARCH_NO_UPDATE_PROMPT` | unset | Disable update notifications |
+| **Deprecated (diagnosed, never honored)** | | |
+| `CODING_AGENT_SEARCH_NO_UPDATE_PROMPT` | unset | `deprecated-ignored` — update checks were removed; cass never contacts a release API, so no opt-out is needed |
+| `CASS_SKIP_UPDATE` | unset | `deprecated-ignored` — update checks were removed |
+| `CASS_UPDATE_API_BASE_URL` | unset | `deprecated-ignored` — cass never contacts a release API |
+| `CASS_FLEET_BUDGET_MS` / `CASS_FLEET_PER_HOST_BUDGET_MS` | unset | `deprecated-ignored` — fleet commands were removed |
 | **Connector Overrides** | | |
 | `CASS_AIDER_DATA_ROOT` | `~/.aider.chat.history.md` | Aider history location |
 | `CASS_OMP_DATA_ROOT` | unset | OMP-only archive/store root; assigns OMP identity and preserves the exact sessions root for resume |
@@ -3602,8 +3505,8 @@ uniform SQLite 0.4.12 versions, a single resolution per package, and registry so
 **Build-time validation**
 - `build.rs` validates every named dependency contract against its exact registry requirement, package name, enabled features, and `default-features` policy. It also rejects git/revision fields for these registry-only contracts.
 - The fsqlite-family gate additionally checks `Cargo.lock` for exactly one registry resolution per package at `0.4.12` and rejects every `[patch.crates-io]` redirect for the family, including the facade.
-- Enable optional sibling-manifest validation with `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-strict-target cargo check --features strict-path-dep-validation` or `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-strict-target CASS_STRICT_PATH_DEP_VALIDATION=1 cargo check`. For sibling checkouts that are present, this verifies package names, versions, and required features before you switch to local path overrides; registry-only contracts do not require a particular sibling branch or clean worktree.
-- Use `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-strict-target CASS_STRICT_PATH_DEP_VALIDATION=1 cargo check` for a fast read-only preflight of sibling pins before changing them.
+- Enable optional sibling-manifest validation with `cargo check --features strict-path-dep-validation` or `CASS_STRICT_PATH_DEP_VALIDATION=1 cargo check`. For sibling checkouts that are present, this verifies package names, versions, and required features before you switch to local path overrides; registry-only contracts do not require a particular sibling branch or clean worktree.
+- Use `CASS_STRICT_PATH_DEP_VALIDATION=1 cargo check` for a fast read-only preflight of sibling pins before changing them.
 
 **Expected interface contract**
 - `frankensqlite` (`fsqlite`): `Connection`, `params!`, and `compat::{ConnectionExt, RowExt}` with `row.get_typed(...)`.
@@ -3640,20 +3543,21 @@ When intentionally updating one of these sibling crates, update the manifest pin
 ## 🧪 Developer Workflow
 
 We target the dated Rust nightly `nightly-2026-08-31` pinned by
-`rust-toolchain.toml`. Agents should offload build, test, lint, and snapshot
-commands with `rch`.
+`rust-toolchain.toml`. Build, test, lint, and snapshot commands run locally
+with cargo; `scripts/lib/run_cargo.sh` resolves shared defaults
+(`CARGO_TARGET_DIR`, `CARGO_BUILD_JOBS`, test threads) for the dev scripts.
 
 ```bash
 # Format & Lint
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-dev-target cargo fmt --check
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-dev-target cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 
 # Build & Test
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-dev-target cargo build --release
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-dev-target cargo test
+cargo build --release
+cargo test
 
 # Run End-to-End Tests
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-dev-target cargo test --test e2e_index_tui
+cargo test --test e2e_index_tui
 ```
 
 ### Snapshot Baseline Workflow (FrankenTUI)
@@ -3662,12 +3566,12 @@ Use targeted snapshot runs; do not blindly bless everything:
 
 ```bash
 # Verify current baselines
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-target cargo test snapshot_baseline_ -- --nocapture
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-target cargo test snapshot_search_surface_ -- --nocapture
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-target cargo test --test ftui_harness_snapshots -- --nocapture
+cargo test snapshot_baseline_ -- --nocapture
+cargo test snapshot_search_surface_ -- --nocapture
+cargo test --test ftui_harness_snapshots -- --nocapture
 
 # Regenerate only the suite you intentionally changed
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-target BLESS=1 cargo test snapshot_baseline_ -- --nocapture
+BLESS=1 cargo test snapshot_baseline_ -- --nocapture
 ```
 
 The full regeneration/review protocol (required reviewer checklist, behavioral guard tests,
@@ -3700,19 +3604,19 @@ opt-level = 3           # Maximum runtime optimization
 - LTO and a single codegen unit prioritize runtime optimization at the cost of build time
 - No stack traces on panic (use debug builds for development)
 
-### Verification and Release Pipeline
+### Verification Pipeline
 
-This repository has no GitHub Actions: `.github/workflows/` stays empty, `scripts/gate.sh` refuses to run on a tree that carries a workflow file, and `tests/no_github_actions.rs` fails on one. Verification runs on the `rch` build fleet through `scripts/gate.sh`, in one fleet admission. Its stages are source identity and freshness, `cargo fmt --check`, `clippy --all-targets -D warnings`, the lib build and tests, the selected integration targets, the `cass` binary's own tests, the golden-file contracts and a UBS scan of the changed files. Each stage prints a `STAGE=<name> EXIT=<code>` receipt line, and commits and bead closures cite those lines. `--lib-filter`, `--integration name:filter,...`, `--no-lib` and `--no-bin` narrow a run.
+This repository has no GitHub Actions: `.github/workflows/` stays empty, `scripts/gate.sh` refuses to run on a tree that carries a workflow file, and `tests/no_github_actions.rs` fails on one. Verification runs locally through `scripts/gate.sh`. Its stages are source identity and freshness, `cargo fmt --check`, `clippy --all-targets -D warnings`, the lib build and tests, the selected integration targets, the `cass` binary's own tests, the golden-file contracts and a UBS scan of the changed files. Each stage prints a `STAGE=<name> EXIT=<code>` receipt line, and commits cite those lines. `--lib-filter`, `--integration name:filter,...`, `--no-lib` and `--no-bin` narrow a run.
 
-Cross-platform builds and releases run through `dsr` (`dsr health all`, `dsr build`, `dsr release`, `dsr fallback`); native Windows and macOS checks run on its build hosts. No coverage report is published; generate one locally:
+There is no release pipeline: cass is `publish = false` and ships no release
+channels. No coverage report is published; generate one locally:
 
 ```bash
-# Generate coverage through rch
 # Ensure cargo-llvm-cov is already installed before agent-run gates.
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-coverage-target cargo llvm-cov --all-features --workspace --text
+cargo llvm-cov --all-features --text
 
 # Run specific e2e tests
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-e2e-target cargo test --test e2e_filters -- --test-threads=1
+cargo test --test e2e_filters -- --test-threads=1
 ```
 
 ## About Contributions

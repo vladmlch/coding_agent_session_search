@@ -910,7 +910,6 @@ and distinguish successful results from timeout or maintenance refusal.
 | `CASS_CACHE_SHARD_CAP` | Per-shard cache entries (default 256) |
 | `CASS_CACHE_TOTAL_CAP` | Total cached hits (default 2048) |
 | `CASS_DEBUG_CACHE_METRICS` | Enable cache debug logging |
-| `CODING_AGENT_SEARCH_NO_UPDATE_PROMPT` | Skip update checks |
 
 ---
 

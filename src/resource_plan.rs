@@ -4,15 +4,14 @@ use std::fs;
 use std::process::Command;
 use std::thread;
 
-pub const SCHEMA_VERSION: &str = "cass.guide.resource_plan.v1";
-pub const DEFAULT_TARGET_DIR: &str = "/data/tmp/cass-resource-plan-target";
+pub const SCHEMA_VERSION: &str = "cass.guide.resource_plan.v2";
+pub const DEFAULT_TARGET_DIR: &str = "${TMPDIR:-/tmp}/cass-resource-plan-target";
 pub const ACTIONS: &[&str] = &[
     "full-index",
     "semantic-backfill",
     "model-install",
     "html-export",
     "support-capsule",
-    "release-verification",
 ];
 
 #[derive(Debug, Clone)]
@@ -104,11 +103,11 @@ fn render_payload(
         "inputs": render_inputs(&facts),
         "plans": plans.iter().map(render_plan).collect::<Vec<_>>(),
         "concurrency_caps": concurrency_caps(&facts),
-        "offload": {
+        "local_execution": {
             "recommended": plans.iter().any(|plan| plan.interactive_latency_risk != "low"),
             "target_dir": DEFAULT_TARGET_DIR,
-            "command_prefix": format!("rch exec -- env CARGO_TARGET_DIR={DEFAULT_TARGET_DIR}"),
-            "reason": "use a dedicated target dir per agent and keep expensive work off the interactive pane"
+            "command_prefix": format!("env CARGO_TARGET_DIR={DEFAULT_TARGET_DIR}"),
+            "reason": "run heavy cargo work locally under a dedicated target dir so its artifacts stay out of the shared default target dir"
         },
         "guided_workflow": {
             "surface": "cass guide <intent> --apply --json",
@@ -210,12 +209,12 @@ fn summarize(facts: &ResourceFacts, plans: &[ActionEstimate]) -> Value {
     };
     let recommended_action = plans
         .iter()
-        .find(|plan| plan.recommended_action != "proceed-with-offloaded-window")
+        .find(|plan| plan.recommended_action != "proceed-with-dedicated-target-dir")
         .map(|plan| plan.recommended_action)
         .unwrap_or(if partial_count > 0 {
             "inspect-health-status"
         } else {
-            "proceed-with-offloaded-window"
+            "proceed-with-dedicated-target-dir"
         });
 
     json!({
@@ -322,7 +321,6 @@ fn work_units(action: &str, db_size_mb: u64, message_count: u64) -> u64 {
         "support-capsule" => (message_count / 20_000)
             .saturating_add(db_size_mb / 128)
             .max(8),
-        "release-verification" => db_size_mb.saturating_div(4).saturating_add(300),
         _ => 100,
     }
 }
@@ -334,7 +332,6 @@ fn peak_memory_mb(action: &str, db_size_mb: u64, index_threads: u64, semantic_ba
         "model-install" => 768,
         "html-export" => 384 + (db_size_mb / 8).min(4_096),
         "support-capsule" => 512 + (db_size_mb / 16).min(2_048),
-        "release-verification" => 2_048 + index_threads.saturating_mul(128),
         _ => 512,
     }
 }
@@ -348,7 +345,6 @@ fn disk_write_mb(action: &str, db_size_mb: u64, message_count: u64) -> u64 {
         "model-install" => 120,
         "html-export" => (message_count / 1_000).max(20),
         "support-capsule" => (db_size_mb / 20).max(50),
-        "release-verification" => 256,
         _ => 128,
     }
 }
@@ -368,7 +364,7 @@ fn recommendation_for(warnings: &[&str]) -> &'static str {
     {
         "inspect-health-status"
     } else {
-        "proceed-with-offloaded-window"
+        "proceed-with-dedicated-target-dir"
     }
 }
 
@@ -394,10 +390,8 @@ fn latency_risk(action: &str, cpu: u64, p95_seconds: u64, warnings: &[&str]) -> 
         return "high";
     }
     match action {
-        "full-index" | "semantic-backfill" | "release-verification" if p95_seconds > 1_800 => {
-            "high"
-        }
-        "full-index" | "semantic-backfill" | "release-verification" => "medium",
+        "full-index" | "semantic-backfill" if p95_seconds > 1_800 => "high",
+        "full-index" | "semantic-backfill" => "medium",
         "html-export" | "support-capsule" if cpu <= 4 || p95_seconds > 180 => "medium",
         _ => "low",
     }
