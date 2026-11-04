@@ -1,17 +1,3 @@
-# State
-
-This is a locally developed project with local changes. My goal is to maintain local fixes and the local-only
-direction (no remote sync, fleet operations, hosted deploys, or remote build offload), but periodically checkout
-remote branch and prefer remote changes ONLY when they do the same as local one.
-Meaning that, try to scope every local change as an incremental addition with smallest change in integration point
-with existing code.
-Example: rather then refactoring method (changing arguments, arguments types, name etc.) or changing method logic,
-create a new method which does the new or fixed functionality.
-
-Local-only deletions land as grouped commits (one group per feature area) and every deleted path is logged in
-`docs/LOCAL_ONLY.md`. On merge conflict between an upstream change and a local deletion, **keep the deletion** —
-`docs/LOCAL_ONLY.md` is the ledger that decides which deletions stand.
-
 # Disk space and compilation caches
 
 При нехватке места удаляй кеши сборки без лишних вопросов (только регенерируемые артефакты: target/, incremental-кеши)
