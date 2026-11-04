@@ -5,9 +5,9 @@
 //! These tests ensure:
 //! 1. Zero hardcoded agent paths remain in production code (all come from FAD)
 //! 2. Connector detection round-trip works correctly
-//! 3. Probe script generation uses FAD paths dynamically
+//! 3. FAD probe paths stay consistent with the connector set
 //! 4. Agent counts are consistent across all APIs
-//! 5. Detection-only connectors (continue, windsurf) are properly handled
+//! 5. Detection-only connectors (windsurf) are properly handled
 
 use coding_agent_search::indexer::get_connector_factories;
 use std::collections::HashSet;
@@ -51,7 +51,8 @@ fn probe_slugs() -> HashSet<String> {
 
 /// Detection-only connectors: have probe paths and detection entries but
 /// no parser implementation (no entry in `get_connector_factories()`).
-const DETECTION_ONLY: &[&str] = &["continue", "windsurf"];
+/// `continue` graduated to a full connector factory in the pinned FAD fork.
+const DETECTION_ONLY: &[&str] = &["windsurf"];
 
 /// Extract a function body from source code, including the braces.
 fn extract_function_body(source: &str, fn_prefix: &str) -> String {
@@ -166,7 +167,7 @@ fn feature_gated_connectors_available() {
              Check Cargo.toml enables the feature for franken-agent-detection"
         );
     }
-    assert_eq!(slugs.len(), 33, "Expected 33 connector factories");
+    assert_eq!(slugs.len(), 34, "Expected 34 connector factories");
 }
 
 // ---------------------------------------------------------------------------
@@ -396,34 +397,6 @@ fn diagnostics_connector_paths_is_dynamic() {
     }
 }
 
-/// probe.rs build_probe_script() must source paths from FAD's
-/// default_probe_paths_tilde(), not a hardcoded list.
-#[test]
-fn probe_script_uses_fad_api() {
-    let src =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sources/probe.rs"))
-            .expect("should read src/sources/probe.rs");
-    let body = extract_function_body(&src, "fn build_probe_script(");
-
-    assert!(
-        body.contains("default_probe_paths_tilde"),
-        "build_probe_script should call default_probe_paths_tilde"
-    );
-
-    // The function should NOT contain hardcoded agent directory paths
-    for banned in [
-        "\".codex/sessions\"",
-        "\".claude/projects\"",
-        "\".gemini/tmp\"",
-        "\".goose/sessions\"",
-    ] {
-        assert!(
-            !body.contains(banned),
-            "build_probe_script still hardcodes: {banned}"
-        );
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Test 6: Slug mapping consistency
 // ---------------------------------------------------------------------------
@@ -452,7 +425,8 @@ fn slug_mappings_are_correct() {
 /// When a new connector is added to FAD, cass picks it up automatically via:
 /// - get_connector_factories() (indexing)
 /// - detect_installed_agents() (diagnostics)
-/// - default_probe_paths_tilde() (SSH probing)
+/// - default_probe_paths_tilde() (FAD probe-path table; cass no longer
+///   consumes it — the remote probe script was removed with remote sync)
 #[test]
 fn new_agent_auto_discovery_documented() {
     let factories = get_connector_factories();

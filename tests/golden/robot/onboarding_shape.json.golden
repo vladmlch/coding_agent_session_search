@@ -22,9 +22,6 @@
     "semantic_ready": {
       "type": "boolean"
     },
-    "remote_hint": {
-      "type": "string"
-    },
     "recommended_action": {
       "type": "string"
     },

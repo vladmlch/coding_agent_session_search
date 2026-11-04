@@ -372,9 +372,9 @@ fn safe_mirror_name_is_omp_profiles_root(name: &str) -> bool {
 }
 
 fn has_sanitized_omp_mirror_marker(parts: &[String]) -> bool {
-    // `sources sync` preserves a configured remote path in the mirror
-    // container name. A tilde path starts with the provider marker, while an
-    // absolute path retains its leading components, for example:
+    // Archived remote mirrors preserve the configured remote path in the
+    // mirror container name. A tilde path starts with the provider marker,
+    // while an absolute path retains its leading components, for example:
     //
     //   ~/.omp/agent/sessions       -> .omp_agent_sessions_<hash>
     //   /home/u/.omp/agent/sessions -> home_u_.omp_agent_sessions_<hash>
@@ -635,7 +635,7 @@ pub(crate) fn configured_session_root(path: &Path) -> Option<PathBuf> {
 pub(crate) fn profile_from_session_path(path: &Path) -> Option<String> {
     let parts = path_parts(path)?;
 
-    // `sources sync` flattens the `~/.omp/profiles` preset into one
+    // Archived remote mirrors flatten the `~/.omp/profiles` preset into one
     // provider-qualified mirror container. The profile then sits directly
     // below the safe name instead of below a literal `profiles` component:
     //

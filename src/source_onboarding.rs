@@ -92,7 +92,9 @@ pub struct OnboardingObservation {
     pub providers: Vec<ProviderObservation>,
     /// Whether a semantic embedding model is present locally.
     pub semantic_model_present: bool,
-    /// Whether any remote sources are configured.
+    /// Whether any legacy remote (`type = "ssh"`) entries remain in
+    /// sources.toml. They are inert archive records — remote sync was
+    /// removed and no connection is ever opened for them.
     pub remote_sources_configured: bool,
     /// Whether an index/archive DB already exists with content.
     pub existing_indexed_db: bool,
@@ -124,7 +126,8 @@ pub struct OnboardingReport {
     pub estimated_index_sessions: u64,
     /// Whether the semantic model is ready (else search is lexical-only).
     pub semantic_ready: bool,
-    /// Advisory hint about remote sources, when relevant.
+    /// Advisory hint about legacy remote sources, when such entries are
+    /// still present in sources.toml.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_hint: Option<String>,
     /// The single recommended action.
@@ -198,8 +201,8 @@ pub fn recommend(observation: &OnboardingObservation) -> OnboardingReport {
 
     let (recommended_command, rollback_note) = match recommended_action {
         OnboardingAction::DiscoverSources => (
-            "cass sources discover --json".to_string(),
-            "read-only discovery; nothing is written until you run an explicit add/index"
+            "cass sources add <name> --path <dir>".to_string(),
+            "adding a source only writes sources.toml; remove it with 'cass sources remove <name>'"
                 .to_string(),
         ),
         OnboardingAction::FixSourcePermissions => (
@@ -218,12 +221,16 @@ pub fn recommend(observation: &OnboardingObservation) -> OnboardingReport {
         ),
     };
 
+    // Remote sources can no longer be added: remote sync/discovery was
+    // removed by the local-only port. A hint is only relevant when legacy
+    // `type = "ssh"` entries still sit in sources.toml — they are inert
+    // archive records whose already-mirrored conversations stay indexed.
     let remote_hint = if observation.remote_sources_configured {
-        None
-    } else {
         Some(
-            "no remote sources configured; run cass sources add <ssh-host> to include other machines (additive)".to_string(),
+            "legacy remote sources are inert archive records (remote sync was removed); cass index keeps their mirrors searchable".to_string(),
         )
+    } else {
+        None
     };
 
     OnboardingReport {
@@ -281,7 +288,10 @@ mod tests {
     fn empty_machine_recommends_discovery() {
         let r = recommend(&base());
         assert_eq!(r.recommended_action, OnboardingAction::DiscoverSources);
-        assert_eq!(r.recommended_command, "cass sources discover --json");
+        assert_eq!(
+            r.recommended_command,
+            "cass sources add <name> --path <dir>"
+        );
         assert!(r.providers.is_empty());
         assert!(r.mutation_free);
     }
@@ -317,20 +327,19 @@ mod tests {
     }
 
     #[test]
-    fn missing_remote_config_yields_hint() {
+    fn legacy_remote_entries_yield_inert_hint() {
+        // Legacy `type = "ssh"` entries still in sources.toml are inert:
+        // the hint explains they stay searchable without remote sync.
         let mut o = base();
         o.providers = vec![provider("codex", 1)];
-        o.remote_sources_configured = false;
+        o.remote_sources_configured = true;
         let r = recommend(&o);
-        assert!(
-            r.remote_hint
-                .as_deref()
-                .unwrap()
-                .contains("cass sources add")
-        );
-        // Configured => no hint.
+        let hint = r.remote_hint.as_deref().unwrap();
+        assert!(hint.contains("inert"), "unexpected hint: {hint}");
+        assert!(hint.contains("cass index"), "unexpected hint: {hint}");
+        // No legacy entries => no remote hint.
         let mut o2 = o.clone();
-        o2.remote_sources_configured = true;
+        o2.remote_sources_configured = false;
         assert!(recommend(&o2).remote_hint.is_none());
     }
 

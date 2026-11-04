@@ -270,20 +270,6 @@ See [`models/README.md`](models/README.md) for full documentation.
 
 ---
 
-### sources/
-
-**Scenario:** Sources subsystem probe fixtures.
-
-See [`sources/probe/README.md`](sources/probe/README.md) for full documentation.
-
-| Subdirectory | Description |
-|--------------|-------------|
-| `probe/` | HostProbeResult JSON fixtures for various states |
-
-**Tested by:** `src/sources/probe.rs`, `tests/e2e_sources.rs`
-
----
-
 ## Adding New Fixtures
 
 1. **Use real data** — Capture from actual agent sessions when possible

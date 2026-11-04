@@ -19593,7 +19593,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "  cass export <path> [--format markdown] [--output FILE]  Export a conversation to markdown / other formats.".to_string(),
             "  cass export-html <path> [--output-dir DIR] [--json]  Self-contained HTML export (optional encryption).".to_string(),
             "  cass pages [--export-only DIR] [--verify PATH] [--agents A1,A2]  Encrypted searchable archive for static hosting.".to_string(),
-            "  cass sources [agents list|exclude|include] [setup|list|sync] [--json]  Manage remote sources + agent exclusions.".to_string(),
+            "  cass sources [list|add|remove|doctor|mappings|agents ...] [--json]  Manage local sources + persisted agent-harness exclusions.".to_string(),
             "  cass analytics [status|tokens|tools|models|rebuild|validate] [--json]  Token / tool / model analytics.".to_string(),
             "  cass import [...]                Import conversation data from external sources.".to_string(),
             "  cass daemon [...]                Run the semantic model daemon (Unix only).".to_string(),
@@ -19765,7 +19765,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "  Doctor failure reports: attach the redacted failure_context.json plus manifest/commands/events artifacts; do not attach raw session logs, exact source paths, or live archive copies by default.".to_string(),
             "  Evidence handoff: use `cass pack \"query\" --robot` when triage points at prior sessions; pack is a bounded cited handoff.".to_string(),
             "  Args: accepts --robot-docs=topic and misplaced globals; detailed errors with examples on parse failure".to_string(),
-            "  Source control: use `cass robot-docs sources` for remote sync/setup plus persistent agent-harness exclusions".to_string(),
+            "  Source control: use `cass robot-docs sources` for local sources plus persistent agent-harness exclusions".to_string(),
             "  TUI drill-in contract: Enter on selected hit opens detail modal (Messages tab); Enter with no selected hit falls back to query submit behavior".to_string(),
             "  Detail modal shortcuts: / opens find, n/N cycles matches, Esc exits find then closes modal, F8 opens selected hit in $EDITOR".to_string(),
             "  Safety: prefer --color=never in non-TTY; use --trace-file for spans; reset TUI via `cass tui --reset-state`".to_string(),
@@ -19775,7 +19775,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
         RobotTopic::ExitCodes => vec![
             "exit-codes:".to_string(),
             " 0 ok | 1 health-failed | 2 usage | 3 missing index/db | 4 io|refused-unsafe | 5 data-corrupt | 6 input-required | 7 lock/busy | 8 unused | 9 unknown".to_string(),
-            " 10 config|timeout | 11 config | 12 source|ssh | 13 mapping|not_found | 14 io|mapping | 15 semantic-unavailable|embedder-unavailable".to_string(),
+            " 10 config|timeout | 11 config | 12 source | 13 mapping|not_found | 14 io|mapping | 15 semantic-unavailable|embedder-unavailable".to_string(),
             " 20-21 model | 22 io | 23 download | 24 io | 70 index-stalled (cass index abort) | 130 interrupted (SIGINT)".to_string(),
             " NOTE: codes >= 10 cover domain-specific failures (sources/models/semantic/analytics).".to_string(),
             "       Use `err.kind` from the JSON envelope as the canonical identifier — kinds are".to_string(),
@@ -76917,8 +76917,8 @@ fn count_onboarding_sessions(root: &Path) -> u64 {
 
 /// Gather a read-only [`OnboardingObservation`](crate::source_onboarding::OnboardingObservation)
 /// from live host state — detected agent providers, source-config exclusions and
-/// remote sources, local semantic-model files, and the archive DB. Performs no
-/// mutation (bead 5u82n.6).
+/// legacy remote entries, local semantic-model files, and the archive DB.
+/// Performs no mutation (bead 5u82n.6).
 fn gather_onboarding_observation(
     data_dir: &Path,
     db_path: &Path,
@@ -88634,7 +88634,7 @@ fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
             "4",
             "I/O failure or unsafe operation refused",
             "maybe",
-            "Branch on err.kind: fix the path, permissions, or free space for io/output-not-writable; follow err.hint for refused-unsafe. Not a network code: remote sources fail with 12, model downloads with 20-23.",
+            "Branch on err.kind: fix the path, permissions, or free space for io/output-not-writable; follow err.hint for refused-unsafe. Not a network code: source problems fail with 12, model downloads with 20-23.",
         ),
         exit_code_capability(
             "5",
@@ -88674,9 +88674,9 @@ fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
         ),
         exit_code_capability(
             "12",
-            "source or SSH problem",
+            "source problem",
             "maybe",
-            "Inspect source JSON fields and verify the remote host or path.",
+            "Inspect source JSON fields and verify the configured source or path.",
         ),
         exit_code_capability(
             "13",

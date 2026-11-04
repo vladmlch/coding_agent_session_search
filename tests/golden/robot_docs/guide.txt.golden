@@ -22,7 +22,7 @@ guide:
   Doctor failure reports: attach the redacted failure_context.json plus manifest/commands/events artifacts; do not attach raw session logs, exact source paths, or live archive copies by default.
   Evidence handoff: use `cass pack "query" --robot` when triage points at prior sessions; pack is a bounded cited handoff.
   Args: accepts --robot-docs=topic and misplaced globals; detailed errors with examples on parse failure
-  Source control: use `cass robot-docs sources` for remote sync/setup plus persistent agent-harness exclusions
+  Source control: use `cass robot-docs sources` for local sources plus persistent agent-harness exclusions
   TUI drill-in contract: Enter on selected hit opens detail modal (Messages tab); Enter with no selected hit falls back to query submit behavior
   Detail modal shortcuts: / opens find, n/N cycles matches, Esc exits find then closes modal, F8 opens selected hit in $EDITOR
   Safety: prefer --color=never in non-TTY; use --trace-file for spans; reset TUI via `cass tui --reset-state`

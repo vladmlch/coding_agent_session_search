@@ -373,7 +373,7 @@ fn onboarding_tty_runs_readonly_wizard_and_exits_without_bare_tui() -> TestResul
         "Read-only guided review",
         "What would you like to review?",
         "Recommended next command",
-        "cass sources discover --json",
+        "cass sources add <name> --path <dir>",
         "This wizard did not run that command.",
         "No changes were made.",
     ];

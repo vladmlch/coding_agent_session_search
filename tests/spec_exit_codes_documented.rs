@@ -82,6 +82,12 @@ const SOURCES: &[(&str, &str)] = &[
         "src/viewer_bridge/deadline.rs",
         include_str!("../src/viewer_bridge/deadline.rs"),
     ),
+    // `process::exit(70)` for the indexer checkpoint stall watchdog — the
+    // cass-side "index stalled and aborted" emitter.
+    (
+        "src/indexer/checkpoint_deadline.rs",
+        include_str!("../src/indexer/checkpoint_deadline.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed
@@ -119,7 +125,7 @@ fn emitted_cli_error_codes(src: &str) -> BTreeSet<i32> {
 }
 
 /// Every literal `process::exit(N)`: exits that bypass `CliError` entirely
-/// (the index-stall abort, an interrupted sources setup).
+/// (the index-stall aborts).
 fn emitted_process_exit_codes(src: &str) -> BTreeSet<i32> {
     src.match_indices("process::exit(")
         .filter_map(|(start, needle)| {

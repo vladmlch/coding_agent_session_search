@@ -79,7 +79,6 @@ const SAFE_COMMAND_PREFIXES: &[&str] = &[
     "cass index",
     "cass sources",
     "cass models",
-    "cass self-update",
     "cass triage",
 ];
 
@@ -364,8 +363,8 @@ fn missing_or_stale_note(
             );
         }
         SourceCoverageState::Unavailable => notes.push(
-            "configured sources are unreachable (source=unavailable); the archive is preserved — \
-             reconnect before syncing, do not remove the source"
+            "configured source paths are unreachable (source=unavailable); the archive is \
+             preserved — restore the paths before re-indexing, do not remove the source"
                 .into(),
         ),
         SourceCoverageState::Partial => notes.push(

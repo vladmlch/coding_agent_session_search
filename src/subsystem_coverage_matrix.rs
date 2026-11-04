@@ -396,7 +396,6 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
             subsystem: "sources",
             owning_beads: &[".8", ".8.1", ".8.2", ".8.4", ".8.5"],
             failure_modes: &[
-                "fm-sources-rsync-not-on-path",
                 "fm-sources-toml-malformed",
                 "fm-sources-toctou-existence-race",
             ],
@@ -408,10 +407,10 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
             proof_artifacts: &[
                 "src/sources/config_validation.rs",
                 "tests/e2e_sources.rs",
-                "tests/setup_workflow.rs",
+                "tests/legacy_settings_tolerance.rs",
             ],
-            optional_diagnostics: &["live SSH source probe (opt-in)"],
-            fixture_provenance: "synthetic sources.toml + mirror dirs; no SSH session opened at test time",
+            optional_diagnostics: &[],
+            fixture_provenance: "synthetic sources.toml + local source dirs; legacy ssh entries are inert records — no connection is ever opened",
             log_expectation: "deterministic --lib result line; structured logs for e2e source flows",
             redaction: RedactionExpectation::LocalOnly,
             closure_evidence: "cargo test --test e2e_sources result line",

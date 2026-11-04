@@ -617,26 +617,28 @@ impl DerivedAssetTruthTable {
             SourceCoverageState::Unconfigured => {
                 return SafeNextCommand::new(
                     A::ConfigureSources,
-                    Some("cass sources setup"),
-                    "no sources configured; configure sources before indexing",
+                    Some("cass sources add <name> --path <dir>"),
+                    "no sources configured; add a local source before indexing",
                 );
             }
             SourceCoverageState::Unavailable => {
                 return SafeNextCommand::new(
                     A::ReconnectSource,
-                    Some("cass sources list --json"),
-                    "configured sources are unreachable; reconnect before syncing",
+                    Some("cass sources doctor --json"),
+                    "configured source paths are unreachable; restore the paths or remove the entries",
                 );
             }
             _ => {}
         }
 
-        // 6. Binary skew — upgrade before trusting/rebuilding assets.
+        // 6. Binary skew — upgrade before trusting/rebuilding assets. No
+        // cass command performs an upgrade (self-update was removed), so the
+        // action carries only prose guidance.
         if self.binary == BinaryCompatibility::Outdated {
             return SafeNextCommand::new(
                 A::UpgradeBinary,
-                Some("cass self-update"),
-                "binary is older than the fleet baseline; upgrade before relying on derived assets",
+                None,
+                "binary is older than the baseline; reinstall from a source checkout (`cargo install --path . --locked --bin cass`) before relying on derived assets",
             );
         }
         if self.binary == BinaryCompatibility::Ahead {

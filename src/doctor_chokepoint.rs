@@ -161,7 +161,7 @@ pub(crate) enum ChokepointError {
 /// Pass-1 scope: a path is in scope if it is a descendant of `data_dir`. We do
 /// **not** allow writes to `~/.config/cass/` from `--fix` in pass-1 — that's a
 /// stricter scope than the existing `cass doctor` (which writes to
-/// `~/.config/cass/sources.toml` via `sources setup`). The new chokepoint is
+/// `~/.config/cass/sources.toml` via `cass sources` mutations). The new chokepoint is
 /// the *new* path; existing surfaces keep their existing scope.
 ///
 /// **Defenses against path-traversal and symlink attacks** (per Gemini fresh-eyes round-1 P0/P1):

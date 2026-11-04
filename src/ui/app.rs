@@ -12445,8 +12445,8 @@ impl CassApp {
                 "  agent_search.db - Full-text search index".into(),
                 "  tui_state.json - UI preferences | watch_state.json - Watch timestamps"
                     .into(),
-                "  remotes/ - Synced session data from remote sources".into(),
-                "Config: ~/.config/cass/sources.toml (remote sources)".into(),
+                "  remotes/ - Archived mirror data from legacy remote sources".into(),
+                "Config: ~/.config/cass/sources.toml (local sources)".into(),
                 "Agents: Claude Code, Codex, Gemini, Antigravity, Cline, OpenCode, Amp, Cursor"
                     .into(),
                 "        ChatGPT, Aider, Pi Agent, Oh My Pi, Copilot, Copilot CLI, OpenClaw, ClawdBot"
@@ -12484,10 +12484,7 @@ impl CassApp {
                     "{} jump directly to Analytics (global shell + metrics views)",
                     shortcuts::SURFACE_ANALYTICS
                 ),
-                format!(
-                    "{} open Sources manager (sync, doctor, health)",
-                    shortcuts::SOURCES
-                ),
+                format!("{} open Sources manager (list, doctor)", shortcuts::SOURCES),
                 "Esc from Analytics/Sources returns to the previous surface".into(),
                 format!(
                     "{} opens the command palette for all surface commands",
@@ -12521,13 +12518,13 @@ impl CassApp {
 
         add_section(
             &mut lines,
-            "Sources (Multi-Machine)",
+            "Sources",
             &[
                 "F11 cycle source filter: all → local → remote → all".into(),
                 "Shift+F11 opens source filter menu (select specific sources)".into(),
-                "Remote sessions show [source-name] in results list".into(),
-                "Setup: cass sources setup (interactive wizard with SSH discovery)".into(),
-                "Sync: rsync over SSH (delta transfers, additive-only for safety)".into(),
+                "Archived remote sessions show [source-name] in results list".into(),
+                "Add: cass sources add <name> --path <dir> (local directories)".into(),
+                "Legacy remote mirrors stay indexed via cass index".into(),
             ],
         );
 
@@ -21652,7 +21649,7 @@ impl super::ftui_adapter::Model for CassApp {
                 let header_inner = header_block.inner(vertical[0]);
                 header_block.render(vertical[0], frame);
                 if render_content && !header_inner.is_empty() {
-                    let hints = " s=sync  d=doctor  r=refresh  Esc=back";
+                    let hints = " d=doctor  r=refresh  Esc=back";
                     Paragraph::new(hints)
                         .style(text_muted_style)
                         .render(header_inner, frame);

@@ -2,38 +2,7 @@
   "version": "1.0.0",
   "generated_at": "2026-01-27",
   "description": "Allowlist for mock/fake/stub patterns. Only true platform boundaries and deterministic fixtures remain.",
-  "entries": [
-    {
-      "path": "src/sources/install.rs",
-      "pattern": "mock_system_info",
-      "rationale": "Fixture constructor for testing pure install method selection logic with deterministic inputs",
-      "owner": "sources-team",
-      "review_date": "2026-07-27",
-      "cfg_test_only": true,
-      "permanent": true,
-      "note": "Creates test SystemInfo struct for unit testing choose_method() and related pure functions. Complemented by real system probe tests."
-    },
-    {
-      "path": "src/sources/install.rs",
-      "pattern": "mock_resources",
-      "rationale": "Fixture constructor for testing pure resource checking logic with deterministic inputs",
-      "owner": "sources-team",
-      "review_date": "2026-07-27",
-      "cfg_test_only": true,
-      "permanent": true,
-      "note": "Creates test ResourceInfo struct for unit testing check_resources() and can_compile(). Complemented by real resource probe tests."
-    },
-    {
-      "path": "tests/tailscale_discovery.rs",
-      "pattern": "fake_tailscale_status",
-      "rationale": "External Tailscale CLI/daemon protocol boundary: deterministic status JSON is necessary to exercise Mullvad filtering without a private tailnet or contacting provider infrastructure. The production parser, setup and real OpenSSH execute unchanged; ProxyCommand records and refuses every transport locally.",
-      "owner": "sources-team",
-      "review_date": "2027-03-28",
-      "cfg_test_only": true,
-      "permanent": true,
-      "note": "GH505 covers tag-only and DNS-only providers, normal exit nodes, aliases, all-provider discovery, and resumed stale discovery. No SSH executable is substituted."
-    }
-  ],
+  "entries": [],
   "excluded_paths": [
     "node_modules/",
     "target/",

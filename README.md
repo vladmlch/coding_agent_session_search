@@ -356,8 +356,8 @@ Ingests history from 34 local agent connectors, normalizing them into a unified 
 - **Crush**: `~/.crush/crush.db` and per-project `.crush/crush.db` (SQLite)
 - **Hermes**: `~/.hermes/state.db` and project-local `.hermes/state.db` (SQLite)
 - **Devin CLI**: `~/.local/share/devin/cli/sessions.db` (SQLite; override with `CASS_DEVIN_DATA_ROOT`). Indexes visible local sessions along their active parent chain, preserving tool messages and excluding abandoned branches and inline image payloads. Cloud-only sessions are outside this connector's scope.
-- **Shelley**: reads the local SQLite conversation database directly. Set `CASS_SHELLEY_DB=/absolute/path/to/shelley.db`, or add that file to the `paths` of a `type = "local"` source in `sources.toml`. Any filename is accepted after schema validation. Defaults include `~/.config/shelley/shelley.db` and `shelley.db` in the current directory. Live indexing watches the database and its WAL/SHM sidecars; metadata changes refresh existing sessions. `CASS_SKIP_SUBAGENTS=1` excludes conversations with a Shelley parent ID. The database can also contain credentials and application settings, so raw mirroring and remote database ingestion are disabled; keep the database on its original machine.
-- **Grok Bot**: indexes the desktop application's local rolling chat replica. Set `CASS_GROK_BOT_DATA_ROOT` to its persistence directory. Native message IDs preserve already indexed history as older messages leave the application's window; repeat scans do not duplicate retained messages. CASS reads only chat content. Raw mirroring and automatic fleet copying are disabled because the replica also holds secret and approval fields. This connector is separate from the Grok CLI connector and does not fetch cloud history.
+- **Shelley**: reads the local SQLite conversation database directly. Set `CASS_SHELLEY_DB=/absolute/path/to/shelley.db`, or add that file to the `paths` of a `type = "local"` source in `sources.toml`. Any filename is accepted after schema validation. Defaults include `~/.config/shelley/shelley.db` and `shelley.db` in the current directory. Live indexing watches the database and its WAL/SHM sidecars; metadata changes refresh existing sessions. `CASS_SKIP_SUBAGENTS=1` excludes conversations with a Shelley parent ID. The database can also contain credentials and application settings, so raw mirroring is disabled for it; keep the database on its original machine.
+- **Grok Bot**: indexes the desktop application's local rolling chat replica. Set `CASS_GROK_BOT_DATA_ROOT` to its persistence directory. Native message IDs preserve already indexed history as older messages leave the application's window; repeat scans do not duplicate retained messages. CASS reads only chat content. Raw mirroring is disabled because the replica also holds secret and approval fields. This connector is separate from the Grok CLI connector and does not fetch cloud history.
 - **Kimi Code**: `$KIMI_CODE_HOME/sessions/*/*/agents/*/wire.jsonl` (default `~/.kimi-code`; sub-agents index as `<sessionId>:<agentId>`), plus the legacy `~/.kimi/sessions/*/*/wire.jsonl` layout (Session JSONL)
 - **Muse Code**: `~/.local/share/muse/sessions/<YYYY>/<MM>/<DD>/<session-id>/session.jsonl`, including nested `subagent/*/session.jsonl` transcripts (override with `CASS_MUSE_DATA_ROOT`)
 - **Qwen Code**: `~/.qwen/tmp/*/chats/session-*.json` (Chat JSON)
@@ -395,187 +395,34 @@ agent identity throughout search, analytics, resume, TUI, and HTML export:
 - **Format**: SQLite database with sessions table
 - **Detection**: Finds directories named `.opencode` containing database files
 
-### 🌐 Remote Sources (Multi-Machine Search)
+### 📂 Sources
 
-Search across agent sessions from multiple machines—your laptop, desktop, and remote servers—all from a single unified index. `cass` uses SSH/rsync to efficiently sync session data, tracking provenance so you know where each conversation originated.
+`cass` runs fully local-only. A *source* is an extra local directory indexed in place under a friendly name that becomes its `source_id`. There is no remote discovery, sync, or scheduling — the removed verbs (`sources sync`, `sources setup`, `sources discover`, `sources reingest`, `sources artifact-manifest`, `sources schedule`, and the `sources add user@host` form) fail with a removed-command error naming the local equivalent.
 
-#### Interactive Setup Wizard (Recommended)
-
-The easiest way to configure multi-machine search is the interactive setup wizard:
+#### Adding and Managing Sources
 
 ```bash
-cass sources setup
+# Add a local directory as a named source (--path is repeatable)
+cass sources add archive-box --path /Volumes/old-sessions
+cass sources add archive-box -p /data/a -p /data/b
+
+# List configured sources
+cass sources list [--verbose] [--json]   # kind: local | legacy-remote
+
+# Remove a source (--purge also deletes its archived mirror data)
+cass sources remove archive-box [--purge] [-y]
+
+# Local diagnostics only: path syntax/existence, mirror storage writability
+cass sources doctor [--source <name>] [--json]
 ```
 
-**What the wizard does:**
+#### Legacy Remote Entries
 
-1. **Discovers** SSH hosts from your `~/.ssh/config`
-2. **Probes** each host to check for:
-   - Existing cass installation (and version)
-   - Agent session data (Claude, Codex, Cursor, Gemini, etc.)
-   - System resources (disk space, memory)
-3. **Lets you select** which hosts to configure
-4. **Installs cass** on remotes that don't have it (optional)
-5. **Indexes** existing sessions on remotes (optional)
-6. **Configures** `sources.toml` with correct paths and mappings
-7. **Syncs** the configured remotes by running `cass sources sync` right after configuration (skipped with `--skip-sync` or `--dry-run`; `--json` setup defers it and reports the command to run)
+Historical `type = "ssh"` entries in `sources.toml` stay readable as inert archive records: `cass sources list --json` reports `kind: legacy-remote` with `supported: false`, `cass sources doctor` reports them as warnings and never connects, and ordinary `cass index` keeps indexing any existing `<data-dir>/remotes/<name>/mirror` trees read-only under their original source ids. Previously synced sessions remain searchable and source-filterable.
 
-**Wizard options:**
+#### Archive Safety & Raw-Mirror Retention
 
-| Flag | Purpose |
-|------|---------|
-| `--hosts <names>` | Configure only specific hosts (comma-separated) |
-| `--dry-run` | Preview changes without applying them |
-| `--non-interactive` | Use auto-detected defaults for scripting |
-| `--skip-install` | Don't install cass on remotes |
-| `--skip-index` | Don't run indexing on remotes |
-| `--skip-sync` | Skip the final `cass sources sync`. Interactive setup runs that sync after the hosts are configured and records it as complete only once it has actually finished; `--json` setup always defers it and reports `sync.status = "pending"` with the command to run |
-| `--resume` | Resume an interrupted setup |
-| `--json` | Output progress as JSON (for automation) |
-
-**Examples:**
-
-```bash
-# Full interactive wizard
-cass sources setup
-
-# Configure specific hosts only
-cass sources setup --hosts laptop,workstation,build-server
-
-# Preview without making changes
-cass sources setup --dry-run
-
-# Resume interrupted setup
-cass sources setup --resume
-
-# Non-interactive for CI/CD
-cass sources setup --non-interactive --hosts myserver --skip-install
-```
-
-**Resumable state:** If setup is interrupted (Ctrl+C, connection lost), state is saved to the cache directory (`~/.cache/cass/setup_state.json` on Linux). Resume with `--resume`.
-
-#### Tailscale discovery
-
-Tailscale discovery is optional: `cass sources discover --tailscale --json` adds
-online tailnet peers to SSH-config discovery, and `cass sources setup --tailscale`
-offers them in setup. It reads local `tailscale status --json` with a five-second
-deadline; a missing CLI, stopped daemon, or login failure produces a warning and
-leaves SSH-config discovery available. Explicit `setup --hosts` skips discovery.
-Connections use ordinary SSH over assigned Tailscale IPv4 addresses, so MagicDNS
-is not required. Matching SSH aliases retain their user/key configuration;
-otherwise SSH uses its normal defaults. IPv6-only peers are currently omitted.
-Tailscale ACLs, SSH authorization and host-key checks still apply; discovery does
-not log in, install Tailscale, or change either SSH or tailnet configuration.
-
-#### Remote Installation Methods
-
-When the wizard installs `cass` on remote machines, it tries every viable method in this priority order, falling through to the next when one fails; setup fails only when all of them do, and the error lists each attempt:
-
-| Priority | Method | Speed | Requirements |
-|----------|--------|-------|--------------|
-| 1 | **Pre-built binary** | ~10s | curl/wget, GitHub access, compatible release binary |
-| 2 | **Source build** | ~30 min | rustup and cargo, curl/wget, 6GB free disk in `$HOME`, 10GB RAM |
-| 3 | **Full bootstrap** | ~30 min | curl, 6GB free disk in `$HOME`, 10GB RAM (installs rustup, then builds as in 2) |
-
-The source build downloads the
-release tag's source archive into `$HOME`, installs the Rust toolchain that
-tag's `rust-toolchain.toml` pins (a dated nightly; cass does not build on
-stable), and runs `cargo install --locked --path . --bin cass` inside it, so the
-binary lands in `~/.cargo/bin/cass`. The unpacked tree is removed afterwards. It
-does not use crates.io. It builds with thin LTO instead of the release
-profile's fat LTO, so the binary is somewhat larger and slower than the
-published one. Measured building v0.10.0 on a fresh account (two build jobs):
-28 minutes, 8.6 GB peak compiler memory (10.9 GB and 36 minutes with fat LTO),
-1.5 GB toolchain, 0.8 GB cargo cache and a 2.6 GB build tree. The wizard
-offers it only to hosts above those floors.
-
-> **crates.io lags the source:** the last published crates.io version is 0.7.0
-> (2026-08-25), so `cargo install coding-agent-search` builds 0.7.0. The crate
-> is now `publish = false` — install from a source checkout
-> (`cargo install --path . --locked --bin cass`) for a current version.
-
-**Resource Requirements**:
-- Minimum 1GB free disk in `$HOME` for the pre-built binary
-- 6GB free disk in `$HOME` and 10GB RAM for a source build
-- Linux pre-built binaries require glibc 2.28+ on conventional FHS-style distributions (see *System Requirements*); older glibc, musl-only, and NixOS hosts fall back to source installation when possible.
-- SSH access with key-based authentication
-
-**What Gets Installed**:
-- The `cass` binary (location depends on method: `~/.cargo/bin/cass` for cargo-based, `~/.local/bin/cass` for pre-built binary)
-- No daemon, no background services—just the binary
-
-**Installation Progress**: The wizard shows real-time progress for each stage:
-```
-Installing cass on laptop...
-  [1/4] Checking environment...     ✓
-  [2/4] Downloading binary...       ████████░░ 80%
-  [3/4] Verifying checksum...       ✓
-  [4/4] Setting up PATH...          ✓
-```
-
-Use `--skip-install` if you prefer to install manually on remotes.
-
-#### Host Discovery & Probing
-
-The setup wizard automatically discovers SSH hosts from your configuration:
-
-**Discovery Sources**:
-- `~/.ssh/config` (parses Host entries)
-- Hosts with wildcards (`*`, `?`) are automatically excluded
-
-**Probe Results** (for each discovered host):
-| Check | Purpose |
-|-------|---------|
-| **Connectivity** | Can we establish SSH connection? |
-| **cass Version** | Is cass already installed? What version? |
-| **Agent Data** | Which agents have session data? |
-| **Session Count** | How many conversations exist? |
-| **System Info** | OS, architecture, disk space, memory |
-
-Each setup run probes every selected host afresh; probe results are not cached between runs.
-
-#### Manual Setup
-
-For manual configuration without the wizard:
-
-```bash
-# Add a remote machine using platform presets
-cass sources add user@laptop.local --preset macos-defaults
-
-# Or specify paths explicitly
-cass sources add dev@workstation --path ~/.claude/projects --path ~/.codex/sessions
-
-# Sync sessions from all configured sources
-cass sources sync
-
-# Check source health and connectivity
-cass sources doctor
-```
-
-#### Remote Archive Safety
-
-Remote source diagnostics are intentionally local-only. `cass triage --json`,
-`cass doctor --json`, `cass health --json`, and `cass status --json` report the
-`remote_source_sync` summary from cass-owned evidence: `sources.toml`,
-`sync_status.json`, the local `remotes/<source>/mirror/` copy, and archive DB
-provenance rows. They do not open SSH sessions, mutate remote machines, or
-rewrite provider session logs while classifying source gaps.
-
-`cass sources doctor` is the explicit networked exception: it performs bounded,
-read-only probes of configured source hosts. Its per-source human summary keeps
-the same native reachability, binary-health, and mirror/sync state codes and
-safe command as the JSON report. It intentionally does not claim local search
-readiness, because a remote host probe cannot establish the controller's local
-SQLite, lexical, or semantic asset state.
-
-This matters because agent harnesses can prune their own logs. If a laptop is
-retired, a remote path disappears, or a provider truncates older sessions, the
-cass archive DB and cass-owned local mirror may be the only remaining evidence
-for those conversations. Treat gap names such as `remote_source_unavailable`,
-`remote_source_pruned`, `local_archive_ahead_of_remote`, and
-`remote_copy_ahead_verified` as preservation signals first: keep the archive and
-mirror intact, then run the recommended `cass sources sync --json` (all configured remote sources; `--source <name>` narrows it) or
-source-specific sync command after reviewing the reported evidence.
+This matters because agent harnesses can prune their own logs. If a source directory disappears, a mirror tree is lost, or a provider truncates older sessions, the cass archive DB and cass-owned local copies may be the only remaining evidence for those conversations.
 
 Raw-mirror retention is explicit and audited. Use `cass mirror prune
 --older-than 90d --json` or `cass mirror prune --max-size 100GB --json` to get a
@@ -646,20 +493,22 @@ Sources are configured in the platform config directory (Linux: `~/.config/cass/
 
 ```toml
 [[sources]]
+name = "archive-box"
+type = "local"
+paths = ["/Volumes/old-sessions"]
+
+# A legacy remote entry: kept as an inert archive record. Its `host`,
+# `sync_schedule` and `platform` fields are preserved on rewrites; no
+# connection is ever opened for it.
+[[sources]]
 name = "laptop"
 type = "ssh"
 host = "user@laptop.local"
-paths = ["~/.claude/projects", "~/.codex/sessions"]
+paths = ["~/.claude/projects"]
 sync_schedule = "manual"
 
-[[sources]]
-name = "workstation"
-type = "ssh"
-host = "dev@work.example.com"
-paths = ["~/.claude/projects"]
-sync_schedule = "daily"
-
-# Path mappings rewrite remote paths to local equivalents
+# Path mappings rewrite archived remote workspace paths to local
+# equivalents when opening hits in an editor
 [[sources.path_mappings]]
 from = "/home/dev/projects"
 to = "/Users/me/projects"
@@ -669,48 +518,21 @@ to = "/Users/me/projects"
 from = "/opt/work"
 to = "/Volumes/Work"
 agents = ["claude_code"]
+
+# Disable noisy connectors globally, including the built-in local source
+disabled_agents = ["openclaw"]
 ```
 
 **Configuration Fields:**
 | Field | Description |
 |-------|-------------|
 | `name` | Friendly identifier (becomes `source_id`) |
-| `type` | Connection type: `ssh` or `local` |
-| `host` | SSH host (`user@hostname`) |
-| `paths` | Paths to sync (supports `~` expansion) |
-| `sync_schedule` | `manual`, `hourly`, or `daily`. Legacy label only — `cass schedule` performs no synchronization, and `cass schedule status` reports how many sources still set it; syncs happen only when you run `cass sources sync` |
-| `path_mappings` | Rewrite remote paths to local equivalents |
-
-#### CLI Commands
-
-```bash
-# List configured sources
-cass sources list [--verbose] [--json]
-
-# Add a new source
-cass sources add <user@host> [--name <name>] [--preset macos-defaults|linux-defaults] [--path <path>...] [--no-test] [--json]
-
-# Set the legacy sync_schedule label on a remote source (default: manual);
-# nothing executes it — `cass schedule status` reports it as ignored
-cass sources schedule <name> <manual|hourly|daily> [--json]
-
-# Remove a source
-cass sources remove <name> [--purge] [-y]
-
-# Check connectivity and config
-cass sources doctor [--source <name>] [--json]
-
-# Sync sessions
-cass sources sync [--source <name>] [--no-index] [--verbose] [--dry-run] [--json]
-```
-
-#### Read-Only (rrsync) Remotes
-
-A key restricted in the remote's `authorized_keys` to `command="rrsync -ro /home/user",restrict` works: `cass sources sync` retries without `--secluded-args` (which rrsync refuses), and the connectivity check in `sources add` and `sources doctor` runs `true`, the one non-rsync command rrsync allows. Three things differ from an unrestricted key:
-
-- Write remote paths without `~`. cass expands `~` by asking the remote shell for `$HOME`, and rrsync refuses that.
-- rrsync anchors every path at its directory. With `rrsync -ro /home/user`, configure `/.claude/projects` (served as `/home/user/.claude/projects`); `/home/user/.claude/projects` would be served as `/home/user/home/user/.claude/projects`. Paths containing `..` are refused.
-- Tailscale SSH authenticates through the tailnet, not `authorized_keys`, so a forced command does not restrict a Tailscale SSH session. Use a regular sshd for a read-only key.
+| `type` | `local` indexes extra directories; legacy `ssh` entries stay readable as inert archive records |
+| `host` | Preserved on legacy `ssh` entries; never connected to |
+| `paths` | Directories to index in place (local sources) |
+| `sync_schedule` | Legacy label preserved on `ssh` entries; nothing executes it |
+| `path_mappings` | Rewrite archived remote workspace paths to local equivalents |
+| `disabled_agents` | Persisted connector exclusions applied at indexing time |
 
 #### Excluding Noisy Agent Harnesses
 
@@ -727,7 +549,7 @@ cass sources agents exclude openclaw
 cass sources agents include openclaw
 ```
 
-`cass` stores this preference in `sources.toml` (`~/.config/cass/sources.toml` on Linux, `~/Library/Application Support/cass/sources.toml` on macOS), so future scans, syncs, and watch-mode updates remember it automatically.
+`cass` stores this preference in `sources.toml` (`~/.config/cass/sources.toml` on Linux, `~/Library/Application Support/cass/sources.toml` on macOS), so future scans and watch-mode updates remember it automatically.
 
 By default, `cass sources agents exclude <agent>` also removes already archived local data for that agent and rebuilds the lexical index so the exclusion frees space instead of only blocking future imports.
 
@@ -737,54 +559,16 @@ If you want to block future indexing but keep the data already archived:
 cass sources agents exclude openclaw --keep-indexed-data
 ```
 
-#### Sync Engine Internals
-
-The sync engine uses rsync over SSH for efficient delta transfers and falls back to other transports when rsync is unavailable:
-
-**Transfer Methods** (auto-detected):
-| Method | When Used | Characteristics |
-|--------|-----------|-----------------|
-| **rsync** | rsync available on both ends | Delta transfers, compression, progress stats |
-| **WSL rsync** | Windows without native rsync, WSL with rsync installed | Runs `wsl rsync` |
-| **scp** | rsync unavailable | Full file copies through the system `scp`, inheriting the OpenSSH agent, keys and `~/.ssh/config` |
-| **SFTP** | the fallbacks above unavailable | Full file transfers via the SSH native protocol |
-
-**Safety Guarantees**:
-- **Additive-only syncs**: rsync runs WITHOUT `--delete`, so remote deletions never propagate locally.
-- **Local copies follow the remote**: rsync runs with `-a` and without `-u`, so a local mirror file that differs from the remote is overwritten, even when the local copy is newer. The mirror is a copy of the remote, not a place to edit sessions.
-- **Interrupted transfers resume**: `--partial` keeps a partly transferred file under its final name so the next sync continues it. A failed sync can therefore leave a truncated file until the next sync completes.
-
-**Transfer Configuration**:
-| Setting | Default | Purpose |
-|---------|---------|---------|
-| Connection timeout | 10s | Fail fast on unreachable hosts |
-| Transfer timeout | 300 s of I/O inactivity | rsync `--timeout` aborts a transfer that stalls this long; there is no wall-clock limit on a transfer that keeps moving |
-| Compression | Enabled | Reduce bandwidth for text-heavy sessions |
-| Partial transfers | Enabled | Resume interrupted syncs |
-
-**rsync Flags Used**:
-```
--avz --links --safe-links --stats --partial [--protect-args | --secluded-args] --timeout 300 \
-  -e "ssh [-F $CASS_SSH_CONFIG] -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes"
-```
-Where `-avz` = archive mode + verbose + compression. `--protect-args`/`--secluded-args` is auto-detected per remote rsync version (omitted when the remote rejects it), and `--timeout` carries the transfer timeout in seconds. `StrictHostKeyChecking=yes` means a host whose key is not already in `known_hosts` fails with "Host key verification failed". Connect once with plain `ssh <host>` and accept the key, or add it with `ssh-keyscan`, before the first sync.
-
-**Data Flow**:
-```
-Remote: ~/.claude/projects/
-    ↓ (rsync over SSH)
-Local: ~/.local/share/coding-agent-search/remotes/<source>/mirror/<path>_<hash>/
-    ↓ (connector scan)
-Index: agent_search.db + index/v9-quill/
-```
-
-Where `<path>` is a filesystem-safe version of the remote path (e.g. `.claude_projects`), and `<hash>` is an FNV-1a hash of the original path in hex, so `foo/bar` and `foo_bar` never collide.
-
-Sessions from remotes are indexed alongside local sessions, with provenance tracking to identify origin.
+Archived remote mirrors keep their historical layout under
+`<data-dir>/remotes/<source>/mirror/<path>_<hash>/`, where `<path>` is a
+filesystem-safe version of the remote path (e.g. `.claude_projects`) and
+`<hash>` is an FNV-1a hash of the original path in hex, so `foo/bar` and
+`foo_bar` never collide. `cass index` scans these trees read-only alongside
+local sessions, with provenance tracking to identify origin.
 
 #### Path Mappings
 
-When viewing sessions from remote machines, workspace paths may not exist locally. Path mappings rewrite these paths so file links work on your local machine:
+When viewing sessions whose workspace paths were recorded on another machine (an archived remote mirror or a copied directory), those paths may not exist locally. Path mappings rewrite these paths so file links work on your local machine:
 
 ```bash
 # List current mappings
@@ -810,15 +594,15 @@ In the TUI, filter sessions by origin:
 - **F11**: Cycle source filter (all → local → remote → all)
 - **Shift+F11**: Open source filter menu to select specific sources
 
-Remote sessions display with a source indicator (e.g., `[laptop]`) in the results list.
+Archived remote sessions display with a source indicator (e.g., `[laptop]`) in the results list.
 
 #### Provenance Tracking
 
 Each conversation tracks its origin:
-- `source_id`: Machine identifier (e.g., "laptop", "workstation")
+- `source_id`: Source identifier (e.g., "local", "archive-box", "laptop")
 - `origin_kind`: `local` or `remote`
 - `origin_host`: the remote host label, absent for local sessions
-- `workspace_original`: Original path on the remote machine (before path mapping)
+- `workspace_original`: Original path recorded at ingest (before path mapping)
 
 `--fields provenance` selects exactly `source_id`, `origin_kind` and `origin_host`.
 
@@ -1125,7 +909,7 @@ Errors are structured, actionable, and include recovery hints. A real sample fro
 | 9 | Unknown error | Check `retryable` flag |
 | 10 | Config / timeout | Depends on `err.kind` |
 | 11 | Config validation | Fix config |
-| 12 | Source / SSH | Check remote host |
+| 12 | Source | Check configured source paths / `sources.toml` |
 | 13 | Mapping / not-found | Depends on `err.kind` |
 | 14 | I/O / mapping | Retry or inspect path |
 | 15 | Semantic / embedder unavailable | Install model or `--mode lexical` |
@@ -1460,7 +1244,7 @@ For machine-readable documentation, use `cass robot-docs <topic>`:
 | `exit-codes` | Exit code meanings and retry guidance |
 | `examples` | Copy-paste usage examples |
 | `contracts` | API contract version and stability |
-| `sources` | Remote sources configuration guide |
+| `sources` | Local sources configuration guide |
 
 ```bash
 # Get documentation programmatically
@@ -2346,10 +2130,9 @@ flowchart LR
  A5["… 30 more\n(cass capabilities --json)"]:::pastel
  end
 
- subgraph Remote["Remote Sources"]
- R1["sources.toml"]:::pastel
- R2["SSH/rsync\nSync Engine"]:::pastel2
- R3["remotes/\nSynced Data"]:::pastel3
+ subgraph Extra["Named & Legacy Sources"]
+ R1["sources.toml\nlocal source dirs"]:::pastel
+ R3["remotes/\nlegacy mirrors (read-only)"]:::pastel3
  end
 
  subgraph "Ingestion Layer"
@@ -2371,8 +2154,7 @@ flowchart LR
  A3 --> C1
  A4 --> C1
  A5 --> C1
- R1 --> R2
- R2 --> R3
+ R1 --> C1
  R3 --> C1
  C1 -->|Persist| S1
  C1 -->|Index| T1
@@ -2625,7 +2407,7 @@ The SQLite database uses 23 versioned schema migrations, tracked in the `_schema
 **Safe Files** (never deleted during rebuild):
 - `bookmarks.db` - Your saved bookmarks
 - `tui_state.json` - UI preferences
-- `sources.toml` - Remote source configuration
+- `sources.toml` - Source configuration (local sources and inert legacy entries)
 - `.env` - Environment configuration
 
 **Backup and Retention Policy**: Migration/rebuild backups preserve user data and
@@ -2830,22 +2612,19 @@ cass
     - `Ctrl+Shift+R`: Trigger manual re-index (refresh search results).
     - `Ctrl+Shift+Del`: Reset TUI state (clear history, filters, layout).
 
-### 4. Multi-Machine Search (Optional)
+### 4. Named Sources (Optional)
 
-Aggregate sessions from your other machines into a unified index:
+Index extra local directories as named sources in the unified index:
 
 ```bash
-# Add a remote machine
-cass sources add user@laptop.local --preset macos-defaults
+# Add a local directory as a named source (--path is repeatable)
+cass sources add archive-box --path /Volumes/old-sessions
 
-# Sync sessions from all sources
-cass sources sync
-
-# Check source health and connectivity
+# Check configured sources and local path health
 cass sources doctor
 ```
 
-See [Remote Sources (Multi-Machine Search)](#-remote-sources-multi-machine-search) for full documentation.
+See [Sources](#-sources) for full documentation, including how historical `type = "ssh"` entries remain readable as inert archive records.
 
 ---
 
@@ -2883,11 +2662,11 @@ cass export /path/to/session --format markdown -o out.md  # Export conversation
 cass expand /path/to/session -n 42 -C 5 --json            # Context around line
 cass timeline --today --json                               # Activity timeline
 
-# Remote Sources
-cass sources add user@host --preset macos-defaults  # Add machine
-cass sources sync                                    # Sync sessions
-cass sources doctor                                  # Check connectivity
-cass sources mappings list laptop                    # View path mappings
+# Named Sources
+cass sources add archive-box --path /data/sessions  # Index a local directory
+cass sources list                                   # List configured sources
+cass sources doctor                                 # Check source paths
+cass sources mappings list laptop                   # View path mappings
 
 # Utilities
 cass stats --json
@@ -2907,7 +2686,7 @@ cass completions bash > ~/.bash_completion.d/cass
 | `search --robot` | JSON output for automation pipelines |
 | `pack --robot` | Deterministic cited answer packs for agent/human handoffs; reports health, freshness, privacy, and warnings |
 | `triage` / `ready` / `preflight` | One-shot agent preflight: readiness, exact next command, docs, schemas, workflows, and recoveries |
-| `guide [INTENT]` | Intent-to-command planner (fix-ci, investigate-search-miss, prepare-release, repair-assets, export-session, onboard-source, support-capsule); dry-run by default. With `--apply`, read-only operations evaluate proofs, and guarded adapters can create a support bundle, repair the lexical index or incrementally index staged configured sources. Unsupported operations are reported without being executed |
+| `guide [INTENT]` | Intent-to-command planner (fix-ci, investigate-search-miss, prepare-release, repair-assets, export-session, onboard-source, support-capsule); dry-run by default. With `--apply`, read-only operations evaluate proofs, and guarded adapters can create a support bundle, repair the lexical index or incrementally index configured sources. Unsupported operations are reported without being executed |
 | `status` / `state` | Health snapshot: index freshness, DB stats, recommended action |
 | `health` | Minimal health check (<50ms on a healthy archive; the strict, mutation-free owner-thread probe shared with `status` has a 30 s hard deadline and never checkpoints a dirty WAL), exit 0=healthy, 1=unhealthy |
 | `selftest` | Archive-independent executable probe for installers and binary-promotion gates; exercises an in-memory FrankenSQLite write/read round-trip |
@@ -2920,7 +2699,7 @@ cass completions bash > ~/.bash_completion.d/cass
 | `export-html <path>` | Export as self-contained HTML with optional encryption |
 | `expand <path> -n N` | Show messages around a specific line number |
 | `timeline` | Activity timeline with grouping by hour/day |
-| `sources` | Manage remote sources: add/list/remove/doctor/sync/mappings |
+| `sources` | Manage local sources: add/list/remove/doctor/mappings/agents |
 | `doctor` | Diagnose and repair installation issues (safe, never deletes data) |
 
 Other subcommands (all present in the `Commands` enum in `src/lib.rs`):
@@ -2939,13 +2718,10 @@ Other subcommands (all present in the `Commands` enum in `src/lib.rs`):
 | `forget` | Prune archived conversations with `--source-glob '<glob>'`, `--workspace-glob '<glob>'`, and/or `--older-than 90d`; at least one selector is required, and supplied selectors are ANDed. Preview is strictly read-only; add `--apply` to delete canonical rows and rebuild FTS, analytics and the lexical index under the indexing maintenance lock. Age means the last message time, strictly before the reported `before_ms` cutoff; sessions with missing message times are kept. Shared stores such as OpenCode/Devin SQLite databases use durable session identities, so forgotten sessions stay out when siblings change while retained siblings keep updating. Single-session files retain size/mtime tombstones: an unchanged file stays forgotten across incremental/full indexing, and a changed file is indexed again. Source files and raw-mirror captures remain. Use `CASS_EXCLUDE_PATHS` or `CASS_EXCLUDE_WORKSPACES` for prospective exclusion, and `cass mirror prune` for explicit raw-capture retention. Semantic vectors are not rewritten: explicit semantic search reports `semantic-unavailable` and hybrid falls back to lexical until `cass index --semantic` catches up. A previously opened `cass serve` keeps its pinned snapshot until `reload`; the TUI drops forgotten hits on its next search. If lexical rebuilding fails, forget exits 5 (`lexical-rebuild`) and the next index repairs the derived data |
 | `forget --list` / `forget --reinclude` | Inspect recorded exclusions or explicitly release matching records. Use literal `--source-path`, `--source-glob`, or exact `--source-id`, `--agent`, and `--external-id` selectors; supplied selectors are ANDed. Re-inclusion requires a selector and previews by default; add `--apply`, then run `cass index`. Other exclusions and current workspace/path policies remain in force. Historical exclusion records cannot be selected by workspace or age. |
 | `import chatgpt` | Split a ChatGPT web export (`conversations.json`) into files the ChatGPT connector can index |
-| `sources discover` | Auto-discover SSH hosts from `~/.ssh/config` |
-| `sources reingest` | Re-ingest an already-synced mirror into the canonical archive without re-running rsync |
-| `sources artifact-manifest` | Build or verify a lexical-artifact evidence manifest for remote exchange |
 
 `cass guide repair-assets --apply` can rebuild the lexical index from the selected canonical database after the plan's step confirmation, cost acceptance, resource checks and stop-condition acknowledgement. It uses the existing bounded rebuild path and refuses missing or empty archives before source discovery. A successful receipt requires a fresh, complete lexical generation with unchanged canonical identity and conversation/message counts. Already-current assets are reported as `already-ready`; semantic enrichment remains a separate operation. Inspect the dry-run plan first for the exact confirmation flags and step number.
 
-`cass guide onboard-source --apply` previews privacy exposure, then requires explicit confirmation before incremental indexing. Configure sources with `cass sources add` and stage their mirrors with `cass sources sync` first. The guide performs no registration, SSH transfer or model download. Indexing scans staged configured sources and normal local discovery roots, honors `--db` and `--data-dir`, and uses the existing index lock with a 120-second deadline. Completion requires an unchanged source configuration, a complete scan and a fresh canonical/lexical status check. The receipt separates indexer count observations from archive totals measured by that status check. Missing mirrors, scan errors, deferred work or a busy indexer fail the operation; a started operation may already have updated the archive. Review the dry-run plan for its exact privacy, cost, resource, stop-condition and step confirmations.
+`cass guide onboard-source --apply` previews privacy exposure, then requires explicit confirmation before incremental indexing. Configure sources with `cass sources add <name> --path <dir>` first. The guide performs no registration or model download. Indexing scans configured sources and normal local discovery roots, honors `--db` and `--data-dir`, and uses the existing index lock with a 120-second deadline. Completion requires an unchanged source configuration, a complete scan and a fresh canonical/lexical status check. The receipt separates indexer count observations from archive totals measured by that status check. Scan errors, deferred work or a busy indexer fail the operation; a started operation may already have updated the archive. Review the dry-run plan for its exact privacy, cost, resource, stop-condition and step confirmations.
 
 Five more commands are dispatched before the main parser (registered via `allow_external_subcommands` in `src/main.rs`); use their own `--help`:
 
@@ -3019,7 +2795,7 @@ cass doctor --fix --json
 | Surface | Purpose | Mutation Policy |
 |---------|---------|-----------------|
 | `cass doctor check --json` | Read-only truth surface for archive coverage, source authority, locks, storage pressure, semantic fallback, and recommended action | Never mutates |
-| `cass doctor archive-scan --json` | Read-only source inventory, raw mirror, coverage, sole-copy, and remote sync gap inspection | Never mutates |
+| `cass doctor archive-scan --json` | Read-only source inventory, raw mirror, coverage, and sole-copy inspection | Never mutates |
 | `cass doctor repair --dry-run --json` | Builds a fingerprinted repair plan and candidate/promotion gates | Read-only plan |
 | `cass doctor repair --yes --plan-fingerprint <fp> --json` | Applies exactly the inspected repair fingerprint | Candidate-based, receipt-backed |
 | `cass doctor backups list/verify/restore ... --json` | Lists backups, verifies manifests, rehearses restore, then applies by fingerprint | Restore apply requires a matching rehearsal fingerprint |
@@ -3358,7 +3134,7 @@ Forgetting is always an explicit operation. CASS does not automatically delete o
 | `CASS_DB_PATH` | `$CASS_DATA_DIR/agent_search.db` | Same as `--db` (the flag wins): path of the canonical database. When it lies outside the data dir, derived assets (lexical index, checkpoints, locks) follow its directory unless `--data-dir` is given |
 | `CASS_EXCLUDE_PATHS` | unset | Comma/newline-delimited files or directory prefixes to skip without advancing scan/watch watermarks |
 | `CASS_OUTPUT_FORMAT` | unset | `json`, `jsonl`, `compact`, `sessions` or `toon` makes robot output the default, as if `--robot-format` were given |
-| `CASS_SSH_CONFIG` | unset | SSH config file passed as `ssh -F <path>` for remote sources (cass also sets `BatchMode=yes` and `StrictHostKeyChecking=yes`) |
+| `CASS_SSH_CONFIG` | unset | Deprecated-ignored: remote sync was removed by the local-only conversion; no SSH config is consulted |
 | `CASS_RAW_MIRROR` | `1` | Raw-mirror capture of session source files into `raw-mirror/v1/`. `0`, `false`, `no` or `off` stops capturing (GH #506). Indexing is unchanged, and existing captures stay until `cass mirror prune`. Doctor reports `raw_mirror_capture_disabled`, because a file its provider deletes then survives only in the archive DB. |
 | `CASS_DOCTOR_RAW_MIRROR_FULL_VERIFY` | unset | Set to `1` to hash every raw-mirror descriptor/chunk during a read-only doctor run, overriding the default bounded verification limits |
 | `CASS_DOCTOR_RAW_MIRROR_FULL_VERIFY_MANIFEST_LIMIT` | `256` | Defer full raw-mirror hashing above this manifest count while retaining metadata-only amplification diagnostics |

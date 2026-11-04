@@ -2130,10 +2130,10 @@ fn readiness_recommended_action(
         return Some("inspect cass status --json for active locks".to_string());
     }
     if !request.readiness.source_sync_gaps.is_empty() {
-        return Some("inspect cass sources sync --json and source status".to_string());
+        return Some("inspect cass sources doctor --json and source status".to_string());
     }
     if !health_is_healthy {
-        return Some("inspect cass health --json and source sync status".to_string());
+        return Some("inspect cass health --json and source status".to_string());
     }
     if matches!(
         semantic_readiness,
@@ -3857,7 +3857,7 @@ mod tests {
         assert_eq!(value["health"]["healthy"], false);
         assert_eq!(
             value["health"]["recommended_action"],
-            "inspect cass health --json and source sync status"
+            "inspect cass health --json and source status"
         );
         assert_eq!(
             value["health"]["source_readiness"][0]["readiness"],
@@ -4157,7 +4157,7 @@ mod tests {
                 kind: PackSourceSyncGapKind::RemoteStale,
                 lag_seconds: Some(3_600),
                 last_synced_at_ms: Some(1_000_000),
-                recommended_action: Some("run cass sources sync --json".to_string()),
+                recommended_action: Some("run cass index --json".to_string()),
             },
             PackSourceSyncGap {
                 source_id: "old-laptop".to_string(),
@@ -4182,7 +4182,7 @@ mod tests {
         );
         assert_eq!(
             value["health"]["recommended_action"],
-            "inspect cass sources sync --json and source status"
+            "inspect cass sources doctor --json and source status"
         );
         assert!(
             value["warnings"]

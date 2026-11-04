@@ -172,11 +172,11 @@ be silently skipped during closeout.
 ### sources
 
 - **Owning beads:** .8, .8.1, .8.2, .8.4, .8.5
-- **Failure modes:** fm-sources-rsync-not-on-path, fm-sources-toml-malformed, fm-sources-toctou-existence-race
+- **Failure modes:** fm-sources-toml-malformed, fm-sources-toctou-existence-race
 - **Mandatory proofs:** unit, integration, golden
-- **Proof artifacts:** `src/sources/config_validation.rs`, `tests/e2e_sources.rs`, `tests/setup_workflow.rs`
-- **Optional diagnostics:** live SSH source probe (opt-in)
-- **Fixture provenance:** synthetic sources.toml + mirror dirs; no SSH session opened at test time
+- **Proof artifacts:** `src/sources/config_validation.rs`, `tests/e2e_sources.rs`, `tests/legacy_settings_tolerance.rs`
+- **Optional diagnostics:** —
+- **Fixture provenance:** synthetic sources.toml + local source dirs; legacy ssh entries are inert records — no connection is ever opened
 - **Log expectation:** deterministic --lib result line; structured logs for e2e source flows
 - **Redaction:** local-only
 - **Closure evidence:** cargo test --test e2e_sources result line

@@ -57,7 +57,7 @@ case: mac_mini_max_stale_old_binary
   Search usable now: yes
   Why: Search is fully correct for everything already indexed; only the most recent sessions may not appear yet.
   Missing/stale: lexical index lags recent ingests (lexical=stale_but_searchable) — search works, a refresh picks up the newest sessions; this binary is older than the fleet baseline (binary=outdated…
-  Safest next step: binary is older than the fleet baseline; upgrade before relying on derived assets → `cass self-update`
+  Safest next step: binary is older than the baseline; reinstall from a source checkout (`cargo install --path . --locked --bin cass`) before relying on derived assets
   State codes: class=stale_searchable db=available lexical=stale_but_searchable semantic=fast_tier_ready source=complete archive_risk=low binary=outdated next=upgrade_binary
 
 ========================================

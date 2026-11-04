@@ -120,7 +120,7 @@ commands:
   cass export <path> [--format markdown] [--output FILE]  Export a conversation to markdown / other formats.
   cass export-html <path> [--output-dir DIR] [--json]  Self-contained HTML export (optional encryption).
   cass pages [--export-only DIR] [--verify PATH] [--agents A1,A2]  Encrypted searchable archive for static hosting.
-  cass sources [agents list|exclude|include] [setup|list|sync] [--json]  Manage remote sources + agent exclusions.
+  cass sources [list|add|remove|doctor|mappings|agents ...] [--json]  Manage local sources + persisted agent-harness exclusions.
   cass analytics [status|tokens|tools|models|rebuild|validate] [--json]  Token / tool / model analytics.
   cass import [...]                Import conversation data from external sources.
   cass daemon [...]                Run the semantic model daemon (Unix only).

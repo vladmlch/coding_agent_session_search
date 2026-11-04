@@ -130,14 +130,6 @@ not add a `--partial-ok` policy or suppress exit 9 for other incomplete scans.
 | Concurrent indexers | 1 | `index-run.lock` admits one indexer; others exit 7 `index-busy` |
 | Concurrent readers | Unlimited | Thread-safe |
 
-## Network/Sync Limits (Remote Sources)
-
-| Operation | Timeout | Notes |
-|-----------|---------|-------|
-| SSH connection | 10s | Configurable |
-| rsync transfer | 300 s of I/O inactivity | rsync `--timeout`; no wall-clock limit on a transfer that keeps moving |
-| SFTP fallback | Per-file | When rsync unavailable |
-
 ## Environment Variable Overrides
 
 | Variable | Default | Purpose |
