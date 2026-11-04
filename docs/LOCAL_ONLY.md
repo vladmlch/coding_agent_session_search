@@ -313,3 +313,23 @@ Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
 | 2026-11-04 | `cass schedule install --dry-run --json` (manual, isolated HOME) | unit `ProgramArguments` still `cass --color=never schedule run --job {incremental,nightly} --data-dir <dir> --json` — unchanged vs Task 0 snapshot; existing launchd/systemd units need no rewrite |
 | 2026-11-04 | `cargo fmt --all -- --check` | ok |
 | 2026-11-04 | `cargo clippy --all-targets --locked -- -D warnings` | ok |
+
+## Task 9 — sources local-only; remote sync/setup/discovery removed (2026-11-04)
+
+Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
+
+| Date (UTC) | Command | Result |
+| ---------- | ------- | ------ |
+| 2026-11-04 | `cargo check --tests --locked` | ok — after `cargo clean` on the shared target dir recovered 35.4 GiB (disk was at 116 MiB free, `os error 28`) |
+| 2026-11-04 | `cargo clippy --all-targets --locked -- -D warnings` | ok |
+| 2026-11-04 | `cargo fmt --all -- --check` | ok |
+| 2026-11-04 | `UPDATE_GOLDENS=1 cargo test --locked --test golden_robot_docs` | ok: 16 passed — regenerated `sources`/`env`/`exit-codes` goldens; every diff line reviewed (local-only sources text, `CASS_SSH_CONFIG` deprecated-ignored, exit 8 unused) |
+| 2026-11-04 | `cargo test --locked --test e2e_sources` | ok: 104 passed — local `add NAME --path`, legacy `type="ssh"` tolerance, ordinary `cass index` over `<data-dir>/remotes/*/mirror`, `user@host` add → removed-command |
+| 2026-11-04 | `cargo test --locked --test cli_dispatch_coverage` | ok: 106 passed — six Task-9 REMOVED_COMMAND_CASES rows flipped `pending:false` (each rejects with kind `removed-command`, exit 2); four `sources_artifact_manifest_verify_*` tests removed with their helpers |
+| 2026-11-04 | `cargo test --locked --test multi_source_integration --test cli_stats_source_filter --test legacy_settings_tolerance --test local_archive_preservation --test tui_flows --test remote_mirror_ingestion --test e2e_remote_mirror_subtrees --test reproduction_sync_oscillation` | ok: 72+5+61+59+6+2+0(linux-only)+2 passed — legacy list JSON keeps `host`/`sync_schedule`/`platform`/`paths` with `kind: "legacy-remote"`, `supported: false`; index warns on stderr only; `agents exclude` preserves legacy fields |
+| 2026-11-04 | `cargo test --locked --lib guide_runner` | ok: 25 passed |
+| 2026-11-04 | `cargo test --locked --lib connectors::omp` | ok: 14 passed |
+| 2026-11-04 | `cargo test --locked --lib indexer::` | 1532 passed, 27 failed — all failures are the documented macOS environmental classes (non-UTF8 path `os error 92`, `/var` vs `/private/var` symlink canonicalization, watch timing) identical in character to the Task 2 baseline notes; the `mirror_source_ids` removal is semantics-preserving (the parameter was always `None`, every collapsed branch kept the `None` arm) and cannot affect them |
+| 2026-11-04 | `cargo test --locked --test spec_starter_workflows_drift --test spec_recommended_commands_drift --test spec_mistake_recoveries_contract --test spec_robot_docs_topics --test spec_aliases_resolve --test spec_auto_correction_contracts` | ok |
+| 2026-11-04 | `cargo test --locked --test spec_exit_codes_documented` | ok: 5 passed — `every_documented_exit_code_is_emitted` green for the first time: dead `8` entry removed from the contract + README/AGENTS rows, the real `process::exit(70)` emitter (`src/viewer_bridge/deadline.rs`) added to the scan SOURCES (fixes the pre-existing {70} baseline gap), and the still-real 130 exit made scannable via a literal `code: 130` CliError on the no-signal-registered `IndexInterrupted` arm |
+| 2026-11-04 | `UPDATE_GOLDENS=1 cargo test --locked --test golden_robot_json` | ok: 52 passed — capabilities golden regenerated; diff is exactly the removed `code: "8"` entry and the retexted `130` `agent_action` |
