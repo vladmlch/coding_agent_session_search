@@ -88655,12 +88655,6 @@ fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
             "Retry later with bounded backoff; another cass operation owns the lock.",
         ),
         exit_code_capability(
-            "8",
-            "unused (was partial sync result)",
-            "n/a",
-            "Remote sync was removed; no command currently exits 8. Search/pack timeouts exit 0 with budget.timed_out instead.",
-        ),
-        exit_code_capability(
             "9",
             "unknown error",
             "maybe",
@@ -101660,6 +101654,19 @@ fn run_index_with_data(
     let mut res = match index_handle.join() {
         Ok(result) => result.map_err(|e| {
             if e.downcast_ref::<indexer::IndexInterrupted>().is_some() {
+                // An interruption with no registered signal is the plain
+                // SIGINT path: keep the literal 130 so the emitted-code scan
+                // sees the documented exit it produces.
+                if shutdown_signals.received.is_none() {
+                    return CliError {
+                        code: 130,
+                        kind: CliErrorKind::Index.kind_str(),
+                        message: "index interrupted after finishing the in-flight batch"
+                            .into(),
+                        hint: Some("Rerun the same index command to resume from committed source observations.".into()),
+                        retryable: true,
+                    };
+                }
                 return CliError {
                     code: shutdown_signals.received.unwrap_or(130),
                     kind: CliErrorKind::Index.kind_str(),

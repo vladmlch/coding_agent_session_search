@@ -1122,7 +1122,6 @@ Errors are structured, actionable, and include recovery hints. A real sample fro
 | 5 | Data corruption, or maintenance required | Inspect `cass health --json` / `cass status --json` / `cass doctor --json` and follow `recommended_action`: usually rebuild derived assets (`maintenance-required`, `checkpoint_incomplete` start that rebuild themselves); only a canonical-archive failure needs repair or restore |
 | 6 | Required input missing (password, resume command) | Supply the input (e.g. `--password-stdin`) and rerun |
 | 7 | Lock/busy | Retry later |
-| 8 | Partial result (`sources sync` only: some sources had path failures) | Inspect per-path errors in the JSON output and retry the failed sources |
 | 9 | Unknown error | Check `retryable` flag |
 | 10 | Config / timeout | Depends on `err.kind` |
 | 11 | Config validation | Fix config |
@@ -1135,7 +1134,7 @@ Errors are structured, actionable, and include recovery hints. A real sample fro
 | 23 | Model download | Retry or use `--from-file` |
 | 24 | I/O during model verify/install | Retry |
 | 70 | `cass index` stalled and aborted (kind `index-stalled` envelope on stderr) | Inspect `cass status --json`, then rerun `cass index` |
-| 130 | Interrupted (SIGINT) | Rerun; `cass sources setup --resume` continues an interrupted setup |
+| 130 | Interrupted (SIGINT) | Rerun the command; indexing and search resume from their checkpoints |
 
 Search/pack timeouts are not exit 8: on expiry `search` and `pack` exit 0 with `{"hits": [], "budget": {"timed_out": true, "skipped_sections": [...], "recommended_next_probe": "<command>", ...}}`, and `--robot-format sessions` instead fails with exit 10, kind `timeout`. Explicit `--mode semantic` is the other exception: when the remaining budget cannot admit semantic setup or dispatch, search fails with exit 10, kind `timeout`, `retryable: true`, and a `semantic_budget checkpoint=...` message, rather than returning an empty or lexical result. Hybrid (explicit or default) instead falls back to lexical and reports `semantic_budget_limited`.
 

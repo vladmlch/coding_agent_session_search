@@ -77,6 +77,11 @@ const SOURCES: &[(&str, &str)] = &[
     ("src/doctor.rs", include_str!("../src/doctor.rs")),
     ("src/doctor_undo.rs", include_str!("../src/doctor_undo.rs")),
     ("src/doctor_runs.rs", include_str!("../src/doctor_runs.rs")),
+    // `process::exit(70)` for the viewer-bridge hard deadline lives here.
+    (
+        "src/viewer_bridge/deadline.rs",
+        include_str!("../src/viewer_bridge/deadline.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed

@@ -3832,12 +3832,6 @@
       "agent_action": "Retry later with bounded backoff; another cass operation owns the lock."
     },
     {
-      "code": "8",
-      "meaning": "partial result (sources sync only)",
-      "retryable": "yes",
-      "agent_action": "Some sources had path failures: inspect the per-source errors and re-sync the failed sources. Search/pack timeouts exit 0 with budget.timed_out instead."
-    },
-    {
       "code": "9",
       "meaning": "unknown error",
       "retryable": "maybe",
@@ -3913,7 +3907,7 @@
       "code": "130",
       "meaning": "interrupted (SIGINT)",
       "retryable": "yes",
-      "agent_action": "Rerun the command; cass sources setup --resume continues an interrupted setup."
+      "agent_action": "Rerun the command; indexing and search resume from their checkpoints."
     }
   ],
   "env_vars": [
