@@ -28732,8 +28732,14 @@ fn rebuild_tantivy_from_db_once(
     // never shipped. Each stamp is a compare-and-swap on the stage-time
     // marks snapshot, so a concurrent republish/meta-edit is refused
     // rather than overwritten.
-    t_index.commit_region_doc_stamps(marks_storage.raw())?;
-    drop(marks_storage);
+    //
+    // Task 8: the marks stamps land WITHOUT certification here — the
+    // post-stamp fold and the terminal checkpoint commit below still
+    // rewrite this candidate's MANIFEST, so the generation sealed at this
+    // point is an intermediate the published manifest supersedes. The
+    // writer's armed coverage floor survives for
+    // `certify_sealed_publication`, which binds the terminal generation.
+    t_index.replay_region_doc_stamps(marks_storage.raw())?;
     if let Some(p) = &progress {
         p.tick_activity();
     }
@@ -28790,6 +28796,15 @@ fn rebuild_tantivy_from_db_once(
             perf_profile.as_mut(),
         )
     })?;
+
+    // Task 8: certify ONLY now — after the fold and the terminal checkpoint
+    // commit sealed the candidate's final MANIFEST. The receipt then names
+    // the generation the publish path actually validates and (for a staged
+    // build) swaps live, never the intermediate manifest the first commit
+    // superseded. The armed coverage floor still bounds the revisions this
+    // generation honestly covers.
+    t_index.certify_sealed_publication(marks_storage.raw());
+    drop(marks_storage);
 
     // Release the bulk writer before opening a fresh validation reader. Large
     // archives must not retain both writer and reader working sets here.
@@ -39054,7 +39069,7 @@ pub mod persist {
                 // Task 11: post-commit change-journal notify — canonical
                 // events were already journaled by the observer triggers
                 // inside the ingest commit; this coalesces them and stamps
-                // index_ready (SQLite journal is truth, IPC is wakeup-only).
+                // canonical_ready (SQLite journal is truth, IPC is wakeup-only).
                 crate::viewer_extensions::changes::notify_committed_change_best_effort(
                     franken.raw(),
                 );
@@ -40754,7 +40769,7 @@ pub mod persist {
                 // Task 11: post-commit change-journal notify — canonical
                 // events were already journaled by the observer triggers
                 // inside the ingest commit; this coalesces them and stamps
-                // index_ready (SQLite journal is truth, IPC is wakeup-only).
+                // canonical_ready (SQLite journal is truth, IPC is wakeup-only).
                 crate::viewer_extensions::changes::notify_committed_change_best_effort(
                     writer.raw(),
                 );

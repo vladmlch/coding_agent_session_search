@@ -972,7 +972,14 @@ fn revisions_authorized_writer_accepts_only_narrow_annotation_ops() -> Result<()
         "two accepted patches must bump twice"
     );
     ensure!(revisions.get_typed::<i64>(2)? == 0);
-    ensure!(revisions.get_typed::<i64>(3)? == 0);
+    // Task 8: `lexical_generation` counts CERTIFIED Quill publications —
+    // each accepted patch's post-edit converge committed a real index
+    // generation, so the counter must be positive, never still 0 (canonical
+    // progress alone would leave it untouched).
+    ensure!(
+        revisions.get_typed::<i64>(3)? >= 1,
+        "post-edit converge committed real publications; lexical_generation must certify them"
+    );
     drop(reader);
     bridge.shutdown()
 }

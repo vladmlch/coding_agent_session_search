@@ -28,16 +28,19 @@
 //!
 //! Bridge → client frames:
 //! * `{"type":"subscribed","after_seq":N,"high_water":H,"truncated":B,
-//!    "current_revisions":{...},"lexical_tracking":"unwired"}` — the
-//!   watermark ack.
+//!    "current_revisions":{...},"lexical_tracking":"bound"}` — the
+//!   watermark ack. `"bound"` negotiates that this channel's `index_ready`
+//!   frames certify real Quill publications against the durable
+//!   `PublicationReceipt`, never canonical progress alone (Task 8).
 //! * Event frame: `{type:<journal kind>, sequence, conversation_id?,
 //!    revision, payload?, canonical_revision, annotation_revision,
-//!    projection_revision, lexical_generation}`. `index_ready` additionally
-//!   carries `"lexical_ready": false` — honest gating: nothing yet bumps
-//!   `lexical_generation` on Quill publication (spec decision 12 lane
-//!   exists but is unwired), so the event stream must never assert lexical
-//!   readiness that was not verified. `index_ready` means "the canonical
-//!   change-journal pass committed through canonical_revision R".
+//!    projection_revision, lexical_generation}`. Task 8 readiness split:
+//!   `canonical_ready` is the journal's canonical-progress marker and
+//!   carries `"lexical_ready": false`; `index_ready` exists only because
+//!   `certify_lexical_publication` committed a real Quill publication, so
+//!   it carries `"lexical_ready": true` and binds the receipt's own
+//!   covered revisions + `lexical_generation` — never a readiness that
+//!   was not published.
 //! * `{"type":"heartbeat","high_water":H}` every `HEARTBEAT_TICKS` pump
 //!   ticks — liveness only; idle connections receive this and nothing
 //!   else. A fresh subscriber whose first pass replays no event backlog
@@ -457,8 +460,13 @@ fn encode(value: &Value) -> Vec<u8> {
 /// Serialize one journal event into the spec-12 wire shape:
 /// `{type, sequence, conversation_id?, revision, payload?,
 ///   canonical_revision, annotation_revision, projection_revision,
-///   lexical_generation}`. `index_ready` adds `lexical_ready:false` —
-/// honest gating until a Quill-publication lane bumps `lexical_generation`.
+///   lexical_generation}`. Task 8 readiness split: `canonical_ready`
+/// stamps `lexical_ready:false` (canonical progress only); `index_ready`
+/// stamps `lexical_ready:true` — it exists ONLY because
+/// `certify_lexical_publication` persisted the receipt — and overlays the
+/// receipt's own covered revisions/`lexical_generation` so the frame binds
+/// the generation it certifies even when a newer certification already
+/// moved the live counters.
 fn event_frame(
     event: &journal::ChangeEvent,
     revisions: Option<&journal::JournalRevisions>,
@@ -471,9 +479,14 @@ fn event_frame(
     if let Some(conversation_id) = event.conversation_id {
         frame["conversation_id"] = conversation_id.into();
     }
+    let mut receipt: Option<Value> = None;
     if let Some(payload) = &event.payload_json {
-        frame["payload"] =
+        let parsed =
             serde_json::from_str(payload).unwrap_or_else(|_| Value::String(payload.clone()));
+        if parsed.is_object() {
+            receipt = Some(parsed.clone());
+        }
+        frame["payload"] = parsed;
     }
     if let Some(revisions) = revisions {
         frame["canonical_revision"] = revisions.canonical_revision.into();
@@ -482,6 +495,24 @@ fn event_frame(
         frame["lexical_generation"] = revisions.lexical_generation.into();
     }
     if event.kind == journal::kind::INDEX_READY {
+        // The durable receipt the certification committed with the event
+        // is the binding — a later certification must not retroactively
+        // widen what this frame announces.
+        if let Some(receipt) = &receipt {
+            for field in [
+                "canonical_revision",
+                "annotation_revision",
+                "projection_revision",
+                "lexical_generation",
+            ] {
+                if let Some(value) = receipt.get(field) {
+                    frame[field] = value.clone();
+                }
+            }
+        }
+        frame["lexical_ready"] = true.into();
+    }
+    if event.kind == journal::kind::CANONICAL_READY {
         frame["lexical_ready"] = false.into();
     }
     encode(&frame)
@@ -506,9 +537,10 @@ fn subscribed_frame(after_seq: i64, connection: Option<&Connection>) -> Vec<u8> 
         "high_water": high_water,
         "truncated": truncated,
         "current_revisions": revisions,
-        // Honest capability report: nothing yet bumps lexical_generation on
-        // Quill publication, so lexical_ready on index_ready stays false.
-        "lexical_tracking": "unwired",
+        // Task 8: this channel's index_ready frames are bound to durable
+        // PublicationReceipt certifications — `lexical_ready:true` means
+        // the named Quill generation is committed, covered and replayable.
+        "lexical_tracking": "bound",
         "protocol": PROTOCOL,
     }))
 }

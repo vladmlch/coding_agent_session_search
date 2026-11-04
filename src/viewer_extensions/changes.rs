@@ -7,17 +7,28 @@
 //! the SAME commit that mutates canonical rows — including writers in other
 //! processes, since triggers are schema objects. Extension-table triggers
 //! on `viewer_annotations`/`viewer_tags` append `annotations_updated` inside
-//! the annotation write transaction. `index_ready` and administrative
-//! `reset_required` are appended explicitly by post-commit callers through
-//! [`append_change_event`].
+//! the annotation write transaction. `canonical_ready`, `index_ready` and
+//! administrative `reset_required` are appended explicitly by post-commit
+//! callers through [`append_change_event`].
 //!
 //! [`notify_committed_change`] is the post-commit maintenance pass — it is
 //! callable ONLY after the writer's commit succeeded, never inside the
 //! transaction it announces. It coalesces the committed burst to the latest
-//! event per `(kind, conversation_id)`, stamps `index_ready`, and enforces
-//! bounded retention. A writer that crashes after commit but before notify
-//! still left a fully replayable (uncompacted) journal — never silently
-//! stale.
+//! event per `(kind, conversation_id)`, stamps `canonical_ready` — the
+//! canonical-progress marker, which asserts nothing about lexical
+//! publication — and enforces bounded retention. A writer that crashes
+//! after commit but before notify still left a fully replayable
+//! (uncompacted) journal — never silently stale.
+//!
+//! Task 8 reserves `index_ready` for REAL lexical publication:
+//! [`certify_lexical_publication`] is the ONLY writer of that kind, and it
+//! runs only after a Quill commit has sealed a manifest generation. One
+//! `BEGIN IMMEDIATE` transaction bumps `viewer_revisions.lexical_generation`,
+//! persists the versioned [`PublicationReceipt`] into
+//! `viewer_lexical_publication` and journals the `index_ready` event bound
+//! to them — atomically, so a crash can never mint a generation the journal
+//! cannot explain or a journal claim no durable receipt backs. Merely
+//! observing canonical progress never advances `lexical_generation`.
 //!
 //! A separate stock indexer process MUST be able to notify a bridge: the
 //! local IPC wakeup lands with Task 12; the SQLite journal alone is truth.
@@ -32,8 +43,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 
-use crate::franken_sync::compat::RowExt;
+use crate::franken_sync::compat::{ParamValue, RowExt};
 use crate::franken_sync::{Connection, SqliteValue};
+use crate::viewer_extensions::facts::FactsDb;
 
 /// Journal event kinds. Keep stable: they are the wire vocabulary the
 /// Task-12 event stream and `changes_since` responses speak.
@@ -51,7 +63,15 @@ pub mod kind {
     pub const ANNOTATIONS_UPDATED: &str = "annotations_updated";
     /// Post-commit marker: an ingest pass committed canonical changes and
     /// the journal is coalesced through it. `revision` binds the canonical
-    /// revision the pass certifies.
+    /// revision the pass certifies. Canonical progress ONLY — it asserts
+    /// nothing about lexical publication (Task 8).
+    pub const CANONICAL_READY: &str = "canonical_ready";
+    /// Lexical publication certification (Task 8): a real Quill commit
+    /// sealed a manifest generation and
+    /// [`certify_lexical_publication`](super::certify_lexical_publication)
+    /// persisted the versioned [`PublicationReceipt`] covering it.
+    /// `revision` binds the minted `lexical_generation` ordinal;
+    /// `payload_json` carries the receipt itself.
     pub const INDEX_READY: &str = "index_ready";
     /// Coarse resync demand: cursor expired (bounded retention), the
     /// archive was replaced (seq regression), or an administrator
@@ -89,9 +109,10 @@ pub struct ChangeEvent {
     pub kind: String,
     pub conversation_id: Option<i64>,
     /// The lane revision the event is bound to: post-bump
-    /// `canonical_revision` for `session_*`, the per-row annotation CAS
-    /// revision for `annotations_updated`, the certified canonical revision
-    /// for `index_ready`, `0` for administrative `reset_required`.
+    /// `canonical_revision` for `session_*` and `canonical_ready`, the
+    /// per-row annotation CAS revision for `annotations_updated`, the
+    /// minted `lexical_generation` ordinal for `index_ready`, `0` for
+    /// administrative `reset_required`.
     pub revision: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload_json: Option<String>,
@@ -162,6 +183,21 @@ fn set_meta(connection: &Connection, key: &str, value: i64) -> Result<()> {
 fn max_seq(connection: &Connection) -> Result<i64> {
     let value: Option<i64> = connection
         .query_row("SELECT MAX(seq) FROM viewer_change_log")?
+        .get_typed(0)?;
+    Ok(value.unwrap_or(0))
+}
+
+/// Highest journaled seq over CANONICAL event kinds — the `canonical_ready`
+/// trigger. Session lifecycle rows are the only evidence of canonical
+/// progress; annotation, marker and administrative rows above the boundary
+/// coalesce without minting a canonical claim.
+fn canonical_committed_seq(connection: &Connection) -> Result<i64> {
+    let value: Option<i64> = connection
+        .query_row(
+            "SELECT MAX(seq) FROM viewer_change_log WHERE kind IN (\
+                 'session_created','session_updated','session_deleted'\
+             )",
+        )?
         .get_typed(0)?;
     Ok(value.unwrap_or(0))
 }
@@ -333,9 +369,11 @@ pub fn append_change_event(
 ///
 /// 1. Coalesces newly committed rows (`seq` above the previous pass's
 ///    high-water) to the latest per `(kind, conversation_id)`.
-/// 2. Stamps `index_ready` bound to `committed_revision` — but only when
-///    the pass actually observed new events, so an idempotent re-ingest
-///    emits no semantic event.
+/// 2. Stamps `canonical_ready` bound to `committed_revision` — but only
+///    when the pass actually observed new events, so an idempotent
+///    re-ingest emits no semantic event. Task 8: this marker certifies
+///    canonical progress ONLY; `index_ready` is reserved for
+///    [`certify_lexical_publication`].
 /// 3. Enforces bounded retention: rows older than `high_water -
 ///    JOURNAL_RETENTION` are dropped and the floor recorded, so later
 ///    `changes_since` cursors below the floor get `reset_required`.
@@ -378,28 +416,38 @@ pub fn notify_committed_change_with_retention(
                  )",
                 &[SqliteValue::Integer(boundary)],
             )?;
-            // Mark the pass: index_ready binds the canonical revision the
-            // commit certified (re-read when the caller passes 0).
-            let revision = if committed_revision > 0 {
-                committed_revision
-            } else {
-                lane_revisions(connection)?
-                    .map(|g| g.canonical_revision)
-                    .unwrap_or(0)
-            };
-            append_change_event(
-                connection,
-                kind::INDEX_READY,
-                None,
-                revision,
-                Some(format!("{{\"canonical_revision\":{revision}}}")),
-            )?;
-            // Only the newest index_ready marker is meaningful.
-            connection.execute(
-                "DELETE FROM viewer_change_log WHERE kind = 'index_ready' AND seq < (\
-                     SELECT MAX(seq) FROM viewer_change_log WHERE kind = 'index_ready'\
-                 )",
-            )?;
+            // Task 8: `canonical_ready` certifies CANONICAL progress only.
+            // Annotation bursts (`annotations_updated`) and marker rows the
+            // certification lane appended (`index_ready`, `reset_required`)
+            // still coalesce above, but they must not mint a canonical
+            // progress marker — the stamp is conditional on canonical
+            // journal rows having landed since the boundary.
+            if canonical_committed_seq(connection)? > boundary {
+                // Mark the pass: canonical_ready binds the canonical
+                // revision the commit certified (re-read when the caller
+                // passes 0). index_ready is minted exclusively by
+                // certify_lexical_publication.
+                let revision = if committed_revision > 0 {
+                    committed_revision
+                } else {
+                    lane_revisions(connection)?
+                        .map(|g| g.canonical_revision)
+                        .unwrap_or(0)
+                };
+                append_change_event(
+                    connection,
+                    kind::CANONICAL_READY,
+                    None,
+                    revision,
+                    Some(format!("{{\"canonical_revision\":{revision}}}")),
+                )?;
+                // Only the newest canonical_ready marker is meaningful.
+                connection.execute(
+                    "DELETE FROM viewer_change_log WHERE kind = 'canonical_ready' AND seq < (\
+                         SELECT MAX(seq) FROM viewer_change_log WHERE kind = 'canonical_ready'\
+                     )",
+                )?;
+            }
         }
         let high_water = max_seq(connection)?;
         // Retention: expire the oldest rows past the bounded window and
@@ -440,6 +488,248 @@ pub fn notify_committed_change_best_effort(connection: &Connection) {
             error = %error,
             "viewer change-journal notify pass failed; journal remains replayable but uncompacted"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task 8: lexical publication certification — the ONLY `index_ready` writer.
+// A certification exists exclusively when a real Quill commit already sealed
+// a manifest generation; it binds that generation plus the covered revisions
+// the caller's coverage floor names. Merely observing canonical progress or
+// bumping a counter elsewhere never mints `lexical_generation`.
+// ---------------------------------------------------------------------------
+
+/// Version tag of the persisted [`PublicationReceipt`] payload.
+pub const PUBLICATION_RECEIPT_VERSION: i64 = 1;
+
+/// Versioned durable certification record for ONE real Quill publication.
+/// Written inside the same `BEGIN IMMEDIATE` transaction that bumps
+/// `viewer_revisions.lexical_generation` and journals `index_ready` — the
+/// three artifacts commit atomically, so a crash can never produce a
+/// generation the journal cannot explain nor a journal event no durable
+/// receipt backs. `payload_json` of the `index_ready` journal row carries
+/// this same serialization, so `changes_since` replay alone reconstructs
+/// the certification — no side channel, no recomputation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PublicationReceipt {
+    /// Payload schema version ([`PUBLICATION_RECEIPT_VERSION`]).
+    pub v: i64,
+    /// Committed revisions the certified generation covers — the coverage
+    /// floor captured when the publishing writer began staging, never a
+    /// later wider snapshot.
+    pub canonical_revision: i64,
+    pub annotation_revision: i64,
+    pub projection_revision: i64,
+    /// Certification ordinal — `viewer_revisions.lexical_generation` after
+    /// this certification's atomic bump.
+    pub lexical_generation: i64,
+    /// Committed Quill MANIFEST generation this receipt binds.
+    pub quill_generation: i64,
+    /// Live documents the certified manifest holds (durable evidence).
+    pub live_doc_count: i64,
+    pub certified_at_ms: i64,
+}
+
+/// The committed logical revisions — the `viewer_revisions` singleton read
+/// through any [`FactsDb`] lane (`None` on an unextended archive). Writers
+/// capture this as their coverage floor before staging work a later commit
+/// will certify.
+pub fn current_journal_revisions(db: &impl FactsDb) -> Result<Option<JournalRevisions>> {
+    let rows = db.facts_query_map(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='viewer_revisions' LIMIT 1",
+        &[],
+        |_| Ok(()),
+    )?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let revisions = db.facts_query_map(
+        "SELECT canonical_revision,annotation_revision,projection_revision,lexical_generation \
+         FROM viewer_revisions WHERE id = 1 LIMIT 2",
+        &[],
+        |row| {
+            Ok(JournalRevisions {
+                canonical_revision: row.get_typed(0)?,
+                annotation_revision: row.get_typed(1)?,
+                projection_revision: row.get_typed(2)?,
+                lexical_generation: row.get_typed(3)?,
+            })
+        },
+    )?;
+    Ok(revisions.first().copied())
+}
+
+/// The durable [`PublicationReceipt`] singleton, if any certification has
+/// committed (`None` before the first certified publication or on an
+/// unextended archive). Deserialization failure surfaces as an error — a
+/// receipt that cannot be decoded must never be silently certified away.
+pub fn latest_lexical_publication(db: &impl FactsDb) -> Result<Option<PublicationReceipt>> {
+    let rows = db.facts_query_map(
+        "SELECT 1 FROM sqlite_master WHERE type='table' \
+         AND name='viewer_lexical_publication' LIMIT 1",
+        &[],
+        |_| Ok(()),
+    )?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let payloads = db.facts_query_map(
+        "SELECT payload_json FROM viewer_lexical_publication WHERE id = 1 LIMIT 1",
+        &[],
+        |row| row.get_typed::<String>(0),
+    )?;
+    let Some(payload) = payloads.into_iter().next() else {
+        return Ok(None);
+    };
+    serde_json::from_str(&payload)
+        .map(Some)
+        .context("decoding viewer_lexical_publication payload")
+}
+
+fn lexical_publication_table_present(db: &impl FactsDb) -> Result<bool> {
+    let rows = db.facts_query_map(
+        "SELECT 1 FROM sqlite_master WHERE type='table' \
+         AND name='viewer_lexical_publication' LIMIT 1",
+        &[],
+        |_| Ok(()),
+    )?;
+    Ok(!rows.is_empty())
+}
+
+fn journal_installed_facts(db: &impl FactsDb) -> Result<bool> {
+    let rows = db.facts_query_map(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='viewer_change_log' LIMIT 1",
+        &[],
+        |_| Ok(()),
+    )?;
+    Ok(!rows.is_empty())
+}
+
+/// Certify one REAL committed Quill publication — the only lane that may
+/// mint `lexical_generation` or journal `index_ready`.
+///
+/// Contract: the caller invokes this AFTER the Quill commit sealed the
+/// manifest it names (`quill_generation`/`live_doc_count` read back from
+/// the durable MANIFEST), never before and never speculatively. `floor` is
+/// the coverage floor the publishing writer captured when it began
+/// staging (`None` binds the revisions at certification time — the floor
+/// for writers whose staging never touched the archive).
+///
+/// One `BEGIN IMMEDIATE` transaction commits three artifacts atomically:
+/// the `viewer_revisions.lexical_generation` bump, the
+/// `viewer_lexical_publication` receipt row, and the `index_ready`
+/// journal event whose `revision`/`payload_json` bind them. A
+/// certification identical to the durable receipt (same committed
+/// generation AND same coverage) is idempotent: it mints no new ordinal
+/// and appends no event — a publish retried after a crash cannot
+/// fabricate a second readiness claim. Returns `None` on an unextended
+/// archive (nothing to certify into).
+pub fn certify_lexical_publication(
+    db: &impl FactsDb,
+    quill_generation: i64,
+    live_doc_count: i64,
+    floor: Option<JournalRevisions>,
+) -> Result<Option<PublicationReceipt>> {
+    if !journal_installed_facts(db)? || !lexical_publication_table_present(db)? {
+        return Ok(None);
+    }
+    db.facts_execute("BEGIN IMMEDIATE", &[])
+        .context("opening lexical certification transaction")?;
+    let result = (|| -> Result<Option<PublicationReceipt>> {
+        let Some(current) = current_journal_revisions(db)? else {
+            return Ok(None);
+        };
+        // Covered revisions: the stage-time floor where one was captured,
+        // clamped down to what is committed now — never a wider snapshot
+        // than the floor proves this generation contains.
+        let covered = floor.map_or(current, |floor| JournalRevisions {
+            canonical_revision: floor.canonical_revision.min(current.canonical_revision),
+            annotation_revision: floor.annotation_revision.min(current.annotation_revision),
+            projection_revision: floor.projection_revision.min(current.projection_revision),
+            lexical_generation: current.lexical_generation,
+        });
+        if let Some(previous) = latest_lexical_publication(db)?
+            && previous.quill_generation == quill_generation
+            && previous.canonical_revision == covered.canonical_revision
+            && previous.annotation_revision == covered.annotation_revision
+            && previous.projection_revision == covered.projection_revision
+            && previous.live_doc_count == live_doc_count
+        {
+            // Same committed generation, same coverage: the certification
+            // already happened — replay it, mint nothing.
+            return Ok(Some(previous));
+        }
+        let lexical_generation = current.lexical_generation + 1;
+        let now = now_ms();
+        db.facts_execute(
+            "UPDATE viewer_revisions \
+             SET lexical_generation = ?1, updated_at_ms = ?2 WHERE id = 1",
+            &[
+                ParamValue::from(lexical_generation),
+                ParamValue::from(now),
+            ],
+        )?;
+        let receipt = PublicationReceipt {
+            v: PUBLICATION_RECEIPT_VERSION,
+            canonical_revision: covered.canonical_revision,
+            annotation_revision: covered.annotation_revision,
+            projection_revision: covered.projection_revision,
+            lexical_generation,
+            quill_generation,
+            live_doc_count,
+            certified_at_ms: now,
+        };
+        let payload_json = serde_json::to_string(&receipt)
+            .context("serializing lexical publication receipt")?;
+        db.facts_execute(
+            "INSERT OR REPLACE INTO viewer_lexical_publication \
+             (id, v, quill_generation, live_doc_count, canonical_revision, \
+              annotation_revision, projection_revision, lexical_generation, \
+              certified_at_ms, payload_json) \
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            &[
+                ParamValue::from(receipt.v),
+                ParamValue::from(receipt.quill_generation),
+                ParamValue::from(receipt.live_doc_count),
+                ParamValue::from(receipt.canonical_revision),
+                ParamValue::from(receipt.annotation_revision),
+                ParamValue::from(receipt.projection_revision),
+                ParamValue::from(receipt.lexical_generation),
+                ParamValue::from(receipt.certified_at_ms),
+                ParamValue::from(payload_json.as_str()),
+            ],
+        )?;
+        db.facts_execute(
+            "INSERT INTO viewer_change_log \
+             (kind, conversation_id, revision, payload_json, created_at_ms) \
+             VALUES (?1, NULL, ?2, ?3, ?4)",
+            &[
+                ParamValue::from(kind::INDEX_READY),
+                ParamValue::from(lexical_generation),
+                ParamValue::from(payload_json.as_str()),
+                ParamValue::from(now),
+            ],
+        )?;
+        // Only the newest index_ready marker is meaningful — replay
+        // coalesces to it anyway.
+        db.facts_execute(
+            "DELETE FROM viewer_change_log WHERE kind = 'index_ready' AND seq < (\
+                 SELECT MAX(seq) FROM viewer_change_log WHERE kind = 'index_ready'\
+             )",
+            &[],
+        )?;
+        Ok(Some(receipt))
+    })();
+    match result {
+        Ok(receipt) => {
+            db.facts_execute("COMMIT", &[])
+                .context("committing lexical certification transaction")?;
+            Ok(receipt)
+        }
+        Err(error) => {
+            let _ = db.facts_execute("ROLLBACK", &[]);
+            Err(error)
+        }
     }
 }
 
@@ -637,12 +927,22 @@ mod tests {
         );
 
         // Crash window: journal rows are committed with the canonical write;
-        // notify then coalesces and stamps index_ready.
+        // notify then coalesces and stamps canonical_ready — Task 8: the
+        // canonical pass is canonical progress only; index_ready is
+        // reserved for a certified Quill publication.
         let high_water = notify_committed_change(reader, 0)?;
         let replay = changes_since(reader, 0, 64)?;
         assert!(
-            replay.events.iter().any(|e| e.kind == kind::INDEX_READY),
-            "notify over real changes must stamp index_ready: {:?}",
+            replay
+                .events
+                .iter()
+                .any(|e| e.kind == kind::CANONICAL_READY),
+            "notify over real changes must stamp canonical_ready: {:?}",
+            replay.events
+        );
+        assert!(
+            replay.events.iter().all(|e| e.kind != kind::INDEX_READY),
+            "a canonical notify must never emit index_ready: {:?}",
             replay.events
         );
         assert_eq!(replay.next_seq, high_water);
@@ -655,6 +955,48 @@ mod tests {
         );
         let page = changes_since(reader, high_water, 64)?;
         assert!(page.events.is_empty());
+        Ok(())
+    }
+
+    /// Task 8: `canonical_ready` certifies canonical progress only. A pass
+    /// that observes ONLY annotation or marker rows above the boundary must
+    /// coalesce them without minting a canonical claim — annotation-only
+    /// activity and lexical certifications are not canonical commits.
+    #[test]
+    fn noncanonical_rows_do_not_mint_canonical_ready() -> Result<()> {
+        let (_temp, _db, storage) = fixture();
+        let reader = storage.raw();
+        storage.insert_conversation_tree(agent(&storage), None, &canned(1, "base", 1))?;
+        let baseline = notify_committed_change(reader, 0)?;
+
+        // An annotation-only journal row above the boundary.
+        append_change_event(reader, kind::ANNOTATIONS_UPDATED, Some(1), 9, None)?;
+        let high_water = notify_committed_change(reader, 0)?;
+        let page = changes_since(reader, baseline, 64)?;
+        assert!(
+            page.events
+                .iter()
+                .all(|e| e.kind != kind::CANONICAL_READY && e.kind != kind::INDEX_READY),
+            "annotation-only activity must mint no readiness marker: {:?}",
+            page.events
+        );
+        assert!(high_water > baseline, "the pass still advances the watermark");
+
+        // A certified publication above the boundary likewise mints no
+        // canonical claim on the next notify.
+        certify_lexical_publication(reader, 3, 10, None)?.expect("certify");
+        notify_committed_change(reader, 0)?;
+        let page = changes_since(reader, high_water, 64)?;
+        assert!(
+            page.events.iter().all(|e| e.kind != kind::CANONICAL_READY),
+            "lexical certification must not fabricate canonical progress: {:?}",
+            page.events
+        );
+        assert!(
+            page.events.iter().any(|e| e.kind == kind::INDEX_READY),
+            "the certification event itself replays: {:?}",
+            page.events
+        );
         Ok(())
     }
 
@@ -732,6 +1074,97 @@ mod tests {
         assert_eq!(page.events.len(), 1);
         assert_eq!(page.events[0].seq, Some(seq));
         assert_eq!(page.events[0].revision, 7);
+        Ok(())
+    }
+
+    /// Task 8: `certify_lexical_publication` is the only writer of
+    /// `index_ready`: one `BEGIN IMMEDIATE` transaction bumps
+    /// `lexical_generation`, persists the versioned PublicationReceipt and
+    /// journals the event bound to it — atomically, so a crash can never
+    /// produce a journal claim the counters cannot explain. The receipt
+    /// binds the caller's coverage floor (never the wider current
+    /// revisions), and a second certification of the same generation and
+    /// coverage is idempotent — no fabricated readiness.
+    #[test]
+    fn certify_lexical_publication_binds_receipt_to_journal() -> Result<()> {
+        let (_temp, db, storage) = fixture();
+        // Canonical progress first so covered revisions are nonzero.
+        storage.insert_conversation_tree(agent(&storage), None, &canned(1, "alpha", 1))?;
+        let current = current_journal_revisions(storage.raw())?.expect("revisions");
+        let floor = JournalRevisions {
+            canonical_revision: current.canonical_revision.saturating_sub(1),
+            ..current
+        };
+
+        let receipt = certify_lexical_publication(storage.raw(), 7, 42, Some(floor))?
+            .expect("certification must produce a receipt");
+        assert_eq!(receipt.lexical_generation, 1);
+        assert_eq!(receipt.quill_generation, 7);
+        assert_eq!(receipt.live_doc_count, 42);
+        assert_eq!(
+            receipt.canonical_revision, floor.canonical_revision,
+            "coverage binds the floor, never the wider current revision"
+        );
+        assert_eq!(receipt.v, PUBLICATION_RECEIPT_VERSION);
+
+        // The durable singleton persisted the same receipt the journal
+        // event carries.
+        let persisted = latest_lexical_publication(storage.raw())?.expect("receipt row");
+        assert_eq!(persisted, receipt);
+
+        // The journal event replays on a FRESH connection (a restarted
+        // bridge) with the receipt as its payload and lexical_generation
+        // as its bound revision.
+        let reader = Connection::open(db.to_string_lossy().into_owned())?;
+        let page = changes_since(&reader, 0, 64)?;
+        let event = page
+            .events
+            .iter()
+            .find(|e| e.kind == kind::INDEX_READY)
+            .expect("index_ready replays from the durable journal");
+        assert_eq!(event.revision, 1, "event binds the certified ordinal");
+        let payload: serde_json::Value =
+            serde_json::from_str(event.payload_json.as_deref().expect("receipt payload"))?;
+        assert_eq!(payload["quill_generation"], 7);
+        assert_eq!(payload["canonical_revision"], floor.canonical_revision);
+        assert_eq!(payload["v"], PUBLICATION_RECEIPT_VERSION);
+        assert_eq!(
+            page.current_revisions.map(|r| r.lexical_generation),
+            Some(1),
+            "viewer_revisions.lexical_generation advanced exactly once"
+        );
+
+        // Same generation + same coverage: idempotent — no second ordinal,
+        // no second event.
+        let again = certify_lexical_publication(storage.raw(), 7, 42, Some(floor))?
+            .expect("repeat certification reads back");
+        assert_eq!(again, receipt);
+        assert_eq!(
+            current_journal_revisions(storage.raw())?.map(|r| r.lexical_generation),
+            Some(1),
+            "idempotent certification must not mint a new lexical_generation"
+        );
+
+        // A NEW committed generation certifies a new ordinal.
+        let next = certify_lexical_publication(storage.raw(), 8, 42, None)?
+            .expect("second generation certification");
+        assert_eq!(next.lexical_generation, 2);
+        assert!(
+            next.canonical_revision >= receipt.canonical_revision,
+            "a floorless certification binds current coverage"
+        );
+        let page = changes_since(&reader, 0, 64)?;
+        let ready_events: Vec<_> = page
+            .events
+            .iter()
+            .filter(|e| e.kind == kind::INDEX_READY)
+            .collect();
+        assert_eq!(
+            ready_events.len(),
+            1,
+            "read-side coalescing keeps only the newest index_ready: {:?}",
+            page.events
+        );
         Ok(())
     }
 }

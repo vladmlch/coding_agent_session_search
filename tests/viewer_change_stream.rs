@@ -4,10 +4,12 @@
 //! triggers append `session_*` rows inside the SAME commit that mutates
 //! canonical tables, extension-table triggers append `annotations_updated`
 //! inside the annotation write transaction, and `notify_committed_change`
-//! runs AFTER a successful commit to coalesce the journal, stamp an
-//! `index_ready` marker and enforce bounded retention. Local IPC is only a
-//! wakeup; a writer that crashes after commit but before notify still left
-//! a fully replayable journal.
+//! runs AFTER a successful commit to coalesce the journal, stamp a
+//! `canonical_ready` marker and enforce bounded retention. Task 8 reserves
+//! `index_ready` for a certified real Quill publication carrying the
+//! durable `PublicationReceipt` coverage. Local IPC is only a wakeup; a
+//! writer that crashes after commit but before notify still left a fully
+//! replayable journal.
 //!
 //! The bridge modules are compiled into the `cass-viewer-bridge` binary,
 //! not the library; the read-side surface is included under its original
@@ -360,12 +362,13 @@ fn journal_same_values_update_and_idempotent_reingest_are_quiet() -> Result<()> 
     }
 
     // A notify pass on a quiet journal writes no semantic event either —
-    // index_ready is only stamped when a pass actually coalesced changes.
+    // canonical_ready is only stamped when a pass actually coalesced
+    // canonical changes (and index_ready is never stamped by notify at all).
     journal::notify_committed_change_best_effort(&reader);
     let page = journal::changes_since(&reader, cursor, 256)?;
     ensure!(
         page.events.is_empty(),
-        "notify on a quiet journal must not emit index_ready: {:?}",
+        "notify on a quiet journal must not emit canonical_ready: {:?}",
         page.events
     );
     drop(reader);
@@ -413,7 +416,9 @@ fn journal_commit_without_notify_still_replays_then_compacts() -> Result<()> {
     );
 
     // The post-commit notify coalesces the bulk burst and stamps
-    // index_ready bound to the canonical revision it certifies.
+    // canonical_ready bound to the canonical revision it certifies.
+    // Task 8: notify marks canonical progress only — index_ready is
+    // reserved for a certified Quill publication and must NOT appear here.
     journal::notify_committed_change_best_effort(&reader);
     let replayed = journal::changes_since(&reader, cursor, 256)?;
     let updated: Vec<_> = replayed
@@ -430,18 +435,27 @@ fn journal_commit_without_notify_still_replays_then_compacts() -> Result<()> {
         replayed
             .events
             .iter()
-            .any(|e| e.kind == journal::kind::INDEX_READY),
-        "a notify pass over real changes must stamp index_ready: {:?}",
+            .any(|e| e.kind == journal::kind::CANONICAL_READY),
+        "a notify pass over real canonical changes must stamp canonical_ready: {:?}",
+        replayed.events
+    );
+    ensure!(
+        replayed
+            .events
+            .iter()
+            .all(|e| e.kind != journal::kind::INDEX_READY),
+        "canonical notify must never fabricate index_ready — only a real \
+         Quill publication certifies it: {:?}",
         replayed.events
     );
     let ready = replayed
         .events
         .iter()
-        .find(|e| e.kind == journal::kind::INDEX_READY)
-        .expect("index_ready event");
+        .find(|e| e.kind == journal::kind::CANONICAL_READY)
+        .expect("canonical_ready event");
     ensure!(
         Some(ready.revision) == replayed.current_revisions.map(|g| g.canonical_revision),
-        "index_ready must bind the canonical revision it certifies: {:?} vs {:?}",
+        "canonical_ready must bind the canonical revision it certifies: {:?} vs {:?}",
         ready.revision,
         replayed.current_revisions
     );
@@ -1004,21 +1018,25 @@ fn subscribe_reconnect_replays_missed_changes() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Honest index_ready gating: an annotation-only commit must NEVER emit
-// index_ready (nothing about canonical content or Quill changed), and when
-// a canonical pass does stamp index_ready the wire event must not claim a
-// lexical readiness nothing has verified — `lexical_ready` stays false
-// until a writer publishes lexical_generation on Quill commit (spec 12).
+// Task 8 readiness split: an annotation-only commit must NEVER emit either
+// readiness kind; a canonical pass stamps `canonical_ready` (canonical
+// progress only — never `index_ready`); and `index_ready` arrives only from
+// a REAL Quill publication, carrying `lexical_ready:true` plus the durable
+// `PublicationReceipt` coverage it certifies.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn subscribe_metadata_edit_never_claims_index_ready() -> Result<()> {
+fn subscribe_readiness_events_split_canonical_from_lexical() -> Result<()> {
     let (mut bridge, endpoint) =
         events_bridge(&[SeedConversation::new(1, "codex", "/seed-c", "seed-1")
             .agent_messages(Some(1_700_000_000_000), 1)])?;
     let mut subscriber = subscribe(&endpoint, None)?;
     let ack = read_event(&mut subscriber)?.expect("subscribed ack");
     ensure!(ack["type"] == "subscribed", "{ack}");
+    ensure!(
+        ack["lexical_tracking"] == "bound",
+        "the subscribe ack must negotiate publication-bound lexical tracking: {ack}"
+    );
 
     // Metadata-only edit on a second connection.
     let writer = open(&bridge.db)?;
@@ -1039,16 +1057,14 @@ fn subscribe_metadata_edit_never_claims_index_ready() -> Result<()> {
     })?;
     ensure!(found, "annotations_updated did not arrive: {frames:?}");
     ensure!(
-        frames
-            .iter()
-            .all(|frame| frame["type"] != journal::kind::INDEX_READY),
-        "a metadata edit must never claim index_ready: {frames:?}"
+        frames.iter().all(|frame| frame["type"] != journal::kind::INDEX_READY
+            && frame["type"] != journal::kind::CANONICAL_READY),
+        "a metadata edit must never claim either readiness kind: {frames:?}"
     );
 
-    // A canonical commit + post-commit notify DOES stamp index_ready — but
-    // the event must honestly report that no Quill publication tracking
-    // verified lexical readiness (lexical_ready is false until the lane is
-    // wired; it never asserts readiness that does not exist).
+    // A canonical commit + post-commit notify stamps `canonical_ready` —
+    // canonical progress only; NO Quill publication happened, so
+    // `index_ready` must stay absent.
     insert_conversation(&bridge.db, &canned_conversation(2, "content", 1))?;
     let maintainer = open(&bridge.db)?;
     journal::notify_committed_change_best_effort(&maintainer);
@@ -1056,22 +1072,185 @@ fn subscribe_metadata_edit_never_claims_index_ready() -> Result<()> {
     journal::send_bridge_wakeup_best_effort(&bridge.db);
 
     let (frames, found) = collect_until(&mut subscriber, Duration::from_secs(3), |frame| {
+        frame["type"] == journal::kind::CANONICAL_READY
+    })?;
+    ensure!(
+        found,
+        "canonical_ready did not arrive after a canonical pass: {frames:?}"
+    );
+    ensure!(
+        frames
+            .iter()
+            .all(|frame| frame["type"] != journal::kind::INDEX_READY),
+        "canonical progress must never masquerade as index_ready: {frames:?}"
+    );
+    let canonical_ready = frames
+        .iter()
+        .find(|frame| frame["type"] == journal::kind::CANONICAL_READY)
+        .expect("canonical_ready frame");
+    ensure!(
+        canonical_ready["canonical_revision"].as_i64().unwrap_or(0) > 0,
+        "canonical_ready must bind the canonical revision it certifies: {canonical_ready}"
+    );
+
+    // A REAL Quill publication — the authorized write lane's post-edit
+    // region convergence commits the published index and certifies the
+    // generation it sealed. Only now may `index_ready` appear, bound to
+    // the durable PublicationReceipt coverage.
+    let second_temp = tempfile::tempdir()?;
+    let mut second = BridgeHarness::spawn_fixture(
+        second_temp,
+        bridge.data_dir.clone(),
+        bridge.db.clone(),
+        &["--enable-viewer-writes"],
+    )?;
+    let patched = second.exchange(json!({
+        "op": "patch_annotations",
+        "conversation_id": 1,
+        "expected_revision": 1,
+        "patch": {"is_pinned": false, "custom_title": "certified"}
+    }))?;
+    ensure!(patched["ok"] == true, "patch_annotations refused: {patched}");
+    let edited = patched["result"]["generation"]["annotation_revision"]
+        .as_i64()
+        .expect("annotation_revision in patch receipt");
+
+    let (frames, found) = collect_until(&mut subscriber, Duration::from_secs(3), |frame| {
         frame["type"] == journal::kind::INDEX_READY
     })?;
     ensure!(
         found,
-        "index_ready did not arrive after a canonical pass: {frames:?}"
+        "a real Quill publication must emit index_ready: {frames:?}"
     );
     let ready = frames
         .iter()
         .find(|frame| frame["type"] == journal::kind::INDEX_READY)
         .expect("index_ready frame");
     ensure!(
-        ready["lexical_ready"] == false,
-        "index_ready must not claim unverified lexical readiness: {ready}"
+        ready["lexical_ready"] == true,
+        "a certified publication must report lexical_ready:true: {ready}"
+    );
+    ensure!(
+        ready["annotation_revision"].as_i64().unwrap_or(0) >= edited,
+        "index_ready coverage must reach the just-committed annotation revision \
+         ({edited}): {ready}"
+    );
+    let receipt = &ready["payload"];
+    ensure!(
+        receipt["v"].as_i64() == Some(1)
+            && receipt["lexical_generation"].as_i64() == ready["lexical_generation"].as_i64()
+            && receipt["quill_generation"].as_i64().unwrap_or(0) >= 1
+            && receipt["canonical_revision"].as_i64().is_some(),
+        "index_ready must carry the durable PublicationReceipt: {ready}"
+    );
+
+    // The announced lexical generation IS the committed logical generation
+    // the bridge reports.
+    let hello = bridge.exchange(json!({"op":"hello","id":5}))?;
+    let served_generation =
+        hello["result"]["generation"]["lexical_generation"].as_i64();
+    ensure!(
+        served_generation == ready["lexical_generation"].as_i64(),
+        "the served generation must equal the one index_ready announced: \
+         {served_generation:?} vs {ready}"
     );
     drop(subscriber);
+    let _ = second.shutdown();
     let _ = bridge.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Crash/restart truth: `canonical_ready` is canonical progress only (it must
+// never advance `lexical_generation`); a certified publication is a durable
+// journal row + durable `viewer_revisions` bump — replayed identically by a
+// restarted bridge that lost every in-memory watermark.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn certified_publication_replays_after_bridge_restart() -> Result<()> {
+    let (mut bridge, _endpoint) =
+        events_bridge(&[SeedConversation::new(1, "codex", "/seed-d", "seed-1")
+            .agent_messages(Some(1_700_000_000_000), 1)])?;
+    let data_dir = bridge.data_dir.clone();
+    let db = bridge.db.clone();
+
+    // Canonical progress alone must NOT mint a lexical generation.
+    insert_conversation(&db, &canned_conversation(2, "pre-publish", 1))?;
+    let maintainer = open(&db)?;
+    journal::notify_committed_change_best_effort(&maintainer);
+    drop(maintainer);
+    let hello = bridge.exchange(json!({"op":"hello","id":9}))?;
+    ensure!(
+        hello["result"]["generation"]["lexical_generation"].as_i64() == Some(0),
+        "canonical progress minted a lexical generation it did not publish: {hello}"
+    );
+    let page = journal::changes_since(&open(&db)?, 0, 256)?;
+    ensure!(
+        page.events.iter().any(|e| e.kind == journal::kind::CANONICAL_READY)
+            && page.events.iter().all(|e| e.kind != journal::kind::INDEX_READY),
+        "canonical pass must journal canonical_ready only: {:?}",
+        page.events
+    );
+
+    // A REAL Quill publication on the served index: commit + region-stamp
+    // path certifies the generation it sealed.
+    let index_dir =
+        coding_agent_search::search::tantivy::expected_index_dir(&data_dir);
+    let mut index =
+        coding_agent_search::search::tantivy::TantivyIndex::open_or_create(&index_dir)?;
+    let writer = open(&db)?;
+    index.commit_with_region_doc_stamps(&writer)?;
+    drop(writer);
+    journal::send_bridge_wakeup_best_effort(&db);
+
+    // The certification is durable in the journal and in viewer_revisions.
+    let generation = revisions::generation(&open(&db)?)?.expect("generation");
+    ensure!(
+        generation.lexical_generation == 1,
+        "first certified publication must mint lexical_generation 1: {generation:?}"
+    );
+    let _ = bridge.shutdown();
+
+    // A restarted bridge replays the durable index_ready — sequence,
+    // receipt payload and lexical_ready from the journal alone.
+    let restart_temp = tempfile::tempdir()?;
+    let mut restarted =
+        BridgeHarness::spawn_fixture(restart_temp, data_dir.clone(), db.clone(), EVENT_ARGS)?;
+    let hello = restarted.exchange(json!({"op":"hello","id":1}))?;
+    let restarted_endpoint = events_endpoint(&hello)?;
+    let mut subscriber = subscribe(&restarted_endpoint, None)?;
+    let ack = read_event(&mut subscriber)?.expect("subscribed ack");
+    ensure!(
+        ack["type"] == "subscribed" && ack["lexical_tracking"] == "bound",
+        "{ack}"
+    );
+    let (frames, found) = collect_until(&mut subscriber, Duration::from_secs(3), |frame| {
+        frame["type"] == journal::kind::INDEX_READY
+    })?;
+    ensure!(
+        found,
+        "a restarted bridge must replay the certified index_ready: {frames:?}"
+    );
+    let ready = frames
+        .iter()
+        .find(|frame| frame["type"] == journal::kind::INDEX_READY)
+        .expect("index_ready frame");
+    ensure!(
+        ready["lexical_ready"] == true
+            && ready["lexical_generation"].as_i64() == Some(1)
+            && ready["payload"]["quill_generation"].as_i64().is_some()
+            && ready["payload"]["v"].as_i64() == Some(1),
+        "replayed index_ready must carry its durable receipt: {ready}"
+    );
+    let hello = restarted.exchange(json!({"op":"hello","id":2}))?;
+    ensure!(
+        hello["result"]["generation"]["lexical_generation"].as_i64() == Some(1)
+            && hello["result"]["event_stream"]["lexical_tracking"] == "bound",
+        "hello must report the certified generation + bound tracking: {hello}"
+    );
+    drop(subscriber);
+    let _ = restarted.shutdown();
     Ok(())
 }
 

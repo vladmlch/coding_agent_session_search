@@ -18,7 +18,7 @@
 //!
 //! [`changes`] is the bounded replay journal (spec decision 7, plan Task 11):
 //! `viewer_change_log` reads (`changes_since`), the post-commit coalesce/
-//! `index_ready`/retention pass (`notify_committed_change`) and the explicit
+//! `canonical_ready`/retention pass (`notify_committed_change`) and the explicit
 //! append lane (`append_change_event`). The journal rows themselves are
 //! written inside the writers' commits by the observer triggers.
 //! [`projection`] is the Task-8 structural projection (spec decisions 4/5):

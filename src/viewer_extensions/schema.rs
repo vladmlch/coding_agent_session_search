@@ -50,7 +50,12 @@ use crate::franken_sync::compat::RowExt;
 /// `indexed_text` fragments for derived/meta lanes only) plus the
 /// per-session publication mark and stale-document reconcile queue that
 /// keeps `complete` ingest receipts honest about index coverage.
-pub const EXTENSION_SCHEMA_VERSION: i64 = 7;
+/// v8: `viewer_lexical_publication` — the durable singleton
+/// `PublicationReceipt` the Task-8 certification lane writes inside the
+/// same transaction that bumps `lexical_generation` and journals
+/// `index_ready`, so the announced generation always names the committed
+/// Quill manifest it certifies.
+pub const EXTENSION_SCHEMA_VERSION: i64 = 8;
 
 /// Additive viewer schema. Every statement is idempotent so re-running the
 /// profile on an initialized archive is a no-op.
@@ -744,6 +749,37 @@ INSERT OR REPLACE INTO viewer_meta (key, value)
 VALUES ('extension_schema_version', '7');
 ";
 
+/// Schema v8 — durable lexical publication receipt (Task 8).
+///
+/// `viewer_lexical_publication` is a singleton row (`id` is always 1 by
+/// writer convention) holding the versioned `PublicationReceipt` of the
+/// most recent certified Quill publication: the committed MANIFEST
+/// `quill_generation`, its `live_doc_count`, and the covered
+/// canonical/annotation/projection revisions plus the `lexical_generation`
+/// ordinal minted for it. The row, the `viewer_revisions` bump and the
+/// `index_ready` journal event commit atomically in
+/// `changes::certify_lexical_publication`, so a crash can never leave a
+/// generation the journal cannot explain or a journal claim no receipt
+/// backs. Only the newest certification matters — the journal replay
+/// coalesces `index_ready` the same way.
+const VIEWER_SCHEMA_V8: &str = r"
+CREATE TABLE IF NOT EXISTS viewer_lexical_publication (
+    id INTEGER PRIMARY KEY,
+    v INTEGER NOT NULL,
+    quill_generation INTEGER NOT NULL,
+    live_doc_count INTEGER NOT NULL,
+    canonical_revision INTEGER NOT NULL,
+    annotation_revision INTEGER NOT NULL,
+    projection_revision INTEGER NOT NULL,
+    lexical_generation INTEGER NOT NULL,
+    certified_at_ms INTEGER NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+INSERT OR REPLACE INTO viewer_meta (key, value)
+VALUES ('extension_schema_version', '8');
+";
+
 /// Guarded v3 column migration: `parent_external_id` cannot ride the
 /// `CREATE TABLE` statement (existing v2 archives keep their table), so it
 /// lands as an `ALTER TABLE` only when the column is absent — inside the
@@ -854,6 +890,7 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
         connection.execute_batch(VIEWER_SCHEMA_V5)?;
         connection.execute_batch(VIEWER_SCHEMA_V6)?;
         connection.execute_batch(VIEWER_SCHEMA_V7)?;
+        connection.execute_batch(VIEWER_SCHEMA_V8)?;
         Ok(())
     })();
     match applied {

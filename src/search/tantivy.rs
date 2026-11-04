@@ -1558,6 +1558,15 @@ pub struct TantivyIndex {
     /// upsert of the same doc identity before publication is a duplicate
     /// live id Quill refuses. Cleared exactly when the stamp queue is.
     staged_region_doc_sessions: HashSet<i64>,
+    /// Task 8 coverage floor: the `viewer_revisions` snapshot captured when
+    /// this writer began staging the work its next commit will seal. The
+    /// post-commit [`certify_lexical_publication`] receipt binds AT MOST
+    /// these revisions — anything committed after the floor is
+    /// not-in-this-generation work the next publication must pick up.
+    /// Captured lazily by every db-carrying staging entry and by
+    /// [`Self::commit_with_region_doc_stamps`] pre-commit; cleared when a
+    /// commit certifies or fails.
+    publication_floor: Option<crate::viewer_extensions::changes::JournalRevisions>,
 }
 
 impl TantivyIndex {
@@ -1583,6 +1592,7 @@ impl TantivyIndex {
             resume_reconcile_docs_remaining: 0,
             pending_region_doc_stamps: Vec::new(),
             staged_region_doc_sessions: HashSet::new(),
+            publication_floor: None,
         })
     }
 
@@ -1610,7 +1620,28 @@ impl TantivyIndex {
             resume_reconcile_docs_remaining: 0,
             pending_region_doc_stamps: Vec::new(),
             staged_region_doc_sessions: HashSet::new(),
+            publication_floor: None,
         })
+    }
+
+    /// Task 8: capture this writer's coverage floor — the committed
+    /// `viewer_revisions` snapshot the next [`certify_lexical_publication`]
+    /// receipt will bind as the revisions this generation covers. First
+    /// capture wins: staging more work later does NOT move the floor
+    /// forward, so a certification never claims revisions committed after
+    /// this writer began the generation it is about to seal. Callers
+    /// staging canonical documents through db-less lanes should invoke
+    /// this before they begin for a tight floor; every db-carrying staging
+    /// entry captures it lazily.
+    pub fn capture_publication_floor(
+        &mut self,
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+    ) -> Result<()> {
+        if self.publication_floor.is_none() {
+            self.publication_floor =
+                crate::viewer_extensions::changes::current_journal_revisions(db)?;
+        }
+        Ok(())
     }
 
     pub fn add_conversation(&mut self, conv: &NormalizedConversation) -> Result<()> {
@@ -1650,9 +1681,13 @@ impl TantivyIndex {
                 // region-doc stamps must never certify a marks row for
                 // documents a later commit did not carry. Clearing keeps
                 // the sessions honestly pending — the next converge pass
-                // re-materializes and re-stamps them.
+                // re-materializes and re-stamps them. The Task-8 coverage
+                // floor clears with them: it described the staging the
+                // lost commit would have sealed, and must not certify a
+                // later generation.
                 self.pending_region_doc_stamps.clear();
                 self.staged_region_doc_sessions.clear();
+                self.publication_floor = None;
                 Err(error)
             }
         }
@@ -1664,10 +1699,17 @@ impl TantivyIndex {
     /// The stamp itself is a freshness-guarded compare-and-swap, so a
     /// marks row that changed since staging is refused rather than
     /// clobbered.
+    ///
+    /// Task 8: before the commit, capture this writer's coverage floor if
+    /// staging never did (a db-less staging lane leaves it unset — the
+    /// pre-commit revisions are the tightest honest bound still provable
+    /// here). After the commit seals the manifest, the floor certifies
+    /// the publication inside [`Self::commit_region_doc_stamps`].
     pub fn commit_with_region_doc_stamps(
         &mut self,
         db: &impl crate::viewer_extensions::facts::FactsDb,
     ) -> Result<()> {
+        self.capture_publication_floor(db)?;
         self.commit()?;
         self.commit_region_doc_stamps(db)?;
         Ok(())
@@ -1688,7 +1730,33 @@ impl TantivyIndex {
     /// canonical batch included — ahead of the real boundary. A delete
     /// error propagates WITHOUT stamping, leaving `docs_state`/`pending_
     /// doc_deletes` honestly pending for the next converge pass.
+    ///
+    /// Task 8: once the marks stamps land, the publication is certified
+    /// against the durable MANIFEST this writer just sealed — the ONLY
+    /// lane that ever mints `lexical_generation` or journals `index_ready`.
+    /// A certification failure (a contended archive, a missing manifest
+    /// slot) logs and keeps the captured coverage floor so the next
+    /// stamp-aware commit certifies the still-wider coverage honestly —
+    /// never a fabricated or dropped readiness claim.
     pub fn commit_region_doc_stamps(
+        &mut self,
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+    ) -> Result<usize> {
+        let stamped = self.replay_region_doc_stamps(db)?;
+        self.certify_published_generation(db);
+        Ok(stamped)
+    }
+
+    /// The stamp half of [`Self::commit_region_doc_stamps`] WITHOUT the
+    /// post-commit certification — for the authoritative lexical rebuild,
+    /// whose candidate still folds and re-commits after the stamps land,
+    /// so the generation sealed at stamp time is an intermediate manifest
+    /// the terminal commit supersedes. The captured coverage floor stays
+    /// armed for [`Self::certify_sealed_publication`] once that terminal
+    /// commit lands. Every single-commit lane must keep calling
+    /// [`Self::commit_region_doc_stamps`]: skipping certification entirely
+    /// would publish a generation readiness can never explain.
+    pub fn replay_region_doc_stamps(
         &mut self,
         db: &impl crate::viewer_extensions::facts::FactsDb,
     ) -> Result<usize> {
@@ -1708,6 +1776,55 @@ impl TantivyIndex {
                 .context("deleting staged search-region stale identities")?;
         }
         crate::viewer_extensions::search_regions::stamp_region_docs_published(db, &stamps)
+    }
+
+    /// Certify the generation this writer's last commit sealed — consumes
+    /// the armed coverage floor against the durable MANIFEST. Only for
+    /// lanes whose publish pipeline keeps committing after
+    /// [`Self::replay_region_doc_stamps`] (the authoritative rebuild's
+    /// post-stamp fold + terminal checkpoint commit); single-commit lanes
+    /// certify inside [`Self::commit_region_doc_stamps`] instead. Reading
+    /// the manifest AFTER the last commit binds the generation that is
+    /// actually published, never an intermediate candidate manifest.
+    pub fn certify_sealed_publication(
+        &mut self,
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+    ) {
+        self.certify_published_generation(db);
+    }
+
+    /// Task 8 post-commit certification: read the durable Quill MANIFEST
+    /// this writer just sealed and bind its generation plus the captured
+    /// coverage floor into `viewer_revisions.lexical_generation` +
+    /// `viewer_lexical_publication` + the `index_ready` journal row — one
+    /// atomic certification transaction. Best-effort by construction: a
+    /// certification that cannot write leaves readiness honestly
+    /// un-advanced (the floor is restored so the next publish certifies
+    /// wider coverage instead of losing it).
+    fn certify_published_generation(
+        &mut self,
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+    ) {
+        let Some(manifest) =
+            crate::search::quill_bridge::manifest_live_doc_count(self.inner.path())
+        else {
+            // No decodable durable manifest — the commit's generation is
+            // not on disk, so there is nothing truthful to certify.
+            return;
+        };
+        let floor = self.publication_floor.take();
+        if let Err(error) = crate::viewer_extensions::changes::certify_lexical_publication(
+            db,
+            manifest.generation.min(i64::MAX as u64) as i64,
+            manifest.live_docs.min(i64::MAX as u64) as i64,
+            floor,
+        ) {
+            self.publication_floor = self.publication_floor.or(floor);
+            tracing::warn!(
+                error = %format!("{error:#}"),
+                "lexical publication certification deferred; readiness stays honestly un-advanced"
+            );
+        }
     }
 
     /// GH #446: route the stall watchdog's liveness signal into the Quill
@@ -2215,6 +2332,9 @@ impl TantivyIndex {
         if self.staged_region_doc_sessions.contains(&conversation_id) {
             return Ok(0);
         }
+        // Task 8: the first staged work on this writer captures the
+        // coverage floor its eventual commit will certify.
+        self.capture_publication_floor(db)?;
         let (docs, stamp) =
             crate::viewer_extensions::search_regions::stage_region_docs(
                 &mut self.inner,
@@ -2250,6 +2370,10 @@ impl TantivyIndex {
         db: &impl crate::viewer_extensions::facts::FactsDb,
         limit: i64,
     ) -> Result<usize> {
+        // Task 8: capture the coverage floor before this pass touches any
+        // pending marks — the eventual commit's certification binds at
+        // most what was committed when this writer began covering work.
+        self.capture_publication_floor(db)?;
         let pending =
             crate::viewer_extensions::search_regions::pending_region_doc_sessions(db, limit)?;
         let mut converged = 0_usize;

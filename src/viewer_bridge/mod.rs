@@ -268,11 +268,11 @@ impl Session {
                 "endpoint":self.events.as_ref().map(|handle| handle.endpoint()),
                 "protocol":"cass-viewer-events/1",
                 "journal":"viewer_change_log",
-                // Honest capability report: nothing yet bumps
-                // lexical_generation on Quill publication, so index_ready
-                // events carry lexical_ready:false (never an unverified
-                // lexical claim).
-                "lexical_tracking":"unwired",
+                // Task 8: index_ready is minted exclusively by
+                // certify_lexical_publication after a real Quill commit —
+                // every such event binds the durable PublicationReceipt
+                // (covered revisions + the manifest generation it sealed).
+                "lexical_tracking":"bound",
             },
             "generation":extension.generation,
             "features":["readonly","catalog_page","session","messages_page","rank_begin","rank_next","rank_cancel","reload","get_annotations","list_sessions","get_session_details","get_tool_output","search_sessions","projects","dashboard","health","changes_since","subscribe_events"],

@@ -17,7 +17,9 @@ use coding_agent_search::viewer_extensions::changes as journal;
 
 pub use coding_agent_search::viewer_extensions::changes::{
     CHANGES_PAGE_LIMIT, ChangeEvent, ChangePage, JOURNAL_RETENTION, JournalRevisions,
-    append_change_event, kind, notify_committed_change, notify_committed_change_best_effort,
+    PUBLICATION_RECEIPT_VERSION, PublicationReceipt, append_change_event,
+    certify_lexical_publication, current_journal_revisions, kind, latest_lexical_publication,
+    notify_committed_change, notify_committed_change_best_effort,
     notify_committed_change_with_retention,
 };
 
