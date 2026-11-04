@@ -4,7 +4,6 @@ use assert_cmd::Command;
 use coding_agent_search::franken_sync::Connection as FrankenConnection;
 use coding_agent_search::model::types::{Agent, AgentKind, Conversation};
 use coding_agent_search::sources::config::{SourceDefinition, SourcesConfig, SyncSchedule};
-use coding_agent_search::sources::sync::{SourceSyncInfo, SyncResult, SyncStatus};
 use coding_agent_search::storage::sqlite::SqliteStorage;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -865,16 +864,22 @@ impl DoctorFixtureFactory {
     }
 
     fn write_multi_source_sync_fixture(&mut self) {
-        let mut work_laptop = SourceDefinition::ssh("work-laptop", "user@work-laptop");
+        let legacy = |name: &str, host: &str| SourceDefinition {
+            name: name.to_string(),
+            source_type: coding_agent_search::sources::provenance::SourceKind::Ssh,
+            host: Some(host.to_string()),
+            ..Default::default()
+        };
+        let mut work_laptop = legacy("work-laptop", "user@work-laptop");
         work_laptop.paths = vec!["~/.cline/tasks".to_string()];
         work_laptop.sync_schedule = SyncSchedule::Hourly;
-        let mut stale_server = SourceDefinition::ssh("stale-server", "user@stale-server");
+        let mut stale_server = legacy("stale-server", "user@stale-server");
         stale_server.paths = vec!["~/.codex/sessions".to_string()];
         stale_server.sync_schedule = SyncSchedule::Daily;
-        let mut retired_laptop = SourceDefinition::ssh("retired-laptop", "user@retired-laptop");
+        let mut retired_laptop = legacy("retired-laptop", "user@retired-laptop");
         retired_laptop.paths = vec!["~/.codex/old-sessions".to_string()];
         retired_laptop.sync_schedule = SyncSchedule::Daily;
-        let mut offline_server = SourceDefinition::ssh("offline-server", "user@offline-server");
+        let mut offline_server = legacy("offline-server", "user@offline-server");
         offline_server.paths = vec!["~/.codex/sessions".to_string()];
         offline_server.sync_schedule = SyncSchedule::Daily;
         let sources_config = SourcesConfig {
@@ -924,52 +929,43 @@ impl DoctorFixtureFactory {
             "remote_source_mirror",
         );
 
-        let mut sync_status = SyncStatus::default();
-        sync_status.set_info(
-            "work-laptop",
-            SourceSyncInfo {
-                last_sync: Some(FIXTURE_BASE_TS_MS),
-                last_result: SyncResult::PartialFailure("fixture partial transfer".to_string()),
-                files_synced: 2,
-                bytes_transferred: 512,
-                duration_ms: 1234,
-                consecutive_failures: 1,
-            },
-        );
-        sync_status.set_info(
-            "retired-laptop",
-            SourceSyncInfo {
-                last_sync: Some(FIXTURE_BASE_TS_MS),
-                last_result: SyncResult::Failed(
-                    "remote source path does not exist; source pruned".to_string(),
-                ),
-                files_synced: 0,
-                bytes_transferred: 0,
-                duration_ms: 987,
-                consecutive_failures: 1,
-            },
-        );
-        sync_status.set_info(
-            "offline-server",
-            SourceSyncInfo {
-                last_sync: Some(FIXTURE_BASE_TS_MS),
-                last_result: SyncResult::Failed(
-                    "ssh: connect to host offline-server timed out".to_string(),
-                ),
-                files_synced: 0,
-                bytes_transferred: 0,
-                duration_ms: 60_000,
-                consecutive_failures: 1,
-            },
-        );
-        sync_status
-            .save(&self.data_dir)
-            .expect("write doctor fixture sync status");
+        // A historical `sync_status.json` left by the removed remote-sync
+        // machinery: inert fixture bytes that must never be probed or
+        // rewritten, only preserved as archive evidence.
         let sync_status_path = self.data_dir.join("sync_status.json");
-        self.record_file("sync_status", &sync_status_path);
-        self.log(
-            "write_sync_status",
-            &format!("sync_status:{}", self.relative_to_root(&sync_status_path)),
+        self.write_confined_file(
+            &sync_status_path,
+            serde_json::to_string_pretty(&json!({
+                "sources": {
+                    "work-laptop": {
+                        "last_sync": FIXTURE_BASE_TS_MS,
+                        "last_result": {"partial_failure": "fixture partial transfer"},
+                        "files_synced": 2,
+                        "bytes_transferred": 512,
+                        "duration_ms": 1234,
+                        "consecutive_failures": 1
+                    },
+                    "retired-laptop": {
+                        "last_sync": FIXTURE_BASE_TS_MS,
+                        "last_result": {"failed": "remote source path does not exist; source pruned"},
+                        "files_synced": 0,
+                        "bytes_transferred": 0,
+                        "duration_ms": 987,
+                        "consecutive_failures": 1
+                    },
+                    "offline-server": {
+                        "last_sync": FIXTURE_BASE_TS_MS,
+                        "last_result": {"failed": "ssh: connect to host offline-server timed out"},
+                        "files_synced": 0,
+                        "bytes_transferred": 0,
+                        "duration_ms": 60000,
+                        "consecutive_failures": 1
+                    }
+                }
+            }))
+            .expect("serialize doctor fixture sync status")
+            .as_bytes(),
+            "sync_status",
         );
     }
 

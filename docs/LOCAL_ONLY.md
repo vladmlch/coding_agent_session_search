@@ -29,6 +29,24 @@ Ledger for D1: every path deleted by the local-only port, grouped by task.
 **On merge conflict with upstream, keep the deletion.** Newest task first;
 each task appends its own group.
 
+### Task 9 — remote source sync/setup/discovery machinery (2026-11-04)
+
+- `src/sources/sync.rs`, `src/sources/sync/rrsync_tests.rs` — SSH/SFTP/rsync mirror sync engine and its rrsync tests
+- `src/sources/install.rs` — remote cass install over SSH
+- `src/sources/probe.rs` — remote host probing
+- `src/sources/setup.rs` — interactive/non-interactive remote setup wizard driver
+- `src/sources/interactive.rs` — setup wizard TUI flow
+- `src/sources/index.rs`, `src/sources/index/job.rs` — remote index job runner
+- `src/sources/tailscale_tests.rs` — Tailscale peer discovery tests
+- `tests/ssh_sync_integration.rs`, `tests/ssh_test_helper.rs`, `tests/e2e_ssh_sources.rs` — live-SSH sync suites and the SSH test helper
+- `tests/tailscale_discovery.rs` — Tailscale discovery suite
+- `tests/setup_workflow.rs` — remote setup workflow suite
+
+Kept (checked per the brief's conditions): `src/sources/child_output.rs`
+(used by non-SSH child-process capture) and
+`tests/reproduction_sync_oscillation.rs` (adapted: reproduces the archived
+mirror-oscillation regression through ordinary `cass index`, no live sync).
+
 ### Task 10 — scheduler remote-sync stages (2026-11-04)
 
 No whole files deleted — remote scheduling machinery removed in place:

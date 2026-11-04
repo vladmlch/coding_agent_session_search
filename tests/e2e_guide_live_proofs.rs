@@ -103,9 +103,15 @@ fn db_digest(data_dir: &Path) -> blake3::Hash {
 
 fn configure_remote(home: &Path, remote_path: &str) -> std::path::PathBuf {
     use coding_agent_search::sources::config::{SourceDefinition, SourcesConfig};
+    use coding_agent_search::sources::provenance::SourceKind;
     let config_dir = home.join("xdg-config/cass");
     std::fs::create_dir_all(&config_dir).expect("config directory");
-    let mut source = SourceDefinition::ssh("guide-remote", "fixture.invalid");
+    let mut source = SourceDefinition {
+        name: "guide-remote".to_string(),
+        source_type: SourceKind::Ssh,
+        host: Some("fixture.invalid".to_string()),
+        ..Default::default()
+    };
     source.paths = vec![remote_path.into()];
     let config = SourcesConfig {
         sources: vec![source],
@@ -162,9 +168,9 @@ fn live_onboarding_indexes_a_staged_remote_only_after_explicit_confirmation() {
     let data_dir = home.path().join("data with spaces");
     let db = home.path().join("selected archive.db");
     let config = configure_remote(home.path(), "~/.codex");
-    let mirror = data_dir.join("remotes/guide-remote/mirror").join(
-        coding_agent_search::sources::sync::path_to_safe_dirname("~/.codex"),
-    );
+    let mirror = data_dir
+        .join("remotes/guide-remote/mirror")
+        .join(coding_agent_search::sources::provenance::path_to_safe_dirname("~/.codex"));
     util::seed_codex_session(&mirror, "rollout-guide-remote.jsonl", PRIVATE_BODY, true);
     let config_before = std::fs::read(&config).expect("config bytes");
     let unconfirmed = onboard(home.path(), &data_dir, &db, false);
@@ -252,9 +258,9 @@ fn live_onboarding_preserves_the_archive_when_another_indexer_holds_the_lock() {
     let data_dir = home.path().join("data");
     seed_archive(home.path(), &data_dir);
     configure_remote(home.path(), "~/.codex");
-    let mirror = data_dir.join("remotes/guide-remote/mirror").join(
-        coding_agent_search::sources::sync::path_to_safe_dirname("~/.codex"),
-    );
+    let mirror = data_dir
+        .join("remotes/guide-remote/mirror")
+        .join(coding_agent_search::sources::provenance::path_to_safe_dirname("~/.codex"));
     util::seed_codex_session(
         &mirror,
         "rollout-guide-locked.jsonl",
@@ -289,9 +295,9 @@ fn live_onboarding_reports_partial_progress_when_a_session_has_an_active_writer(
     let data_dir = home.path().join("data");
     let db = data_dir.join("agent_search.db");
     configure_remote(home.path(), "~/.codex");
-    let mirror = data_dir.join("remotes/guide-remote/mirror").join(
-        coding_agent_search::sources::sync::path_to_safe_dirname("~/.codex"),
-    );
+    let mirror = data_dir
+        .join("remotes/guide-remote/mirror")
+        .join(coding_agent_search::sources::provenance::path_to_safe_dirname("~/.codex"));
     util::seed_codex_session(
         &mirror,
         "rollout-available.jsonl",

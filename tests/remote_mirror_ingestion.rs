@@ -8,7 +8,7 @@
 use std::fs;
 use std::path::Path;
 
-use coding_agent_search::sources::sync::path_to_safe_dirname;
+use coding_agent_search::sources::provenance::path_to_safe_dirname;
 use franken_agent_detection::{
     Connector, CursorConnector, FactoryConnector, GeminiConnector, NormalizedConversation, Origin,
     Platform, PrimeAgentConnector, ScanContext, ScanRoot, VibeConnector,

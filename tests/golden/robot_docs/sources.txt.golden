@@ -1,5 +1,34 @@
 sources:
 
+# Local sources only
+cass runs fully local-only. `cass sources add` indexes extra local
+directories under a name; there is no remote discovery, sync, or
+scheduling. Old `type = "ssh"` entries in sources.toml are inert
+archive records: their already-mirrored conversations stay searchable
+and source-filterable, and ordinary `cass index` keeps indexing any
+existing <data-dir>/remotes/<name>/mirror directories read-only.
+
+  cass sources add archive-box --path /Volumes/old-sessions
+  cass sources add archive-box -p /data/a -p /data/b   # repeatable
+  cass sources list                      # human summary
+  cass sources list --json               # kind: local | legacy-remote
+  cass sources remove archive-box        # drop the config entry
+  cass sources remove archive-box --purge  # + delete its mirror data
+  cass sources doctor --json             # local checks only
+
+Removed remote verbs (each fails with a removed-command error):
+  sources sync, sources setup, sources discover, sources reingest,
+  sources artifact-manifest, sources schedule, `sources add user@host`
+
+# Workspace path mappings
+Path mappings rewrite archived remote workspace paths to local
+equivalents so `cass view`/`cass tui` open hits at the right place.
+
+  cass sources mappings list
+  cass sources mappings add laptop --from /home/u/proj --to /work/proj
+  cass sources mappings test laptop /home/u/proj/x
+  cass sources mappings remove laptop 0   # index from list output
+
 # Persisted agent indexing exclusions
 Use this when you want cass to ignore a connector entirely even if
 the backing session files still exist on disk.
@@ -15,84 +44,4 @@ Configuration is persisted in ~/.config/cass/sources.toml as:
 By default, `exclude` also purges already archived local data for that agent
 and rebuilds lexical search from the remaining archive. Use
 `--keep-indexed-data` if you only want to block future indexing.
-Exclusions apply to future local scans, remote mirror scans, and watch mode.
-
-# cass sources setup - Interactive Remote Sources Wizard
-
-## Overview
-The setup wizard automates configuring cass to search across multiple machines.
-It discovers SSH hosts from ~/.ssh/config, checks their status, and handles
-installation, indexing, and configuration automatically.
-
-## Quick Start
-  cass sources setup                    # Interactive (recommended)
-  cass sources setup --hosts css,csd    # Configure specific hosts
-  cass sources setup --dry-run          # Preview without changes
-  cass sources setup --resume           # Resume interrupted setup
-
-## Workflow Phases
-  1. Discovery  - Parses ~/.ssh/config to find configured hosts
-  2. Probing    - Connects via SSH to check cass status and agent data
-  3. Selection  - Interactive selection of which hosts to configure
-  4. Install    - Installs cass on hosts without it (optional)
-  5. Indexing   - Runs `cass index` on remotes (optional)
-  6. Config     - Generates sources.toml entries
-  7. Sync       - Downloads session data to local machine (optional)
-
-## Flags Reference
-  --hosts <names>      Only configure these hosts (comma-separated SSH aliases)
-  --dry-run            Preview without making changes
-  --resume             Resume from ~/.cache/cass/setup_state.json
-  --non-interactive    Skip prompts, use auto-detected defaults
-  --skip-install       Don't install cass on remotes
-  --skip-index         Don't run remote indexing
-  --skip-sync          Don't sync after setup
-  --json               Output progress as JSON for scripting
-  --timeout <secs>     SSH connection timeout (default: 10)
-  --verbose            Show detailed progress
-
-## Non-Interactive Usage (Scripting)
-  cass sources setup --non-interactive --hosts css,csd
-  cass sources setup --non-interactive --hosts css --skip-install --skip-index
-  cass sources setup --json --hosts css  # JSON output for parsing
-
-## State and Resume
-State saved to ~/.cache/cass/setup_state.json on interruption.
-Resume with: cass sources setup --resume
-
-## Generated Configuration
-The wizard generates sources.toml entries like:
-  [[sources]]
-  name = "css"
-  type = "ssh"
-  host = "css"
-  paths = ["~/.claude/projects", "~/.codex/sessions"]
-  sync_schedule = "manual"
-  [[sources.path_mappings]]
-  from = "/data/projects"
-  to = "/Users/username/projects"
-
-## After Setup
-  cass search "query"       # Search across all sources
-  cass sources sync --all   # Sync latest data
-  cass sources list         # List configured sources
-
-## Troubleshooting
-  "Host unreachable": Verify SSH config with `ssh <host>` manually
-  "Permission denied": Load SSH key with `ssh-add ~/.ssh/id_rsa`
-  "cargo not found": Use --skip-install and install manually
-  "Index taking too long": Large histories take time; runs in background
-
-## Artifact Proofs
-  cass sources artifact-manifest --write --json
-  cass sources artifact-manifest --verify-existing --index-path /copy --expected-manifest /producer/evidence-bundle-manifest.json --json
-Writes evidence-bundle-manifest.json for the current lexical artifact.
-Use --index-path and --expected-manifest to verify a copied artifact before exchange.
-
-## Related Commands
-  cass sources list         List configured sources
-  cass sources sync         Sync data from sources
-  cass sources artifact-manifest  Write/verify lexical artifact proof
-  cass sources discover     Just discover hosts (no setup)
-  cass sources add          Manually add a source
-  cass sources schedule     Set a remote source's sync_schedule (manual|hourly|daily)
+Exclusions apply to future local scans, archive mirror scans, and watch mode.

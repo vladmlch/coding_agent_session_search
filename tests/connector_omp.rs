@@ -9,7 +9,7 @@ use coding_agent_search::connectors::{
     Connector, Origin, Platform, ScanContext, ScanRoot, extract_tokens_for_agent,
     get_connector_factories, omp::OmpConnector,
 };
-use coding_agent_search::sources::sync::path_to_safe_dirname;
+use coding_agent_search::sources::provenance::path_to_safe_dirname;
 use serde_json::json;
 
 const OMP_LIVE_OVERRIDE_CHILD_ENV: &str = "CASS_TEST_OMP_LIVE_OVERRIDE_CHILD";

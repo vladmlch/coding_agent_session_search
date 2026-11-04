@@ -319,9 +319,9 @@ fn export_privacy_session(root: &Path) -> Result<std::path::PathBuf, Box<dyn std
     )?;
     // Reingest supplies an empty default-local-root map and reads only this
     // mirror. It neither discovers the operator's homes nor opens SSH.
-    let mirror = root.join("data/remotes/fixture/mirror").join(
-        coding_agent_search::sources::sync::path_to_safe_dirname("~/.codex/sessions"),
-    );
+    let mirror = root
+        .join("data/remotes/fixture/mirror")
+        .join(coding_agent_search::sources::provenance::path_to_safe_dirname("~/.codex/sessions"));
     fs::create_dir_all(&mirror)?;
     let session = mirror.join("rollout-export-privacy.jsonl");
     let records = [

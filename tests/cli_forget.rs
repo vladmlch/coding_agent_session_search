@@ -1877,8 +1877,8 @@ fn search_readers_open_across_a_forget_stop_returning_forgotten_text() -> TestRe
 fn dedup_removes_misattributed_remote_mirror_duplicates_only() -> TestResult {
     use coding_agent_search::franken_sync::compat::RowExt;
     use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+    use coding_agent_search::sources::provenance::path_to_safe_dirname;
     use coding_agent_search::sources::provenance::{Source, SourceKind};
-    use coding_agent_search::sources::sync::path_to_safe_dirname;
     use coding_agent_search::storage::sqlite::FrankenStorage;
 
     let (archive, _) = indexed_archive(&[])?;

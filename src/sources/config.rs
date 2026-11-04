@@ -1,27 +1,31 @@
-//! Configuration types for remote sources.
+//! Configuration types for sources.
 //!
-//! This module defines the data structures for configuring remote sources
-//! that cass can sync agent sessions from. Configuration is stored in TOML
-//! format at `~/.config/cass/sources.toml` (or XDG equivalent).
+//! This module defines the data structures for source configuration, stored
+//! in TOML format at `~/.config/cass/sources.toml` (or XDG equivalent). In the
+//! local-only build, `type = "local"` entries name extra local directories to
+//! index. Historical `type = "ssh"` entries deserialize unchanged so their
+//! archived mirror directories and indexed rows stay searchable; they are
+//! inert records — cass never opens a remote connection for them.
 //!
 //! # Example Configuration
 //!
 //! ```toml
 //! [[sources]]
+//! name = "archive-box"
+//! type = "local"
+//! paths = ["/Volumes/old-sessions"]
+//!
+//! # A legacy remote entry: kept as an inert archive record. Its `host`,
+//! # `sync_schedule` and `platform` fields are preserved on rewrites.
+//! [[sources]]
 //! name = "laptop"
 //! type = "ssh"
 //! host = "user@laptop.local"
-//! paths = ["~/.claude/projects", "~/.cursor"]
+//! paths = ["~/.claude/projects"]
 //! sync_schedule = "manual"
 //!
-//! [[sources]]
-//! name = "workstation"
-//! type = "ssh"
-//! host = "user@work.example.com"
-//! paths = ["~/.claude/projects"]
-//! sync_schedule = "daily"
-//!
-//! # Path mappings rewrite remote paths to local equivalents
+//! # Path mappings rewrite archived remote workspace paths to local
+//! # equivalents when opening hits in an editor.
 //! [[sources.path_mappings]]
 //! from = "/home/user/projects"
 //! to = "/Users/me/projects"
@@ -36,7 +40,6 @@
 //! disabled_agents = ["openclaw"]
 //! ```
 
-use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
@@ -47,7 +50,6 @@ use super::provenance::SourceKind;
 pub use franken_agent_detection::{PathMapping, Platform};
 
 const BUILT_IN_LOCAL_SOURCE_NAME: &str = "local";
-const RESERVED_REMOTE_SOURCE_SUFFIX: &str = "-ssh";
 
 pub(crate) fn source_name_key(name: &str) -> String {
     name.trim().to_ascii_lowercase()
@@ -136,21 +138,24 @@ pub struct SourceDefinition {
     /// This becomes the `source_id` used throughout the system.
     pub name: String,
 
-    /// Connection type (local, ssh, etc.).
+    /// Source kind. `local` entries add extra directories to index;
+    /// `ssh` entries are inert legacy archive records.
     #[serde(rename = "type", default)]
     pub source_type: SourceKind,
 
-    /// Remote host for SSH connections (e.g., "user@laptop.local").
+    /// Legacy remote host (e.g., "user@laptop.local"). Inert: kept so old
+    /// entries round-trip and archived rows keep their provenance.
     #[serde(default)]
     pub host: Option<String>,
 
-    /// Paths to sync from this source.
-    /// For SSH sources, these are remote paths.
+    /// Paths associated with this source.
+    /// For local sources these are extra directories to index.
+    /// For legacy remote entries they identify the original remote paths.
     /// Supports ~ expansion.
     #[serde(default)]
     pub paths: Vec<String>,
 
-    /// When to automatically sync this source.
+    /// Legacy field: retained for config compatibility only, never executed.
     #[serde(default)]
     pub sync_schedule: SyncSchedule,
 
@@ -175,17 +180,11 @@ impl SourceDefinition {
         }
     }
 
-    /// Create a new SSH source definition.
-    pub fn ssh(name: impl Into<String>, host: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            source_type: SourceKind::Ssh,
-            host: Some(host.into()),
-            ..Default::default()
-        }
-    }
-
-    /// Check if this source requires SSH connectivity.
+    /// Check if this is a legacy remote record (`type = "ssh"`).
+    ///
+    /// Remote synchronization was removed: such entries are inert archive
+    /// records whose previously mirrored conversations stay searchable, and
+    /// whose fields are preserved verbatim on config rewrites.
     pub fn is_remote(&self) -> bool {
         matches!(self.source_type, SourceKind::Ssh)
     }
@@ -202,16 +201,6 @@ impl SourceDefinition {
 
     pub(crate) fn validate_structure(&self) -> Result<(), ConfigError> {
         self.validate_name()?;
-
-        if self.is_remote() && self.host.is_none() {
-            return Err(ConfigError::Validation("SSH sources require a host".into()));
-        }
-
-        if self.is_remote()
-            && let Some(host) = self.host.as_deref()
-        {
-            validate_ssh_host(host)?;
-        }
 
         for (idx, mapping) in self.path_mappings.iter().enumerate() {
             if mapping.from.trim().is_empty() {
@@ -282,16 +271,6 @@ impl SourceDefinition {
     }
 }
 
-/// Adjust an auto-generated remote source name to avoid reserved built-in IDs.
-pub(crate) fn normalize_generated_remote_source_name(name: &str) -> String {
-    let name = name.trim();
-    if source_names_equal(name, BUILT_IN_LOCAL_SOURCE_NAME) {
-        format!("{name}{RESERVED_REMOTE_SOURCE_SUFFIX}")
-    } else {
-        name.to_string()
-    }
-}
-
 fn has_dot_components(path: &Path) -> bool {
     path.components()
         .any(|c| matches!(c, Component::CurDir | Component::ParentDir))
@@ -340,44 +319,6 @@ fn validate_source_name(name: &str) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_ssh_host(host: &str) -> Result<(), ConfigError> {
-    let trimmed = host.trim();
-
-    if trimmed.is_empty() {
-        return Err(ConfigError::Validation("SSH host cannot be empty".into()));
-    }
-
-    if trimmed != host {
-        return Err(ConfigError::Validation(
-            "SSH host cannot have leading or trailing whitespace".into(),
-        ));
-    }
-
-    let host = trimmed;
-
-    if host.starts_with('-') {
-        return Err(ConfigError::Validation(
-            "SSH host cannot start with '-' (would be parsed as an ssh option)".into(),
-        ));
-    }
-
-    if host.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(ConfigError::Validation(
-            "SSH host cannot contain whitespace or control characters".into(),
-        ));
-    }
-
-    if !ssh_host_has_safe_token_chars(host) {
-        return Err(ConfigError::Validation(
-            "SSH host may only contain ASCII letters, digits, '.', '-', '_', and '@'".into(),
-        ));
-    }
-
-    validate_optional_user_host_shape(host).map_err(ConfigError::Validation)?;
-
-    Ok(())
-}
-
 pub(crate) fn source_path_entry_error(index: usize, path: &str) -> Option<String> {
     if path.trim().is_empty() {
         return Some(format!("paths[{index}] cannot be empty"));
@@ -403,25 +344,9 @@ fn validate_source_path_entry(index: usize, path: &str) -> Result<(), ConfigErro
     }
 }
 
-pub(crate) fn ssh_host_has_safe_token_chars(host: &str) -> bool {
-    host.chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '@'))
-}
-
-pub(crate) fn validate_optional_user_host_shape(host: &str) -> Result<(), String> {
-    match host.split_once('@') {
-        Some((user, hostname)) if user.is_empty() || hostname.is_empty() => {
-            Err("SSH host must not have an empty user or hostname around '@'".into())
-        }
-        Some((_, hostname)) if hostname.contains('@') => {
-            Err("SSH host must contain at most one '@' separator".into())
-        }
-        _ => Ok(()),
-    }
-}
-
-/// Sync schedule for remote sources.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, clap::ValueEnum)]
+/// Legacy sync schedule retained only so old `sources.toml` files still
+/// deserialize. It has no effect: remote synchronization was removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SyncSchedule {
     /// Only sync when explicitly requested.
@@ -603,7 +528,10 @@ impl SourcesConfig {
         self.sources.len() < initial_len
     }
 
-    /// Get all remote sources (SSH type).
+    /// Iterate legacy remote entries (`type = "ssh"`).
+    ///
+    /// These are inert archive records kept for provenance and source
+    /// filtering — no connection is ever opened for them.
     pub fn remote_sources(&self) -> impl Iterator<Item = &SourceDefinition> {
         self.sources.iter().filter(|s| s.is_remote())
     }
@@ -679,862 +607,6 @@ fn config_path_from_parts(
 
     // Neither exists: return the platform path for creation (original behavior).
     platform_path.ok_or(ConfigError::NoConfigDir)
-}
-
-/// Get preset paths for a given platform.
-///
-/// These are the default agent session directories for each platform.
-pub fn get_preset_paths(preset: &str) -> Result<Vec<String>, ConfigError> {
-    match preset {
-        "macos-defaults" | "macos" => Ok(vec![
-            "~/.claude/projects".into(),
-            "~/.codex/sessions".into(),
-            "~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev".into(),
-            "~/Library/Application Support/Code/User/globalStorage/rooveterinaryinc.roo-cline"
-                .into(),
-            "~/Library/Application Support/Cursor/User/globalStorage/saoudrizwan.claude-dev".into(),
-            "~/Library/Application Support/Cursor/User/globalStorage/rooveterinaryinc.roo-cline"
-                .into(),
-            "~/Library/Application Support/com.openai.chat".into(),
-            "~/.gemini/tmp".into(),
-            "~/.gemini/antigravity".into(),
-            "~/.gemini/antigravity-cli".into(),
-            "~/.pi/agent/sessions".into(),
-            "~/.prime/agent/sessions".into(),
-            "~/.omp/agent/sessions".into(),
-            "~/.omp/profiles".into(),
-            "~/.local/share/omp".into(),
-            "~/Library/Application Support/opencode/storage".into(),
-            "~/.continue/sessions".into(),
-            "~/.aider.chat.history.md".into(),
-            "~/.goose/sessions".into(),
-        ]),
-        "linux-defaults" | "linux" => Ok(vec![
-            "~/.claude/projects".into(),
-            "~/.codex/sessions".into(),
-            "~/.config/Code/User/globalStorage/saoudrizwan.claude-dev".into(),
-            "~/.config/Code/User/globalStorage/rooveterinaryinc.roo-cline".into(),
-            "~/.config/Cursor/User/globalStorage/saoudrizwan.claude-dev".into(),
-            "~/.config/Cursor/User/globalStorage/rooveterinaryinc.roo-cline".into(),
-            "~/.gemini/tmp".into(),
-            "~/.gemini/antigravity".into(),
-            "~/.gemini/antigravity-cli".into(),
-            "~/.pi/agent/sessions".into(),
-            "~/.prime/agent/sessions".into(),
-            "~/.omp/agent/sessions".into(),
-            "~/.omp/profiles".into(),
-            "~/.local/share/omp".into(),
-            "~/.local/share/opencode/storage".into(),
-            "~/.continue/sessions".into(),
-            "~/.aider.chat.history.md".into(),
-            "~/.goose/sessions".into(),
-        ]),
-        _ => Err(ConfigError::Validation(format!(
-            "Unknown preset: '{}'. Valid presets: macos-defaults, linux-defaults",
-            preset
-        ))),
-    }
-}
-
-// =============================================================================
-// SSH Config Discovery
-// =============================================================================
-
-/// Discovered SSH host from ~/.ssh/config
-#[derive(Debug, Clone)]
-pub struct DiscoveredHost {
-    /// Host alias from SSH config
-    pub name: String,
-    /// Hostname or IP address
-    pub hostname: Option<String>,
-    /// Username
-    pub user: Option<String>,
-    /// Port (defaults to 22)
-    pub port: Option<u16>,
-    /// Identity file path
-    pub identity_file: Option<String>,
-}
-
-impl DiscoveredHost {
-    /// Get the SSH connection string (user@host or just host)
-    pub fn connection_string(&self) -> String {
-        if let Some(user) = &self.user {
-            format!("{}@{}", user, self.name)
-        } else {
-            self.name.clone()
-        }
-    }
-}
-
-/// Discover candidate SSH aliases from the same configuration used by transport.
-///
-/// Parses the SSH config file and returns a list of discovered hosts
-/// that could be used as remote sources.
-pub fn discover_ssh_hosts() -> Vec<DiscoveredHost> {
-    let home = dirs::home_dir().unwrap_or_default();
-    let path = super::ssh_config_override()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".ssh/config"));
-    discover_ssh_hosts_from_path(&path, &home)
-}
-
-/// Add online tailnet peers without changing SSH authentication or configuration.
-/// Failure of this optional discovery mechanism leaves SSH aliases available.
-pub fn discover_fleet_hosts(tailscale: bool) -> (Vec<DiscoveredHost>, Option<String>) {
-    let mut hosts = discover_ssh_hosts();
-    if !tailscale {
-        return (hosts, None);
-    }
-    let result = (|| -> anyhow::Result<usize> {
-        let mut command = std::process::Command::new("tailscale");
-        command
-            .args(["status", "--json"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        super::configure_child_process_group(&mut command);
-        let child = command
-            .spawn()
-            .context("could not start tailscale status")?;
-        let output = super::wait_for_child_output_with_limit(
-            child,
-            std::time::Duration::from_secs(5),
-            Some(8 * 1024 * 1024),
-        )?
-        .context("tailscale status timed out after 5 seconds")?;
-        // Do not echo raw status/stderr: it can contain tailnet account data.
-        anyhow::ensure!(
-            output.status.success(),
-            "tailscale status failed; check local Tailscale login and daemon status"
-        );
-        merge_tailscale_hosts(&mut hosts, &output.stdout)
-    })();
-    let warning = match result {
-        Ok(0) => None,
-        Ok(skipped) => Some(format!(
-            "Tailscale discovery skipped {skipped} peer(s) whose IP addresses conflict with SSH aliases; \
-             configure an unambiguous SSH alias for each intended machine."
-        )),
-        Err(error) => Some(format!("Tailscale discovery unavailable: {error}")),
-    };
-    (hosts, warning)
-}
-
-/// Merge status into candidates freshly read from SSH configuration.
-/// Returns the number of peers whose direct IP target conflicts with an alias.
-fn merge_tailscale_hosts(hosts: &mut Vec<DiscoveredHost>, bytes: &[u8]) -> anyhow::Result<usize> {
-    #[derive(Deserialize)]
-    #[serde(rename_all = "PascalCase")]
-    struct Status {
-        backend_state: String,
-        #[serde(default)]
-        peer: Option<std::collections::BTreeMap<String, Peer>>,
-    }
-    #[derive(Deserialize)]
-    #[serde(rename_all = "PascalCase")]
-    struct Peer {
-        #[serde(default)]
-        online: bool,
-        #[serde(default, rename = "DNSName")]
-        dns_name: String,
-        #[serde(default, rename = "TailscaleIPs")]
-        addresses: Option<Vec<std::net::IpAddr>>,
-        #[serde(default)]
-        sharee_node: bool,
-        #[serde(default)]
-        tags: Option<Vec<String>>,
-    }
-    anyhow::ensure!(
-        bytes.len() <= 8 * 1024 * 1024,
-        "tailscale status exceeds 8 MiB"
-    );
-    let status: Status = serde_json::from_slice(bytes).context("invalid tailscale status JSON")?;
-    anyhow::ensure!(
-        status.backend_state == "Running",
-        "Tailscale is not running; check local login and daemon status"
-    );
-    // Removing a candidate does not remove its Host stanza from SSH config.
-    // Reserve the original names before pruning so a peer's numeric address
-    // cannot recreate an excluded alias and be redirected to that provider.
-    let reserved_names: HashSet<_> = hosts.iter().map(|host| host.name.clone()).collect();
-    let mut shadowed_peers = 0;
-    // GH505: Mullvad peers are provider WireGuard endpoints, not SSH hosts.
-    // Tags may be absent/null in status JSON. The provider DNS suffix is
-    // also used by Tailscale itself (cmd/tailscale/cli/status.go and
-    // wgengine/magicsock); match a full label boundary, not a substring.
-    // Location and ExitNode/ExitNodeOption alone do not identify Mullvad:
-    // ordinary tailnet machines can have those fields and still run SSH.
-    let (providers, peers): (Vec<_>, Vec<_>) = status
-        .peer
-        .unwrap_or_default()
-        .into_values()
-        .partition(|peer| {
-            let mullvad_tag = peer
-                .tags
-                .as_ref()
-                .is_some_and(|tags| tags.iter().any(|tag| tag == "tag:mullvad-exit-node"));
-            let mullvad_dns = peer
-                .dns_name
-                .trim_end_matches('.')
-                .to_ascii_lowercase()
-                .ends_with(".mullvad.ts.net");
-            mullvad_tag || mullvad_dns
-        });
-    // SSH-config discovery ran first. Skipping only the peer addition would
-    // leave aliases for the same provider endpoint in the probe set. Prune
-    // all of those aliases before deduplication: their labels must not hide
-    // legitimate peers that happen to sort before the provider in status.
-    for peer in providers {
-        let addresses = peer.addresses.unwrap_or_default();
-        let dns = peer.dns_name.trim_end_matches('.');
-        // Compare configured destinations, not alias labels: an alias named
-        // after a provider may legitimately point somewhere else. Do this
-        // even for offline/shared peers or DNS-only status records.
-        hosts.retain(|host| {
-            let destination = host.hostname.as_deref().unwrap_or(&host.name);
-            let matches_dns =
-                !dns.is_empty() && destination.trim_end_matches('.').eq_ignore_ascii_case(dns);
-            let matches_ip = destination
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| addresses.contains(&ip));
-            !matches_dns && !matches_ip
-        });
-    }
-    for peer in peers {
-        if !peer.online || peer.sharee_node {
-            continue;
-        }
-        // The existing SSH/rsync source contract accepts IPv4 and DNS names,
-        // not bare IPv6 literals. Do not advertise unusable source targets.
-        let addresses = peer.addresses.unwrap_or_default();
-        let Some(address) = addresses.iter().find(|ip| ip.is_ipv4()) else {
-            continue;
-        };
-        let dns = peer.dns_name.trim_end_matches('.');
-        // Preserve aliases for this destination, including their connection
-        // options. A label matching the peer is not equivalent when HostName
-        // explicitly points elsewhere. Tailscale HostName is not unique.
-        if hosts.iter().any(|host| {
-            let destination = host.hostname.as_deref().unwrap_or(&host.name);
-            (!dns.is_empty() && destination.trim_end_matches('.').eq_ignore_ascii_case(dns))
-                || destination
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|ip| addresses.contains(&ip))
-        }) {
-            continue;
-        }
-        let target = address.to_string();
-        if reserved_names.contains(&target) {
-            // A usable alias for the peer would have matched above. Reusing
-            // this name instead would invoke a different configured target.
-            // Do not override SSH configuration or silently guess a DNS route.
-            shadowed_peers += 1;
-            continue;
-        }
-        // Use the assigned address, so --accept-dns=false and disabled MagicDNS
-        // do not make an otherwise reachable peer unusable. Downstream SSH uses name.
-        hosts.push(DiscoveredHost {
-            name: target.clone(),
-            hostname: Some(target),
-            user: None,
-            port: None,
-            identity_file: None,
-        });
-    }
-    Ok(shadowed_peers)
-}
-
-fn discover_ssh_hosts_from_path(path: &Path, home: &Path) -> Vec<DiscoveredHost> {
-    let mut content = String::new();
-    collect_ssh_discovery_config(path, home, &mut HashSet::new(), &mut content, 0);
-    let mut seen = HashSet::new();
-    parse_ssh_config(&content)
-        .into_iter()
-        .filter(|host| seen.insert(host.name.clone()))
-        .collect()
-}
-
-/// Enumerate candidate aliases only; OpenSSH still evaluates Host/Match and all
-/// connection options. Never execute Match exec or expand shell commands here.
-fn collect_ssh_discovery_config(
-    path: &Path,
-    home: &Path,
-    visited: &mut HashSet<PathBuf>,
-    output: &mut String,
-    depth: usize,
-) {
-    use std::io::Read as _;
-    const MAX_BYTES: usize = 1024 * 1024;
-    if depth >= 16 || visited.len() >= 256 || output.len() >= MAX_BYTES {
-        return;
-    }
-    let Ok(canonical) = path.canonicalize() else {
-        return;
-    };
-    if !visited.insert(canonical.clone()) {
-        return;
-    }
-    let Ok(file) = std::fs::File::open(canonical) else {
-        return;
-    };
-    let mut content = String::new();
-    if file
-        .take((MAX_BYTES - output.len()) as u64)
-        .read_to_string(&mut content)
-        .is_err()
-    {
-        return;
-    }
-    for line in content.lines() {
-        if output.len() + line.len() + 1 > MAX_BYTES {
-            break;
-        }
-        let trimmed = line.trim();
-        let directive = trimmed.split_once(|c: char| c.is_whitespace() || c == '=');
-        if let Some((key, value)) = directive
-            && key.eq_ignore_ascii_case("include")
-        {
-            let value = value.trim_start_matches(|c: char| c.is_whitespace() || c == '=');
-            if let Ok(patterns) = shell_words::split(value) {
-                for pattern in patterns {
-                    if pattern.starts_with('#') {
-                        break;
-                    }
-                    let pattern = if let Some(suffix) = pattern.strip_prefix("~/") {
-                        home.join(suffix)
-                    } else if Path::new(&pattern).is_absolute() {
-                        PathBuf::from(pattern)
-                    } else {
-                        // User-config relative Includes are rooted at ~/.ssh,
-                        // not at the including file's directory (ssh_config(5)).
-                        home.join(".ssh").join(pattern)
-                    };
-                    if let Ok(paths) = glob::glob(&pattern.to_string_lossy()) {
-                        let mut paths: Vec<_> = paths.flatten().collect();
-                        paths.sort();
-                        for included in paths {
-                            collect_ssh_discovery_config(
-                                &included,
-                                home,
-                                visited,
-                                output,
-                                depth + 1,
-                            );
-                        }
-                    }
-                }
-            }
-        } else {
-            output.push_str(line);
-            output.push('\n');
-        }
-    }
-}
-
-/// Parse SSH config file content into discovered hosts.
-fn parse_ssh_config(content: &str) -> Vec<DiscoveredHost> {
-    let mut hosts = Vec::new();
-    let mut current_hosts: Vec<DiscoveredHost> = Vec::new();
-
-    for line in content.lines() {
-        let line = line.trim();
-
-        // Skip comments and empty lines
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        // Parse key-value pairs
-        let (key, value) = if let Some(idx) = line.find(|c: char| c.is_whitespace() || c == '=') {
-            let k = &line[..idx];
-            let v = line[idx..].trim_start_matches(|c: char| c.is_whitespace() || c == '=');
-            (k.to_lowercase(), v)
-        } else {
-            continue;
-        };
-
-        match key.as_str() {
-            "match" => {
-                // Match starts a new conditional block. Its options must not
-                // become metadata for the preceding literal Host declaration.
-                hosts.append(&mut current_hosts);
-            }
-            "host" => {
-                hosts.append(&mut current_hosts);
-                current_hosts = shell_words::split(value)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .take_while(|name| !name.starts_with('#'))
-                    .filter(|name| {
-                        !name.starts_with('!')
-                            && !name.contains('*')
-                            && !name.contains('?')
-                            && ssh_host_has_safe_token_chars(name)
-                            && !name.starts_with('-')
-                    })
-                    .map(|name| DiscoveredHost {
-                        name: name.to_string(),
-                        hostname: None,
-                        user: None,
-                        port: None,
-                        identity_file: None,
-                    })
-                    .collect();
-            }
-            "hostname" => {
-                for host in &mut current_hosts {
-                    if host.hostname.is_none() {
-                        host.hostname = shell_words::split(value)
-                            .ok()
-                            .and_then(|v| v.into_iter().next());
-                    }
-                }
-            }
-            "user" => {
-                for host in &mut current_hosts {
-                    if host.user.is_none() {
-                        host.user = shell_words::split(value)
-                            .ok()
-                            .and_then(|v| v.into_iter().next());
-                    }
-                }
-            }
-            "port" => {
-                for host in &mut current_hosts {
-                    if host.port.is_none() {
-                        host.port = value.split_whitespace().next().and_then(|v| v.parse().ok());
-                    }
-                }
-            }
-            "identityfile" => {
-                for host in &mut current_hosts {
-                    if host.identity_file.is_none() {
-                        host.identity_file = shell_words::split(value)
-                            .ok()
-                            .and_then(|v| v.into_iter().next());
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Don't forget the last host block.
-    hosts.append(&mut current_hosts);
-
-    hosts
-}
-
-// =============================================================================
-// Source Configuration Generator
-// =============================================================================
-
-use std::collections::HashSet;
-
-use colored::Colorize;
-
-use super::probe::HostProbeResult;
-
-/// Result of merging a source into existing configuration.
-#[derive(Debug, Clone)]
-pub enum MergeResult {
-    /// Source was added successfully.
-    Added(SourceDefinition),
-    /// Source already exists with this name.
-    AlreadyExists(String),
-}
-
-/// Reason why a source was skipped during config generation.
-#[derive(Debug, Clone)]
-pub enum SkipReason {
-    /// Already configured in sources.toml.
-    AlreadyConfigured,
-    /// Another selected host generates the same source name.
-    GeneratedNameConflict(String),
-    /// Generated source definition failed validation.
-    InvalidSourceDefinition(String),
-    /// Probe failed (unreachable, timeout, etc.).
-    ProbeFailure(String),
-    /// User deselected this host.
-    UserDeselected,
-}
-
-/// Information about a backup created before config modification.
-#[derive(Debug, Clone)]
-pub struct BackupInfo {
-    /// Path to the backup file (None if no existing config).
-    pub backup_path: Option<PathBuf>,
-    /// Path to the config file.
-    pub config_path: PathBuf,
-}
-
-/// Preview of configuration changes before writing.
-#[derive(Debug, Clone)]
-pub struct ConfigPreview {
-    /// Sources that will be added.
-    pub sources_to_add: Vec<SourceDefinition>,
-    /// Sources that were skipped with reasons.
-    pub sources_skipped: Vec<(String, SkipReason)>,
-}
-
-impl ConfigPreview {
-    /// Create a new empty preview.
-    pub fn new() -> Self {
-        Self {
-            sources_to_add: Vec::new(),
-            sources_skipped: Vec::new(),
-        }
-    }
-
-    /// Display the preview to the user.
-    pub fn display(&self) {
-        println!();
-        println!("{}", "Configuration Preview".bold().underline());
-
-        if self.sources_to_add.is_empty() {
-            println!("  {}", "No new sources to add.".dimmed());
-        } else {
-            println!("  The following will be added to sources.toml:\n");
-
-            for source in &self.sources_to_add {
-                println!("  {}:", source.name.cyan());
-                println!("    {}:", "Paths".dimmed());
-                for path in &source.paths {
-                    println!("      {}", path);
-                }
-                if !source.path_mappings.is_empty() {
-                    println!("    {}:", "Mappings".dimmed());
-                    for mapping in &source.path_mappings {
-                        println!("      {} → {}", mapping.from, mapping.to);
-                    }
-                }
-                println!();
-            }
-        }
-
-        if !self.sources_skipped.is_empty() {
-            println!("  {}:", "Skipped".dimmed());
-            for (name, reason) in &self.sources_skipped {
-                let reason_str = match reason {
-                    SkipReason::AlreadyConfigured => "already configured",
-                    SkipReason::GeneratedNameConflict(source_name) => {
-                        println!(
-                            "    {} - {}",
-                            name.dimmed(),
-                            format!("conflicts with generated source name '{source_name}'")
-                                .dimmed()
-                        );
-                        continue;
-                    }
-                    SkipReason::InvalidSourceDefinition(e) => e.as_str(),
-                    SkipReason::ProbeFailure(e) => e.as_str(),
-                    SkipReason::UserDeselected => "not selected",
-                };
-                println!("    {} - {}", name.dimmed(), reason_str.dimmed());
-            }
-        }
-    }
-
-    /// Check if there are any sources to add.
-    pub fn has_changes(&self) -> bool {
-        !self.sources_to_add.is_empty()
-    }
-
-    /// Get the count of sources to add.
-    pub fn add_count(&self) -> usize {
-        self.sources_to_add.len()
-    }
-}
-
-impl Default for ConfigPreview {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Generator for creating source configurations from probe results.
-///
-/// Takes probe results and generates appropriate `SourceDefinition` objects
-/// with intelligent path and mapping defaults.
-pub struct SourceConfigGenerator {
-    /// Local home directory for mapping generation.
-    local_home: PathBuf,
-}
-
-impl SourceConfigGenerator {
-    /// Create a new config generator.
-    pub fn new() -> Self {
-        Self {
-            local_home: dirs::home_dir().unwrap_or_else(|| PathBuf::from("~")),
-        }
-    }
-
-    /// Generate a complete SourceDefinition from a probe result.
-    ///
-    /// # Arguments
-    /// * `host_name` - The SSH config host alias
-    /// * `probe` - The probe result containing system and agent info
-    pub fn generate_source(&self, host_name: &str, probe: &HostProbeResult) -> SourceDefinition {
-        let paths = self.generate_paths(probe);
-        let path_mappings = self.generate_mappings(probe);
-        let platform = self.detect_platform(probe);
-        let name = normalize_generated_remote_source_name(host_name);
-
-        SourceDefinition {
-            name,
-            source_type: SourceKind::Ssh,
-            host: Some(host_name.to_string()), // Use SSH alias
-            paths,
-            sync_schedule: SyncSchedule::Manual,
-            path_mappings,
-            platform,
-        }
-    }
-
-    /// Generate paths based on detected agent data.
-    ///
-    /// Only includes paths where agent data was actually detected,
-    /// rather than guessing all possible paths.
-    fn generate_paths(&self, probe: &HostProbeResult) -> Vec<String> {
-        let mut paths = Vec::new();
-
-        for agent in &probe.detected_agents {
-            if !super::probe::remote_probe_source_allowed(&agent.agent_type, &agent.path) {
-                continue;
-            }
-            // Use the detected path directly
-            paths.push(agent.path.clone());
-        }
-
-        // Deduplicate while preserving order
-        let mut seen = HashSet::new();
-        paths.retain(|p| seen.insert(p.clone()));
-
-        paths
-    }
-
-    /// Generate path mappings for workspace rewriting.
-    ///
-    /// Creates mappings from remote paths to local equivalents:
-    /// - Remote home/projects → Local home/projects
-    /// - /data/projects → Local home/projects (common server pattern)
-    fn generate_mappings(&self, probe: &HostProbeResult) -> Vec<PathMapping> {
-        let mut mappings = Vec::new();
-
-        // Get remote home from system info
-        if let Some(ref sys_info) = probe.system_info {
-            // Normalize remote_home by trimming trailing slashes to avoid double slashes
-            let remote_home = sys_info.remote_home.trim_end_matches('/');
-
-            // Don't create mappings if remote_home is empty or root
-            if !remote_home.is_empty() && remote_home != "/" {
-                // Map remote home/projects to local home/projects
-                let remote_projects = format!("{}/projects", remote_home);
-                let local_projects = self.local_home.join("projects");
-
-                mappings.push(PathMapping::new(
-                    remote_projects,
-                    local_projects.to_string_lossy().to_string(),
-                ));
-
-                // Also map remote home directly (more general fallback)
-                mappings.push(PathMapping::new(
-                    remote_home,
-                    self.local_home.to_string_lossy().to_string(),
-                ));
-            }
-        }
-
-        // Check for /data/projects pattern (common on servers)
-        let has_data_projects = probe
-            .detected_agents
-            .iter()
-            .any(|a| a.path.starts_with("/data/"));
-
-        if has_data_projects {
-            let local_projects = self.local_home.join("projects");
-            mappings.push(PathMapping::new(
-                "/data/projects",
-                local_projects.to_string_lossy().to_string(),
-            ));
-        }
-
-        mappings
-    }
-
-    /// Detect platform from probe results.
-    fn detect_platform(&self, probe: &HostProbeResult) -> Option<Platform> {
-        probe
-            .system_info
-            .as_ref()
-            .and_then(|si| match si.os.to_lowercase().as_str() {
-                "darwin" => Some(Platform::Macos),
-                "linux" => Some(Platform::Linux),
-                "windows" => Some(Platform::Windows),
-                _ => None,
-            })
-    }
-
-    /// Generate a ConfigPreview from probe results.
-    ///
-    /// # Arguments
-    /// * `probes` - List of (host_name, probe_result) tuples for selected hosts
-    /// * `already_configured` - Set of normalized source-name keys already configured
-    pub fn generate_preview(
-        &self,
-        probes: &[(&str, &HostProbeResult)],
-        already_configured: &HashSet<String>,
-    ) -> ConfigPreview {
-        let mut preview = ConfigPreview::new();
-        let configured_name_keys: HashSet<_> = already_configured
-            .iter()
-            .map(|name| source_name_key(name))
-            .collect();
-        let mut preview_name_keys = configured_name_keys.clone();
-
-        for (host_name, probe) in probes {
-            // Skip if probe failed
-            if !probe.reachable {
-                let reason = probe
-                    .error
-                    .clone()
-                    .unwrap_or_else(|| "unreachable".to_string());
-                preview
-                    .sources_skipped
-                    .push((host_name.to_string(), SkipReason::ProbeFailure(reason)));
-                continue;
-            }
-
-            // Generate source definition before duplicate checks so we compare
-            // using the same canonical naming rules as the saved config.
-            let source = self.generate_source(host_name, probe);
-            let source_name_key = source_name_key(&source.name);
-            if configured_name_keys.contains(&source_name_key) {
-                preview
-                    .sources_skipped
-                    .push((source.name.clone(), SkipReason::AlreadyConfigured));
-                continue;
-            }
-            if let Err(err) = source.validate() {
-                preview.sources_skipped.push((
-                    host_name.to_string(),
-                    SkipReason::InvalidSourceDefinition(err.to_string()),
-                ));
-                continue;
-            }
-            if !preview_name_keys.insert(source_name_key) {
-                preview.sources_skipped.push((
-                    host_name.to_string(),
-                    SkipReason::GeneratedNameConflict(source.name.clone()),
-                ));
-                continue;
-            }
-            preview.sources_to_add.push(source);
-        }
-
-        preview
-    }
-}
-
-impl Default for SourceConfigGenerator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SourcesConfig {
-    /// Write configuration with backup.
-    ///
-    /// Creates a uniquely named backup of the existing config (if any)
-    /// before writing the new configuration atomically.
-    pub fn write_with_backup(&self) -> Result<BackupInfo, ConfigError> {
-        let config_path = Self::config_path()?;
-
-        // Create parent directories if needed
-        if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // Create backup if file exists
-        let backup_path = if config_path.exists() {
-            Some(copy_sources_config_backup(
-                &config_path,
-                unique_backup_path,
-            )?)
-        } else {
-            None
-        };
-
-        // Validate config before writing (round-trip check included below)
-        self.validate()?;
-        let toml_str = toml::to_string_pretty(self)?;
-        let parsed: SourcesConfig = toml::from_str(&toml_str)?;
-        parsed.validate()?;
-
-        // Write atomically (temp file + rename)
-        let temp_path = write_sources_config_temp_file(&config_path, toml_str.as_bytes())?;
-        replace_file_from_temp(&temp_path, &config_path)?;
-
-        Ok(BackupInfo {
-            backup_path,
-            config_path,
-        })
-    }
-
-    /// Merge a source into the configuration.
-    ///
-    /// Returns `MergeResult::Added` if the source was added,
-    /// or `MergeResult::AlreadyExists` if a source with the same name exists.
-    pub fn merge_source(&mut self, source: SourceDefinition) -> Result<MergeResult, ConfigError> {
-        // Validate the source first
-        source.validate()?;
-
-        // Check if already exists
-        if self
-            .sources
-            .iter()
-            .any(|s| source_names_equal(&s.name, &source.name))
-        {
-            return Ok(MergeResult::AlreadyExists(source.name));
-        }
-
-        let added = source.clone();
-        self.sources.push(source);
-        Ok(MergeResult::Added(added))
-    }
-
-    /// Merge multiple sources from a preview.
-    ///
-    /// Returns a tuple of (added_count, skipped_names).
-    pub fn merge_preview(
-        &mut self,
-        preview: &ConfigPreview,
-    ) -> Result<(usize, Vec<String>), ConfigError> {
-        let mut added = 0;
-        let mut skipped = Vec::new();
-
-        for source in &preview.sources_to_add {
-            match self.merge_source(source.clone())? {
-                MergeResult::Added(_) => added += 1,
-                MergeResult::AlreadyExists(name) => skipped.push(name),
-            }
-        }
-
-        Ok((added, skipped))
-    }
-
-    /// Get set of configured source names.
-    pub fn configured_names(&self) -> HashSet<String> {
-        self.sources.iter().map(|s| s.name.clone()).collect()
-    }
-
-    /// Get normalized source-name keys for duplicate detection and lookups.
-    pub fn configured_name_keys(&self) -> HashSet<String> {
-        self.sources
-            .iter()
-            .map(|s| source_name_key(&s.name))
-            .collect()
-    }
 }
 
 fn replace_file_from_temp(temp_path: &Path, final_path: &Path) -> Result<(), std::io::Error> {
@@ -1666,63 +738,6 @@ fn write_sources_config_temp_file_at(path: &Path, contents: &[u8]) -> Result<(),
     file.sync_all()
 }
 
-fn copy_sources_config_backup(
-    source_path: &Path,
-    mut next_path: impl FnMut(&Path) -> PathBuf,
-) -> Result<PathBuf, std::io::Error> {
-    let mut source = std::fs::File::open(source_path)?;
-    let permissions = source.metadata()?.permissions();
-    for _ in 0..100 {
-        let backup_path = next_path(source_path);
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            // Do not expose config contents while copying a private source.
-            options.mode(0o600);
-        }
-        let mut backup = match options.open(&backup_path) {
-            Ok(file) => file,
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(err),
-        };
-        std::io::copy(&mut source, &mut backup)?;
-        backup.set_permissions(permissions)?;
-        backup.sync_all()?;
-        sync_parent_directory(&backup_path)?;
-        return Ok(backup_path);
-    }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists,
-        format!(
-            "failed to allocate unique sources config backup path for {}",
-            source_path.display()
-        ),
-    ))
-}
-
-fn unique_backup_path(path: &Path) -> PathBuf {
-    static NEXT_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let nonce = NEXT_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("sources.toml");
-
-    path.with_file_name(format!(
-        "{file_name}.backup.{}.{}.{}",
-        std::process::id(),
-        timestamp,
-        nonce
-    ))
-}
-
 #[cfg(windows)]
 fn unique_replace_backup_path(path: &Path) -> PathBuf {
     unique_atomic_sidecar_path(path, "bak", "sources.toml")
@@ -1752,6 +767,17 @@ fn unique_atomic_sidecar_path(path: &Path, suffix: &str, fallback_name: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Build a legacy remote (`type = "ssh"`) record the way old sources.toml
+    /// files deserialize it.
+    fn ssh_source(name: &str, host: &str) -> SourceDefinition {
+        SourceDefinition {
+            name: name.into(),
+            source_type: SourceKind::Ssh,
+            host: Some(host.into()),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn test_empty_config_default() {
@@ -1818,113 +844,6 @@ mod tests {
                 .file_type()
                 .is_symlink(),
             "failed temp write should leave the existing symlink untouched"
-        );
-    }
-
-    #[test]
-    fn test_unique_backup_path_changes_each_call() {
-        let final_path = Path::new("/tmp/sources.toml");
-        let first = unique_backup_path(final_path);
-        let second = unique_backup_path(final_path);
-
-        assert_ne!(first, second);
-        assert_eq!(first.parent(), final_path.parent());
-        assert_eq!(second.parent(), final_path.parent());
-    }
-
-    #[test]
-    fn test_sources_config_backup_retries_collision_and_preserves_files() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let source = temp.path().join("sources.toml");
-        let occupied = temp.path().join("occupied.backup");
-        let fresh = temp.path().join("fresh.backup");
-        let contents = vec![b'x'; 131_079];
-        std::fs::write(&source, &contents).expect("write source");
-        std::fs::write(&occupied, b"existing backup").expect("write occupied backup");
-        let mut attempts = 0;
-        let backup = copy_sources_config_backup(&source, |_| {
-            attempts += 1;
-            if attempts == 1 {
-                occupied.clone()
-            } else {
-                fresh.clone()
-            }
-        })
-        .expect("retry collision and copy source");
-        assert_eq!(attempts, 2);
-        assert_eq!(backup, fresh);
-        assert_eq!(std::fs::read(&backup).expect("read backup"), contents);
-        assert_eq!(std::fs::read(&source).expect("read source"), contents);
-        assert_eq!(
-            std::fs::read(&occupied).expect("read occupied backup"),
-            b"existing backup"
-        );
-
-        let mut attempts = 0;
-        let err = copy_sources_config_backup(&source, |_| {
-            attempts += 1;
-            occupied.clone()
-        })
-        .expect_err("persistent collisions must fail after bounded retries");
-        assert_eq!(attempts, 100);
-        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(std::fs::read(&source).expect("read source"), contents);
-        assert_eq!(
-            std::fs::read(&occupied).expect("read occupied backup"),
-            b"existing backup"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_sources_config_backup_retries_symlink_without_touching_target() {
-        use std::os::unix::fs::{PermissionsExt, symlink};
-
-        let temp = tempfile::tempdir().expect("tempdir");
-        let source = temp.path().join("sources.toml");
-        let protected = temp.path().join("protected.toml");
-        let occupied = temp.path().join("occupied.backup");
-        let fresh = temp.path().join("fresh.backup");
-        std::fs::write(&source, b"source config").expect("write source");
-        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o600))
-            .expect("set source permissions");
-        std::fs::write(&protected, b"protected config").expect("write protected file");
-        symlink(&protected, &occupied).expect("create occupied symlink");
-        let mut attempts = 0;
-        let backup = copy_sources_config_backup(&source, |_| {
-            attempts += 1;
-            if attempts == 1 {
-                occupied.clone()
-            } else {
-                fresh.clone()
-            }
-        })
-        .expect("retry symlink collision");
-        assert_eq!(attempts, 2);
-        assert_eq!(backup, fresh);
-        assert_eq!(
-            std::fs::read(&backup).expect("read backup"),
-            b"source config"
-        );
-        assert_eq!(
-            std::fs::read(&source).expect("read source"),
-            b"source config"
-        );
-        assert_eq!(
-            std::fs::read(&protected).expect("read protected file"),
-            b"protected config"
-        );
-        assert_eq!(
-            std::fs::read_link(&occupied).expect("read symlink"),
-            protected
-        );
-        assert_eq!(
-            std::fs::metadata(&backup)
-                .expect("backup metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
         );
     }
 
@@ -2041,8 +960,8 @@ mod tests {
     }
 
     #[test]
-    fn test_source_definition_ssh() {
-        let source = SourceDefinition::ssh("laptop", "user@laptop.local");
+    fn test_legacy_remote_source_deserializes_as_inert_record() {
+        let source = ssh_source("laptop", "user@laptop.local");
         assert_eq!(source.name, "laptop");
         assert_eq!(source.source_type, SourceKind::Ssh);
         assert_eq!(source.host, Some("user@laptop.local".into()));
@@ -2081,7 +1000,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("source-name fixture directory");
         let path = temp.path().join("sources.toml");
         for name in ["C:", "C:outside", "c:outside", "host:stream"] {
-            let source = SourceDefinition::ssh(name, "user@host");
+            let source = ssh_source(name, "user@host");
             assert!(source.validate().is_err(), "accepted source name {name}");
             let mut config = SourcesConfig::default();
             assert!(config.add_source(source.clone()).is_err());
@@ -2093,7 +1012,7 @@ mod tests {
             assert!(SourcesConfig::load_from(&path).is_err(), "loaded {name}");
         }
         for name in ["laptop", "host-name.example", "build_host-1"] {
-            let source = SourceDefinition::ssh(name, "user@host");
+            let source = ssh_source(name, "user@host");
             assert!(source.validate().is_ok(), "rejected source name {name}");
             let mut config = SourcesConfig::default();
             config.add_source(source).expect("add portable source");
@@ -2106,66 +1025,20 @@ mod tests {
 
     #[test]
     fn test_source_validation_reserved_local_name() {
-        let source = SourceDefinition::ssh("local", "user@host");
+        let source = ssh_source("local", "user@host");
         assert!(source.validate().is_err());
 
-        let source = SourceDefinition::ssh("LOCAL", "user@host");
+        let source = ssh_source("LOCAL", "user@host");
         assert!(source.validate().is_err());
     }
 
     #[test]
-    fn test_normalize_generated_remote_source_name_disambiguates_local() {
-        assert_eq!(normalize_generated_remote_source_name("local"), "local-ssh");
-        assert_eq!(normalize_generated_remote_source_name("LOCAL"), "LOCAL-ssh");
-        assert_eq!(
-            normalize_generated_remote_source_name(" local "),
-            "local-ssh"
-        );
-        assert_eq!(normalize_generated_remote_source_name("laptop"), "laptop");
-        assert_eq!(normalize_generated_remote_source_name(" laptop "), "laptop");
-    }
-
-    #[test]
-    fn test_source_validation_ssh_without_host() {
-        let mut source = SourceDefinition::ssh("test", "host");
+    fn test_legacy_remote_source_without_host_is_accepted() {
+        // Old entries are inert records: a missing host is fine because no
+        // connection is ever opened for them.
+        let mut source = ssh_source("test", "host");
         source.host = None;
-        assert!(source.validate().is_err());
-    }
-
-    #[test]
-    fn test_source_validation_ssh_host_hardening() {
-        let source = SourceDefinition::ssh("test", "user-name_1@host-name.example");
         assert!(source.validate().is_ok());
-
-        let source = SourceDefinition::ssh("test", "ssh-config-alias");
-        assert!(source.validate().is_ok());
-
-        let source = SourceDefinition::ssh("test", "-oProxyCommand=evil");
-        assert!(source.validate().is_err());
-
-        let source = SourceDefinition::ssh("test", "user@host withspace");
-        assert!(source.validate().is_err());
-
-        for host in [
-            " user@host",
-            "user@host ",
-            "\tuser@host",
-            "user@host;touch /tmp/cass-owned",
-            "user@host`hostname`",
-            "user@host$(hostname)",
-            "user@host/../../secret",
-            "user@host:2222",
-            "üser@host",
-            "@host",
-            "user@",
-            "user@host@extra",
-        ] {
-            let source = SourceDefinition::ssh("test", host);
-            assert!(
-                source.validate().is_err(),
-                "host should be rejected: {host:?}"
-            );
-        }
     }
 
     #[test]
@@ -2177,7 +1050,7 @@ mod tests {
             "~/.claude/projects ",
             "~/.claude\nprojects",
         ] {
-            let mut source = SourceDefinition::ssh("test", "user@host");
+            let mut source = ssh_source("test", "user@host");
             source.paths = vec![path.to_string()];
             assert!(
                 source.validate().is_err(),
@@ -2185,7 +1058,7 @@ mod tests {
             );
         }
 
-        let mut source = SourceDefinition::ssh("test", "user@host");
+        let mut source = ssh_source("test", "user@host");
         source.paths = vec!["~/Library/Application Support/Cursor/User/globalStorage".to_string()];
         assert!(source.validate().is_ok());
     }
@@ -2224,9 +1097,9 @@ paths = [" ~/.claude/projects", "~/.codex/sessions"]
             &config_path,
             r#"
 [[sources]]
-name = "laptop"
+name = "bad:name"
 type = "ssh"
-host = "user@host withspace"
+host = "user@host"
 paths = ["~/.claude/projects"]
 "#,
         )
@@ -2234,7 +1107,7 @@ paths = ["~/.claude/projects"]
 
         assert!(
             SourcesConfig::load_from(&config_path).is_err(),
-            "lenient load is only for per-path validation, not unsafe host structure"
+            "lenient load is only for per-path validation, not invalid structure"
         );
     }
 
@@ -2458,12 +1331,8 @@ paths = ["~/.claude/projects"]
     #[test]
     fn test_config_duplicate_names_case_insensitive() {
         let mut config = SourcesConfig::default();
-        config
-            .sources
-            .push(SourceDefinition::ssh("Laptop", "user@laptop"));
-        config
-            .sources
-            .push(SourceDefinition::ssh("laptop", "user@other-host"));
+        config.sources.push(ssh_source("Laptop", "user@laptop"));
+        config.sources.push(ssh_source("laptop", "user@other-host"));
 
         assert!(config.validate().is_err());
     }
@@ -2489,12 +1358,12 @@ paths = ["~/.claude/projects"]
     fn test_config_add_source_case_insensitive_duplicate() {
         let mut config = SourcesConfig::default();
         config
-            .add_source(SourceDefinition::ssh("Laptop", "user@laptop"))
+            .add_source(ssh_source("Laptop", "user@laptop"))
             .unwrap();
 
         assert!(
             config
-                .add_source(SourceDefinition::ssh("laptop", "user@other-host"))
+                .add_source(ssh_source("laptop", "user@other-host"))
                 .is_err()
         );
     }
@@ -2512,9 +1381,7 @@ paths = ["~/.claude/projects"]
     #[test]
     fn test_config_remove_source_case_insensitive() {
         let mut config = SourcesConfig::default();
-        config
-            .sources
-            .push(SourceDefinition::ssh("Laptop", "user@laptop"));
+        config.sources.push(ssh_source("Laptop", "user@laptop"));
 
         assert!(config.remove_source("laptop"));
         assert!(config.sources.is_empty());
@@ -2523,9 +1390,7 @@ paths = ["~/.claude/projects"]
     #[test]
     fn test_find_source_case_insensitive() {
         let mut config = SourcesConfig::default();
-        config
-            .sources
-            .push(SourceDefinition::ssh("Laptop", "user@laptop"));
+        config.sources.push(ssh_source("Laptop", "user@laptop"));
 
         assert!(config.find_source("laptop").is_some());
         assert!(config.find_source("LAPTOP").is_some());
@@ -2586,642 +1451,10 @@ paths = ["~/.claude/projects"]
     }
 
     #[test]
-    fn test_preset_paths() {
-        let macos = get_preset_paths("macos-defaults").unwrap();
-        assert!(!macos.is_empty());
-        assert!(macos.iter().any(|p| p.contains(".claude")));
-        // Antigravity history is synced from its own subtrees, distinct from
-        // the legacy Gemini CLI's ~/.gemini/tmp: the IDE store
-        // (~/.gemini/antigravity) and the agy CLI store (~/.gemini/antigravity-cli)
-        // are both presets (#454).
-        assert!(macos.iter().any(|p| p == "~/.gemini/antigravity"));
-        assert!(macos.iter().any(|p| p == "~/.gemini/antigravity-cli"));
-        assert!(macos.iter().any(|p| p == "~/.omp/agent/sessions"));
-        assert!(macos.iter().any(|p| p == "~/.prime/agent/sessions"));
-        assert!(macos.iter().any(|p| p == "~/.omp/profiles"));
-        assert!(macos.iter().any(|p| p == "~/.local/share/omp"));
-
-        let linux = get_preset_paths("linux-defaults").unwrap();
-        assert!(!linux.is_empty());
-        assert!(linux.iter().any(|p| p == "~/.gemini/antigravity"));
-        assert!(linux.iter().any(|p| p == "~/.gemini/antigravity-cli"));
-        assert!(linux.iter().any(|p| p == "~/.omp/agent/sessions"));
-        assert!(linux.iter().any(|p| p == "~/.prime/agent/sessions"));
-        assert!(linux.iter().any(|p| p == "~/.omp/profiles"));
-        assert!(linux.iter().any(|p| p == "~/.local/share/omp"));
-
-        assert!(get_preset_paths("unknown").is_err());
-    }
-
-    #[test]
     fn test_sync_schedule_display() {
         assert_eq!(SyncSchedule::Manual.to_string(), SYNC_SCHEDULE_MANUAL);
         assert_eq!(SyncSchedule::Hourly.to_string(), SYNC_SCHEDULE_HOURLY);
         assert_eq!(SyncSchedule::Daily.to_string(), SYNC_SCHEDULE_DAILY);
-    }
-
-    #[test]
-    fn test_discover_ssh_hosts() {
-        // Just test that the function doesn't panic
-        let hosts = super::discover_ssh_hosts();
-        // Could be empty if no ~/.ssh/config exists
-        for host in hosts {
-            assert!(!host.name.is_empty());
-        }
-    }
-
-    #[test]
-    fn test_tailscale_discovery_preserves_aliases_and_uses_online_peer_addresses() {
-        let mut hosts = parse_ssh_config(
-            "Host workstation\n HostName 100.64.0.1\n User developer\n IdentityFile ~/.ssh/work\n",
-        );
-        let status = serde_json::json!({
-            "BackendState": "Running",
-            "Self": {"Online": true, "TailscaleIPs": ["100.64.0.99"]},
-            "Peer": {
-                "a": {"Online": true, "DNSName": "workstation.example.ts.net.", "TailscaleIPs": ["100.64.0.1"]},
-                "b": {"Online": true, "DNSName": "other.example.ts.net.", "TailscaleIPs": ["fd7a:115c:a1e0::2", "100.64.0.2"]},
-                "c": {"Online": false, "TailscaleIPs": ["100.64.0.3"]},
-                "d": {"Online": true, "ShareeNode": true, "TailscaleIPs": ["100.64.0.4"]},
-                "e": {"Online": true, "TailscaleIPs": []},
-                "f": {"Online": true, "TailscaleIPs": ["fd7a:115c:a1e0::6"]},
-                "g": {"Online": true, "TailscaleIPs": null}
-            }
-        });
-        let bytes = serde_json::to_vec(&status).unwrap();
-        merge_tailscale_hosts(&mut hosts, &bytes).unwrap();
-        assert_eq!(hosts.len(), 2);
-        assert_eq!(hosts[0].connection_string(), "developer@workstation");
-        assert_eq!(hosts[0].identity_file.as_deref(), Some("~/.ssh/work"));
-        assert_eq!(hosts[1].connection_string(), "100.64.0.2");
-        merge_tailscale_hosts(&mut hosts, &bytes).unwrap();
-        assert_eq!(hosts.len(), 2);
-    }
-
-    #[test]
-    fn test_tailscale_discovery_rejects_bad_status_without_losing_ssh_hosts() {
-        let mut hosts =
-            parse_ssh_config("Host workstation\n HostName workstation.example.ts.net\n");
-        for status in [
-            br#"{"BackendState":"NeedsLogin"}"#.as_slice(),
-            br#"{"BackendState":"Running","Peer":{"a":{"Online":true,"TailscaleIPs":["-oProxyCommand=bad"]}}}"#,
-            b"not JSON",
-        ] {
-            assert!(merge_tailscale_hosts(&mut hosts, status).is_err());
-            assert_eq!(hosts.len(), 1);
-        }
-        merge_tailscale_hosts(&mut hosts, br#"{"BackendState":"Running","Peer":null}"#).unwrap();
-        merge_tailscale_hosts(&mut hosts, br#"{"BackendState":"Running","Peer":{"a":{"Online":true,"DNSName":"WORKSTATION.example.ts.net.","TailscaleIPs":["100.64.0.1"]}}}"#).unwrap();
-        assert_eq!(hosts.len(), 1);
-    }
-
-    #[test]
-    fn test_ssh_discovery_follows_includes_without_cycles_or_duplicate_aliases() {
-        let root = tempfile::tempdir().unwrap().keep();
-        let home = root.join("home");
-        let fragments = home.join(".ssh/fragments");
-        std::fs::create_dir_all(&fragments).unwrap();
-        let config = root.join("private config");
-        std::fs::write(
-            &config,
-            "Include fragments/*.conf\nHost direct\n HostName direct.invalid\n",
-        )
-        .unwrap();
-        std::fs::write(
-            fragments.join("01.conf"),
-            format!(
-                "Host workstation\n HostName workstation.invalid\nInclude \"{}\"\n",
-                config.display()
-            ),
-        )
-        .unwrap();
-        std::fs::write(
-            fragments.join("02.conf"),
-            "Host laptop workstation * !excluded\n User operator\n",
-        )
-        .unwrap();
-        let hosts = super::discover_ssh_hosts_from_path(&config, &home);
-        assert_eq!(
-            hosts.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(),
-            ["workstation", "laptop", "direct"]
-        );
-        assert_eq!(hosts[0].hostname.as_deref(), Some("workstation.invalid"));
-        assert_eq!(hosts[1].user.as_deref(), Some("operator"));
-        assert!(super::discover_ssh_hosts_from_path(&root.join("missing"), &home).is_empty());
-    }
-
-    #[test]
-    fn test_parse_ssh_config_match_does_not_hide_a_tailnet_peer() {
-        let mut hosts = parse_ssh_config(
-            "Host \"workstation\" # not another alias\n HostName \"100.64.0.1\"\n HostName 100.64.0.2\n User developer\n User wrong\nMatch host other\n HostName 100.64.0.2\n User conditional\n",
-        );
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].name, "workstation");
-        assert_eq!(hosts[0].hostname.as_deref(), Some("100.64.0.1"));
-        assert_eq!(hosts[0].user.as_deref(), Some("developer"));
-        merge_tailscale_hosts(&mut hosts, br#"{"BackendState":"Running","Peer":{"a":{"Online":true,"TailscaleIPs":["100.64.0.2"]}}}"#).unwrap();
-        assert_eq!(hosts.len(), 2);
-        assert_eq!(hosts[1].name, "100.64.0.2");
-    }
-
-    #[test]
-    fn test_parse_ssh_config_splits_multiple_host_aliases() {
-        let hosts = super::parse_ssh_config(
-            r#"
-Host alpha beta *.internal ?wild
-  HostName 192.0.2.10
-  User ubuntu
-  Port 2222
-  IdentityFile ~/.ssh/id_ed25519
-
-Host gamma
-  User deploy
-"#,
-        );
-
-        assert_eq!(hosts.len(), 3);
-        assert_eq!(hosts[0].name, "alpha");
-        assert_eq!(hosts[1].name, "beta");
-        assert_eq!(hosts[2].name, "gamma");
-        for host in &hosts[..2] {
-            assert_eq!(host.hostname.as_deref(), Some("192.0.2.10"));
-            assert_eq!(host.user.as_deref(), Some("ubuntu"));
-            assert_eq!(host.port, Some(2222));
-            assert_eq!(host.identity_file.as_deref(), Some("~/.ssh/id_ed25519"));
-        }
-        assert_eq!(hosts[2].user.as_deref(), Some("deploy"));
-    }
-
-    #[test]
-    fn test_parse_ssh_config_skips_negated_host_patterns() {
-        let hosts = super::parse_ssh_config(
-            r#"
-Host * !bastion staging
-  User ubuntu
-
-Host production !legacy-prod
-  User deploy
-"#,
-        );
-
-        assert_eq!(hosts.len(), 2);
-        assert_eq!(hosts[0].name, "staging");
-        assert_eq!(hosts[0].user.as_deref(), Some("ubuntu"));
-        assert_eq!(hosts[1].name, "production");
-        assert_eq!(hosts[1].user.as_deref(), Some("deploy"));
-    }
-
-    #[test]
-    fn test_parse_ssh_config() {
-        let content = "
-            Host example
-                HostName example.com
-                User testuser
-
-            Host=another
-                Port=2222
-                IdentityFile = ~/.ssh/id_rsa
-        ";
-        let hosts = parse_ssh_config(content);
-        assert_eq!(hosts.len(), 2);
-        assert_eq!(hosts[0].name, "example");
-        assert_eq!(hosts[0].hostname.as_deref(), Some("example.com"));
-        assert_eq!(hosts[0].user.as_deref(), Some("testuser"));
-
-        assert_eq!(hosts[1].name, "another");
-        assert_eq!(hosts[1].port, Some(2222));
-        assert_eq!(hosts[1].identity_file.as_deref(), Some("~/.ssh/id_rsa"));
-    }
-
-    // ==========================================================================
-    // Source Config Generator Tests
-    // ==========================================================================
-
-    use super::super::probe::{CassStatus, DetectedAgent, HostProbeResult, SystemInfo};
-
-    fn make_test_probe(
-        reachable: bool,
-        agents: Vec<DetectedAgent>,
-        sys_info: Option<SystemInfo>,
-    ) -> HostProbeResult {
-        HostProbeResult {
-            host_name: "test-host".into(),
-            reachable,
-            connection_time_ms: 100,
-            cass_status: CassStatus::NotFound,
-            detected_agents: agents,
-            system_info: sys_info,
-            resources: None,
-            error: if reachable {
-                None
-            } else {
-                Some("connection refused".into())
-            },
-        }
-    }
-
-    fn make_test_agent(agent_type: &str, path: &str) -> DetectedAgent {
-        DetectedAgent {
-            agent_type: agent_type.into(),
-            path: path.into(),
-            estimated_sessions: Some(100),
-            estimated_size_mb: Some(50),
-        }
-    }
-
-    fn make_test_sys_info(os: &str, remote_home: &str) -> SystemInfo {
-        SystemInfo {
-            os: os.into(),
-            arch: "x86_64".into(),
-            distro: Some("Ubuntu 22.04".into()),
-            has_cargo: true,
-            has_cargo_binstall: true,
-            has_curl: true,
-            has_wget: true,
-            remote_home: remote_home.into(),
-            machine_id: None,
-        }
-    }
-
-    #[test]
-    fn test_source_config_generator_new() {
-        let generator = SourceConfigGenerator::new();
-        assert!(!generator.local_home.as_os_str().is_empty());
-    }
-
-    #[test]
-    fn test_generate_source_basic() {
-        let generator = SourceConfigGenerator::new();
-        let probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(make_test_sys_info("linux", "/home/ubuntu")),
-        );
-
-        let source = generator.generate_source("my-server", &probe);
-
-        assert_eq!(source.name, "my-server");
-        assert_eq!(source.source_type, SourceKind::Ssh);
-        assert_eq!(source.host, Some("my-server".into()));
-        assert_eq!(source.sync_schedule, SyncSchedule::Manual);
-        assert!(!source.paths.is_empty());
-        assert!(source.paths.contains(&"~/.claude/projects".to_string()));
-    }
-
-    #[test]
-    fn gh447_remote_autoconfig_rejects_sensitive_grok_bot_probe_reports() {
-        let generator = SourceConfigGenerator::new();
-        let report = make_test_probe(
-            true,
-            vec![
-                make_test_agent("grok_bot", "/custom/replica-root"),
-                make_test_agent("grok-bot", "/another/replica-root"),
-                make_test_agent(
-                    "unknown",
-                    "/Users/test/Library/Application Support/Grok Bot/sand-client-persistence",
-                ),
-                make_test_agent("grok", "~/.grok/sessions"),
-                make_test_agent("codex", "~/.codex/sessions"),
-            ],
-            Some(make_test_sys_info("darwin", "/Users/test")),
-        );
-        let source = generator.generate_source("laptop", &report);
-        assert_eq!(source.paths, vec!["~/.grok/sessions", "~/.codex/sessions"]);
-        assert_eq!(source.source_type, SourceKind::Ssh);
-    }
-
-    #[test]
-    fn remote_autoconfig_rejects_muse_credentials_but_keeps_sessions() {
-        let generator = SourceConfigGenerator::new();
-        let report = make_test_probe(
-            true,
-            vec![
-                make_test_agent("muse", "~/.config/muse/auth.json"),
-                make_test_agent("muse", "~/.config/muse"),
-                make_test_agent("unknown", "/home/test/.config/muse/"),
-                make_test_agent("unknown", r"C:\Users\test\.config\muse\auth.json"),
-                make_test_agent("muse", "~/.local/share/muse/sessions"),
-                make_test_agent("muse", "~/.local/share/muse"),
-                make_test_agent("unknown", "~/.config/muse-other/sessions"),
-            ],
-            Some(make_test_sys_info("linux", "/home/test")),
-        );
-        let source = generator.generate_source("workstation", &report);
-        assert_eq!(
-            source.paths,
-            vec![
-                "~/.local/share/muse/sessions",
-                "~/.local/share/muse",
-                "~/.config/muse-other/sessions",
-            ]
-        );
-    }
-
-    #[test]
-    fn test_generate_source_disambiguates_reserved_local_name() {
-        let generator = SourceConfigGenerator::new();
-        let probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(make_test_sys_info("linux", "/home/ubuntu")),
-        );
-
-        let source = generator.generate_source("local", &probe);
-
-        assert_eq!(source.name, "local-ssh");
-        assert_eq!(source.host, Some("local".into()));
-    }
-
-    #[test]
-    fn test_generate_source_deduplicates_paths() {
-        let generator = SourceConfigGenerator::new();
-        let probe = make_test_probe(
-            true,
-            vec![
-                make_test_agent("claude", "~/.claude/projects"),
-                make_test_agent("claude-2", "~/.claude/projects"), // Duplicate
-            ],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-
-        let source = generator.generate_source("server", &probe);
-        assert_eq!(source.paths.len(), 1);
-    }
-
-    #[test]
-    fn test_generate_source_path_mappings() {
-        let generator = SourceConfigGenerator::new();
-        let probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(make_test_sys_info("linux", "/home/ubuntu")),
-        );
-
-        let source = generator.generate_source("server", &probe);
-        assert!(!source.path_mappings.is_empty());
-        assert!(
-            source
-                .path_mappings
-                .iter()
-                .any(|m| m.from.contains("/home/ubuntu"))
-        );
-    }
-
-    #[test]
-    fn test_generate_source_platform_detection() {
-        let generator = SourceConfigGenerator::new();
-        let probe = make_test_probe(
-            true,
-            vec![],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-        let source = generator.generate_source("server", &probe);
-        assert_eq!(source.platform, Some(Platform::Linux));
-    }
-
-    #[test]
-    fn test_generate_preview_basic() {
-        let generator = SourceConfigGenerator::new();
-        let probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-
-        let probes: Vec<(&str, &HostProbeResult)> = vec![("server1", &probe)];
-        let preview = generator.generate_preview(&probes, &HashSet::new());
-
-        assert_eq!(preview.sources_to_add.len(), 1);
-        assert!(preview.sources_skipped.is_empty());
-        assert!(preview.has_changes());
-    }
-
-    #[test]
-    fn test_generate_preview_skips_already_configured() {
-        let generator = SourceConfigGenerator::new();
-        let probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-
-        let probes: Vec<(&str, &HostProbeResult)> = vec![("server1", &probe)];
-        let mut configured = HashSet::new();
-        configured.insert("server1".to_string());
-
-        let preview = generator.generate_preview(&probes, &configured);
-        assert!(preview.sources_to_add.is_empty());
-        assert_eq!(preview.sources_skipped.len(), 1);
-    }
-
-    #[test]
-    fn test_generate_preview_skips_already_configured_case_insensitive() {
-        let generator = SourceConfigGenerator::new();
-        let probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-
-        let probes: Vec<(&str, &HostProbeResult)> = vec![("Laptop", &probe)];
-        let mut configured = HashSet::new();
-        configured.insert(source_name_key("laptop"));
-
-        let preview = generator.generate_preview(&probes, &configured);
-        assert!(preview.sources_to_add.is_empty());
-        assert_eq!(preview.sources_skipped.len(), 1);
-    }
-
-    #[test]
-    fn test_generate_preview_skips_already_configured_case_insensitively_with_raw_names() {
-        let generator = SourceConfigGenerator::new();
-        let probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-
-        let probes: Vec<(&str, &HostProbeResult)> = vec![("laptop", &probe)];
-        let mut configured = HashSet::new();
-        configured.insert("Laptop".to_string());
-
-        let preview = generator.generate_preview(&probes, &configured);
-
-        assert!(preview.sources_to_add.is_empty());
-        assert_eq!(preview.sources_skipped.len(), 1);
-        assert!(matches!(
-            preview.sources_skipped[0].1,
-            SkipReason::AlreadyConfigured
-        ));
-    }
-
-    #[test]
-    fn test_generate_preview_preserves_already_configured_skip_for_invalid_probe_data() {
-        let generator = SourceConfigGenerator::new();
-        let probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "bad\npath")],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-
-        let probes: Vec<(&str, &HostProbeResult)> = vec![("server1", &probe)];
-        let mut configured = HashSet::new();
-        configured.insert("server1".to_string());
-
-        let preview = generator.generate_preview(&probes, &configured);
-
-        assert!(preview.sources_to_add.is_empty());
-        assert_eq!(preview.sources_skipped.len(), 1);
-        assert_eq!(preview.sources_skipped[0].0, "server1");
-        assert!(matches!(
-            preview.sources_skipped[0].1,
-            SkipReason::AlreadyConfigured
-        ));
-    }
-
-    #[test]
-    fn test_generate_preview_skips_conflicting_generated_names_case_insensitive() {
-        let generator = SourceConfigGenerator::new();
-        let probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-
-        let probes: Vec<(&str, &HostProbeResult)> = vec![("Laptop", &probe), ("laptop", &probe)];
-        let preview = generator.generate_preview(&probes, &HashSet::new());
-
-        assert_eq!(preview.sources_to_add.len(), 1);
-        assert_eq!(preview.sources_to_add[0].name, "Laptop");
-        assert_eq!(preview.sources_skipped.len(), 1);
-        assert_eq!(preview.sources_skipped[0].0, "laptop");
-        assert!(matches!(
-            &preview.sources_skipped[0].1,
-            SkipReason::GeneratedNameConflict(name) if name == "laptop"
-        ));
-    }
-
-    #[test]
-    fn test_generate_preview_invalid_source_does_not_shadow_later_valid_duplicate() {
-        let generator = SourceConfigGenerator::new();
-        let invalid_probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "bad\npath")],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-        let valid_probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-
-        let probes: Vec<(&str, &HostProbeResult)> =
-            vec![("Laptop", &invalid_probe), ("laptop", &valid_probe)];
-        let preview = generator.generate_preview(&probes, &HashSet::new());
-
-        assert_eq!(preview.sources_to_add.len(), 1);
-        assert_eq!(preview.sources_to_add[0].name, "laptop");
-        assert_eq!(preview.sources_skipped.len(), 1);
-        assert_eq!(preview.sources_skipped[0].0, "Laptop");
-        assert!(matches!(
-            &preview.sources_skipped[0].1,
-            SkipReason::InvalidSourceDefinition(message)
-                if message.contains("paths[0] cannot contain control characters")
-        ));
-    }
-
-    #[test]
-    fn test_generate_preview_skips_invalid_generated_sources_before_merge() {
-        let generator = SourceConfigGenerator::new();
-        let invalid_host_probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-        let invalid_path_probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "bad\npath")],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-        let valid_probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(make_test_sys_info("linux", "/home/user")),
-        );
-
-        let probes: Vec<(&str, &HostProbeResult)> = vec![
-            ("bad host", &invalid_host_probe),
-            ("path-host", &invalid_path_probe),
-            ("server1", &valid_probe),
-        ];
-        let preview = generator.generate_preview(&probes, &HashSet::new());
-
-        assert_eq!(preview.sources_to_add.len(), 1);
-        assert_eq!(preview.sources_to_add[0].name, "server1");
-        assert_eq!(preview.sources_skipped.len(), 2);
-        assert_eq!(preview.sources_skipped[0].0, "bad host");
-        assert!(matches!(
-            &preview.sources_skipped[0].1,
-            SkipReason::InvalidSourceDefinition(message)
-                if message.contains("SSH host cannot contain whitespace")
-        ));
-        assert_eq!(preview.sources_skipped[1].0, "path-host");
-        assert!(matches!(
-            &preview.sources_skipped[1].1,
-            SkipReason::InvalidSourceDefinition(message)
-                if message.contains("paths[0] cannot contain control characters")
-        ));
-
-        let mut config = SourcesConfig::default();
-        let (added, skipped) = config.merge_preview(&preview).unwrap();
-        assert_eq!(added, 1);
-        assert!(skipped.is_empty());
-        assert_eq!(config.sources.len(), 1);
-        assert_eq!(config.sources[0].name, "server1");
-    }
-
-    #[test]
-    fn test_merge_source() {
-        let mut config = SourcesConfig::default();
-        let source = SourceDefinition::ssh("new-server", "user@server");
-
-        let result = config.merge_source(source).unwrap();
-        assert!(matches!(result, MergeResult::Added(_)));
-        assert_eq!(config.sources.len(), 1);
-    }
-
-    #[test]
-    fn test_merge_source_already_exists() {
-        let mut config = SourcesConfig::default();
-        config.sources.push(SourceDefinition::ssh("server", "host"));
-
-        let source = SourceDefinition::ssh("server", "other-host");
-        let result = config.merge_source(source).unwrap();
-        assert!(matches!(result, MergeResult::AlreadyExists(_)));
-        assert_eq!(config.sources.len(), 1);
-    }
-
-    #[test]
-    fn test_merge_source_already_exists_case_insensitive() {
-        let mut config = SourcesConfig::default();
-        config.sources.push(SourceDefinition::ssh("Server", "host"));
-
-        let source = SourceDefinition::ssh("server", "other-host");
-        let result = config.merge_source(source).unwrap();
-        assert!(matches!(result, MergeResult::AlreadyExists(_)));
-        assert_eq!(config.sources.len(), 1);
-    }
-
-    #[test]
-    fn test_configured_names() {
-        let mut config = SourcesConfig::default();
-        config.sources.push(SourceDefinition::ssh("server1", "h1"));
-        config.sources.push(SourceDefinition::ssh("server2", "h2"));
-
-        let names = config.configured_names();
-        assert_eq!(names.len(), 2);
-        assert!(names.contains("server1"));
-        assert!(names.contains("server2"));
     }
 
     #[test]
@@ -3278,26 +1511,12 @@ Host production !legacy-prod
     }
 
     #[test]
-    fn test_configured_name_keys_normalize_case() {
-        let mut config = SourcesConfig::default();
-        config.sources.push(SourceDefinition::ssh("Server1", "h1"));
-        config.sources.push(SourceDefinition::ssh("server2", "h2"));
-
-        let names = config.configured_name_keys();
-        assert_eq!(names.len(), 2);
-        assert!(names.contains("server1"));
-        assert!(names.contains("server2"));
-    }
-
-    #[test]
     fn test_save_to_rejects_invalid_config() {
         let temp = tempfile::tempdir().expect("tempdir");
         let path = temp.path().join("sources.toml");
 
         let mut config = SourcesConfig::default();
-        config
-            .sources
-            .push(SourceDefinition::ssh("local", "user@host"));
+        config.sources.push(ssh_source("local", "user@host"));
 
         let err = config
             .save_to(&path)
@@ -3305,55 +1524,4 @@ Host production !legacy-prod
         assert!(matches!(err, ConfigError::Validation(_)));
         assert!(!path.exists(), "invalid config should not be written");
     }
-
-    #[test]
-    fn test_empty_remote_home_no_mappings() {
-        let generator = SourceConfigGenerator::new();
-        let mut sys_info = make_test_sys_info("linux", "");
-        sys_info.remote_home = "".into();
-
-        let probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(sys_info),
-        );
-
-        let source = generator.generate_source("server", &probe);
-        assert!(source.path_mappings.is_empty());
-    }
-
-    #[test]
-    fn test_trailing_slash_remote_home_normalized() {
-        let generator = SourceConfigGenerator::new();
-        // Remote home with trailing slash should be normalized
-        let mut sys_info = make_test_sys_info("linux", "/home/user/");
-        sys_info.remote_home = "/home/user/".into(); // Explicitly set with trailing slash
-
-        let probe = make_test_probe(
-            true,
-            vec![make_test_agent("claude", "~/.claude/projects")],
-            Some(sys_info),
-        );
-
-        let source = generator.generate_source("server", &probe);
-
-        // Should have mappings without double slashes
-        assert!(!source.path_mappings.is_empty());
-        // The projects mapping should NOT have double slashes
-        let projects_mapping = source
-            .path_mappings
-            .iter()
-            .find(|m| m.from.contains("projects"));
-        assert!(projects_mapping.is_some());
-        // Check no double slashes
-        assert!(
-            !projects_mapping.unwrap().from.contains("//"),
-            "Path mapping should not contain double slashes: {}",
-            projects_mapping.unwrap().from
-        );
-    }
 }
-
-#[cfg(test)]
-#[path = "tailscale_tests.rs"]
-mod tailscale_tests;

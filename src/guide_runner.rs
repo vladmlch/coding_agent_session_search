@@ -1187,21 +1187,9 @@ fn execute_incremental_index(data_dir: &Path, db_path: Option<&Path>) -> Mutatio
             "configured source scope changed; no indexing started",
         );
     }
-    for source in config.remote_sources() {
-        for path in &source.paths {
-            let mirror = data_dir
-                .join("remotes")
-                .join(&source.name)
-                .join("mirror")
-                .join(crate::sources::sync::path_to_safe_dirname(path));
-            if std::fs::read_dir(&mirror).is_err() {
-                return failed_mutation(
-                    false,
-                    "a configured source mirror is unavailable; run cass sources sync before indexing",
-                );
-            }
-        }
-    }
+    // Historical remote mirrors under `<data-dir>/remotes/<name>/mirror/` are
+    // optional read-only archives (decision D2): a missing mirror directory is
+    // informational and never blocks indexing.
     let default_db = data_dir.join("agent_search.db");
     let requested_db = db_path.unwrap_or(&default_db);
     let db_path = match requested_db
@@ -1299,7 +1287,9 @@ fn incremental_index_scope() -> Value {
         "source_scan": true,
         "source_registration": false,
         "remote_sync": false,
-        "requires_staged_mirrors": true,
+        // Historical mirrors are optional read-only archives; indexing
+        // proceeds whether or not they exist.
+        "requires_staged_mirrors": false,
         "semantic_rebuild": false,
         "timeout_seconds": 120
     })
@@ -1827,7 +1817,13 @@ mod tests {
     #[test]
     fn source_binding_detects_path_host_and_exclusion_changes() {
         use crate::sources::config::{SourceDefinition, SourcesConfig};
-        let mut source = SourceDefinition::ssh("example", "fixture.invalid");
+        use crate::sources::provenance::SourceKind;
+        let mut source = SourceDefinition {
+            name: "example".into(),
+            source_type: SourceKind::Ssh,
+            host: Some("fixture.invalid".into()),
+            ..Default::default()
+        };
         source.paths = vec!["~/.codex".into()];
         let config = SourcesConfig {
             sources: vec![source],

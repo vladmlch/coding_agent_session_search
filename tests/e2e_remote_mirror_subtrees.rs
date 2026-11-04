@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
-use coding_agent_search::sources::sync::path_to_safe_dirname;
+use coding_agent_search::sources::provenance::path_to_safe_dirname;
 use coding_agent_search::storage::sqlite::FrankenStorage;
 use serde_json::{Value, json};
 

@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use coding_agent_search::search::tantivy::{SCHEMA_HASH, expected_index_dir};
 use coding_agent_search::sources::config::{SourceDefinition, SourcesConfig, SyncSchedule};
+use coding_agent_search::sources::provenance::SourceKind;
 use coding_agent_search::storage::sqlite::CURRENT_SCHEMA_VERSION;
 use fs2::FileExt;
 use serde_json::json;
@@ -119,7 +120,12 @@ fn write_generation_manifest(
 }
 
 fn write_remote_source_config(config_home: &Path) {
-    let mut source = SourceDefinition::ssh("status-remote", "user@status-remote");
+    let mut source = SourceDefinition {
+        name: "status-remote".to_string(),
+        source_type: SourceKind::Ssh,
+        host: Some("user@status-remote".to_string()),
+        ..Default::default()
+    };
     source.paths = vec!["~/.codex/sessions".to_string()];
     source.sync_schedule = SyncSchedule::Hourly;
     SourcesConfig {

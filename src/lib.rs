@@ -1984,7 +1984,14 @@ pub enum ImportCommand {
     },
 }
 
-/// Subcommands for managing remote sources (P5.x)
+/// Subcommands for managing sources.
+///
+/// `type = "local"` entries name extra local directories to index in place.
+/// Historical `type = "ssh"` entries remain readable as inert archive
+/// records: their previously mirrored conversations stay searchable, but
+/// remote synchronization was removed — the remote surface (`sync`,
+/// `setup`, `discover`, `reingest`, `artifact-manifest`, `schedule`)
+/// errors through `REMOVED_COMMANDS`.
 #[derive(Subcommand, Debug, Clone)]
 pub enum SourcesCommand {
     /// List configured sources
@@ -1996,35 +2003,13 @@ pub enum SourcesCommand {
         #[arg(long, visible_alias = "robot")]
         json: bool,
     },
-    /// Add a new remote source
+    /// Add a local source: extra directories indexed in place under a name
     Add {
-        /// Source URL (e.g., user@host or ssh://user@host)
-        url: String,
-        /// Friendly name for this source (becomes source_id)
-        #[arg(long)]
-        name: Option<String>,
-        /// Use preset paths for platform (macos-defaults, linux-defaults);
-        /// merged with any explicit --path entries
-        #[arg(long)]
-        preset: Option<String>,
-        /// Paths to sync (can be specified multiple times)
+        /// Name for this source (becomes its source_id)
+        name: String,
+        /// Local paths to index under this source (repeatable, required)
         #[arg(long = "path", short = 'p')]
         paths: Vec<String>,
-        /// Skip connectivity test
-        #[arg(long)]
-        no_test: bool,
-        /// Output as JSON (`--robot` also works)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-    },
-    /// Set how often scheduled jobs sync a remote source (manual, hourly, daily)
-    Schedule {
-        /// Name of the configured remote source
-        name: String,
-        /// manual: only an explicit `cass sources sync`; hourly or daily: the
-        /// jobs from `cass schedule install` sync it when due
-        #[arg(value_enum)]
-        schedule: crate::sources::config::SyncSchedule,
         /// Output as JSON (`--robot` also works)
         #[arg(long, visible_alias = "robot")]
         json: bool,
@@ -2033,14 +2018,14 @@ pub enum SourcesCommand {
     Remove {
         /// Name of source to remove
         name: String,
-        /// Also delete synced session data from index
+        /// Also delete archived mirror data for this source
         #[arg(long)]
         purge: bool,
         /// Skip confirmation prompt
         #[arg(long, short = 'y')]
         yes: bool,
     },
-    /// Diagnose source connectivity and configuration issues
+    /// Diagnose source configuration issues (local checks only)
     Doctor {
         /// Check only specific source (defaults to all)
         #[arg(long, short)]
@@ -2051,80 +2036,9 @@ pub enum SourcesCommand {
         /// Overall wall-clock budget in milliseconds
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         budget_ms: Option<u64>,
-        /// Per-source wall-clock budget in milliseconds
+        /// Retained for CLI compatibility; ignored (no remote probes remain)
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         per_host_budget_ms: Option<u64>,
-    },
-    /// Synchronize sessions from remote sources
-    Sync {
-        /// Sync only specific source(s)
-        #[arg(long, short)]
-        source: Option<Vec<String>>,
-        /// Sync every configured remote source. This is already the default
-        /// when --source is absent; the explicit spelling is what doctor,
-        /// robot-docs and the fleet rehearsal recommend, and it used to be a
-        /// usage error (reality check 2026-09-01, docs validator).
-        #[arg(long, conflicts_with = "source")]
-        all: bool,
-        /// Don't re-index after sync
-        #[arg(long)]
-        no_index: bool,
-        /// Show detailed transfer information
-        #[arg(long, short)]
-        verbose: bool,
-        /// Dry run - show what would be synced without actually syncing
-        #[arg(long)]
-        dry_run: bool,
-        /// Output as JSON (`--robot` also works)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-    },
-    /// Re-ingest an already-synced mirror into the canonical archive WITHOUT
-    /// re-running the rsync transfer.
-    ///
-    /// `cass sources sync` only triggers an ingest pass when new files are
-    /// transferred, so a mirror that is already current (or whose sessions were
-    /// never promoted to canonical) has no way to reach the searchable archive
-    /// without a wasteful re-transfer. This forces an ingest pass over the
-    /// existing mirror root(s), which `cass index` discovers via the same
-    /// remote scan-root machinery used after a sync.
-    Reingest {
-        /// Re-ingest from the existing mirror without re-running rsync. This is
-        /// the default and only mode today; the flag documents intent and keeps
-        /// the `cass sources reingest --from-mirror` spelling explicit.
-        #[arg(long, default_value_t = true)]
-        from_mirror: bool,
-        /// Re-ingest only specific source(s) (defaults to all remote sources)
-        #[arg(long, short)]
-        source: Option<Vec<String>>,
-        /// Rebuild the full index from the mirror (cass index --full) instead of
-        /// an incremental ingest pass
-        #[arg(long)]
-        full: bool,
-        /// Output as JSON (`--robot` also works)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-    },
-    /// Build or write a lexical artifact evidence manifest for remote exchange
-    ArtifactManifest {
-        /// Exact lexical index path. Defaults to <data-dir>/index/<schema-version>.
-        #[arg(long, value_hint = ValueHint::DirPath, conflicts_with = "data_dir")]
-        index_path: Option<PathBuf>,
-        /// Override cass data dir used to resolve the lexical index path
-        #[arg(long, value_hint = ValueHint::DirPath)]
-        data_dir: Option<PathBuf>,
-        /// Write evidence-bundle-manifest.json next to the lexical artifact
-        #[arg(long)]
-        write: bool,
-        /// Verify the existing evidence-bundle-manifest.json without regenerating it
-        #[arg(long, conflicts_with = "write")]
-        verify_existing: bool,
-        /// Producer manifest to compare against when verifying a copied artifact
-        #[arg(long, value_hint = ValueHint::FilePath, requires = "verify_existing")]
-        expected_manifest: Option<PathBuf>,
-        /// Output as JSON (`--robot` also works)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
     },
     /// Manage path mappings for a source (P6.3)
     #[command(subcommand)]
@@ -2132,109 +2046,6 @@ pub enum SourcesCommand {
     /// Manage persisted agent indexing exclusions
     #[command(subcommand)]
     Agents(AgentsAction),
-    /// Auto-discover SSH hosts from ~/.ssh/config
-    Discover {
-        /// Platform preset for default paths (macos-defaults, linux-defaults)
-        #[arg(long, default_value = "linux-defaults")]
-        preset: String,
-        /// Skip hosts that are already configured as sources
-        #[arg(long)]
-        skip_existing: bool,
-        /// Also discover online peers using local `tailscale status --json`
-        #[arg(long)]
-        tailscale: bool,
-        /// Output as JSON (`--robot` also works)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-    },
-    /// Interactive wizard to discover, configure, and set up remote sources.
-    ///
-    /// This wizard automates configuring cass to search across multiple machines.
-    /// It discovers SSH hosts from ~/.ssh/config, checks each for existing cass
-    /// installations and agent session data, then guides you through selecting
-    /// which machines to configure for remote search.
-    ///
-    /// # Workflow Phases
-    ///
-    /// 1. **Discovery**: Parses ~/.ssh/config to find configured hosts
-    /// 2. **Probing**: Connects to each host via SSH to check cass status and data
-    /// 3. **Selection**: Interactive selection of which hosts to configure
-    /// 4. **Installation**: Installs cass on hosts that don't have it (optional)
-    /// 5. **Indexing**: Runs `cass index` on remotes (optional)
-    /// 6. **Configuration**: Generates and saves sources.toml entries
-    /// 7. **Sync**: Downloads session data to local machine (optional)
-    ///
-    /// # Examples
-    ///
-    /// ```bash
-    /// # Interactive wizard (recommended for first-time setup)
-    /// cass sources setup
-    ///
-    /// # Configure specific hosts only
-    /// cass sources setup --hosts css,csd,yto
-    ///
-    /// # Preview without making changes
-    /// cass sources setup --dry-run
-    ///
-    /// # Resume an interrupted setup
-    /// cass sources setup --resume
-    ///
-    /// # Non-interactive for scripting (uses auto-detected defaults)
-    /// cass sources setup --non-interactive --hosts css,csd
-    ///
-    /// # Skip installation and indexing, just configure
-    /// cass sources setup --hosts css --skip-install --skip-index
-    ///
-    /// # JSON output for automation
-    /// cass sources setup --json --hosts css
-    /// ```
-    ///
-    /// # State and Resume
-    ///
-    /// If setup is interrupted (Ctrl+C, connection lost), state is saved to
-    /// `~/.cache/cass/setup_state.json`. Resume with `cass sources setup --resume`.
-    ///
-    /// # See Also
-    ///
-    /// - `cass sources list` - List configured sources
-    /// - `cass sources sync` - Sync data from sources
-    /// - `cass sources discover` - Just discover hosts (no setup)
-    /// - `cass robot-docs sources` - Machine-readable sources documentation
-    Setup {
-        /// Preview what would happen without making changes
-        #[arg(long)]
-        dry_run: bool,
-        /// Skip interactive prompts (use auto-detected defaults for scripting)
-        #[arg(long)]
-        non_interactive: bool,
-        /// Configure only these hosts (comma-separated SSH aliases, skips discovery/selection)
-        #[arg(long, value_delimiter = ',')]
-        hosts: Option<Vec<String>>,
-        /// Also discover online Tailscale peers (explicit --hosts skips discovery)
-        #[arg(long)]
-        tailscale: bool,
-        /// Skip cass installation on remotes that don't have it
-        #[arg(long)]
-        skip_install: bool,
-        /// Skip running `cass index` on remotes
-        #[arg(long)]
-        skip_index: bool,
-        /// Skip syncing data after setup completes
-        #[arg(long)]
-        skip_sync: bool,
-        /// SSH connection timeout in seconds
-        #[arg(long, default_value = "10")]
-        timeout: u64,
-        /// Resume from previous interrupted setup (reads ~/.cache/cass/setup_state.json)
-        #[arg(long)]
-        resume: bool,
-        /// Show detailed progress output
-        #[arg(long, short)]
-        verbose: bool,
-        /// Output progress as JSON (implies non-interactive, for scripting)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-    },
 }
 
 /// Subcommands for managing semantic search models
@@ -5726,20 +5537,10 @@ fn format_missing_subcommand_error(args: &[String]) -> String {
             ],
         ),
         "sources" => (
-            &[
-                "list",
-                "add",
-                "remove",
-                "doctor",
-                "sync",
-                "artifact-manifest",
-                "mappings",
-                "discover",
-                "setup",
-            ],
+            &["list", "add", "remove", "doctor", "mappings", "agents"],
             &[
                 "cass sources list --json",
-                "cass sources add user@host --name myserver",
+                "cass sources add myserver --path /data/sessions",
                 "cass sources doctor --json",
             ],
         ),
@@ -6164,6 +5965,36 @@ const REMOVED_COMMANDS: &[RemovedCommand] = &[
     RemovedCommand {
         path: &["upgrade"],
         hint: Some("reinstall with `cargo install --path . --locked`"),
+    },
+    RemovedCommand {
+        path: &["sources", "sync"],
+        hint: Some(
+            "remote sync was removed; existing archive mirrors stay indexed via `cass index`",
+        ),
+    },
+    RemovedCommand {
+        path: &["sources", "setup"],
+        hint: Some("cass sources add NAME --path PATH adds a local source"),
+    },
+    RemovedCommand {
+        path: &["sources", "discover"],
+        hint: Some(
+            "remote discovery was removed; cass sources add NAME --path PATH adds a local source",
+        ),
+    },
+    RemovedCommand {
+        path: &["sources", "reingest"],
+        hint: Some("cass index scans existing archive mirrors directly"),
+    },
+    RemovedCommand {
+        path: &["sources", "artifact-manifest"],
+        hint: Some("remote artifact exchange was removed; the index is built and used locally"),
+    },
+    RemovedCommand {
+        path: &["sources", "schedule"],
+        hint: Some(
+            "sync schedules were removed with remote sync; the field stays readable in old configs",
+        ),
     },
 ];
 
@@ -19284,26 +19115,10 @@ fn is_robot_mode(command: &Commands, cli: &Cli) -> bool {
         Commands::Sources(SourcesCommand::List { json, .. }) => {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
-        Commands::Sources(SourcesCommand::Add { json, .. })
-        | Commands::Sources(SourcesCommand::Schedule { json, .. }) => {
+        Commands::Sources(SourcesCommand::Add { json, .. }) => {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
         Commands::Sources(SourcesCommand::Doctor { json, .. }) => {
-            resolve_subcommand_structured_format(cli, *json).is_some()
-        }
-        Commands::Sources(SourcesCommand::Sync { json, .. }) => {
-            resolve_subcommand_structured_format(cli, *json).is_some()
-        }
-        Commands::Sources(SourcesCommand::Reingest { json, .. }) => {
-            resolve_subcommand_structured_format(cli, *json).is_some()
-        }
-        Commands::Sources(SourcesCommand::ArtifactManifest { json, .. }) => {
-            resolve_subcommand_structured_format(cli, *json).is_some()
-        }
-        Commands::Sources(SourcesCommand::Discover { json, .. }) => {
-            resolve_subcommand_structured_format(cli, *json).is_some()
-        }
-        Commands::Sources(SourcesCommand::Setup { json, .. }) => {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
         Commands::Sources(SourcesCommand::Agents(AgentsAction::List { json })) => {
@@ -19892,7 +19707,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "  CASS_SEARCH_EXACT_TOTAL_COUNT_MAX_DOCS=<N>  max index documents for computing exact total_matches on a full page (default 5000000; 0 disables)".to_string(),
             "  CASS_SEMANTIC_EMBEDDER=hash|minilm|multilingual-minilm  force semantic embedder backend (default auto)".to_string(),
             "  CASS_SEMANTIC_PROGRESS_JSONL=<path>      append semantic backfill phase transition events as JSONL to <path>".to_string(),
-            "  CASS_SSH_CONFIG=<path>                   SSH config file passed as `ssh -F <path>` for remote sources".to_string(),
+            "  CASS_SSH_CONFIG=<path>                   deprecated-ignored: remote sync was removed; no SSH config is consulted".to_string(),
             "  CASS_TANTIVY_REBUILD_BATCH_FETCH_CONVERSATIONS=<N>  conversations per SQL message-fetch chunk during lexical rebuild".to_string(),
             "  CASS_TANTIVY_REBUILD_COMMIT_EVERY_CONVERSATIONS=<N>  steady-state durable-commit interval in conversations (default 10000)".to_string(),
             "  CASS_TANTIVY_REBUILD_COMMIT_EVERY_MESSAGES=<N>       steady-state durable-commit interval in messages (default 800000)".to_string(),
@@ -19960,7 +19775,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
         RobotTopic::Schemas => render_schema_docs(),
         RobotTopic::ExitCodes => vec![
             "exit-codes:".to_string(),
-            " 0 ok | 1 health-failed | 2 usage | 3 missing index/db | 4 io|refused-unsafe | 5 data-corrupt | 6 input-required | 7 lock/busy | 8 partial (sources sync) | 9 unknown".to_string(),
+            " 0 ok | 1 health-failed | 2 usage | 3 missing index/db | 4 io|refused-unsafe | 5 data-corrupt | 6 input-required | 7 lock/busy | 8 unused | 9 unknown".to_string(),
             " 10 config|timeout | 11 config | 12 source|ssh | 13 mapping|not_found | 14 io|mapping | 15 semantic-unavailable|embedder-unavailable".to_string(),
             " 20-21 model | 22 io | 23 download | 24 io | 70 index-stalled (cass index abort) | 130 interrupted (SIGINT)".to_string(),
             " NOTE: codes >= 10 cover domain-specific failures (sources/models/semantic/analytics).".to_string(),
@@ -20092,6 +19907,35 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
         RobotTopic::Sources => vec![
             "sources:".to_string(),
             String::new(),
+            "# Local sources only".to_string(),
+            "cass runs fully local-only. `cass sources add` indexes extra local".to_string(),
+            "directories under a name; there is no remote discovery, sync, or".to_string(),
+            "scheduling. Old `type = \"ssh\"` entries in sources.toml are inert".to_string(),
+            "archive records: their already-mirrored conversations stay searchable".to_string(),
+            "and source-filterable, and ordinary `cass index` keeps indexing any".to_string(),
+            "existing <data-dir>/remotes/<name>/mirror directories read-only.".to_string(),
+            String::new(),
+            "  cass sources add archive-box --path /Volumes/old-sessions".to_string(),
+            "  cass sources add archive-box -p /data/a -p /data/b   # repeatable".to_string(),
+            "  cass sources list                      # human summary".to_string(),
+            "  cass sources list --json               # kind: local | legacy-remote".to_string(),
+            "  cass sources remove archive-box        # drop the config entry".to_string(),
+            "  cass sources remove archive-box --purge  # + delete its mirror data".to_string(),
+            "  cass sources doctor --json             # local checks only".to_string(),
+            String::new(),
+            "Removed remote verbs (each fails with a removed-command error):".to_string(),
+            "  sources sync, sources setup, sources discover, sources reingest,".to_string(),
+            "  sources artifact-manifest, sources schedule, `sources add user@host`".to_string(),
+            String::new(),
+            "# Workspace path mappings".to_string(),
+            "Path mappings rewrite archived remote workspace paths to local".to_string(),
+            "equivalents so `cass view`/`cass tui` open hits at the right place.".to_string(),
+            String::new(),
+            "  cass sources mappings list".to_string(),
+            "  cass sources mappings add laptop --from /home/u/proj --to /work/proj".to_string(),
+            "  cass sources mappings test laptop /home/u/proj/x".to_string(),
+            "  cass sources mappings remove laptop 0   # index from list output".to_string(),
+            String::new(),
             "# Persisted agent indexing exclusions".to_string(),
             "Use this when you want cass to ignore a connector entirely even if".to_string(),
             "the backing session files still exist on disk.".to_string(),
@@ -20107,89 +19951,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "By default, `exclude` also purges already archived local data for that agent".to_string(),
             "and rebuilds lexical search from the remaining archive. Use".to_string(),
             "`--keep-indexed-data` if you only want to block future indexing.".to_string(),
-            "Exclusions apply to future local scans, remote mirror scans, and watch mode.".to_string(),
-            String::new(),
-            "# cass sources setup - Interactive Remote Sources Wizard".to_string(),
-            String::new(),
-            "## Overview".to_string(),
-            "The setup wizard automates configuring cass to search across multiple machines.".to_string(),
-            "It discovers SSH hosts from ~/.ssh/config, checks their status, and handles".to_string(),
-            "installation, indexing, and configuration automatically.".to_string(),
-            String::new(),
-            "## Quick Start".to_string(),
-            "  cass sources setup                    # Interactive (recommended)".to_string(),
-            "  cass sources setup --hosts css,csd    # Configure specific hosts".to_string(),
-            "  cass sources setup --dry-run          # Preview without changes".to_string(),
-            "  cass sources setup --resume           # Resume interrupted setup".to_string(),
-            String::new(),
-            "## Workflow Phases".to_string(),
-            "  1. Discovery  - Parses ~/.ssh/config to find configured hosts".to_string(),
-            "  2. Probing    - Connects via SSH to check cass status and agent data".to_string(),
-            "  3. Selection  - Interactive selection of which hosts to configure".to_string(),
-            "  4. Install    - Installs cass on hosts without it (optional)".to_string(),
-            "  5. Indexing   - Runs `cass index` on remotes (optional)".to_string(),
-            "  6. Config     - Generates sources.toml entries".to_string(),
-            "  7. Sync       - Downloads session data to local machine (optional)".to_string(),
-            String::new(),
-            "## Flags Reference".to_string(),
-            "  --hosts <names>      Only configure these hosts (comma-separated SSH aliases)".to_string(),
-            "  --dry-run            Preview without making changes".to_string(),
-            "  --resume             Resume from ~/.cache/cass/setup_state.json".to_string(),
-            "  --non-interactive    Skip prompts, use auto-detected defaults".to_string(),
-            "  --skip-install       Don't install cass on remotes".to_string(),
-            "  --skip-index         Don't run remote indexing".to_string(),
-            "  --skip-sync          Don't sync after setup".to_string(),
-            "  --json               Output progress as JSON for scripting".to_string(),
-            "  --timeout <secs>     SSH connection timeout (default: 10)".to_string(),
-            "  --verbose            Show detailed progress".to_string(),
-            String::new(),
-            "## Non-Interactive Usage (Scripting)".to_string(),
-            "  cass sources setup --non-interactive --hosts css,csd".to_string(),
-            "  cass sources setup --non-interactive --hosts css --skip-install --skip-index".to_string(),
-            "  cass sources setup --json --hosts css  # JSON output for parsing".to_string(),
-            String::new(),
-            "## State and Resume".to_string(),
-            "State saved to ~/.cache/cass/setup_state.json on interruption.".to_string(),
-            "Resume with: cass sources setup --resume".to_string(),
-            String::new(),
-            "## Generated Configuration".to_string(),
-            "The wizard generates sources.toml entries like:".to_string(),
-            "  [[sources]]".to_string(),
-            "  name = \"css\"".to_string(),
-            "  type = \"ssh\"".to_string(),
-            "  host = \"css\"".to_string(),
-            "  paths = [\"~/.claude/projects\", \"~/.codex/sessions\"]".to_string(),
-            "  sync_schedule = \"manual\"".to_string(),
-            "  [[sources.path_mappings]]".to_string(),
-            "  from = \"/data/projects\"".to_string(),
-            "  to = \"/Users/username/projects\"".to_string(),
-            String::new(),
-            "## After Setup".to_string(),
-            "  cass search \"query\"       # Search across all sources".to_string(),
-            "  cass sources sync --all   # Sync latest data".to_string(),
-            "  cass sources list         # List configured sources".to_string(),
-            String::new(),
-            "## Troubleshooting".to_string(),
-            "  \"Host unreachable\": Verify SSH config with `ssh <host>` manually".to_string(),
-            "  \"Permission denied\": Load SSH key with `ssh-add ~/.ssh/id_rsa`".to_string(),
-            "  \"cargo not found\": Use --skip-install and install manually".to_string(),
-            "  \"Index taking too long\": Large histories take time; runs in background".to_string(),
-            String::new(),
-            "## Artifact Proofs".to_string(),
-            "  cass sources artifact-manifest --write --json".to_string(),
-            "  cass sources artifact-manifest --verify-existing --index-path /copy --expected-manifest /producer/evidence-bundle-manifest.json --json".to_string(),
-            "Writes evidence-bundle-manifest.json for the current lexical artifact.".to_string(),
-            "Use --index-path and --expected-manifest to verify a copied artifact before exchange."
-                .to_string(),
-            String::new(),
-            "## Related Commands".to_string(),
-            "  cass sources list         List configured sources".to_string(),
-            "  cass sources sync         Sync data from sources".to_string(),
-            "  cass sources artifact-manifest  Write/verify lexical artifact proof".to_string(),
-            "  cass sources discover     Just discover hosts (no setup)".to_string(),
-            "  cass sources add          Manually add a source".to_string(),
-            "  cass sources schedule     Set a remote source's sync_schedule (manual|hourly|daily)"
-                .to_string(),
+            "Exclusions apply to future local scans, archive mirror scans, and watch mode.".to_string(),
         ],
         RobotTopic::Analytics => render_analytics_docs(),
         RobotTopic::Doctor => crate::doctor_robot_docs::doctor_robot_docs_body()
@@ -51710,7 +51472,8 @@ fn run_doctor_emit_capabilities(structured_format: Option<RobotFormat>) -> CliRe
             {"name": "CASS_FLEET_PER_HOST_BUDGET_MS", "status": "deprecated-ignored", "note": "Fleet commands were removed by the local-only conversion; the value is ignored."},
             {"name": "CASS_SKIP_UPDATE", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; cass never phones home, so no opt-out is needed."},
             {"name": "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; the prompt no longer exists, so the value is ignored."},
-            {"name": "CASS_UPDATE_API_BASE_URL", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; cass never contacts a release API, so the value is ignored."}
+            {"name": "CASS_UPDATE_API_BASE_URL", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; cass never contacts a release API, so the value is ignored."},
+            {"name": "CASS_SSH_CONFIG", "status": "deprecated-ignored", "note": "Remote synchronization was removed by the local-only conversion; no SSH config is consulted, so the value is ignored."}
         ],
         "subcommands_added_by_world_class_doctor": [
             {"flag": "--ls", "added_in_pass": 2, "kind": "read-only"},
@@ -88894,9 +88657,9 @@ fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
         ),
         exit_code_capability(
             "8",
-            "partial result (sources sync only)",
-            "yes",
-            "Some sources had path failures: inspect the per-source errors and re-sync the failed sources. Search/pack timeouts exit 0 with budget.timed_out instead.",
+            "unused (was partial sync result)",
+            "n/a",
+            "Remote sync was removed; no command currently exits 8. Search/pack timeouts exit 0 with budget.timed_out instead.",
         ),
         exit_code_capability(
             "9",
@@ -88974,7 +88737,7 @@ fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
             "130",
             "interrupted (SIGINT)",
             "yes",
-            "Rerun the command; cass sources setup --resume continues an interrupted setup.",
+            "Rerun the command; indexing and search resume from their checkpoints.",
         ),
     ]
 }
@@ -101318,6 +101081,7 @@ fn run_index_with_data(
         }
     };
     let indexing_exclusion_notice = active_indexing_exclusion_notice();
+    let legacy_remote_notice = legacy_remote_source_notice();
 
     // Generate params hash for idempotency validation
     let params_hash = {
@@ -101435,6 +101199,9 @@ fn run_index_with_data(
 
     if let Some(notice) = &indexing_exclusion_notice {
         emit_indexing_exclusion_notice(notice, structured_output);
+    }
+    if let Some(names) = &legacy_remote_notice {
+        emit_legacy_remote_source_notice(names);
     }
 
     if emit_progress_events {
@@ -102258,6 +102025,41 @@ fn index_agent_slug_for_connector_notice(connector_name: &str) -> &str {
         "claude" => "claude_code",
         other => other,
     }
+}
+
+/// Names of legacy `type = "ssh"` source entries the index run will treat as
+/// read-only archives. `None` when the config is ignored, unreadable, or has
+/// no legacy entries. Emitted once per index run on stderr so robot stdout
+/// stays clean.
+fn legacy_remote_source_notice() -> Option<Vec<String>> {
+    use crate::sources::config::SourcesConfig;
+
+    if dotenvy::var("CASS_IGNORE_SOURCES_CONFIG").is_ok() {
+        return None;
+    }
+
+    let config = SourcesConfig::load().ok()?;
+    let names: Vec<String> = config
+        .sources
+        .iter()
+        .filter(|source| source.is_remote())
+        .map(|source| source.name.clone())
+        .collect();
+    (!names.is_empty()).then_some(names)
+}
+
+fn emit_legacy_remote_source_notice(names: &[String]) {
+    eprintln!(
+        "warning: sources.toml lists {} legacy remote entr{} ({}); remote synchronization was removed, so {} treated as read-only archive record(s) — mirrored data is indexed if present",
+        names.len(),
+        if names.len() == 1 { "y" } else { "ies" },
+        names.join(", "),
+        if names.len() == 1 {
+            "it is"
+        } else {
+            "they are"
+        },
+    );
 }
 
 fn emit_indexing_exclusion_notice(notice: &IndexingExclusionNotice, structured_output: bool) {
@@ -110538,31 +110340,16 @@ fn run_timeline(
     Ok(())
 }
 
-/// Handle sources subcommands (P5.x)
+/// Handle sources subcommands.
 fn run_sources_command(cmd: SourcesCommand, cli: &Cli) -> CliResult<()> {
     match cmd {
         SourcesCommand::List { verbose, json } => {
             let structured_format = resolve_subcommand_structured_format(cli, json);
             run_sources_list(verbose, structured_format)
         }
-        SourcesCommand::Add {
-            url,
-            name,
-            preset,
-            paths,
-            no_test,
-            json,
-        } => {
+        SourcesCommand::Add { name, paths, json } => {
             let structured_format = resolve_subcommand_structured_format(cli, json);
-            run_sources_add(&url, name, preset, paths, no_test, structured_format)
-        }
-        SourcesCommand::Schedule {
-            name,
-            schedule,
-            json,
-        } => {
-            let structured_format = resolve_subcommand_structured_format(cli, json);
-            run_sources_schedule(&name, schedule, structured_format)
+            run_sources_add(&name, paths, structured_format)
         }
         SourcesCommand::Remove { name, purge, yes } => run_sources_remove(&name, purge, yes),
         SourcesCommand::Doctor {
@@ -110579,334 +110366,18 @@ fn run_sources_command(cmd: SourcesCommand, cli: &Cli) -> CliResult<()> {
                 per_host_budget_ms,
             )
         }
-        SourcesCommand::Sync {
-            source,
-            // `--all` only makes the default explicit; clap already refuses it
-            // together with `--source`.
-            all: _,
-            no_index,
-            verbose,
-            dry_run,
-            json,
-        } => {
-            let structured_format = resolve_subcommand_structured_format(cli, json);
-            run_sources_sync(source, no_index, verbose, dry_run, structured_format)
-        }
-        SourcesCommand::Reingest {
-            from_mirror: _,
-            source,
-            full,
-            json,
-        } => {
-            let structured_format = resolve_subcommand_structured_format(cli, json);
-            run_sources_reingest(source, full, structured_format)
-        }
-        SourcesCommand::ArtifactManifest {
-            index_path,
-            data_dir,
-            write,
-            verify_existing,
-            expected_manifest,
-            json,
-        } => {
-            let structured_format = resolve_subcommand_structured_format(cli, json);
-            run_sources_artifact_manifest(
-                index_path,
-                data_dir,
-                write,
-                verify_existing,
-                expected_manifest,
-                structured_format,
-            )
-        }
         SourcesCommand::Mappings(action) => run_mappings_command(action, cli),
         SourcesCommand::Agents(action) => run_agents_command(action, cli),
-        SourcesCommand::Discover {
-            preset,
-            skip_existing,
-            tailscale,
-            json,
-        } => {
-            let structured_format = resolve_subcommand_structured_format(cli, json);
-            run_sources_discover(&preset, skip_existing, tailscale, structured_format)
-        }
-        SourcesCommand::Setup {
-            dry_run,
-            non_interactive,
-            hosts,
-            tailscale,
-            skip_install,
-            skip_index,
-            skip_sync,
-            timeout,
-            resume,
-            verbose,
-            json,
-        } => {
-            let structured_format = resolve_subcommand_structured_format(cli, json);
-            let is_robot = structured_format.is_some();
-            run_sources_setup(sources::setup::SetupOptions {
-                dry_run,
-                non_interactive: non_interactive || is_robot,
-                hosts,
-                tailscale,
-                skip_install,
-                skip_index,
-                skip_sync,
-                timeout,
-                resume,
-                verbose,
-                json: is_robot,
-            })
-        }
     }
 }
 
-fn resolved_sources_artifact_manifest_index_path(
-    index_path: Option<PathBuf>,
-    data_dir: Option<PathBuf>,
-) -> PathBuf {
-    index_path.unwrap_or_else(|| {
-        let data_dir = data_dir.unwrap_or_else(default_data_dir);
-        search::tantivy::expected_index_dir(&data_dir)
-    })
-}
-
-fn sources_artifact_manifest_error(e: anyhow::Error) -> CliError {
-    CliError {
-        code: 5,
-        kind: CliErrorKind::LexicalGeneration.kind_str(),
-        message: format!("Failed to build lexical artifact evidence manifest: {e:#}"),
-        hint: Some(
-            "Run `cass index --full --json` first, then retry the artifact manifest command."
-                .to_string(),
-        ),
-        retryable: true,
-    }
-}
-
-fn normalized_sources_artifact_manifest_format(fmt: RobotFormat) -> RobotFormat {
-    if matches!(fmt, RobotFormat::Sessions) {
-        RobotFormat::Compact
-    } else {
-        fmt
-    }
-}
-
-fn run_sources_verify_existing_artifact_manifest(
-    index_path: PathBuf,
-    expected_manifest: Option<PathBuf>,
-    output_format: Option<RobotFormat>,
-) -> CliResult<()> {
-    let manifest_path = crate::evidence_bundle::EvidenceBundleManifest::path(&index_path);
-    let report =
-        crate::evidence_bundle::verify_evidence_bundle_manifest_file(&index_path, &manifest_path);
-    let expected_manifest_path = expected_manifest
-        .as_ref()
-        .map(|path| path.display().to_string());
-    let mut manifest_matches_expected = None;
-    let mut manifest_compare_error = None;
-    let mut actual_bundle_id = report.bundle_id.clone();
-    let mut expected_bundle_id = None;
-
-    if let Some(expected_manifest) = expected_manifest.as_ref() {
-        match (
-            crate::evidence_bundle::EvidenceBundleManifest::load(&manifest_path),
-            crate::evidence_bundle::EvidenceBundleManifest::load(expected_manifest),
-        ) {
-            (Ok(actual), Ok(expected)) => {
-                actual_bundle_id = Some(actual.bundle_id.clone());
-                expected_bundle_id = Some(expected.bundle_id.clone());
-                manifest_matches_expected = Some(actual == expected);
-            }
-            (actual, expected) => {
-                manifest_matches_expected = Some(false);
-                manifest_compare_error = Some(format!(
-                    "actual_manifest_load={}; expected_manifest_load={}",
-                    actual
-                        .as_ref()
-                        .map(|_| "ok".to_string())
-                        .unwrap_or_else(|err| format!("{err:#}")),
-                    expected
-                        .as_ref()
-                        .map(|_| "ok".to_string())
-                        .unwrap_or_else(|err| format!("{err:#}"))
-                ));
-                if let Ok(actual) = actual {
-                    actual_bundle_id = Some(actual.bundle_id);
-                }
-                if let Ok(expected) = expected {
-                    expected_bundle_id = Some(expected.bundle_id);
-                }
-            }
-        }
-    }
-
-    let expected_manifest_matches = manifest_matches_expected.unwrap_or(true);
-    let complete = report.is_complete() && expected_manifest_matches;
-    let status = if complete { "ok" } else { "error" };
-    let report_status = report.status;
-    let issue_count = report.issues.len();
-    let unsafe_issue_count = report.unsafe_issue_count;
-
-    let payload = serde_json::json!({
-        "status": status,
-        "index_path": index_path.display().to_string(),
-        "manifest_path": manifest_path.display().to_string(),
-        "expected_manifest_path": expected_manifest_path,
-        "manifest_matches_expected": manifest_matches_expected,
-        "manifest_compare_error": manifest_compare_error,
-        "actual_bundle_id": actual_bundle_id,
-        "expected_bundle_id": expected_bundle_id,
-        "verification": report,
-    });
-
-    if let Some(fmt) = output_format {
-        output_structured_value(payload, normalized_sources_artifact_manifest_format(fmt))?;
-        if !complete {
-            return Err(CliError::already_reported(
-                5,
-                CliErrorKind::LexicalGeneration.kind_str(),
-                true,
-            ));
-        }
-    } else {
-        println!("Lexical artifact evidence manifest verification");
-        println!("  index: {}", index_path.display());
-        println!("  manifest: {}", manifest_path.display());
-        if let Some(expected_manifest) = expected_manifest_path.as_deref() {
-            println!("  expected_manifest: {expected_manifest}");
-            println!(
-                "  manifest_matches_expected: {}",
-                manifest_matches_expected.unwrap_or(false)
-            );
-        }
-        println!("  status: {:?}", report_status);
-        println!("  issues: {issue_count} ({unsafe_issue_count} unsafe)");
-        if !complete {
-            return Err(CliError {
-                code: 5,
-                kind: CliErrorKind::LexicalGeneration.kind_str(),
-                message: if !expected_manifest_matches {
-                    "Lexical artifact evidence manifest does not match the expected producer manifest"
-                        .to_string()
-                } else {
-                    format!(
-                        "Lexical artifact evidence manifest verification failed: {:?}",
-                        report_status
-                    )
-                },
-                hint: Some(
-                    "Reject this copied artifact and rebuild or copy it again from the source."
-                        .to_string(),
-                ),
-                retryable: true,
-            });
-        }
-    }
-
-    Ok(())
-}
-
-fn run_sources_artifact_manifest(
-    index_path: Option<PathBuf>,
-    data_dir: Option<PathBuf>,
-    write: bool,
-    verify_existing: bool,
-    expected_manifest: Option<PathBuf>,
-    output_format: Option<RobotFormat>,
-) -> CliResult<()> {
-    let index_path = resolved_sources_artifact_manifest_index_path(index_path, data_dir);
-    if verify_existing {
-        return run_sources_verify_existing_artifact_manifest(
-            index_path,
-            expected_manifest,
-            output_format,
-        );
-    }
-
-    let manifest = search::tantivy::lexical_search_evidence_bundle_manifest(&index_path)
-        .map_err(sources_artifact_manifest_error)?;
-    let report = manifest.verify(&index_path);
-    if !report.is_complete() {
-        return Err(CliError {
-            code: 5,
-            kind: CliErrorKind::LexicalGeneration.kind_str(),
-            message: format!(
-                "Generated lexical artifact evidence manifest did not verify cleanly: {:?}",
-                report.status
-            ),
-            hint: Some(
-                "Re-run `cass index --full --json` before exchanging artifacts.".to_string(),
-            ),
-            retryable: true,
-        });
-    }
-
-    let manifest_path = if write {
-        let path = manifest.save(&index_path).map_err(|e| CliError {
-            code: 14,
-            kind: CliErrorKind::Io.kind_str(),
-            message: format!("Failed to write lexical artifact evidence manifest: {e:#}"),
-            hint: Some("Check that the index directory is writable.".to_string()),
-            retryable: true,
-        })?;
-        Some(path)
-    } else {
-        None
-    };
-    let expected_manifest_path = crate::evidence_bundle::EvidenceBundleManifest::path(&index_path);
-    let bundle_id = manifest.bundle_id.clone();
-    let kind = manifest.kind;
-    let chunk_count = manifest.chunks.len();
-
-    let payload = serde_json::json!({
-        "status": "ok",
-        "index_path": index_path.display().to_string(),
-        "manifest_path": manifest_path
-            .as_ref()
-            .unwrap_or(&expected_manifest_path)
-            .display()
-            .to_string(),
-        "wrote_manifest": write,
-        "bundle_id": bundle_id,
-        "kind": kind,
-        "chunk_count": chunk_count,
-        "expected_bytes": report.expected_bytes,
-        "verification_status": report.status,
-    });
-
-    if let Some(fmt) = output_format {
-        output_structured_value(payload, normalized_sources_artifact_manifest_format(fmt))?;
-    } else {
-        println!("Lexical artifact evidence manifest");
-        println!("  index: {}", index_path.display());
-        println!(
-            "  manifest: {}{}",
-            manifest_path
-                .as_ref()
-                .unwrap_or(&expected_manifest_path)
-                .display(),
-            if write { "" } else { " (not written)" }
-        );
-        println!(
-            "  bundle_id: {}",
-            payload["bundle_id"].as_str().unwrap_or("")
-        );
-        println!("  chunks: {}", payload["chunk_count"].as_u64().unwrap_or(0));
-        println!(
-            "  expected_bytes: {}",
-            payload["expected_bytes"].as_u64().unwrap_or(0)
-        );
-    }
-
-    Ok(())
-}
-
-/// List configured sources (P5.3)
+/// List configured sources.
+///
+/// `type = "ssh"` entries are legacy remote archive records: they are
+/// reported with `kind = "legacy-remote"`, `supported = false`, and the
+/// number of archived conversations still attributed to them.
 fn run_sources_list(verbose: bool, output_format: Option<RobotFormat>) -> CliResult<()> {
     use crate::sources::config::SourcesConfig;
-    use crate::sources::sync::{SyncStatus, current_unix_ms};
 
     let config = SourcesConfig::load().map_err(|e| CliError {
         code: 9,
@@ -110931,35 +110402,39 @@ fn run_sources_list(verbose: bool, output_format: Option<RobotFormat>) -> CliRes
     });
     let disabled_agents = config.configured_disabled_agents();
     let data_dir = default_data_dir();
-    let sync_status = SyncStatus::load(&data_dir).unwrap_or_default();
-    let now_ms = current_unix_ms();
+    let db_path = data_dir.join("agent_search.db");
+    // Archived conversation counts are best-effort: a missing or locked
+    // archive still yields a correct list, just with zero counts.
+    let archived_counts = crate::storage::sqlite::FrankenStorage::open_strict_readonly(&db_path)
+        .and_then(|storage| storage.conversation_counts_by_source())
+        .unwrap_or_default();
 
     if let Some(fmt) = structured_format {
         let sources_json: Vec<serde_json::Value> = config
             .sources
             .iter()
             .map(|s| {
-                let sync_decision = sync_status.decision_for_source_at(s, now_ms, false);
-                serde_json::json!({
-                    "name": s.name,
-                    "type": s.source_type.as_str(),
-                    "host": s.host,
-                    "paths": s.paths,
-                    "sync_schedule": s.sync_schedule.to_string(),
-                    "platform": s.platform.map(|p| p.to_string()),
-                    "sync_health": {
-                        "action": sync_decision.action.as_str(),
-                        "health": sync_decision.health.as_str(),
-                        "health_score": sync_decision.health_score,
-                        "staleness_ms": sync_decision.staleness_ms,
-                        "stale_value_score": sync_decision.stale_value_score,
-                        "manual_override": sync_decision.manual_override,
-                        "fallback_active": sync_decision.fallback_active,
-                        "next_eligible_sync_ms": sync_decision.next_eligible_sync_ms,
-                        "backoff_until_ms": sync_decision.backoff_until_ms,
-                        "reasons": sync_decision.reasons,
-                    },
-                })
+                if s.is_remote() {
+                    serde_json::json!({
+                        "name": s.name,
+                        "kind": "legacy-remote",
+                        "supported": false,
+                        "type": s.source_type.as_str(),
+                        "host": s.host,
+                        "paths": s.paths,
+                        "platform": s.platform.map(|p| p.to_string()),
+                        "sync_schedule": s.sync_schedule.to_string(),
+                        "archived_conversations": archived_counts.get(&s.name).copied().unwrap_or(0),
+                    })
+                } else {
+                    serde_json::json!({
+                        "name": s.name,
+                        "kind": "local",
+                        "supported": true,
+                        "type": s.source_type.as_str(),
+                        "paths": s.paths,
+                    })
+                }
             })
             .collect();
 
@@ -110987,8 +110462,8 @@ fn run_sources_list(verbose: bool, output_format: Option<RobotFormat>) -> CliRes
             println!("Indexing exclusions are still active for future runs.");
         }
         println!();
-        println!("To add a source, run:");
-        println!("  cass sources add user@hostname --preset macos-defaults");
+        println!("To add a local source, run:");
+        println!("  cass sources add <name> --path <dir>");
         return Ok(());
     }
 
@@ -110997,10 +110472,19 @@ fn run_sources_list(verbose: bool, output_format: Option<RobotFormat>) -> CliRes
         for source in &config.sources {
             println!("Source: {}", source.name);
             println!("  Type: {}", source.source_type);
+            if source.is_remote() {
+                let archived = archived_counts.get(&source.name).copied().unwrap_or(0);
+                println!("  Kind: legacy-remote (archive; remote sync removed)");
+                println!("  Archived conversations: {archived}");
+            } else {
+                println!("  Kind: local");
+            }
             if let Some(ref host) = source.host {
                 println!("  Host: {host}");
             }
-            println!("  Schedule: {}", source.sync_schedule);
+            if source.is_remote() {
+                println!("  Legacy schedule: {}", source.sync_schedule);
+            }
             if let Some(platform) = source.platform {
                 println!("  Platform: {platform}");
             }
@@ -111029,8 +110513,8 @@ fn run_sources_list(verbose: bool, output_format: Option<RobotFormat>) -> CliRes
         }
     } else {
         // Table output
-        println!("  {:15} {:8} {:30} {:>5}", "NAME", "TYPE", "HOST", "PATHS");
-        println!("  {}", "-".repeat(62));
+        println!("  {:15} {:13} {:30} {:>5}", "NAME", "KIND", "HOST", "PATHS");
+        println!("  {}", "-".repeat(67));
         for source in &config.sources {
             let host = source.host.as_deref().unwrap_or("-");
             let host_truncated = if host.len() > 30 {
@@ -111038,10 +110522,15 @@ fn run_sources_list(verbose: bool, output_format: Option<RobotFormat>) -> CliRes
             } else {
                 host.to_string()
             };
+            let kind = if source.is_remote() {
+                "legacy-remote"
+            } else {
+                "local"
+            };
             println!(
-                "  {:15} {:8} {:30} {:>5}",
+                "  {:15} {:13} {:30} {:>5}",
                 source.name,
-                source.source_type.as_str(),
+                kind,
                 host_truncated,
                 source.paths.len()
             );
@@ -111054,16 +110543,13 @@ fn run_sources_list(verbose: bool, output_format: Option<RobotFormat>) -> CliRes
     Ok(())
 }
 
-/// Add a new remote source (P5.2)
+/// Add a new local source: extra directories indexed in place under a name.
 fn run_sources_add(
-    url: &str,
-    name: Option<String>,
-    preset: Option<String>,
-    paths_arg: Vec<String>,
-    no_test: bool,
+    name: &str,
+    paths: Vec<String>,
     output_format: Option<RobotFormat>,
 ) -> CliResult<()> {
-    use crate::sources::config::{Platform, SourceDefinition, SourcesConfig, get_preset_paths};
+    use crate::sources::config::{SourceDefinition, SourcesConfig};
     use crate::sources::provenance::SourceKind;
 
     let structured_format = output_format.map(|fmt| {
@@ -111074,48 +110560,28 @@ fn run_sources_add(
         }
     });
 
-    // Parse URL to extract host
-    let (host, source_id) = parse_source_url(url, name.as_deref())?;
-
-    // Determine paths: preset and explicit args merge (#358 — explicit
-    // --path entries must never be silently discarded when a preset is
-    // also given), explicit args alone, or error
-    let paths = if let Some(ref preset_name) = preset {
-        let mut merged = get_preset_paths(preset_name).map_err(|e| CliError {
-            code: 10,
-            kind: CliErrorKind::Config.kind_str(),
-            message: format!("Invalid preset: {e}"),
-            hint: Some("Valid presets: macos-defaults, linux-defaults".into()),
+    // The remote `sources add user@host` form was removed with remote sync;
+    // report it through the same removed-command envelope as deleted verbs.
+    if name.contains('@') {
+        return Err(CliError {
+            code: 2,
+            kind: CliErrorKind::RemovedCommand.kind_str(),
+            message: format!("`cass sources add {name}` was removed: cass runs fully local-only"),
+            hint: Some(
+                "local equivalent: cass sources add NAME --path PATH adds a local source".into(),
+            ),
             retryable: false,
-        })?;
-        for path in paths_arg {
-            if !merged.contains(&path) {
-                merged.push(path);
-            }
-        }
-        merged
-    } else if !paths_arg.is_empty() {
-        paths_arg
-    } else {
+        });
+    }
+
+    if paths.is_empty() {
         return Err(CliError {
             code: 10,
             kind: CliErrorKind::Config.kind_str(),
-            message: "No paths specified".into(),
-            hint: Some("Use --preset macos-defaults or --path <path> to specify paths".into()),
+            message: "No paths given: a local source needs at least one --path".to_string(),
+            hint: Some("cass sources add NAME --path <dir> [--path <dir> ...]".into()),
             retryable: false,
         });
-    };
-
-    // Test SSH connectivity unless --no-test. Structured output keeps stdout
-    // for the result object, so progress text is printed only for humans.
-    if !no_test {
-        if structured_format.is_none() {
-            println!("Testing SSH connectivity to {host}...");
-        }
-        test_ssh_connectivity(&host)?;
-        if structured_format.is_none() {
-            println!("  Connected successfully");
-        }
     }
 
     // Load existing config
@@ -111128,34 +110594,21 @@ fn run_sources_add(
     })?;
 
     // Check for duplicate
-    if config.find_source(&source_id).is_some() {
+    if config.find_source(name).is_some() {
         return Err(CliError {
             code: 10,
             kind: CliErrorKind::Config.kind_str(),
-            message: format!("Source '{source_id}' already exists"),
-            hint: Some("Use a different --name or remove the existing source first".into()),
+            message: format!("Source '{name}' already exists"),
+            hint: Some("Use a different name or remove the existing source first".into()),
             retryable: false,
         });
     }
 
-    // Determine platform from preset
-    let platform = preset.as_ref().and_then(|p| {
-        if p.contains("macos") {
-            Some(Platform::Macos)
-        } else if p.contains("linux") {
-            Some(Platform::Linux)
-        } else {
-            None
-        }
-    });
-
     // Create source definition
     let source = SourceDefinition {
-        name: source_id.clone(),
-        source_type: SourceKind::Ssh,
-        host: Some(host.clone()),
+        name: name.to_string(),
+        source_type: SourceKind::Local,
         paths: paths.clone(),
-        platform,
         ..Default::default()
     };
 
@@ -111186,16 +110639,14 @@ fn run_sources_add(
         let output = serde_json::json!({
             "status": "added",
             "source": {
-                "name": source_id,
-                "type": SourceKind::Ssh.as_str(),
-                "host": host,
+                "name": name,
+                "kind": "local",
+                "type": SourceKind::Local.as_str(),
                 "paths": paths,
-                "platform": platform.map(|p| p.to_string()),
             },
-            "connectivity_tested": !no_test,
             "config_path": config_path,
             "next_steps": [
-                format!("cass sources sync --source {source_id}"),
+                "cass index".to_string(),
                 "cass sources list".to_string(),
             ],
         });
@@ -111203,231 +110654,20 @@ fn run_sources_add(
     }
 
     println!();
-    println!("Added source '{source_id}'");
-    println!("  Host: {host}");
+    println!("Added local source '{name}'");
     println!("  Paths: {} path(s)", paths.len());
     println!("  Config: {config_path}");
     println!();
     println!("Next steps:");
-    println!("  cass sources sync --source {source_id}   # Fetch sessions from this source");
-    println!("  cass sources list               # View all configured sources");
-
-    Ok(())
-}
-
-/// Set a remote source's `sync_schedule` in sources.toml (GH #531 follow-up).
-fn run_sources_schedule(
-    name: &str,
-    schedule: crate::sources::config::SyncSchedule,
-    output_format: Option<RobotFormat>,
-) -> CliResult<()> {
-    use crate::sources::config::{SourcesConfig, SyncSchedule};
-
-    let structured_format = output_format.map(|fmt| {
-        if matches!(fmt, RobotFormat::Sessions) {
-            RobotFormat::Compact
-        } else {
-            fmt
-        }
-    });
-
-    let mut config = SourcesConfig::load().map_err(|e| CliError {
-        code: 9,
-        kind: CliErrorKind::Config.kind_str(),
-        message: format!("Failed to load sources config: {e}"),
-        hint: None,
-        retryable: false,
-    })?;
-    let Some(source) = config.find_source_mut(name) else {
-        return Err(CliError {
-            code: 13,
-            kind: CliErrorKind::NotFound.kind_str(),
-            message: format!("Source '{name}' not found"),
-            hint: Some("Run 'cass sources list' to see configured sources".into()),
-            retryable: false,
-        });
-    };
-    if !source.is_remote() {
-        return Err(CliError {
-            code: 10,
-            kind: CliErrorKind::Config.kind_str(),
-            message: format!(
-                "Source '{}' is local; sync_schedule applies only to remote (ssh) sources",
-                source.name
-            ),
-            hint: Some("Local sources are indexed in place by `cass index`".into()),
-            retryable: false,
-        });
-    }
-    let previous = source.sync_schedule;
-    let stored_name = source.name.clone();
-    let changed = previous != schedule;
-    if changed {
-        source.sync_schedule = schedule;
-        config.save().map_err(|e| CliError {
-            code: 11,
-            kind: CliErrorKind::Config.kind_str(),
-            message: format!("Failed to save config: {e}"),
-            hint: Some("Check file permissions on config directory".into()),
-            retryable: false,
-        })?;
-    }
-    let config_path = SourcesConfig::config_path()
-        .ok()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "unknown".into());
-
-    if let Some(fmt) = structured_format {
-        let output = serde_json::json!({
-            "status": if changed { "updated" } else { "unchanged" },
-            "source": stored_name,
-            "sync_schedule": schedule.to_string(),
-            "previous_sync_schedule": previous.to_string(),
-            "config_path": config_path,
-        });
-        return output_structured_value(output, fmt);
-    }
-
-    if changed {
-        println!("Source '{stored_name}': sync_schedule {previous} -> {schedule}");
-    } else {
-        println!("Source '{stored_name}': sync_schedule is already {schedule}");
-    }
-    if matches!(schedule, SyncSchedule::Manual) {
-        println!("  Only an explicit `cass sources sync` fetches it.");
-    } else {
-        println!("  Jobs from `cass schedule install` sync it when due.");
-    }
-    println!("  Config: {config_path}");
-    Ok(())
-}
-
-/// Parse source URL and extract host and source_id.
-/// Accepts formats: user@host, ssh://user@host
-fn parse_source_url(url: &str, name: Option<&str>) -> Result<(String, String), CliError> {
-    // Strip ssh:// prefix if present
-    let host = url.strip_prefix("ssh://").unwrap_or(url);
-
-    // Basic hardening: avoid whitespace/control chars and option-injection.
-    if host.trim().is_empty()
-        || host.starts_with('-')
-        || host.chars().any(|c| c.is_whitespace() || c.is_control())
-        || !crate::sources::config::ssh_host_has_safe_token_chars(host)
-        || crate::sources::config::validate_optional_user_host_shape(host).is_err()
-    {
-        return Err(CliError {
-            code: 10,
-            kind: CliErrorKind::Config.kind_str(),
-            message: "Invalid host: contains unsafe characters or starts with '-'".into(),
-            hint: Some("Use format: user@hostname (e.g., user@laptop.local)".into()),
-            retryable: false,
-        });
-    }
-
-    // Validate URL contains @
-    if !host.contains('@') {
-        return Err(CliError {
-            code: 10,
-            kind: CliErrorKind::Config.kind_str(),
-            message: "Invalid URL format: missing username".into(),
-            hint: Some("Use format: user@hostname (e.g., user@laptop.local)".into()),
-            retryable: false,
-        });
-    }
-
-    // Generate source_id from hostname if not provided.
-    // Auto-generated remote names must not collide with the built-in local source ID.
-    let source_id = if let Some(n) = name {
-        n.to_string()
-    } else {
-        // Extract hostname part (after @)
-        let hostname_part = host.split('@').nth(1).unwrap_or(host);
-        // Take first segment before any dots
-        crate::sources::config::normalize_generated_remote_source_name(
-            hostname_part.split('.').next().unwrap_or(hostname_part),
-        )
-    };
-
-    Ok((host.to_string(), source_id))
-}
-
-#[cfg(test)]
-mod source_url_tests {
-    use super::*;
-
-    #[test]
-    fn parse_source_url_accepts_safe_user_host_tokens() {
-        let (host, source_id) =
-            parse_source_url("ssh://user-name_1@host-name.example", None).expect("parse");
-
-        assert_eq!(host, "user-name_1@host-name.example");
-        assert_eq!(source_id, "host-name");
-    }
-
-    #[test]
-    fn parse_source_url_rejects_shell_metacharacters_before_ssh_probe() {
-        for url in [
-            "user@host;touch /tmp/cass-owned",
-            "user@host`hostname`",
-            "user@host$(hostname)",
-            "user@host/../../secret",
-            "@host",
-            "user@",
-            "user@host@extra",
-        ] {
-            let err = parse_source_url(url, None).expect_err("must reject unsafe host");
-            assert_eq!(err.code, 10);
-            assert_eq!(err.kind, CliErrorKind::Config.kind_str());
-            assert!(err.message.contains("unsafe characters"), "{err:?}");
-        }
-    }
-}
-
-/// Test SSH connectivity to a host.
-fn test_ssh_connectivity(host: &str) -> CliResult<()> {
-    let mut ssh_args = crate::sources::strict_ssh_cli_tokens(5);
-    ssh_args.push("--".to_string());
-    ssh_args.push(host.to_string());
-    ssh_args.push(crate::sources::SSH_CONNECTIVITY_PROBE_COMMAND.to_string());
-
-    let output = std::process::Command::new("ssh")
-        .args(&ssh_args)
-        .output()
-        .map_err(|e| CliError {
-            code: 12,
-            kind: CliErrorKind::Ssh.kind_str(),
-            message: format!("Failed to run ssh command: {e}"),
-            hint: Some("Ensure ssh is installed and in PATH".into()),
-            retryable: false,
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let hint = if crate::sources::is_host_key_verification_failure(&stderr) {
-            crate::sources::host_key_verification_error(host)
-        } else {
-            format!(
-                "Error: {}. Ensure SSH key is set up for this host.",
-                stderr.trim()
-            )
-        };
-        return Err(CliError {
-            code: 12,
-            kind: CliErrorKind::Ssh.kind_str(),
-            message: format!("SSH connection failed to {host}"),
-            hint: Some(hint),
-            retryable: true,
-        });
-    }
+    println!("  cass index          # Index sessions under this source");
+    println!("  cass sources list   # View all configured sources");
 
     Ok(())
 }
 
 /// Remove a configured source (P5.7)
 fn run_sources_remove(name: &str, purge: bool, skip_confirm: bool) -> CliResult<()> {
-    use crate::sources::SyncStatus;
     use crate::sources::config::SourcesConfig;
-    use colored::Colorize;
 
     // Load existing config
     let mut config = SourcesConfig::load().map_err(|e| CliError {
@@ -111493,43 +110733,21 @@ fn run_sources_remove(name: &str, purge: bool, skip_confirm: bool) -> CliResult<
 
     println!("Removed '{}' from configuration.", stored_source_name);
 
-    let data_dir = default_data_dir();
-    match SyncStatus::load(&data_dir) {
-        Ok(mut sync_status) => {
-            if sync_status.retain_sources(config.sources.iter().map(|source| source.name.as_str()))
-                && let Err(error) = sync_status.save(&data_dir)
-            {
-                eprintln!(
-                    "{} Failed to save pruned sync status: {}",
-                    "Warning:".yellow().bold(),
-                    error
-                );
-            }
-        }
-        Err(error) => {
-            eprintln!(
-                "{} Failed to load sync status for pruning: {}",
-                "Warning:".yellow().bold(),
-                error
-            );
-        }
-    }
-
-    // Handle purge
+    // Handle purge: drop the archived mirror directory for this source.
     if purge {
-        // Find and remove synced data directory
+        let data_dir = default_data_dir();
         let source_dir = data_dir.join("remotes").join(&stored_source_name);
         if source_dir.exists() {
             std::fs::remove_dir_all(&source_dir).map_err(|e| CliError {
                 code: 15,
                 kind: CliErrorKind::Io.kind_str(),
-                message: format!("Failed to delete synced data: {e}"),
+                message: format!("Failed to delete archived mirror data: {e}"),
                 hint: None,
                 retryable: false,
             })?;
-            println!("Deleted synced data at {}", source_dir.display());
+            println!("Deleted archived mirror data at {}", source_dir.display());
         }
-        println!("Note: Run 'cass reindex' to remove entries from the search index.");
+        println!("Note: Run 'cass index --full' to remove entries from the search index.");
     }
 
     Ok(())
@@ -111566,26 +110784,17 @@ struct SourcesDoctorOutput<'a> {
     config_validation: &'a crate::sources::config_validation::SourceConfigValidation,
 }
 
-/// Bead uojcg.8.5: validate the parsed source configuration against this
-/// host. The validator is pure; this gathers its environment signals: the
-/// sync transports on PATH, an interrupted `sources setup` (its checkpoint is
-/// removed on completion) and `.sources.toml.tmp.*` files an interrupted
-/// config write left beside the config. `disabled_agents` names are not
-/// checked: they accept aliases (`claude_code`) that raw connector names would
-/// misreport as unknown.
+/// Validate the parsed source configuration against this host. The validator
+/// is pure; this gathers its environment signals: `.sources.toml.tmp.*` files
+/// an interrupted config write left beside the config. `disabled_agents`
+/// names are not checked: they accept aliases (`claude_code`) that raw
+/// connector names would misreport as unknown. Remote transports are never
+/// probed: legacy `type = "ssh"` entries surface as `legacy_remote_source`
+/// warnings.
 fn sources_doctor_config_validation(
     config: &crate::sources::config::SourcesConfig,
 ) -> crate::sources::config_validation::SourceConfigValidation {
     use crate::sources::config_validation::{ConfigValidationContext, validate_sources_config};
-    let on_path = |tool: &str| {
-        let file = if cfg!(target_os = "windows") {
-            format!("{tool}.exe")
-        } else {
-            tool.to_string()
-        };
-        std::env::var_os("PATH")
-            .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(&file).is_file()))
-    };
     let orphaned_temp_files = crate::sources::config::SourcesConfig::config_path()
         .ok()
         .and_then(|path| path.parent().map(Path::to_path_buf))
@@ -111602,9 +110811,6 @@ fn sources_doctor_config_validation(
                 .count()
         });
     let ctx = ConfigValidationContext {
-        rsync_available: on_path("rsync"),
-        scp_available: on_path("scp"),
-        setup_in_progress: matches!(crate::sources::SetupState::load(), Ok(Some(_))),
         orphaned_temp_files,
         known_agents: Vec::new(),
     };
@@ -111673,7 +110879,7 @@ fn run_sources_doctor(
             );
         } else {
             println!("No sources configured.");
-            println!("Run 'cass sources add <url>' to add one.");
+            println!("Run 'cass sources add <name> --path <dir>' to add a local source.");
         }
         return Ok(());
     }
@@ -112012,989 +111218,6 @@ mod source_doctor_local_storage_tests {
             std::fs::read(&source_dir).expect("read fixture after check"),
             contents_before
         );
-    }
-}
-
-fn sources_sync_will_reindex(
-    no_index: bool,
-    dry_run: bool,
-    total_files: u64,
-    total_bytes: u64,
-) -> bool {
-    !no_index && !dry_run && (total_files > 0 || total_bytes > 0)
-}
-
-#[cfg(test)]
-mod sources_sync_reindex_tests {
-    use super::sources_sync_will_reindex;
-
-    #[test]
-    fn transferred_files_or_payload_bytes_require_indexing_unless_disabled() {
-        for (files, bytes) in [(252, 73_703_557), (1, 0), (0, 16)] {
-            assert!(sources_sync_will_reindex(false, false, files, bytes));
-            assert!(!sources_sync_will_reindex(true, false, files, bytes));
-            assert!(!sources_sync_will_reindex(false, true, files, bytes));
-            assert!(!sources_sync_will_reindex(true, true, files, bytes));
-        }
-        for (no_index, dry_run) in [(false, false), (true, false), (false, true), (true, true)] {
-            assert!(!sources_sync_will_reindex(no_index, dry_run, 0, 0));
-        }
-    }
-}
-
-/// Sync sessions from remote sources (P5.5)
-fn run_sources_sync(
-    source_filter: Option<Vec<String>>,
-    no_index: bool,
-    verbose: bool,
-    dry_run: bool,
-    output_format: Option<RobotFormat>,
-) -> CliResult<()> {
-    use crate::sources::config::{SourcesConfig, source_names_equal, source_path_entry_error};
-    use crate::sources::sync::{SyncEngine, SyncReport, SyncStatus, current_unix_ms};
-    use colored::Colorize;
-
-    let config = SourcesConfig::load().map_err(|e| CliError {
-        code: 9,
-        kind: CliErrorKind::Config.kind_str(),
-        message: format!("Failed to load sources config: {e}"),
-        hint: Some("Run 'cass sources add' to configure a source".into()),
-        retryable: false,
-    })?;
-
-    // Filter to remote sources only
-    let remote_sources: Vec<_> = config.remote_sources().collect();
-
-    if remote_sources.is_empty() {
-        let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-            if matches!(fmt, RobotFormat::Sessions) {
-                RobotFormat::Compact
-            } else {
-                fmt
-            }
-        });
-
-        if let Some(_fmt) = structured_format {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "status": "no_sources",
-                    "message": "No remote sources configured"
-                })
-            );
-        } else {
-            println!(
-                "{}",
-                "No remote sources configured. Run 'cass sources add' first.".yellow()
-            );
-        }
-        return Ok(());
-    }
-
-    // Filter to specified sources if provided
-    let sources_to_sync: Vec<_> = if let Some(ref names) = source_filter {
-        remote_sources
-            .into_iter()
-            .filter(|s| names.iter().any(|name| source_names_equal(name, &s.name)))
-            .collect()
-    } else {
-        remote_sources
-    };
-
-    if sources_to_sync.is_empty() {
-        let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-            if matches!(fmt, RobotFormat::Sessions) {
-                RobotFormat::Compact
-            } else {
-                fmt
-            }
-        });
-
-        if let Some(_fmt) = structured_format {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "status": "no_match",
-                    "message": "No sources match the filter"
-                })
-            );
-        } else {
-            println!("{}", "No sources match the specified filter.".yellow());
-        }
-        return Ok(());
-    }
-
-    // Use the same data dir as the rest of the app (DB, Tantivy index, remotes mirror).
-    // Override with `CASS_DATA_DIR` or command-specific `--data-dir` flags elsewhere.
-    let data_dir = default_data_dir();
-
-    // Create sync engine
-    let engine = SyncEngine::new(&data_dir);
-
-    // Load existing sync status
-    let mut status = SyncStatus::load(&data_dir).unwrap_or_default();
-    let now_ms = current_unix_ms();
-
-    let is_robot = output_format.is_some() || robot_format_from_env().is_some();
-    if dry_run && !is_robot {
-        println!("{}", "DRY RUN - no changes will be made".cyan().bold());
-        println!();
-    }
-
-    let mut all_reports = Vec::new();
-    let mut total_files = 0u64;
-    let mut total_bytes = 0u64;
-    // #392: `sources sync` used to report status "complete" and exit 0 even
-    // when every path of every source failed. Track per-source outcomes so the
-    // top-level status and the process exit code tell the truth.
-    let mut attempted_sources = 0usize;
-    let mut sources_with_failures = 0usize;
-    let mut sources_fully_failed = 0usize;
-
-    for source in &sources_to_sync {
-        let sync_decision = status.decision_for_source_at(source, now_ms, true);
-
-        if !is_robot {
-            println!(
-                "{} {}...",
-                "Syncing".cyan().bold(),
-                source.name.white().bold()
-            );
-        }
-
-        if dry_run {
-            // In dry run, just show what would be synced
-            if !is_robot {
-                for (idx, path) in source.paths.iter().enumerate() {
-                    if let Some(message) = source_path_entry_error(idx, path) {
-                        println!("  {} {}", "Invalid path:".red().bold(), message.red());
-                    } else {
-                        println!("  {} {}", "Would sync:".dimmed(), path);
-                    }
-                }
-                println!();
-            } else {
-                let paths = source
-                    .paths
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, path)| {
-                        if let Some(message) = source_path_entry_error(idx, path) {
-                            serde_json::json!({
-                                "path": path,
-                                "success": false,
-                                "files": 0,
-                                "bytes": 0,
-                                "error": format!("Invalid source path: {message}"),
-                                "failure_reason": "invalid_path",
-                            })
-                        } else {
-                            serde_json::json!({
-                                "path": path,
-                                "success": serde_json::Value::Null,
-                                "files": 0,
-                                "bytes": 0,
-                                "error": serde_json::Value::Null,
-                                "failure_reason": serde_json::Value::Null,
-                            })
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let has_invalid_paths = paths
-                    .iter()
-                    .any(|path| path["success"].as_bool() == Some(false));
-                all_reports.push(serde_json::json!({
-                    "source": source.name,
-                    "status": if has_invalid_paths { "invalid_config" } else { "dry_run" },
-                    "method": "not_run",
-                    "paths": paths,
-                    "total_files": 0,
-                    "total_bytes": 0,
-                    "duration_ms": 0,
-                    "transport_decision": serde_json::to_value(
-                        SyncEngine::detect_sync_method().transport_decision()
-                    )
-                    .unwrap_or_else(|_| serde_json::json!({})),
-                    "sync_decision": serde_json::to_value(&sync_decision)
-                        .unwrap_or_else(|_| serde_json::json!({})),
-                }));
-            }
-            continue;
-        }
-
-        // Perform actual sync
-        attempted_sources += 1;
-        let report = match engine.sync_source(source) {
-            Ok(r) => {
-                if !r.all_succeeded {
-                    sources_with_failures += 1;
-                    if !r.path_results.is_empty() && r.path_results.iter().all(|p| !p.success) {
-                        sources_fully_failed += 1;
-                    }
-                }
-                r
-            }
-            Err(e) => {
-                sources_with_failures += 1;
-                sources_fully_failed += 1;
-                let failed_report = SyncReport::failed(source.name.clone(), e);
-                status.update(&source.name, &failed_report);
-
-                let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-                    if matches!(fmt, RobotFormat::Sessions) {
-                        RobotFormat::Compact
-                    } else {
-                        fmt
-                    }
-                });
-
-                if let Some(_fmt) = structured_format {
-                    let transport_decision = failed_report.transport_decision();
-                    all_reports.push(serde_json::json!({
-                        "source": source.name,
-                        "status": "error",
-                        "method": transport_decision.chosen_transport.clone(),
-                        "paths": failed_report.path_results.iter().map(|r| serde_json::json!({
-                            "path": r.remote_path,
-                            "success": r.success,
-                            "files": r.files_transferred,
-                            "bytes": r.bytes_transferred,
-                            "error": r.error,
-                            "failure_reason": r.failure_reason(),
-                        })).collect::<Vec<_>>(),
-                        "total_files": failed_report.total_files(),
-                        "total_bytes": failed_report.total_bytes(),
-                        "duration_ms": failed_report.total_duration_ms,
-                        "transport_decision": serde_json::to_value(&transport_decision)
-                            .unwrap_or_else(|_| serde_json::json!({})),
-                        "sync_decision": serde_json::to_value(&sync_decision)
-                            .unwrap_or_else(|_| serde_json::json!({})),
-                        "error": failed_report
-                            .path_results
-                            .first()
-                            .and_then(|r| r.error.clone())
-                            .unwrap_or_else(|| "sync failed".to_string()),
-                    }));
-                } else {
-                    let err_msg = failed_report
-                        .path_results
-                        .first()
-                        .and_then(|r| r.error.as_deref())
-                        .unwrap_or("sync failed");
-                    println!("  {} {}", "Error:".red().bold(), err_msg.red());
-                }
-                continue;
-            }
-        };
-
-        // Update status
-        status.update(&source.name, &report);
-
-        // Print results
-        let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-            if matches!(fmt, RobotFormat::Sessions) {
-                RobotFormat::Compact
-            } else {
-                fmt
-            }
-        });
-
-        if let Some(_fmt) = structured_format {
-            all_reports.push(serde_json::json!({
-                "source": source.name,
-                "status": if report.all_succeeded { "success" } else { "partial" },
-                "method": report.method.to_string(),
-                "paths": report.path_results.iter().map(|r| serde_json::json!({
-                    "path": r.remote_path,
-                    "success": r.success,
-                    "files": r.files_transferred,
-                    "bytes": r.bytes_transferred,
-                    "error": r.error,
-                    "failure_reason": r.failure_reason(),
-                })).collect::<Vec<_>>(),
-                "total_files": report.total_files(),
-                "total_bytes": report.total_bytes(),
-                "duration_ms": report.total_duration_ms,
-                "transport_decision": serde_json::to_value(report.transport_decision())
-                    .unwrap_or_else(|_| serde_json::json!({})),
-                "sync_decision": serde_json::to_value(&sync_decision)
-                    .unwrap_or_else(|_| serde_json::json!({})),
-            }));
-        } else {
-            for result in &report.path_results {
-                if result.success {
-                    if verbose || result.files_transferred > 0 || result.bytes_transferred > 0 {
-                        println!(
-                            "  {}: {} files ({} bytes)",
-                            result.remote_path.dimmed(),
-                            result.files_transferred.to_string().green(),
-                            format_bytes(result.bytes_transferred)
-                        );
-                    } else {
-                        println!(
-                            "  {}: {}",
-                            result.remote_path.dimmed(),
-                            "up to date".green()
-                        );
-                    }
-                } else {
-                    println!(
-                        "  {}: {}",
-                        result.remote_path.dimmed(),
-                        result.error.as_deref().unwrap_or("failed").red()
-                    );
-                }
-            }
-            println!(
-                "  {} {} files, {}",
-                "Total:".dimmed(),
-                report.total_files(),
-                format_bytes(report.total_bytes())
-            );
-            println!();
-        }
-
-        total_files += report.total_files();
-        total_bytes += report.total_bytes();
-    }
-
-    // Save sync status
-    if !dry_run {
-        let current_config = SourcesConfig::load().unwrap_or_else(|error| {
-            tracing::warn!("Failed to reload sources config before saving sync status: {error}");
-            config.clone()
-        });
-        status.retain_sources(
-            current_config
-                .sources
-                .iter()
-                .map(|source| source.name.as_str()),
-        );
-        if let Err(e) = status.save(&data_dir) {
-            tracing::warn!("Failed to save sync status: {}", e);
-        }
-    }
-
-    // Output summary
-    let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-        if matches!(fmt, RobotFormat::Sessions) {
-            RobotFormat::Compact
-        } else {
-            fmt
-        }
-    });
-
-    // #392: the top-level status must reflect per-source outcomes instead of
-    // asserting "complete" unconditionally.
-    let overall_status = if attempted_sources > 0 && sources_fully_failed == attempted_sources {
-        "failed"
-    } else if sources_with_failures > 0 {
-        "partial"
-    } else {
-        "complete"
-    };
-
-    if structured_format.is_none() && sources_with_failures > 0 {
-        println!(
-            "{} {} of {} synced source(s) had failures{}",
-            "Warning:".yellow().bold(),
-            sources_with_failures,
-            attempted_sources,
-            if overall_status == "failed" {
-                " (all paths failed)"
-            } else {
-                ""
-            }
-        );
-    }
-
-    // Capture nested indexing so structured sync emits one final document,
-    // including failure, rather than a premature success plus a second JSON.
-    // Empty files count as changes too; payload bytes remain useful evidence if
-    // a client's file-count statistic is unavailable. Reuse this exact decision
-    // in the JSON summary so the advertised action matches the executed branch.
-    let will_reindex = sources_sync_will_reindex(no_index, dry_run, total_files, total_bytes);
-    let mut indexing_result = None;
-    let indexing = if will_reindex {
-        if !is_robot {
-            println!(
-                "{} {} new files...",
-                "Re-indexing".cyan().bold(),
-                total_files
-            );
-        }
-
-        // Call indexer to include synced sessions
-        let progress = if output_format.is_some() {
-            ProgressResolved::None
-        } else if std::io::stdout().is_terminal() {
-            ProgressResolved::Bars
-        } else {
-            ProgressResolved::Plain
-        };
-
-        run_index_with_data(
-            None,           // db_override (uses data_dir default)
-            false,          // full
-            false,          // force_rebuild
-            false,          // watch
-            None,           // watch_once
-            30,             // watch_interval (default)
-            Some(data_dir), // data_dir
-            false,          // semantic
-            false,          // build_hnsw
-            None,           // embedder follows semantic policy
-            progress,
-            output_format,
-            None,  // idempotency_key
-            2000,  // progress_interval_ms (default)
-            false, // no_progress_events
-            false, // robot_trace_ingest
-            false, // background
-            is_robot.then_some(&mut indexing_result),
-            None,
-        )
-    } else {
-        Ok(())
-    };
-
-    if let Some(format) = structured_format {
-        let mut payload = serde_json::json!({
-            "status": if indexing.is_err() { "index_failed" } else { overall_status },
-            "dry_run": dry_run,
-            "sources": all_reports,
-            "sources_attempted": attempted_sources,
-            "sources_with_failures": sources_with_failures,
-            "sources_fully_failed": sources_fully_failed,
-            "total_files": total_files,
-            "total_bytes": total_bytes,
-            "will_reindex": will_reindex,
-        });
-        if let Some(result) = indexing_result {
-            payload["indexing"] = result;
-        } else if let Err(error) = &indexing {
-            payload["indexing"] = cli_error_json_payload(error, 0);
-        }
-        output_structured_value(payload, format)?;
-    }
-    indexing?;
-
-    // #392: exit nonzero when the sync did not fully succeed. The summary JSON
-    // above is the data surface (stdout); this error envelope is the
-    // diagnostic surface (stderr + exit code). Runs where every attempted
-    // source failed exit 12 (source/SSH problem); partial failures exit 8
-    // (partial result). Both are retryable.
-    if attempted_sources > 0 && sources_fully_failed == attempted_sources {
-        return Err(CliError {
-            code: 12,
-            kind: CliErrorKind::Source.kind_str(),
-            message: format!(
-                "sources sync failed: all {attempted_sources} attempted source(s) failed every path"
-            ),
-            hint: Some(
-                "Inspect per-path errors in the JSON output; check SSH connectivity and \
-                 remote paths, then retry with 'cass sources sync'"
-                    .into(),
-            ),
-            retryable: true,
-        });
-    }
-    if sources_with_failures > 0 {
-        return Err(CliError {
-            code: 8,
-            kind: CliErrorKind::Source.kind_str(),
-            message: format!(
-                "sources sync partially failed: {sources_with_failures} of {attempted_sources} \
-                 attempted source(s) had path failures"
-            ),
-            hint: Some(
-                "Successful paths were synced and indexed; inspect per-path errors in the \
-                 JSON output and retry the failed sources"
-                    .into(),
-            ),
-            retryable: true,
-        });
-    }
-
-    Ok(())
-}
-
-/// Re-ingest already-synced mirror(s) into the canonical archive without rsync.
-///
-/// #266 bug 4: `cass sources sync` only ingests when new files are transferred,
-/// so an already-current mirror (or one whose sessions never reached canonical)
-/// has no promotion path short of a wasteful re-transfer. This forces an ingest
-/// pass over the existing mirror root(s). The actual scan-root discovery is the
-/// same machinery `cass index` uses after a sync (`build_scan_roots` /
-/// `additional_scan_roots_for_scan_or_watch`), so a plain index run already
-/// scans the mirrors — we just trigger it directly, skipping the transfer.
-fn run_sources_reingest(
-    source_filter: Option<Vec<String>>,
-    full: bool,
-    output_format: Option<RobotFormat>,
-) -> CliResult<()> {
-    use crate::sources::config::{SourcesConfig, source_names_equal};
-    use colored::Colorize;
-
-    let config = SourcesConfig::load().map_err(|e| CliError {
-        code: 9,
-        kind: CliErrorKind::Config.kind_str(),
-        message: format!("Failed to load sources config: {e}"),
-        hint: Some("Run 'cass sources add' to configure a source".into()),
-        retryable: false,
-    })?;
-
-    let remote_sources: Vec<_> = config.remote_sources().collect();
-    if let Some(names) = &source_filter {
-        let unknown: Vec<_> = names
-            .iter()
-            .filter(|name| {
-                !remote_sources
-                    .iter()
-                    .any(|source| source_names_equal(name, &source.name))
-            })
-            .collect();
-        if names.is_empty() || !unknown.is_empty() {
-            return Err(CliError {
-                code: 2,
-                kind: "usage",
-                message: format!("unknown remote source selection: {unknown:?}"),
-                hint: Some("Run 'cass sources list' to see configured remote sources.".into()),
-                retryable: false,
-            });
-        }
-    }
-    if remote_sources.is_empty() {
-        let is_robot = output_format.is_some() || robot_format_from_env().is_some();
-        if is_robot {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "status": "no_sources",
-                    "message": "No remote sources configured"
-                })
-            );
-        } else {
-            println!(
-                "{}",
-                "No remote sources configured. Run 'cass sources add' first.".yellow()
-            );
-        }
-        return Ok(());
-    }
-
-    // Validate the filter resolves to configured remote sources so an operator
-    // typo fails loudly rather than silently no-op'ing.
-    let selected: Vec<&crate::sources::config::SourceDefinition> =
-        if let Some(ref names) = source_filter {
-            let matched: Vec<_> = remote_sources
-                .iter()
-                .copied()
-                .filter(|s| names.iter().any(|name| source_names_equal(name, &s.name)))
-                .collect();
-            if matched.is_empty() {
-                return Err(CliError {
-                    code: 2,
-                    kind: "usage",
-                    message: format!(
-                        "no configured remote source matches {names:?}; known: {}",
-                        remote_sources
-                            .iter()
-                            .map(|s| s.name.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                    hint: Some("Run 'cass sources list' to see configured sources.".into()),
-                    retryable: false,
-                });
-            }
-            matched
-        } else {
-            remote_sources.clone()
-        };
-
-    let data_dir = default_data_dir();
-    // Surface the mirror roots that will actually be scanned so the operator
-    // can confirm the mirror is present without opening a database before
-    // the indexer acquires its writer lock. Compare source identities, not
-    // platform-specific substrings of rendered filesystem paths.
-    let selected_names: Vec<String> = selected.iter().map(|s| s.name.clone()).collect();
-    let roots: Vec<_> = crate::indexer::build_scan_roots(None, &data_dir)
-        .into_iter()
-        .filter(|root| {
-            root.origin.kind.is_remote() && selected_names.contains(&root.origin.source_id)
-        })
-        .collect();
-    let mirror_roots: Vec<_> = roots
-        .iter()
-        .map(|root| root.path.display().to_string())
-        .collect();
-    let missing_mirrors: Vec<_> = selected_names
-        .iter()
-        .filter(|name| !roots.iter().any(|root| &root.origin.source_id == *name))
-        .cloned()
-        .collect();
-
-    let is_robot = output_format.is_some() || robot_format_from_env().is_some();
-    if !is_robot {
-        println!(
-            "{} {} source(s) from existing mirror(s) (no rsync)...",
-            "Re-ingesting".cyan().bold(),
-            selected.len()
-        );
-        for root in &mirror_roots {
-            println!("  {} {}", "mirror:".dimmed(), root);
-        }
-        if !missing_mirrors.is_empty() {
-            println!(
-                "  {} no mirror found for: {} — run 'cass sources sync' first.",
-                "warning:".yellow().bold(),
-                missing_mirrors.join(", ")
-            );
-        }
-    }
-
-    let progress = if output_format.is_some() {
-        ProgressResolved::None
-    } else if std::io::stdout().is_terminal() {
-        ProgressResolved::Bars
-    } else {
-        ProgressResolved::Plain
-    };
-
-    let mut indexing_result = None;
-    let indexing = run_index_with_data(
-        None,                   // db_override (uses data_dir default)
-        full,                   // full rebuild if requested
-        false,                  // force_rebuild
-        false,                  // watch
-        None,                   // watch_once
-        30,                     // watch_interval (default)
-        Some(data_dir.clone()), // data_dir (existing mirror root is discovered here)
-        false,                  // semantic
-        false,                  // build_hnsw
-        None,                   // embedder follows semantic policy
-        progress,
-        output_format,
-        None,  // idempotency_key
-        2000,  // progress_interval_ms (default)
-        false, // no_progress_events
-        false, // robot_trace_ingest
-        false, // background
-        is_robot.then_some(&mut indexing_result),
-        Some(selected_names),
-    );
-
-    if is_robot {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "status": if indexing.is_err() { "index_failed" } else { "complete" },
-                "kind": "sources_reingest",
-                "indexing": indexing_result.or_else(|| indexing.as_ref().err().map(|error| cli_error_json_payload(error, 0))),
-                "from_mirror": true,
-                "full": full,
-                "sources": selected.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
-                "mirror_roots": mirror_roots,
-                "missing_mirrors": missing_mirrors,
-                "data_dir": data_dir.display().to_string(),
-                "note": "Re-ingested from the existing mirror with no rsync transfer.",
-            }))
-            .unwrap_or_default()
-        );
-    }
-
-    indexing
-}
-
-/// Auto-discover SSH hosts from ~/.ssh/config (P5.6)
-fn run_sources_discover(
-    preset: &str,
-    skip_existing: bool,
-    tailscale: bool,
-    output_format: Option<RobotFormat>,
-) -> CliResult<()> {
-    use crate::sources::config::{SourcesConfig, discover_fleet_hosts, get_preset_paths};
-    use colored::Colorize;
-
-    // Get preset paths
-    let preset_paths = get_preset_paths(preset).map_err(|e| CliError {
-        code: 9,
-        kind: CliErrorKind::Config.kind_str(),
-        message: format!("Invalid preset: {e}"),
-        hint: Some("Valid presets: linux-defaults, macos-defaults".into()),
-        retryable: false,
-    })?;
-
-    // Discover SSH hosts
-    let (discovered, discovery_warning) = discover_fleet_hosts(tailscale);
-    if let Some(warning) = &discovery_warning {
-        eprintln!("{warning}");
-    }
-
-    if discovered.is_empty() {
-        let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-            if matches!(fmt, RobotFormat::Sessions) {
-                RobotFormat::Compact
-            } else {
-                fmt
-            }
-        });
-
-        if let Some(_fmt) = structured_format {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "status": "no_hosts",
-                    "message": "No hosts found in the enabled discovery providers",
-                    "discovery_warning": discovery_warning,
-                })
-            );
-        } else {
-            println!(
-                "{}",
-                "No hosts found in the enabled discovery providers".yellow()
-            );
-        }
-        return Ok(());
-    }
-
-    // Load existing config to check for duplicates
-    let existing_config = SourcesConfig::load().ok();
-    let already_configured = |host: &crate::sources::config::DiscoveredHost| {
-        existing_config.as_ref().is_some_and(|config| {
-            config.remote_sources().any(|source| {
-                source.host.as_deref().is_some_and(|target| {
-                    let target = target
-                        .rsplit('@')
-                        .next()
-                        .unwrap_or(target)
-                        .trim_end_matches('.');
-                    [&host.name, host.hostname.as_ref().unwrap_or(&host.name)]
-                        .into_iter()
-                        .any(|name| name.trim_end_matches('.').eq_ignore_ascii_case(target))
-                })
-            })
-        })
-    };
-
-    // Filter hosts
-    let hosts_to_add: Vec<_> = if skip_existing {
-        discovered
-            .into_iter()
-            .filter(|h| !already_configured(h))
-            .collect()
-    } else {
-        discovered
-    };
-
-    if hosts_to_add.is_empty() {
-        let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-            if matches!(fmt, RobotFormat::Sessions) {
-                RobotFormat::Compact
-            } else {
-                fmt
-            }
-        });
-
-        if let Some(_fmt) = structured_format {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "status": "all_existing",
-                    "message": "All discovered hosts are already configured",
-                    "discovery_warning": discovery_warning,
-                })
-            );
-        } else {
-            println!(
-                "{}",
-                "All discovered SSH hosts are already configured as sources.".green()
-            );
-        }
-        return Ok(());
-    }
-
-    // Output discovered hosts
-    let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-        if matches!(fmt, RobotFormat::Sessions) {
-            RobotFormat::Compact
-        } else {
-            fmt
-        }
-    });
-
-    if let Some(_fmt) = structured_format {
-        let hosts_json: Vec<_> = hosts_to_add
-            .iter()
-            .map(|h| {
-                serde_json::json!({
-                    "name": h.name,
-                    "hostname": h.hostname,
-                    "user": h.user,
-                    "port": h.port,
-                    "identity_file": h.identity_file,
-                    "already_configured": already_configured(h),
-                })
-            })
-            .collect();
-
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "status": "discovered",
-                "preset": preset,
-                "preset_paths": preset_paths,
-                "hosts": hosts_json,
-                "count": hosts_to_add.len(),
-                "discovery_warning": discovery_warning,
-            }))
-            .unwrap_or_default()
-        );
-    } else {
-        println!(
-            "{} {} SSH hosts from enabled discovery providers:\n",
-            "Discovered".cyan().bold(),
-            hosts_to_add.len()
-        );
-
-        for host in &hosts_to_add {
-            let status = if already_configured(host) {
-                " (already configured)".yellow().to_string()
-            } else {
-                String::new()
-            };
-
-            println!("  {} {}{}", "→".cyan(), host.name.white().bold(), status);
-
-            if let Some(hostname) = &host.hostname {
-                println!("      Hostname: {}", hostname.dimmed());
-            }
-            if let Some(user) = &host.user {
-                println!("      User: {}", user.dimmed());
-            }
-            if let Some(port) = host.port
-                && port != 22
-            {
-                println!("      Port: {}", port.to_string().dimmed());
-            }
-        }
-
-        println!();
-        println!("{} {}", "Preset:".dimmed(), preset);
-        println!("{}", "Paths to sync:".dimmed());
-        for path in &preset_paths {
-            println!("  - {}", path.dimmed());
-        }
-
-        println!();
-        println!("{} To add a host as a source, use:", "Next step:".yellow());
-        println!(
-            "  {}",
-            "cass sources add <user>@<host> --name <name> --path '~/.claude/projects'".dimmed()
-        );
-    }
-
-    Ok(())
-}
-
-/// Run the interactive sources setup wizard
-fn run_sources_setup(opts: sources::setup::SetupOptions) -> CliResult<()> {
-    use sources::setup::{SetupError, run_setup};
-
-    match run_setup(&opts) {
-        Ok(result) => {
-            if opts.json {
-                // One JSON document per command: the sync prints its own
-                // report, so robot mode defers it and says so truthfully
-                // instead of interleaving two documents on stdout.
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "status": "success",
-                        "dry_run": result.dry_run,
-                        "sources_added": result.sources_added,
-                        "hosts_installed": result.hosts_installed,
-                        "hosts_indexed": result.hosts_indexed,
-                        "total_sessions": result.total_sessions,
-                        "sync": if result.sync_pending {
-                            serde_json::json!({
-                                "status": "pending",
-                                "command": "cass sources sync --json",
-                            })
-                        } else {
-                            serde_json::json!({ "status": "skipped" })
-                        },
-                    })
-                );
-                return Ok(());
-            }
-            if result.sync_pending {
-                // WS-G.1: setup used to print "Phase 7: Syncing" and mark the
-                // sync complete without running it. Run it, and record it
-                // only once it has actually happened.
-                run_sources_sync(None, false, opts.verbose, false, None).map_err(|err| {
-                    CliError {
-                        code: err.code,
-                        kind: err.kind,
-                        message: format!("Setup finished, but the final sync failed: {}", err.message),
-                        hint: Some(
-                            "Setup state is saved; re-run 'cass sources sync' (or 'cass sources setup --resume') once the remotes are reachable"
-                                .into(),
-                        ),
-                        retryable: true,
-                    }
-                })?;
-                match sources::setup::SetupState::load() {
-                    Ok(Some(mut state)) => {
-                        state.sync_complete = true;
-                        if let Err(err) = state.save() {
-                            tracing::warn!(error = %err, "setup: could not record the completed sync in the setup state");
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(err) => {
-                        tracing::warn!(error = %err, "setup: could not reload the setup state after the sync");
-                    }
-                }
-            }
-            Ok(())
-        }
-        Err(SetupError::Cancelled) => {
-            if opts.json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "status": "cancelled",
-                        "message": "Setup cancelled by user"
-                    })
-                );
-            }
-            Ok(())
-        }
-        Err(SetupError::Interrupted) => {
-            // Progress saved, exit cleanly
-            std::process::exit(130);
-        }
-        Err(SetupError::NoHosts) => {
-            if opts.json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "status": "no_hosts",
-                        "message": "No SSH hosts found or selected"
-                    })
-                );
-            }
-            Ok(())
-        }
-        Err(e) => Err(CliError {
-            code: 9,
-            kind: CliErrorKind::Setup.kind_str(),
-            message: format!("Setup failed: {e}"),
-            hint: Some("Run with --verbose for more details".into()),
-            retryable: true,
-        }),
     }
 }
 
@@ -116459,7 +114682,7 @@ mod subcommand_robot_output_tests {
                         | AnalyticsCommand::Rebuild { common, .. }
                         | AnalyticsCommand::Validate { common, .. },
                     ) => resolve_subcommand_structured_format(&cli, common.json),
-                    Commands::Sources(SourcesCommand::Setup { json, .. }) => {
+                    Commands::Sources(SourcesCommand::List { json, .. }) => {
                         resolve_subcommand_structured_format(&cli, *json)
                     }
                     other => panic!("unexpected command variant for args {args:?}: {other:?}"),
@@ -116495,36 +114718,21 @@ mod subcommand_robot_output_tests {
     }
 
     #[test]
-    fn sources_reingest_parses_from_mirror_flags() {
+    fn removed_sources_subcommands_error_through_removed_commands() {
         run_on_large_stack(|| {
-            // #266: `cass sources reingest` re-ingests an already-synced mirror
-            // without re-running rsync. The `--from-mirror` spelling is accepted
-            // by clap as a hidden alias-free no-op understanding; the canonical
-            // flags are --source/--full/--json.
-            let cli = Cli::try_parse_from([
-                "cass",
-                "sources",
-                "reingest",
-                "--from-mirror",
-                "--source",
-                "laptop",
-                "--full",
-                "--json",
-            ])
-            .expect("parse sources reingest");
-            let Some(Commands::Sources(SourcesCommand::Reingest {
-                from_mirror,
-                source,
-                full,
-                json,
-            })) = cli.command.as_ref()
-            else {
-                panic!("expected sources reingest command, got {:?}", cli.command);
-            };
-            assert!(*from_mirror);
-            assert_eq!(source.as_deref(), Some(["laptop".to_string()].as_slice()));
-            assert!(*full);
-            assert!(*json);
+            for args in [
+                vec!["cass", "sources", "sync"],
+                vec!["cass", "sources", "setup"],
+                vec!["cass", "sources", "discover"],
+                vec!["cass", "sources", "reingest", "--from-mirror"],
+                vec!["cass", "sources", "artifact-manifest"],
+                vec!["cass", "sources", "schedule", "laptop", "daily"],
+            ] {
+                let argv: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+                let error = removed_invocation_error(&argv, REMOVED_COMMANDS, REMOVED_FLAGS)
+                    .unwrap_or_else(|| panic!("expected removed-command error for {argv:?}"));
+                assert_eq!(error.kind, CliErrorKind::RemovedCommand.kind_str());
+            }
         });
     }
 

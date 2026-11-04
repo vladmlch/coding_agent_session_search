@@ -8,9 +8,6 @@
 //! export, export-html, sources subcommands, models subcommands.
 
 use assert_cmd::Command;
-use coding_agent_search::evidence_bundle::{
-    EvidenceBundleChunk, EvidenceBundleChunkRole, EvidenceBundleKind, EvidenceBundleManifest,
-};
 use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
 use coding_agent_search::franken_sync::{Connection as FrankenConnection, params as fparams};
 use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
@@ -2506,156 +2503,8 @@ fn sources_help_shows_subcommands() {
         .stdout(contains("add"))
         .stdout(contains("remove"))
         .stdout(contains("doctor"))
-        .stdout(contains("sync"))
-        .stdout(contains("artifact-manifest"));
-}
-
-fn write_cli_test_evidence_manifest(
-    index_path: &Path,
-    chunk_bytes: &[u8],
-) -> EvidenceBundleManifest {
-    fs::create_dir_all(index_path).expect("create lexical artifact test dir");
-    fs::write(index_path.join("chunk.bin"), chunk_bytes).expect("write lexical artifact chunk");
-    let chunk = EvidenceBundleChunk::from_file(
-        index_path,
-        "chunk.bin",
-        EvidenceBundleChunkRole::LexicalShard,
-        true,
-        None,
-    )
-    .expect("digest lexical artifact chunk");
-    let mut manifest = EvidenceBundleManifest::new(
-        "cli-test-lexical-bundle",
-        EvidenceBundleKind::LexicalGeneration,
-        0,
-    );
-    manifest.chunks.push(chunk);
-    manifest.save(index_path).expect("save evidence manifest");
-    manifest
-}
-
-fn write_cli_expected_manifest(path: &Path, manifest: &EvidenceBundleManifest) {
-    fs::write(
-        path,
-        serde_json::to_vec_pretty(manifest).expect("serialize expected manifest"),
-    )
-    .expect("write expected manifest");
-}
-
-#[test]
-fn sources_artifact_manifest_verify_existing_json_accepts_complete_manifest() {
-    let tmp = TempDir::new().unwrap();
-    let index_path = tmp.path().join("copied-index");
-    write_cli_test_evidence_manifest(&index_path, b"stable bytes");
-
-    let mut cmd = base_cmd(tmp.path());
-    cmd.args([
-        "sources",
-        "artifact-manifest",
-        "--index-path",
-        index_path.to_str().unwrap(),
-        "--verify-existing",
-        "--json",
-    ]);
-
-    let output = cmd.assert().success().get_output().clone();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(stdout.trim()).expect("valid artifact manifest json");
-    assert_eq!(json["status"], "ok");
-    assert_eq!(json["verification"]["status"], "complete");
-}
-
-#[test]
-fn sources_artifact_manifest_verify_existing_json_compares_expected_manifest() {
-    let tmp = TempDir::new().unwrap();
-    let index_path = tmp.path().join("copied-index");
-    let expected_manifest = write_cli_test_evidence_manifest(&index_path, b"producer bytes");
-    let expected_manifest_path = tmp.path().join("producer-manifest.json");
-    write_cli_expected_manifest(&expected_manifest_path, &expected_manifest);
-
-    let mut cmd = base_cmd(tmp.path());
-    cmd.args([
-        "sources",
-        "artifact-manifest",
-        "--index-path",
-        index_path.to_str().unwrap(),
-        "--verify-existing",
-        "--expected-manifest",
-        expected_manifest_path.to_str().unwrap(),
-        "--json",
-    ]);
-
-    let output = cmd.assert().success().get_output().clone();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(stdout.trim()).expect("valid artifact manifest json");
-    assert_eq!(json["status"], "ok");
-    assert_eq!(json["verification"]["status"], "complete");
-    assert_eq!(json["manifest_matches_expected"], true);
-    assert_eq!(
-        json["actual_bundle_id"], json["expected_bundle_id"],
-        "matching producer and copied manifests should report the same bundle id"
-    );
-}
-
-#[test]
-fn sources_artifact_manifest_verify_existing_json_rejects_sidecar_rewrite() {
-    let tmp = TempDir::new().unwrap();
-    let index_path = tmp.path().join("copied-index");
-    let expected_manifest = write_cli_test_evidence_manifest(&index_path, b"producer bytes");
-    let expected_manifest_path = tmp.path().join("producer-manifest.json");
-    write_cli_expected_manifest(&expected_manifest_path, &expected_manifest);
-
-    write_cli_test_evidence_manifest(&index_path, b"tampered bytes");
-
-    let mut cmd = base_cmd(tmp.path());
-    cmd.args([
-        "sources",
-        "artifact-manifest",
-        "--index-path",
-        index_path.to_str().unwrap(),
-        "--verify-existing",
-        "--expected-manifest",
-        expected_manifest_path.to_str().unwrap(),
-        "--json",
-    ]);
-
-    let output = cmd.assert().failure().get_output().clone();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(stdout.trim()).expect("valid artifact manifest json");
-    assert_eq!(json["status"], "error");
-    assert_eq!(json["verification"]["status"], "complete");
-    assert_eq!(json["manifest_matches_expected"], false);
-}
-
-#[test]
-fn sources_artifact_manifest_verify_existing_json_rejects_corrupt_artifact() {
-    let tmp = TempDir::new().unwrap();
-    let index_path = tmp.path().join("copied-index");
-    write_cli_test_evidence_manifest(&index_path, b"stable bytes");
-    fs::write(index_path.join("chunk.bin"), b"STABLE bytes").expect("mutate artifact chunk");
-
-    let mut cmd = base_cmd(tmp.path());
-    cmd.args([
-        "sources",
-        "artifact-manifest",
-        "--index-path",
-        index_path.to_str().unwrap(),
-        "--verify-existing",
-        "--json",
-    ]);
-
-    let output = cmd.assert().failure().get_output().clone();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(stdout.trim()).expect("valid artifact manifest json");
-    assert_eq!(json["status"], "error");
-    assert_eq!(json["verification"]["status"], "unsafe");
-    assert!(
-        json["verification"]["issues"]
-            .as_array()
-            .expect("issues array")
-            .iter()
-            .any(|issue| issue["kind"] == "digest_mismatch")
-    );
+        .stdout(contains("mappings"))
+        .stdout(contains("agents"));
 }
 
 // =============================================================================
@@ -5466,43 +5315,43 @@ const REMOVED_COMMAND_CASES: &[RemovedCommandCase] = &[
         args: &["sources", "sync"],
         display: "cass sources sync",
         task: 9,
-        pending: true,
-        probe_args: Some(&["sources", "sync", "--help"]),
+        pending: false,
+        probe_args: None,
     },
     RemovedCommandCase {
         args: &["sources", "setup"],
         display: "cass sources setup",
         task: 9,
-        pending: true,
-        probe_args: Some(&["sources", "setup", "--help"]),
+        pending: false,
+        probe_args: None,
     },
     RemovedCommandCase {
         args: &["sources", "discover"],
         display: "cass sources discover",
         task: 9,
-        pending: true,
-        probe_args: Some(&["sources", "discover", "--help"]),
+        pending: false,
+        probe_args: None,
     },
     RemovedCommandCase {
         args: &["sources", "reingest"],
         display: "cass sources reingest",
         task: 9,
-        pending: true,
-        probe_args: Some(&["sources", "reingest", "--help"]),
+        pending: false,
+        probe_args: None,
     },
     RemovedCommandCase {
         args: &["sources", "artifact-manifest"],
         display: "cass sources artifact-manifest",
         task: 9,
-        pending: true,
-        probe_args: Some(&["sources", "artifact-manifest", "--help"]),
+        pending: false,
+        probe_args: None,
     },
     RemovedCommandCase {
         args: &["sources", "schedule"],
         display: "cass sources schedule",
         task: 9,
-        pending: true,
-        probe_args: Some(&["sources", "schedule", "--help"]),
+        pending: false,
+        probe_args: None,
     },
     // Task 12 — model download/acquisition surfaces. The flag rows probe
     // the flag itself: while pending the flag must still parse, and a

@@ -399,71 +399,12 @@ use coding_agent_search::connectors::{
 };
 use coding_agent_search::model::types::{Conversation, Message, MessageRole, Snippet};
 use coding_agent_search::search::query::{MatchType, SearchHit};
-use coding_agent_search::sources::probe::HostProbeResult;
 use rand::{RngExt, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use serde_json::json;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-
-// =============================================================================
-// Source/Probe Fixture Loaders
-// =============================================================================
-
-/// Load a probe fixture by name from tests/fixtures/sources/probe/{name}.json
-///
-/// Available fixtures:
-/// - `indexed_host` - Host with cass installed and indexed
-/// - `not_indexed_host` - Host with cass installed but not indexed
-/// - `no_cass_host` - Host without cass installed
-/// - `empty_index_host` - Host with cass but empty index
-/// - `unreachable_host` - Host that couldn't be reached via SSH
-/// - `unknown_status_host` - Host where status couldn't be determined
-#[allow(dead_code)]
-pub fn load_probe_fixture(name: &str) -> HostProbeResult {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/sources/probe")
-        .join(format!("{}.json", name));
-    let content = std::fs::read_to_string(&path).expect("Failed to read probe fixture");
-    serde_json::from_str(&content).expect("Failed to parse probe fixture")
-}
-
-/// Pre-built probe fixtures for common test scenarios.
-#[allow(dead_code)]
-pub mod probe_fixtures {
-    use super::*;
-
-    /// Host with cass installed and fully indexed (847 sessions).
-    pub fn indexed_host() -> HostProbeResult {
-        load_probe_fixture("indexed_host")
-    }
-
-    /// Host with cass installed but not yet indexed.
-    pub fn not_indexed_host() -> HostProbeResult {
-        load_probe_fixture("not_indexed_host")
-    }
-
-    /// Host without cass installed.
-    pub fn no_cass_host() -> HostProbeResult {
-        load_probe_fixture("no_cass_host")
-    }
-
-    /// Host with cass indexed but 0 sessions.
-    pub fn empty_index_host() -> HostProbeResult {
-        load_probe_fixture("empty_index_host")
-    }
-
-    /// Host that couldn't be reached via SSH.
-    pub fn unreachable_host() -> HostProbeResult {
-        load_probe_fixture("unreachable_host")
-    }
-
-    /// Host where cass status couldn't be determined.
-    pub fn unknown_status_host() -> HostProbeResult {
-        load_probe_fixture("unknown_status_host")
-    }
-}
 
 /// Captures tracing output for tests.
 #[allow(dead_code)]

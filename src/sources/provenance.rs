@@ -201,6 +201,65 @@ impl std::fmt::Display for SourceFilter {
     }
 }
 
+/// Convert a remote path to a safe directory name.
+///
+/// Historical remote mirrors under `<data-dir>/remotes/<name>/mirror/` stored
+/// each synchronized remote path in a directory named by this function. The
+/// local-only build keeps those mirrors as read-only archives, so the naming
+/// scheme must stay byte-for-byte stable for the indexer to keep finding them.
+///
+/// Sanitizes path by:
+/// - Removing leading `~` and `/`
+/// - Replacing path separators and spaces with underscores
+/// - Removing parent directory references (`..`) to prevent traversal attacks
+/// - Removing current directory references (`.`)
+/// - Appending a stable hash to prevent collisions (e.g., "foo/bar" vs "foo_bar")
+pub fn path_to_safe_dirname(path: &str) -> String {
+    use std::path::{Component, Path};
+
+    let path_obj = Path::new(path);
+    let mut parts: Vec<&str> = Vec::new();
+
+    for component in path_obj.components() {
+        match component {
+            Component::Normal(name) => {
+                if let Some(s) = name.to_str() {
+                    // Skip "~" (home directory marker) and empty/dot-only components
+                    if !s.is_empty() && s != "." && s != "~" {
+                        parts.push(s);
+                    }
+                }
+            }
+            // Skip all traversal components for security
+            Component::ParentDir
+            | Component::CurDir
+            | Component::RootDir
+            | Component::Prefix(_) => {}
+        }
+    }
+
+    let cleaned = parts.join("_").replace([' ', '\\'], "_");
+
+    // Append stable hash to prevent collisions
+    let hash = fnv1a_hash(path);
+    let hash_suffix = format!("{:08x}", hash);
+
+    if cleaned.is_empty() {
+        format!("root_{}", hash_suffix)
+    } else {
+        format!("{}_{}", cleaned, hash_suffix)
+    }
+}
+
+fn fnv1a_hash(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in text.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

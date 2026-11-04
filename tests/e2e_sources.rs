@@ -1,13 +1,11 @@
 //! E2E tests for `cass sources` CLI commands.
 //!
-//! Tests the sources subcommands end-to-end:
-//! - sources add (with --no-test to skip SSH)
-//! - sources list
-//! - sources remove
-//! - sources doctor (limited without actual SSH)
-//! - sources sync (dry-run only)
-//!
-//! Note: Tests that require actual SSH connectivity are marked #[ignore].
+//! Tests the local-only sources subcommands end-to-end:
+//! - sources add NAME --path PATH (local sources only)
+//! - sources list / sources remove
+//! - sources doctor (local checks only; legacy ssh entries warn)
+//! - sources mappings / sources agents
+//! - ordinary `cass index` over historical remote-mirror archives
 
 use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use coding_agent_search::storage::sqlite::FrankenStorage;
@@ -35,109 +33,6 @@ fn create_sources_config(config_dir: &Path, toml_content: &str) {
 fn read_sources_config(config_dir: &Path) -> String {
     let config_file = config_dir.join("cass").join("sources.toml");
     fs::read_to_string(&config_file).unwrap_or_default()
-}
-
-#[test]
-#[cfg(target_os = "linux")]
-fn sources_setup_resume_retains_pending_sync_after_real_transport_failure() {
-    use coding_agent_search::sources::probe::HostProbeResult;
-    use coding_agent_search::sources::setup::SetupState;
-
-    let tracker =
-        tracker_for("sources_setup_resume_retains_pending_sync_after_real_transport_failure");
-    let root = tempfile::tempdir().unwrap();
-    let config = root.path().join("config");
-    let cache = root.path().join("cache");
-    let home = root.path().join("home");
-    fs::create_dir_all(&home).unwrap();
-    fs::create_dir_all(cache.join("cass")).unwrap();
-    create_sources_config(
-        &config,
-        "[[sources]]\nname = 'retry-peer'\ntype = 'ssh'\nhost = 'retry-peer'\npaths = ['~/.codex/sessions']\n",
-    );
-    // Real OpenSSH takes a deterministic failing transport, without contacting
-    // any external host or substituting a fake ssh/rsync executable.
-    let ssh_config = root.path().join("ssh_config");
-    fs::write(
-        &ssh_config,
-        "Host *\n  ProxyCommand false\n  BatchMode yes\n",
-    )
-    .unwrap();
-    let mut probe = HostProbeResult::unreachable("retry-peer", "unused fixture error");
-    probe.reachable = true;
-    probe.error = None;
-    let state = SetupState {
-        discovery_complete: true,
-        discovered_hosts: 1,
-        discovered_host_names: vec!["retry-peer".into()],
-        probing_complete: true,
-        probed_hosts: vec![probe],
-        selection_complete: true,
-        selected_host_names: vec!["retry-peer".into()],
-        installation_complete: true,
-        indexing_complete: true,
-        configuration_complete: true,
-        ..Default::default()
-    };
-    let state_path = cache.join("cass/setup_state.json");
-    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
-    let config_before = read_sources_config(&config);
-    let env = tracker
-        .command_environment()
-        .with_home(&home)
-        .with_var("XDG_CONFIG_HOME", &config)
-        .with_var("XDG_CACHE_HOME", &cache)
-        .with_var("XDG_DATA_HOME", root.path().join("data"))
-        .with_var("CASS_DATA_DIR", root.path().join("cass-data"))
-        .with_var("CASS_SSH_CONFIG", &ssh_config);
-    let args = [
-        "sources",
-        "setup",
-        "--resume",
-        "--non-interactive",
-        "--skip-install",
-        "--skip-index",
-    ];
-    let failed = env
-        .cass_assert_command()
-        .args(args)
-        .timeout(std::time::Duration::from_secs(30))
-        .output()
-        .unwrap();
-    assert!(
-        !failed.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&failed.stdout),
-        String::from_utf8_lossy(&failed.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&failed.stderr).contains("final sync failed"),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&failed.stdout),
-        String::from_utf8_lossy(&failed.stderr)
-    );
-    for _ in 0..2 {
-        let resumed = env
-            .cass_assert_command()
-            .args(args)
-            .arg("--json")
-            .timeout(std::time::Duration::from_secs(30))
-            .output()
-            .unwrap();
-        assert!(
-            resumed.status.success(),
-            "stderr={}",
-            String::from_utf8_lossy(&resumed.stderr)
-        );
-        let result: Value = serde_json::from_slice(&resumed.stdout).unwrap();
-        assert_eq!(result["sync"]["status"], "pending");
-        let retained: SetupState = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
-        assert_eq!(retained.selected_host_names, ["retry-peer"]);
-        assert!(retained.configuration_complete);
-        assert!(!retained.sync_complete);
-        assert_eq!(read_sources_config(&config), config_before);
-    }
-    tracker.complete();
 }
 
 fn cass_data_dir(data_root: &Path) -> std::path::PathBuf {
@@ -199,92 +94,15 @@ fn seed_archive_conversation(db_path: &Path, agent_slug: &str, marker: &str) {
 // sources list tests
 // =============================================================================
 
-/// Discovery must use the operator's override, including quoted Include files.
+/// Historical remote mirrors under `<data-dir>/remotes/<name>/mirror/` are
+/// indexed by ordinary `cass index` runs as read-only archives. This test
+/// seeds such a mirror and asserts the archive indexes and searches under the
+/// legacy source's identity.
 #[test]
-fn sources_discover_uses_private_ssh_config_override_and_includes() {
-    let tracker = tracker_for("sources_discover_uses_private_ssh_config_override_and_includes");
-    let root = tempfile::tempdir().unwrap().keep();
-    let home = root.join("home");
-    fs::create_dir_all(&home).unwrap();
-    let config = root.join("private-config");
-    let included = root.join("fleet hosts.conf");
-    fs::write(&config, format!("Include \"{}\"\n", included.display())).unwrap();
-    fs::write(
-        &included,
-        "Host workstation laptop\n HostName example.invalid\n",
-    )
-    .unwrap();
-    create_sources_config(
-        &root.join("config"),
-        "[[sources]]\nname = \"workstation\"\ntype = \"ssh\"\nhost = \"operator@different.invalid\"\npaths = [\"~/.codex/sessions\"]\n",
-    );
-    let output = tracker
-        .cass_std_command()
-        .args(["sources", "discover", "--json"])
-        .env("HOME", &home)
-        .env("CASS_SSH_CONFIG", &config)
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .current_dir(&home)
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let hosts = result["hosts"].as_array().expect("discovered host array");
-    assert_eq!(hosts.len(), 2, "{result}");
-    assert_eq!(hosts[0]["name"], "workstation");
-    assert_eq!(hosts[1]["name"], "laptop");
-    assert_eq!(hosts[0]["already_configured"], false);
-    // A missing optional CLI must retain configured hosts and report fallback.
-    // This uses a genuinely empty executable search path, not a fake tailscale.
-    let fallback = tracker
-        .cass_std_command()
-        .args(["sources", "discover", "--tailscale", "--json"])
-        .env("HOME", &home)
-        .env("PATH", root.join("no-executables"))
-        .env("CASS_SSH_CONFIG", &config)
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .current_dir(&home)
-        .output()
-        .unwrap();
-    assert!(fallback.status.success());
-    let fallback: Value = serde_json::from_slice(&fallback.stdout).unwrap();
-    assert_eq!(fallback["hosts"], result["hosts"]);
-    assert!(
-        fallback["discovery_warning"]
-            .as_str()
-            .unwrap()
-            .contains("could not start")
-    );
-    create_sources_config(
-        &root.join("config"),
-        "[[sources]]\nname = \"my-archive\"\ntype = \"ssh\"\nhost = \"operator@example.invalid\"\npaths = [\"~/.codex/sessions\"]\n",
-    );
-    let skipped = tracker
-        .cass_std_command()
-        .args(["sources", "discover", "--skip-existing", "--json"])
-        .env("HOME", &home)
-        .env("CASS_SSH_CONFIG", &config)
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .current_dir(&home)
-        .output()
-        .unwrap();
-    assert!(skipped.status.success());
-    let skipped: Value = serde_json::from_slice(&skipped.stdout).unwrap();
-    assert_eq!(skipped["status"], "all_existing");
-    tracker.complete();
-}
+fn legacy_remote_mirror_indexes_and_searches_under_source_id() {
+    use coding_agent_search::sources::provenance::path_to_safe_dirname;
 
-/// Real mirror ingestion must return one JSON document on success and lock refusal.
-#[test]
-fn sources_reingest_json_preserves_index_result_and_busy_exit() {
-    use coding_agent_search::sources::sync::path_to_safe_dirname;
-    use fs2::FileExt;
-
-    let tracker = tracker_for("sources_reingest_json_preserves_index_result_and_busy_exit");
+    let tracker = tracker_for("legacy_remote_mirror_indexes_and_searches_under_source_id");
     let root = tempfile::tempdir().unwrap().keep();
     let home = root.join("home");
     let config = root.join("config");
@@ -326,54 +144,13 @@ sync_schedule = "manual"
         tracker.command_environment().apply_to_std(&mut command);
         command
     };
-    let lock = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(data.join("index-run.lock"))
-        .unwrap();
-    lock.lock_exclusive().unwrap();
-    let busy = command()
-        .args(["sources", "reingest", "--from-mirror", "--json"])
-        .output()
-        .unwrap();
-    assert_eq!(
-        busy.status.code(),
-        Some(7),
-        "{}",
-        String::from_utf8_lossy(&busy.stderr)
-    );
-    let refused: Value =
-        serde_json::from_slice(&busy.stdout).expect("one JSON response on index refusal");
-    assert_eq!(refused["status"], "index_failed");
-    assert_eq!(refused["indexing"]["success"], false);
-    assert_eq!(refused["indexing"]["code"], 7);
-    assert!(
-        refused["indexing"]["error"]
-            .as_str()
-            .is_some_and(|s| !s.is_empty())
-    );
-    assert!(
-        !data.join("agent_search.db").exists(),
-        "a refused mirror preview must not create/open the archive for writing"
-    );
-    FileExt::unlock(&lock).unwrap();
 
-    let ingested = command()
-        .args(["sources", "reingest", "--from-mirror", "--json"])
-        .output()
-        .unwrap();
+    let ingested = command().args(["index", "--json"]).output().unwrap();
     assert!(
         ingested.status.success(),
         "{}",
         String::from_utf8_lossy(&ingested.stderr)
     );
-    let result: Value =
-        serde_json::from_slice(&ingested.stdout).expect("one JSON response after indexing");
-    assert_eq!(result["status"], "complete");
-    assert_eq!(result["indexing"]["success"], true);
-    assert_eq!(result["indexing"]["messages"], 1);
     let found = command()
         .args([
             "search",
@@ -401,19 +178,21 @@ sync_schedule = "manual"
 }
 
 #[test]
-fn sources_reingest_scope_streaming() {
-    assert_sources_reingest_scope("1");
+fn legacy_mirrors_index_with_source_identity_streaming() {
+    assert_legacy_mirrors_index_with_source_identity("1");
 }
 
 #[test]
-fn sources_reingest_scope_batch() {
-    assert_sources_reingest_scope("0");
+fn legacy_mirrors_index_with_source_identity_batch() {
+    assert_legacy_mirrors_index_with_source_identity("0");
 }
 
-fn assert_sources_reingest_scope(streaming: &str) {
-    use coding_agent_search::sources::sync::path_to_safe_dirname;
+fn assert_legacy_mirrors_index_with_source_identity(streaming: &str) {
+    use coding_agent_search::sources::provenance::path_to_safe_dirname;
 
-    let tracker = tracker_for(&format!("sources_reingest_scope_{streaming}"));
+    let tracker = tracker_for(&format!(
+        "legacy_mirrors_index_with_source_identity_{streaming}"
+    ));
     let root = tempfile::tempdir().unwrap().keep();
     let home = root.join("home");
     let config = root.join("config");
@@ -500,19 +279,6 @@ paths = ["/synthetic/.codex/sessions"]
         );
         output
     };
-    // A mixed valid/invalid selection must fail before the first writable open.
-    run(
-        &["sources", "reingest", "--source", "alpha,unknown", "--json"],
-        2,
-    );
-    assert!(!data.join("agent_search.db").exists());
-    let ingest = |args: &[&str]| {
-        let output = run(args, 0);
-        let payload: Value = serde_json::from_slice(&output.stdout).expect("single reingest JSON");
-        assert_eq!(payload["status"], "complete", "{payload}");
-        assert_eq!(payload["indexing"]["success"], true, "{payload}");
-        payload
-    };
     let search_sources = |expected: &[&str]| {
         let output = run(
             &[
@@ -536,43 +302,14 @@ paths = ["/synthetic/.codex/sessions"]
         actual.sort_unstable();
         assert_eq!(
             actual, expected,
-            "unselected mirror/local history was ingested: {payload}"
+            "mirror/local history must be searchable under its source id: {payload}"
         );
     };
-    let first = ingest(&["sources", "reingest", "--source", "ALPHA", "--json"]);
-    assert_eq!(first["sources"], serde_json::json!(["alpha"]));
-    assert_eq!(first["missing_mirrors"], serde_json::json!([]));
-    assert_eq!(first["mirror_roots"].as_array().unwrap().len(), 1);
-    search_sources(&["alpha"]);
-    {
-        let storage = FrankenStorage::open(&data.join("agent_search.db")).unwrap();
-        assert_eq!(storage.get_last_scan_ts().unwrap(), None);
-        assert_eq!(storage.get_connector_last_scan_ts("codex").unwrap(), None);
-        storage.set_last_scan_ts(1234).unwrap();
-        storage.set_connector_last_scan_ts("codex", 1234).unwrap();
-    }
-    seed(&alpha.join("rollout-alpha-second.jsonl"), "alpha-second");
-    ingest(&[
-        "sources", "reingest", "--source", "alpha", "--full", "--json",
-    ]);
-    search_sources(&["alpha", "alpha"]);
-    ingest(&["sources", "reingest", "--source", "alpha", "--json"]);
-    search_sources(&["alpha", "alpha"]);
-    let all = ingest(&["sources", "reingest", "--json"]);
-    assert_eq!(all["missing_mirrors"], serde_json::json!(["absent"]));
-    search_sources(&["alpha", "alpha", "beta"]);
-    {
-        let storage = FrankenStorage::open_readonly(&data.join("agent_search.db")).unwrap();
-        assert_eq!(storage.get_last_scan_ts().unwrap(), Some(1234));
-        assert_eq!(
-            storage.get_connector_last_scan_ts("codex").unwrap(),
-            Some(1234)
-        );
-    }
-    // A subsequent ordinary scan must still see local history that predates
-    // all the mirror-only runs. Neither scan mode may hide it with a watermark.
+    // Ordinary `cass index` picks up every seeded mirror under its legacy
+    // source id; a configured legacy source without a mirror is skipped, and
+    // the locally seeded codex file lands under `local`.
     run(&["index", "--json"], 0);
-    search_sources(&["alpha", "alpha", "beta", "local"]);
+    search_sources(&["alpha", "beta", "local"]);
     tracker.complete();
 }
 
@@ -1091,19 +828,9 @@ paths = ["~/.claude/projects"]
     let sources = json["sources"].as_array().expect("sources should be array");
     assert_eq!(sources.len(), 1);
     assert_eq!(sources[0]["name"], "laptop");
-    assert_eq!(sources[0]["sync_health"]["health"], "never_synced");
-    assert_eq!(sources[0]["sync_health"]["action"], "skip");
-    assert_eq!(sources[0]["sync_health"]["stale_value_score"], 100);
-    assert_eq!(
-        sources[0]["sync_health"]["staleness_ms"],
-        serde_json::Value::Null
-    );
-    assert_eq!(sources[0]["sync_health"]["manual_override"], false);
-    assert!(
-        sources[0]["sync_health"]["reasons"]
-            .as_array()
-            .is_some_and(|reasons| !reasons.is_empty())
-    );
+    assert_eq!(sources[0]["kind"], "legacy-remote");
+    assert_eq!(sources[0]["supported"], false);
+    assert_eq!(sources[0]["archived_conversations"], 0);
     tracker.end(
         "verify_json",
         Some("Verify JSON structure and content"),
@@ -1117,10 +844,10 @@ paths = ["~/.claude/projects"]
 // sources add tests
 // =============================================================================
 
-/// Test: sources add with --no-test creates config without SSH connectivity.
+/// Test: sources add creates a local source from an explicit path.
 #[test]
-fn sources_add_no_test() {
-    let tracker = tracker_for("sources_add_no_test");
+fn sources_add_local() {
+    let tracker = tracker_for("sources_add_local");
 
     let start = tracker.start("setup", Some("Create temp config directory"));
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1128,25 +855,16 @@ fn sources_add_no_test() {
     fs::create_dir_all(&config_dir).unwrap();
     tracker.end("setup", Some("Create temp config directory"), start);
 
-    let start = tracker.start("run_sources_add", Some("Run sources add with --no-test"));
+    let start = tracker.start("run_sources_add", Some("Run sources add with a local path"));
     let mut command = tracker.cass_assert_command();
     let output = command
-        .args([
-            "sources",
-            "add",
-            "user@myserver.local",
-            "--name",
-            "myserver",
-            "--preset",
-            "linux-defaults",
-            "--no-test",
-        ])
+        .args(["sources", "add", "myserver", "--path", "~/extra/sessions"])
         .env("XDG_CONFIG_HOME", &config_dir)
         .output()
         .expect("sources add command");
     tracker.end(
         "run_sources_add",
-        Some("Run sources add with --no-test"),
+        Some("Run sources add with a local path"),
         start,
     );
 
@@ -1161,7 +879,7 @@ fn sources_add_no_test() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Added source 'myserver'"),
+        stdout.contains("Added local source 'myserver'"),
         "Expected success message, got: {stdout}"
     );
     let config_content = read_sources_config(&config_dir);
@@ -1170,8 +888,12 @@ fn sources_add_no_test() {
         "Source not in config file"
     );
     assert!(
-        config_content.contains("user@myserver.local"),
-        "Host not in config file"
+        config_content.contains("extra/sessions"),
+        "Path not in config file"
+    );
+    assert!(
+        config_content.contains("local"),
+        "Local type not in config file"
     );
     tracker.end(
         "verify_output",
@@ -1198,14 +920,9 @@ fn sources_add_json_reports_the_saved_source_and_refuses_duplicates_as_json() {
             .args([
                 "sources",
                 "add",
-                "user@myserver.local",
-                "--name",
                 "myserver",
-                "--preset",
-                "linux-defaults",
                 "--path",
                 "~/extra/sessions",
-                "--no-test",
                 "--json",
             ])
             .env("XDG_CONFIG_HOME", &config_dir)
@@ -1227,23 +944,17 @@ fn sources_add_json_reports_the_saved_source_and_refuses_duplicates_as_json() {
     });
     assert_eq!(result["status"], "added");
     assert_eq!(result["source"]["name"], "myserver");
-    assert_eq!(result["source"]["type"], "ssh");
-    assert_eq!(result["source"]["host"], "user@myserver.local");
-    assert_eq!(result["source"]["platform"], "linux");
+    assert_eq!(result["source"]["kind"], "local");
+    assert_eq!(result["source"]["type"], "local");
     let paths: Vec<&str> = result["source"]["paths"]
         .as_array()
         .expect("paths array")
         .iter()
         .filter_map(Value::as_str)
         .collect();
-    assert!(paths.contains(&"~/extra/sessions"), "paths: {paths:?}");
-    assert!(paths.len() > 1, "preset paths must be merged: {paths:?}");
-    assert_eq!(result["connectivity_tested"], false);
-    assert_eq!(
-        result["next_steps"][0],
-        "cass sources sync --source myserver"
-    );
-    assert!(read_sources_config(&config_dir).contains("user@myserver.local"));
+    assert_eq!(paths, ["~/extra/sessions"], "paths: {paths:?}");
+    assert_eq!(result["next_steps"][0], "cass index");
+    assert!(read_sources_config(&config_dir).contains("myserver"));
 
     let duplicate = add();
     assert_eq!(duplicate.status.code(), Some(10));
@@ -1266,108 +977,9 @@ fn sources_add_json_reports_the_saved_source_and_refuses_duplicates_as_json() {
         "{error}"
     );
     assert_eq!(
-        read_sources_config(&config_dir)
-            .matches("user@myserver.local")
-            .count(),
+        read_sources_config(&config_dir).matches("myserver").count(),
         1,
         "the refused add must leave the config unchanged"
-    );
-
-    tracker.complete();
-}
-
-/// Test: `sources schedule` sets a remote source's sync_schedule in
-/// sources.toml, reports unchanged repeats, and refuses unknown names, local
-/// sources and invalid values without touching the config (GH #531
-/// follow-up, coding_agent_session_search-kw97g).
-#[test]
-fn sources_schedule_sets_a_remote_sync_schedule_and_refuses_bad_targets() {
-    let tracker =
-        tracker_for("sources_schedule_sets_a_remote_sync_schedule_and_refuses_bad_targets");
-    let tmp = tempfile::TempDir::new().unwrap();
-    let config_dir = tmp.path().join("config");
-    fs::create_dir_all(&config_dir).unwrap();
-    create_sources_config(
-        &config_dir,
-        r#"
-[[sources]]
-name = "laptop"
-type = "ssh"
-host = "user@laptop.local"
-paths = ["/home/user/.claude/projects"]
-
-[[sources]]
-name = "here"
-type = "local"
-paths = ["/tmp/sessions"]
-"#,
-    );
-    let run = |args: &[&str]| {
-        tracker
-            .cass_assert_command()
-            .args(args)
-            .env("XDG_CONFIG_HOME", &config_dir)
-            .output()
-            .expect("cass sources schedule")
-    };
-    let schedule_of = |name: &str| -> String {
-        let output = run(&["sources", "list", "--json"]);
-        assert!(output.status.success());
-        let list: Value = serde_json::from_slice(&output.stdout).unwrap();
-        list["sources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|source| source["name"] == name)
-            .unwrap_or_else(|| panic!("{name} missing from {list}"))["sync_schedule"]
-            .as_str()
-            .unwrap()
-            .to_string()
-    };
-    assert_eq!(schedule_of("laptop"), "manual");
-
-    let set = run(&["sources", "schedule", "laptop", "daily", "--json"]);
-    assert!(
-        set.status.success(),
-        "{}",
-        String::from_utf8_lossy(&set.stderr)
-    );
-    let result: Value = serde_json::from_slice(&set.stdout).unwrap();
-    assert_eq!(result["status"], "updated");
-    assert_eq!(result["source"], "laptop");
-    assert_eq!(result["sync_schedule"], "daily");
-    assert_eq!(result["previous_sync_schedule"], "manual");
-    assert_eq!(schedule_of("laptop"), "daily");
-    assert!(read_sources_config(&config_dir).contains("sync_schedule = \"daily\""));
-
-    let again = run(&["sources", "schedule", "laptop", "daily", "--json"]);
-    assert!(again.status.success());
-    let result: Value = serde_json::from_slice(&again.stdout).unwrap();
-    assert_eq!(result["status"], "unchanged");
-
-    let hourly = run(&["sources", "schedule", "laptop", "hourly"]);
-    assert!(hourly.status.success());
-    assert!(String::from_utf8_lossy(&hourly.stdout).contains("daily -> hourly"));
-    assert_eq!(schedule_of("laptop"), "hourly");
-
-    let before = read_sources_config(&config_dir);
-    let missing = run(&["sources", "schedule", "nosuch", "daily", "--json"]);
-    assert_eq!(missing.status.code(), Some(13));
-    assert!(missing.stdout.is_empty());
-    let error: Value = serde_json::from_slice(&missing.stderr).unwrap();
-    assert_eq!(error["error"]["kind"], "not-found");
-
-    let local = run(&["sources", "schedule", "here", "daily", "--json"]);
-    assert_eq!(local.status.code(), Some(10));
-    let error: Value = serde_json::from_slice(&local.stderr).unwrap();
-    assert_eq!(error["error"]["kind"], "config");
-
-    let invalid = run(&["sources", "schedule", "laptop", "weekly"]);
-    assert_eq!(invalid.status.code(), Some(2));
-    assert_eq!(
-        read_sources_config(&config_dir),
-        before,
-        "refused schedules must leave sources.toml unchanged"
     );
 
     tracker.complete();
@@ -1393,14 +1005,11 @@ fn sources_add_explicit_paths() {
         .args([
             "sources",
             "add",
-            "admin@devbox",
-            "--name",
             "devbox",
             "--path",
             "~/.claude/projects",
             "--path",
             "~/.codex/sessions",
-            "--no-test",
         ])
         .env("XDG_CONFIG_HOME", &config_dir)
         .output()
@@ -1435,71 +1044,6 @@ fn sources_add_explicit_paths() {
     tracker.complete();
 }
 
-/// Test: sources add merges --preset paths with explicit --path entries (#358).
-#[test]
-fn sources_add_preset_merges_explicit_paths() {
-    let tracker = tracker_for("sources_add_preset_merges_explicit_paths");
-
-    let start = tracker.start("setup", Some("Create temp config directory"));
-    let tmp = tempfile::TempDir::new().unwrap();
-    let config_dir = tmp.path().join("config");
-    fs::create_dir_all(&config_dir).unwrap();
-    tracker.end("setup", Some("Create temp config directory"), start);
-
-    let start = tracker.start(
-        "run_sources_add",
-        Some("Run sources add with --preset plus --path"),
-    );
-    let mut command = tracker.cass_assert_command();
-    let output = command
-        .args([
-            "sources",
-            "add",
-            "user@studio.local",
-            "--name",
-            "studio",
-            "--preset",
-            "linux-defaults",
-            "--path",
-            "~/.local/share/opencode",
-            "--no-test",
-        ])
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .output()
-        .expect("sources add command");
-    tracker.end(
-        "run_sources_add",
-        Some("Run sources add with --preset plus --path"),
-        start,
-    );
-
-    let start = tracker.start(
-        "verify_config",
-        Some("Verify preset and custom paths both present"),
-    );
-    assert!(
-        output.status.success(),
-        "sources add failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let config_content = read_sources_config(&config_dir);
-    assert!(
-        config_content.contains(".claude/projects"),
-        "Preset path missing from config: {config_content}"
-    );
-    assert!(
-        config_content.contains(".local/share/opencode"),
-        "Explicit --path entry silently dropped when combined with --preset (#358): {config_content}"
-    );
-    tracker.end(
-        "verify_config",
-        Some("Verify preset and custom paths both present"),
-        start,
-    );
-
-    tracker.complete();
-}
-
 /// Test: sources add fails without paths.
 #[test]
 fn sources_add_no_paths_error() {
@@ -1514,14 +1058,7 @@ fn sources_add_no_paths_error() {
     let start = tracker.start("run_sources_add", Some("Run sources add without paths"));
     let mut command = tracker.cass_assert_command();
     let output = command
-        .args([
-            "sources",
-            "add",
-            "user@server.local",
-            "--name",
-            "server",
-            "--no-test",
-        ])
+        .args(["sources", "add", "server"])
         .env("XDG_CONFIG_HOME", &config_dir)
         .output()
         .expect("sources add command");
@@ -1539,7 +1076,7 @@ fn sources_add_no_paths_error() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("No paths") || stderr.contains("path"),
+        stderr.contains("path"),
         "Expected paths error, got: {stderr}"
     );
     tracker.end("verify_error", Some("Verify paths error reported"), start);
@@ -1574,16 +1111,7 @@ paths = ["~/.claude/projects"]
     );
     let mut command = tracker.cass_assert_command();
     let output = command
-        .args([
-            "sources",
-            "add",
-            "other@other.local",
-            "--name",
-            "laptop",
-            "--preset",
-            "linux-defaults",
-            "--no-test",
-        ])
+        .args(["sources", "add", "laptop", "--path", "/tmp/other-sessions"])
         .env("XDG_CONFIG_HOME", &config_dir)
         .output()
         .expect("sources add command");
@@ -1626,16 +1154,7 @@ fn sources_add_reserved_local_name_error() {
     );
     let mut command = tracker.cass_assert_command();
     let output = command
-        .args([
-            "sources",
-            "add",
-            "user@other.local",
-            "--name",
-            "local",
-            "--preset",
-            "linux-defaults",
-            "--no-test",
-        ])
+        .args(["sources", "add", "local", "--path", "/tmp/sessions"])
         .env("XDG_CONFIG_HOME", &config_dir)
         .output()
         .expect("sources add command");
@@ -1695,16 +1214,7 @@ paths = ["~/.claude/projects"]
     );
     let mut command = tracker.cass_assert_command();
     let output = command
-        .args([
-            "sources",
-            "add",
-            "other@other.local",
-            "--name",
-            "laptop",
-            "--preset",
-            "linux-defaults",
-            "--no-test",
-        ])
+        .args(["sources", "add", "laptop", "--path", "/tmp/other-sessions"])
         .env("XDG_CONFIG_HOME", &config_dir)
         .output()
         .expect("sources add command");
@@ -1737,10 +1247,11 @@ paths = ["~/.claude/projects"]
     tracker.complete();
 }
 
-/// Test: sources add with invalid URL format.
+/// Test: the removed remote `sources add user@host` form is rejected through
+/// the removed-command error envelope.
 #[test]
-fn sources_add_invalid_url() {
-    let tracker = tracker_for("sources_add_invalid_url");
+fn sources_add_remote_url_rejected() {
+    let tracker = tracker_for("sources_add_remote_url_rejected");
 
     let start = tracker.start("setup", Some("Create temp config directory"));
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1749,152 +1260,49 @@ fn sources_add_invalid_url() {
     tracker.end("setup", Some("Create temp config directory"), start);
 
     let start = tracker.start(
-        "run_sources_add_invalid",
-        Some("Add source with invalid URL"),
+        "run_sources_add_remote",
+        Some("Attempt remote-style add user@host"),
     );
     let mut command = tracker.cass_assert_command();
     let output = command
         .args([
             "sources",
             "add",
-            "laptop.local",
-            "--preset",
-            "linux-defaults",
-            "--no-test",
+            "user@laptop.local",
+            "--path",
+            "/tmp/sessions",
         ])
         .env("XDG_CONFIG_HOME", &config_dir)
         .output()
         .expect("sources add command");
     tracker.end(
-        "run_sources_add_invalid",
-        Some("Add source with invalid URL"),
+        "run_sources_add_remote",
+        Some("Attempt remote-style add user@host"),
         start,
     );
 
-    let start = tracker.start("verify_error", Some("Verify invalid URL error"));
-    assert!(
-        !output.status.success(),
-        "command should have failed but succeeded with: {}",
-        String::from_utf8_lossy(&output.stdout)
+    let start = tracker.start(
+        "verify_error",
+        Some("Verify removed-command error for remote add form"),
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "removed commands exit 2: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("username") || stderr.contains("Invalid"),
-        "Expected invalid URL error, got: {stderr}"
+        stderr.contains("removed") && stderr.contains("local"),
+        "Expected removed-command error, got: {stderr}"
     );
-    tracker.end("verify_error", Some("Verify invalid URL error"), start);
-
-    tracker.complete();
-}
-
-/// Test: sources add auto-generates name from hostname.
-#[test]
-fn sources_add_auto_name() {
-    let tracker = tracker_for("sources_add_auto_name");
-
-    let start = tracker.start("setup", Some("Create temp config directory"));
-    let tmp = tempfile::TempDir::new().unwrap();
-    let config_dir = tmp.path().join("config");
-    fs::create_dir_all(&config_dir).unwrap();
-    tracker.end("setup", Some("Create temp config directory"), start);
-
-    let start = tracker.start("run_sources_add", Some("Add source without explicit name"));
-    let mut command = tracker.cass_assert_command();
-    let output = command
-        .args([
-            "sources",
-            "add",
-            "user@devlaptop.home.lan",
-            "--preset",
-            "linux-defaults",
-            "--no-test",
-        ])
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .output()
-        .expect("sources add command");
-    tracker.end(
-        "run_sources_add",
-        Some("Add source without explicit name"),
-        start,
-    );
-
-    let start = tracker.start("verify_auto_name", Some("Verify auto-generated name"));
     assert!(
-        output.status.success(),
-        "command failed: {}\nstderr: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let config_content = read_sources_config(&config_dir);
-    assert!(
-        config_content.contains("name = \"devlaptop\""),
-        "Auto-generated name not found in config: {config_content}"
+        !config_dir.join("cass/sources.toml").exists(),
+        "a refused add must not create the config"
     );
     tracker.end(
-        "verify_auto_name",
-        Some("Verify auto-generated name"),
-        start,
-    );
-
-    tracker.complete();
-}
-
-/// Test: sources add auto-generated names do not collide with the built-in local source.
-#[test]
-fn sources_add_auto_name_disambiguates_reserved_local() {
-    let tracker = tracker_for("sources_add_auto_name_disambiguates_reserved_local");
-
-    let start = tracker.start("setup", Some("Create temp config directory"));
-    let tmp = tempfile::TempDir::new().unwrap();
-    let config_dir = tmp.path().join("config");
-    fs::create_dir_all(&config_dir).unwrap();
-    tracker.end("setup", Some("Create temp config directory"), start);
-
-    let start = tracker.start(
-        "run_sources_add",
-        Some("Add source without explicit name for reserved local hostname"),
-    );
-    let mut command = tracker.cass_assert_command();
-    let output = command
-        .args([
-            "sources",
-            "add",
-            "user@local",
-            "--preset",
-            "linux-defaults",
-            "--no-test",
-        ])
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .output()
-        .expect("sources add command");
-    tracker.end(
-        "run_sources_add",
-        Some("Add source without explicit name for reserved local hostname"),
-        start,
-    );
-
-    let start = tracker.start(
-        "verify_auto_name",
-        Some("Verify reserved local auto-name was disambiguated"),
-    );
-    assert!(
-        output.status.success(),
-        "command failed: {}\nstderr: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let config_content = read_sources_config(&config_dir);
-    assert!(
-        config_content.contains("name = \"local-ssh\""),
-        "Reserved auto-generated name not rewritten in config: {config_content}"
-    );
-    assert!(
-        config_content.contains("host = \"user@local\""),
-        "Host not preserved in config: {config_content}"
-    );
-    tracker.end(
-        "verify_auto_name",
-        Some("Verify reserved local auto-name was disambiguated"),
+        "verify_error",
+        Some("Verify removed-command error for remote add form"),
         start,
     );
 
@@ -2125,24 +1533,6 @@ fn sources_remove_with_purge_case_insensitive_uses_stored_name() {
     fs::create_dir_all(&source_data).unwrap();
     fs::write(source_data.join("session.jsonl"), "test data").unwrap();
 
-    let sync_status_path = cass_data_dir(&data_dir).join("sync_status.json");
-    fs::create_dir_all(sync_status_path.parent().unwrap()).unwrap();
-    fs::write(
-        &sync_status_path,
-        r#"{
-  "sources": {
-    "Laptop": {
-      "last_sync": 1234567890,
-      "last_result": "success",
-      "files_synced": 1,
-      "bytes_transferred": 9,
-      "duration_ms": 12
-    }
-  }
-}"#,
-    )
-    .unwrap();
-
     create_sources_config(
         &config_dir,
         r#"
@@ -2196,11 +1586,6 @@ paths = ["~/.claude/projects"]
     assert!(
         !source_data.exists(),
         "Stored-name mirror directory should have been purged"
-    );
-    let sync_status_content = fs::read_to_string(&sync_status_path).expect("read sync status");
-    assert!(
-        !sync_status_content.contains("\"Laptop\""),
-        "Removed source should have been pruned from sync status"
     );
     tracker.end(
         "verify_removal",
@@ -2496,522 +1881,6 @@ paths = ["~/.claude/projects"]
     tracker.complete();
 }
 
-/// Bead uojcg.8.6: `sources doctor --json` classifies an unreachable remote into
-/// an explicit *unreached* state (never folded into healthy), offers a
-/// preservation-safe (non-destructive) next command, reports the diagnosis as
-/// mutation-free, and in fact does not rewrite the sources config.
-#[test]
-fn sources_doctor_health_unreachable_is_mutation_free_and_safe() {
-    let tracker = tracker_for("sources_doctor_health_unreachable_is_mutation_free_and_safe");
-
-    let start = tracker.start("setup", Some("Config with an unreachable remote"));
-    let tmp = tempfile::TempDir::new().unwrap();
-    let config_dir = tmp.path().join("config");
-    let data_dir = tmp.path().join("data");
-    fs::create_dir_all(&config_dir).unwrap();
-    fs::create_dir_all(&data_dir).unwrap();
-
-    // `.invalid` is a reserved TLD (RFC 6761): DNS resolution always fails, so
-    // the host is deterministically unreachable in any environment.
-    create_sources_config(
-        &config_dir,
-        r#"
-[[sources]]
-name = "retired-laptop"
-type = "ssh"
-host = "user@retired-laptop.invalid"
-paths = ["~/.claude/projects"]
-"#,
-    );
-
-    let before = read_sources_config(&config_dir);
-    tracker.end("setup", Some("Config with an unreachable remote"), start);
-
-    let start = tracker.start("run", Some("Run sources doctor --json"));
-    let mut command = tracker.cass_assert_command();
-    let output = command
-        .args(["sources", "doctor", "--json"])
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .env("CASS_DATA_DIR", &data_dir)
-        .output()
-        .expect("sources doctor --json command");
-    tracker.end("run", Some("Run sources doctor --json"), start);
-
-    let start = tracker.start("verify", Some("Verify unreached classification + safety"));
-    let json: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("valid JSON output");
-
-    let diagnostics = json["diagnostics"].as_array().expect("diagnostics array");
-    assert_eq!(diagnostics.len(), 1, "one source diagnosed");
-    let entry = &diagnostics[0];
-    assert_eq!(entry["source_id"], "retired-laptop");
-
-    // Local-only: a configured remote host is reported as a warning that no
-    // network probe can resolve. It is never folded into a pass.
-    let checks = entry["checks"].as_array().expect("checks array");
-    let remote_check = checks
-        .iter()
-        .find(|check| check["name"] == "Remote Host")
-        .expect("remote host check present");
-    assert_eq!(remote_check["status"], "warn");
-
-    // Every offered remediation is preservation-safe (never destructive).
-    for check in checks {
-        if let Some(next) = check["remediation"].as_str() {
-            let lower = next.to_ascii_lowercase();
-            for needle in [
-                "--delete",
-                "rm -rf",
-                "rm -r ",
-                "prune",
-                "shred",
-                "--remove-source-files",
-            ] {
-                assert!(
-                    !lower.contains(needle),
-                    "remediation must not be destructive: {next:?}"
-                );
-            }
-        }
-    }
-    tracker.end(
-        "verify",
-        Some("Verify unreached classification + safety"),
-        start,
-    );
-
-    // Mutation-free in fact: the config file is byte-identical after the run.
-    let after = read_sources_config(&config_dir);
-    assert_eq!(
-        before, after,
-        "sources doctor must not rewrite sources.toml"
-    );
-
-    tracker.complete();
-}
-
-/// Bead uojcg.8.7: `sources doctor --json` only runs the bounded remote
-/// binary/platform probe against a host it actually reached. For an unreachable
-/// host it must NOT claim a `cass_version` (the binary was never probed) and must
-/// NOT classify the host as `cass_missing`/`old_cass` — the transport failure
-/// dominates. The host's platform identity stays present regardless, and the
-/// diagnosis remains mutation-free.
-#[test]
-fn sources_doctor_unreachable_omits_unprobed_remote_binary_8_7() {
-    let tracker = tracker_for("sources_doctor_unreachable_omits_unprobed_remote_binary_8_7");
-
-    let start = tracker.start("setup", Some("Config with an unreachable remote"));
-    let tmp = tempfile::TempDir::new().unwrap();
-    let config_dir = tmp.path().join("config");
-    let data_dir = tmp.path().join("data");
-    fs::create_dir_all(&config_dir).unwrap();
-    fs::create_dir_all(&data_dir).unwrap();
-
-    // `.invalid` (RFC 6761) never resolves: the host is deterministically
-    // unreachable, so the bounded cass/platform probe must be skipped entirely.
-    create_sources_config(
-        &config_dir,
-        r#"
-[[sources]]
-name = "retired-laptop"
-type = "ssh"
-host = "user@retired-laptop.invalid"
-paths = ["~/.claude/projects"]
-"#,
-    );
-
-    let before = read_sources_config(&config_dir);
-    tracker.end("setup", Some("Config with an unreachable remote"), start);
-
-    let start = tracker.start("run", Some("Run sources doctor --json"));
-    let mut command = tracker.cass_assert_command();
-    let output = command
-        .args(["sources", "doctor", "--json"])
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .env("CASS_DATA_DIR", &data_dir)
-        .output()
-        .expect("sources doctor --json command");
-    tracker.end("run", Some("Run sources doctor --json"), start);
-
-    let start = tracker.start("verify", Some("Verify no remote-binary overclaim"));
-    let json: serde_json::Value =
-        serde_json::from_slice(&output.stdout).expect("valid JSON output");
-
-    // Local-only: remote hosts are never probed, so no remote-binary verdict
-    // can appear. The diagnostics entry carries local checks only — no
-    // host_report, no probed cass_version.
-    let entry = &json["diagnostics"].as_array().expect("diagnostics array")[0];
-    assert!(
-        entry.get("host_report").is_none(),
-        "no remote probe ran, so no host_report may be emitted: {entry}"
-    );
-    let checks = entry["checks"].as_array().expect("checks array");
-    assert!(
-        checks
-            .iter()
-            .any(|check| check["name"] == "Remote Host" && check["status"] == "warn"),
-        "a configured remote host must be reported as a local-only warning: {checks:?}"
-    );
-    assert!(
-        checks.iter().all(|check| {
-            !check["message"]
-                .as_str()
-                .unwrap_or_default()
-                .contains("cass_version")
-        }),
-        "no check may claim a probed remote cass_version: {checks:?}"
-    );
-    tracker.end("verify", Some("Verify no remote-binary overclaim"), start);
-
-    // Mutation-free in fact: the config is byte-identical after the run.
-    assert_eq!(
-        before,
-        read_sources_config(&config_dir),
-        "sources doctor must not rewrite sources.toml"
-    );
-
-    tracker.complete();
-}
-
-// =============================================================================
-// sources sync tests
-// =============================================================================
-
-/// Test: sources sync with no sources configured.
-#[test]
-fn sources_sync_no_sources() {
-    let tracker = tracker_for("sources_sync_no_sources");
-
-    let start = tracker.start("setup", Some("Create empty config and data directories"));
-    let tmp = tempfile::TempDir::new().unwrap();
-    let config_dir = tmp.path().join("config");
-    let data_dir = tmp.path().join("data");
-    fs::create_dir_all(&config_dir).unwrap();
-    fs::create_dir_all(&data_dir).unwrap();
-
-    tracker.end(
-        "setup",
-        Some("Create empty config and data directories"),
-        start,
-    );
-
-    let start = tracker.start("run_sources_sync", Some("Run sources sync with no sources"));
-    let mut command = tracker.cass_assert_command();
-    let output = command
-        .args(["sources", "sync"])
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .env("XDG_DATA_HOME", &data_dir)
-        .output()
-        .expect("sources sync command");
-    tracker.end(
-        "run_sources_sync",
-        Some("Run sources sync with no sources"),
-        start,
-    );
-
-    let start = tracker.start("verify_output", Some("Verify no sources message"));
-    assert!(
-        output.status.success(),
-        "command failed: {}\nstderr: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("No") && stdout.contains("sources"),
-        "Expected no sources message, got: {stdout}"
-    );
-    tracker.end("verify_output", Some("Verify no sources message"), start);
-
-    tracker.complete();
-}
-
-/// Test: sources sync --dry-run shows what would be synced.
-#[test]
-fn sources_sync_dry_run() {
-    let tracker = tracker_for("sources_sync_dry_run");
-
-    let start = tracker.start("setup", Some("Create config with one source for dry-run"));
-    let tmp = tempfile::TempDir::new().unwrap();
-    let config_dir = tmp.path().join("config");
-    let data_dir = tmp.path().join("data");
-    fs::create_dir_all(&config_dir).unwrap();
-    fs::create_dir_all(&data_dir).unwrap();
-
-    create_sources_config(
-        &config_dir,
-        r#"
-[[sources]]
-name = "laptop"
-type = "ssh"
-host = "user@laptop.local"
-paths = ["~/.claude/projects"]
-"#,
-    );
-
-    tracker.end(
-        "setup",
-        Some("Create config with one source for dry-run"),
-        start,
-    );
-
-    let start = tracker.start(
-        "run_sources_sync_dry_run",
-        Some("Run sources sync --dry-run"),
-    );
-    let mut command = tracker.cass_assert_command();
-    let output = command
-        .args(["sources", "sync", "--dry-run"])
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .env("XDG_DATA_HOME", &data_dir)
-        .output()
-        .expect("sources sync --dry-run command");
-    tracker.end(
-        "run_sources_sync_dry_run",
-        Some("Run sources sync --dry-run"),
-        start,
-    );
-
-    let start = tracker.start("verify_output", Some("Verify dry run mentions source"));
-    // Dry run should indicate the source would be synced
-    // Note: Will likely fail SSH connectivity, but should still report the source
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{stdout}{stderr}");
-
-    assert!(
-        combined.contains("laptop") || combined.contains("dry"),
-        "Expected source name or dry run message, got: {combined}"
-    );
-    tracker.end(
-        "verify_output",
-        Some("Verify dry run mentions source"),
-        start,
-    );
-
-    tracker.complete();
-}
-
-/// Test: sources sync --source filters to specific source.
-#[test]
-fn sources_sync_single_source() {
-    let tracker = tracker_for("sources_sync_single_source");
-
-    let start = tracker.start(
-        "setup",
-        Some("Create config with two sources for filtered sync"),
-    );
-    let tmp = tempfile::TempDir::new().unwrap();
-    let config_dir = tmp.path().join("config");
-    let data_dir = tmp.path().join("data");
-    fs::create_dir_all(&config_dir).unwrap();
-    fs::create_dir_all(&data_dir).unwrap();
-
-    create_sources_config(
-        &config_dir,
-        r#"
-[[sources]]
-name = "laptop"
-type = "ssh"
-host = "user@laptop.local"
-paths = ["~/.claude/projects"]
-
-[[sources]]
-name = "workstation"
-type = "ssh"
-host = "dev@work.local"
-paths = ["~/.claude/projects"]
-"#,
-    );
-
-    tracker.end(
-        "setup",
-        Some("Create config with two sources for filtered sync"),
-        start,
-    );
-
-    let start = tracker.start(
-        "run_sources_sync_filtered",
-        Some("Run sync filtered to laptop"),
-    );
-    let mut command = tracker.cass_assert_command();
-    let output = command
-        .args(["sources", "sync", "--source", "laptop", "--dry-run"])
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .env("XDG_DATA_HOME", &data_dir)
-        .output()
-        .expect("sources sync --source command");
-    tracker.end(
-        "run_sources_sync_filtered",
-        Some("Run sync filtered to laptop"),
-        start,
-    );
-
-    let start = tracker.start(
-        "verify_filtered_output",
-        Some("Verify only laptop in output"),
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined = format!("{stdout}{stderr}");
-
-    // Should only mention laptop, not workstation
-    assert!(
-        combined.contains("laptop"),
-        "Expected laptop in output, got: {combined}"
-    );
-    // The source filter should work even if sync fails due to SSH
-    tracker.end(
-        "verify_filtered_output",
-        Some("Verify only laptop in output"),
-        start,
-    );
-
-    tracker.complete();
-}
-
-/// Test: sources sync --json outputs valid JSON.
-#[test]
-fn sources_sync_json() {
-    let tracker = tracker_for("sources_sync_json");
-
-    let start = tracker.start("setup", Some("Create config for sync JSON test"));
-    let tmp = tempfile::TempDir::new().unwrap();
-    let config_dir = tmp.path().join("config");
-    let data_dir = tmp.path().join("data");
-    fs::create_dir_all(&config_dir).unwrap();
-    fs::create_dir_all(&data_dir).unwrap();
-
-    create_sources_config(
-        &config_dir,
-        r#"
-[[sources]]
-name = "laptop"
-type = "ssh"
-host = "user@laptop.local"
-paths = ["~/.claude/projects"]
-"#,
-    );
-
-    tracker.end("setup", Some("Create config for sync JSON test"), start);
-
-    let start = tracker.start(
-        "run_sources_sync_json",
-        Some("Run sources sync --json --dry-run"),
-    );
-    let mut command = tracker.cass_assert_command();
-    let output = command
-        .args(["sources", "sync", "--json", "--dry-run"])
-        .env("XDG_CONFIG_HOME", &config_dir)
-        .env("XDG_DATA_HOME", &data_dir)
-        .output()
-        .expect("sources sync --json command");
-    tracker.end(
-        "run_sources_sync_json",
-        Some("Run sources sync --json --dry-run"),
-        start,
-    );
-
-    let start = tracker.start("verify_json", Some("Verify valid JSON output"));
-    // Should output valid JSON even if sync fails
-    if !output.stdout.is_empty() {
-        let json: serde_json::Value =
-            serde_json::from_slice(&output.stdout).expect("valid JSON output");
-
-        // Should have a sources or results field
-        assert!(
-            json.get("sources").is_some() || json.get("results").is_some(),
-            "Expected sources or results field in JSON output: {}",
-            String::from_utf8_lossy(&output.stdout)
-        );
-        let sources = json["sources"].as_array().expect("sources should be array");
-        assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0]["source"], "laptop");
-        assert_eq!(sources[0]["status"], "dry_run");
-        assert_eq!(sources[0]["sync_decision"]["action"], "sync");
-        assert_eq!(sources[0]["sync_decision"]["stale_value_score"], 100);
-        assert_eq!(sources[0]["sync_decision"]["manual_override"], true);
-        assert!(
-            sources[0]["sync_decision"]["reasons"]
-                .as_array()
-                .is_some_and(|reasons| !reasons.is_empty())
-        );
-        let transport_decision = &sources[0]["transport_decision"];
-        assert!(
-            transport_decision["chosen_transport"].as_str().is_some(),
-            "transport decision should name the chosen transport: {transport_decision}"
-        );
-        assert!(
-            transport_decision["auth_source"].as_str().is_some(),
-            "transport decision should name auth source: {transport_decision}"
-        );
-        assert!(
-            transport_decision["fallback_rationale"].as_str().is_some(),
-            "transport decision should explain fallback rationale: {transport_decision}"
-        );
-        let attempts = transport_decision["attempted_transports"]
-            .as_array()
-            .expect("transport attempts should be an array");
-        let transports = attempts
-            .iter()
-            .filter_map(|attempt| attempt["transport"].as_str())
-            .collect::<Vec<_>>();
-        assert!(transports.contains(&"rsync"));
-        assert!(transports.contains(&"wsl-rsync"));
-        assert!(transports.contains(&"scp"));
-        assert!(transports.contains(&"sftp"));
-        assert!(
-            attempts.iter().any(|attempt| attempt["status"] == "chosen"),
-            "one transport attempt should be chosen: {attempts:?}"
-        );
-        assert!(
-            attempts
-                .iter()
-                .all(|attempt| attempt["auth_source"].as_str().is_some()),
-            "each transport attempt should record auth source: {attempts:?}"
-        );
-        let paths = sources[0]["paths"]
-            .as_array()
-            .expect("paths should be an array");
-        assert!(
-            paths
-                .iter()
-                .all(|path| path.get("failure_reason").is_some()),
-            "each path should include failure_reason: {paths:?}"
-        );
-
-        let mut command = tracker.cass_assert_command();
-        let env_output = command
-            .args(["sources", "sync", "--dry-run"])
-            .env("XDG_CONFIG_HOME", &config_dir)
-            .env("XDG_DATA_HOME", &data_dir)
-            .env("CASS_OUTPUT_FORMAT", "json")
-            .output()
-            .expect("sources sync env-json command");
-        assert!(
-            env_output.status.success(),
-            "env-json sync failed: {}\nstderr: {}",
-            env_output.status,
-            String::from_utf8_lossy(&env_output.stderr)
-        );
-        let env_json: serde_json::Value =
-            serde_json::from_slice(&env_output.stdout).expect("valid env JSON output");
-        let env_sources = env_json["sources"]
-            .as_array()
-            .expect("env sources should be array");
-        assert_eq!(env_sources.len(), 1);
-        assert_eq!(env_sources[0]["sync_decision"]["manual_override"], true);
-        assert!(
-            env_sources[0]["transport_decision"]["chosen_transport"]
-                .as_str()
-                .is_some()
-        );
-    }
-    tracker.end("verify_json", Some("Verify valid JSON output"), start);
-
-    tracker.complete();
-}
-
 // =============================================================================
 // Integration workflow tests
 // =============================================================================
@@ -3032,16 +1901,7 @@ fn sources_workflow_add_list_remove() {
     let start = tracker.start("add_source", Some("Add server source"));
     let mut command = tracker.cass_assert_command();
     let output = command
-        .args([
-            "sources",
-            "add",
-            "user@server.example",
-            "--name",
-            "server",
-            "--preset",
-            "linux-defaults",
-            "--no-test",
-        ])
+        .args(["sources", "add", "server", "--path", "/tmp/sessions"])
         .env("XDG_CONFIG_HOME", &config_dir)
         .output()
         .expect("sources add command");
@@ -3134,16 +1994,7 @@ fn sources_multiple_add_list() {
     let start = tracker.start("add_laptop", Some("Add laptop source"));
     tracker
         .cass_assert_command()
-        .args([
-            "sources",
-            "add",
-            "user@laptop.local",
-            "--name",
-            "laptop",
-            "--preset",
-            "macos-defaults",
-            "--no-test",
-        ])
+        .args(["sources", "add", "laptop", "--path", "/tmp/laptop-sessions"])
         .env("XDG_CONFIG_HOME", &config_dir)
         .assert()
         .success();
@@ -3156,12 +2007,9 @@ fn sources_multiple_add_list() {
         .args([
             "sources",
             "add",
-            "dev@workstation.office",
-            "--name",
             "workstation",
-            "--preset",
-            "linux-defaults",
-            "--no-test",
+            "--path",
+            "/tmp/workstation-sessions",
         ])
         .env("XDG_CONFIG_HOME", &config_dir)
         .assert()
@@ -4279,11 +3127,12 @@ paths = ["~/.claude/projects"]
     tracker.complete();
 }
 
-/// `cass sources doctor` reports problems in `sources.toml` itself that no
-/// per-host probe can see (bead uojcg.8.5). With no sync transport on PATH an
-/// ssh source cannot sync: that is an error and the doctor exits non-zero. A
-/// `.sources.toml.tmp.*` left beside the config by an interrupted write is a
-/// separate warning, reported only when the file exists.
+/// `cass sources doctor` reports problems in `sources.toml` itself (bead
+/// uojcg.8.5, adapted for local-only). A legacy `type = "ssh"` entry is an
+/// inert archive record: it surfaces as a `legacy_remote_source` warning —
+/// never probed, never an error. A `.sources.toml.tmp.*` left beside the
+/// config by an interrupted write is a separate `interrupted_config_write`
+/// warning, reported only when the file exists.
 #[test]
 #[cfg(unix)]
 fn sources_doctor_reports_config_problems_the_host_probes_cannot_see() {
@@ -4352,22 +3201,22 @@ to = "/work/projects"
 
     let (code, report) = diagnose(false);
     assert_eq!(report["config_validation"]["source_count"], 1, "{report}");
-    assert_eq!(report["config_validation"]["valid"], false, "{report}");
-    assert_eq!(kinds(&report), ["missing_transport_tool"], "{report}");
-    assert_eq!(code, Some(1), "an unusable configuration is not healthy");
+    assert_eq!(report["config_validation"]["valid"], true, "{report}");
+    assert_eq!(kinds(&report), ["legacy_remote_source"], "{report}");
+    assert_eq!(code, Some(0), "a legacy archive record is not an error");
 
     let (code, report) = diagnose(true);
     let found = kinds(&report);
     assert!(
-        found.iter().any(|kind| kind == "missing_transport_tool")
-            && found.iter().any(|kind| kind == "concurrent_setup_race"),
+        found.iter().any(|kind| kind == "legacy_remote_source")
+            && found.iter().any(|kind| kind == "interrupted_config_write"),
         "{report}"
     );
-    assert_eq!(code, Some(1));
+    assert_eq!(code, Some(0));
     tracker.complete();
 }
 
-/// GH #520, end to end: `sources sync` keeps only a configured path's
+/// GH #520, end to end: the archive layout keeps only a configured path's
 /// basename inside its safe-name container (`~/.factory/sessions` arrives as
 /// `<container>/sessions`). Factory, Vibe, Prime, Gemini and Cursor recognise
 /// a store by its parent chain, so they indexed nothing from such a mirror.
@@ -4377,7 +3226,7 @@ to = "/work/projects"
 #[test]
 fn gh520_remote_mirrors_index_structural_agents_end_to_end() {
     use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
-    use coding_agent_search::sources::sync::path_to_safe_dirname;
+    use coding_agent_search::sources::provenance::path_to_safe_dirname;
     use std::collections::BTreeSet;
 
     let tracker = tracker_for("gh520_remote_mirrors_index_structural_agents_end_to_end");
@@ -4407,7 +3256,8 @@ fn gh520_remote_mirrors_index_structural_agents_end_to_end() {
         ),
     );
 
-    // The layout every sync method produces: <container>/<basename>/...
+    // The historical mirror layout every sync method produced:
+    // <container>/<basename>/...
     let mirror = data.join("remotes/laptop/mirror");
     let container = |path: &str| mirror.join(path_to_safe_dirname(path));
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");

@@ -11072,6 +11072,23 @@ impl FrankenStorage {
         Ok(count.max(0) as usize)
     }
 
+    /// Count archived conversations grouped by `source_id`, for archive
+    /// provenance display (e.g. `cass sources list` reporting how many
+    /// conversations a legacy remote entry still covers).
+    pub fn conversation_counts_by_source(
+        &self,
+    ) -> Result<std::collections::HashMap<String, usize>> {
+        let rows = self.conn.query_map_collect(
+            "SELECT COALESCE(source_id, 'local'), COUNT(*) FROM conversations GROUP BY COALESCE(source_id, 'local')",
+            fparams![],
+            |row| Ok((row.get_typed::<String>(0)?, row.get_typed::<i64>(1)?)),
+        )?;
+        Ok(rows
+            .into_iter()
+            .map(|(source_id, count)| (source_id, count.max(0) as usize))
+            .collect())
+    }
+
     /// Count all archived messages.
     pub fn total_message_count(&self) -> Result<usize> {
         let count: i64 =
@@ -42398,7 +42415,7 @@ sys.exit('stock writer does not own WAL_WRITE_LOCK')
             fparams![PREVIOUS_LEGACY_OMP_RECLASSIFICATION_META_KEY],
         )?;
 
-        let safe_name = crate::sources::sync::path_to_safe_dirname("~/.omp/agent/sessions");
+        let safe_name = crate::sources::provenance::path_to_safe_dirname("~/.omp/agent/sessions");
         let remote_external_id = "-projects-cass/remote-legacy-omp";
         let mut remote = Conversation {
             id: None,

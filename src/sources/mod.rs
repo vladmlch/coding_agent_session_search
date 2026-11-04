@@ -1,15 +1,17 @@
-//! Remote sources management for cass.
+//! Source configuration and provenance for cass.
 //!
-//! This module provides functionality for configuring and syncing agent session
-//! data from remote machines via SSH. It enables cass to search across conversation
-//! history from multiple machines.
+//! This module defines the local source model. In the local-only build,
+//! `type = "local"` entries name extra directories indexed in place, and
+//! historical `type = "ssh"` entries survive as inert archive records whose
+//! previously mirrored conversations stay searchable and filterable. Remote
+//! synchronization (SSH/SFTP/rsync/Tailscale) was removed; nothing in this
+//! module opens a connection.
 //!
 //! # Architecture
 //!
-//! - **config**: Configuration types for defining remote sources
-//! - **provenance**: Types for tracking conversation origins
-//! - **sync**: Sync engine for pulling sessions from remotes via rsync/SSH
-//! - **status** (future): Sync status tracking
+//! - **config**: Configuration types for sources (`sources.toml`)
+//! - **provenance**: Types for tracking conversation origins, including the
+//!   byte-stable archive directory naming old mirrors depend on
 //!
 //! # Configuration
 //!
@@ -17,10 +19,9 @@
 //!
 //! ```toml
 //! [[sources]]
-//! name = "laptop"
-//! type = "ssh"
-//! host = "user@laptop.local"
-//! paths = ["~/.claude/projects", "~/.cursor"]
+//! name = "archive-box"
+//! type = "local"
+//! paths = ["/Volumes/old-sessions"]
 //! ```
 //!
 //! # Provenance
@@ -33,39 +34,8 @@
 //! // Local conversation
 //! let local = Origin::local();
 //!
-//! // Remote conversation
+//! // Archived remote conversation
 //! let remote = Origin::remote("work-laptop");
-//! ```
-//!
-//! # Syncing
-//!
-//! The sync engine uses rsync over SSH for efficient delta transfers:
-//!
-//! ```rust,ignore
-//! use coding_agent_search::sources::sync::SyncEngine;
-//! use coding_agent_search::sources::config::SourcesConfig;
-//!
-//! let config = SourcesConfig::load()?;
-//! let engine = SyncEngine::new(&data_dir);
-//!
-//! for source in config.remote_sources() {
-//!     let report = engine.sync_source(source)?;
-//!     println!("Synced {}: {} files", source.name, report.total_files());
-//! }
-//! ```
-//!
-//! # Usage
-//!
-//! ```rust,ignore
-//! use coding_agent_search::sources::config::SourcesConfig;
-//!
-//! // Load configuration
-//! let config = SourcesConfig::load()?;
-//!
-//! // Iterate remote sources
-//! for source in config.remote_sources() {
-//!     println!("Source: {} ({})", source.name, source.host.as_deref().unwrap_or("-"));
-//! }
 //! ```
 
 #[cfg(unix)]
@@ -73,18 +43,11 @@ mod child_output;
 
 pub mod config;
 pub(crate) mod config_validation;
-pub mod index;
-pub mod install;
-pub mod interactive;
-pub mod probe;
 pub mod provenance;
-pub mod setup;
-pub mod sync;
 
 #[cfg(not(unix))]
 use std::io::Read as IoRead;
-use std::io::{Seek, Write};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, Output};
 #[cfg(not(unix))]
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 #[cfg(not(unix))]
@@ -95,74 +58,6 @@ use std::time::Instant;
 
 #[cfg(not(unix))]
 use wait_timeout::ChildExt;
-
-/// Canonical SSH stderr marker for host-key verification failures.
-pub(crate) const HOST_KEY_VERIFICATION_FAILED: &str = "Host key verification failed";
-
-/// Remote command for an SSH connectivity check. A restricted key's forced
-/// command, such as stock `rrsync -ro DIR`, refuses everything except rsync
-/// and exactly `true`, so the check must not run `echo` or a shell (GH #531).
-pub(crate) const SSH_CONNECTIVITY_PROBE_COMMAND: &str = "true";
-
-/// Build strict SSH CLI tokens with consistent trust policy.
-///
-/// The returned vector contains full `ssh` argument tokens:
-/// `-o BatchMode=yes -o ConnectTimeout=<secs> -o StrictHostKeyChecking=yes`.
-pub(crate) fn strict_ssh_cli_tokens(connect_timeout_secs: u64) -> Vec<String> {
-    let mut tokens = Vec::new();
-    if let Some(config_path) = ssh_config_override() {
-        tokens.push("-F".to_string());
-        tokens.push(config_path);
-    }
-    tokens.extend([
-        "-o".to_string(),
-        "BatchMode=yes".to_string(),
-        "-o".to_string(),
-        format!("ConnectTimeout={connect_timeout_secs}"),
-        "-o".to_string(),
-        "ServerAliveInterval=15".to_string(),
-        "-o".to_string(),
-        "ServerAliveCountMax=3".to_string(),
-        "-o".to_string(),
-        "StrictHostKeyChecking=yes".to_string(),
-    ]);
-    tokens
-}
-
-/// Build strict SSH command string for tools that require a single shell fragment.
-pub(crate) fn strict_ssh_command_for_rsync(connect_timeout_secs: u64) -> String {
-    let config_arg = ssh_config_override()
-        .map(|path| format!(" -F {}", shell_quote_ssh_arg(&path)))
-        .unwrap_or_default();
-    format!(
-        "ssh{config_arg} -o BatchMode=yes -o ConnectTimeout={connect_timeout_secs} -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes"
-    )
-}
-
-fn ssh_config_override() -> Option<String> {
-    dotenvy::var("CASS_SSH_CONFIG")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn shell_quote_ssh_arg(value: &str) -> String {
-    if !value.is_empty()
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | ':' | '@'))
-    {
-        return value.to_string();
-    }
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-pub(crate) fn file_backed_child_stdin(contents: &[u8]) -> std::io::Result<Stdio> {
-    let mut file = tempfile::tempfile()?;
-    file.write_all(contents)?;
-    file.seek(std::io::SeekFrom::Start(0))?;
-    Ok(Stdio::from(file))
-}
 
 #[cfg(not(unix))]
 struct ChildPipeReader {
@@ -272,13 +167,7 @@ fn kill_child_process_group(_pid: u32) {}
 /// [`configure_child_process_group`] before `spawn()`. Without that, the direct
 /// child can be killed but shell grandchildren may keep inherited pipe FDs open
 /// until they exit naturally.
-pub(crate) fn wait_for_child_output_with_timeout(
-    child: Child,
-    timeout: Duration,
-) -> std::io::Result<Option<Output>> {
-    wait_for_child_output_with_limit(child, timeout, None)
-}
-
+///
 /// Limit each captured stream while retaining the same process deadline.
 /// Unix capture owns nonblocking pipes directly: overflow stops immediately,
 /// and cancellation cannot leave background reader threads behind. Process
@@ -352,128 +241,18 @@ pub(crate) fn wait_for_child_output_with_limit(
     }
 }
 
-/// Whether stderr indicates SSH host-key verification failure.
-pub(crate) fn is_host_key_verification_failure(stderr: &str) -> bool {
-    stderr.contains(HOST_KEY_VERIFICATION_FAILED)
-}
-
-/// Standard user-facing error for host-key verification failures.
-pub(crate) fn host_key_verification_error(host: &str) -> String {
-    format!(
-        "Host key verification failed for {host} (add/verify host key in ~/.ssh/known_hosts first)"
-    )
-}
-
 // Re-export commonly used config types
 pub use config::{
-    BackupInfo, ConfigError, ConfigPreview, DiscoveredHost, MergeResult, PathMapping, Platform,
-    SkipReason, SourceConfigGenerator, SourceDefinition, SourcesConfig, SyncSchedule,
-    discover_ssh_hosts, get_preset_paths,
+    ConfigError, PathMapping, Platform, SourceDefinition, SourcesConfig, SyncSchedule,
 };
 
 // Re-export commonly used provenance types
 pub use provenance::{LOCAL_SOURCE_ID, Origin, Source, SourceFilter, SourceKind};
 
-// Re-export commonly used sync types
-pub use sync::{
-    PathSyncResult, SourceHealthKind, SourceSyncAction, SourceSyncDecision, SourceSyncInfo,
-    SyncEngine, SyncError, SyncMethod, SyncReport, SyncResult, SyncStatus,
-};
-
-// Re-export commonly used probe types
-pub use probe::{
-    CassStatus, DetectedAgent, HostProbeResult, ProbeCache, ResourceInfo, SystemInfo, probe_host,
-    probe_hosts_parallel,
-};
-
-// Re-export commonly used install types
-pub use install::{
-    InstallError, InstallMethod, InstallProgress, InstallResult, InstallStage, RemoteInstaller,
-};
-
-// Re-export commonly used index types
-pub use index::{IndexError, IndexProgress, IndexResult, IndexStage, RemoteIndexer};
-
-// Re-export commonly used interactive types
-pub use interactive::{
-    CassStatusDisplay, HostDisplayInfo, HostSelectionResult, HostSelector, HostState,
-    InteractiveError, confirm_action, confirm_with_details, probe_to_display_info,
-    run_host_selection,
-};
-
-// Re-export commonly used setup types
-pub use setup::{SetupError, SetupOptions, SetupResult, SetupState, run_setup};
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    struct EnvGuard {
-        key: &'static str,
-        previous: Option<String>,
-    }
-
-    impl EnvGuard {
-        fn set(key: &'static str, value: &str) -> Self {
-            let previous = dotenvy::var(key).ok();
-            // SAFETY: test helper toggles a process-local env var for isolation.
-            unsafe {
-                std::env::set_var(key, value);
-            }
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            if let Some(value) = &self.previous {
-                // SAFETY: test helper restores prior process env for isolation.
-                unsafe {
-                    std::env::set_var(self.key, value);
-                }
-            } else {
-                // SAFETY: test helper restores prior process env for isolation.
-                unsafe {
-                    std::env::remove_var(self.key);
-                }
-            }
-        }
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn strict_ssh_cli_tokens_include_config_override() {
-        let _guard = EnvGuard::set("CASS_SSH_CONFIG", "/tmp/cass ssh/config");
-
-        let tokens = strict_ssh_cli_tokens(5);
-
-        assert_eq!(tokens[0], "-F");
-        assert_eq!(tokens[1], "/tmp/cass ssh/config");
-        assert!(tokens.contains(&"StrictHostKeyChecking=yes".to_string()));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn strict_ssh_command_for_rsync_quotes_config_override() {
-        let _guard = EnvGuard::set("CASS_SSH_CONFIG", "/tmp/cass'ssh/config");
-
-        let command = strict_ssh_command_for_rsync(5);
-
-        assert!(command.starts_with("ssh -F '/tmp/cass'\\''ssh/config' "));
-        assert!(command.contains("StrictHostKeyChecking=yes"));
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn strict_ssh_helpers_ignore_empty_config_override() {
-        let _guard = EnvGuard::set("CASS_SSH_CONFIG", "   ");
-
-        let tokens = strict_ssh_cli_tokens(5);
-        let command = strict_ssh_command_for_rsync(5);
-
-        assert!(!tokens.contains(&"-F".to_string()));
-        assert!(!command.contains(" -F "));
-    }
+    use std::process::Stdio;
 
     #[cfg(unix)]
     #[test]
@@ -523,34 +302,5 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert!(started.elapsed() < Duration::from_secs(5));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn file_backed_child_stdin_delivers_exact_bytes() -> anyhow::Result<()> {
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg("cat")
-            .stdin(file_backed_child_stdin(b"probe payload\n")?)
-            .stdout(std::process::Stdio::piped())
-            .output()?;
-
-        assert!(output.status.success());
-        assert_eq!(output.stdout, b"probe payload\n");
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn file_backed_child_stdin_survives_child_exit_without_reading() -> anyhow::Result<()> {
-        let payload = vec![b'x'; 1_048_576];
-        let status = Command::new("sh")
-            .arg("-c")
-            .arg("exit 23")
-            .stdin(file_backed_child_stdin(&payload)?)
-            .status()?;
-
-        assert_eq!(status.code(), Some(23));
-        Ok(())
     }
 }

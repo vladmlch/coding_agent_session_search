@@ -1,9 +1,9 @@
-use coding_agent_search::sources::sync::path_to_safe_dirname;
+use coding_agent_search::sources::provenance::path_to_safe_dirname;
 
 #[test]
 fn test_path_to_safe_dirname_stability() {
-    // This test verifies the fix for the sync directory oscillation bug.
-    // The local directory name must be derived from the configured path string,
+    // This test verifies the fix for the mirror directory oscillation bug.
+    // The archive directory name must be derived from the configured path string,
     // not the expanded path, to ensure stability when home directory lookup fails/succeeds.
 
     let configured_path = "~/.claude/projects";

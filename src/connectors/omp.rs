@@ -1054,7 +1054,7 @@ mod tests {
     #[test]
     fn sanitized_remote_profile_paths_require_the_production_mirror_slot() -> anyhow::Result<()> {
         fn check_valid_root(remote_root: &str) -> anyhow::Result<()> {
-            let safe_name = crate::sources::sync::path_to_safe_dirname(remote_root);
+            let safe_name = crate::sources::provenance::path_to_safe_dirname(remote_root);
             let production_path = PathBuf::from("/cass/remotes/build-host/mirror")
                 .join(&safe_name)
                 .join("work/agent/sessions/project/session.jsonl");
@@ -1079,7 +1079,7 @@ mod tests {
         check_valid_root("~/.omp/profiles")?;
         check_valid_root("/home/dev/.omp/profiles")?;
 
-        let safe_name = crate::sources::sync::path_to_safe_dirname("~/.omp/profiles");
+        let safe_name = crate::sources::provenance::path_to_safe_dirname("~/.omp/profiles");
         let invalid_profile = PathBuf::from("/cass/remotes/build-host/mirror")
             .join(safe_name)
             .join("con/agent/sessions/project/session.jsonl");
@@ -1194,8 +1194,8 @@ mod tests {
 
     #[test]
     fn sanitized_omp_markers_require_the_exact_production_mirror_slot() {
-        let tilde_name = crate::sources::sync::path_to_safe_dirname("~/.omp/agent/sessions");
-        let absolute_name = crate::sources::sync::path_to_safe_dirname(
+        let tilde_name = crate::sources::provenance::path_to_safe_dirname("~/.omp/agent/sessions");
+        let absolute_name = crate::sources::provenance::path_to_safe_dirname(
             "/home/dev/.local/share/omp/profiles/work/sessions",
         );
         for safe_name in [&tilde_name, &absolute_name] {

@@ -234,6 +234,10 @@ fn legacy_settings_are_tolerated_and_never_rewritten() {
     assert_eq!(legacy["host"], "fixture.invalid");
     assert_eq!(legacy["sync_schedule"], "hourly");
     assert_eq!(legacy["platform"], "linux");
+    // The local-only shape: the entry is visible but explicitly inert.
+    assert_eq!(legacy["kind"], "legacy-remote");
+    assert_eq!(legacy["supported"], false);
+    assert_eq!(legacy["archived_conversations"], 0);
     assert_eq!(
         sha256_hex(&fixture.sources_toml),
         toml_sha_setup,
@@ -273,5 +277,62 @@ fn legacy_settings_are_tolerated_and_never_rewritten() {
     assert_eq!(
         after, db_sha,
         "read-only status must not modify agent_search.db"
+    );
+}
+
+/// `cass index` warns once on stderr about legacy remote entries while robot
+/// stdout stays a clean single JSON document.
+#[test]
+fn index_warns_about_legacy_remote_entries_on_stderr_only() {
+    let fixture = build_fixture();
+    let data_dir = fixture.data_dir.to_string_lossy().into_owned();
+
+    let out = fixture.cass_ok(&["index", "--json", "--data-dir", &data_dir]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("legacy remote") && stderr.contains("legacy-laptop"),
+        "index must warn once about legacy remote entries: {stderr}"
+    );
+    assert!(
+        serde_json::from_slice::<Value>(&out.stdout).is_ok(),
+        "robot stdout must stay clean JSON: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+/// `sources agents exclude` rewrites sources.toml but must preserve every
+/// legacy field verbatim (host, sync_schedule, platform, path_mappings).
+#[test]
+fn agents_exclude_preserves_legacy_source_fields() {
+    let fixture = build_fixture();
+
+    let out = fixture.cass_ok(&[
+        "sources",
+        "agents",
+        "exclude",
+        "codex",
+        "--keep-indexed-data",
+    ]);
+    let _ = out; // success asserted by cass_ok
+
+    let rewritten = fs::read_to_string(&fixture.sources_toml).expect("read rewritten toml");
+    for needle in [
+        "name = \"legacy-laptop\"",
+        "type = \"ssh\"",
+        "host = \"fixture.invalid\"",
+        "sync_schedule = \"hourly\"",
+        "platform = \"linux\"",
+        "path_mappings",
+        "from = \"/home/fixture/projects\"",
+        "to = \"/work/fixture/projects\"",
+    ] {
+        assert!(
+            rewritten.contains(needle),
+            "agents exclude must preserve {needle}: {rewritten}"
+        );
+    }
+    assert!(
+        rewritten.contains("disabled_agents"),
+        "the exclusion itself must be persisted: {rewritten}"
     );
 }

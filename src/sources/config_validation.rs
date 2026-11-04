@@ -1,22 +1,20 @@
 // Dead-code tolerated module-wide: `validate_sources_config` feeds
 // `cass sources doctor` (its `config_validation` field), but the parse-failure
 // half (`validate_malformed`) and the change manifest (`diff_configs`) have no
-// production caller yet. The reachability/sync-health side lives in
-// source_doctor_health.rs (.8.2); this module is config-time validation.
+// production caller yet. This module is config-time validation.
 #![allow(dead_code)]
 
-//! Source configuration validation and setup-race diagnostics (bead
-//! cass-fleet-resilience-20260608-uojcg.8.5).
+//! Source configuration validation for the local-only build.
 //!
-//! Before any sync or fleet operation, `sources.toml` must be validated so a
-//! malformed config or a concurrent setup race is reported *as such* — never
-//! silently dropped, overwritten, or mistaken for a healthy remote. This
-//! module classifies the config-time problems the report named — no sources
-//! configured, malformed config (with the parser's line/field detail), a
-//! duplicate name, an SSH source missing its host or paths, a missing
-//! transport tool (rsync/scp), a missing path mapping, an unknown disabled
-//! agent, and a concurrent setup/write race — each with a severity and a
-//! concrete (never destructive) safe-next-command.
+//! `sources.toml` is validated so a malformed config or an interrupted write
+//! is reported *as such* — never silently dropped, overwritten, or mistaken
+//! for something else. This module classifies the config-time findings: no
+//! sources configured, malformed config (with the parser's line/field
+//! detail), a duplicate name, a source listing no paths, a missing path
+//! mapping on a legacy remote entry, an unknown disabled agent, an
+//! interrupted config write, and — as a warning rather than an error — the
+//! presence of legacy `type = "ssh"` entries whose remote synchronization was
+//! removed.
 //!
 //! It also provides a before/after [`ConfigChangeManifest`] for dry-run config
 //! changes so a removal is always explicit and confirmable: cass never drops
@@ -48,20 +46,19 @@ pub(crate) enum ConfigIssueKind {
     MalformedConfig,
     /// Two source entries share a name (the name is the `source_id`).
     DuplicateSourceName,
-    /// An SSH-typed source has no `host`.
-    SshSourceMissingHost,
-    /// A source lists no paths to sync.
+    /// A `type = "ssh"` entry is present. Remote synchronization was removed;
+    /// the entry is an inert archive record kept for provenance.
+    LegacyRemoteSource,
+    /// A source lists no paths.
     SourceMissingPaths,
-    /// SSH sources are configured but neither rsync nor scp is available.
-    MissingTransportTool,
-    /// An SSH source has no path mapping, so its workspace paths will not
-    /// rewrite to local equivalents.
+    /// A legacy remote source has no path mapping, so its archived workspace
+    /// paths will not rewrite to local equivalents when opening hits.
     PathMappingMissing,
     /// A `disabled_agents` entry is not a known connector name.
     DisabledAgentUnknown,
-    /// A setup wizard checkpoint or orphaned temp file indicates an in-flight
-    /// or crashed concurrent setup/write.
-    ConcurrentSetupRace,
+    /// Orphaned `.sources.toml.tmp.*` temp files indicate an interrupted
+    /// atomic config write.
+    InterruptedConfigWrite,
 }
 
 impl ConfigIssueKind {
@@ -70,29 +67,25 @@ impl ConfigIssueKind {
             Self::NoSourcesConfigured => "no_sources_configured",
             Self::MalformedConfig => "malformed_config",
             Self::DuplicateSourceName => "duplicate_source_name",
-            Self::SshSourceMissingHost => "ssh_source_missing_host",
+            Self::LegacyRemoteSource => "legacy_remote_source",
             Self::SourceMissingPaths => "source_missing_paths",
-            Self::MissingTransportTool => "missing_transport_tool",
             Self::PathMappingMissing => "path_mapping_missing",
             Self::DisabledAgentUnknown => "disabled_agent_unknown",
-            Self::ConcurrentSetupRace => "concurrent_setup_race",
+            Self::InterruptedConfigWrite => "interrupted_config_write",
         }
     }
 
-    /// The default severity for this kind. Anything that makes remote sync
-    /// unsafe or impossible is an error; degraded-but-usable states warn;
-    /// local-only is informational.
+    /// The default severity for this kind. A malformed or ambiguous config is
+    /// an error; degraded-but-usable states warn; local-only is informational.
     pub(crate) fn default_severity(self) -> ConfigIssueSeverity {
         match self {
             Self::NoSourcesConfigured => ConfigIssueSeverity::Info,
-            Self::MalformedConfig
-            | Self::DuplicateSourceName
-            | Self::SshSourceMissingHost
-            | Self::MissingTransportTool => ConfigIssueSeverity::Error,
-            Self::SourceMissingPaths
+            Self::MalformedConfig | Self::DuplicateSourceName => ConfigIssueSeverity::Error,
+            Self::LegacyRemoteSource
+            | Self::SourceMissingPaths
             | Self::PathMappingMissing
             | Self::DisabledAgentUnknown
-            | Self::ConcurrentSetupRace => ConfigIssueSeverity::Warning,
+            | Self::InterruptedConfigWrite => ConfigIssueSeverity::Warning,
         }
     }
 
@@ -100,20 +93,20 @@ impl ConfigIssueKind {
     /// manual edit / host-level action). Never a bare or destructive command.
     pub(crate) fn safe_next_command(self) -> Option<&'static str> {
         match self {
-            Self::NoSourcesConfigured => Some("cass sources setup"),
+            Self::NoSourcesConfigured | Self::SourceMissingPaths => {
+                Some("cass sources add <name> --path <path>")
+            }
             // A malformed file or duplicate name needs a manual edit; the
             // detail names the exact line/field. We never auto-rewrite the file.
-            Self::MalformedConfig | Self::DuplicateSourceName => None,
-            Self::SshSourceMissingHost | Self::SourceMissingPaths => {
-                Some("cass sources add <user@host> --path <path>")
-            }
-            // Installing rsync/openssh is host-level, not a cass command.
-            Self::MissingTransportTool => None,
+            // A legacy remote entry is inert archive data — nothing to run.
+            Self::MalformedConfig
+            | Self::DuplicateSourceName
+            | Self::LegacyRemoteSource
+            | Self::InterruptedConfigWrite => None,
             Self::PathMappingMissing => {
                 Some("cass sources mappings add <name> --from <remote> --to <local>")
             }
             Self::DisabledAgentUnknown => Some("cass sources agents list --json"),
-            Self::ConcurrentSetupRace => Some("cass sources setup --resume"),
         }
     }
 }
@@ -122,11 +115,11 @@ impl ConfigIssueKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ConfigIssueSeverity {
-    /// Blocks safe remote sync/fleet operations.
+    /// The configuration itself is malformed or ambiguous.
     Error,
-    /// Degraded — remote operations may be partial or links may not resolve.
+    /// Degraded — links may not resolve or writes may have been interrupted.
     Warning,
-    /// Informational (e.g. local-only search).
+    /// Informational (e.g. no extra sources configured).
     Info,
 }
 
@@ -171,22 +164,16 @@ impl ConfigIssue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SourceSearchMode {
-    /// No (valid) remote sources — search runs over local sessions only.
+    /// Search runs over local sessions and local archive mirrors only.
     LocalOnly,
-    /// Remote sources are configured and structurally valid.
-    RemoteConfigured,
-    /// The config could not be parsed or has blocking errors; remote state is
-    /// invalid and must not be reported as healthy.
+    /// The config could not be parsed or has blocking errors and must not be
+    /// reported as healthy.
     ConfigInvalid,
 }
 
 /// Environment signals the pure validator needs beyond the config itself.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ConfigValidationContext {
-    pub rsync_available: bool,
-    pub scp_available: bool,
-    /// A setup wizard checkpoint exists and looks in-flight/stale.
-    pub setup_in_progress: bool,
     /// Count of orphaned `.sources.toml.tmp.*` temp files observed beside the
     /// config (evidence of an interrupted atomic write).
     pub orphaned_temp_files: usize,
@@ -237,7 +224,7 @@ pub(crate) fn validate_sources_config(
         issues.push(ConfigIssue::new(
             ConfigIssueKind::NoSourcesConfigured,
             None,
-            "no remote sources configured; search runs over local sessions only",
+            "no extra sources configured; search runs over local sessions and archives only",
         ));
     }
 
@@ -260,28 +247,28 @@ pub(crate) fn validate_sources_config(
         }
     }
 
-    let mut has_ssh_source = false;
     for src in &config.sources {
         let is_ssh = src.source_type == SourceKind::Ssh;
         if is_ssh {
-            has_ssh_source = true;
-            if src.host.as_deref().map(str::trim).unwrap_or("").is_empty() {
-                issues.push(
-                    ConfigIssue::new(
-                        ConfigIssueKind::SshSourceMissingHost,
-                        Some(src.name.clone()),
-                        format!("ssh source '{}' has no host (user@hostname)", src.name),
-                    )
-                    .with_field("host"),
-                );
-            }
+            issues.push(
+                ConfigIssue::new(
+                    ConfigIssueKind::LegacyRemoteSource,
+                    Some(src.name.clone()),
+                    format!(
+                        "source '{}' is a legacy remote entry; remote synchronization was removed — \
+                         its archived conversations stay searchable and the entry is kept for provenance",
+                        src.name
+                    ),
+                )
+                .with_field("type"),
+            );
             if src.path_mappings.is_empty() {
                 issues.push(
                     ConfigIssue::new(
                         ConfigIssueKind::PathMappingMissing,
                         Some(src.name.clone()),
                         format!(
-                            "ssh source '{}' has no path mapping; remote workspace paths will not rewrite to local",
+                            "legacy remote source '{}' has no path mapping; archived workspace paths will not rewrite to local",
                             src.name
                         ),
                     )
@@ -294,20 +281,11 @@ pub(crate) fn validate_sources_config(
                 ConfigIssue::new(
                     ConfigIssueKind::SourceMissingPaths,
                     Some(src.name.clone()),
-                    format!("source '{}' lists no paths to sync", src.name),
+                    format!("source '{}' lists no paths", src.name),
                 )
                 .with_field("paths"),
             );
         }
-    }
-
-    // Transport tooling is only required when SSH sources exist.
-    if has_ssh_source && !ctx.rsync_available && !ctx.scp_available {
-        issues.push(ConfigIssue::new(
-            ConfigIssueKind::MissingTransportTool,
-            None,
-            "ssh sources are configured but neither rsync nor scp is available on this host",
-        ));
     }
 
     // Unknown disabled-agent names (only when a known set is supplied).
@@ -326,13 +304,14 @@ pub(crate) fn validate_sources_config(
         }
     }
 
-    if ctx.setup_in_progress || ctx.orphaned_temp_files > 0 {
+    if ctx.orphaned_temp_files > 0 {
         issues.push(ConfigIssue::new(
-            ConfigIssueKind::ConcurrentSetupRace,
+            ConfigIssueKind::InterruptedConfigWrite,
             None,
             format!(
-                "a concurrent or interrupted setup/write was detected ({} orphaned temp file(s), setup_in_progress={}); resume or re-run setup before sync",
-                ctx.orphaned_temp_files, ctx.setup_in_progress
+                "an interrupted config write left {} orphaned temp file(s) beside sources.toml; \
+                 the next successful sources command rewrites it atomically",
+                ctx.orphaned_temp_files
             ),
         ));
     }
@@ -342,8 +321,6 @@ pub(crate) fn validate_sources_config(
         .any(|i| i.severity == ConfigIssueSeverity::Error);
     let search_mode = if has_errors {
         SourceSearchMode::ConfigInvalid
-    } else if has_ssh_source {
-        SourceSearchMode::RemoteConfigured
     } else {
         SourceSearchMode::LocalOnly
     };
@@ -546,24 +523,19 @@ mod tests {
         }
     }
 
-    fn ctx_full_tooling() -> ConfigValidationContext {
-        ConfigValidationContext {
-            rsync_available: true,
-            scp_available: true,
-            ..Default::default()
-        }
+    fn ctx() -> ConfigValidationContext {
+        ConfigValidationContext::default()
     }
 
     const ALL_KINDS: &[ConfigIssueKind] = &[
         ConfigIssueKind::NoSourcesConfigured,
         ConfigIssueKind::MalformedConfig,
         ConfigIssueKind::DuplicateSourceName,
-        ConfigIssueKind::SshSourceMissingHost,
+        ConfigIssueKind::LegacyRemoteSource,
         ConfigIssueKind::SourceMissingPaths,
-        ConfigIssueKind::MissingTransportTool,
         ConfigIssueKind::PathMappingMissing,
         ConfigIssueKind::DisabledAgentUnknown,
-        ConfigIssueKind::ConcurrentSetupRace,
+        ConfigIssueKind::InterruptedConfigWrite,
     ];
 
     fn assert_no_destructive_commands(v: &SourceConfigValidation) {
@@ -597,23 +569,16 @@ mod tests {
                 ConfigIssueKind::DuplicateSourceName,
                 "duplicate_source_name",
             ),
-            (
-                ConfigIssueKind::SshSourceMissingHost,
-                "ssh_source_missing_host",
-            ),
+            (ConfigIssueKind::LegacyRemoteSource, "legacy_remote_source"),
             (ConfigIssueKind::SourceMissingPaths, "source_missing_paths"),
-            (
-                ConfigIssueKind::MissingTransportTool,
-                "missing_transport_tool",
-            ),
             (ConfigIssueKind::PathMappingMissing, "path_mapping_missing"),
             (
                 ConfigIssueKind::DisabledAgentUnknown,
                 "disabled_agent_unknown",
             ),
             (
-                ConfigIssueKind::ConcurrentSetupRace,
-                "concurrent_setup_race",
+                ConfigIssueKind::InterruptedConfigWrite,
+                "interrupted_config_write",
             ),
         ];
         for (kind, want) in pairs {
@@ -629,7 +594,7 @@ mod tests {
     #[test]
     fn empty_config_is_local_only_not_an_error() {
         let cfg = SourcesConfig::default();
-        let v = validate_sources_config(&cfg, &ctx_full_tooling());
+        let v = validate_sources_config(&cfg, &ctx());
         assert!(v.valid, "no sources is not an error");
         assert_eq!(v.search_mode, SourceSearchMode::LocalOnly);
         assert_eq!(v.source_count, 0);
@@ -649,79 +614,55 @@ mod tests {
             sources: vec![local("a", &["~/.claude/projects"])],
             disabled_agents: vec![],
         };
-        let v = validate_sources_config(&cfg, &ctx_full_tooling());
+        let v = validate_sources_config(&cfg, &ctx());
         assert!(v.valid);
         assert_eq!(v.search_mode, SourceSearchMode::LocalOnly);
         assert!(v.issues.is_empty(), "{:?}", v.issues);
     }
 
     #[test]
-    fn valid_ssh_source_is_remote_configured() {
+    fn legacy_remote_source_warns_but_stays_valid() {
         let cfg = SourcesConfig {
             sources: vec![ssh("laptop", Some("me@laptop"), &["~/.claude/projects"], 1)],
             disabled_agents: vec![],
         };
-        let v = validate_sources_config(&cfg, &ctx_full_tooling());
+        let v = validate_sources_config(&cfg, &ctx());
         assert!(v.valid, "{:?}", v.issues);
-        assert_eq!(v.search_mode, SourceSearchMode::RemoteConfigured);
-        assert!(v.issues.is_empty());
-    }
-
-    #[test]
-    fn ssh_missing_host_is_a_blocking_error_and_config_invalid() {
-        let cfg = SourcesConfig {
-            sources: vec![ssh("laptop", None, &["~/x"], 1)],
-            disabled_agents: vec![],
-        };
-        let v = validate_sources_config(&cfg, &ctx_full_tooling());
-        assert!(!v.valid);
-        assert!(v.has_errors());
-        assert_eq!(v.search_mode, SourceSearchMode::ConfigInvalid);
+        assert_eq!(v.search_mode, SourceSearchMode::LocalOnly);
         let issue = v
-            .issues_of(ConfigIssueKind::SshSourceMissingHost)
+            .issues_of(ConfigIssueKind::LegacyRemoteSource)
             .next()
-            .expect("missing-host issue");
-        assert_eq!(issue.severity, ConfigIssueSeverity::Error);
-        assert_eq!(issue.field.as_deref(), Some("host"));
+            .expect("legacy-remote issue");
+        assert_eq!(issue.severity, ConfigIssueSeverity::Warning);
         assert_eq!(issue.source_name.as_deref(), Some("laptop"));
     }
 
     #[test]
-    fn missing_transport_tool_only_errors_with_ssh_sources() {
-        let no_tooling = ConfigValidationContext::default();
-        // Local-only: no transport needed even without rsync/scp.
-        let local_cfg = SourcesConfig {
-            sources: vec![local("a", &["~/x"])],
+    fn legacy_remote_source_without_host_still_warns_not_errors() {
+        let cfg = SourcesConfig {
+            sources: vec![ssh("laptop", None, &["~/x"], 1)],
             disabled_agents: vec![],
         };
-        let v = validate_sources_config(&local_cfg, &no_tooling);
-        assert_eq!(
-            v.issues_of(ConfigIssueKind::MissingTransportTool).count(),
-            0,
-            "local sources need no transport"
-        );
+        let v = validate_sources_config(&cfg, &ctx());
+        // A legacy entry never blocks: remote fields are inert data now.
         assert!(v.valid);
-
-        // SSH with no rsync/scp: blocking error.
-        let ssh_cfg = SourcesConfig {
-            sources: vec![ssh("laptop", Some("me@laptop"), &["~/x"], 1)],
-            disabled_agents: vec![],
-        };
-        let v = validate_sources_config(&ssh_cfg, &no_tooling);
-        assert_eq!(
-            v.issues_of(ConfigIssueKind::MissingTransportTool).count(),
-            1
-        );
-        assert!(!v.valid);
+        assert!(!v.has_errors());
+        assert_eq!(v.search_mode, SourceSearchMode::LocalOnly);
+        let issue = v
+            .issues_of(ConfigIssueKind::LegacyRemoteSource)
+            .next()
+            .expect("legacy-remote issue");
+        assert_eq!(issue.severity, ConfigIssueSeverity::Warning);
+        assert_eq!(issue.source_name.as_deref(), Some("laptop"));
     }
 
     #[test]
-    fn ssh_without_mapping_warns_but_stays_valid() {
+    fn legacy_remote_source_without_mapping_warns_but_stays_valid() {
         let cfg = SourcesConfig {
             sources: vec![ssh("laptop", Some("me@laptop"), &["~/x"], 0)],
             disabled_agents: vec![],
         };
-        let v = validate_sources_config(&cfg, &ctx_full_tooling());
+        let v = validate_sources_config(&cfg, &ctx());
         let issue = v
             .issues_of(ConfigIssueKind::PathMappingMissing)
             .next()
@@ -729,7 +670,7 @@ mod tests {
         assert_eq!(issue.severity, ConfigIssueSeverity::Warning);
         // A warning does not invalidate the config.
         assert!(v.valid);
-        assert_eq!(v.search_mode, SourceSearchMode::RemoteConfigured);
+        assert_eq!(v.search_mode, SourceSearchMode::LocalOnly);
         assert!(
             issue
                 .safe_next_command
@@ -749,7 +690,7 @@ mod tests {
             ],
             disabled_agents: vec![],
         };
-        let v = validate_sources_config(&cfg, &ctx_full_tooling());
+        let v = validate_sources_config(&cfg, &ctx());
         // Two extra duplicates beyond the first.
         assert_eq!(v.issues_of(ConfigIssueKind::DuplicateSourceName).count(), 2);
         assert!(!v.valid, "duplicate names block");
@@ -761,7 +702,7 @@ mod tests {
             sources: vec![local("a", &[])],
             disabled_agents: vec![],
         };
-        let v = validate_sources_config(&cfg, &ctx_full_tooling());
+        let v = validate_sources_config(&cfg, &ctx());
         let issue = v
             .issues_of(ConfigIssueKind::SourceMissingPaths)
             .next()
@@ -777,7 +718,7 @@ mod tests {
             disabled_agents: vec!["claude".to_string(), "not_a_real_agent".to_string()],
         };
         // No known set: skip the check.
-        let v = validate_sources_config(&cfg, &ctx_full_tooling());
+        let v = validate_sources_config(&cfg, &ctx());
         assert_eq!(
             v.issues_of(ConfigIssueKind::DisabledAgentUnknown).count(),
             0
@@ -785,7 +726,7 @@ mod tests {
         // With a known set: flag the unknown one.
         let ctx = ConfigValidationContext {
             known_agents: vec!["claude".to_string(), "codex".to_string()],
-            ..ctx_full_tooling()
+            ..ctx()
         };
         let v = validate_sources_config(&cfg, &ctx);
         let issue = v
@@ -796,30 +737,22 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_setup_race_is_detected_from_signals() {
+    fn interrupted_config_write_is_detected_from_orphaned_temps() {
         let cfg = SourcesConfig {
             sources: vec![local("a", &["~/x"])],
             disabled_agents: vec![],
         };
         let ctx = ConfigValidationContext {
             orphaned_temp_files: 2,
-            setup_in_progress: true,
-            ..ctx_full_tooling()
+            ..ctx()
         };
         let v = validate_sources_config(&cfg, &ctx);
         let issue = v
-            .issues_of(ConfigIssueKind::ConcurrentSetupRace)
+            .issues_of(ConfigIssueKind::InterruptedConfigWrite)
             .next()
-            .expect("setup-race issue");
+            .expect("interrupted-write issue");
         assert_eq!(issue.severity, ConfigIssueSeverity::Warning);
-        assert!(
-            issue
-                .safe_next_command
-                .as_deref()
-                .unwrap()
-                .contains("setup --resume")
-        );
-        // A race alone (no errors) does not flip the config invalid.
+        // An interrupted write alone (no errors) does not flip config invalid.
         assert!(v.valid);
         assert_no_destructive_commands(&v);
     }
@@ -946,13 +879,9 @@ mod tests {
         assert_eq!(v.search_mode, SourceSearchMode::ConfigInvalid);
         assert_eq!(v.issues[0].kind, ConfigIssueKind::MalformedConfig);
 
-        // 2) A well-formed SSH source (host + paths, no mapping) → loads, then
-        //    validates: with no rsync/scp in the default context the missing
-        //    transport tool is a blocking error, and the absent path mapping is
-        //    a warning. (The real loader already rejects a host-less SSH source
-        //    at load time with Validation("SSH sources require a host"), so the
-        //    SshSourceMissingHost classifier covers the in-memory/pre-save path
-        //    — see ssh_missing_host_is_a_blocking_error_and_config_invalid.)
+        // 2) A well-formed legacy SSH source (host + paths, no mapping) → loads,
+        //    then validates: the legacy remote entry is a warning, the absent
+        //    path mapping is a second warning, and the config stays valid.
         let ok_path = dir.path().join("ok.toml");
         let mut f = std::fs::File::create(&ok_path).expect("create ok");
         writeln!(
@@ -963,11 +892,8 @@ mod tests {
         drop(f);
         let cfg = SourcesConfig::load_from(&ok_path).expect("well-formed config loads");
         let v = validate_sources_config(&cfg, &ConfigValidationContext::default());
-        assert!(!v.valid, "ssh source with no transport tool is invalid");
-        assert_eq!(
-            v.issues_of(ConfigIssueKind::MissingTransportTool).count(),
-            1
-        );
+        assert!(v.valid, "a legacy remote entry warns but stays valid");
+        assert_eq!(v.issues_of(ConfigIssueKind::LegacyRemoteSource).count(), 1);
         assert_eq!(v.issues_of(ConfigIssueKind::PathMappingMissing).count(), 1);
         assert_no_destructive_commands(&v);
     }

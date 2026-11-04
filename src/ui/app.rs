@@ -4861,23 +4861,18 @@ impl ScreenshotFormat {
 pub struct SourcesViewItem {
     /// Source name (e.g., "laptop").
     pub name: String,
-    /// Connection kind (local / ssh).
+    /// Source kind: `local` entries index in place; `ssh` entries are inert
+    /// legacy-remote archive records.
     pub kind: crate::sources::SourceKind,
-    /// SSH host string (e.g., "user@laptop.local"), if remote.
+    /// Legacy remote host string (e.g., "user@laptop.local"), kept as archive
+    /// provenance only — never probed.
     pub host: Option<String>,
-    /// Sync schedule label.
-    pub schedule: String,
     /// Number of paths configured.
     pub path_count: usize,
-    /// Last sync timestamp (unix ms), if any.
-    pub last_sync: Option<i64>,
-    /// Last sync result label ("success", "failed", "partial", "never").
-    pub last_result: String,
-    /// Files synced in last run.
-    pub files_synced: u64,
-    /// Bytes transferred in last run.
-    pub bytes_transferred: u64,
-    /// Whether a sync/doctor action is currently running for this source.
+    /// Archived conversations still attributed to this source, when the
+    /// archive database was readable. Shown for legacy-remote rows.
+    pub archived_conversations: Option<usize>,
+    /// Whether a doctor action is currently running for this source.
     pub busy: bool,
     /// Doctor diagnostic summary (pass/warn/fail counts), if available.
     pub doctor_summary: Option<(usize, usize, usize)>,
@@ -4909,61 +4904,12 @@ pub struct SourcesViewState {
     pub selected: usize,
     /// Scroll offset for long lists.
     pub scroll: usize,
-    /// Whether a bulk operation is running (e.g., sync-all).
+    /// Whether a bulk operation is running.
     pub busy: bool,
     /// Path to sources.toml (for display).
     pub config_path: String,
     /// Status line message.
     pub status: String,
-}
-
-fn format_source_sync_status(report: &crate::sources::SyncReport) -> String {
-    match report.sync_result() {
-        crate::sources::SyncResult::Success => format!(
-            "Sync '{}' OK: {} files, {} bytes",
-            report.source_name,
-            report.total_files(),
-            report.total_bytes()
-        ),
-        crate::sources::SyncResult::PartialFailure(error) => {
-            let total_paths = report.successful_paths() + report.failed_paths();
-            if error.is_empty() {
-                format!(
-                    "Sync '{}' partial: {}/{} paths OK",
-                    report.source_name,
-                    report.successful_paths(),
-                    total_paths
-                )
-            } else {
-                format!(
-                    "Sync '{}' partial: {}/{} paths OK ({error})",
-                    report.source_name,
-                    report.successful_paths(),
-                    total_paths
-                )
-            }
-        }
-        crate::sources::SyncResult::Failed(error) => {
-            if error.is_empty() {
-                format!("Sync '{}' failed", report.source_name)
-            } else {
-                format!("Sync '{}' failed: {error}", report.source_name)
-            }
-        }
-        crate::sources::SyncResult::Skipped => format!("Sync '{}' skipped", report.source_name),
-    }
-}
-
-fn apply_source_sync_info_to_item(
-    item: &mut SourcesViewItem,
-    info: &crate::sources::SourceSyncInfo,
-) {
-    item.last_sync = info.last_sync;
-    item.last_result = info.last_result.label().into();
-    item.files_synced = info.files_synced;
-    item.bytes_transferred = info.bytes_transferred;
-    item.doctor_summary = None;
-    item.error = info.last_result.error_message().map(str::to_owned);
 }
 
 // =========================================================================
@@ -13510,7 +13456,7 @@ impl CassApp {
     fn rebuild_sources_view(
         &mut self,
         config: &crate::sources::SourcesConfig,
-        sync_status: &crate::sources::SyncStatus,
+        archived_counts: &HashMap<String, usize>,
         config_path: String,
     ) {
         let previous_status = self.sources_view.status.clone();
@@ -13535,19 +13481,16 @@ impl CassApp {
             name: "local".into(),
             kind: crate::sources::SourceKind::Local,
             host: None,
-            schedule: "always".into(),
             path_count: 0,
-            last_sync: None,
-            last_result: "n/a".into(),
-            files_synced: 0,
-            bytes_transferred: 0,
+            archived_conversations: archived_counts
+                .get(crate::sources::LOCAL_SOURCE_ID)
+                .copied(),
             busy: local_state.busy,
             doctor_summary: local_state.doctor_summary,
             error: None,
         });
 
         for src in &config.sources {
-            let info = sync_status.sources.get(&src.name);
             let row_state = previous_row_state
                 .get(&src.name)
                 .copied()
@@ -13556,18 +13499,11 @@ impl CassApp {
                 name: src.name.clone(),
                 kind: src.source_type,
                 host: src.host.clone(),
-                schedule: format!("{:?}", src.sync_schedule).to_lowercase(),
                 path_count: src.paths.len(),
-                last_sync: info.and_then(|i| i.last_sync),
-                last_result: info
-                    .map(|i| i.last_result.label())
-                    .unwrap_or("never")
-                    .into(),
-                files_synced: info.map(|i| i.files_synced).unwrap_or(0),
-                bytes_transferred: info.map(|i| i.bytes_transferred).unwrap_or(0),
+                archived_conversations: archived_counts.get(&src.name).copied(),
                 busy: row_state.busy,
                 doctor_summary: row_state.doctor_summary,
-                error: info.and_then(|i| i.last_result.error_message().map(str::to_owned)),
+                error: None,
             });
         }
 
@@ -13619,39 +13555,29 @@ impl CassApp {
         scroll.min(max_scroll)
     }
 
-    /// Load sources configuration + sync status into `SourcesViewState`.
+    /// Load sources configuration + archived conversation counts into
+    /// `SourcesViewState`. Read-only: a missing or locked archive just means
+    /// counts are absent.
     #[cfg(not(test))]
     fn load_sources_view(&mut self) {
-        use crate::sources::{SourcesConfig, SyncStatus};
+        use crate::sources::SourcesConfig;
 
         let config_path = SourcesConfig::config_path()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "unknown".into());
 
-        let data_dir = self.data_dir.clone();
-        let mut sync_status = SyncStatus::load(&data_dir).unwrap_or_default();
+        let db_path = self.data_dir.join("agent_search.db");
+        let archived_counts =
+            crate::storage::sqlite::FrankenStorage::open_strict_readonly(&db_path)
+                .and_then(|storage| storage.conversation_counts_by_source())
+                .unwrap_or_default();
         match SourcesConfig::load() {
             Ok(config) => {
-                let prune_warning = if sync_status
-                    .retain_sources(config.sources.iter().map(|source| source.name.as_str()))
-                {
-                    sync_status.save(&data_dir).err().map(|error| {
-                        tracing::warn!(%error, "failed to save pruned source sync status");
-                        format!("Failed to save pruned source sync status: {error}")
-                    })
-                } else {
-                    None
-                };
-                self.rebuild_sources_view(&config, &sync_status, config_path);
-                if let Some(warning) = prune_warning
-                    && !self.sources_view.items.iter().any(|item| item.busy)
-                {
-                    self.sources_view.status = warning;
-                }
+                self.rebuild_sources_view(&config, &archived_counts, config_path);
             }
             Err(error) => {
                 tracing::warn!(%error, "failed to load sources config");
-                self.rebuild_sources_view(&SourcesConfig::default(), &sync_status, config_path);
+                self.rebuild_sources_view(&SourcesConfig::default(), &archived_counts, config_path);
                 self.sources_view.status = format!("Failed to load sources config: {error}");
             }
         }
@@ -13668,7 +13594,6 @@ impl CassApp {
 
     fn sources_status_is_sticky_warning(status: &str) -> bool {
         status.starts_with("Failed to load sources config:")
-            || status.starts_with("Failed to save pruned source sync status:")
     }
 
     /// Number of selectable items in the current analytics subview.
@@ -14300,12 +14225,8 @@ pub enum CassMsg {
     // -- Sources management surface (2noh9.4.9) ----------------------------
     /// Switch to the sources management surface.
     SourcesEntered,
-    /// Reload sources config + sync status from disk.
+    /// Reload sources config + archived counts from disk.
     SourcesRefreshed,
-    /// Trigger sync for the selected source (by name).
-    SourceSyncRequested(String),
-    /// Sync completed with a structured result report.
-    SourceSyncCompleted { report: crate::sources::SyncReport },
     /// Trigger doctor diagnostics for the selected source.
     SourceDoctorRequested(String),
     /// Doctor diagnostics completed.
@@ -16616,21 +16537,10 @@ impl super::ftui_adapter::Model for CassApp {
                 CassMsg::SelectionMoved { delta } => {
                     return self.update(CassMsg::SourcesSelectionMoved { delta: *delta });
                 }
-                // 's' key triggers sync for selected source.
-                CassMsg::QueryChanged(text) if text == "s" || text == "S" => {
-                    if let Some(item) = self.sources_view.items.get(self.sources_view.selected)
-                        && item.kind != crate::sources::SourceKind::Local
-                        && !item.busy
-                    {
-                        let name = item.name.clone();
-                        return self.update(CassMsg::SourceSyncRequested(name));
-                    }
-                    return ftui::Cmd::none();
-                }
-                // 'd' key triggers doctor for selected source.
+                // 'd' key triggers the local-only doctor for the selected
+                // configured source (remote probing no longer exists).
                 CassMsg::QueryChanged(text) if text == "d" || text == "D" => {
                     if let Some(item) = self.sources_view.items.get(self.sources_view.selected)
-                        && item.kind != crate::sources::SourceKind::Local
                         && !item.busy
                     {
                         let name = item.name.clone();
@@ -20361,125 +20271,6 @@ impl super::ftui_adapter::Model for CassApp {
                 }
                 ftui::Cmd::none()
             }
-            CassMsg::SourceSyncRequested(ref name) => {
-                let name = name.clone();
-                if let Some(item) = self.sources_view.items.iter_mut().find(|i| i.name == name) {
-                    item.busy = true;
-                }
-                self.sources_view.status = format!("Syncing '{name}'...");
-
-                // Spawn background sync task.
-                let source_name = name.clone();
-                let data_dir = self.data_dir.clone();
-                #[cfg(not(test))]
-                {
-                    use crate::sources::{SourcesConfig, SyncEngine};
-                    let config = SourcesConfig::load().unwrap_or_default();
-                    if let Some(source_def) = config.find_source(&source_name) {
-                        let source_def = source_def.clone();
-                        ftui::Cmd::task(move || {
-                            let engine = SyncEngine::new(&data_dir);
-                            let report = engine.sync_source(&source_def).unwrap_or_else(|error| {
-                                crate::sources::SyncReport::failed(source_name.clone(), error)
-                            });
-                            CassMsg::SourceSyncCompleted { report }
-                        })
-                    } else {
-                        if let Some(item) = self
-                            .sources_view
-                            .items
-                            .iter_mut()
-                            .find(|item| item.name == source_name)
-                        {
-                            item.busy = false;
-                            item.error =
-                                Some("Source no longer exists in sources config".to_string());
-                        }
-                        self.sources_view.status =
-                            format!("Source '{source_name}' not found in config");
-                        ftui::Cmd::none()
-                    }
-                }
-                #[cfg(test)]
-                {
-                    let _ = data_dir;
-                    let _ = source_name;
-                    ftui::Cmd::none()
-                }
-            }
-            CassMsg::SourceSyncCompleted { ref report } => {
-                let source_name = report.source_name.clone();
-                let sync_info = crate::sources::SourceSyncInfo::from_report(report);
-                let base_status_message = format_source_sync_status(report);
-                if let Some(item) = self
-                    .sources_view
-                    .items
-                    .iter_mut()
-                    .find(|i| i.name == source_name)
-                {
-                    item.busy = false;
-                    apply_source_sync_info_to_item(item, &sync_info);
-                }
-                let has_other_busy_source = self.sources_view.items.iter().any(|item| item.busy);
-                #[cfg(not(test))]
-                {
-                    use crate::sources::{SourcesConfig, SyncStatus};
-
-                    let status_message = match SyncStatus::load(&self.data_dir) {
-                        Ok(mut persisted_status) => match SourcesConfig::load() {
-                            Ok(config) => {
-                                let source_still_configured =
-                                    config.find_source(&source_name).is_some();
-                                persisted_status.retain_sources(
-                                    config.sources.iter().map(|source| source.name.as_str()),
-                                );
-                                if source_still_configured {
-                                    persisted_status.set_info(&source_name, sync_info);
-                                }
-                                let status_message = if source_still_configured {
-                                    base_status_message.clone()
-                                } else {
-                                    format!(
-                                        "{base_status_message} (source removed from config before sync completed)"
-                                    )
-                                };
-                                if let Err(error) = persisted_status.save(&self.data_dir) {
-                                    format!(
-                                        "{status_message} (warning: failed to save sync status: {error})"
-                                    )
-                                } else {
-                                    status_message
-                                }
-                            }
-                            Err(error) => {
-                                persisted_status.set_info(&source_name, sync_info);
-                                if let Err(save_error) = persisted_status.save(&self.data_dir) {
-                                    format!(
-                                        "{base_status_message} (warning: failed to load sources config for sync-status pruning: {error}; failed to save sync status: {save_error})"
-                                    )
-                                } else {
-                                    format!(
-                                        "{base_status_message} (warning: failed to load sources config for sync-status pruning: {error})"
-                                    )
-                                }
-                            }
-                        },
-                        Err(error) => format!(
-                            "{base_status_message} (warning: failed to load sync status: {error})"
-                        ),
-                    };
-                    if !has_other_busy_source {
-                        self.sources_view.status = status_message;
-                    }
-                }
-                #[cfg(test)]
-                {
-                    if !has_other_busy_source {
-                        self.sources_view.status = base_status_message;
-                    }
-                }
-                ftui::Cmd::none()
-            }
             CassMsg::SourceDoctorRequested(ref name) => {
                 let name = name.clone();
                 if let Some(item) = self.sources_view.items.iter_mut().find(|i| i.name == name) {
@@ -20487,64 +20278,88 @@ impl super::ftui_adapter::Model for CassApp {
                 }
                 self.sources_view.status = format!("Running doctor on '{name}'...");
 
-                // Spawn background doctor/probe task.
+                // Spawn a background local-only doctor task. Nothing on the
+                // network is contacted: legacy remote entries report their
+                // archive status instead of being probed.
                 let source_name = name.clone();
                 #[cfg(not(test))]
                 {
-                    use crate::sources::{DiscoveredHost, SourcesConfig, probe_host};
+                    use crate::sources::SourcesConfig;
                     let config = SourcesConfig::load().unwrap_or_default();
-                    if let Some(source_def) = config.find_source(&source_name) {
-                        let host_str = source_def
-                            .host
-                            .clone()
-                            .unwrap_or_else(|| source_name.clone());
-                        ftui::Cmd::task(move || {
-                            let host = DiscoveredHost {
-                                name: host_str,
-                                hostname: None,
-                                user: None,
-                                port: None,
-                                identity_file: None,
-                            };
-                            let result = probe_host(&host, 15);
-                            let mut passed = 0usize;
-                            let mut warnings = 0usize;
-                            let mut failed = 0usize;
+                    if let Some(source_def) = config.find_source(&source_name).cloned() {
+                        if source_def.is_remote() {
+                            // Legacy remote entries are inert archive records.
+                            // Reporting their archived conversation count is
+                            // the local-only replacement for the removed
+                            // remote probe.
+                            if let Some(item) = self
+                                .sources_view
+                                .items
+                                .iter_mut()
+                                .find(|item| item.name == source_name)
+                            {
+                                item.busy = false;
+                                let archived = item.archived_conversations.unwrap_or(0);
+                                item.doctor_summary = Some((0, 1, 0));
+                                self.sources_view.status = format!(
+                                    "'{source_name}' is a legacy remote archive (remote sync removed): {archived} archived conversation(s)"
+                                );
+                            }
+                            ftui::Cmd::none()
+                        } else {
+                            ftui::Cmd::task(move || {
+                                let mut passed = 0usize;
+                                let mut warnings = 0usize;
+                                let mut failed = 0usize;
 
-                            // SSH reachable?
-                            if result.reachable {
-                                passed += 1;
-                            } else {
-                                failed += 1;
-                            }
-                            // Cass installed?
-                            if result.has_cass() {
-                                passed += 1;
-                            } else {
-                                warnings += 1;
-                            }
-                            // Agent data present?
-                            if result.has_agent_data() {
-                                passed += 1;
-                            } else {
-                                warnings += 1;
-                            }
-                            // Disk space available?
-                            if let Some(ref res) = result.resources {
-                                if res.disk_available_mb >= 1024 {
-                                    passed += 1;
-                                } else {
-                                    warnings += 1;
+                                // Config-level issues scoped to this source.
+                                let validation =
+                                    crate::sources::config_validation::validate_sources_config(
+                                        &config,
+                                        &crate::sources::config_validation::ConfigValidationContext::default(),
+                                    );
+                                for issue in &validation.issues {
+                                    if issue.source_name.as_deref() == Some(source_name.as_str()) {
+                                        match issue.severity {
+                                            crate::sources::config_validation::ConfigIssueSeverity::Error => {
+                                                failed += 1
+                                            }
+                                            crate::sources::config_validation::ConfigIssueSeverity::Warning => {
+                                                warnings += 1
+                                            }
+                                            crate::sources::config_validation::ConfigIssueSeverity::Info => {}
+                                        }
+                                    }
                                 }
-                            }
 
-                            CassMsg::SourceDoctorCompleted {
-                                source_name,
-                                passed,
-                                warnings,
-                                failed,
-                            }
-                        })
+                                // Configured local paths exist on disk?
+                                for path in &source_def.paths {
+                                    if crate::sources::config::source_path_entry_error(0, path)
+                                        .is_some()
+                                    {
+                                        failed += 1;
+                                        continue;
+                                    }
+                                    let expanded = path
+                                        .strip_prefix("~/")
+                                        .and_then(|rest| {
+                                            dirs::home_dir().map(|home| home.join(rest))
+                                        })
+                                        .unwrap_or_else(|| PathBuf::from(path));
+                                    match std::fs::metadata(&expanded) {
+                                        Ok(meta) if meta.is_dir() => passed += 1,
+                                        Ok(_) | Err(_) => warnings += 1,
+                                    }
+                                }
+
+                                CassMsg::SourceDoctorCompleted {
+                                    source_name,
+                                    passed,
+                                    warnings,
+                                    failed,
+                                }
+                            })
+                        }
                     } else {
                         if let Some(item) = self
                             .sources_view
@@ -21858,7 +21673,7 @@ impl super::ftui_adapter::Model for CassApp {
                     let sv = &self.sources_view;
                     if sv.items.is_empty() {
                         Paragraph::new(
-                            "No sources configured.\nRun `cass sources add <host>` to add one.",
+                            "No sources configured.\nRun `cass sources add <name> --path <dir>` to add a local directory.",
                         )
                         .style(text_muted_style)
                         .render(content_inner, frame);
@@ -21885,21 +21700,28 @@ impl super::ftui_adapter::Model for CassApp {
                             let is_selected = src_idx == sv.selected;
                             let kind_tag = match item.kind {
                                 crate::sources::SourceKind::Local => "[local]",
-                                crate::sources::SourceKind::Ssh => "[ssh]  ",
+                                crate::sources::SourceKind::Ssh => "[arch] ",
                             };
                             let host_str = item.host.as_deref().unwrap_or("-");
-                            let sync_str = if item.busy {
+                            let status_str = if item.busy {
                                 "\u{23F3}".to_string() // hourglass
                             } else if let Some((p, w, f)) = item.doctor_summary {
                                 format!("dr:{p}p/{w}w/{f}f")
+                            } else if item.kind == crate::sources::SourceKind::Ssh {
+                                match item.archived_conversations {
+                                    Some(count) => {
+                                        format!("archive:{count} conv (remote sync removed)")
+                                    }
+                                    None => "archive (remote sync removed)".to_string(),
+                                }
                             } else {
-                                format!("last:{}", item.last_result)
+                                "local".to_string()
                             };
 
                             // Truncate row to fit.
                             let row_text = format!(
-                                " {kind_tag} {:<16} {:<24} {:<8} paths:{} {sync_str}",
-                                item.name, host_str, item.schedule, item.path_count
+                                " {kind_tag} {:<16} {:<24} paths:{} {status_str}",
+                                item.name, host_str, item.path_count
                             );
                             let display: String = row_text
                                 .chars()
@@ -23624,6 +23446,35 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     static TRACE_CAPTURE_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Build a legacy remote (`type = "ssh"`) record the way old sources.toml
+    /// files deserialize it: an inert archive entry, never probed.
+    fn legacy_ssh_source(name: &str, host: &str) -> SourceDefinition {
+        SourceDefinition {
+            name: name.into(),
+            source_type: crate::sources::SourceKind::Ssh,
+            host: Some(host.into()),
+            ..Default::default()
+        }
+    }
+
+    /// Minimal sources-view row for tests.
+    fn sources_view_item(
+        name: &str,
+        kind: crate::sources::SourceKind,
+        host: Option<&str>,
+    ) -> SourcesViewItem {
+        SourcesViewItem {
+            name: name.into(),
+            kind,
+            host: host.map(str::to_string),
+            path_count: 1,
+            archived_conversations: None,
+            busy: false,
+            doctor_summary: None,
+            error: None,
+        }
+    }
 
     #[derive(Clone)]
     struct TraceBufferWriter(Arc<Mutex<Vec<u8>>>);
@@ -33305,7 +33156,7 @@ not jsonl",
     #[serial]
     fn copy_path_rewrites_configured_remote_source_paths() {
         let mut config = SourcesConfig::default();
-        let mut source = SourceDefinition::ssh("work-laptop", "user@work-laptop");
+        let mut source = legacy_ssh_source("work-laptop", "user@work-laptop");
         source
             .path_mappings
             .push(PathMapping::new("/remote/root", "/local/root"));
@@ -33327,7 +33178,7 @@ not jsonl",
     #[serial]
     fn copy_path_rewrites_hyphenated_agent_mappings_for_underscored_hits() {
         let mut config = SourcesConfig::default();
-        let mut source = SourceDefinition::ssh("work-laptop", "user@work-laptop");
+        let mut source = legacy_ssh_source("work-laptop", "user@work-laptop");
         source.path_mappings.push(PathMapping::with_agents(
             "/remote/root",
             "/local/root",
@@ -33352,7 +33203,7 @@ not jsonl",
     #[serial]
     fn bulk_copy_paths_rewrites_configured_remote_source_paths() {
         let mut config = SourcesConfig::default();
-        let mut source = SourceDefinition::ssh("work-laptop", "user@work-laptop");
+        let mut source = legacy_ssh_source("work-laptop", "user@work-laptop");
         source
             .path_mappings
             .push(PathMapping::new("/remote/root", "/local/root"));
@@ -33419,7 +33270,7 @@ not jsonl",
         clear_test_editor_invocations();
 
         let mut config = SourcesConfig::default();
-        let mut source = SourceDefinition::ssh("work-laptop", "user@work-laptop");
+        let mut source = legacy_ssh_source("work-laptop", "user@work-laptop");
         source
             .path_mappings
             .push(PathMapping::new("/remote/root", "/local/root"));
@@ -43316,21 +43167,6 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
     // Sources management tests (2noh9.4.9)
     // =========================================================================
 
-    fn make_sync_report(
-        source_name: &str,
-        path_results: Vec<crate::sources::PathSyncResult>,
-        total_duration_ms: u64,
-    ) -> crate::sources::SyncReport {
-        let all_succeeded = path_results.iter().all(|result| result.success);
-        crate::sources::SyncReport {
-            source_name: source_name.to_string(),
-            method: crate::sources::SyncMethod::Rsync,
-            path_results,
-            total_duration_ms,
-            all_succeeded,
-        }
-    }
-
     #[test]
     fn sources_entered_switches_surface() {
         let mut app = CassApp::default();
@@ -43368,34 +43204,12 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
     fn sources_selection_wraps() {
         let mut app = CassApp::default();
         app.sources_view.items = vec![
-            SourcesViewItem {
-                name: "local".into(),
-                kind: crate::sources::SourceKind::Local,
-                host: None,
-                schedule: "always".into(),
-                path_count: 0,
-                last_sync: None,
-                last_result: "n/a".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
-            },
-            SourcesViewItem {
-                name: "laptop".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@laptop".into()),
-                schedule: "daily".into(),
-                path_count: 2,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
-            },
+            sources_view_item("local", crate::sources::SourceKind::Local, None),
+            sources_view_item(
+                "laptop",
+                crate::sources::SourceKind::Ssh,
+                Some("user@laptop"),
+            ),
         ];
         app.sources_view.selected = 0;
 
@@ -43414,19 +43228,12 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
         let mut app = CassApp::default();
         app.last_sources_visible_rows.set(2);
         app.sources_view.items = (0..5)
-            .map(|idx| SourcesViewItem {
-                name: format!("host-{idx}"),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some(format!("user@host-{idx}")),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
+            .map(|idx| {
+                sources_view_item(
+                    &format!("host-{idx}"),
+                    crate::sources::SourceKind::Ssh,
+                    Some(&format!("user@host-{idx}")),
+                )
             })
             .collect();
         app.sources_view.selected = 0;
@@ -43464,19 +43271,12 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
         let mut app = CassApp::default();
         app.last_sources_visible_rows.set(2);
         app.sources_view.items = (0..5)
-            .map(|idx| SourcesViewItem {
-                name: format!("host-{idx}"),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some(format!("user@host-{idx}")),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
+            .map(|idx| {
+                sources_view_item(
+                    &format!("host-{idx}"),
+                    crate::sources::SourceKind::Ssh,
+                    Some(&format!("user@host-{idx}")),
+                )
             })
             .collect();
         app.sources_view.selected = 4;
@@ -43495,19 +43295,12 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
     fn sources_selection_unknown_visible_rows_clamps_scroll_back_to_selection() {
         let mut app = CassApp::default();
         app.sources_view.items = (0..5)
-            .map(|idx| SourcesViewItem {
-                name: format!("host-{idx}"),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some(format!("user@host-{idx}")),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
+            .map(|idx| {
+                sources_view_item(
+                    &format!("host-{idx}"),
+                    crate::sources::SourceKind::Ssh,
+                    Some(&format!("user@host-{idx}")),
+                )
             })
             .collect();
         app.last_sources_visible_rows.set(0);
@@ -43522,93 +43315,32 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
     fn rebuild_sources_view_preserves_busy_doctor_and_visible_selection() {
         let mut app = CassApp::default();
         app.last_sources_visible_rows.set(2);
+        let mut beta =
+            sources_view_item("beta", crate::sources::SourceKind::Ssh, Some("user@beta"));
+        beta.busy = true;
+        beta.doctor_summary = Some((3, 1, 0));
         app.sources_view.items = vec![
-            SourcesViewItem {
-                name: "local".into(),
-                kind: crate::sources::SourceKind::Local,
-                host: None,
-                schedule: "always".into(),
-                path_count: 0,
-                last_sync: None,
-                last_result: "n/a".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
-            },
-            SourcesViewItem {
-                name: "alpha".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@alpha".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
-            },
-            SourcesViewItem {
-                name: "beta".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@beta".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: true,
-                doctor_summary: Some((3, 1, 0)),
-                error: None,
-            },
-            SourcesViewItem {
-                name: "gamma".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@gamma".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
-            },
-            SourcesViewItem {
-                name: "delta".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@delta".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
-            },
+            sources_view_item("local", crate::sources::SourceKind::Local, None),
+            sources_view_item("alpha", crate::sources::SourceKind::Ssh, Some("user@alpha")),
+            beta,
+            sources_view_item("gamma", crate::sources::SourceKind::Ssh, Some("user@gamma")),
+            sources_view_item("delta", crate::sources::SourceKind::Ssh, Some("user@delta")),
         ];
         app.sources_view.selected = 4;
         app.sources_view.scroll = 0;
 
         let config = crate::sources::SourcesConfig {
             sources: vec![
-                crate::sources::SourceDefinition::ssh("alpha", "user@alpha"),
-                crate::sources::SourceDefinition::ssh("beta", "user@beta"),
-                crate::sources::SourceDefinition::ssh("gamma", "user@gamma"),
-                crate::sources::SourceDefinition::ssh("delta", "user@delta"),
+                legacy_ssh_source("alpha", "user@alpha"),
+                legacy_ssh_source("beta", "user@beta"),
+                legacy_ssh_source("gamma", "user@gamma"),
+                legacy_ssh_source("delta", "user@delta"),
             ],
             disabled_agents: vec![],
         };
-        let sync_status = crate::sources::SyncStatus::default();
+        let archived_counts = HashMap::new();
 
-        app.rebuild_sources_view(&config, &sync_status, "/tmp/sources.toml".into());
+        app.rebuild_sources_view(&config, &archived_counts, "/tmp/sources.toml".into());
 
         assert_eq!(app.sources_view.selected, 4);
         assert_eq!(app.sources_view.scroll, 3);
@@ -43626,63 +43358,28 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
     fn rebuild_sources_view_preserves_selected_source_when_order_changes() {
         let mut app = CassApp::default();
         app.last_sources_visible_rows.set(2);
+        let mut beta =
+            sources_view_item("beta", crate::sources::SourceKind::Ssh, Some("user@beta"));
+        beta.busy = true;
+        beta.doctor_summary = Some((2, 0, 0));
         app.sources_view.items = vec![
-            SourcesViewItem {
-                name: "local".into(),
-                kind: crate::sources::SourceKind::Local,
-                host: None,
-                schedule: "always".into(),
-                path_count: 0,
-                last_sync: None,
-                last_result: "n/a".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
-            },
-            SourcesViewItem {
-                name: "alpha".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@alpha".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
-            },
-            SourcesViewItem {
-                name: "beta".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@beta".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: true,
-                doctor_summary: Some((2, 0, 0)),
-                error: None,
-            },
+            sources_view_item("local", crate::sources::SourceKind::Local, None),
+            sources_view_item("alpha", crate::sources::SourceKind::Ssh, Some("user@alpha")),
+            beta,
         ];
         app.sources_view.selected = 2;
         app.sources_view.scroll = 0;
 
         let config = crate::sources::SourcesConfig {
             sources: vec![
-                crate::sources::SourceDefinition::ssh("beta", "user@beta"),
-                crate::sources::SourceDefinition::ssh("alpha", "user@alpha"),
+                legacy_ssh_source("beta", "user@beta"),
+                legacy_ssh_source("alpha", "user@alpha"),
             ],
             disabled_agents: vec![],
         };
-        let sync_status = crate::sources::SyncStatus::default();
+        let archived_counts = HashMap::new();
 
-        app.rebuild_sources_view(&config, &sync_status, "/tmp/sources.toml".into());
+        app.rebuild_sources_view(&config, &archived_counts, "/tmp/sources.toml".into());
 
         assert_eq!(app.sources_view.selected, 1);
         assert_eq!(
@@ -43702,56 +43399,17 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
         let mut app = CassApp::default();
         app.last_sources_visible_rows.set(3);
         app.sources_view.items = vec![
-            SourcesViewItem {
-                name: "local".into(),
-                kind: crate::sources::SourceKind::Local,
-                host: None,
-                schedule: "always".into(),
-                path_count: 0,
-                last_sync: None,
-                last_result: "n/a".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
-            },
-            SourcesViewItem {
-                name: "alpha".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@alpha".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
-            },
-            SourcesViewItem {
-                name: "beta".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@beta".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
-            },
+            sources_view_item("local", crate::sources::SourceKind::Local, None),
+            sources_view_item("alpha", crate::sources::SourceKind::Ssh, Some("user@alpha")),
+            sources_view_item("beta", crate::sources::SourceKind::Ssh, Some("user@beta")),
         ];
         app.sources_view.selected = 2;
         app.sources_view.scroll = 2;
 
         let config = crate::sources::SourcesConfig::default();
-        let sync_status = crate::sources::SyncStatus::default();
+        let archived_counts = HashMap::new();
 
-        app.rebuild_sources_view(&config, &sync_status, "/tmp/sources.toml".into());
+        app.rebuild_sources_view(&config, &archived_counts, "/tmp/sources.toml".into());
 
         assert_eq!(app.sources_view.items.len(), 1);
         assert_eq!(app.sources_view.selected, 0);
@@ -43762,279 +43420,73 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
     #[test]
     fn rebuild_sources_view_preserves_busy_status_message() {
         let mut app = CassApp::default();
-        app.sources_view.status = "Syncing 'beta'...".into();
+        app.sources_view.status = "Running doctor on 'beta'...".into();
+        let mut beta =
+            sources_view_item("beta", crate::sources::SourceKind::Ssh, Some("user@beta"));
+        beta.busy = true;
         app.sources_view.items = vec![
-            SourcesViewItem {
-                name: "local".into(),
-                kind: crate::sources::SourceKind::Local,
-                host: None,
-                schedule: "always".into(),
-                path_count: 0,
-                last_sync: None,
-                last_result: "n/a".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
-            },
-            SourcesViewItem {
-                name: "beta".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@beta".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: true,
-                doctor_summary: None,
-                error: None,
-            },
+            sources_view_item("local", crate::sources::SourceKind::Local, None),
+            beta,
         ];
         app.sources_view.selected = 1;
 
         let config = crate::sources::SourcesConfig {
-            sources: vec![crate::sources::SourceDefinition::ssh("beta", "user@beta")],
+            sources: vec![legacy_ssh_source("beta", "user@beta")],
             disabled_agents: vec![],
         };
-        let sync_status = crate::sources::SyncStatus::default();
+        let archived_counts = HashMap::new();
 
-        app.rebuild_sources_view(&config, &sync_status, "/tmp/sources.toml".into());
+        app.rebuild_sources_view(&config, &archived_counts, "/tmp/sources.toml".into());
 
-        assert_eq!(app.sources_view.status, "Syncing 'beta'...");
+        assert_eq!(app.sources_view.status, "Running doctor on 'beta'...");
         assert!(app.sources_view.items[1].busy);
     }
 
     #[test]
-    fn sources_sync_requested_marks_busy() {
+    fn rebuild_sources_view_maps_archived_counts_to_rows() {
         let mut app = CassApp::default();
-        app.sources_view.items = vec![SourcesViewItem {
-            name: "laptop".into(),
-            kind: crate::sources::SourceKind::Ssh,
-            host: Some("user@laptop".into()),
-            schedule: "manual".into(),
-            path_count: 1,
-            last_sync: None,
-            last_result: "never".into(),
-            files_synced: 0,
-            bytes_transferred: 0,
-            busy: false,
-            doctor_summary: None,
-            error: None,
-        }];
+        let config = crate::sources::SourcesConfig {
+            sources: vec![legacy_ssh_source("laptop", "user@laptop")],
+            disabled_agents: vec![],
+        };
+        let mut archived_counts = HashMap::new();
+        archived_counts.insert("local".to_string(), 7usize);
+        archived_counts.insert("laptop".to_string(), 42usize);
 
-        let _ = app.update(CassMsg::SourceSyncRequested("laptop".into()));
+        app.rebuild_sources_view(&config, &archived_counts, "/tmp/sources.toml".into());
+
+        assert_eq!(app.sources_view.items[0].archived_conversations, Some(7));
+        assert_eq!(app.sources_view.items[1].archived_conversations, Some(42));
+        assert_eq!(
+            app.sources_view.items[1].kind,
+            crate::sources::SourceKind::Ssh
+        );
+    }
+
+    #[test]
+    fn sources_doctor_requested_marks_busy() {
+        let mut app = CassApp::default();
+        app.sources_view.items = vec![sources_view_item(
+            "laptop",
+            crate::sources::SourceKind::Ssh,
+            Some("user@laptop"),
+        )];
+
+        let _ = app.update(CassMsg::SourceDoctorRequested("laptop".into()));
         assert!(app.sources_view.items[0].busy);
-        assert!(app.sources_view.status.contains("Syncing"));
-    }
-
-    #[test]
-    fn sources_sync_completed_updates_row_state_on_success() {
-        let mut app = CassApp::default();
-        app.sources_view.items = vec![SourcesViewItem {
-            name: "laptop".into(),
-            kind: crate::sources::SourceKind::Ssh,
-            host: Some("user@laptop".into()),
-            schedule: "manual".into(),
-            path_count: 1,
-            last_sync: None,
-            last_result: "never".into(),
-            files_synced: 0,
-            bytes_transferred: 0,
-            busy: true,
-            doctor_summary: Some((3, 1, 0)),
-            error: Some("stale error".into()),
-        }];
-
-        let report = make_sync_report(
-            "laptop",
-            vec![crate::sources::PathSyncResult {
-                remote_path: "~/sessions".into(),
-                files_transferred: 42,
-                bytes_transferred: 1024,
-                success: true,
-                duration_ms: 15,
-                ..Default::default()
-            }],
-            15,
-        );
-
-        let _ = app.update(CassMsg::SourceSyncCompleted { report });
-        let item = &app.sources_view.items[0];
-        assert!(!item.busy);
-        assert!(item.last_sync.is_some());
-        assert_eq!(item.last_result, "success");
-        assert_eq!(item.files_synced, 42);
-        assert_eq!(item.bytes_transferred, 1024);
-        assert_eq!(item.doctor_summary, None);
-        assert_eq!(item.error, None);
-        assert!(app.sources_view.status.contains("Sync 'laptop' OK"));
-    }
-
-    #[test]
-    fn sources_sync_completed_keeps_other_active_status_when_another_row_is_busy() {
-        let mut app = CassApp::default();
-        app.sources_view.status = "Syncing 'desktop'...".into();
-        app.sources_view.items = vec![
-            SourcesViewItem {
-                name: "laptop".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@laptop".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: true,
-                doctor_summary: None,
-                error: None,
-            },
-            SourcesViewItem {
-                name: "desktop".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@desktop".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: true,
-                doctor_summary: None,
-                error: None,
-            },
-        ];
-
-        let report = make_sync_report(
-            "laptop",
-            vec![crate::sources::PathSyncResult {
-                remote_path: "~/sessions".into(),
-                files_transferred: 42,
-                bytes_transferred: 1024,
-                success: true,
-                duration_ms: 15,
-                ..Default::default()
-            }],
-            15,
-        );
-
-        let _ = app.update(CassMsg::SourceSyncCompleted { report });
-
-        assert!(!app.sources_view.items[0].busy);
-        assert!(app.sources_view.items[1].busy);
-        assert_eq!(app.sources_view.status, "Syncing 'desktop'...");
-    }
-
-    #[test]
-    fn sources_sync_completed_updates_row_state_on_partial_failure() {
-        let mut app = CassApp::default();
-        app.sources_view.items = vec![SourcesViewItem {
-            name: "laptop".into(),
-            kind: crate::sources::SourceKind::Ssh,
-            host: Some("user@laptop".into()),
-            schedule: "manual".into(),
-            path_count: 2,
-            last_sync: None,
-            last_result: "never".into(),
-            files_synced: 0,
-            bytes_transferred: 0,
-            busy: true,
-            doctor_summary: Some((2, 0, 0)),
-            error: None,
-        }];
-
-        let report = make_sync_report(
-            "laptop",
-            vec![
-                crate::sources::PathSyncResult {
-                    remote_path: "~/sessions".into(),
-                    files_transferred: 7,
-                    bytes_transferred: 2048,
-                    success: true,
-                    duration_ms: 12,
-                    ..Default::default()
-                },
-                crate::sources::PathSyncResult {
-                    remote_path: "~/logs".into(),
-                    success: false,
-                    error: Some("permission denied".into()),
-                    duration_ms: 3,
-                    ..Default::default()
-                },
-            ],
-            15,
-        );
-
-        let _ = app.update(CassMsg::SourceSyncCompleted { report });
-        let item = &app.sources_view.items[0];
-        assert!(!item.busy);
-        assert!(item.last_sync.is_some());
-        assert_eq!(item.last_result, "partial");
-        assert_eq!(item.files_synced, 7);
-        assert_eq!(item.bytes_transferred, 2048);
-        assert_eq!(item.doctor_summary, None);
-        assert_eq!(item.error.as_deref(), Some("permission denied"));
-        assert!(app.sources_view.status.contains("partial"));
-        assert!(app.sources_view.status.contains("permission denied"));
-    }
-
-    #[test]
-    fn sources_sync_completed_updates_row_state_on_failure() {
-        let mut app = CassApp::default();
-        app.sources_view.items = vec![SourcesViewItem {
-            name: "laptop".into(),
-            kind: crate::sources::SourceKind::Ssh,
-            host: Some("user@laptop".into()),
-            schedule: "manual".into(),
-            path_count: 1,
-            last_sync: None,
-            last_result: "never".into(),
-            files_synced: 99,
-            bytes_transferred: 4096,
-            busy: true,
-            doctor_summary: None,
-            error: None,
-        }];
-
-        let report =
-            crate::sources::SyncReport::failed("laptop", crate::sources::SyncError::NoHost);
-
-        let _ = app.update(CassMsg::SourceSyncCompleted { report });
-        let item = &app.sources_view.items[0];
-        assert!(!item.busy);
-        assert!(item.last_sync.is_some());
-        assert_eq!(item.last_result, "failed");
-        assert_eq!(item.files_synced, 0);
-        assert_eq!(item.bytes_transferred, 0);
-        assert_eq!(item.error.as_deref(), Some("Source has no host configured"));
-        assert!(app.sources_view.status.contains("failed"));
-        assert!(
-            app.sources_view
-                .status
-                .contains("Source has no host configured")
-        );
+        assert!(app.sources_view.status.contains("Running doctor"));
     }
 
     #[test]
     fn sources_doctor_completed_sets_summary() {
         let mut app = CassApp::default();
-        app.sources_view.items = vec![SourcesViewItem {
-            name: "laptop".into(),
-            kind: crate::sources::SourceKind::Ssh,
-            host: Some("user@laptop".into()),
-            schedule: "manual".into(),
-            path_count: 1,
-            last_sync: None,
-            last_result: "never".into(),
-            files_synced: 0,
-            bytes_transferred: 0,
-            busy: true,
-            doctor_summary: None,
-            error: None,
-        }];
+        let mut item = sources_view_item(
+            "laptop",
+            crate::sources::SourceKind::Ssh,
+            Some("user@laptop"),
+        );
+        item.busy = true;
+        app.sources_view.items = vec![item];
 
         let _ = app.update(CassMsg::SourceDoctorCompleted {
             source_name: "laptop".into(),
@@ -44050,37 +43502,20 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
     #[test]
     fn sources_doctor_completed_keeps_other_active_status_when_another_row_is_busy() {
         let mut app = CassApp::default();
-        app.sources_view.status = "Syncing 'desktop'...".into();
-        app.sources_view.items = vec![
-            SourcesViewItem {
-                name: "laptop".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@laptop".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: true,
-                doctor_summary: None,
-                error: None,
-            },
-            SourcesViewItem {
-                name: "desktop".into(),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some("user@desktop".into()),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: true,
-                doctor_summary: None,
-                error: None,
-            },
-        ];
+        app.sources_view.status = "Running doctor on 'desktop'...".into();
+        let mut laptop = sources_view_item(
+            "laptop",
+            crate::sources::SourceKind::Ssh,
+            Some("user@laptop"),
+        );
+        laptop.busy = true;
+        let mut desktop = sources_view_item(
+            "desktop",
+            crate::sources::SourceKind::Ssh,
+            Some("user@desktop"),
+        );
+        desktop.busy = true;
+        app.sources_view.items = vec![laptop, desktop];
 
         let _ = app.update(CassMsg::SourceDoctorCompleted {
             source_name: "laptop".into(),
@@ -44092,27 +43527,20 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
         assert!(!app.sources_view.items[0].busy);
         assert_eq!(app.sources_view.items[0].doctor_summary, Some((3, 1, 0)));
         assert!(app.sources_view.items[1].busy);
-        assert_eq!(app.sources_view.status, "Syncing 'desktop'...");
+        assert_eq!(app.sources_view.status, "Running doctor on 'desktop'...");
     }
 
     #[test]
     fn sources_refreshed_keeps_active_status_when_row_busy() {
         let mut app = CassApp::default();
         app.sources_view.status = "Running doctor on 'laptop'...".into();
-        app.sources_view.items = vec![SourcesViewItem {
-            name: "laptop".into(),
-            kind: crate::sources::SourceKind::Ssh,
-            host: Some("user@laptop".into()),
-            schedule: "manual".into(),
-            path_count: 1,
-            last_sync: None,
-            last_result: "never".into(),
-            files_synced: 0,
-            bytes_transferred: 0,
-            busy: true,
-            doctor_summary: None,
-            error: None,
-        }];
+        let mut item = sources_view_item(
+            "laptop",
+            crate::sources::SourceKind::Ssh,
+            Some("user@laptop"),
+        );
+        item.busy = true;
+        app.sources_view.items = vec![item];
 
         let _ = app.update(CassMsg::SourcesRefreshed);
 
@@ -44123,20 +43551,11 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
     fn sources_refreshed_keeps_config_load_error_status() {
         let mut app = CassApp::default();
         app.sources_view.status = "Failed to load sources config: duplicate source".into();
-        app.sources_view.items = vec![SourcesViewItem {
-            name: "local".into(),
-            kind: crate::sources::SourceKind::Local,
-            host: None,
-            schedule: "always".into(),
-            path_count: 0,
-            last_sync: None,
-            last_result: "n/a".into(),
-            files_synced: 0,
-            bytes_transferred: 0,
-            busy: false,
-            doctor_summary: None,
-            error: None,
-        }];
+        app.sources_view.items = vec![sources_view_item(
+            "local",
+            crate::sources::SourceKind::Local,
+            None,
+        )];
 
         let _ = app.update(CassMsg::SourcesRefreshed);
 
@@ -44147,51 +43566,14 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
     }
 
     #[test]
-    fn sources_refreshed_keeps_prune_warning_status() {
-        let mut app = CassApp::default();
-        app.sources_view.status =
-            "Failed to save pruned source sync status: permission denied".into();
-        app.sources_view.items = vec![SourcesViewItem {
-            name: "local".into(),
-            kind: crate::sources::SourceKind::Local,
-            host: None,
-            schedule: "always".into(),
-            path_count: 0,
-            last_sync: None,
-            last_result: "n/a".into(),
-            files_synced: 0,
-            bytes_transferred: 0,
-            busy: false,
-            doctor_summary: None,
-            error: None,
-        }];
-
-        let _ = app.update(CassMsg::SourcesRefreshed);
-
-        assert_eq!(
-            app.sources_view.status,
-            "Failed to save pruned source sync status: permission denied"
-        );
-    }
-
-    #[test]
     fn sources_view_renders_without_panic() {
         let mut app = CassApp::default();
         app.surface = AppSurface::Sources;
-        app.sources_view.items = vec![SourcesViewItem {
-            name: "local".into(),
-            kind: crate::sources::SourceKind::Local,
-            host: None,
-            schedule: "always".into(),
-            path_count: 0,
-            last_sync: None,
-            last_result: "n/a".into(),
-            files_synced: 0,
-            bytes_transferred: 0,
-            busy: false,
-            doctor_summary: None,
-            error: None,
-        }];
+        app.sources_view.items = vec![sources_view_item(
+            "local",
+            crate::sources::SourceKind::Local,
+            None,
+        )];
         let mut pool = ftui::GraphemePool::new();
         let mut frame = ftui::Frame::new(80, 24, &mut pool);
         app.view(&mut frame);
@@ -44203,19 +43585,12 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
         let mut app = CassApp::default();
         app.surface = AppSurface::Sources;
         app.sources_view.items = (0..5)
-            .map(|idx| SourcesViewItem {
-                name: format!("host-{idx}"),
-                kind: crate::sources::SourceKind::Ssh,
-                host: Some(format!("user@host-{idx}")),
-                schedule: "manual".into(),
-                path_count: 1,
-                last_sync: None,
-                last_result: "never".into(),
-                files_synced: 0,
-                bytes_transferred: 0,
-                busy: false,
-                doctor_summary: None,
-                error: None,
+            .map(|idx| {
+                sources_view_item(
+                    &format!("host-{idx}"),
+                    crate::sources::SourceKind::Ssh,
+                    Some(&format!("user@host-{idx}")),
+                )
             })
             .collect();
         app.sources_view.selected = 4;
