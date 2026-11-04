@@ -26216,6 +26216,7 @@ fn rebuild_tantivy_from_db_via_staged_shards(
     options: LexicalRebuildStartupOptions,
     prep_profile_started: Option<Instant>,
     storage: FrankenStorage,
+    build_start_floor: Option<crate::viewer_extensions::changes::JournalRevisions>,
     mut rebuild_state: LexicalRebuildState,
     shard_plan: LexicalShardPlan,
     pipeline_settings: LexicalRebuildPipelineSettingsSnapshot,
@@ -27294,7 +27295,7 @@ fn rebuild_tantivy_from_db_via_staged_shards(
     // EVERY marked session into the publish path BEFORE the manifest and
     // fingerprint are recorded, so the staged swap ships the persisted
     // inventory whole and the post-publish doc-count verify stays exact.
-    let region_docs = {
+    let (region_docs, certification_floor, marks_storage) = {
         let mut region_index =
             TantivyIndex::open_or_create(&final_merge_artifact.publish_path).with_context(|| {
                 format!(
@@ -27302,6 +27303,10 @@ fn rebuild_tantivy_from_db_via_staged_shards(
                     final_merge_artifact.publish_path.display()
                 )
             })?;
+        // Task 8: arm the floor captured at build start — a lazy capture
+        // here would cover canonical commits the merged candidate does
+        // not contain.
+        region_index.arm_publication_floor(build_start_floor);
         let marks_storage = FrankenStorage::open_writer(db_path).with_context(|| {
             format!(
                 "opening writable database to stamp search-region docs published: {}",
@@ -27312,9 +27317,15 @@ fn rebuild_tantivy_from_db_via_staged_shards(
             region_index.converge_all_search_region_docs(marks_storage.raw(), i64::MAX)?;
         // Two-phase: the commit seals the staged region documents, then
         // the queued marks stamps land `published` — never before.
-        region_index.commit_with_region_doc_stamps(marks_storage.raw())?;
+        // Task 8: certification is DEFERRED past the staged swap and the
+        // post-publish doc-count verify — `commit_with_region_doc_stamps`
+        // would certify this candidate manifest before it goes live, and
+        // a refusal below would leave the receipt forever claiming a
+        // generation that was never published.
+        region_index.commit()?;
+        region_index.replay_region_doc_stamps(marks_storage.raw())?;
         indexed_docs += docs;
-        docs
+        (docs, region_index.take_publication_floor(), marks_storage)
     };
     let final_total_conversations = if options.defer_initial_content_fingerprint {
         processed_conversations
@@ -27363,6 +27374,16 @@ fn rebuild_tantivy_from_db_via_staged_shards(
         )
     })?;
     verify_published_lexical_doc_count(index_path, indexed_docs, "staged")?;
+    // Task 8: certify ONLY now — the staged swap published this
+    // generation and the post-swap verify proved the manifest readers
+    // actually open. A refusal above never reached this point, so no
+    // durable certification can outlive a manifest that never went live.
+    TantivyIndex::certify_published_manifest(
+        marks_storage.raw(),
+        index_path,
+        certification_floor,
+    );
+    drop(marks_storage);
     let refresh_ledger =
         build_authoritative_lexical_refresh_ledger(AuthoritativeLexicalRefreshLedgerInput {
             publish_mode: "atomic_staged_swap",
@@ -27502,6 +27523,17 @@ fn rebuild_tantivy_from_db_once(
     })?;
 
     log_prep_step("open_readonly", &mut prep_step_started);
+
+    // Task 8: capture the publication coverage floor at BUILD START —
+    // before the streaming loop stages a single document. A canonical
+    // commit landing mid-build then lands ABOVE the floor, so the
+    // certification this build's terminal publication writes can never
+    // claim revisions the generation does not contain. `None` on an
+    // unextended archive — certification binds current revisions there
+    // anyway.
+    let build_start_floor =
+        crate::viewer_extensions::changes::current_journal_revisions(storage.raw())
+            .context("capturing the lexical build-start coverage floor")?;
 
     let index_path = index_dir(data_dir)?;
     let db_state = if options.defer_initial_content_fingerprint {
@@ -27991,6 +28023,7 @@ fn rebuild_tantivy_from_db_once(
             options,
             prep_profile.then_some(prep_started),
             storage,
+            build_start_floor,
             rebuild_state,
             shard_plan.clone(),
             pipeline_settings,
@@ -28056,6 +28089,11 @@ fn rebuild_tantivy_from_db_once(
             return Err(err);
         }
     };
+
+    // Task 8: arm the coverage floor captured at build start — the lazy
+    // stage-time captures below must never move it forward past a commit
+    // this generation cannot contain.
+    t_index.arm_publication_floor(build_start_floor);
 
     // #440: fence the resume cursor against the published authority. The
     // checkpoint says how many documents the last durable commit covered;
@@ -28737,8 +28775,8 @@ fn rebuild_tantivy_from_db_once(
     // post-stamp fold and the terminal checkpoint commit below still
     // rewrite this candidate's MANIFEST, so the generation sealed at this
     // point is an intermediate the published manifest supersedes. The
-    // writer's armed coverage floor survives for
-    // `certify_sealed_publication`, which binds the terminal generation.
+    // writer's armed coverage floor survives for the deferred
+    // `certify_published_manifest` call after the swap validates.
     t_index.replay_region_doc_stamps(marks_storage.raw())?;
     if let Some(p) = &progress {
         p.tick_activity();
@@ -28797,14 +28835,14 @@ fn rebuild_tantivy_from_db_once(
         )
     })?;
 
-    // Task 8: certify ONLY now — after the fold and the terminal checkpoint
-    // commit sealed the candidate's final MANIFEST. The receipt then names
-    // the generation the publish path actually validates and (for a staged
-    // build) swaps live, never the intermediate manifest the first commit
-    // superseded. The armed coverage floor still bounds the revisions this
-    // generation honestly covers.
-    t_index.certify_sealed_publication(marks_storage.raw());
-    drop(marks_storage);
+    // Task 8: certification must wait for the candidate to be validated
+    // and — for a staged build — swapped live and re-verified at the
+    // published path. A receipt written here would durably survive a
+    // refusal below and certify a manifest that never went live. Disarm
+    // the build-start coverage floor across the writer drop so the
+    // post-publish call can bind it to the manifest readers actually
+    // open; `marks_storage` stays open for that call.
+    let certification_floor = t_index.take_publication_floor();
 
     // Release the bulk writer before opening a fresh validation reader. Large
     // archives must not retain both writer and reader working sets here.
@@ -28931,6 +28969,18 @@ fn rebuild_tantivy_from_db_once(
         crate::search::tantivy::validate_searchable_index_contract(&index_path)?;
         verify_published_lexical_doc_count(&index_path, indexed_docs, "direct")
     })?;
+    // Task 8: certify ONLY now — the candidate passed validation, any
+    // staged swap published it, and the post-swap verify proved the
+    // manifest readers actually open. A refusal above never reached this
+    // point, so no durable certification can outlive a manifest that
+    // never went live. The floor captured at build start bounds the
+    // receipt's coverage claim.
+    TantivyIndex::certify_published_manifest(
+        marks_storage.raw(),
+        &index_path,
+        certification_floor,
+    );
+    drop(marks_storage);
     log_lexical_generation_manifest_published(&generation_manifest, &equivalence_evidence);
 
     if let Some(p) = &progress {
@@ -63787,6 +63837,54 @@ c.close()
             cached(),
             999_999,
             "an unchanged canonical identity is served from the memo after publication"
+        );
+    }
+
+    /// Task 8: the authoritative rebuild lane certifies ONLY after the
+    /// candidate validates and (for the staged lanes) swaps live — the
+    /// durable receipt, the `lexical_generation` bump and the
+    /// `index_ready` journal row land atomically at the end of the
+    /// publish path, bound to the coverage floor captured at build start.
+    #[test]
+    fn rebuild_tantivy_certifies_published_manifest_after_validation() {
+        let dir = TempDir::new().unwrap();
+        let data_dir = dir.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("rebuild-certify.db");
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+        crate::viewer_extensions::schema::ensure_schema(storage.raw()).unwrap();
+        seed_lexical_rebuild_fixture(&storage);
+        drop(storage);
+
+        rebuild_tantivy_from_db(&db_path, &data_dir, 2, None).unwrap();
+
+        let reader = FrankenStorage::open_readonly(&db_path).unwrap();
+        let receipt =
+            crate::viewer_extensions::changes::latest_lexical_publication(reader.raw())
+                .unwrap()
+                .expect("a published rebuild must leave a durable PublicationReceipt");
+        assert_eq!(receipt.lexical_generation, 1);
+        assert!(
+            receipt.quill_generation >= 1,
+            "the receipt must name the committed Quill generation: {receipt:?}"
+        );
+        let revisions =
+            crate::viewer_extensions::changes::current_journal_revisions(reader.raw())
+                .unwrap()
+                .expect("revisions");
+        assert_eq!(
+            revisions.lexical_generation, 1,
+            "viewer_revisions must carry the certified ordinal"
+        );
+        let page =
+            crate::viewer_extensions::changes::changes_since(reader.raw(), 0, 64).unwrap();
+        assert!(
+            page.events
+                .iter()
+                .any(|e| e.kind == crate::viewer_extensions::changes::kind::INDEX_READY),
+            "the certified publication must journal index_ready: {:?}",
+            page.events
         );
     }
 

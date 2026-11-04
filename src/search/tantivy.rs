@@ -1644,6 +1644,34 @@ impl TantivyIndex {
         Ok(())
     }
 
+    /// Arm the coverage floor with a snapshot the caller captured earlier.
+    /// The authoritative rebuild reads its floor at BUILD START — before
+    /// the streaming loop stages a single document and before this writer
+    /// exists — so a canonical commit landing mid-build lands ABOVE the
+    /// floor and the eventual publication receipt can never claim
+    /// revisions the generation does not contain. First floor wins, like
+    /// [`Self::capture_publication_floor`]: the lazy stage-time captures
+    /// must not move an armed floor forward.
+    pub fn arm_publication_floor(
+        &mut self,
+        floor: Option<crate::viewer_extensions::changes::JournalRevisions>,
+    ) {
+        if self.publication_floor.is_none() {
+            self.publication_floor = floor;
+        }
+    }
+
+    /// Disarm and return the captured coverage floor without certifying —
+    /// for the authoritative rebuild, which drops this writer before the
+    /// candidate is validated and (for a staged build) swapped live, then
+    /// binds the floor to the PUBLISHED manifest via
+    /// [`Self::certify_published_manifest`].
+    pub fn take_publication_floor(
+        &mut self,
+    ) -> Option<crate::viewer_extensions::changes::JournalRevisions> {
+        self.publication_floor.take()
+    }
+
     pub fn add_conversation(&mut self, conv: &NormalizedConversation) -> Result<()> {
         // ibuuh.32 migration: route the in-tree convenience entrypoint
         // through the packet-driven pipeline so the lexical sink stops
@@ -1742,6 +1770,11 @@ impl TantivyIndex {
         &mut self,
         db: &impl crate::viewer_extensions::facts::FactsDb,
     ) -> Result<usize> {
+        // Task 8: a db-less staging lane reaches this commit with the
+        // floor still unset — capture it at stamp time rather than let
+        // `certify_lexical_publication` bind the revisions at certify
+        // time, the broadest possible coverage claim.
+        self.capture_publication_floor(db)?;
         let stamped = self.replay_region_doc_stamps(db)?;
         self.certify_published_generation(db);
         Ok(stamped)
@@ -1779,13 +1812,13 @@ impl TantivyIndex {
     }
 
     /// Certify the generation this writer's last commit sealed — consumes
-    /// the armed coverage floor against the durable MANIFEST. Only for
-    /// lanes whose publish pipeline keeps committing after
-    /// [`Self::replay_region_doc_stamps`] (the authoritative rebuild's
-    /// post-stamp fold + terminal checkpoint commit); single-commit lanes
-    /// certify inside [`Self::commit_region_doc_stamps`] instead. Reading
-    /// the manifest AFTER the last commit binds the generation that is
-    /// actually published, never an intermediate candidate manifest.
+    /// the armed coverage floor against the durable MANIFEST at the
+    /// writer's own path. Retained for lanes that publish in place:
+    /// single-commit lanes certify inside
+    /// [`Self::commit_region_doc_stamps`] instead, and the authoritative
+    /// rebuild defers to [`Self::certify_published_manifest`] so the
+    /// certification binds the manifest readers open at the PUBLISHED
+    /// path — never a candidate a refusal kept off the live index.
     pub fn certify_sealed_publication(
         &mut self,
         db: &impl crate::viewer_extensions::facts::FactsDb,
@@ -1805,25 +1838,77 @@ impl TantivyIndex {
         &mut self,
         db: &impl crate::viewer_extensions::facts::FactsDb,
     ) {
-        let Some(manifest) =
-            crate::search::quill_bridge::manifest_live_doc_count(self.inner.path())
+        let floor = self.publication_floor.take();
+        if let Err(floor) = Self::certify_manifest_at(db, self.inner.path(), floor) {
+            self.publication_floor = self.publication_floor.or(floor);
+        }
+    }
+
+    /// Task 8 deferred certification for the authoritative rebuild: the
+    /// sealing writer is dropped before the candidate is validated and
+    /// (for a staged build) swapped live, so certification runs here —
+    /// AFTER `validate_published_generation` proved the manifest readers
+    /// actually open — against the PUBLISHED path with the floor the
+    /// writer armed at build start. A validation/refusal before this
+    /// point can never leave a durable certification for a manifest that
+    /// never went live. Best-effort: a failure logs and leaves readiness
+    /// honestly un-advanced (the disarmed floor is dropped with the
+    /// writer either way).
+    pub fn certify_published_manifest(
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+        published_path: &Path,
+        floor: Option<crate::viewer_extensions::changes::JournalRevisions>,
+    ) {
+        let _ = Self::certify_manifest_at(db, published_path, floor);
+    }
+
+    /// Bind the durable manifest at `index_path` plus `floor` into the
+    /// atomic [`certify_lexical_publication`] transaction. Returns
+    /// `Err(floor)` when the certification could not commit so the caller
+    /// may re-arm it for a later publish; `Ok(())` covers both a real
+    /// certification and a knowingly-skipped one (no decodable manifest,
+    /// or an archive whose extension profile predates schema v8 — logged,
+    /// never silent).
+    fn certify_manifest_at(
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+        index_path: &Path,
+        floor: Option<crate::viewer_extensions::changes::JournalRevisions>,
+    ) -> std::result::Result<(), Option<crate::viewer_extensions::changes::JournalRevisions>>
+    {
+        let Some(manifest) = crate::search::quill_bridge::manifest_live_doc_count(index_path)
         else {
             // No decodable durable manifest — the commit's generation is
             // not on disk, so there is nothing truthful to certify.
-            return;
+            return Ok(());
         };
-        let floor = self.publication_floor.take();
-        if let Err(error) = crate::viewer_extensions::changes::certify_lexical_publication(
+        match crate::viewer_extensions::changes::certify_lexical_publication(
             db,
             manifest.generation.min(i64::MAX as u64) as i64,
             manifest.live_docs.min(i64::MAX as u64) as i64,
             floor,
         ) {
-            self.publication_floor = self.publication_floor.or(floor);
-            tracing::warn!(
-                error = %format!("{error:#}"),
-                "lexical publication certification deferred; readiness stays honestly un-advanced"
-            );
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => {
+                // The journal or the v8 receipt table is absent (the
+                // extension profile was never installed or predates the
+                // certification lane). Certification is a durable no-op
+                // there forever — say so rather than silently claiming
+                // `lexical_tracking: bound` on the read side.
+                tracing::warn!(
+                    index_path = %index_path.display(),
+                    "lexical publication certification skipped: archive lacks \
+                     viewer_lexical_publication (extension schema predates v8 \
+                     or is uninstalled); readiness stays honestly un-advanced"
+                );
+                Ok(())
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %format!("{error:#}"),
+                    "lexical publication certification deferred; readiness stays honestly un-advanced"
+                );
+                Err(floor)
+            }
         }
     }
 

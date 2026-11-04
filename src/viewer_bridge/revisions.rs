@@ -59,9 +59,16 @@ use coding_agent_search::franken_sync::compat::RowExt;
 use super::protocol::Generation;
 
 // The observed canonical surface is the served v1 projection:
-// `conversations`, `messages` and `conversation_tail_state`. Dimension
-// tables (`agents`, `workspaces`, `sources`) and non-served tables
-// (`snippets`, `*_tail_lookup`, analytics) stay out of v1 scope.
+// `conversations`, `messages` and `conversation_tail_state`, plus the
+// dimension tables (`agents`, `workspaces`, `sources`) whose rows the
+// served projection joins — a rename/delete there changes served data
+// and must invalidate live clients. Dimension observers journal a coarse
+// `session_updated` with `conversation_id = NULL` (the served row is not
+// addressable by one conversation). Non-served tables (`snippets`,
+// `*_tail_lookup`, analytics) stay out of v1 scope; dimension INSERTs are
+// likewise uncovered — an unreferenced row serves nothing, and the
+// conversation INSERT that later references it already journals
+// `session_created`.
 
 const CONVERSATION_GUARD: &str = "\
     OLD.agent_id IS NOT NEW.agent_id OR OLD.workspace_id IS NOT NEW.workspace_id OR \
@@ -99,6 +106,22 @@ const TAIL_GUARD: &str = "\
 const ANNOTATION_GUARD: &str = "\
     OLD.is_pinned IS NOT NEW.is_pinned OR OLD.custom_title IS NOT NEW.custom_title OR \
     OLD.notes IS NOT NEW.notes OR OLD.revision IS NOT NEW.revision";
+
+/// Dimension guards: the served/identity columns only, so a same-values
+/// upsert (`ensure_agent`/`ensure_workspace`/`ensure_source` replay) is
+/// neither a false canonical bump nor a false journal row. `updated_at`
+/// is bookkeeping, never a served change.
+const AGENT_GUARD: &str = "\
+    OLD.slug IS NOT NEW.slug OR OLD.name IS NOT NEW.name OR \
+    OLD.version IS NOT NEW.version OR OLD.kind IS NOT NEW.kind";
+
+const WORKSPACE_GUARD: &str = "\
+    OLD.path IS NOT NEW.path OR OLD.display_name IS NOT NEW.display_name";
+
+const SOURCE_GUARD: &str = "\
+    OLD.id IS NOT NEW.id OR OLD.kind IS NOT NEW.kind OR \
+    OLD.host_label IS NOT NEW.host_label OR OLD.machine_id IS NOT NEW.machine_id OR \
+    OLD.platform IS NOT NEW.platform OR OLD.config_json IS NOT NEW.config_json";
 
 /// Journal `revision` stamped on canonical events: the post-bump
 /// `canonical_revision` (the bump runs first in the same trigger body).
@@ -183,6 +206,12 @@ pub const OBSERVER_TRIGGERS: &[&str] = &[
     "viewer_rev_annotations_upd",
     "viewer_rev_tags_ins",
     "viewer_rev_tags_del",
+    "viewer_rev_agents_upd",
+    "viewer_rev_agents_del",
+    "viewer_rev_workspaces_upd",
+    "viewer_rev_workspaces_del",
+    "viewer_rev_sources_upd",
+    "viewer_rev_sources_del",
 ];
 
 fn observer_ddl() -> String {
@@ -288,6 +317,47 @@ fn observer_ddl() -> String {
         &TAG_STAMP.replace("{cid}", "OLD.conversation_id"),
         None,
     ));
+    // Dimension tables: a rename or delete changes served rows but is
+    // not addressable by one conversation — journal a coarse
+    // `session_updated` with `conversation_id = NULL`. INSERTs stay
+    // unobserved by design (see the scope note at the top of this file).
+    for (name, timing, table, guard) in [
+        (
+            "viewer_rev_agents_upd",
+            "AFTER UPDATE",
+            "agents",
+            Some(AGENT_GUARD),
+        ),
+        ("viewer_rev_agents_del", "AFTER DELETE", "agents", None),
+        (
+            "viewer_rev_workspaces_upd",
+            "AFTER UPDATE",
+            "workspaces",
+            Some(WORKSPACE_GUARD),
+        ),
+        (
+            "viewer_rev_workspaces_del",
+            "AFTER DELETE",
+            "workspaces",
+            None,
+        ),
+        (
+            "viewer_rev_sources_upd",
+            "AFTER UPDATE",
+            "sources",
+            Some(SOURCE_GUARD),
+        ),
+        ("viewer_rev_sources_del", "AFTER DELETE", "sources", None),
+    ] {
+        ddl.push_str(&canonical_trigger(
+            name,
+            timing,
+            table,
+            "session_updated",
+            "NULL",
+            guard,
+        ));
+    }
     ddl
 }
 

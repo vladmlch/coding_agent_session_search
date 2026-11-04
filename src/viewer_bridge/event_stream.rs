@@ -495,10 +495,22 @@ fn event_frame(
         frame["lexical_generation"] = revisions.lexical_generation.into();
     }
     if event.kind == journal::kind::INDEX_READY {
-        // The durable receipt the certification committed with the event
-        // is the binding — a later certification must not retroactively
-        // widen what this frame announces.
-        if let Some(receipt) = &receipt {
+        // Only a version-1 PublicationReceipt — the exact payload schema
+        // `certify_lexical_publication` commits — may claim readiness.
+        // Retained pre-Task-8 `index_ready` rows and malformed receipts
+        // never do (`"v": true`/`"v": "1"` are not the integer 1).
+        let certified = receipt
+            .as_ref()
+            .is_some_and(|receipt| {
+                receipt.get("v").and_then(Value::as_i64)
+                    == Some(journal::PUBLICATION_RECEIPT_VERSION)
+            });
+        if certified
+            && let Some(receipt) = &receipt
+        {
+            // The durable receipt the certification committed with the
+            // event is the binding — a later certification must not
+            // retroactively widen what this frame announces.
             for field in [
                 "canonical_revision",
                 "annotation_revision",
@@ -510,7 +522,7 @@ fn event_frame(
                 }
             }
         }
-        frame["lexical_ready"] = true.into();
+        frame["lexical_ready"] = certified.into();
     }
     if event.kind == journal::kind::CANONICAL_READY {
         frame["lexical_ready"] = false.into();

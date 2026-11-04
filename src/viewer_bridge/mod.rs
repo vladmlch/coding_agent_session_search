@@ -160,7 +160,7 @@ fn backfill_viewer_extensions(db: &Path, limit: Option<u64>) -> Result<()> {
     })?;
     // One post-commit maintenance pass for the whole run: any observer-
     // journaled events (a concurrent canonical writer) coalesce into a
-    // single index_ready instead of one marker per batch.
+    // single canonical_ready instead of one marker per batch.
     coding_agent_search::viewer_extensions::changes::notify_committed_change(&connection, 0)?;
     // Wakeup-only: a listening bridge's poll fallback rechecks anyway.
     coding_agent_search::viewer_extensions::changes::send_bridge_wakeup_best_effort(db);

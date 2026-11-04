@@ -58,6 +58,19 @@ impl OwnedWriter {
                 "The viewer extension profile is not installed; run --init-extensions first",
             ));
         }
+        // Task 8: an archive whose extension profile predates schema v8
+        // (no `viewer_lexical_publication`) would claim
+        // `lexical_tracking: bound` while certification silently no-ops —
+        // self-upgrade here. ensure_schema is additive idempotent DDL, so
+        // a current archive pays one schema-version read.
+        coding_agent_search::viewer_extensions::schema::ensure_schema(&connection).map_err(
+            |e| {
+                refuse(
+                    "viewer_extensions_missing",
+                    format!("Cannot ensure viewer extension schema: {e:#}"),
+                )
+            },
+        )?;
         revisions::ensure_observers(&connection).map_err(|e| {
             refuse(
                 "viewer_extensions_missing",

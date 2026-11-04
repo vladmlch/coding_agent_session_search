@@ -967,7 +967,10 @@ fn subscribe_reconnect_replays_missed_changes() -> Result<()> {
     ensure!(found, "missed-window events did not replay: {frames:?}");
     // The missed window replays in commit order: the insert's
     // session_created + session_updated (conversations and messages rows
-    // both fire canonical observers) land before the annotation edit.
+    // both fire canonical observers) land before the annotation edit. A
+    // leading coarse session_updated (NULL conversation_id) is also
+    // admissible: the fixture's ensure_agent upsert legitimately renames
+    // the seeded agent row, and dimension observers journal that rename.
     let events: Vec<&Value> = frames
         .iter()
         .filter(|frame| frame["type"] != "heartbeat")
@@ -977,8 +980,7 @@ fn subscribe_reconnect_replays_missed_changes() -> Result<()> {
         .filter_map(|frame| frame["type"].as_str())
         .collect();
     ensure!(
-        kinds.first() == Some(&journal::kind::SESSION_CREATED)
-            && kinds.last() == Some(&journal::kind::ANNOTATIONS_UPDATED)
+        kinds.last() == Some(&journal::kind::ANNOTATIONS_UPDATED)
             && kinds.iter().all(|kind| [
                 journal::kind::SESSION_CREATED,
                 journal::kind::SESSION_UPDATED,
@@ -988,7 +990,10 @@ fn subscribe_reconnect_replays_missed_changes() -> Result<()> {
         "replay must deliver every missed event in commit order: {kinds:?}"
     );
     ensure!(
-        events[0]["conversation_id"].as_i64() == Some(conversation)
+        events
+            .iter()
+            .any(|frame| frame["type"] == journal::kind::SESSION_CREATED
+                && frame["conversation_id"].as_i64() == Some(conversation))
             && events[events.len() - 1]["conversation_id"].as_i64() == Some(1),
         "replayed events must keep their addresses: {events:?}"
     );
@@ -1251,6 +1256,313 @@ fn certified_publication_replays_after_bridge_restart() -> Result<()> {
     );
     drop(subscriber);
     let _ = restarted.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Deferred certification (rebuild ordering): a candidate manifest that is
+// sealed but NEVER published — validation refused it — must leave no durable
+// certification: no `lexical_generation` bump, no receipt row, no
+// `index_ready` journal event. Only the manifest verified at the PUBLISHED
+// path may certify.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn deferred_certification_binds_published_manifest_never_a_refused_candidate() -> Result<()> {
+    let fixture = fixture()?;
+    let index_root = fixture.db.parent().expect("data dir").join("lexical");
+    let candidate_dir = index_root.join("candidate");
+    let published_dir = index_root.join("published");
+
+    // A candidate seals a manifest at its build path. Validation then
+    // refuses it (count mismatch / unreadable): the writer's armed floor
+    // is disarmed and NO certification call is ever made for it.
+    let writer = open(&fixture.db)?;
+    let mut candidate =
+        coding_agent_search::search::tantivy::TantivyIndex::open_or_create(&candidate_dir)?;
+    candidate.capture_publication_floor(&writer)?;
+    candidate.commit()?;
+    let armed_floor = candidate.take_publication_floor();
+    ensure!(
+        armed_floor.is_some(),
+        "the extended archive must arm a coverage floor"
+    );
+    drop(candidate);
+
+    // The refusal path: certification is only ever invoked for the
+    // PUBLISHED path — a directory without a durable manifest must no-op.
+    coding_agent_search::search::tantivy::TantivyIndex::certify_published_manifest(
+        &writer,
+        &published_dir,
+        armed_floor,
+    );
+    let generation = revisions::generation(&writer)?.expect("generation");
+    ensure!(
+        generation.lexical_generation == 0,
+        "a refused candidate must not mint a lexical generation: {generation:?}"
+    );
+    ensure!(
+        journal::latest_lexical_publication(&writer)?.is_none(),
+        "a refused candidate must leave no durable receipt"
+    );
+    let page = journal::changes_since(&writer, 0, 256)?;
+    ensure!(
+        page.events.iter().all(|e| e.kind != journal::kind::INDEX_READY),
+        "a refused candidate must not journal index_ready: {:?}",
+        page.events
+    );
+
+    // Publish for real: a manifest sealed at the PUBLISHED path certifies
+    // against the armed floor.
+    let mut live =
+        coding_agent_search::search::tantivy::TantivyIndex::open_or_create(&published_dir)?;
+    live.commit()?;
+    coding_agent_search::search::tantivy::TantivyIndex::certify_published_manifest(
+        &writer,
+        &published_dir,
+        armed_floor,
+    );
+    let receipt = journal::latest_lexical_publication(&writer)?.expect("receipt");
+    ensure!(
+        receipt.lexical_generation == 1
+            && receipt.quill_generation >= 1
+            && receipt.v == journal::PUBLICATION_RECEIPT_VERSION,
+        "the published manifest must certify once, bound to its receipt: {receipt:?}"
+    );
+    let page = journal::changes_since(&writer, 0, 256)?;
+    ensure!(
+        page.events.iter().any(|e| e.kind == journal::kind::INDEX_READY),
+        "the published certification must journal index_ready: {:?}",
+        page.events
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Build-start coverage floor: a canonical commit landing DURING the build
+// lands above the armed floor, so the deferred certification's receipt
+// covers only the revisions the build could have indexed — never the
+// broader current-at-certify snapshot.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn build_start_floor_bounds_receipt_coverage() -> Result<()> {
+    let fixture = fixture()?;
+    let index_dir = fixture.db.parent().expect("data dir").join("lexical");
+    let writer = open(&fixture.db)?;
+
+    // Build start: the rebuild captures the committed revisions BEFORE
+    // any document is staged and arms the writer's floor with them.
+    let build_floor = journal::current_journal_revisions(&writer)?.expect("revisions");
+    let mut index =
+        coding_agent_search::search::tantivy::TantivyIndex::open_or_create(&index_dir)?;
+    index.arm_publication_floor(Some(build_floor));
+
+    // A canonical commit lands mid-build — its content was never staged.
+    insert_conversation(&fixture.db, &canned_conversation(1, "mid-build", 1))?;
+    let mid_build = journal::current_journal_revisions(&writer)?.expect("revisions");
+    ensure!(
+        mid_build.canonical_revision > build_floor.canonical_revision,
+        "the mid-build commit must land above the floor: {mid_build:?} vs {build_floor:?}"
+    );
+
+    // The build seals, validates, publishes — certification binds the
+    // armed build-start floor, not the wider current revisions.
+    index.commit()?;
+    let armed = index.take_publication_floor();
+    coding_agent_search::search::tantivy::TantivyIndex::certify_published_manifest(
+        &writer, &index_dir, armed,
+    );
+    let receipt = journal::latest_lexical_publication(&writer)?.expect("receipt");
+    ensure!(
+        receipt.canonical_revision == build_floor.canonical_revision,
+        "receipt coverage must bind the build-start floor, not the \
+         mid-build revision: {receipt:?} vs {build_floor:?}"
+    );
+    ensure!(
+        receipt.canonical_revision < mid_build.canonical_revision,
+        "the mid-build commit must NOT be claimed covered: {receipt:?}"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Receipt-version gate: `index_ready` claims `lexical_ready:true` ONLY for a
+// version-1 PublicationReceipt payload. Retained pre-Task-8 rows and
+// malformed receipts (`v` as bool/string/missing) report
+// `lexical_ready:false` — never a readiness claim.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn index_ready_frame_requires_v1_receipt_payload() -> Result<()> {
+    let (mut bridge, endpoint) =
+        events_bridge(&[SeedConversation::new(1, "codex", "/seed-g", "seed-1")
+            .agent_messages(Some(1_700_000_000_000), 1)])?;
+    let mut subscriber = subscribe(&endpoint, None)?;
+    let ack = read_event(&mut subscriber)?.expect("subscribed ack");
+    ensure!(ack["type"] == "subscribed", "{ack}");
+
+    // Retained legacy/malformed index_ready payloads — each injected and
+    // framed individually (same-key journal rows coalesce inside a page).
+    for payload in [
+        None,
+        Some(json!({"note":"pre-task-8 marker"}).to_string()),
+        Some(json!({"v":2,"quill_generation":9}).to_string()),
+        Some(json!({"v":true,"quill_generation":9}).to_string()),
+        Some(json!({"v":"1","quill_generation":9}).to_string()),
+    ] {
+        let writer = open(&bridge.db)?;
+        journal::append_change_event(
+            &writer,
+            journal::kind::INDEX_READY,
+            None,
+            0,
+            payload.clone(),
+        )?;
+        drop(writer);
+        journal::send_bridge_wakeup_best_effort(&bridge.db);
+        let (frames, found) = collect_until(&mut subscriber, Duration::from_secs(3), |frame| {
+            frame["type"] == journal::kind::INDEX_READY
+        })?;
+        ensure!(found, "index_ready did not arrive: {frames:?}");
+        let ready = frames
+            .iter()
+            .find(|frame| frame["type"] == journal::kind::INDEX_READY)
+            .expect("index_ready frame");
+        ensure!(
+            ready["lexical_ready"] == false,
+            "receipt payload {payload:?} must never claim lexical readiness: {ready}"
+        );
+    }
+    drop(subscriber);
+    let _ = bridge.shutdown();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Dimension invalidation: a rename on `agents`/`workspaces`/`sources` is a
+// canonical change the served projection joins — it must bump
+// `canonical_revision` and journal a coarse `session_updated` with a NULL
+// conversation_id so live clients invalidate. A same-values rewrite stays
+// silent.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dimension_rename_journals_coarse_session_updated() -> Result<()> {
+    let fixture = fixture()?;
+    insert_conversation(&fixture.db, &canned_conversation(1, "dim", 1))?;
+    let cursor = journal::changes_since(&open(&fixture.db)?, 0, 256)?.next_seq;
+
+    let agent_id: i64 = open(&fixture.db)?
+        .query_row("SELECT id FROM agents WHERE slug = 'codex' LIMIT 1")?
+        .get_typed(0)?;
+    let writer = open(&fixture.db)?;
+    writer.execute_with_params(
+        "UPDATE agents SET name = ?1 WHERE id = ?2",
+        &param_slice_to_values(params![String::from("Codex Renamed"), agent_id]),
+    )?;
+    drop(writer);
+
+    let reader = open(&fixture.db)?;
+    let page = journal::changes_since(&reader, cursor, 256)?;
+    let coarse = page
+        .events
+        .iter()
+        .filter(|e| e.kind == journal::kind::SESSION_UPDATED)
+        .collect::<Vec<_>>();
+    ensure!(
+        coarse.len() == 1 && coarse[0].conversation_id.is_none(),
+        "a dimension rename must journal one coarse session_updated with \
+         NULL conversation_id: {:?}",
+        page.events
+    );
+    let generation = revisions::generation(&reader)?.expect("generation");
+    ensure!(
+        generation.canonical_revision > 0,
+        "a dimension rename must bump canonical_revision: {generation:?}"
+    );
+
+    // Same-values rewrite: neither a bump nor a journal row.
+    let cursor = page.next_seq;
+    let before = generation.canonical_revision;
+    let writer = open(&fixture.db)?;
+    writer.execute_with_params(
+        "UPDATE agents SET name = ?1 WHERE id = ?2",
+        &param_slice_to_values(params![String::from("Codex Renamed"), agent_id]),
+    )?;
+    drop(writer);
+    let reader = open(&fixture.db)?;
+    let page = journal::changes_since(&reader, cursor, 256)?;
+    ensure!(
+        page.events.is_empty(),
+        "a same-values dimension rewrite must journal nothing: {:?}",
+        page.events
+    );
+    ensure!(
+        revisions::generation(&reader)?.expect("generation").canonical_revision == before,
+        "a same-values dimension rewrite must not bump canonical_revision"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Schema-v7 self-upgrade: an archive whose extension profile predates v8
+// (no `viewer_lexical_publication`) self-upgrades when the authorized write
+// lane opens — `OwnedWriter::open` runs `ensure_schema` before observers —
+// so certification can never silently no-op under `lexical_tracking: bound`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn schema_v7_archive_upgrades_when_owned_writer_opens() -> Result<()> {
+    let mut bridge = BridgeHarness::with_seed(
+        &[SeedConversation::new(1, "codex", "/seed-v7", "seed-1")
+            .agent_messages(Some(1_700_000_000_000), 1)],
+        &["--enable-viewer-writes"],
+    )?;
+    init_extensions(&bridge)?;
+
+    // Rewind the profile to v7: V8 is purely additive (one table + the
+    // version marker), so dropping both restores the v7 shape exactly.
+    let installer = open(&bridge.db)?;
+    installer.execute("DROP TABLE IF EXISTS viewer_lexical_publication")?;
+    installer.execute(
+        "INSERT OR REPLACE INTO viewer_meta (key, value) \
+         VALUES ('extension_schema_version', '7')",
+    )?;
+    ensure!(
+        coding_agent_search::viewer_extensions::schema::installed_version(&installer)?
+            == Some(7),
+        "fixture must stand at schema v7"
+    );
+    drop(installer);
+
+    // The write lane's first mutation opens `OwnedWriter` → ensure_schema
+    // upgrades the archive in place.
+    let patched = bridge.exchange(json!({
+        "op": "patch_annotations",
+        "conversation_id": 1,
+        "expected_revision": 0,
+        "patch": {"is_pinned": true}
+    }))?;
+    ensure!(patched["ok"] == true, "patch_annotations refused: {patched}");
+
+    let reader = open(&bridge.db)?;
+    ensure!(
+        coding_agent_search::viewer_extensions::schema::installed_version(&reader)?
+            == Some(8),
+        "OwnedWriter::open must self-upgrade the v7 profile to v8"
+    );
+    // Certification is live on the upgraded archive, not a silent no-op.
+    let index_dir =
+        coding_agent_search::search::tantivy::expected_index_dir(&bridge.data_dir);
+    let mut index =
+        coding_agent_search::search::tantivy::TantivyIndex::open_or_create(&index_dir)?;
+    index.commit_with_region_doc_stamps(&reader)?;
+    ensure!(
+        journal::latest_lexical_publication(&reader)?.is_some(),
+        "the upgraded archive must certify real publications"
+    );
+    let _ = bridge.shutdown();
     Ok(())
 }
 
