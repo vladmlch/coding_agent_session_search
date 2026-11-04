@@ -54279,69 +54279,6 @@
             }
           }
         },
-        "models-check-update": {
-          "type": "object",
-          "properties": {
-            "type": {
-              "type": "string"
-            },
-            "description": {
-              "type": "string"
-            },
-            "properties": {
-              "type": "object",
-              "properties": {
-                "update_available": {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "reason": {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "string"
-                    },
-                    "description": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "current_revision": {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    }
-                  }
-                },
-                "latest_revision": {
-                  "type": "object",
-                  "properties": {
-                    "type": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    }
-                  }
-                }
-              }
-            },
-            "required": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              }
-            }
-          }
-        },
         "models-status": {
           "type": "object",
           "properties": {

@@ -1,7 +1,7 @@
 //! Integration tests for semantic search flows.
 //!
 //! Tests cover:
-//! - CLI models commands (status, verify, check-update)
+//! - CLI models commands (status, verify, install --from-file)
 //! - Search mode flags (lexical, semantic, hybrid)
 //! - Determinism tests (same query yields consistent results)
 //! - Robot output schema validation
@@ -175,9 +175,11 @@ fn test_models_verify_json_output() {
     );
 }
 
-/// Test: cass models check-update returns valid output
+/// Test: `cass models check-update` was removed by the local-only port —
+/// there is no remote registry to check against. The invocation must be
+/// rejected (non-zero exit), not silently succeed.
 #[test]
-fn test_models_check_update_command() {
+fn test_models_check_update_command_removed() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().join("cass_data");
     fs::create_dir_all(&data_dir).unwrap();
@@ -189,17 +191,16 @@ fn test_models_check_update_command() {
         .output()
         .expect("models check-update command");
 
-    // Should succeed regardless of installation state
     assert!(
-        output.status.success(),
-        "models check-update should succeed. stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !output.status.success(),
+        "models check-update must be rejected as removed. stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
 }
 
-/// Test: cass models check-update --json returns valid JSON
+/// Test: `cass models check-update --json` is also rejected.
 #[test]
-fn test_models_check_update_json_output() {
+fn test_models_check_update_json_output_removed() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().join("cass_data");
     fs::create_dir_all(&data_dir).unwrap();
@@ -212,32 +213,9 @@ fn test_models_check_update_json_output() {
         .expect("models check-update --json command");
 
     assert!(
-        output.status.success(),
-        "models check-update --json should succeed. stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(stdout.trim())
-        .expect("models check-update --json should return valid JSON");
-
-    // Bead 7k7pl: pin update_available as a boolean (not `null` or a
-    // string like "maybe"), and latest_revision as a string. CLI
-    // consumers branch on the bool; a type regression would slip past
-    // `.is_some()`.
-    assert!(
-        json.get("update_available")
-            .and_then(|v| v.as_bool())
-            .is_some(),
-        "update_available must be a boolean. Got: {}",
-        json
-    );
-    assert!(
-        json.get("latest_revision")
-            .and_then(|v| v.as_str())
-            .is_some(),
-        "latest_revision must be a string. Got: {}",
-        json
+        !output.status.success(),
+        "models check-update --json must be rejected as removed. stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
     );
 }
 
@@ -271,8 +249,8 @@ fn test_models_help_shows_subcommands() {
         "Help should mention remove subcommand"
     );
     assert!(
-        stdout.contains("check-update"),
-        "Help should mention check-update subcommand"
+        !stdout.contains("check-update"),
+        "Help must not mention the removed check-update subcommand"
     );
 }
 
@@ -919,36 +897,34 @@ fn test_filter_parity_agent_filter() {
 // Offline Mode Tests
 // =============================================================================
 
-/// Test: CASS_OFFLINE=1 disables network calls
+/// Test: CASS_OFFLINE=1 is inert in the local-only build — `models status`
+/// still emits a valid JSON envelope because nothing needs the network.
 #[test]
 fn test_offline_mode_environment() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().join("cass_data");
     fs::create_dir_all(&data_dir).unwrap();
 
-    // With CASS_OFFLINE=1, models check-update should not make network calls
     let output = cargo_bin_cmd!("cass")
-        .args(["models", "check-update", "--json", "--data-dir"])
-        .arg(&data_dir)
+        .args(["models", "status", "--json"])
+        // `models status` takes no --data-dir; scope via CASS_DATA_DIR.
+        .env("CASS_DATA_DIR", &data_dir)
         .env("CASS_OFFLINE", "1")
         .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
-        .expect("offline check-update");
+        .expect("offline models status");
 
-    // Should succeed but indicate offline mode
     assert!(
         output.status.success(),
-        "check-update in offline mode should succeed. stderr: {}",
+        "models status with CASS_OFFLINE=1 should succeed. stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // In offline mode, should either skip check or return cached/offline result
     let json: Value = serde_json::from_str(stdout.trim()).unwrap_or(Value::Null);
-    // Verify it returns valid structure (doesn't fail on network)
     assert!(
         json.is_object(),
-        "Should return valid JSON in offline mode. Got: {}",
+        "Should return valid JSON with CASS_OFFLINE set. Got: {}",
         stdout
     );
 }
@@ -1040,7 +1016,6 @@ fn test_models_install_from_file_directory_validates_checksums() {
         .arg(&fixture_dir)
         .arg("--data-dir")
         .arg(&data_dir)
-        .arg("-y")
         .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models install from-file command");
@@ -1053,44 +1028,52 @@ fn test_models_install_from_file_directory_validates_checksums() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("SHA256 mismatch"),
+        stderr.contains("verification failed"),
         "stderr should show the real checksum-validation failure from the implemented --from-file path. Got: {}",
         stderr
     );
 }
 
-/// Test: models install rejects an invalid mirror URL before any network work
+/// Test: models install rejects the removed `--mirror` flag outright —
+/// cass is local-only, so a mirror URL is never even inspected.
 #[test]
-fn test_models_install_rejects_invalid_mirror_url() {
+fn test_models_install_rejects_mirror_flag() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().join("cass_data");
     fs::create_dir_all(&data_dir).unwrap();
 
     let output = cargo_bin_cmd!("cass")
-        .args(["models", "install", "--mirror", "not-a-valid-url"])
+        .args([
+            "models",
+            "install",
+            "--mirror",
+            "not-a-valid-url",
+            "--from-file",
+            "/tmp/models",
+        ])
         .arg("--data-dir")
         .arg(&data_dir)
-        .arg("-y")
         .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
-        .expect("models install with invalid mirror URL");
+        .expect("models install with removed mirror flag");
 
     assert!(
         !output.status.success(),
-        "install --mirror with an invalid URL should fail"
+        "install --mirror must be rejected as a removed flag"
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("invalid mirror URL"),
-        "stderr should explain that the mirror URL is invalid. Got: {}",
+        stderr.contains("mirror") && stderr.contains("removed"),
+        "stderr should explain that --mirror was removed. Got: {}",
         stderr
     );
 }
 
-/// Test: models install rejects conflicting mirror and from-file sources
+/// Test: `--mirror` combined with `--from-file` is still rejected —
+/// the removed flag wins over the surviving one.
 #[test]
-fn test_models_install_rejects_conflicting_mirror_and_from_file() {
+fn test_models_install_rejects_mirror_and_from_file() {
     let fixture_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/models");
 
     let output = cargo_bin_cmd!("cass")
@@ -1108,13 +1091,13 @@ fn test_models_install_rejects_conflicting_mirror_and_from_file() {
 
     assert!(
         !output.status.success(),
-        "conflicting --mirror and --from-file flags should fail to parse"
+        "--mirror with --from-file must be rejected as removed"
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Could not parse arguments"),
-        "stderr should report a parse failure for conflicting flags. Got: {}",
+        stderr.contains("mirror") && stderr.contains("removed"),
+        "stderr should explain that --mirror was removed. Got: {}",
         stderr
     );
 }
@@ -1133,7 +1116,6 @@ fn test_models_install_from_file_missing_directory() {
         .arg(&missing_dir)
         .arg("--data-dir")
         .arg(&data_dir)
-        .arg("-y")
         .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models install with missing directory");

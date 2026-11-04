@@ -69,7 +69,7 @@ pub struct RegisteredEmbedder {
     pub requires_model_files: bool,
     /// Release/update date (YYYY-MM-DD format) for bake-off eligibility.
     pub release_date: &'static str,
-    /// HuggingFace model ID for download/reference.
+    /// HuggingFace model ID recorded for provenance (never downloaded).
     pub huggingface_id: &'static str,
     /// Approximate model size in bytes.
     pub size_bytes: u64,
@@ -337,7 +337,7 @@ impl EmbedderRegistry {
             return Err(embedder_unavailable(
                 name,
                 format!(
-                    "missing files in {}: {}. Run 'cass models install' to download.",
+                    "missing files in {}: {}. Run 'cass models install --from-file <DIR>' to install.",
                     model_dir,
                     missing.join(", ")
                 ),

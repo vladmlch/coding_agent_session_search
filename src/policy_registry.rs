@@ -89,10 +89,6 @@ pub fn semantic_policy_controller_snapshot(
     let mut inputs = BTreeMap::new();
     inputs.insert("mode".to_string(), policy.mode.as_str().to_string());
     inputs.insert(
-        "download_policy".to_string(),
-        policy.download_policy.as_str().to_string(),
-    );
-    inputs.insert(
         "fast_tier_embedder".to_string(),
         policy.fast_tier_embedder.clone(),
     );

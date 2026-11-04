@@ -2914,11 +2914,6 @@ schemas: (auto-generated from contract)
     - state_before: string
     - tier: string
     - vector_count: integer
-  models-check-update:
-    - current_revision: ?
-    - latest_revision: ?
-    - reason: string
-    - update_available: boolean
   models-status:
     - active_registry_name: ?
     - cache_lifecycle: object

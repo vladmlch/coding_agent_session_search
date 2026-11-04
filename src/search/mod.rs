@@ -13,7 +13,7 @@
 //! - **[`fastembed_reranker`]**: Pure-Rust native cross-encoder reranker (historical module name).
 //! - **[`daemon_client`]**: Daemon client wrappers for warm embedder/reranker (bd-1lps).
 //! - **[`model_manager`]**: Semantic model detection + context wiring (no downloads).
-//! - **[`model_download`]**: Model download system with consent, verification, and atomic install.
+//! - **[`model_download`]**: Local-only model installation from files with checksum verification and atomic install.
 //! - **[`policy`]**: Semantic policy contract: model defaults, tiers, budgets, invalidation.
 //! - **[`semantic_manifest`]**: Durable semantic asset manifests, backlog ledger, and checkpoints.
 //! - **[`canonicalize`]**: Text preprocessing for consistent embedding input.

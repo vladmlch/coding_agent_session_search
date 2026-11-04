@@ -12,7 +12,7 @@
 //! # Implementations
 //!
 //! - **FastEmbed Reranker**: Uses ms-marco-MiniLM-L-6-v2 cross-encoder via FastEmbed.
-//!   Requires model download with user consent.
+//!   Requires a locally installed model (`cass models install --from-file <DIR>`).
 
 use std::fmt;
 

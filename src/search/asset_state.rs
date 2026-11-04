@@ -1158,7 +1158,7 @@ fn semantic_runtime_surface(inputs: SemanticRuntimeInputs<'_>) -> SemanticRuntim
     if manifest_assets_present {
         return SemanticRuntimeSurface {
             status: "stale",
-            availability: "update_available",
+            availability: "index_stale",
             summary: "semantic artifacts exist but do not match the current database".to_string(),
             can_search: false,
             fallback_mode: Some("lexical"),
@@ -1225,7 +1225,6 @@ fn semantic_tier_queryable(
         matches!(
             availability,
             SemanticAvailability::Ready { .. }
-                | SemanticAvailability::UpdateAvailable { .. }
                 | SemanticAvailability::IndexBuilding { .. }
                 | SemanticAvailability::IndexMissing { .. }
         )
@@ -1855,7 +1854,6 @@ fn semantic_embedder_id(
 ) -> Option<String> {
     match availability {
         SemanticAvailability::Ready { embedder_id }
-        | SemanticAvailability::UpdateAvailable { embedder_id, .. }
         | SemanticAvailability::IndexBuilding { embedder_id, .. }
         | SemanticAvailability::IndexStale { embedder_id, .. }
         | SemanticAvailability::ModelMissing { embedder_id, .. } => Some(embedder_id.clone()),
@@ -1917,18 +1915,14 @@ fn semantic_availability_code(availability: &SemanticAvailability) -> &'static s
     match availability {
         SemanticAvailability::Ready { .. } => "ready",
         SemanticAvailability::NotInstalled => "not_installed",
-        SemanticAvailability::NeedsConsent => "needs_consent",
-        SemanticAvailability::Downloading { .. } => "downloading",
-        SemanticAvailability::Verifying => "verifying",
         SemanticAvailability::IndexBuilding { .. } => "index_building",
-        SemanticAvailability::IndexStale { .. } => "update_available",
+        SemanticAvailability::IndexStale { .. } => "index_stale",
         SemanticAvailability::HashFallback => "hash_fallback",
         SemanticAvailability::Disabled { .. } => "disabled",
         SemanticAvailability::ModelMissing { .. } => "model_missing",
         SemanticAvailability::IndexMissing { .. } => "index_missing",
         SemanticAvailability::DatabaseUnavailable { .. } => "database_unavailable",
         SemanticAvailability::LoadFailed { .. } => "load_failed",
-        SemanticAvailability::UpdateAvailable { .. } => "update_available",
     }
 }
 
@@ -1936,15 +1930,10 @@ fn semantic_status_from_availability(availability: &SemanticAvailability) -> &'s
     match availability {
         SemanticAvailability::Ready { .. } => "ready",
         SemanticAvailability::HashFallback => "hash_fallback",
-        SemanticAvailability::Downloading { .. }
-        | SemanticAvailability::Verifying
-        | SemanticAvailability::IndexBuilding { .. } => "building",
+        SemanticAvailability::IndexBuilding { .. } => "building",
         SemanticAvailability::Disabled { .. } => "disabled",
-        SemanticAvailability::UpdateAvailable { .. } | SemanticAvailability::IndexStale { .. } => {
-            "stale"
-        }
+        SemanticAvailability::IndexStale { .. } => "stale",
         SemanticAvailability::NotInstalled
-        | SemanticAvailability::NeedsConsent
         | SemanticAvailability::ModelMissing { .. }
         | SemanticAvailability::IndexMissing { .. } => "missing",
         SemanticAvailability::DatabaseUnavailable { .. }
@@ -1968,18 +1957,13 @@ fn semantic_hint(
             "Run 'cass index --semantic --embedder hash' to build the hash vector index; lexical search remains available"
         }
         (_, SemanticAvailability::NotInstalled)
-        | (_, SemanticAvailability::NeedsConsent)
         | (_, SemanticAvailability::ModelMissing { .. }) => {
-            "Run 'cass models install' and then 'cass index --semantic'; lexical search remains available without the model"
+            "Run 'cass models install --from-file <DIR>' and then 'cass index --semantic'; lexical search remains available without the model"
         }
         (_, SemanticAvailability::IndexMissing { .. })
-        | (_, SemanticAvailability::UpdateAvailable { .. })
         | (_, SemanticAvailability::IndexStale { .. })
         | (_, SemanticAvailability::IndexBuilding { .. }) => {
             "Run 'cass index --semantic' to build or refresh vector assets; lexical search remains available"
-        }
-        (_, SemanticAvailability::Downloading { .. }) | (_, SemanticAvailability::Verifying) => {
-            "Wait for the semantic model installation to finish; lexical search remains available"
         }
         (_, SemanticAvailability::Disabled { .. }) => {
             "Semantic search is disabled by policy; lexical search remains available, or re-enable semantic search"
@@ -4172,7 +4156,7 @@ mod tests {
 
         let state = semantic_state_from_availability(
             temp.path(),
-            &SemanticAvailability::NeedsConsent,
+            &SemanticAvailability::NotInstalled,
             SemanticPreference::DefaultModel,
             Some("current-db"),
         );
@@ -4220,7 +4204,7 @@ mod tests {
 
         let state = semantic_state_from_availability(
             temp.path(),
-            &SemanticAvailability::NeedsConsent,
+            &SemanticAvailability::NotInstalled,
             SemanticPreference::DefaultModel,
             Some("current-db"),
         );
@@ -4267,7 +4251,7 @@ mod tests {
 
         let state = semantic_state_from_availability(
             temp.path(),
-            &SemanticAvailability::NeedsConsent,
+            &SemanticAvailability::NotInstalled,
             SemanticPreference::DefaultModel,
             None,
         );

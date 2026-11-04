@@ -2589,8 +2589,10 @@ fn models_install_help_shows_options() {
     cmd.assert()
         .success()
         .stdout(contains("--model"))
-        .stdout(contains("--mirror"))
-        .stdout(contains("--from-file"));
+        .stdout(contains("--from-file"))
+        .stdout(predicate::str::contains("--mirror").not())
+        .stdout(predicate::str::contains("--yes").not())
+        .stdout(predicate::str::contains("--repair").not());
 }
 
 // =============================================================================
@@ -5360,21 +5362,21 @@ const REMOVED_COMMAND_CASES: &[RemovedCommandCase] = &[
         args: &["models", "check-update"],
         display: "cass models check-update",
         task: 12,
-        pending: true,
+        pending: false,
         probe_args: Some(&["models", "check-update", "--help"]),
     },
     RemovedCommandCase {
         args: &["models", "install", "--mirror", "X"],
         display: "--mirror` on `cass models install",
         task: 12,
-        pending: true,
+        pending: false,
         probe_args: Some(&["models", "install", "--mirror", "X", "--help"]),
     },
     RemovedCommandCase {
         args: &["models", "verify", "--repair"],
         display: "--repair` on `cass models verify",
         task: 12,
-        pending: true,
+        pending: false,
         probe_args: Some(&["models", "verify", "--repair", "--help"]),
     },
     // Task 14 — hosted pages deploy targets.

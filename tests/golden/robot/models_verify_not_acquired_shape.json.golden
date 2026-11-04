@@ -39,9 +39,6 @@
               "items": {
                 "type": "string"
               }
-            },
-            "needs_consent": {
-              "type": "boolean"
             }
           }
         },
@@ -74,10 +71,10 @@
         "cost_class": {
           "type": "string"
         },
-        "expected_download_bytes": {
+        "expected_install_bytes": {
           "type": "integer"
         },
-        "offline_install_available": {
+        "local_install_available": {
           "type": "boolean"
         },
         "skipped_network_reason": {

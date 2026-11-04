@@ -87,7 +87,7 @@ a long JSONL record in an agent prompt.
 - Lexical search is the required fast path. Missing, stale, or incompatible lexical assets are treated as derived-state problems that cass should rebuild from SQLite instead of asking operators to perform routine manual repair.
 - Hybrid is the default search intent. Robot metadata (`--robot --robot-meta`) reports the requested mode, realized mode, semantic refinement status, and any lexical fallback reason when semantic assets are not ready.
 - Semantic assets are opportunistic background enrichment. Lexical-only results are expected during first indexing, semantic catch-up, disabled semantic policy, or unavailable local model/vector files.
-- Semantic model acquisition is **opt-in**: `cass models install` downloads the default `all-minilm-l6-v2` (alias `minilm`, ~90 MB) only on explicit request; `--model multilingual-minilm` selects the larger multilingual MiniLM L12 model (~480 MB) for CJK/mixed-language archives. Cass never auto-downloads or auto-selects the multilingual space. Air-gapped installs use `--from-file <dir>`. While the selected model is absent, hybrid search uses lexical-only and reports `fallback_mode="lexical"` in health/status.
+- Semantic model acquisition is **opt-in and local-only**: `cass models install --from-file <dir>` installs the default `all-minilm-l6-v2` (alias `minilm`, ~90 MB) from a directory you supply, verifying every file's SHA256; `--model multilingual-minilm` selects the larger multilingual MiniLM L12 model (~480 MB) for CJK/mixed-language archives. Cass never downloads models and never auto-selects the multilingual space. While the selected model is absent, hybrid search uses lexical-only and reports `fallback_mode="lexical"` in health/status.
 - `cass triage --json` combines readiness, `next_command`, `recommended_commands[]`, docs/schema pointers, starter workflows, and accepted recoveries for diagnosis. Review recommended mutations before executing them. `cass health --json` and `cass status --json` remain the narrower truth surfaces for readiness, active rebuilds, and recovery.
 
 **Lexical publish durability (atomic-swap)**
@@ -102,7 +102,7 @@ a long JSONL record in an agent prompt.
 - A derived (SQLite fallback) FTS repair that fails **identically on 5 consecutive `cass index` runs** escalates from a warning to a non-zero exit ([#434](https://github.com/Dicklesworthstone/coding_agent_session_search/issues/434)): the counter persists in `<data_dir>/index/.fts-repair-failure-streak.json`, watch daemons log the escalation instead of exiting, and any run whose repair succeeds — or fails differently — resets it. Canonical rows and the Tantivy index are unaffected; run `cass doctor --rebuild-canonical-fts --yes --json` for the explicit repair.
 
 **Schema stability guarantees**
-- JSON contract surfaces are pinned by golden-file regression tests under `tests/golden/robot/`: `capabilities`, `selftest`, `health`, `status`, `diag`, `models status`/`verify`/`check-update`, `introspect`, `doctor`, `api-version`, `stats`, `search`, `export-html`, `onboarding`, the `quarantine` and `dedup` commands and `analytics incidents`, plus `sessions` and `pack` on their missing-database and error paths only. `triage` has no golden file; its shape is covered only by assertion tests. A change to any field name, type, or nullability fails the golden test suite and requires a deliberate regeneration pass (`UPDATE_GOLDENS=1 cargo test --test golden_robot_json --test golden_robot_docs`).
+- JSON contract surfaces are pinned by golden-file regression tests under `tests/golden/robot/`: `capabilities`, `selftest`, `health`, `status`, `diag`, `models status`/`verify`, `introspect`, `doctor`, `api-version`, `stats`, `search`, `export-html`, `onboarding`, the `quarantine` and `dedup` commands and `analytics incidents`, plus `sessions` and `pack` on their missing-database and error paths only. `triage` has no golden file; its shape is covered only by assertion tests. A change to any field name, type, or nullability fails the golden test suite and requires a deliberate regeneration pass (`UPDATE_GOLDENS=1 cargo test --test golden_robot_json --test golden_robot_docs`).
 - `cass introspect --json`'s `response_schemas` block enumerates every schema in a stable alphabetical order (`BTreeMap`-backed — see bead coding_agent_session_search-8sl73).
 - Error envelopes (`{error: {code, kind, message, hint, retryable}}`) have a fixed shape. `kind` values are kebab-case; branch on `err.kind`, not on the numeric code, for codes ≥ 10 (see the Error Handling section below).
 
@@ -191,9 +191,9 @@ AI coding agents are transforming how we write software. Claude Code, Codex, Cur
   collapses it to a single-tier quality search and the TUI's progressive lanes
   are disabled at HEAD, so hybrid search today is lexical plus one MiniLM
   refinement pass when the model is installed.
-- **Opt-in acquisition**: `cass models install` downloads `all-minilm-l6-v2` from Hugging Face on explicit request and verifies SHA256 checksums. `cass models install --model multilingual-minilm` explicitly selects `paraphrase-multilingual-MiniLM-L12-v2` for CJK and mixed-language retrieval. Nothing is fetched until an install command runs, and merely installing the multilingual model never changes the active space.
+- **Opt-in, local-only acquisition**: `cass models install --from-file <dir>` installs `all-minilm-l6-v2` from a local directory and verifies SHA256 checksums against the pinned manifest; there is no download path. `cass models install --model multilingual-minilm --from-file <dir>` explicitly selects `paraphrase-multilingual-MiniLM-L12-v2` for CJK and mixed-language retrieval. Merely installing the multilingual model never changes the active space.
 
-- **Air-gapped install**: `cass models install --model <minilm|multilingual-minilm> --from-file <dir>` accepts a pre-downloaded model directory so you can bring the assets in yourself.
+- **Local install layout**: `--from-file <dir>` expects a prepared model directory containing the manifest-required files (`model.safetensors`, `tokenizer.json`, `config.json`, `special_tokens_map.json`, `tokenizer_config.json`); failed verification leaves any existing install untouched.
 - **Switching spaces**: both models output 384 values, but their identities and vectors are incompatible. Set `CASS_SEMANTIC_EMBEDDER=multilingual-minilm`, then run `cass models backfill --tier quality --embedder multilingual-minilm`; cass keeps lexical fail-open active until the complete new generation is atomically published.
 - **Required files** (all must be present after install; `cass models verify --model <minilm|multilingual-minilm>` checks the selected model):
   - `model.safetensors`
@@ -223,7 +223,7 @@ The deterministic hash embedder is available only when explicitly selected, such
 4. **Normalize**: L2 normalize to unit length for cosine similarity
 
 **When to Use**:
-- Quick setup without downloading model files
+- Quick setup without installing model files
 - Environments where ML inference overhead is unwanted
 - Fast-tier testing or an explicitly chosen degraded mode
 
@@ -913,9 +913,7 @@ Errors are structured, actionable, and include recovery hints. A real sample fro
 | 13 | Mapping / not-found | Depends on `err.kind` |
 | 14 | I/O / mapping | Retry or inspect path |
 | 15 | Semantic / embedder unavailable | Install model or `--mode lexical` |
-| 20-21 | Model acquisition | Check `err.kind`, `err.hint` |
-| 22 | I/O during model handling | Retry |
-| 23 | Model download | Retry or use `--from-file` |
+| 20 | Model acquisition | Check `err.kind`, `err.hint` |
 | 24 | I/O during model verify/install | Retry |
 | 70 | `cass index` stalled and aborted (kind `index-stalled` envelope on stderr) | Inspect `cass status --json`, then rerun `cass index` |
 | 130 | Interrupted (SIGINT) | Rerun the command; indexing and search resume from their checkpoints |
@@ -1541,7 +1539,7 @@ Launch-time flags: `cass tui --refresh` (alias `--catch-up`) runs an incremental
 | `F9` | Toggle match mode: standard (default) ↔ prefix, where every bare word of 2+ characters also matches as a prefix (`auth` → `auth*`; phrases, operators and wildcards are left as typed) |
 | `F12` / `Alt+R` | Cycle ranking: recent → balanced → relevance → quality → newest → oldest |
 | `Alt+F` | Cycle result grouping: agent → conversation → workspace → flat |
-| `Alt+S` | Cycle search mode (lexical / semantic / hybrid). Without an installed model (or vector index) the status line says results stay lexical and names the command: `cass models install` (offline `--from-file <dir>`) or `cass index --semantic`; nothing downloads on its own |
+| `Alt+S` | Cycle search mode (lexical / semantic / hybrid). Without an installed model (or vector index) the status line says results stay lexical and names the command: `cass models install --from-file <dir>` or `cass index --semantic` |
 | `Ctrl+D` | Cycle density: Compact → Cozy → Spacious |
 | `Ctrl+1`..`Ctrl+9` | Save the current view to slot N |
 | `Shift+1`..`Shift+9` | Load the view from slot N |
@@ -2850,8 +2848,8 @@ cass models status --json
 #     "model_dir": "~/.local/share/coding-agent-search/models/all-MiniLM-L6-v2",
 #     "installed": false,
 #     "state": "not_acquired",
-#     "state_detail": "model not acquired (user consent required); missing ...",
-#     "next_step": "Run `cass models install`, or keep using lexical search.",
+#     "state_detail": "model not installed; missing ...",
+#     "next_step": "cass models install --model all-minilm-l6-v2 --from-file <DIR>",
 #     "lexical_fail_open": true,
 #     "revision": "c9745ed1...",
 #     "license": "Apache-2.0",
@@ -2861,21 +2859,14 @@ cass models status --json
 #     "policy_source": "semantic_policy"
 #   }
 
-# Install model (downloads ~90MB from Hugging Face on explicit request)
-cass models install
-# → Downloads from Hugging Face, verifies checksum
-
-# Install from local directory (air-gapped environments)
+# Install model from a local directory (the only install path — cass
+# never downloads models). Every manifest file is SHA256-verified
+# before the directory is activated.
 cass models install --from-file /path/to/model-dir
 
-# Verify model integrity
+# Verify model integrity (read-only; never repairs or re-downloads)
 cass models verify --json
 # → all_valid bool + per-file SHA-256 checks (see `cass models verify --help`)
-
-# Check for model updates
-cass models check-update --json
-# → { "update_available": bool, "reason": str,
-#     "current_revision": str|null, "latest_revision": str }
 ```
 
 In `cass status --json`, `semantic.preferred_backend` is `"fastembed"` when the native MiniLM lane is selected and `"hash"` for the hash tier; `fastembed` is only the id of the native pure-Rust MiniLM lane — no ONNX runtime is involved.
@@ -2911,10 +2902,10 @@ If a crash occurs during step 2, the original file is untouched. The rename oper
 
 **ML Model Installation** (`models/all-MiniLM-L6-v2/`):
 ```
-1. Download to temp directory (models/all-MiniLM-L6-v2.tmp/)
-2. Verify all checksums
+1. Copy local files into a staging sibling (models/all-MiniLM-L6-v2.installing/)
+2. Verify all checksums in staging, then write the .verified marker
 3. If existing model present: rename to backup (models/all-MiniLM-L6-v2.bak/)
-4. Atomic rename: temp → final
+4. Atomic rename: staging → final
 5. On success: remove backup
 6. On failure: restore from backup
 ```
@@ -2925,7 +2916,7 @@ All configuration writes follow the same temp-file-then-rename pattern, ensuring
 
 **Why This Matters**:
 - System crashes mid-write won't corrupt your preferences
-- Network interruptions during model download won't leave broken installations
+- Interrupted local model installs won't leave broken installations
 - Concurrent processes won't see partially-written files
 
 ### Secret Redaction at Index Time

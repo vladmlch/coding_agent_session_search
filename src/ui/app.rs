@@ -4665,20 +4665,16 @@ fn match_mode_token(mode: MatchMode) -> &'static str {
 
 /// What the user must do for semantic or hybrid search to use the model, or
 /// `None` when it already can (or is being prepared). Until then those modes
-/// return lexical results. cass never downloads a model without an explicit
-/// command, so this names the command (2l1b0.66).
+/// return lexical results. cass is local-only: models come from
+/// `cass models install --from-file <dir>`, so this names that command
+/// (2l1b0.66).
 fn semantic_mode_guidance(availability: &SemanticAvailability) -> Option<String> {
     use SemanticAvailability as S;
     match availability {
-        S::Ready { .. }
-        | S::HashFallback
-        | S::Downloading { .. }
-        | S::Verifying
-        | S::IndexBuilding { .. }
-        | S::UpdateAvailable { .. } => None,
-        S::NotInstalled | S::NeedsConsent | S::ModelMissing { .. } => Some(
-            "results stay lexical until the MiniLM model is installed: run `cass models install` \
-             (offline: `cass models install --from-file <dir>`)"
+        S::Ready { .. } | S::HashFallback | S::IndexBuilding { .. } => None,
+        S::NotInstalled | S::ModelMissing { .. } => Some(
+            "results stay lexical until the MiniLM model is installed: \
+             run `cass models install --from-file <dir>`"
                 .to_string(),
         ),
         S::IndexMissing { .. } | S::IndexStale { .. } => Some(format!(

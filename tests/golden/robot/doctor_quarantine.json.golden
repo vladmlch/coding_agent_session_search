@@ -765,7 +765,7 @@
     "feature_compiled_in": true,
     "quality_tier_published": false,
     "semantic_only_search_available": false,
-    "hint": "Run 'cass index --full' first. Optional later: run 'cass models install' and 'cass index --semantic'.",
+    "hint": "Run 'cass index --full' first. Optional later: run 'cass models install --from-file <DIR>' and 'cass index --semantic'.",
     "fast_tier": {
       "present": false,
       "ready": false,
@@ -830,7 +830,7 @@
     "network_allowed": false,
     "auto_download_allowed": false,
     "auto_download_attempted": false,
-    "skipped_auto_download_reason": "doctor never downloads semantic models; model acquisition requires explicit cass models install or --from-file",
+    "skipped_auto_download_reason": "doctor never acquires semantic models; model installation requires explicit cass models install --from-file",
     "model_policy": "no-auto-download",
     "selected_repair_action": "none",
     "recommended_action": "repair canonical archive DB before rebuilding semantic derivatives",

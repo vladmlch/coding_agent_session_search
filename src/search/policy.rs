@@ -102,46 +102,6 @@ impl SemanticMode {
     }
 }
 
-// ─── Model download policy ─────────────────────────────────────────────────
-
-/// Whether model downloads are automatic, opt-in, or budget-gated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelDownloadPolicy {
-    /// Never download automatically; user must explicitly request.
-    #[default]
-    OptIn,
-    /// Download if disk budget allows and user has consented once.
-    BudgetGated,
-    /// Download automatically when needed (not recommended for constrained machines).
-    Automatic,
-}
-
-impl fmt::Display for ModelDownloadPolicy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl ModelDownloadPolicy {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::OptIn => "opt_in",
-            Self::BudgetGated => "budget_gated",
-            Self::Automatic => "automatic",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().replace('-', "_").as_str() {
-            "opt_in" | "optin" | "manual" => Some(Self::OptIn),
-            "budget_gated" | "budget" | "gated" => Some(Self::BudgetGated),
-            "automatic" | "auto" => Some(Self::Automatic),
-            _ => None,
-        }
-    }
-}
-
 // ─── Tier identifiers ──────────────────────────────────────────────────────
 
 /// Default fast-tier embedder name (always available, no model files).
@@ -230,9 +190,6 @@ pub struct SemanticPolicy {
     /// Active semantic mode.
     pub mode: SemanticMode,
 
-    /// Whether model downloads may happen automatically.
-    pub download_policy: ModelDownloadPolicy,
-
     // ── Model selection ────────────────────────────────────────────────
     /// Fast-tier embedder name (e.g., "hash").
     pub fast_tier_embedder: String,
@@ -298,7 +255,6 @@ impl SemanticPolicy {
     pub fn compiled_defaults() -> Self {
         Self {
             mode: SemanticMode::default(),
-            download_policy: ModelDownloadPolicy::default(),
             fast_tier_embedder: DEFAULT_FAST_TIER_EMBEDDER.to_owned(),
             quality_tier_embedder: DEFAULT_QUALITY_TIER_EMBEDDER.to_owned(),
             reranker: DEFAULT_RERANKER.to_owned(),
@@ -344,12 +300,9 @@ impl SemanticPolicy {
             }
         }
 
-        if let Some(val) = lookup("CASS_SEMANTIC_DOWNLOAD_POLICY")
-            && let Some(policy) = ModelDownloadPolicy::parse(&val)
-        {
-            self.download_policy = policy;
-        }
-
+        // CASS_SEMANTIC_DOWNLOAD_POLICY is intentionally not consulted:
+        // cass is local-only and never downloads models, so the knob has no
+        // effect. It is listed in the deprecated-env diagnostics instead.
         if let Some(val) = lookup("CASS_SEMANTIC_BUDGET_MB")
             && let Ok(mb) = val.trim().parse::<u64>()
         {
@@ -619,9 +572,6 @@ impl EffectiveSettings {
                 "CASS_SEMANTIC_MAX_MODEL_SIZE_MB",
                 |p| p.max_model_size_mb.to_string(),
             ),
-            ("download_policy", "CASS_SEMANTIC_DOWNLOAD_POLICY", |p| {
-                p.download_policy.to_string()
-            }),
             (
                 "idle_delay_seconds",
                 "CASS_SEMANTIC_IDLE_DELAY_SECONDS",
@@ -869,13 +819,15 @@ impl BudgetDecision {
 impl SemanticPolicy {
     /// Check whether a proposed write of `write_size_mb` is within budget.
     ///
-    /// This is intended for **model downloads** — the first check compares
+    /// This is intended for **model installs** — the first check compares
     /// against `max_model_size_mb`.  For vector index writes (which are much
     /// smaller), prefer skipping the per-model cap or calling with a separate
     /// budget method when one is needed.
     ///
     /// `current_semantic_usage_mb` is the total disk used by semantic artifacts
     /// right now.  `free_disk_mb` is the free space on the volume.
+    ///
+    /// cass is local-only, so this guards local installs rather than downloads.
     pub fn check_budget(
         &self,
         write_size_mb: u64,
@@ -926,7 +878,6 @@ pub struct SemanticCapabilityReport {
     pub quality_weight: f32,
     pub semantic_budget_mb: u64,
     pub current_usage_mb: u64,
-    pub download_policy: ModelDownloadPolicy,
     pub semantic_schema_version: u32,
     pub chunking_strategy_version: u32,
     pub summary: String,
@@ -951,7 +902,6 @@ impl SemanticCapabilityReport {
             quality_weight: policy.quality_weight,
             semantic_budget_mb: policy.semantic_budget_mb,
             current_usage_mb,
-            download_policy: policy.download_policy,
             semantic_schema_version: policy.semantic_schema_version,
             chunking_strategy_version: policy.chunking_strategy_version,
             summary,
@@ -1006,7 +956,6 @@ mod tests {
         assert_eq!(p.mode, SemanticMode::HybridPreferred);
         assert_eq!(p.fast_tier_embedder, "hash");
         assert_eq!(p.quality_tier_embedder, "minilm");
-        assert_eq!(p.download_policy, ModelDownloadPolicy::OptIn);
         assert_eq!(p.fast_dimension, 256);
         assert_eq!(p.quality_dimension, 384);
         assert!((p.quality_weight - 0.7).abs() < f32::EPSILON);
@@ -1081,28 +1030,6 @@ mod tests {
     }
 
     #[test]
-    fn download_policy_parsing() {
-        let cases: &[(&str, Option<ModelDownloadPolicy>)] = &[
-            ("opt_in", Some(ModelDownloadPolicy::OptIn)),
-            ("optin", Some(ModelDownloadPolicy::OptIn)),
-            ("manual", Some(ModelDownloadPolicy::OptIn)),
-            ("budget_gated", Some(ModelDownloadPolicy::BudgetGated)),
-            ("budget", Some(ModelDownloadPolicy::BudgetGated)),
-            ("gated", Some(ModelDownloadPolicy::BudgetGated)),
-            ("automatic", Some(ModelDownloadPolicy::Automatic)),
-            ("auto", Some(ModelDownloadPolicy::Automatic)),
-            ("xyz", None),
-        ];
-        for (input, expected) in cases {
-            assert_eq!(
-                ModelDownloadPolicy::parse(input),
-                *expected,
-                "failed for input: {input:?}"
-            );
-        }
-    }
-
-    #[test]
     fn display_spellings_delegate_to_as_str() {
         let semantic_modes = [
             (SemanticMode::HybridPreferred, "hybrid_preferred"),
@@ -1112,16 +1039,6 @@ mod tests {
         for (mode, expected) in semantic_modes {
             assert_eq!(mode.as_str(), expected);
             assert_eq!(mode.to_string(), expected);
-        }
-
-        let download_policies = [
-            (ModelDownloadPolicy::OptIn, "opt_in"),
-            (ModelDownloadPolicy::BudgetGated, "budget_gated"),
-            (ModelDownloadPolicy::Automatic, "automatic"),
-        ];
-        for (policy, expected) in download_policies {
-            assert_eq!(policy.as_str(), expected);
-            assert_eq!(policy.to_string(), expected);
         }
 
         let setting_sources = [
@@ -1413,7 +1330,6 @@ mod tests {
 
         assert_eq!(report.capability, SemanticCapability::FastTierOnly);
         assert_eq!(report.quality_tier_embedder, "minilm");
-        assert_eq!(report.download_policy, ModelDownloadPolicy::OptIn);
     }
 
     #[test]
@@ -1544,7 +1460,9 @@ mod tests {
     }
 
     #[test]
-    fn effective_settings_download_policy_uses_snake_case_value() {
+    fn effective_settings_ignores_removed_download_policy_env() {
+        // CASS_SEMANTIC_DOWNLOAD_POLICY is obsolete (local-only: no downloads).
+        // It must not produce an effective setting or influence resolution.
         let settings =
             EffectiveSettings::resolve_with_env_lookup(&CliSemanticOverrides::default(), |key| {
                 match key {
@@ -1553,9 +1471,18 @@ mod tests {
                 }
             });
 
-        let policy = settings.get("download_policy").unwrap();
-        assert_eq!(policy.value, "budget_gated");
-        assert_eq!(policy.source, SettingSource::Environment);
+        assert!(
+            settings.get("download_policy").is_none(),
+            "the removed download policy must not surface as an effective setting"
+        );
+        for s in &settings.settings {
+            assert_eq!(
+                s.source,
+                SettingSource::CompiledDefault,
+                "obsolete env var must not flip '{}' to Environment",
+                s.name
+            );
+        }
     }
 
     #[test]

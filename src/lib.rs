@@ -632,7 +632,7 @@ pub enum Commands {
         // Model / Reranker / Daemon flags (bd-3bbv)
         // ==========================================================================
         /// Embedding model to use for semantic search.
-        /// Available models depend on what's been downloaded.
+        /// Available models depend on what's been installed.
         /// `cass models status --json` lists them.
         #[arg(long)]
         model: Option<String>,
@@ -2077,20 +2077,18 @@ pub enum ModelsCommand {
         #[arg(long, visible_alias = "robot")]
         json: bool,
     },
-    /// Download and install the semantic search model
+    /// Install the semantic search model from a local directory
+    ///
+    /// cass is local-only: model bytes always come from a directory you
+    /// supply. The directory must contain every file the pinned manifest
+    /// requires; each file is SHA256-verified before the install publishes.
     Install {
         /// Model to install (default: all-minilm-l6-v2)
         #[arg(long, default_value = "all-minilm-l6-v2")]
         model: String,
-        /// Custom HTTP(S) mirror base URL for downloading
-        #[arg(long, conflicts_with = "from_file")]
-        mirror: Option<String>,
-        /// Install from local model directory (for air-gapped environments)
-        #[arg(long, conflicts_with = "mirror")]
-        from_file: Option<PathBuf>,
-        /// Skip confirmation prompt
-        #[arg(long, short = 'y')]
-        yes: bool,
+        /// Install from a local model directory (required)
+        #[arg(long)]
+        from_file: PathBuf,
         /// Override data dir
         #[arg(long)]
         data_dir: Option<PathBuf>,
@@ -2100,9 +2098,6 @@ pub enum ModelsCommand {
         /// Model to verify (default: all-minilm-l6-v2)
         #[arg(long, default_value = "all-minilm-l6-v2")]
         model: String,
-        /// Attempt to repair corrupted files
-        #[arg(long)]
-        repair: bool,
         /// Override data dir
         #[arg(long)]
         data_dir: Option<PathBuf>,
@@ -2148,18 +2143,6 @@ pub enum ModelsCommand {
         /// Override data dir
         #[arg(long)]
         data_dir: Option<PathBuf>,
-    },
-    /// Check for model updates
-    CheckUpdate {
-        /// Model to inspect (default: all-minilm-l6-v2)
-        #[arg(long, default_value = "all-minilm-l6-v2")]
-        model: String,
-        /// Override data dir
-        #[arg(long)]
-        data_dir: Option<PathBuf>,
-        /// Output as JSON (`--robot` also works)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
     },
 }
 
@@ -2916,7 +2899,7 @@ fn data_dir_insertion_index(rest: &[String], command_index: usize) -> Option<usi
         "models" => rest
             .get(command_index + 1)
             .is_some_and(|action| {
-                ["install", "verify", "backfill", "remove", "check-update"]
+                ["install", "verify", "backfill", "remove"]
                     .iter()
                     .any(|candidate| action.eq_ignore_ascii_case(candidate))
             })
@@ -4907,7 +4890,6 @@ fn normalize_args(raw: Vec<String>) -> (Vec<String>, Option<String>) {
         "record-macro",
         "play-macro",
         "group-by",
-        "mirror",
         "from-file",
         "fixture",
         "repair",
@@ -5545,10 +5527,17 @@ fn format_missing_subcommand_error(args: &[String]) -> String {
             ],
         ),
         "models" => (
-            &["status", "install", "verify", "remove", "check-update"],
+            &[
+                "status",
+                "install",
+                "verify",
+                "backfill",
+                "build-hnsw",
+                "remove",
+            ],
             &[
                 "cass models status --json",
-                "cass models install --model all-minilm-l6-v2",
+                "cass models install --model all-minilm-l6-v2 --from-file <DIR>",
                 "cass models verify --json",
             ],
         ),
@@ -5996,6 +5985,12 @@ const REMOVED_COMMANDS: &[RemovedCommand] = &[
             "sync schedules were removed with remote sync; the field stays readable in old configs",
         ),
     },
+    RemovedCommand {
+        path: &["models", "check-update"],
+        hint: Some(
+            "model update checks were removed with network access; pinned manifest revisions are the only supported installs",
+        ),
+    },
 ];
 
 /// A flag (or specific flag values) removed from a command that otherwise
@@ -6018,12 +6013,34 @@ struct RemovedFlag {
 }
 
 /// Flags removed by the local-only port; see `RemovedFlag`.
-const REMOVED_FLAGS: &[RemovedFlag] = &[RemovedFlag {
-    path: &["guide"],
-    flag: "allow-rch",
-    values: None,
-    hint: Some("the guide runs strictly local; there is no rch offload to permit"),
-}];
+const REMOVED_FLAGS: &[RemovedFlag] = &[
+    RemovedFlag {
+        path: &["guide"],
+        flag: "allow-rch",
+        values: None,
+        hint: Some("the guide runs strictly local; there is no rch offload to permit"),
+    },
+    RemovedFlag {
+        path: &["models", "install"],
+        flag: "mirror",
+        values: None,
+        hint: Some("`cass models install --from-file DIR`"),
+    },
+    RemovedFlag {
+        path: &["models", "install"],
+        flag: "yes",
+        values: None,
+        hint: Some("local installs need no confirmation: `cass models install --from-file DIR`"),
+    },
+    RemovedFlag {
+        path: &["models", "verify"],
+        flag: "repair",
+        values: None,
+        hint: Some(
+            "repair-by-download was removed; reinstall with `cass models install --from-file DIR`",
+        ),
+    },
+];
 
 /// Whether `name` is a removed *top-level* command: a one-word path in
 /// `removed_commands`. Removed names are excluded from fuzzy typo
@@ -15280,7 +15297,7 @@ fn state_meta_json_inner(
         assets.semantic.quality_tier_published = false;
         assets.semantic.semantic_only_search_available = false;
         assets.semantic.hint = Some(
-            "Run 'cass index --full' first. Optional later: run 'cass models install' and 'cass index --semantic'."
+            "Run 'cass index --full' first. Optional later: run 'cass models install --from-file <DIR>' and 'cass index --semantic'."
                 .to_string(),
         );
         assets.semantic.fast_tier = Default::default();
@@ -16368,10 +16385,7 @@ fn semantic_readiness_from_state(
     if fast_ready || can_search {
         return SemanticReadinessState::FastTierReady;
     }
-    if checkpoint_active
-        || backlog_pending
-        || matches!(availability, "downloading" | "verifying" | "index_building")
-    {
+    if checkpoint_active || backlog_pending || availability == "index_building" {
         return SemanticReadinessState::Backfilling;
     }
 
@@ -19132,9 +19146,6 @@ fn is_robot_mode(command: &Commands, cli: &Cli) -> bool {
         Commands::Models(ModelsCommand::Backfill { json, .. }) => {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
-        Commands::Models(ModelsCommand::CheckUpdate { json, .. }) => {
-            resolve_subcommand_structured_format(cli, *json).is_some()
-        }
         Commands::Models(ModelsCommand::BuildHnsw { json, .. }) => {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
@@ -19576,10 +19587,9 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "  cass api-version [--json]        Show crate_version + api_version + contract_version.".to_string(),
             "  cass state [--json]              Alias of `cass status` (index/db/rebuild/semantic readiness).".to_string(),
             "  cass models status [--json]      Semantic model acquisition + cache state.".to_string(),
-            "  cass models install [--from-file DIR] [--model minilm|multilingual-minilm]  Download + install an explicit native embedder.".to_string(),
+            "  cass models install --from-file DIR [--model minilm|multilingual-minilm]  Install an explicit native embedder from a local directory (SHA256-verified).".to_string(),
             "  cass models remove [--model NAME]  Remove an installed semantic model from disk.".to_string(),
             "  cass models verify [--model NAME] [--json]  Per-file SHA-256 verification of an explicit installed model.".to_string(),
-            "  cass models check-update [--model NAME] [--json]  Compare an explicit installed revision against its pin.".to_string(),
             "  cass models backfill             Re-embed conversations against a newly acquired model.".to_string(),
             "  cass models build-hnsw [--tier fast|quality] [--check] [--force] [--json]  Build/verify the HNSW accelerator for a published semantic artifact (no archive open, no embedding).".to_string(),
             "  cass expand <path> --message-index N [--source ID] [--conversation-id ID] [-C CONTEXT] [--json]  Follow search line_number; --line is for raw JSONL.".to_string(),
@@ -19776,11 +19786,11 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "exit-codes:".to_string(),
             " 0 ok | 1 health-failed | 2 usage | 3 missing index/db | 4 io|refused-unsafe | 5 data-corrupt | 6 input-required | 7 lock/busy | 8 unused | 9 unknown".to_string(),
             " 10 config|timeout | 11 config | 12 source | 13 mapping|not_found | 14 io|mapping | 15 semantic-unavailable|embedder-unavailable".to_string(),
-            " 20-21 model | 22 io | 23 download | 24 io | 70 index-stalled (cass index abort) | 130 interrupted (SIGINT)".to_string(),
+            " 20 model | 21-23 unused | 24 io | 70 index-stalled (cass index abort) | 130 interrupted (SIGINT)".to_string(),
             " NOTE: codes >= 10 cover domain-specific failures (sources/models/semantic/analytics).".to_string(),
             "       Use `err.kind` from the JSON envelope as the canonical identifier — kinds are".to_string(),
             "       kebab-case (e.g. missing-index, missing-db, semantic-unavailable, embedder-unavailable,".to_string(),
-            "       ambiguous-source, timeout, config, lock-busy, model, download, io).".to_string(),
+            "       ambiguous-source, timeout, config, lock-busy, model, io).".to_string(),
             "       Agents should branch on `err.kind`, not on numeric code, when handling codes >= 10.".to_string(),
             "       `cass archive`: 2 logical-archive-usage | 5 logical-archive-integrity | 7 logical-archive-busy (retryable) | 14 logical-archive-io (retryable) | 9 logical-archive-error.".to_string(),
             "       For doctor JSON, prefer `operation_outcome.kind` and `operation_outcome.exit_code_kind` for no-op/partial/blocked/refused/incomplete repair decisions.".to_string(),
@@ -24053,7 +24063,7 @@ fn configure_bounded_search_semantics(
                 "Run 'cass index --semantic --embedder hash' to rebuild the hash vector index, or omit --mode semantic when lexical evidence is acceptable"
                     .to_string()
             } else {
-                "Run 'cass models install' and then 'cass index --semantic', or omit --mode semantic when lexical evidence is acceptable"
+                "Run 'cass models install --from-file <DIR>' and then 'cass index --semantic', or omit --mode semantic when lexical evidence is acceptable"
                     .to_string()
             };
             if mode_meta.fail_open_on_semantic_unavailable() {
@@ -24076,7 +24086,7 @@ fn configure_bounded_search_semantics(
             "Run 'cass index --semantic --embedder hash' to build the hash vector index, or omit --mode semantic when lexical evidence is acceptable"
                 .to_string()
         } else {
-            "Run 'cass models install' and then 'cass index --semantic', or omit --mode semantic when lexical evidence is acceptable"
+            "Run 'cass models install --from-file <DIR>' and then 'cass index --semantic', or omit --mode semantic when lexical evidence is acceptable"
                 .to_string()
         };
         if mode_meta.fail_open_on_semantic_unavailable() {
@@ -24918,7 +24928,7 @@ fn run_cli_search(
                     "Run 'cass index --semantic --embedder hash' to rebuild the hash vector index, or omit --mode semantic when lexical evidence is acceptable"
                         .to_string()
                 } else {
-                    "Run 'cass models install' and then 'cass index --semantic', or omit --mode semantic when lexical evidence is acceptable"
+                    "Run 'cass models install --from-file <DIR>' and then 'cass index --semantic', or omit --mode semantic when lexical evidence is acceptable"
                         .to_string()
                 };
                 if hybrid_fail_open {
@@ -24941,7 +24951,7 @@ fn run_cli_search(
                 "Run 'cass index --semantic --embedder hash' to build the hash vector index, or omit --mode semantic when lexical evidence is acceptable"
                     .to_string()
             } else {
-                "Run 'cass models install' and then 'cass index --semantic', or omit --mode semantic when lexical evidence is acceptable"
+                "Run 'cass models install --from-file <DIR>' and then 'cass index --semantic', or omit --mode semantic when lexical evidence is acceptable"
                     .to_string()
             };
             if hybrid_fail_open {
@@ -35567,7 +35577,7 @@ fn doctor_human_semantic_fallback_summary(
     }
 
     Some(format!(
-        "Semantic search: {}. This is derived-search state, not archive damage; cass will not download models during doctor. Next optional command: cass models install, then cass index --semantic --json.",
+        "Semantic search: {}. This is derived-search state, not archive damage; cass never acquires models during doctor. Next optional command: cass models install --from-file <dir>, then cass index --semantic --json.",
         derived_semantic_assets.recommended_action
     ))
 }
@@ -39190,8 +39200,9 @@ fn doctor_semantic_memo_quarantine_marker(data_dir: &Path) -> Option<String> {
 
 fn doctor_semantic_model_asset_class(availability: &str) -> DoctorAssetClass {
     match availability {
-        "not_installed" | "needs_consent" | "downloading" | "verifying" | "disabled"
-        | "model_missing" | "load_failed" => DoctorAssetClass::ModelCache,
+        "not_installed" | "disabled" | "model_missing" | "load_failed" => {
+            DoctorAssetClass::ModelCache
+        }
         _ => DoctorAssetClass::DerivedSemanticIndex,
     }
 }
@@ -39210,13 +39221,13 @@ fn doctor_semantic_recommended_action(
         return "inspect memoization cache quarantine; rebuild derived memo cache from the canonical archive only after archive checks pass".to_string();
     }
     if model_quarantined || availability == "load_failed" {
-        return "cass models verify --repair --json; lexical search remains usable while model cache repair is explicit".to_string();
+        return "cass models verify --json; reinstall corrupt models with cass models install --from-file <dir>; lexical search remains usable".to_string();
     }
     match availability {
-        "not_installed" | "needs_consent" | "model_missing" => {
-            "cass models status --json; install explicitly with cass models install or cass models install --from-file <dir>, then run cass index --semantic --json".to_string()
+        "not_installed" | "model_missing" => {
+            "cass models status --json; install explicitly with cass models install --from-file <dir>, then run cass index --semantic --json".to_string()
         }
-        "index_missing" | "update_available" | "index_building" => {
+        "index_missing" | "index_stale" | "index_building" => {
             "cass index --semantic --json, or keep using lexical search".to_string()
         }
         "disabled" => {
@@ -39313,7 +39324,7 @@ fn doctor_build_derived_semantic_asset_report(
         "disabled-by-policy"
     } else if matches!(
         semantic_availability.as_str(),
-        "not_installed" | "needs_consent" | "model_missing"
+        "not_installed" | "model_missing"
     ) {
         "explicit-install-required-no-auto-download"
     } else if model_quarantined || semantic_availability == "load_failed" {
@@ -39335,7 +39346,7 @@ fn doctor_build_derived_semantic_asset_report(
     }
     .to_string();
     let skipped_auto_download_reason = (!semantic_ready).then(|| {
-        "doctor never downloads semantic models; model acquisition requires explicit cass models install or --from-file".to_string()
+        "doctor never acquires semantic models; model installation requires explicit cass models install --from-file".to_string()
     });
 
     let model_status = if !archive_db_usable {
@@ -39344,14 +39355,11 @@ fn doctor_build_derived_semantic_asset_report(
         "quarantined"
     } else {
         match semantic_availability.as_str() {
-            "ready" | "hash_fallback" | "index_missing" | "index_building" | "update_available" => {
+            "ready" | "hash_fallback" | "index_missing" | "index_building" | "index_stale" => {
                 "available-or-not-required"
             }
             "disabled" => "policy-disabled",
-            "not_installed" | "needs_consent" | "model_missing" => {
-                "missing-explicit-install-required"
-            }
-            "downloading" | "verifying" => "acquisition-in-progress",
+            "not_installed" | "model_missing" => "missing-explicit-install-required",
             "load_failed" => "corrupt-or-unreadable",
             _ => "unknown",
         }
@@ -39380,7 +39388,7 @@ fn doctor_build_derived_semantic_asset_report(
         "ready"
     } else if semantic_checkpoint_active || semantic_availability == "index_building" {
         "building"
-    } else if semantic_status == "stale" || semantic_availability == "update_available" {
+    } else if semantic_status == "stale" || semantic_availability == "index_stale" {
         "stale"
     } else if semantic_availability == "index_missing" {
         "missing"
@@ -39427,7 +39435,7 @@ fn doctor_build_derived_semantic_asset_report(
                     | "hash_fallback"
                     | "index_missing"
                     | "index_building"
-                    | "update_available"
+                    | "index_stale"
             )),
             present: None,
             safe_to_rebuild: false,
@@ -39622,7 +39630,7 @@ mod doctor_derived_semantic_asset_tests {
             doctor_human_semantic_fallback_summary(&report).expect("semantic fallback copy");
 
         assert!(summary.contains("not archive damage"));
-        assert!(summary.contains("cass will not download models during doctor"));
+        assert!(summary.contains("cass never acquires models during doctor"));
         assert!(summary.contains("cass models install"));
         assert!(!summary.contains("cass models install --json"));
         assert!(summary.contains("cass index --semantic --json"));
@@ -39659,13 +39667,7 @@ mod doctor_derived_semantic_asset_tests {
     #[test]
     fn stale_vectors_are_rebuildable_derived_semantic_assets() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let mut state = semantic_state(
-            temp.path(),
-            "stale",
-            "update_available",
-            false,
-            Some("lexical"),
-        );
+        let mut state = semantic_state(temp.path(), "stale", "index_stale", false, Some("lexical"));
         state["semantic"]["fast_tier"]["present"] = json!(true);
         state["semantic"]["fast_tier"]["ready"] = json!(true);
         state["semantic"]["fast_tier"]["current_db_matches"] = json!(false);
@@ -51472,7 +51474,8 @@ fn run_doctor_emit_capabilities(structured_format: Option<RobotFormat>) -> CliRe
             {"name": "CASS_SKIP_UPDATE", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; cass never phones home, so no opt-out is needed."},
             {"name": "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; the prompt no longer exists, so the value is ignored."},
             {"name": "CASS_UPDATE_API_BASE_URL", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; cass never contacts a release API, so the value is ignored."},
-            {"name": "CASS_SSH_CONFIG", "status": "deprecated-ignored", "note": "Remote synchronization was removed by the local-only conversion; no SSH config is consulted, so the value is ignored."}
+            {"name": "CASS_SSH_CONFIG", "status": "deprecated-ignored", "note": "Remote synchronization was removed by the local-only conversion; no SSH config is consulted, so the value is ignored."},
+            {"name": "CASS_SEMANTIC_DOWNLOAD_POLICY", "status": "deprecated-ignored", "note": "Model downloads were removed by the local-only conversion; models install only via `cass models install --from-file <DIR>`, so the value is ignored."}
         ],
         "subcommands_added_by_world_class_doctor": [
             {"flag": "--ls", "added_in_pass": 2, "kind": "read-only"},
@@ -88634,7 +88637,7 @@ fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
             "4",
             "I/O failure or unsafe operation refused",
             "maybe",
-            "Branch on err.kind: fix the path, permissions, or free space for io/output-not-writable; follow err.hint for refused-unsafe. Not a network code: source problems fail with 12, model downloads with 20-23.",
+            "Branch on err.kind: fix the path, permissions, or free space for io/output-not-writable; follow err.hint for refused-unsafe. Not a network code: source problems fail with 12, model errors with 20 or 24.",
         ),
         exit_code_capability(
             "5",
@@ -88697,22 +88700,10 @@ fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
             "Install/verify models or continue with lexical fallback when acceptable.",
         ),
         exit_code_capability(
-            "20-21",
+            "20",
             "model acquisition failure",
             "maybe",
-            "Check err.kind and err.hint; retry download or use --from-file.",
-        ),
-        exit_code_capability(
-            "22",
-            "I/O during model handling",
-            "maybe",
-            "Verify model cache permissions and available disk before retrying.",
-        ),
-        exit_code_capability(
-            "23",
-            "download failure",
-            "yes",
-            "Retry with network available or install from a local model directory.",
+            "Check err.kind and err.hint; fix the local model files and retry --from-file.",
         ),
         exit_code_capability(
             "24",
@@ -89163,7 +89154,6 @@ fn build_workflow_capabilities() -> Vec<WorkflowCapability> {
             "cass models status --json",
             &[
                 "cass models verify --json",
-                "cass models install --model minilm",
                 "cass models install --from-file <dir> --model minilm",
                 "cass models backfill",
             ],
@@ -91491,7 +91481,7 @@ fn response_schema_doctor_v2_error_envelope() -> serde_json::Value {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "description": "Stable kebab-case error kind, for example usage, lock-busy, repair-blocked, verification-failed, config, io, semantic-unavailable, model, download."
+                        "description": "Stable kebab-case error kind, for example usage, lock-busy, repair-blocked, verification-failed, config, io, semantic-unavailable, model."
                     },
                     "code": { "type": "integer" },
                     "message": { "type": "string" },
@@ -94855,11 +94845,11 @@ fn build_response_schemas() -> std::collections::BTreeMap<String, serde_json::Va
 
     // `coding_agent_session_search-0h4cx`: extend response_schemas to
     // cover every advertised JSON surface from README line 103. The
-    // four below — doctor / models-status / models-verify /
-    // models-check-update — were absent pre-fix even though their
-    // goldens live under tests/golden/robot/. An agent reading
-    // response_schemas to drive schema-aware parsing now finds a
-    // pinned schema for every surface cass commits to.
+    // surfaces below — doctor / models-status / models-verify — were
+    // absent pre-fix even though their goldens live under
+    // tests/golden/robot/. An agent reading response_schemas to drive
+    // schema-aware parsing now finds a pinned schema for every surface
+    // cass commits to.
     let mut doctor_schema = json!({
         "type": "object",
         "description": "cass doctor --json: diagnostic checks + optional auto-fix audit.",
@@ -95470,7 +95460,7 @@ fn build_response_schemas() -> std::collections::BTreeMap<String, serde_json::Va
                 "model_id": { "type": "string" },
                 "model_dir": { "type": "string" },
                 "installed": { "type": "boolean" },
-                "state": { "type": "string", "description": "not_acquired | downloading | ready | needs_update" },
+                "state": { "type": "string", "description": "not_acquired | acquired | checksum_mismatch | incompatible_version | disabled_by_policy | budget_blocked | quarantined_corrupt | preseeded_local" },
                 "state_detail": { "type": "string" },
                 "next_step": { "type": "string" },
                 "revision": { "type": "string" },
@@ -95482,12 +95472,12 @@ fn build_response_schemas() -> std::collections::BTreeMap<String, serde_json::Va
                 "cache_lifecycle": {
                     "type": "object",
                     "additionalProperties": true,
-                    "description": "Opaque lifecycle block describing cache state, missing files, and consent status."
+                    "description": "Opaque lifecycle block describing cache state and missing files."
                 },
                 "model_acquisition": {
                     "type": "object",
                     "additionalProperties": true,
-                    "description": "Hardened acquisition contract: state (absent|partial_download|ready|checksum_mismatch|quarantined_corrupt|budget_blocked|offline_blocked|disabled_by_policy|baseline_no_semantic|incompatible_runtime|runtime_load_failed), runtime, source, cost_class, expected_download_bytes, fallback_mode, next_step, next_command, state_detail, rollback_guidance, fingerprint{revision,content_digest,marker_token}, and skipped_network_reason (the typed proof cass never auto-downloads outside `cass models install`)."
+                    "description": "Hardened acquisition contract: state (absent|partial_install|ready|checksum_mismatch|quarantined_corrupt|budget_blocked|disabled_by_policy|baseline_no_semantic|incompatible_runtime|runtime_load_failed), runtime, source, cost_class, expected_install_bytes, fallback_mode, next_step, next_command, state_detail, rollback_guidance, fingerprint{revision,content_digest,marker_token}, and skipped_network_reason (the typed proof cass never acquires models outside `cass models install --from-file`)."
                 },
                 "files": response_schema_opaque_object_array()
             },
@@ -95539,21 +95529,6 @@ fn build_response_schemas() -> std::collections::BTreeMap<String, serde_json::Va
                 "next_command": { "type": ["string", "null"], "description": "cass models build-hnsw when the accelerator is not current" }
             },
             "required": ["tier", "embedder_id", "vector_count", "hnsw_path", "state_before", "state_after", "action", "manifest_published", "current"]
-        }),
-    );
-
-    schemas.insert(
-        "models-check-update".to_string(),
-        json!({
-            "type": "object",
-            "description": "cass models check-update --json: compares installed model revision against the pinned registry revision.",
-            "properties": {
-                "update_available": { "type": "boolean" },
-                "reason": { "type": "string", "description": "model_not_installed | up_to_date | newer_revision_available | registry_check_failed" },
-                "current_revision": { "type": ["string", "null"] },
-                "latest_revision": { "type": ["string", "null"] }
-            },
-            "required": ["update_available", "reason"]
         }),
     );
 
@@ -111234,25 +111209,16 @@ fn run_models_command(cmd: ModelsCommand, cli: &Cli) -> CliResult<()> {
         }
         ModelsCommand::Install {
             model,
-            mirror,
             from_file,
-            yes,
             data_dir,
-        } => run_models_install(
-            &model,
-            mirror.as_deref(),
-            from_file.as_deref(),
-            yes,
-            data_dir,
-        ),
+        } => run_models_install(&model, &from_file, data_dir),
         ModelsCommand::Verify {
             model,
-            repair,
             data_dir,
             json,
         } => {
             let structured_format = resolve_subcommand_structured_format(cli, json);
-            run_models_verify(&model, repair, data_dir, structured_format)
+            run_models_verify(&model, data_dir, structured_format)
         }
         ModelsCommand::Backfill {
             tier,
@@ -111293,14 +111259,6 @@ fn run_models_command(cmd: ModelsCommand, cli: &Cli) -> CliResult<()> {
             yes,
             data_dir,
         } => run_models_remove(&model, yes, data_dir),
-        ModelsCommand::CheckUpdate {
-            model,
-            data_dir,
-            json,
-        } => {
-            let structured_format = resolve_subcommand_structured_format(cli, json);
-            run_models_check_update(&model, structured_format, data_dir)
-        }
     }
 }
 
@@ -111328,8 +111286,7 @@ fn run_models_status(output_format: Option<RobotFormat>) -> CliResult<()> {
     // model's `model_acquisition` block so the report cannot drift per model.
     let acq_runtime = crate::search::model_acquisition::RuntimeLoadability::probe_cheap_host();
     let acq_policy_inputs = crate::search::model_acquisition::OnDiskPolicyInputs {
-        policy_enabled: acquisition_policy.downloads_enabled,
-        offline: acquisition_policy.offline,
+        policy_enabled: acquisition_policy.install_enabled,
         budget_max_bytes: acquisition_policy.max_model_bytes,
     };
 
@@ -111434,7 +111391,7 @@ fn run_models_status(output_format: Option<RobotFormat>) -> CliResult<()> {
                     "installed": s.cache_report.is_usable(),
                     "state": s.cache_report.state_code(),
                     "state_detail": s.cache_report.state.summary(),
-                    "next_step": s.cache_report.state.next_step(),
+                    "next_step": s.cache_report.state.next_step(s.registry_name),
                     "revision": s.manifest.revision,
                     "license": s.manifest.license,
                     "total_size_bytes": s.total_size,
@@ -111463,7 +111420,7 @@ fn run_models_status(output_format: Option<RobotFormat>) -> CliResult<()> {
                 "installed": s.cache_report.is_usable(),
                 "state": s.cache_report.state_code(),
                 "state_detail": s.cache_report.state.summary(),
-                "next_step": s.cache_report.state.next_step(),
+                "next_step": s.cache_report.state.next_step(s.registry_name),
                 "revision": s.manifest.revision,
                 "license": s.manifest.license,
                 "total_size_bytes": s.total_size,
@@ -111540,11 +111497,10 @@ fn run_models_status(output_format: Option<RobotFormat>) -> CliResult<()> {
             let total_size_mb = s.total_size as f64 / 1_048_576.0;
             println!("  Size:     {:.1} MB", total_size_mb);
             let status_str = match s.cache_report.state_code() {
-                "acquired" | "preseeded_local" | "mirror_sourced" => {
+                "acquired" | "preseeded_local" => {
                     s.cache_report.state.summary().green().to_string()
                 }
-                "acquiring" => s.cache_report.state.summary().cyan().to_string(),
-                "not_acquired" | "offline_blocked" | "budget_blocked" | "disabled_by_policy" => {
+                "not_acquired" | "budget_blocked" | "disabled_by_policy" => {
                     s.cache_report.state.summary().yellow().to_string()
                 }
                 _ => s.cache_report.state.summary().red().to_string(),
@@ -111570,7 +111526,7 @@ fn run_models_status(output_format: Option<RobotFormat>) -> CliResult<()> {
                 "{} ok / {} partial / {} missing",
                 installed, partial, missing
             );
-            if let Some(next_step) = s.cache_report.state.next_step() {
+            if let Some(next_step) = s.cache_report.state.next_step(s.registry_name) {
                 println!("  Next:     {}", next_step);
             }
             println!();
@@ -111579,7 +111535,7 @@ fn run_models_status(output_format: Option<RobotFormat>) -> CliResult<()> {
         if active_status.is_none() && policy_embedder != "hash" {
             println!(
                 "{}: active embedder '{}' has no manifest registered. \
-                 Use 'cass models install --model minilm' or '--model multilingual-minilm' to install a supported embedder.",
+                 Use 'cass models install --model minilm --from-file <DIR>' or '--model multilingual-minilm --from-file <DIR>' to install a supported embedder.",
                 "⚠".yellow(),
                 policy_embedder
             );
@@ -111597,7 +111553,7 @@ fn run_models_status(output_format: Option<RobotFormat>) -> CliResult<()> {
 /// #308/#410): the native embedder admits the registered MiniLM L6 and
 /// multilingual MiniLM L12 topologies, while the
 /// native reranker is architecture-verified for ms-marco only. Anything else
-/// would download and sha-verify fine, report installed/Ready, and then fail
+/// would copy and sha-verify fine, report installed/Ready, and then fail
 /// every load with `EmbedderUnavailable` — so `models install` refuses it up
 /// front instead of leaving a 100+ MB permanently-unloadable install behind.
 fn native_backend_supports_model(registry_name: &str) -> bool {
@@ -111706,19 +111662,20 @@ fn resolve_model_install_dir(
     })
 }
 
-/// Download and install the semantic search model
+/// Install the semantic search model from a local directory.
+///
+/// cass is local-only: there is no downloader, mirror, or update path.
+/// `ModelInstaller::install_from_directory` stages every manifest-required
+/// file from `source_dir`, verifies each SHA256, writes the provenance
+/// marker, and atomically promotes the staged files — a failed install
+/// leaves any previous installation untouched.
 fn run_models_install(
     model_name: &str,
-    mirror: Option<&str>,
-    from_file: Option<&Path>,
-    skip_confirm: bool,
+    source_path: &Path,
     data_dir_override: Option<PathBuf>,
 ) -> CliResult<()> {
-    use crate::search::model_download::{
-        ModelDownloader, check_model_installed, normalize_mirror_base_url,
-    };
+    use crate::search::model_download::ModelInstaller;
     use colored::Colorize;
-    use indicatif::{ProgressBar, ProgressStyle};
 
     let registry_name = resolve_cli_model_name(model_name)?;
     if !native_backend_supports_model(registry_name) {
@@ -111728,12 +111685,12 @@ fn run_models_install(
             message: format!(
                 "Model '{registry_name}' cannot be loaded by the pure-Rust native inference \
                  backend yet: only the registered MiniLM embedders and ms-marco reranker are \
-                 architecture-verified (cass #308). Installing it would download files that \
+                 architecture-verified (cass #308). Installing it would fetch files that \
                  can never be used."
             ),
             hint: Some(
                 "Install the supported default embedder instead: \
-                 cass models install --model all-minilm-l6-v2"
+                 cass models install --model all-minilm-l6-v2 --from-file <DIR>"
                     .into(),
             ),
             retryable: false,
@@ -111741,308 +111698,64 @@ fn run_models_install(
     }
     let data_dir = data_dir_override.unwrap_or_else(default_data_dir);
     let (model_dir, manifest) = resolve_model_install_dir(&data_dir, registry_name)?;
-    let mirror_base_url = mirror
-        .map(normalize_mirror_base_url)
-        .transpose()
-        .map_err(|error| CliError {
-            code: 21,
-            kind: CliErrorKind::Model.kind_str(),
-            message: error.to_string(),
-            hint: Some(
-                "Use an absolute http(s) mirror base URL such as https://mirror.example/cache"
-                    .into(),
-            ),
-            retryable: false,
-        })?;
 
-    // Install from local directory (for air-gapped environments)
-    if let Some(source_path) = from_file {
-        use crate::search::model_download::compute_sha256;
-
-        if !source_path.is_dir() {
-            return Err(CliError {
-                code: 21,
-                kind: CliErrorKind::Model.kind_str(),
-                message: format!(
-                    "--from-file path is not a directory: {}",
-                    source_path.display()
-                ),
-                hint: Some(
-                    "Provide a directory containing model files (model.safetensors, tokenizer.json, etc.)"
-                        .into(),
-                ),
-                retryable: false,
-            });
-        }
-
-        println!(
-            "Installing model from local directory: {}",
-            source_path.display()
-        );
-
-        // Verify all required files exist and match checksums
-        for mfile in &manifest.files {
-            let local_name = mfile.local_name();
-            let src = source_path.join(local_name);
-            if !src.is_file() {
-                return Err(CliError {
-                    code: 21,
-                    kind: CliErrorKind::Model.kind_str(),
-                    message: format!(
-                        "Required file '{}' not found in {}",
-                        local_name,
-                        source_path.display()
-                    ),
-                    hint: Some(format!(
-                        "Expected files: {}",
-                        manifest
-                            .files
-                            .iter()
-                            .map(|f| f.local_name().to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )),
-                    retryable: false,
-                });
-            }
-
-            // Verify SHA256
-            println!("  Verifying {}...", local_name);
-            let actual_hash = compute_sha256(&src).map_err(|e| CliError {
-                code: 22,
-                kind: CliErrorKind::Io.kind_str(),
-                message: format!("Failed to hash {}: {}", local_name, e),
-                hint: None,
-                retryable: false,
-            })?;
-            if actual_hash != mfile.sha256 {
-                return Err(CliError {
-                    code: 21,
-                    kind: CliErrorKind::Model.kind_str(),
-                    message: format!(
-                        "SHA256 mismatch for '{}': expected {}, got {}",
-                        local_name, mfile.sha256, actual_hash
-                    ),
-                    hint: Some(
-                        "The file may be corrupted or from a different model version".into(),
-                    ),
-                    retryable: false,
-                });
-            }
-        }
-
-        // All verified -- copy to model directory
-        std::fs::create_dir_all(&model_dir).map_err(|e| CliError {
-            code: 22,
-            kind: CliErrorKind::Io.kind_str(),
-            message: format!("Failed to create model directory: {}", e),
-            hint: None,
-            retryable: false,
-        })?;
-
-        for mfile in &manifest.files {
-            let local_name = mfile.local_name();
-            let src = source_path.join(local_name);
-            let dst = model_dir.join(local_name);
-            std::fs::copy(&src, &dst).map_err(|e| CliError {
-                code: 22,
-                kind: CliErrorKind::Io.kind_str(),
-                message: format!("Failed to copy {}: {}", local_name, e),
-                hint: None,
-                retryable: false,
-            })?;
-        }
-
-        // Write verified marker. The hardened marker records the install
-        // source provenance (`from-file`), the local source path, and the
-        // model fingerprint so an air-gapped install is auditable and
-        // distinguishable from a network download (bead
-        // cass-fleet-resilience-20260608-uojcg.5.5). Byte-compatible with the
-        // legacy reader: `revision=` stays first and unknown lines are ignored.
-        let marker_path = model_dir.join(crate::search::model_acquisition::VERIFIED_MARKER_NAME);
-        let content = crate::search::model_acquisition::VerifiedMarker::for_from_file(
-            &manifest,
-            source_path,
-            chrono::Utc::now().to_rfc3339(),
-        )
-        .render();
-        std::fs::write(&marker_path, content).map_err(|e| CliError {
-            code: 22,
-            kind: CliErrorKind::Io.kind_str(),
-            message: format!("Failed to write verified marker: {}", e),
-            hint: None,
-            retryable: false,
-        })?;
-
-        println!();
-        println!(
-            "{} Model installed successfully from local files!",
-            "✓".green()
-        );
-        println!("  Location: {}", model_dir.display());
-        return Ok(());
-    }
-
-    // Check current state — pass the resolved manifest so the
-    // file-presence check matches the model the user asked to install
-    // (bead coding_agent_session_search-odbnh).
-    let state = check_model_installed(&model_dir, &manifest);
-    if state.is_ready() {
-        println!(
-            "{} Model files are already installed and verified.",
-            "✓".green()
-        );
-        println!("  Location: {}", model_dir.display());
-        return Ok(());
-    }
-
-    let total_size = manifest.total_size();
-    let total_size_mb = total_size as f64 / 1_048_576.0;
-
-    // Confirm download unless -y flag
-    if !skip_confirm {
-        println!("Semantic Search Model Installation");
-        println!("===================================");
-        println!();
-        println!("Model:   {} ({})", manifest.id, manifest.license);
-        println!("Size:    {:.1} MB", total_size_mb);
-        if let Some(mirror_url) = mirror_base_url.as_deref() {
-            println!("Source:  Mirror ({mirror_url})");
-            println!("Repo:    {}", manifest.repo);
-        } else {
-            println!("Source:  HuggingFace ({})", manifest.repo);
-        }
-        println!();
-        if mirror_base_url.is_some() {
-            println!("This will download the model from the configured mirror.");
-        } else {
-            println!("This will download the model from HuggingFace.");
-        }
-        print!("Continue? [y/N] ");
-        std::io::Write::flush(&mut std::io::stdout()).ok();
-
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).ok();
-        if !input.trim().eq_ignore_ascii_case("y") && !input.trim().eq_ignore_ascii_case("yes") {
-            println!("Cancelled.");
-            return Ok(());
-        }
-    }
-
-    // Create model directory parent
-    if let Some(parent) = model_dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| CliError {
-            code: 22,
-            kind: CliErrorKind::Io.kind_str(),
-            message: format!("Failed to create model directory: {}", e),
-            hint: None,
-            retryable: false,
-        })?;
-    }
-
-    println!();
-    println!("Downloading model files...");
-
-    // Set up progress bar
-    let pb = ProgressBar::new(total_size);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({percent}%)")
-            .unwrap_or_else(|_| ProgressStyle::default_bar())
-            .progress_chars("=> "),
+    println!(
+        "Installing model from local directory: {}",
+        source_path.display()
     );
 
-    let downloader = ModelDownloader::new(model_dir.clone());
-    let pb_clone = pb.clone();
-    let manifest_clone = manifest.clone();
-    let mirror_base_url_clone = mirror_base_url.clone();
-
-    // Run download on a fresh OS thread so the model downloader owns its
-    // dedicated asupersync runtime and blocking file writes.
-    let result = std::thread::spawn(move || {
-        downloader.download_with_mirror(
-            &manifest_clone,
-            mirror_base_url_clone.as_deref(),
-            Some(std::sync::Arc::new(move |progress| {
-                pb_clone.set_position(progress.total_bytes);
-            })),
-        )
-    })
-    .join()
-    .map_err(|_| {
-        pb.abandon_with_message("Download failed");
-        CliError {
-            code: 23,
-            kind: CliErrorKind::Download.kind_str(),
-            message: "Model download thread panicked".to_string(),
-            hint: Some("Retry the command; if it persists, report the panic output.".into()),
-            retryable: true,
-        }
-    })?;
-
-    match result {
-        Ok(()) => {
-            pb.finish_with_message("Download complete");
-            println!();
-            println!("{} Model installed successfully!", "✓".green());
-            println!("  Location: {}", model_dir.display());
-            println!();
-            println!(
-                "Model files are verified. Semantic search also requires a working embedder and a completed backfill."
-            );
-            Ok(())
-        }
-        Err(e) => {
-            pb.abandon_with_message("Download failed");
-            let err_str = e.to_string();
-            let looks_like_windows_tcp_race = cfg!(windows)
-                || err_str.contains("10057")
-                || err_str.contains("socket is not connected")
-                || err_str.contains("WSAENOTCONN");
-
-            if looks_like_windows_tcp_race {
-                eprintln!();
-                eprintln!(
-                    "{} Known issue on Windows: asupersync's TLS client can attempt to write \
-                     before the TCP connect completes (see cass#193).",
-                    "!".yellow()
-                );
-                eprintln!(
-                    "Workaround: download the files manually and install with --from-file.\n"
-                );
-                eprintln!("--- bash / Git Bash / MSYS2 ---");
-                eprintln!(
-                    "{}",
-                    manifest.air_gap_bash_script(mirror_base_url.as_deref())
-                );
-                eprintln!("--- PowerShell ---");
-                eprintln!(
-                    "{}",
-                    manifest.air_gap_powershell_script(mirror_base_url.as_deref())
-                );
+    let installer = ModelInstaller::new(model_dir.clone());
+    installer
+        .install_from_directory(source_path, &manifest)
+        .map_err(|error| {
+            use crate::search::model_download::InstallError;
+            let rendered = error.to_string();
+            // Validation failures (not a directory, missing file, checksum
+            // mismatch, source==target, unverified manifest) are operator
+            // errors: rerunning the same command cannot succeed, so they are
+            // reported non-retryable. Only genuine I/O failures qualify as
+            // retryable and keep the Io kind/code.
+            let (code, kind, retryable) = match &error {
+                InstallError::IoError(io_error)
+                    if io_error.kind() != std::io::ErrorKind::NotADirectory =>
+                {
+                    (22, CliErrorKind::Io.kind_str(), true)
+                }
+                _ => (21, CliErrorKind::Model.kind_str(), false),
+            };
+            CliError {
+                code,
+                kind,
+                message: format!("Model install failed: {rendered}"),
+                hint: Some(format!(
+                    "Provide a directory containing the manifest's files \
+                 ({}); each file is SHA256-verified before anything is published",
+                    manifest
+                        .files
+                        .iter()
+                        .map(|f| f.local_name().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+                retryable,
             }
+        })?;
 
-            Err(CliError {
-                code: 23,
-                kind: CliErrorKind::Download.kind_str(),
-                message: format!("Model download failed: {}", e),
-                hint: Some(if looks_like_windows_tcp_race {
-                    "Use the air-gap script printed above, then re-run with --from-file".into()
-                } else if mirror_base_url.is_some() {
-                    "Check your mirror URL, connectivity, and try again".into()
-                } else {
-                    "Check your network connection and try again".into()
-                }),
-                retryable: true,
-            })
-        }
-    }
+    println!();
+    println!(
+        "{} Model installed successfully from local files!",
+        "✓".green()
+    );
+    println!("  Location: {}", model_dir.display());
+    println!(
+        "Model files are verified. Semantic search also requires a working embedder and a completed backfill."
+    );
+    Ok(())
 }
 
 /// Verify model file integrity
 fn run_models_verify(
     model_name: &str,
-    repair: bool,
     data_dir_override: Option<PathBuf>,
     output_format: Option<RobotFormat>,
 ) -> CliResult<()> {
@@ -112062,15 +111775,14 @@ fn run_models_verify(
     // Hardened model-acquisition projection (bead 0qxwg): the same probe-based
     // block `cass models status` emits, so verify and status agree. The probe
     // is filesystem-only — `skipped_network_reason` proves verify never
-    // auto-downloads. `probe_cheap_host()` never loads ONNX, so it is safe even
-    // on a corrupt/incompatible cache.
+    // touches the network. `probe_cheap_host()` never loads ONNX, so it is
+    // safe even on a corrupt/incompatible cache.
     let acquisition_block = crate::search::model_acquisition::live_acquisition_block(
         &model_dir,
         &manifest,
         crate::search::model_acquisition::RuntimeLoadability::probe_cheap_host(),
         crate::search::model_acquisition::OnDiskPolicyInputs {
-            policy_enabled: acquisition_policy.downloads_enabled,
-            offline: acquisition_policy.offline,
+            policy_enabled: acquisition_policy.install_enabled,
             budget_max_bytes: acquisition_policy.max_model_bytes,
         },
         registry_name,
@@ -112091,7 +111803,7 @@ fn run_models_verify(
                 serde_json::to_string_pretty(&serde_json::json!({
                     "status": cache_report.state_code(),
                     "state_detail": cache_report.state.summary(),
-                    "next_step": cache_report.state.next_step(),
+                    "next_step": cache_report.state.next_step(registry_name),
                     "lexical_fail_open": true,
                     "model_dir": model_dir.display().to_string(),
                     "all_valid": false,
@@ -112105,7 +111817,7 @@ fn run_models_verify(
             println!("{} {}", "✗".red(), cache_report.state.summary());
             println!("  Expected location: {}", model_dir.display());
             println!();
-            if let Some(next_step) = cache_report.state.next_step() {
+            if let Some(next_step) = cache_report.state.next_step(registry_name) {
                 println!("{}", next_step);
             }
         }
@@ -112114,7 +111826,7 @@ fn run_models_verify(
 
     let mut results: Vec<serde_json::Value> = Vec::new();
     let mut all_valid = true;
-    let mut files_to_repair: Vec<String> = Vec::new();
+    let mut failed_files: Vec<String> = Vec::new();
 
     let is_robot = structured_format.is_some();
     if !is_robot {
@@ -112140,7 +111852,7 @@ fn run_models_verify(
 
         if !valid {
             all_valid = false;
-            files_to_repair.push(mfile.local_name().to_string());
+            failed_files.push(mfile.local_name().to_string());
         }
 
         results.push(serde_json::json!({
@@ -112182,7 +111894,7 @@ fn run_models_verify(
                 "model_dir": model_dir.display().to_string(),
                 "status": cache_report.state_code(),
                 "state_detail": cache_report.state.summary(),
-                "next_step": cache_report.state.next_step(),
+                "next_step": cache_report.state.next_step(registry_name),
                 "lexical_fail_open": true,
                 "all_valid": all_valid,
                 "cache_lifecycle": &cache_report,
@@ -112199,21 +111911,12 @@ fn run_models_verify(
             println!(
                 "{} {} file(s) failed verification.",
                 "✗".red(),
-                files_to_repair.len()
+                failed_files.len()
             );
-            if repair {
-                println!();
-                println!("Repairing by re-downloading model files...");
-                println!();
-                // Actually perform the repair by re-running install
-                return run_models_install(registry_name, None, None, true, data_dir_override);
-            } else {
-                println!();
-                println!("To repair corrupted files, run:");
-                println!("  cass models verify --model {registry_name} --repair");
-                println!("Or reinstall:");
-                println!("  cass models install --model {registry_name} -y");
-            }
+            println!();
+            println!("cass is local-only: repair means reinstalling from a known-good");
+            println!("directory of model files. Reinstall with:");
+            println!("  cass models install --model {registry_name} --from-file <DIR>");
         }
     }
 
@@ -112951,7 +112654,7 @@ fn run_models_backfill_batch(
                     hint: Some(if external {
                         "Check CASS_EXTERNAL_EMBEDDINGS consent and CASS_EXTERNAL_EMBEDDING_* configuration; no local provider is substituted".into()
                     } else if embedder_type == "fastembed" {
-                        "Run 'cass models install -y' or retry with --embedder hash".into()
+                        "Run 'cass models install --from-file <DIR>' or retry with --embedder hash".into()
                     } else {
                         "Use --embedder hash or install the selected embedder model".into()
                     }),
@@ -113317,120 +113020,7 @@ fn run_models_remove(
     println!("  Freed {:.1} MB", size_mb);
     println!();
     println!("To reinstall, run:");
-    println!("  cass models install");
-
-    Ok(())
-}
-
-/// Check for model updates
-fn run_models_check_update(
-    model_name: &str,
-    output_format: Option<RobotFormat>,
-    data_dir_override: Option<PathBuf>,
-) -> CliResult<()> {
-    use crate::search::model_download::{
-        ModelState, check_model_installed, check_version_mismatch,
-    };
-    use colored::Colorize;
-
-    let data_dir = data_dir_override.unwrap_or_else(default_data_dir);
-    let registry_name = resolve_cli_model_name(model_name)?;
-    let (model_dir, manifest) = resolve_model_install_dir(&data_dir, registry_name)?;
-
-    // bead coding_agent_session_search-odbnh: pass the resolved manifest
-    // so the file-presence check matches the installed model's layout.
-    let state = check_model_installed(&model_dir, &manifest);
-
-    if !state.is_ready() {
-        let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-            if matches!(fmt, RobotFormat::Sessions) {
-                RobotFormat::Compact
-            } else {
-                fmt
-            }
-        });
-
-        if let Some(_fmt) = structured_format {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "update_available": false,
-                    "reason": "model_not_installed",
-                    "current_revision": null,
-                    "latest_revision": manifest.revision,
-                }))
-                .unwrap_or_default()
-            );
-        } else {
-            println!("{} Model is not installed.", "✗".yellow());
-            println!(
-                "  Latest revision: {}",
-                manifest.revision.get(..12).unwrap_or(&manifest.revision)
-            );
-            println!();
-            println!("To install, run:");
-            println!("  cass models install --model {registry_name}");
-        }
-        return Ok(());
-    }
-
-    // Check for version mismatch
-    let update_info = check_version_mismatch(&model_dir, &manifest);
-
-    let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-        if matches!(fmt, RobotFormat::Sessions) {
-            RobotFormat::Compact
-        } else {
-            fmt
-        }
-    });
-
-    if let Some(ModelState::UpdateAvailable {
-        current_revision,
-        latest_revision,
-    }) = update_info
-    {
-        if let Some(_fmt) = structured_format {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "update_available": true,
-                    "current_revision": current_revision,
-                    "latest_revision": latest_revision,
-                }))
-                .unwrap_or_default()
-            );
-        } else {
-            println!("{} Update available!", "⚠".yellow());
-            println!(
-                "  Current: {}",
-                current_revision.get(..12).unwrap_or(&current_revision)
-            );
-            println!(
-                "  Latest:  {}",
-                latest_revision.get(..12).unwrap_or(&latest_revision)
-            );
-            println!();
-            println!("To update, run:");
-            println!("  cass models install");
-        }
-    } else if let Some(_fmt) = structured_format {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "update_available": false,
-                "current_revision": manifest.revision,
-                "latest_revision": manifest.revision,
-            }))
-            .unwrap_or_default()
-        );
-    } else {
-        println!("{} Model is up to date.", "✓".green());
-        println!(
-            "  Revision: {}",
-            manifest.revision.get(..12).unwrap_or(&manifest.revision)
-        );
-    }
+    println!("  cass models install --from-file <DIR>");
 
     Ok(())
 }

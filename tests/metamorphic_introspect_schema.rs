@@ -311,7 +311,8 @@ fn surface_command(
                 ExpectStatus::ExitOk,
             ));
         }
-        "models-check-update" => vec!["models", "check-update", "--json"],
+        // "models-check-update" was removed by the local-only port (task 12):
+        // pinned manifest revisions are the only supported installs.
         "models-status" => vec!["models", "status", "--json"],
         "models-verify" => vec!["models", "verify", "--json"],
         "pack" => {
@@ -324,8 +325,11 @@ fn surface_command(
                     "2".to_string(),
                     "--max-evidence".to_string(),
                     "2".to_string(),
+                    // The pack JSON envelope itself is ~1.7k estimated
+                    // tokens; a tighter budget evicts all evidence into
+                    // `omitted` before this probe can exercise its schema.
                     "--max-tokens".to_string(),
-                    "1200".to_string(),
+                    "4000".to_string(),
                     "--data-dir".to_string(),
                     demo_data.to_string(),
                 ],

@@ -203,7 +203,6 @@
         "inputs": {
           "chunk_timeout_seconds": "120",
           "chunking_strategy_version": "2",
-          "download_policy": "opt_in",
           "fast_dimension": "256",
           "fast_tier_embedder": "hash",
           "idle_delay_seconds": "30",
@@ -444,7 +443,7 @@
       "feature_compiled_in": true,
       "quality_tier_published": false,
       "semantic_only_search_available": false,
-      "hint": "Run 'cass index --full' first. Optional later: run 'cass models install' and 'cass index --semantic'.",
+      "hint": "Run 'cass index --full' first. Optional later: run 'cass models install --from-file <DIR>' and 'cass index --semantic'.",
       "fast_tier": {
         "present": false,
         "ready": false,
@@ -540,7 +539,6 @@
           "inputs": {
             "chunk_timeout_seconds": "120",
             "chunking_strategy_version": "2",
-            "download_policy": "opt_in",
             "fast_dimension": "256",
             "fast_tier_embedder": "hash",
             "idle_delay_seconds": "30",

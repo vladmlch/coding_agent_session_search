@@ -252,10 +252,10 @@
           "tests/e2e_analytics_models.rs"
         ],
         "optional_diagnostics": [
-          "live model download (opt-in; never CI-required)"
+          "local model install via --from-file (never CI-required)"
         ],
-        "fixture_provenance": "missing/mismatched model dirs; no network at test time",
-        "log_expectation": "deterministic contract test result line; live download is opt-in only",
+        "fixture_provenance": "missing/mismatched model dirs; no network exists anywhere",
+        "log_expectation": "deterministic contract test result line; local installs are opt-in only",
         "redaction": "no-user-content",
         "closure_evidence": "cargo test --test cli_model_lifecycle_contract"
       },
@@ -1113,7 +1113,7 @@
         },
         {
           "name": "model",
-          "description": "Embedding model to use for semantic search. Available models depend on what's been downloaded. `cass models status --json` lists them",
+          "description": "Embedding model to use for semantic search. Available models depend on what's been installed. `cass models status --json` lists them",
           "arg_type": "option",
           "value_type": "string",
           "required": false
@@ -18799,7 +18799,7 @@
           "properties": {
             "kind": {
               "type": "string",
-              "description": "Stable kebab-case error kind, for example usage, lock-busy, repair-blocked, verification-failed, config, io, semantic-unavailable, model, download."
+              "description": "Stable kebab-case error kind, for example usage, lock-busy, repair-blocked, verification-failed, config, io, semantic-unavailable, model."
             },
             "code": {
               "type": "integer"
@@ -29580,35 +29580,6 @@
         "current"
       ]
     },
-    "models-check-update": {
-      "type": "object",
-      "description": "cass models check-update --json: compares installed model revision against the pinned registry revision.",
-      "properties": {
-        "update_available": {
-          "type": "boolean"
-        },
-        "reason": {
-          "type": "string",
-          "description": "model_not_installed | up_to_date | newer_revision_available | registry_check_failed"
-        },
-        "current_revision": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "latest_revision": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "update_available",
-        "reason"
-      ]
-    },
     "models-status": {
       "type": "object",
       "description": "cass models status --json: semantic-model acquisition + cache state.",
@@ -29643,7 +29614,7 @@
         },
         "state": {
           "type": "string",
-          "description": "not_acquired | downloading | ready | needs_update"
+          "description": "not_acquired | acquired | checksum_mismatch | incompatible_version | disabled_by_policy | budget_blocked | quarantined_corrupt | preseeded_local"
         },
         "state_detail": {
           "type": "string"
@@ -29672,12 +29643,12 @@
         "cache_lifecycle": {
           "type": "object",
           "additionalProperties": true,
-          "description": "Opaque lifecycle block describing cache state, missing files, and consent status."
+          "description": "Opaque lifecycle block describing cache state and missing files."
         },
         "model_acquisition": {
           "type": "object",
           "additionalProperties": true,
-          "description": "Hardened acquisition contract: state (absent|partial_download|ready|checksum_mismatch|quarantined_corrupt|budget_blocked|offline_blocked|disabled_by_policy|baseline_no_semantic|incompatible_runtime|runtime_load_failed), runtime, source, cost_class, expected_download_bytes, fallback_mode, next_step, next_command, state_detail, rollback_guidance, fingerprint{revision,content_digest,marker_token}, and skipped_network_reason (the typed proof cass never auto-downloads outside `cass models install`)."
+          "description": "Hardened acquisition contract: state (absent|partial_install|ready|checksum_mismatch|quarantined_corrupt|budget_blocked|disabled_by_policy|baseline_no_semantic|incompatible_runtime|runtime_load_failed), runtime, source, cost_class, expected_install_bytes, fallback_mode, next_step, next_command, state_detail, rollback_guidance, fingerprint{revision,content_digest,marker_token}, and skipped_network_reason (the typed proof cass never acquires models outside `cass models install --from-file`)."
         },
         "files": {
           "type": "array",

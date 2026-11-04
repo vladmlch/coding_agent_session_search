@@ -1,82 +1,45 @@
-//! Model download and management system.
+//! Model manifest, cache-state classification, and local-file installation.
 //!
 //! This module handles:
-//! - Model manifest with SHA256 checksums
-//! - State machine for download lifecycle
-//! - Resumable downloads with progress reporting
-//! - SHA256 verification
-//! - Atomic installation (temp dir -> rename)
-//! - Model version upgrade detection
+//! - Model manifest with pinned revisions, sizes, and SHA256 checksums
+//! - On-disk cache-state classification (`ModelCacheState`)
+//! - Installation from a local directory (`ModelInstaller`) with SHA256
+//!   verification and atomic publication (staging dir -> rename)
 //!
-//! **Note**: The core types (`ModelState`, `ModelFile`, `ModelManifest`) are
+//! cass is fully local-only: **there is no downloader, mirror, resume, or
+//! update-check path**. The HuggingFace `repo`/`revision` manifest fields
+//! are provenance metadata only — they tell the operator where the pinned
+//! file set came from so the files can be obtained outside cass and handed
+//! to `cass models install --from-file <DIR>`.
+//!
+//! **Note**: The core types (`ModelFile`, `ModelManifest`) are
 //! structurally identical to those in `frankensearch_embed::model_manifest`.
 //! They are kept locally for now due to build-system sync constraints.
 //! See frankensearch-embed for the canonical definitions.
-//!
-//! **Network Policy**: No network calls occur without explicit user consent.
-//! The download system is consent-gated via [`ModelState::NeedsConsent`].
 
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use url::Url;
 
-use crate::search::policy::{ModelDownloadPolicy, SemanticPolicy};
+use crate::search::policy::SemanticPolicy;
 
-/// Model state machine for download lifecycle.
+/// Installed-model presence on disk.
 ///
-/// State transitions:
-/// ```text
-/// NotInstalled ──> NeedsConsent ──> Downloading ──> Verifying ──> Ready
-///                       │                │              │
-///                       │                │              └──> VerificationFailed
-///                       │                └──────────────────> Cancelled
-///                       └────────────────────────────────────> Disabled
-///
-/// Ready ──> UpdateAvailable ──> Downloading (upgrade) ──> Verifying ──> Ready
-/// ```
-///
-/// Structurally identical to `frankensearch_embed::ModelState`.
+/// cass has no download lifecycle: a model is either absent (or incomplete,
+/// which is still absent) or ready. Partial/corrupt states are surfaced
+/// through [`ModelCacheState`] instead.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelState {
-    /// Model not installed on disk.
+    /// Model not installed on disk (or incomplete/markerless).
     NotInstalled,
-    /// User consent required before download.
-    NeedsConsent,
-    /// Download in progress.
-    Downloading {
-        /// Progress percentage (0-100).
-        progress_pct: u8,
-        /// Bytes downloaded so far.
-        bytes_downloaded: u64,
-        /// Total bytes to download.
-        total_bytes: u64,
-    },
-    /// Verifying downloaded files.
-    Verifying,
     /// Model ready for use.
     Ready,
-    /// Model disabled by user or policy.
-    Disabled { reason: String },
-    /// Verification failed after download.
-    VerificationFailed { reason: String },
-    /// New model version available.
-    UpdateAvailable {
-        /// Currently installed revision.
-        current_revision: String,
-        /// Latest available revision.
-        latest_revision: String,
-    },
-    /// Download was cancelled.
-    Cancelled,
 }
 
 impl ModelState {
@@ -85,35 +48,11 @@ impl ModelState {
         matches!(self, ModelState::Ready)
     }
 
-    /// Whether a download is in progress.
-    pub fn is_downloading(&self) -> bool {
-        matches!(self, ModelState::Downloading { .. })
-    }
-
-    /// Whether user consent is needed.
-    pub fn needs_consent(&self) -> bool {
-        matches!(self, ModelState::NeedsConsent)
-    }
-
     /// Human-readable summary of the state.
     pub fn summary(&self) -> String {
         match self {
             ModelState::NotInstalled => "not installed".into(),
-            ModelState::NeedsConsent => "needs consent".into(),
-            ModelState::Downloading { progress_pct, .. } => {
-                format!("downloading ({progress_pct}%)")
-            }
-            ModelState::Verifying => "verifying".into(),
             ModelState::Ready => "ready".into(),
-            ModelState::Disabled { reason } => format!("disabled: {reason}"),
-            ModelState::VerificationFailed { reason } => format!("verification failed: {reason}"),
-            ModelState::UpdateAvailable {
-                current_revision,
-                latest_revision,
-            } => {
-                format!("update available: {current_revision} -> {latest_revision}")
-            }
-            ModelState::Cancelled => "cancelled".into(),
         }
     }
 }
@@ -122,23 +61,14 @@ impl ModelState {
 ///
 /// This is intentionally local and explicit: callers can construct it from the
 /// resolved semantic policy, CLI flags, test fixtures, or future persisted
-/// config without hiding why acquisition is blocked.
+/// config without hiding why acquisition is blocked. Acquisition always means
+/// a local `cass models install --from-file <DIR>` — there is no network path.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelAcquisitionPolicy {
-    /// Whether semantic model acquisition is enabled at all.
-    pub downloads_enabled: bool,
-    /// Whether a missing model requires explicit user consent before fetching.
-    pub requires_consent: bool,
-    /// Whether network acquisition is unavailable because the host is offline.
-    pub offline: bool,
-    /// Whether the current network is metered.
-    pub metered: bool,
-    /// Whether acquisition may proceed on a metered network.
-    pub allow_metered: bool,
-    /// Maximum allowed size for this model download.
+    /// Whether semantic model installation is enabled at all.
+    pub install_enabled: bool,
+    /// Maximum allowed size for this model install.
     pub max_model_bytes: Option<u64>,
-    /// Optional mirror source selected for acquisition.
-    pub mirror_base_url: Option<String>,
     /// Human-readable provenance for the active policy.
     pub config_source: String,
 }
@@ -146,13 +76,8 @@ pub struct ModelAcquisitionPolicy {
 impl Default for ModelAcquisitionPolicy {
     fn default() -> Self {
         Self {
-            downloads_enabled: true,
-            requires_consent: true,
-            offline: false,
-            metered: false,
-            allow_metered: false,
+            install_enabled: true,
             max_model_bytes: None,
-            mirror_base_url: None,
             config_source: "compiled_default".to_string(),
         }
     }
@@ -164,11 +89,9 @@ impl ModelAcquisitionPolicy {
         const MIB: u64 = 1_048_576;
 
         Self {
-            downloads_enabled: policy.mode.should_build_semantic(),
-            requires_consent: matches!(policy.download_policy, ModelDownloadPolicy::OptIn),
+            install_enabled: policy.mode.should_build_semantic(),
             max_model_bytes: Some(policy.max_model_size_mb.saturating_mul(MIB)),
             config_source: "semantic_policy".to_string(),
-            ..Self::default()
         }
     }
 }
@@ -181,14 +104,6 @@ pub enum ModelCacheState {
     NotAcquired {
         /// Missing manifest files, expressed as local filenames.
         missing_files: Vec<String>,
-        /// Whether the next acquisition step is consent rather than download.
-        needs_consent: bool,
-    },
-    /// A staged/resumable acquisition is present.
-    Acquiring {
-        staging_dir: PathBuf,
-        bytes_present: u64,
-        total_bytes: u64,
     },
     /// All files are installed, verified, and revision-compatible.
     Acquired { model_dir: PathBuf },
@@ -214,13 +129,6 @@ pub enum ModelCacheState {
     },
     /// Files were preseeded locally and verified without a cass marker.
     PreseededLocal { model_dir: PathBuf },
-    /// Files were acquired from a configured mirror and verified.
-    MirrorSourced {
-        model_dir: PathBuf,
-        mirror_base_url: String,
-    },
-    /// Acquisition is needed, but the host is offline.
-    OfflineBlocked { missing_files: Vec<String> },
 }
 
 impl ModelCacheState {
@@ -228,7 +136,6 @@ impl ModelCacheState {
     pub fn code(&self) -> &'static str {
         match self {
             Self::NotAcquired { .. } => "not_acquired",
-            Self::Acquiring { .. } => "acquiring",
             Self::Acquired { .. } => "acquired",
             Self::ChecksumMismatch { .. } => "checksum_mismatch",
             Self::IncompatibleVersion { .. } => "incompatible_version",
@@ -236,36 +143,15 @@ impl ModelCacheState {
             Self::BudgetBlocked { .. } => "budget_blocked",
             Self::QuarantinedCorrupt { .. } => "quarantined_corrupt",
             Self::PreseededLocal { .. } => "preseeded_local",
-            Self::MirrorSourced { .. } => "mirror_sourced",
-            Self::OfflineBlocked { .. } => "offline_blocked",
         }
     }
 
     /// Human-readable state detail for CLI and robot diagnostics.
     pub fn summary(&self) -> String {
         match self {
-            Self::NotAcquired {
-                missing_files,
-                needs_consent,
-            } => {
-                let action = if *needs_consent {
-                    "user consent required"
-                } else {
-                    "ready to acquire"
-                };
-                format!(
-                    "model not acquired ({action}); missing {}",
-                    missing_files.join(", ")
-                )
+            Self::NotAcquired { missing_files } => {
+                format!("model not installed; missing {}", missing_files.join(", "))
             }
-            Self::Acquiring {
-                bytes_present,
-                total_bytes,
-                staging_dir,
-            } => format!(
-                "model acquisition in progress at {} ({bytes_present}/{total_bytes} bytes)",
-                staging_dir.display()
-            ),
             Self::Acquired { .. } => "model cache acquired and verified".to_string(),
             Self::ChecksumMismatch {
                 file,
@@ -287,56 +173,35 @@ impl ModelCacheState {
                 format!("model cache quarantined: {reason}")
             }
             Self::PreseededLocal { .. } => "preseeded local model cache verified".to_string(),
-            Self::MirrorSourced {
-                mirror_base_url, ..
-            } => {
-                format!("model cache verified from mirror {mirror_base_url}")
-            }
-            Self::OfflineBlocked { missing_files } => {
-                format!(
-                    "offline and model is not acquired; missing {}",
-                    missing_files.join(", ")
-                )
-            }
         }
     }
 
-    /// Suggested next operator action.
-    pub fn next_step(&self) -> Option<&'static str> {
+    /// Suggested next operator action. `model_name` is the canonical registry
+    /// name used in the generated `cass models install` command.
+    pub fn next_step(&self, model_name: &str) -> Option<String> {
         match self {
-            Self::NotAcquired { .. } => {
-                Some("Run `cass models install`, or keep using lexical search.")
-            }
-            Self::Acquiring { .. } => {
-                Some("Wait for model acquisition to finish, or keep using lexical search.")
-            }
-            Self::Acquired { .. } | Self::PreseededLocal { .. } | Self::MirrorSourced { .. } => {
-                None
-            }
-            Self::ChecksumMismatch { .. } | Self::QuarantinedCorrupt { .. } => Some(
-                "Run `cass models verify --repair`, or reinstall with `cass models install -y`.",
-            ),
-            Self::IncompatibleVersion { .. } => {
-                Some("Run `cass models install -y` to refresh the model cache.")
-            }
+            Self::NotAcquired { .. } => Some(format!(
+                "cass models install --model {model_name} --from-file <DIR>"
+            )),
+            Self::Acquired { .. } | Self::PreseededLocal { .. } => None,
+            Self::ChecksumMismatch { .. } | Self::QuarantinedCorrupt { .. } => Some(format!(
+                "reinstall from verified local files: cass models install --model {model_name} --from-file <DIR>"
+            )),
+            Self::IncompatibleVersion { .. } => Some(format!(
+                "cass models install --model {model_name} --from-file <DIR> to refresh the model cache"
+            )),
             Self::DisabledByPolicy { .. } => {
-                Some("Use lexical search or re-enable semantic model acquisition in policy.")
+                Some("Use lexical search or re-enable semantic model acquisition in policy.".into())
             }
             Self::BudgetBlocked { .. } => {
-                Some("Increase the semantic model budget or keep using lexical search.")
+                Some("Increase the semantic model budget or keep using lexical search.".into())
             }
-            Self::OfflineBlocked { .. } => Some(
-                "Reconnect or install from local files with `cass models install --from-file`.",
-            ),
         }
     }
 
     /// Whether the installed files can be used by the embedder immediately.
     pub fn is_usable(&self) -> bool {
-        matches!(
-            self,
-            Self::Acquired { .. } | Self::PreseededLocal { .. } | Self::MirrorSourced { .. }
-        )
+        matches!(self, Self::Acquired { .. } | Self::PreseededLocal { .. })
     }
 }
 
@@ -386,7 +251,7 @@ impl ModelFile {
     }
 }
 
-/// Model manifest describing a downloadable model.
+/// Model manifest describing the files required for a local install.
 ///
 /// Structurally compatible with `frankensearch_embed::ModelManifest`
 /// (which has additional optional fields: version, display_name, description,
@@ -399,7 +264,7 @@ pub struct ModelManifest {
     pub repo: String,
     /// Pinned revision (commit SHA).
     pub revision: String,
-    /// Files to download.
+    /// Files that must be present in the source directory and installed.
     pub files: Vec<ModelFile>,
     /// License identifier.
     pub license: String,
@@ -408,54 +273,8 @@ pub struct ModelManifest {
 /// Placeholder checksum value used for unverified manifests.
 ///
 /// When a manifest file has this checksum, it means the model has not been
-/// downloaded and verified yet. The download system will reject such files.
+/// obtained and verified yet. The installer will reject such files.
 pub const PLACEHOLDER_CHECKSUM: &str = "PLACEHOLDER_VERIFY_AFTER_DOWNLOAD";
-
-/// Validate and normalize a mirror base URL for model downloads.
-///
-/// The returned string never ends with a trailing slash and must be an
-/// absolute HTTP(S) URL without query or fragment components.
-pub fn normalize_mirror_base_url(base_url: &str) -> Result<String, DownloadError> {
-    let trimmed = base_url.trim();
-    if trimmed.is_empty() {
-        return Err(invalid_mirror_url(base_url, "mirror URL cannot be empty"));
-    }
-
-    let parsed = Url::parse(trimmed).map_err(|err| invalid_mirror_url(trimmed, err.to_string()))?;
-
-    match parsed.scheme() {
-        "http" | "https" => {}
-        scheme => {
-            return Err(invalid_mirror_url(
-                trimmed,
-                format!("unsupported URL scheme '{scheme}' (expected http or https)"),
-            ));
-        }
-    }
-
-    if parsed.host_str().is_none() {
-        return Err(invalid_mirror_url(
-            trimmed,
-            "mirror URL must include a host",
-        ));
-    }
-
-    if parsed.query().is_some() || parsed.fragment().is_some() {
-        return Err(invalid_mirror_url(
-            trimmed,
-            "mirror URL must not include query or fragment components",
-        ));
-    }
-
-    Ok(parsed.to_string().trim_end_matches('/').to_string())
-}
-
-fn invalid_mirror_url(url: impl Into<String>, reason: impl Into<String>) -> DownloadError {
-    DownloadError::InvalidMirrorUrl {
-        url: url.into(),
-        reason: reason.into(),
-    }
-}
 
 impl ModelManifest {
     /// Check if this manifest has verified checksums for all files.
@@ -821,145 +640,11 @@ impl ModelManifest {
     pub fn total_size(&self) -> u64 {
         self.files.iter().map(|f| f.size).sum()
     }
-
-    /// Download URL for a file, optionally via a validated mirror base URL.
-    pub fn download_url_with_base(&self, file: &ModelFile, base_url: Option<&str>) -> String {
-        let root = base_url.unwrap_or("https://huggingface.co");
-        format!(
-            "{}/{}/resolve/{}/{}",
-            root.trim_end_matches('/'),
-            self.repo.trim_start_matches('/'),
-            self.revision,
-            file.name.trim_start_matches('/')
-        )
-    }
-
-    /// HuggingFace download URL for a file.
-    pub fn download_url(&self, file: &ModelFile) -> String {
-        self.download_url_with_base(file, None)
-    }
-
-    /// Generate a ready-to-paste bash script that downloads every file in the
-    /// manifest via `curl` and then invokes `cass models install --from-file`.
-    ///
-    /// Use this when the in-process downloader fails (e.g. the known Windows
-    /// rustls/TCP connect race — see GH#193 for context). The script uses the
-    /// pinned repo revision so checksums match.
-    pub fn air_gap_bash_script(&self, base_url: Option<&str>) -> String {
-        // Single-quote URLs to avoid any shell interpretation. Model-download
-        // URLs are HTTP(S) with an allow-listed base (`normalize_mirror_base_url`
-        // rejects anything with query strings), and `ModelFile::name` is
-        // repo-scoped and hash-verified post-download, so no caller-reachable
-        // single quote can slip through. Even so, assert at debug-build time.
-        fn quote_url(url: &str) -> String {
-            debug_assert!(
-                !url.contains('\''),
-                "model download URL unexpectedly contains a single quote: {url}"
-            );
-            format!("'{url}'")
-        }
-
-        let mut out = String::new();
-        out.push_str("# Air-gap model install (bash / Git Bash / MSYS2)\n");
-        out.push_str(
-            "# Run these commands, then re-run `cass models install --from-file \"$DIR\"`.\n",
-        );
-        out.push_str("set -euo pipefail\n");
-        out.push_str(&format!("DIR=\"${{DIR:-./{}_files}}\"\n", self.id));
-        out.push_str("mkdir -p \"$DIR\"\n");
-        for file in &self.files {
-            // Write with explicit `-o "$DIR/<local>"` rather than `-O` so the
-            // output filename is decoupled from the last URL path component.
-            // Manifest files can sit at any repo-internal path (`onnx/model.onnx`,
-            // etc.) but `--from-file` resolves each file by `local_name()`.
-            let url = self.download_url_with_base(file, base_url);
-            out.push_str(&format!(
-                "curl -fL --retry 3 {} -o \"$DIR/{}\"  # {} bytes\n",
-                quote_url(&url),
-                file.local_name(),
-                file.size,
-            ));
-        }
-        out.push_str(&format!(
-            "cass models install {} --from-file \"$DIR\" -y\n",
-            self.id
-        ));
-        out
-    }
-
-    /// Generate a ready-to-paste PowerShell script that downloads every file
-    /// via `Invoke-WebRequest` and then invokes `cass models install --from-file`.
-    pub fn air_gap_powershell_script(&self, base_url: Option<&str>) -> String {
-        // Same single-quoting invariant as the bash path.
-        fn quote_url_ps(url: &str) -> String {
-            debug_assert!(
-                !url.contains('\''),
-                "model download URL unexpectedly contains a single quote: {url}"
-            );
-            format!("'{url}'")
-        }
-
-        let mut out = String::new();
-        out.push_str("# Air-gap model install (PowerShell 5.1+ and 7+)\n");
-        out.push_str("$ErrorActionPreference = 'Stop'\n");
-        // Force TLS 1.2+ on Windows PowerShell 5.1 where default may be
-        // TLS 1.0/1.1; HuggingFace requires 1.2+. No-op on PowerShell 7+.
-        out.push_str(
-            "[System.Net.ServicePointManager]::SecurityProtocol = \
-             [System.Net.ServicePointManager]::SecurityProtocol -bor \
-             [System.Net.SecurityProtocolType]::Tls12\n",
-        );
-        out.push_str(&format!("$dir = \"{}_files\"\n", self.id));
-        out.push_str("New-Item -ItemType Directory -Force -Path $dir | Out-Null\n");
-        for file in &self.files {
-            let url = self.download_url_with_base(file, base_url);
-            // `-UseBasicParsing` keeps this compatible with Windows PowerShell
-            // 5.1 and avoids the IE engine dependency. Ignored on PS 7+.
-            out.push_str(&format!(
-                "Invoke-WebRequest -UseBasicParsing -Uri {} -OutFile (Join-Path $dir '{}')  # {} bytes\n",
-                quote_url_ps(&url),
-                file.local_name(),
-                file.size,
-            ));
-        }
-        out.push_str(&format!(
-            "cass models install {} --from-file $dir -y\n",
-            self.id
-        ));
-        out
-    }
 }
 
-/// Progress callback for downloads.
-pub type ProgressCallback = Arc<dyn Fn(DownloadProgress) + Send + Sync>;
-
-/// Download progress information.
-#[derive(Debug, Clone)]
-pub struct DownloadProgress {
-    /// Current file being downloaded.
-    pub current_file: String,
-    /// File index (1-based).
-    pub file_index: usize,
-    /// Total number of files.
-    pub total_files: usize,
-    /// Bytes downloaded for current file.
-    pub file_bytes: u64,
-    /// Total bytes for current file.
-    pub file_total: u64,
-    /// Total bytes downloaded across all files.
-    pub total_bytes: u64,
-    /// Total bytes to download across all files.
-    pub grand_total: u64,
-    /// Overall progress percentage (0-100).
-    pub progress_pct: u8,
-}
-
-/// Download error types.
+/// Model install error types.
 #[derive(Debug, Error)]
-pub enum DownloadError {
-    /// Network error during download.
-    #[error("network error: {0}")]
-    NetworkError(String),
+pub enum InstallError {
     /// File I/O error.
     #[error("I/O error: {0}")]
     IoError(#[from] std::io::Error),
@@ -970,20 +655,17 @@ pub enum DownloadError {
         expected: String,
         actual: String,
     },
-    /// Download was cancelled.
-    #[error("download cancelled")]
-    Cancelled,
-    /// Timeout during download.
-    #[error("download timed out")]
-    Timeout,
-    /// HTTP error response.
-    #[error("HTTP error {status}: {message}")]
-    HttpError { status: u16, message: String },
+    /// A required manifest file is missing from the local source directory.
+    #[error("required file '{file}' not found in {source_dir}")]
+    MissingSourceFile { file: String, source_dir: String },
+    /// The local source directory resolves to the install target itself.
+    #[error("source directory {0} is the model install target itself")]
+    SourceIsTarget(String),
     /// Manifest has placeholder checksums and is not production-ready.
     ///
-    /// This error is returned when attempting to download a bake-off candidate
+    /// This error is returned when attempting to install a bake-off candidate
     /// model that has not yet been verified. The model files need to be:
-    /// 1. Downloaded manually to compute SHA256 checksums
+    /// 1. Obtained locally to compute SHA256 checksums
     /// 2. Revision pinned to a specific commit (not "main")
     #[error(
         "model '{model_id}' is not production-ready: {} file(s) have placeholder checksums{}",
@@ -999,198 +681,56 @@ pub enum DownloadError {
         unverified_files: Vec<String>,
         revision_unpinned: bool,
     },
-    /// Mirror URL failed validation.
-    #[error("invalid mirror URL '{url}': {reason}")]
-    InvalidMirrorUrl { url: String, reason: String },
 }
 
-impl DownloadError {
-    fn is_retryable(&self) -> bool {
-        match self {
-            DownloadError::NetworkError(_) | DownloadError::IoError(_) | DownloadError::Timeout => {
-                true
-            }
-            DownloadError::HttpError { status, .. } => {
-                *status == 408 || *status == 429 || (500..=599).contains(status)
-            }
-            DownloadError::VerificationFailed { .. }
-            | DownloadError::Cancelled
-            | DownloadError::ManifestNotVerified { .. }
-            | DownloadError::InvalidMirrorUrl { .. } => false,
-        }
-    }
-
-    fn should_discard_temp(&self) -> bool {
-        matches!(self, DownloadError::VerificationFailed { .. })
-    }
-}
-
-const MODEL_HTTP_BODY_SIZE_FLOOR_BYTES: u64 = 500 * 1024 * 1024;
-const MODEL_HTTP_BODY_SIZE_MARGIN_BYTES: u64 = 32 * 1024 * 1024;
-
-/// Flatten an error and its `source()` chain into one message.
+/// Local model installer with verification and atomic publication.
 ///
-/// `reqwest::Error`'s top-level `Display` is only "error sending request for
-/// url (...)"; the real cause — e.g. `invalid peer certificate: UnknownIssuer`
-/// from the TLS layer — lives further down the `source()` chain and is
-/// otherwise lost (#370). Consecutive duplicate fragments are collapsed so a
-/// wrapper that just re-displays its source doesn't double up.
-fn format_download_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
-    let mut parts = vec![err.to_string()];
-    let mut source = err.source();
-    // Bound the walk: no real error chain is this deep, and the cap guards
-    // against a pathological `source()` cycle looping forever.
-    let mut remaining_depth = 32;
-    while let Some(inner) = source {
-        if remaining_depth == 0 {
-            break;
-        }
-        remaining_depth -= 1;
-        let msg = inner.to_string();
-        if parts.last().map(|last| last != &msg).unwrap_or(true) {
-            parts.push(msg);
-        }
-        source = inner.source();
-    }
-    parts.join(": ")
-}
-
-/// Heuristic: does this flattened error chain describe a TLS trust failure?
-/// Used to surface a corporate-proxy hint instead of a bare "network error".
-fn download_error_looks_like_tls(chain_lower: &str) -> bool {
-    chain_lower.contains("certificate")
-        || chain_lower.contains("unknownissuer")
-        || chain_lower.contains("unknown issuer")
-        || chain_lower.contains("invalid peer certificate")
-        || chain_lower.contains("certificateunknown")
-        || chain_lower.contains("tls handshake")
-        || chain_lower.contains("handshake failure")
-}
-
-fn map_reqwest_download_error(err: reqwest::Error) -> DownloadError {
-    if err.is_timeout() {
-        return DownloadError::Timeout;
-    }
-    let chain = format_download_error_chain(&err);
-    if download_error_looks_like_tls(&chain.to_ascii_lowercase()) {
-        DownloadError::NetworkError(format!(
-            "{chain} — this looks like a TLS trust failure. If you are behind a \
-             corporate proxy that inspects TLS, install its root CA into your \
-             system trust store (cass now trusts the OS store) or point \
-             SSL_CERT_FILE at a CA bundle that includes it. As a workaround, \
-             fetch the model files with a client that trusts the system store \
-             and run `cass models install --from-file <DIR>`."
-        ))
-    } else {
-        DownloadError::NetworkError(chain)
-    }
-}
-
-fn map_model_response_read_error(err: std::io::Error) -> DownloadError {
-    if err.kind() == std::io::ErrorKind::TimedOut {
-        DownloadError::Timeout
-    } else {
-        DownloadError::NetworkError(format!("reading model artifact response: {err}"))
-    }
-}
-
-fn model_http_max_body_size(expected_size: u64) -> usize {
-    let size_with_margin = expected_size.saturating_add(MODEL_HTTP_BODY_SIZE_MARGIN_BYTES);
-    let desired = size_with_margin.max(MODEL_HTTP_BODY_SIZE_FLOOR_BYTES);
-    let usize_max = u64::try_from(usize::MAX).unwrap_or(u64::MAX);
-    let capped = desired.min(usize_max);
-    usize::try_from(capped).unwrap_or(usize::MAX)
-}
-
-/// Model downloader with resumption and verification.
-pub struct ModelDownloader {
+/// Stages verified files in a `<target>.installing` sibling directory and
+/// promotes them with a backup-rename pattern, so a failed install never
+/// leaves a partial or clobbered model directory behind.
+pub struct ModelInstaller {
     /// Target directory for model files.
     target_dir: PathBuf,
-    /// Temporary download directory.
+    /// Temporary staging directory.
     temp_dir: PathBuf,
-    /// Cancellation flag.
-    cancelled: Arc<AtomicBool>,
-    /// Connection timeout.
-    connect_timeout: Duration,
-    /// Per-file timeout.
-    file_timeout: Duration,
-    /// Maximum retries per file.
-    max_retries: u32,
 }
 
-impl ModelDownloader {
-    /// Create a new model downloader.
+impl ModelInstaller {
+    /// Create a new model installer targeting `target_dir`.
     pub fn new(target_dir: PathBuf) -> Self {
         // Use parent + modified filename to avoid with_extension() replacing dots in dir names
-        // e.g., "model.v2" should become "model.v2.downloading", not "model.downloading"
-        let temp_dir = if let Some(parent) = target_dir.parent() {
-            let dir_name = target_dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("model");
-            parent.join(format!("{}.downloading", dir_name))
-        } else {
-            // Fallback for root paths (unlikely)
-            target_dir.with_extension("downloading")
-        };
+        // e.g., "model.v2" should become "model.v2.installing", not "model.installing"
+        let temp_dir = model_install_temp_dir(&target_dir);
         Self {
             target_dir,
             temp_dir,
-            cancelled: Arc::new(AtomicBool::new(false)),
-            connect_timeout: Duration::from_secs(30),
-            file_timeout: Duration::from_secs(300), // 5 minutes per file
-            max_retries: 3,
         }
     }
 
-    /// Get a cancellation handle.
-    pub fn cancellation_handle(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.cancelled)
-    }
-
-    /// Cancel the download.
-    pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
-    }
-
-    /// Check if download was cancelled.
-    pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
-    }
-
-    /// Download and install a model.
+    /// Install a model from a local directory of already-obtained files.
     ///
     /// This function:
-    /// 1. Creates a temporary download directory
-    /// 2. Downloads each file with resume support
-    /// 3. Verifies SHA256 checksums
-    /// 4. Atomically moves to target directory
+    /// 1. Validates the manifest is production-ready (no placeholder checksums)
+    /// 2. Stages each required file from `source_dir` (by `local_name()`)
+    /// 3. Verifies the SHA256 of every staged file
+    /// 4. Writes the `.verified` marker into staging
+    /// 5. Atomically promotes staging to the target directory
     ///
-    /// # Arguments
-    ///
-    /// * `manifest` - Model manifest with file checksums
-    /// * `on_progress` - Progress callback (called frequently)
+    /// A checksum or I/O failure discards staging and leaves any existing
+    /// installation untouched.
     ///
     /// # Errors
     ///
-    /// Returns `DownloadError` if download fails.
-    pub fn download(
+    /// Returns `InstallError` if a required file is missing, a checksum fails,
+    /// the manifest is not production-ready, or the filesystem operation fails.
+    pub fn install_from_directory(
         &self,
+        source_dir: &Path,
         manifest: &ModelManifest,
-        on_progress: Option<ProgressCallback>,
-    ) -> Result<(), DownloadError> {
-        self.download_with_mirror(manifest, None, on_progress)
-    }
-
-    /// Download and install a model, optionally via a validated mirror base URL.
-    pub fn download_with_mirror(
-        &self,
-        manifest: &ModelManifest,
-        mirror_base_url: Option<&str>,
-        on_progress: Option<ProgressCallback>,
-    ) -> Result<(), DownloadError> {
-        // Validate manifest is production-ready before downloading
-        // This prevents downloading models with placeholder checksums that can't be verified
+    ) -> Result<(), InstallError> {
+        // Validate manifest is production-ready before staging. This prevents
+        // installing bake-off candidates with placeholder checksums that
+        // cannot be verified.
         if !manifest.is_production_ready() {
             let unverified_files: Vec<String> = manifest
                 .files
@@ -1198,108 +738,96 @@ impl ModelDownloader {
                 .filter(|f| f.sha256 == PLACEHOLDER_CHECKSUM)
                 .map(|f| f.name.clone())
                 .collect();
-            return Err(DownloadError::ManifestNotVerified {
+            return Err(InstallError::ManifestNotVerified {
                 model_id: manifest.id.clone(),
                 unverified_files,
                 revision_unpinned: !manifest.has_pinned_revision(),
             });
         }
 
-        // Reset cancellation flag
-        self.cancelled.store(false, Ordering::SeqCst);
+        // The source must be a real directory of already-obtained files.
+        if !source_dir.is_dir() {
+            return Err(InstallError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotADirectory,
+                format!(
+                    "model install source {} is not a directory",
+                    source_dir.display()
+                ),
+            )));
+        }
 
-        // Prepare the temp directory for a safe resume. Keep partials for the
-        // current manifest, but remove stale or unsafe entries from older runs.
+        // Refuse to stage the target onto itself: copying `model.safetensors`
+        // over itself would corrupt the existing install in place.
+        if source_dir
+            .canonicalize()
+            .is_ok_and(|canonical| canonical == self.target_dir.canonicalize().unwrap_or_default())
+        {
+            return Err(InstallError::SourceIsTarget(
+                source_dir.display().to_string(),
+            ));
+        }
+
+        // Prepare the staging directory. Keeps manifest-matching partials out
+        // of the way and removes stale/unsafe entries from interrupted runs.
         self.prepare_temp_dir(manifest)?;
 
-        let grand_total = manifest.total_size();
-        let total_files = manifest.files.len();
-        let bytes_downloaded = Arc::new(AtomicU64::new(0));
-
-        for (idx, file) in manifest.files.iter().enumerate() {
-            self.fail_if_cancelled()?;
-
-            // Use local_name() for local path (handles onnx/model.onnx -> model.onnx)
-            let file_path = self.temp_dir.join(file.local_name());
-            let url = manifest.download_url_with_base(file, mirror_base_url);
-
-            // Track bytes_downloaded at start of this file to reset on retry
-            let bytes_before_file = bytes_downloaded.load(Ordering::SeqCst);
-
-            // Download with retries
-            let mut last_error = None;
-            for attempt in 0..self.max_retries {
-                self.fail_if_cancelled()?;
-
-                // Reset byte counter to before this file on retry (avoid double-counting)
-                if attempt > 0 {
-                    bytes_downloaded.store(bytes_before_file, Ordering::SeqCst);
-                }
-
-                // Exponential backoff delay (except first attempt)
-                if attempt > 0 {
-                    let delay = Duration::from_secs(5 * (1 << (attempt - 1)));
-                    std::thread::sleep(delay);
-                }
-
-                match self.download_file(
-                    &url,
-                    &file_path,
-                    file.size,
-                    idx,
-                    total_files,
-                    &bytes_downloaded,
-                    grand_total,
-                    on_progress.as_ref(),
-                ) {
-                    Ok(()) => {
-                        last_error = None;
-                        break;
-                    }
-                    Err(DownloadError::Cancelled) => {
-                        return Err(DownloadError::Cancelled);
-                    }
-                    Err(e) => {
-                        if !e.is_retryable() {
-                            self.cleanup_temp_for_error(&e);
-                            return Err(e);
-                        }
-                        last_error = Some(e);
-                    }
-                }
+        for file in &manifest.files {
+            let local_name = file.local_name();
+            let source_path = source_dir.join(local_name);
+            if !source_path.is_file() {
+                self.cleanup_temp();
+                return Err(InstallError::MissingSourceFile {
+                    file: local_name.to_string(),
+                    source_dir: source_dir.display().to_string(),
+                });
             }
 
-            if let Some(err) = last_error {
-                self.cleanup_temp_for_error(&err);
-                return Err(err);
+            let staged_path = self.temp_dir.join(local_name);
+            if let Err(err) = fs::copy(&source_path, &staged_path)
+                .and_then(|_| File::open(&staged_path).and_then(|file| file.sync_all()))
+            {
+                self.cleanup_temp();
+                return Err(err.into());
             }
 
-            // Verify SHA256
-            self.fail_if_cancelled()?;
-
-            let actual_hash = compute_sha256(&file_path)?;
+            // Verify SHA256 on the staged copy: this guards both against bad
+            // source content and against a short/corrupt copy.
+            let actual_hash = match compute_sha256(&staged_path) {
+                Ok(hash) => hash,
+                Err(err) => {
+                    self.cleanup_temp();
+                    return Err(err);
+                }
+            };
             if actual_hash != file.sha256 {
-                let err = DownloadError::VerificationFailed {
+                self.cleanup_temp();
+                return Err(InstallError::VerificationFailed {
                     file: file.name.clone(),
                     expected: file.sha256.clone(),
                     actual: actual_hash,
-                };
-                self.cleanup_temp_for_error(&err);
-                return Err(err);
+                });
             }
         }
+
+        // Record the hardened `.verified` marker *inside staging* so marker
+        // and files promote atomically with the same operation.
+        self.write_verified_marker(source_dir, manifest)?;
 
         // Atomic install: rename temp -> target
         self.atomic_install()?;
 
-        // Write verified marker
-        self.write_verified_marker(manifest, mirror_base_url)?;
-
         Ok(())
     }
 
-    fn prepare_temp_dir(&self, manifest: &ModelManifest) -> Result<(), DownloadError> {
-        ensure_model_download_temp_dir(&self.temp_dir)?;
+    fn prepare_temp_dir(&self, manifest: &ModelManifest) -> Result<(), InstallError> {
+        ensure_model_install_temp_dir(&self.temp_dir)?;
+
+        // Drop a legacy `<target>.downloading` sibling left behind by the
+        // pre-local-only downloader; nothing can acquire through it anymore.
+        let legacy_staging = model_staging_dir(&self.target_dir, "downloading");
+        if model_dir_is_real_directory(&legacy_staging).unwrap_or(false) {
+            let _ = fs::remove_dir_all(&legacy_staging);
+        }
 
         let expected_files: HashSet<String> = manifest
             .files
@@ -1331,176 +859,13 @@ impl ModelDownloader {
         Ok(())
     }
 
-    /// Download a single file with resume support.
-    #[allow(clippy::too_many_arguments)]
-    fn download_file(
-        &self,
-        url: &str,
-        path: &Path,
-        expected_size: u64,
-        file_idx: usize,
-        total_files: usize,
-        bytes_downloaded: &Arc<AtomicU64>,
-        grand_total: u64,
-        on_progress: Option<&ProgressCallback>,
-    ) -> Result<(), DownloadError> {
-        // Check for existing partial download
-        let mut existing_size = if path.exists() {
-            fs::metadata(path).map(|m| m.len()).unwrap_or(0)
-        } else {
-            0
-        };
-
-        // If the existing partial is larger than expected, discard it and start fresh.
-        if existing_size > expected_size {
-            let _ = fs::remove_file(path);
-            existing_size = 0;
-        }
-
-        // If already complete, skip download
-        if existing_size == expected_size {
-            bytes_downloaded.fetch_add(expected_size, Ordering::SeqCst);
-            return Ok(());
-        }
-
-        let url = url.to_string();
-        let path = path.to_path_buf();
-        let bytes_downloaded = Arc::clone(bytes_downloaded);
-        let cancelled = Arc::clone(&self.cancelled);
-        let progress_callback = on_progress.cloned();
-        let max_body_size = model_http_max_body_size(expected_size);
-
-        crate::ensure_rustls_crypto_provider();
-        let client = reqwest::blocking::Client::builder()
-            .user_agent(concat!(
-                "cass/",
-                env!("CARGO_PKG_VERSION"),
-                " (model-download)"
-            ))
-            .connect_timeout(self.connect_timeout)
-            .timeout(self.file_timeout)
-            .build()
-            .map_err(map_reqwest_download_error)?;
-
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::ACCEPT,
-            reqwest::header::HeaderValue::from_static("application/octet-stream"),
-        );
-
-        if existing_size > 0 {
-            let range_header =
-                reqwest::header::HeaderValue::from_str(&format!("bytes={existing_size}-"))
-                    .map_err(|err| {
-                        DownloadError::NetworkError(format!(
-                            "building model download Range header: {err}"
-                        ))
-                    })?;
-            headers.insert(reqwest::header::RANGE, range_header);
-            bytes_downloaded.fetch_add(existing_size, Ordering::SeqCst);
-        }
-
-        let mut response = client
-            .get(&url)
-            .headers(headers)
-            .send()
-            .map_err(map_reqwest_download_error)?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(DownloadError::HttpError {
-                status: status.as_u16(),
-                message: status
-                    .canonical_reason()
-                    .map_or_else(|| status.as_u16().to_string(), |reason| reason.to_string()),
-            });
-        }
-
-        let content_length = response.content_length().unwrap_or(0);
-        if content_length > max_body_size as u64 {
-            return Err(DownloadError::NetworkError(format!(
-                "model artifact response exceeds transport cap: {content_length} > {max_body_size}"
-            )));
-        }
-
-        // 206 = Partial Content (resume works), 200 = Full file (server ignored Range)
-        let actually_resuming = existing_size > 0 && status.as_u16() == 206;
-        if existing_size > 0 && status.as_u16() == 200 {
-            bytes_downloaded.fetch_sub(existing_size, Ordering::SeqCst);
-            existing_size = 0;
-        }
-
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(actually_resuming)
-            .write(true)
-            .truncate(!actually_resuming)
-            .open(&path)?;
-
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        let start = Instant::now();
-        let mut file_bytes = if actually_resuming { existing_size } else { 0 };
-        let mut buffer = [0_u8; 8192];
-
-        loop {
-            if cancelled.load(Ordering::SeqCst) {
-                return Err(DownloadError::Cancelled);
-            }
-            if start.elapsed() >= self.file_timeout {
-                return Err(DownloadError::Timeout);
-            }
-
-            let read = response
-                .read(&mut buffer)
-                .map_err(map_model_response_read_error)?;
-            if read == 0 {
-                break;
-            }
-
-            file.write_all(&buffer[..read])?;
-            file_bytes = file_bytes.saturating_add(read as u64);
-            if file_bytes > max_body_size as u64 {
-                return Err(DownloadError::NetworkError(format!(
-                    "model artifact body exceeds transport cap: {file_bytes} > {max_body_size}"
-                )));
-            }
-            bytes_downloaded.fetch_add(read as u64, Ordering::SeqCst);
-
-            if let Some(callback) = progress_callback.as_ref() {
-                let total_downloaded = bytes_downloaded.load(Ordering::SeqCst);
-                let progress_pct = if grand_total > 0 {
-                    ((total_downloaded as f64 / grand_total as f64) * 100.0).min(100.0) as u8
-                } else {
-                    0
-                };
-
-                callback(DownloadProgress {
-                    current_file: file_name.clone(),
-                    file_index: file_idx + 1,
-                    total_files,
-                    file_bytes,
-                    file_total: expected_size,
-                    total_bytes: total_downloaded,
-                    grand_total,
-                    progress_pct,
-                });
-            }
-        }
-
-        file.sync_all()?;
-        Ok(())
-    }
-
-    /// Atomically install downloaded files.
+    /// Atomically install staged files.
     ///
     /// Uses a backup-rename-cleanup pattern to minimize the window where no model exists:
     /// 1. Move existing target to backup (if present)
     /// 2. Rename temp to target
     /// 3. Remove backup on success, or restore on failure
-    fn atomic_install(&self) -> Result<(), DownloadError> {
+    fn atomic_install(&self) -> Result<(), InstallError> {
         let backup_dir = unique_model_backup_dir(&self.target_dir);
         sync_tree(&self.temp_dir)?;
 
@@ -1553,55 +918,43 @@ impl ModelDownloader {
         Ok(())
     }
 
-    /// Write .verified marker file.
+    /// Write the `.verified` marker into the staging directory.
+    ///
+    /// The hardened marker records the install source provenance
+    /// (`from-file`), the local source path, and the model fingerprint so a
+    /// local install is auditable. Byte-compatible with the legacy reader:
+    /// `revision=` stays first and unknown lines are ignored (bead
+    /// cass-fleet-resilience-20260608-uojcg.5.5).
     fn write_verified_marker(
         &self,
+        source_dir: &Path,
         manifest: &ModelManifest,
-        mirror_base_url: Option<&str>,
-    ) -> Result<(), DownloadError> {
-        let marker_path = self.target_dir.join(".verified");
-        let source = mirror_base_url
-            .map(|url| format!("mirror:{url}"))
-            .unwrap_or_else(|| "registry".to_string());
-        let content = format!(
-            "revision={}\nverified_at={}\nsource={}\n",
-            manifest.revision,
+    ) -> Result<(), InstallError> {
+        let marker_path = self
+            .temp_dir
+            .join(crate::search::model_acquisition::VERIFIED_MARKER_NAME);
+        let content = crate::search::model_acquisition::VerifiedMarker::for_from_file(
+            manifest,
+            source_dir,
             chrono::Utc::now().to_rfc3339(),
-            source
-        );
-        let temp_path = unique_model_sidecar_path(&marker_path, "tmp", ".verified");
-        let mut file = File::create(&temp_path)?;
+        )
+        .render();
+        let mut file = File::create(&marker_path)?;
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
-        replace_file_from_temp(&temp_path, &marker_path)?;
-        sync_parent_directory(&marker_path)?;
         Ok(())
     }
 
-    /// Clean up temporary download directory.
+    /// Clean up temporary staging directory.
     fn cleanup_temp(&self) {
         if model_dir_is_real_directory(&self.temp_dir).unwrap_or(false) {
             let _ = fs::remove_dir_all(&self.temp_dir);
         }
     }
-
-    fn cleanup_temp_for_error(&self, err: &DownloadError) {
-        if err.should_discard_temp() {
-            self.cleanup_temp();
-        }
-    }
-
-    fn fail_if_cancelled(&self) -> Result<(), DownloadError> {
-        if self.is_cancelled() {
-            Err(DownloadError::Cancelled)
-        } else {
-            Ok(())
-        }
-    }
 }
 
 /// Compute SHA256 hash of a file.
-pub fn compute_sha256(path: &Path) -> Result<String, DownloadError> {
+pub fn compute_sha256(path: &Path) -> Result<String, InstallError> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let mut hasher = Sha256::new();
@@ -1680,9 +1033,9 @@ fn classify_model_cache_state(
     missing_files: &[String],
     integrity: ModelCacheIntegrity,
 ) -> ModelCacheState {
-    if !policy.downloads_enabled {
+    if !policy.install_enabled {
         return ModelCacheState::DisabledByPolicy {
-            reason: "semantic model downloads disabled by policy".to_string(),
+            reason: "semantic model installation disabled by policy".to_string(),
         };
     }
 
@@ -1699,36 +1052,7 @@ fn classify_model_cache_state(
         };
     }
 
-    // A `.downloading` staging directory only means "acquiring" when the model
-    // is not already fully present. A failed/interrupted download leaves an
-    // (often empty) staging dir behind, and treating its mere existence as
-    // in-progress made `cass models status` report a complete, `.verified`
-    // install as not-installed — even after `install --from-file` succeeded and
-    // verified all files (#370). A valid install outranks leftover staging
-    // debris; the marker/checksum logic below decides the concrete ready state.
-    let staging_dir = model_download_temp_dir(model_dir);
-    let install_looks_complete = missing_files.is_empty() && model_dir.join(".verified").is_file();
-    if staging_dir.is_dir() && !install_looks_complete {
-        return ModelCacheState::Acquiring {
-            bytes_present: directory_size_bytes(&staging_dir),
-            staging_dir,
-            total_bytes: manifest.total_size(),
-        };
-    }
-
     if !missing_files.is_empty() {
-        if policy.offline {
-            return ModelCacheState::OfflineBlocked {
-                missing_files: missing_files.to_vec(),
-            };
-        }
-
-        if policy.metered && !policy.allow_metered {
-            return ModelCacheState::DisabledByPolicy {
-                reason: "metered network disallows model acquisition".to_string(),
-            };
-        }
-
         if let Some(max_bytes) = policy.max_model_bytes
             && manifest.total_size() > max_bytes
         {
@@ -1740,7 +1064,6 @@ fn classify_model_cache_state(
 
         return ModelCacheState::NotAcquired {
             missing_files: missing_files.to_vec(),
-            needs_consent: policy.requires_consent,
         };
     }
 
@@ -1798,10 +1121,6 @@ fn classify_model_cache_state(
         Some(source) if source == "preseeded_local" => ModelCacheState::PreseededLocal {
             model_dir: model_dir.to_path_buf(),
         },
-        Some(source) if source.starts_with("mirror:") => ModelCacheState::MirrorSourced {
-            model_dir: model_dir.to_path_buf(),
-            mirror_base_url: source.trim_start_matches("mirror:").to_string(),
-        },
         _ => ModelCacheState::Acquired {
             model_dir: model_dir.to_path_buf(),
         },
@@ -1829,7 +1148,7 @@ pub fn check_model_installed(model_dir: &Path, manifest: &ModelManifest) -> Mode
 
     // Check if all required files exist. Accept either the canonical repo path
     // (for preseeded HuggingFace layouts) or the flat local name used by the
-    // downloader and air-gap installer.
+    // local installer.
     for file in &manifest.files {
         if model_file_path(model_dir, file).is_none() {
             return ModelState::NotInstalled;
@@ -1839,31 +1158,7 @@ pub fn check_model_installed(model_dir: &Path, manifest: &ModelManifest) -> Mode
     ModelState::Ready
 }
 
-/// Check for model version mismatch.
-pub fn check_version_mismatch(model_dir: &Path, manifest: &ModelManifest) -> Option<ModelState> {
-    let verified_marker = model_dir.join(".verified");
-    if !verified_marker.is_file() {
-        return None;
-    }
-
-    // Read installed revision
-    let content = fs::read_to_string(&verified_marker).ok()?;
-    let installed_revision = content
-        .lines()
-        .find(|l| l.starts_with("revision="))
-        .map(|l| l.trim_start_matches("revision=").to_string())?;
-
-    if installed_revision != manifest.revision {
-        Some(ModelState::UpdateAvailable {
-            current_revision: installed_revision,
-            latest_revision: manifest.revision.clone(),
-        })
-    } else {
-        None
-    }
-}
-
-fn ensure_replaceable_model_dir(path: &Path) -> Result<bool, DownloadError> {
+fn ensure_replaceable_model_dir(path: &Path) -> Result<bool, InstallError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             ensure_real_model_directory_metadata(
@@ -1886,14 +1181,14 @@ fn ensure_replaceable_model_dir(path: &Path) -> Result<bool, DownloadError> {
     }
 }
 
-fn ensure_model_download_temp_dir(path: &Path) -> Result<(), DownloadError> {
+fn ensure_model_install_temp_dir(path: &Path) -> Result<(), InstallError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             ensure_real_model_directory_metadata(
                 path,
                 &metadata,
-                "refusing to prepare model download temp dir through symlink",
-                "refusing to prepare model download temp dir because it is not a directory",
+                "refusing to prepare model install temp dir through symlink",
+                "refusing to prepare model install temp dir because it is not a directory",
             )?;
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -1902,7 +1197,7 @@ fn ensure_model_download_temp_dir(path: &Path) -> Result<(), DownloadError> {
                 std::io::Error::new(
                     err.kind(),
                     format!(
-                        "failed inspecting model download temp dir after create {}: {err}",
+                        "failed inspecting model install temp dir after create {}: {err}",
                         path.display()
                     ),
                 )
@@ -1910,15 +1205,15 @@ fn ensure_model_download_temp_dir(path: &Path) -> Result<(), DownloadError> {
             ensure_real_model_directory_metadata(
                 path,
                 &metadata,
-                "refusing to prepare model download temp dir through symlink",
-                "refusing to prepare model download temp dir because it is not a directory",
+                "refusing to prepare model install temp dir through symlink",
+                "refusing to prepare model install temp dir because it is not a directory",
             )?;
         }
         Err(err) => {
             return Err(std::io::Error::new(
                 err.kind(),
                 format!(
-                    "failed inspecting model download temp dir before prepare {}: {err}",
+                    "failed inspecting model install temp dir before prepare {}: {err}",
                     path.display()
                 ),
             )
@@ -1928,7 +1223,7 @@ fn ensure_model_download_temp_dir(path: &Path) -> Result<(), DownloadError> {
     Ok(())
 }
 
-fn model_dir_is_real_directory(path: &Path) -> Result<bool, DownloadError> {
+fn model_dir_is_real_directory(path: &Path) -> Result<bool, InstallError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             let file_type = metadata.file_type();
@@ -1944,7 +1239,7 @@ fn ensure_real_model_directory_metadata(
     metadata: &fs::Metadata,
     symlink_message: &str,
     non_dir_message: &str,
-) -> Result<(), DownloadError> {
+) -> Result<(), InstallError> {
     let file_type = metadata.file_type();
     if file_type.is_symlink() {
         return Err(std::io::Error::other(format!("{symlink_message}: {}", path.display())).into());
@@ -1955,21 +1250,26 @@ fn ensure_real_model_directory_metadata(
     Ok(())
 }
 
-fn model_download_temp_dir(target_dir: &Path) -> PathBuf {
+/// Sibling staging directory `<target>.<suffix>` used for in-flight installs.
+fn model_staging_dir(target_dir: &Path, suffix: &str) -> PathBuf {
     if let Some(parent) = target_dir.parent() {
         let dir_name = target_dir
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("model");
-        parent.join(format!("{dir_name}.downloading"))
+        parent.join(format!("{dir_name}.{suffix}"))
     } else {
-        target_dir.with_extension("downloading")
+        target_dir.with_extension(suffix)
     }
+}
+
+fn model_install_temp_dir(target_dir: &Path) -> PathBuf {
+    model_staging_dir(target_dir, "installing")
 }
 
 /// Resolve a manifest file on disk.
 ///
-/// The downloader stores HuggingFace paths by local basename, while preseeded
+/// The installer stores manifest paths by local basename, while preseeded
 /// directories can preserve the canonical repo layout.
 pub fn model_file_path(model_dir: &Path, file: &ModelFile) -> Option<PathBuf> {
     let canonical = model_dir.join(&file.name);
@@ -2001,26 +1301,6 @@ fn installed_manifest_size(model_dir: &Path, manifest: &ModelManifest) -> u64 {
         .filter_map(|file| model_file_path(model_dir, file))
         .filter_map(|path| path.metadata().ok())
         .map(|metadata| metadata.len())
-        .sum()
-}
-
-fn directory_size_bytes(path: &Path) -> u64 {
-    let Ok(entries) = fs::read_dir(path) else {
-        return 0;
-    };
-
-    entries
-        .filter_map(Result::ok)
-        .map(|entry| {
-            let path = entry.path();
-            match entry.file_type() {
-                Ok(file_type) if file_type.is_file() => {
-                    entry.metadata().map(|metadata| metadata.len()).unwrap_or(0)
-                }
-                Ok(file_type) if file_type.is_dir() => directory_size_bytes(&path),
-                _ => 0,
-            }
-        })
         .sum()
 }
 
@@ -2058,72 +1338,14 @@ fn unique_model_sidecar_path(path: &Path, suffix: &str, fallback_name: &str) -> 
     ))
 }
 
-fn replace_file_from_temp(temp_path: &Path, final_path: &Path) -> Result<(), DownloadError> {
-    #[cfg(windows)]
-    {
-        match fs::rename(temp_path, final_path) {
-            Ok(()) => sync_parent_directory(final_path),
-            Err(first_err)
-                if final_path.exists()
-                    && matches!(
-                        first_err.kind(),
-                        std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
-                    ) =>
-            {
-                let backup_path = unique_model_backup_dir(final_path);
-                fs::rename(final_path, &backup_path).map_err(|backup_err| {
-                    let _ = fs::remove_file(temp_path);
-                    DownloadError::IoError(std::io::Error::other(format!(
-                        "failed preparing backup {} before replacing {}: first error: {first_err}; backup error: {backup_err}",
-                        backup_path.display(),
-                        final_path.display()
-                    )))
-                })?;
-                match fs::rename(temp_path, final_path) {
-                    Ok(()) => {
-                        let _ = fs::remove_file(&backup_path);
-                        sync_parent_directory(final_path)
-                    }
-                    Err(second_err) => match fs::rename(&backup_path, final_path) {
-                        Ok(()) => {
-                            let _ = fs::remove_file(temp_path);
-                            sync_parent_directory(final_path)?;
-                            Err(std::io::Error::other(format!(
-                                "failed replacing {} with {}: first error: {first_err}; second error: {second_err}; restored original file",
-                                final_path.display(),
-                                temp_path.display()
-                            ))
-                            .into())
-                        }
-                        Err(restore_err) => Err(std::io::Error::other(format!(
-                            "failed replacing {} with {}: first error: {first_err}; second error: {second_err}; restore error: {restore_err}; temp file retained at {}",
-                            final_path.display(),
-                            temp_path.display(),
-                            temp_path.display()
-                        ))
-                        .into()),
-                    },
-                }
-            }
-            Err(rename_err) => Err(rename_err.into()),
-        }
-    }
-
-    #[cfg(not(windows))]
-    {
-        fs::rename(temp_path, final_path)?;
-        sync_parent_directory(final_path)
-    }
-}
-
 #[cfg(not(windows))]
-fn sync_tree(path: &Path) -> Result<(), DownloadError> {
+fn sync_tree(path: &Path) -> Result<(), InstallError> {
     sync_tree_inner(path)?;
     sync_parent_directory(path)
 }
 
 #[cfg(not(windows))]
-fn sync_tree_inner(path: &Path) -> Result<(), DownloadError> {
+fn sync_tree_inner(path: &Path) -> Result<(), InstallError> {
     let metadata = fs::metadata(path)?;
     if metadata.is_dir() {
         for entry in fs::read_dir(path)? {
@@ -2138,12 +1360,12 @@ fn sync_tree_inner(path: &Path) -> Result<(), DownloadError> {
 }
 
 #[cfg(windows)]
-fn sync_tree(_path: &Path) -> Result<(), DownloadError> {
+fn sync_tree(_path: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
 #[cfg(not(windows))]
-fn sync_parent_directory(path: &Path) -> Result<(), DownloadError> {
+fn sync_parent_directory(path: &Path) -> Result<(), InstallError> {
     let Some(parent) = path.parent() else {
         return Ok(());
     };
@@ -2152,21 +1374,14 @@ fn sync_parent_directory(path: &Path) -> Result<(), DownloadError> {
 }
 
 #[cfg(windows)]
-fn sync_parent_directory(_path: &Path) -> Result<(), DownloadError> {
+fn sync_parent_directory(_path: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
     use std::error::Error as _;
-    use std::io::{Read, Write};
-    use std::net::{Shutdown, TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-    use std::thread;
-    use std::time::Duration;
 
     /// Copy model fixtures from tests/fixtures/models/ to the target directory.
     /// Copies model.onnx plus config files.
@@ -2202,202 +1417,11 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn model_http_body_size_keeps_floor_for_small_models() {
-        assert_eq!(
-            model_http_max_body_size(86 * 1024 * 1024),
-            MODEL_HTTP_BODY_SIZE_FLOOR_BYTES as usize
-        );
-    }
-
-    #[test]
-    fn model_http_body_size_covers_nomic_onnx_manifest() {
-        let manifest = ModelManifest::nomic_embed();
-        let onnx_file = manifest
-            .files
-            .iter()
-            .find(|file| file.name == "onnx/model.onnx")
-            .expect("nomic manifest should include onnx/model.onnx");
-        let max_body_size = model_http_max_body_size(onnx_file.size);
-        let max_body_size_u64 = u64::try_from(max_body_size).unwrap_or(u64::MAX);
-        assert!(
-            max_body_size_u64 >= onnx_file.size + MODEL_HTTP_BODY_SIZE_MARGIN_BYTES,
-            "transport cap {max_body_size} must cover nomic ONNX size {} plus margin",
-            onnx_file.size
-        );
-    }
-
-    #[derive(Clone, Debug)]
-    struct MirrorRequest {
-        path: String,
-        range_start: Option<u64>,
-    }
-
-    #[derive(Clone)]
-    struct MirrorRoute {
-        body: Vec<u8>,
-        content_type: &'static str,
-        chunk_size: usize,
-        chunk_delay: Duration,
-    }
-
-    struct MirrorFixtureServer {
-        base_url: String,
-        stop: Arc<AtomicBool>,
-        wake_addr: String,
-        requests: Arc<Mutex<Vec<MirrorRequest>>>,
-        handle: Option<std::thread::JoinHandle<()>>,
-    }
-
-    impl MirrorFixtureServer {
-        fn requests(&self) -> Vec<MirrorRequest> {
-            self.requests.lock().unwrap().clone()
-        }
-    }
-
-    impl Drop for MirrorFixtureServer {
-        fn drop(&mut self) {
-            self.stop.store(true, Ordering::SeqCst);
-            if let Ok(stream) = TcpStream::connect(&self.wake_addr) {
-                let _ = stream.shutdown(Shutdown::Both);
-            }
-            if let Some(handle) = self.handle.take() {
-                let _ = handle.join();
-            }
-        }
-    }
-
-    fn start_mirror_fixture_server(routes: Vec<(String, MirrorRoute)>) -> MirrorFixtureServer {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test mirror server");
-        listener
-            .set_nonblocking(true)
-            .expect("set test mirror server nonblocking");
-        let addr = listener.local_addr().expect("read server address");
-        let wake_addr = addr.to_string();
-        let base_url = format!("http://{wake_addr}");
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_flag = Arc::clone(&stop);
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let request_log = Arc::clone(&requests);
-        let route_map: BTreeMap<String, MirrorRoute> = routes.into_iter().collect();
-        let handle = thread::spawn(move || {
-            while !stop_flag.load(Ordering::SeqCst) {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        handle_mirror_request(stream, &route_map, &request_log);
-                    }
-                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-        MirrorFixtureServer {
-            base_url,
-            stop,
-            wake_addr,
-            requests,
-            handle: Some(handle),
-        }
-    }
-
-    fn handle_mirror_request(
-        mut stream: TcpStream,
-        routes: &BTreeMap<String, MirrorRoute>,
-        request_log: &Arc<Mutex<Vec<MirrorRequest>>>,
-    ) {
-        let mut buffer = [0_u8; 8192];
-        let read = match stream.read(&mut buffer) {
-            Ok(read) => read,
-            Err(_) => return,
-        };
-        let request = String::from_utf8_lossy(&buffer[..read]);
-        let mut lines = request.lines();
-        let target = lines
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .unwrap_or("/");
-        let path = target
-            .split_once('?')
-            .map(|(path, _)| path)
-            .unwrap_or(target)
-            .split_once('#')
-            .map(|(path, _)| path)
-            .unwrap_or(target)
-            .to_string();
-        let range_start = lines.find_map(parse_range_start_header);
-        request_log.lock().unwrap().push(MirrorRequest {
-            path: path.clone(),
-            range_start,
-        });
-
-        let Some(route) = routes.get(&path) else {
-            let response = concat!(
-                "HTTP/1.1 404 Not Found\r\n",
-                "Content-Length: 9\r\n",
-                "Content-Type: text/plain\r\n",
-                "Connection: close\r\n\r\n",
-                "not found"
-            );
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
-            return;
-        };
-
-        let start = range_start.unwrap_or(0) as usize;
-        let mut status = "200 OK";
-        let mut content_range = None;
-        let body = if start >= route.body.len() {
-            status = "416 Range Not Satisfiable";
-            &[][..]
-        } else if start > 0 {
-            status = "206 Partial Content";
-            content_range = Some(format!(
-                "bytes {start}-{}/{}",
-                route.body.len().saturating_sub(1),
-                route.body.len()
-            ));
-            &route.body[start..]
-        } else {
-            route.body.as_slice()
-        };
-
-        let mut response = format!(
-            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: {}\r\nConnection: close\r\n",
-            body.len(),
-            route.content_type
-        );
-        if let Some(content_range) = content_range {
-            response.push_str(&format!("Content-Range: {content_range}\r\n"));
-        }
-        response.push_str("\r\n");
-        let _ = stream.write_all(response.as_bytes());
-        for chunk in body.chunks(route.chunk_size.max(1)) {
-            if stream.write_all(chunk).is_err() {
-                return;
-            }
-            let _ = stream.flush();
-            if !route.chunk_delay.is_zero() {
-                thread::sleep(route.chunk_delay);
-            }
-        }
-    }
-
-    fn parse_range_start_header(line: &str) -> Option<u64> {
-        let (name, value) = line.split_once(':')?;
-        if !name.eq_ignore_ascii_case("range") {
-            return None;
-        }
-        let value = value.trim();
-        let value = value.strip_prefix("bytes=")?;
-        let (start, _) = value.split_once('-')?;
-        start.parse().ok()
-    }
-
+    /// Build a manifest whose file checksums are computed from the given
+    /// contents, so local installs verify real SHA256 digests.
     fn build_test_manifest(repo: &str, revision: &str, files: &[(&str, &[u8])]) -> ModelManifest {
         ModelManifest {
-            id: "mirror-test-model".into(),
+            id: "local-test-model".into(),
             repo: repo.into(),
             revision: revision.into(),
             files: files
@@ -2412,187 +1436,36 @@ mod tests {
         }
     }
 
-    fn mirror_route_path(prefix: &str, manifest: &ModelManifest, file: &ModelFile) -> String {
-        format!(
-            "{}/{}/resolve/{}/{}",
-            prefix.trim_end_matches('/'),
-            manifest.repo.trim_start_matches('/'),
-            manifest.revision,
-            file.name.trim_start_matches('/')
-        )
+    /// Write the manifest `files` into a source directory under their local
+    /// basenames — the layout `install_from_directory` expects.
+    fn write_source_dir(dir: &Path, files: &[(&str, &[u8])]) {
+        fs::create_dir_all(dir).unwrap();
+        for (name, body) in files {
+            let local_name = Path::new(name)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+            fs::write(dir.join(local_name), body).unwrap();
+        }
     }
 
     #[test]
     fn test_model_state_summary() {
         assert_eq!(ModelState::NotInstalled.summary(), "not installed");
-        assert_eq!(ModelState::NeedsConsent.summary(), "needs consent");
         assert_eq!(ModelState::Ready.summary(), "ready");
-        assert_eq!(
-            ModelState::Downloading {
-                progress_pct: 50,
-                bytes_downloaded: 1000,
-                total_bytes: 2000
-            }
-            .summary(),
-            "downloading (50%)"
-        );
     }
 
     #[test]
     fn test_model_state_is_ready() {
         assert!(ModelState::Ready.is_ready());
         assert!(!ModelState::NotInstalled.is_ready());
-        assert!(!ModelState::NeedsConsent.is_ready());
-        assert!(
-            !ModelState::Downloading {
-                progress_pct: 0,
-                bytes_downloaded: 0,
-                total_bytes: 0
-            }
-            .is_ready()
-        );
     }
 
     #[test]
     fn test_model_manifest_total_size() {
         let manifest = ModelManifest::minilm_v2();
         assert!(manifest.total_size() > 20_000_000); // > 20MB
-    }
-
-    #[test]
-    fn test_model_manifest_download_url() {
-        let manifest = ModelManifest::minilm_v2();
-        let url = manifest.download_url(&manifest.files[0]);
-        assert!(url.contains("huggingface.co"));
-        assert!(url.contains("sentence-transformers/all-MiniLM-L6-v2"));
-        assert!(url.contains("model.safetensors"));
-    }
-
-    #[test]
-    fn test_model_manifest_download_url_with_mirror_base() {
-        let manifest = ModelManifest::minilm_v2();
-        let url = manifest
-            .download_url_with_base(&manifest.files[0], Some("https://mirror.example/cache/"));
-        assert_eq!(
-            url,
-            format!(
-                "https://mirror.example/cache/{}/resolve/{}/{}",
-                manifest.repo, manifest.revision, manifest.files[0].name
-            )
-        );
-    }
-
-    #[test]
-    fn air_gap_bash_script_uses_explicit_output_filenames() {
-        // Regression for a subtle bug in the initial #193 fix: using `curl -O`
-        // derives the output filename from the URL's last path component, which
-        // happens to match `local_name()` for this manifest but fails for
-        // files whose repo path has extra segments. `-o "$DIR/<local>"`
-        // makes the mapping explicit and matches what --from-file resolves.
-        let manifest = ModelManifest::minilm_v2();
-        let script = manifest.air_gap_bash_script(None);
-        assert!(script.contains("set -euo pipefail"));
-        assert!(script.contains("DIR=\"${DIR:-./all-minilm-l6-v2_files}\""));
-        for file in &manifest.files {
-            let local = file.local_name();
-            assert!(
-                script.contains(&format!("-o \"$DIR/{local}\"")),
-                "bash script must write {local} via explicit -o, got:\n{script}"
-            );
-        }
-        assert!(
-            script.contains("cass models install all-minilm-l6-v2 --from-file \"$DIR\" -y"),
-            "bash script must invoke install with --from-file"
-        );
-    }
-
-    #[test]
-    fn air_gap_bash_script_quotes_urls_with_single_quotes() {
-        // URLs must be single-quoted so the shell performs no interpolation.
-        let manifest = ModelManifest::minilm_v2();
-        let script = manifest.air_gap_bash_script(None);
-        let sample_url = manifest.download_url(&manifest.files[0]);
-        assert!(script.contains(&format!("'{sample_url}'")));
-    }
-
-    #[test]
-    fn air_gap_powershell_script_forces_tls12_and_basic_parsing() {
-        let manifest = ModelManifest::minilm_v2();
-        let script = manifest.air_gap_powershell_script(None);
-        assert!(
-            script.contains("SecurityProtocolType]::Tls12"),
-            "PowerShell script must opt into TLS 1.2 for Windows PowerShell 5.1 compat"
-        );
-        assert!(
-            script.contains("Invoke-WebRequest -UseBasicParsing"),
-            "PowerShell script must use -UseBasicParsing for PS 5.1 compat"
-        );
-        for file in &manifest.files {
-            let local = file.local_name();
-            assert!(
-                script.contains(&format!("(Join-Path $dir '{local}')")),
-                "PowerShell script must materialize output path for {local}, got:\n{script}"
-            );
-        }
-        assert!(
-            script.contains("cass models install all-minilm-l6-v2 --from-file $dir -y"),
-            "PowerShell script must invoke install with --from-file"
-        );
-    }
-
-    #[test]
-    fn air_gap_scripts_honor_mirror_base_url() {
-        let manifest = ModelManifest::minilm_v2();
-        let mirror = Some("https://mirror.example/cache");
-        let bash = manifest.air_gap_bash_script(mirror);
-        let ps = manifest.air_gap_powershell_script(mirror);
-        assert!(bash.contains("https://mirror.example/cache"));
-        assert!(!bash.contains("huggingface.co"));
-        assert!(ps.contains("https://mirror.example/cache"));
-        assert!(!ps.contains("huggingface.co"));
-    }
-
-    #[test]
-    fn test_normalize_mirror_base_url_trims_trailing_slash() {
-        let normalized = normalize_mirror_base_url("https://mirror.example/cache/").unwrap();
-        assert_eq!(normalized, "https://mirror.example/cache");
-    }
-
-    #[test]
-    fn test_normalize_mirror_base_url_rejects_invalid_values() {
-        let cases = [
-            ("mirror.example", "invalid mirror URL"),
-            ("file:///tmp/mirror", "unsupported URL scheme"),
-            (
-                "https://mirror.example/cache?trace=abc",
-                "must not include query or fragment",
-            ),
-        ];
-
-        for (input, expected_fragment) in cases {
-            let err = normalize_mirror_base_url(input).unwrap_err();
-            let message = err.to_string();
-            assert!(
-                message.contains(expected_fragment),
-                "expected error for {input:?} to contain {expected_fragment:?}, got {message:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_invalid_mirror_url_helper_shape() {
-        let err = invalid_mirror_url("ftp://mirror.example/model.onnx", "unsupported scheme");
-
-        assert!(matches!(
-            &err,
-            DownloadError::InvalidMirrorUrl { url, reason }
-                if url == "ftp://mirror.example/model.onnx" && reason == "unsupported scheme"
-        ));
-        assert_eq!(
-            err.to_string(),
-            "invalid mirror URL 'ftp://mirror.example/model.onnx': unsupported scheme"
-        );
-        assert!(!err.is_retryable());
     }
 
     #[test]
@@ -2637,8 +1510,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let manifest = build_test_manifest("repo/model", "rev1", &[("model.onnx", b"model")]);
         let policy = ModelAcquisitionPolicy {
-            downloads_enabled: false,
-            offline: true,
+            install_enabled: false,
             max_model_bytes: Some(1),
             ..ModelAcquisitionPolicy::default()
         };
@@ -2652,47 +1524,24 @@ mod tests {
     }
 
     #[test]
-    fn classify_cache_detects_resume_stage_before_missing() {
+    fn classify_cache_reports_budget_block() {
         let tmp = tempfile::tempdir().unwrap();
-        let model_dir = tmp.path().join("model");
-        let staging_dir = tmp.path().join("model.downloading");
-        fs::create_dir_all(&staging_dir).unwrap();
-        fs::write(staging_dir.join("model.onnx"), b"partial").unwrap();
         let manifest = build_test_manifest("repo/model", "rev1", &[("model.onnx", b"model")]);
 
-        let report =
-            classify_model_cache(&model_dir, &manifest, &ModelAcquisitionPolicy::default());
-        assert_eq!(report.state_code(), "acquiring");
-        assert!(matches!(
-            report.state,
-            ModelCacheState::Acquiring {
-                bytes_present: 7,
-                total_bytes: 5,
-                ..
-            }
-        ));
+        let budget = ModelAcquisitionPolicy {
+            max_model_bytes: Some(1),
+            ..ModelAcquisitionPolicy::default()
+        };
+        let report = classify_model_cache(tmp.path(), &manifest, &budget);
+        assert_eq!(report.state_code(), "budget_blocked");
     }
 
     #[test]
-    fn classify_cache_ignores_stale_staging_over_complete_verified_install() {
-        // #370: a leftover (often empty) `.downloading` staging directory left
-        // by a failed download must not mask a complete, verified install.
-        // Before the fix `cass models status` reported such an install as
-        // not-installed/acquiring even after `install --from-file` succeeded.
+    fn classify_cache_reports_missing_files() {
         let tmp = tempfile::tempdir().unwrap();
         let model_dir = tmp.path().join("model");
         fs::create_dir_all(&model_dir).unwrap();
         fs::write(model_dir.join("model.onnx"), b"model").unwrap();
-        fs::write(model_dir.join("tokenizer.json"), b"tok").unwrap();
-        fs::write(
-            model_dir.join(".verified"),
-            "revision=rev1\nsource=from-file\n",
-        )
-        .unwrap();
-        // Leftover empty staging dir from a prior interrupted download.
-        let staging_dir = model_download_temp_dir(&model_dir);
-        fs::create_dir_all(&staging_dir).unwrap();
-
         let manifest = build_test_manifest(
             "repo/model",
             "rev1",
@@ -2701,78 +1550,15 @@ mod tests {
 
         let report =
             classify_model_cache(&model_dir, &manifest, &ModelAcquisitionPolicy::default());
+        assert_eq!(report.state_code(), "not_acquired");
+        assert!(matches!(
+            &report.state,
+            ModelCacheState::NotAcquired { missing_files } if missing_files == &["tokenizer.json"]
+        ));
         assert_eq!(
-            report.state_code(),
-            "acquired",
-            "a stale staging dir must not mask a complete verified install"
+            report.state.next_step("minilm").as_deref(),
+            Some("cass models install --model minilm --from-file <DIR>")
         );
-        assert!(report.is_usable());
-
-        // Regression guard: a genuinely incomplete install (missing file) plus a
-        // staging dir must still report acquiring — resume detection intact.
-        fs::remove_file(model_dir.join("tokenizer.json")).unwrap();
-        let report =
-            classify_model_cache(&model_dir, &manifest, &ModelAcquisitionPolicy::default());
-        assert_eq!(report.state_code(), "acquiring");
-    }
-
-    #[test]
-    fn download_error_chain_surfaces_tls_cause_and_hint() {
-        // #370: reqwest's top-level Display hides the TLS cause in its source
-        // chain. Our flattening + heuristic must surface it with a proxy hint.
-        #[derive(Debug)]
-        struct TlsCause;
-        impl std::fmt::Display for TlsCause {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "invalid peer certificate: UnknownIssuer")
-            }
-        }
-        impl std::error::Error for TlsCause {}
-
-        #[derive(Debug)]
-        struct SendErr(TlsCause);
-        impl std::fmt::Display for SendErr {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(
-                    f,
-                    "error sending request for url (https://cdn.example/model)"
-                )
-            }
-        }
-        impl std::error::Error for SendErr {
-            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-                Some(&self.0)
-            }
-        }
-
-        let chain = format_download_error_chain(&SendErr(TlsCause));
-        assert!(chain.contains("error sending request for url"));
-        assert!(
-            chain.contains("invalid peer certificate: UnknownIssuer"),
-            "source chain cause must be preserved: {chain}"
-        );
-        assert!(download_error_looks_like_tls(&chain.to_ascii_lowercase()));
-        assert!(!download_error_looks_like_tls("connection refused"));
-    }
-
-    #[test]
-    fn classify_cache_distinguishes_offline_and_budget_blocks() {
-        let tmp = tempfile::tempdir().unwrap();
-        let manifest = build_test_manifest("repo/model", "rev1", &[("model.onnx", b"model")]);
-
-        let offline = ModelAcquisitionPolicy {
-            offline: true,
-            ..ModelAcquisitionPolicy::default()
-        };
-        let report = classify_model_cache(tmp.path(), &manifest, &offline);
-        assert_eq!(report.state_code(), "offline_blocked");
-
-        let budget = ModelAcquisitionPolicy {
-            max_model_bytes: Some(1),
-            ..ModelAcquisitionPolicy::default()
-        };
-        let report = classify_model_cache(tmp.path(), &manifest, &budget);
-        assert_eq!(report.state_code(), "budget_blocked");
     }
 
     #[test]
@@ -2819,7 +1605,7 @@ mod tests {
         fs::write(model_dir.join("model.onnx"), b"m0del").unwrap();
         fs::write(
             model_dir.join(".verified"),
-            "revision=rev1\nsource=registry\n",
+            "revision=rev1\nsource=from-file\n",
         )
         .unwrap();
         let manifest = build_test_manifest("repo/model", "rev1", &[("model.onnx", b"model")]);
@@ -2859,7 +1645,9 @@ mod tests {
     }
 
     #[test]
-    fn classify_cache_reports_mirror_sourced_marker() {
+    fn classify_cache_treats_legacy_mirror_marker_as_acquired() {
+        // Pre-local-only installs may carry `source=mirror:<url>` markers.
+        // There is no mirror path anymore, but a verified install stays usable.
         let tmp = tempfile::tempdir().unwrap();
         let model_dir = tmp.path().join("model");
         fs::create_dir_all(&model_dir).unwrap();
@@ -2873,14 +1661,8 @@ mod tests {
 
         let report =
             classify_model_cache(&model_dir, &manifest, &ModelAcquisitionPolicy::default());
-        assert_eq!(report.state_code(), "mirror_sourced");
-        assert!(matches!(
-            report.state,
-            ModelCacheState::MirrorSourced {
-                mirror_base_url,
-                ..
-            } if mirror_base_url == "https://mirror.example/cache"
-        ));
+        assert_eq!(report.state_code(), "acquired");
+        assert!(report.is_usable());
     }
 
     #[test]
@@ -2914,23 +1696,6 @@ mod tests {
     }
 
     #[test]
-    fn test_check_version_mismatch_none() {
-        let tmp = tempfile::tempdir().unwrap();
-        let model_dir = tmp.path().join("model");
-        fs::create_dir_all(&model_dir).unwrap();
-        // Use the current pinned revision from the manifest
-        let manifest = ModelManifest::minilm_v2();
-        fs::write(
-            model_dir.join(".verified"),
-            format!("revision={}\n", manifest.revision),
-        )
-        .unwrap();
-
-        let result = check_version_mismatch(&model_dir, &manifest);
-        assert!(result.is_none());
-    }
-
-    #[test]
     fn test_model_file_local_name() {
         // Test that local_name() extracts basename from path with subdirectories
         let file = ModelFile {
@@ -2958,18 +1723,6 @@ mod tests {
     }
 
     #[test]
-    fn test_check_version_mismatch_found() {
-        let tmp = tempfile::tempdir().unwrap();
-        let model_dir = tmp.path().join("model");
-        fs::create_dir_all(&model_dir).unwrap();
-        fs::write(model_dir.join(".verified"), "revision=old_version\n").unwrap();
-
-        let manifest = ModelManifest::minilm_v2();
-        let result = check_version_mismatch(&model_dir, &manifest);
-        assert!(matches!(result, Some(ModelState::UpdateAvailable { .. })));
-    }
-
-    #[test]
     fn test_atomic_install_preserves_preexisting_legacy_backup_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let target_dir = tmp.path().join("model");
@@ -2980,11 +1733,11 @@ mod tests {
         fs::create_dir_all(&legacy_backup_dir).unwrap();
         fs::write(legacy_backup_dir.join("sentinel.txt"), "keep me").unwrap();
 
-        let downloader = ModelDownloader::new(target_dir.clone());
-        copy_model_fixtures(&downloader.temp_dir).unwrap();
-        fs::write(downloader.temp_dir.join(".verified"), "revision=new\n").unwrap();
+        let installer = ModelInstaller::new(target_dir.clone());
+        copy_model_fixtures(&installer.temp_dir).unwrap();
+        fs::write(installer.temp_dir.join(".verified"), "revision=new\n").unwrap();
 
-        downloader.atomic_install().unwrap();
+        installer.atomic_install().unwrap();
 
         assert_eq!(
             fs::read_to_string(legacy_backup_dir.join("sentinel.txt")).unwrap(),
@@ -3002,16 +1755,16 @@ mod tests {
         let target_dir = tmp.path().join("model");
         fs::write(&target_dir, "not a directory").unwrap();
 
-        let downloader = ModelDownloader::new(target_dir.clone());
-        copy_model_fixtures(&downloader.temp_dir).unwrap();
+        let installer = ModelInstaller::new(target_dir.clone());
+        copy_model_fixtures(&installer.temp_dir).unwrap();
 
-        let err = downloader.atomic_install().unwrap_err();
+        let err = installer.atomic_install().unwrap_err();
 
         assert!(
             err.to_string().contains("not a directory"),
             "unexpected error: {err}"
         );
-        assert!(downloader.temp_dir.exists());
+        assert!(installer.temp_dir.exists());
         assert_eq!(fs::read_to_string(&target_dir).unwrap(), "not a directory");
     }
 
@@ -3025,16 +1778,16 @@ mod tests {
         let missing_target = tmp.path().join("missing-model");
         symlink(&missing_target, &target_dir).unwrap();
 
-        let downloader = ModelDownloader::new(target_dir.clone());
-        copy_model_fixtures(&downloader.temp_dir).unwrap();
+        let installer = ModelInstaller::new(target_dir.clone());
+        copy_model_fixtures(&installer.temp_dir).unwrap();
 
-        let err = downloader.atomic_install().unwrap_err();
+        let err = installer.atomic_install().unwrap_err();
 
         assert!(
             err.to_string().contains("through symlink"),
             "unexpected error: {err}"
         );
-        assert!(downloader.temp_dir.exists());
+        assert!(installer.temp_dir.exists());
         assert!(
             fs::symlink_metadata(&target_dir)
                 .unwrap()
@@ -3045,48 +1798,51 @@ mod tests {
     }
 
     #[test]
-    fn test_write_verified_marker_overwrites_existing_marker() {
+    fn test_write_verified_marker_records_from_file_provenance() {
         let tmp = tempfile::tempdir().unwrap();
         let target_dir = tmp.path().join("model");
-        fs::create_dir_all(&target_dir).unwrap();
-        fs::write(target_dir.join(".verified"), "revision=old\n").unwrap();
+        let source_dir = tmp.path().join("source");
+        fs::create_dir_all(&source_dir).unwrap();
 
-        let downloader = ModelDownloader::new(target_dir.clone());
-        let manifest = ModelManifest::minilm_v2();
-        downloader.write_verified_marker(&manifest, None).unwrap();
+        let installer = ModelInstaller::new(target_dir);
+        fs::create_dir_all(&installer.temp_dir).unwrap();
+        let manifest = build_test_manifest("repo/model", "rev123", &[("model.onnx", b"m")]);
+        installer
+            .write_verified_marker(&source_dir, &manifest)
+            .unwrap();
 
-        let marker = fs::read_to_string(target_dir.join(".verified")).unwrap();
-        assert!(marker.contains(&format!("revision={}", manifest.revision)));
+        let marker = fs::read_to_string(installer.temp_dir.join(".verified")).unwrap();
+        assert!(marker.starts_with("revision=rev123\n"));
         assert!(marker.contains("verified_at="));
-        assert!(marker.contains("source=registry"));
+        assert!(marker.contains("source=from-file"));
+        assert!(marker.contains("source_path="));
+        assert!(marker.contains("fingerprint="));
     }
 
     #[test]
-    fn test_download_error_display() {
+    fn test_install_error_display() {
         let display_cases = [
             (
-                DownloadError::NetworkError("connection refused".into()),
-                "network error: connection refused",
-            ),
-            (
-                DownloadError::VerificationFailed {
+                InstallError::VerificationFailed {
                     file: "test.onnx".into(),
                     expected: "abc".into(),
                     actual: "def".into(),
                 },
                 "verification failed for test.onnx: expected abc, got def",
             ),
-            (DownloadError::Cancelled, "download cancelled"),
-            (DownloadError::Timeout, "download timed out"),
             (
-                DownloadError::HttpError {
-                    status: 503,
-                    message: "service unavailable".into(),
+                InstallError::MissingSourceFile {
+                    file: "model.onnx".into(),
+                    source_dir: "/models/src".into(),
                 },
-                "HTTP error 503: service unavailable",
+                "required file 'model.onnx' not found in /models/src",
             ),
             (
-                DownloadError::ManifestNotVerified {
+                InstallError::SourceIsTarget("/models/minilm".into()),
+                "source directory /models/minilm is the model install target itself",
+            ),
+            (
+                InstallError::ManifestNotVerified {
                     model_id: "test-model".into(),
                     unverified_files: vec!["model.onnx".into(), "config.json".into()],
                     revision_unpinned: true,
@@ -3094,19 +1850,12 @@ mod tests {
                 "model 'test-model' is not production-ready: 2 file(s) have placeholder checksums and revision is not pinned",
             ),
             (
-                DownloadError::ManifestNotVerified {
+                InstallError::ManifestNotVerified {
                     model_id: "test-model".into(),
                     unverified_files: vec!["model.onnx".into()],
                     revision_unpinned: false,
                 },
                 "model 'test-model' is not production-ready: 1 file(s) have placeholder checksums",
-            ),
-            (
-                DownloadError::InvalidMirrorUrl {
-                    url: "ftp://mirror.example/model.onnx".into(),
-                    reason: "unsupported scheme".into(),
-                },
-                "invalid mirror URL 'ftp://mirror.example/model.onnx': unsupported scheme",
             ),
         ];
 
@@ -3114,16 +1863,19 @@ mod tests {
             assert_eq!(err.to_string(), expected);
         }
 
-        let err: DownloadError = std::io::Error::other("disk full").into();
+        let err: InstallError = std::io::Error::other("disk full").into();
 
         assert_eq!(err.to_string(), "I/O error: disk full");
         let source = err.source().expect("I/O errors expose their source");
         assert_eq!(source.to_string(), "disk full");
 
         assert!(
-            DownloadError::NetworkError("connection refused".into())
-                .source()
-                .is_none(),
+            InstallError::MissingSourceFile {
+                file: "x".into(),
+                source_dir: "y".into(),
+            }
+            .source()
+            .is_none(),
             "non-source variants must not gain an error source"
         );
     }
@@ -3194,40 +1946,51 @@ mod tests {
     }
 
     #[test]
-    fn test_downloader_cancellation() {
-        let tmp = tempfile::tempdir().unwrap();
-        let downloader = ModelDownloader::new(tmp.path().join("model"));
-
-        assert!(!downloader.is_cancelled());
-        downloader.cancel();
-        assert!(downloader.is_cancelled());
-    }
-
-    #[test]
     fn test_prepare_temp_dir_prunes_stale_entries() {
         let tmp = tempfile::tempdir().unwrap();
-        let downloader = ModelDownloader::new(tmp.path().join("model"));
-        fs::create_dir_all(&downloader.temp_dir).unwrap();
-        // model.safetensors is in the manifest → must be kept as a partial resume.
-        fs::write(downloader.temp_dir.join("model.safetensors"), b"partial").unwrap();
+        let installer = ModelInstaller::new(tmp.path().join("model"));
+        fs::create_dir_all(&installer.temp_dir).unwrap();
+        // model.safetensors is in the manifest → kept in staging for the copy.
+        fs::write(installer.temp_dir.join("model.safetensors"), b"partial").unwrap();
         // model.onnx is no longer in the manifest (cass #308) → must be pruned.
-        fs::write(downloader.temp_dir.join("model.onnx"), b"stale-onnx").unwrap();
-        fs::write(downloader.temp_dir.join("stale.bin"), b"stale").unwrap();
-        fs::create_dir_all(downloader.temp_dir.join("nested")).unwrap();
+        fs::write(installer.temp_dir.join("model.onnx"), b"stale-onnx").unwrap();
+        fs::write(installer.temp_dir.join("stale.bin"), b"stale").unwrap();
+        fs::create_dir_all(installer.temp_dir.join("nested")).unwrap();
         fs::write(
-            downloader.temp_dir.join("nested").join("should-remove.txt"),
+            installer.temp_dir.join("nested").join("should-remove.txt"),
             b"stale",
         )
         .unwrap();
 
-        downloader
+        installer
             .prepare_temp_dir(&ModelManifest::minilm_v2())
             .unwrap();
 
-        assert!(downloader.temp_dir.join("model.safetensors").exists());
-        assert!(!downloader.temp_dir.join("model.onnx").exists());
-        assert!(!downloader.temp_dir.join("stale.bin").exists());
-        assert!(!downloader.temp_dir.join("nested").exists());
+        assert!(installer.temp_dir.join("model.safetensors").exists());
+        assert!(!installer.temp_dir.join("model.onnx").exists());
+        assert!(!installer.temp_dir.join("stale.bin").exists());
+        assert!(!installer.temp_dir.join("nested").exists());
+    }
+
+    #[test]
+    fn test_prepare_temp_dir_removes_legacy_downloading_sibling() {
+        // A `<target>.downloading` dir is debris from the pre-local-only
+        // downloader; the local installer must clean it up before staging.
+        let tmp = tempfile::tempdir().unwrap();
+        let target_dir = tmp.path().join("model");
+        let installer = ModelInstaller::new(target_dir.clone());
+        let legacy_dir = model_staging_dir(&target_dir, "downloading");
+        fs::create_dir_all(&legacy_dir).unwrap();
+        fs::write(legacy_dir.join("partial.onnx"), b"stale").unwrap();
+
+        installer
+            .prepare_temp_dir(&ModelManifest::minilm_v2())
+            .unwrap();
+
+        assert!(
+            !legacy_dir.exists(),
+            "legacy .downloading staging dir must be removed"
+        );
     }
 
     #[test]
@@ -3236,18 +1999,21 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let tmp = tempfile::tempdir().unwrap();
-        let downloader = ModelDownloader::new(tmp.path().join("model"));
-        fs::create_dir_all(&downloader.temp_dir).unwrap();
+        let installer = ModelInstaller::new(tmp.path().join("model"));
+        fs::create_dir_all(&installer.temp_dir).unwrap();
         let outside = tmp.path().join("outside.bin");
         fs::write(&outside, b"outside").unwrap();
-        symlink(&outside, downloader.temp_dir.join("model.onnx")).unwrap();
+        symlink(&outside, installer.temp_dir.join("model.onnx")).unwrap();
 
-        downloader
+        installer
             .prepare_temp_dir(&ModelManifest::minilm_v2())
             .unwrap();
 
-        let metadata = fs::symlink_metadata(downloader.temp_dir.join("model.onnx"));
-        assert!(metadata.is_err(), "symlink should be removed before resume");
+        let metadata = fs::symlink_metadata(installer.temp_dir.join("model.onnx"));
+        assert!(
+            metadata.is_err(),
+            "symlink should be removed before staging"
+        );
         assert!(
             outside.exists(),
             "cleanup must not touch the symlink target"
@@ -3260,13 +2026,13 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let tmp = tempfile::tempdir().unwrap();
-        let downloader = ModelDownloader::new(tmp.path().join("model"));
-        let outside = tmp.path().join("outside-download-cache");
+        let installer = ModelInstaller::new(tmp.path().join("model"));
+        let outside = tmp.path().join("outside-install-cache");
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("stale.bin"), b"must remain").unwrap();
-        symlink(&outside, &downloader.temp_dir).unwrap();
+        symlink(&outside, &installer.temp_dir).unwrap();
 
-        let err = downloader
+        let err = installer
             .prepare_temp_dir(&ModelManifest::minilm_v2())
             .expect_err("symlinked temp dir must be rejected before pruning");
 
@@ -3276,7 +2042,7 @@ mod tests {
         );
         assert_eq!(fs::read(outside.join("stale.bin")).unwrap(), b"must remain");
         assert!(
-            fs::symlink_metadata(&downloader.temp_dir)
+            fs::symlink_metadata(&installer.temp_dir)
                 .unwrap()
                 .file_type()
                 .is_symlink()
@@ -3289,20 +2055,20 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let tmp = tempfile::tempdir().unwrap();
-        let downloader = ModelDownloader::new(tmp.path().join("model"));
-        let outside = tmp.path().join("outside-download-cache");
+        let installer = ModelInstaller::new(tmp.path().join("model"));
+        let outside = tmp.path().join("outside-install-cache");
         fs::create_dir_all(&outside).unwrap();
         fs::write(outside.join("sentinel.bin"), b"must remain").unwrap();
-        symlink(&outside, &downloader.temp_dir).unwrap();
+        symlink(&outside, &installer.temp_dir).unwrap();
 
-        downloader.cleanup_temp();
+        installer.cleanup_temp();
 
         assert_eq!(
             fs::read(outside.join("sentinel.bin")).unwrap(),
             b"must remain"
         );
         assert!(
-            fs::symlink_metadata(&downloader.temp_dir)
+            fs::symlink_metadata(&installer.temp_dir)
                 .unwrap()
                 .file_type()
                 .is_symlink()
@@ -3310,302 +2076,246 @@ mod tests {
     }
 
     #[test]
-    fn test_retryable_error_classification() {
-        let cases = [
-            (DownloadError::NetworkError("boom".into()), true),
-            (DownloadError::Timeout, true),
-            (
-                DownloadError::HttpError {
-                    status: 503,
-                    message: "unavailable".into(),
-                },
-                true,
-            ),
-            (
-                DownloadError::HttpError {
-                    status: 404,
-                    message: "missing".into(),
-                },
-                false,
-            ),
-            (DownloadError::Cancelled, false),
-            (
-                DownloadError::VerificationFailed {
-                    file: "model.onnx".into(),
-                    expected: "a".into(),
-                    actual: "b".into(),
-                },
-                false,
-            ),
-        ];
-
-        for (err, expected) in cases {
-            assert_eq!(
-                err.is_retryable(),
-                expected,
-                "retryability mismatch for {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_cleanup_temp_for_error_preserves_partial_downloads_on_cancelled() {
-        let tmp = tempfile::tempdir().unwrap();
-        let downloader = ModelDownloader::new(tmp.path().join("model"));
-        fs::create_dir_all(&downloader.temp_dir).unwrap();
-        let partial = downloader.temp_dir.join("model.onnx");
-        fs::write(&partial, b"partial").unwrap();
-
-        downloader.cleanup_temp_for_error(&DownloadError::Cancelled);
-
-        assert!(
-            partial.exists(),
-            "cancelled downloads should keep partial files for a resumable retry"
-        );
-    }
-
-    #[test]
-    fn test_fail_if_cancelled_preserves_partial_downloads() {
-        let tmp = tempfile::tempdir().unwrap();
-        let downloader = ModelDownloader::new(tmp.path().join("model"));
-        fs::create_dir_all(&downloader.temp_dir).unwrap();
-        let partial = downloader.temp_dir.join("model.onnx");
-        fs::write(&partial, b"partial").unwrap();
-        downloader.cancel();
-
-        let result = downloader.fail_if_cancelled();
-
-        assert!(matches!(result, Err(DownloadError::Cancelled)));
-        assert!(
-            partial.exists(),
-            "early cancellation checks should not discard resumable partial files"
-        );
-    }
-
-    #[test]
-    fn test_cleanup_temp_for_error_discards_temp_after_verification_failure() {
-        let tmp = tempfile::tempdir().unwrap();
-        let downloader = ModelDownloader::new(tmp.path().join("model"));
-        fs::create_dir_all(&downloader.temp_dir).unwrap();
-        let partial = downloader.temp_dir.join("model.onnx");
-        fs::write(&partial, b"partial").unwrap();
-
-        downloader.cleanup_temp_for_error(&DownloadError::VerificationFailed {
-            file: "model.onnx".into(),
-            expected: "good".into(),
-            actual: "bad".into(),
-        });
-
-        assert!(
-            !downloader.temp_dir.exists(),
-            "verification failures should discard the temp directory to avoid reusing corrupt data"
-        );
-    }
-
-    #[test]
-    fn test_download_with_mirror_installs_verified_model_from_http_mirror() {
+    fn test_install_from_directory_installs_verified_model() {
         let files = [
-            ("onnx/model.onnx", b"mirror-model".as_slice()),
+            ("onnx/model.onnx", b"local-model".as_slice()),
             ("tokenizer.json", br#"{"tokenizer":"ok"}"#.as_slice()),
         ];
-        let manifest = build_test_manifest("mirror/test-model", "rev123", &files);
-        let route_prefix = "/cache";
-        let routes: Vec<(String, MirrorRoute)> = manifest
-            .files
-            .iter()
-            .zip(files.iter())
-            .map(|(file, (_, body))| {
-                (
-                    mirror_route_path(route_prefix, &manifest, file),
-                    MirrorRoute {
-                        body: body.to_vec(),
-                        content_type: "application/octet-stream",
-                        chunk_size: 64,
-                        chunk_delay: Duration::ZERO,
-                    },
-                )
-            })
-            .collect();
-        let server = start_mirror_fixture_server(routes);
+        let manifest = build_test_manifest("local/test-model", "rev123", &files);
         let tmp = tempfile::tempdir().unwrap();
-        let downloader = ModelDownloader::new(tmp.path().join("model"));
-        let mirror_base = format!("{}/cache/", server.base_url);
+        let source_dir = tmp.path().join("source");
+        write_source_dir(&source_dir, &files);
+        let target_dir = tmp.path().join("model");
+        let installer = ModelInstaller::new(target_dir.clone());
 
-        downloader
-            .download_with_mirror(&manifest, Some(&mirror_base), None)
+        installer
+            .install_from_directory(&source_dir, &manifest)
             .unwrap();
 
-        for (name, body) in files {
-            let installed = downloader.target_dir.join(
-                Path::new(name)
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .as_ref(),
-            );
-            assert_eq!(
-                fs::read(installed).unwrap(),
-                body,
-                "mirror install should persist the downloaded payload"
-            );
-        }
-        let marker = fs::read_to_string(downloader.target_dir.join(".verified")).unwrap();
+        // Files land under their local basenames with exact contents.
+        assert_eq!(
+            fs::read(target_dir.join("model.onnx")).unwrap(),
+            b"local-model"
+        );
+        assert_eq!(
+            fs::read(target_dir.join("tokenizer.json")).unwrap(),
+            br#"{"tokenizer":"ok"}"#
+        );
+
+        let marker = fs::read_to_string(target_dir.join(".verified")).unwrap();
         assert!(
             marker.contains("revision=rev123"),
-            "verified marker should preserve manifest identity after mirror install"
+            "verified marker should preserve manifest identity: {marker}"
         );
         assert!(
-            marker.contains("source=mirror:"),
-            "verified marker should record mirror source"
+            marker.contains("source=from-file"),
+            "verified marker should record local-file source: {marker}"
         );
 
-        let requests = server.requests();
+        // The installed model classifies as acquired/usable.
+        let report =
+            classify_model_cache(&target_dir, &manifest, &ModelAcquisitionPolicy::default());
+        assert_eq!(report.state_code(), "acquired");
+        assert!(report.is_usable());
+
+        // No staging debris remains.
+        assert!(!installer.temp_dir.exists());
+    }
+
+    #[test]
+    fn test_install_from_directory_reports_missing_source_file() {
+        let files = [
+            ("model.onnx", b"local-model".as_slice()),
+            ("tokenizer.json", b"tok".as_slice()),
+        ];
+        let manifest = build_test_manifest("local/test-model", "rev123", &files);
+        let tmp = tempfile::tempdir().unwrap();
+        let source_dir = tmp.path().join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("model.onnx"), b"local-model").unwrap();
+        // tokenizer.json is absent.
+        let target_dir = tmp.path().join("model");
+        let installer = ModelInstaller::new(target_dir.clone());
+
+        let err = installer
+            .install_from_directory(&source_dir, &manifest)
+            .unwrap_err();
+
+        assert!(
+            matches!(
+                err,
+                InstallError::MissingSourceFile { ref file, .. } if file == "tokenizer.json"
+            ),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !target_dir.exists(),
+            "a failed install must not create the target directory"
+        );
+        assert!(
+            !installer.temp_dir.exists(),
+            "staging must be discarded after a missing-source-file failure"
+        );
+    }
+
+    #[test]
+    fn test_install_from_directory_checksum_failure_preserves_existing_install() {
+        let good_files = [("model.onnx", b"good-model".as_slice())];
+        let good_manifest = build_test_manifest("local/test-model", "rev1", &good_files);
+        let tmp = tempfile::tempdir().unwrap();
+        let source_v1 = tmp.path().join("source-v1");
+        write_source_dir(&source_v1, &good_files);
+        let target_dir = tmp.path().join("model");
+        let installer = ModelInstaller::new(target_dir.clone());
+        installer
+            .install_from_directory(&source_v1, &good_manifest)
+            .unwrap();
+        let marker_before = fs::read_to_string(target_dir.join(".verified")).unwrap();
+
+        // Second manifest expects different content but the source ships
+        // corrupt bytes: verification must fail before publication.
+        let bad_manifest = build_test_manifest(
+            "local/test-model",
+            "rev2",
+            &[("model.onnx", b"expected-other")],
+        );
+        let source_v2 = tmp.path().join("source-v2");
+        fs::create_dir_all(&source_v2).unwrap();
+        fs::write(source_v2.join("model.onnx"), b"corrupt-bytes").unwrap();
+
+        let err = installer
+            .install_from_directory(&source_v2, &bad_manifest)
+            .unwrap_err();
+
+        assert!(
+            matches!(err, InstallError::VerificationFailed { .. }),
+            "corrupt local payloads must fail checksum verification, got: {err}"
+        );
+        assert!(
+            !installer.temp_dir.exists(),
+            "verification failures should discard the staging directory"
+        );
         assert_eq!(
-            requests.len(),
-            manifest.files.len(),
-            "expected one request per manifest file"
+            fs::read(target_dir.join("model.onnx")).unwrap(),
+            b"good-model",
+            "the prior installation must remain intact"
         );
-        assert!(
-            requests
-                .iter()
-                .all(|request| request.path.starts_with("/cache/")),
-            "mirror requests should stay under the configured mirror prefix: {requests:?}"
+        assert_eq!(
+            fs::read_to_string(target_dir.join(".verified")).unwrap(),
+            marker_before,
+            "the prior .verified marker must remain intact"
         );
     }
 
     #[test]
-    fn test_download_with_mirror_reports_missing_artifact_from_http_mirror() {
-        let file_body = b"mirror-model".as_slice();
-        let manifest = build_test_manifest(
-            "mirror/test-model",
-            "rev404",
-            &[("onnx/model.onnx", file_body)],
-        );
-        let server = start_mirror_fixture_server(Vec::new());
+    fn test_install_from_directory_rejects_source_equal_to_target() {
+        let files = [("model.onnx", b"local-model".as_slice())];
+        let manifest = build_test_manifest("local/test-model", "rev1", &files);
         let tmp = tempfile::tempdir().unwrap();
-        let downloader = ModelDownloader::new(tmp.path().join("model"));
-        let mirror_base = format!("{}/cache", server.base_url);
+        let target_dir = tmp.path().join("model");
+        write_source_dir(&target_dir, &files);
+        let installer = ModelInstaller::new(target_dir.clone());
 
-        let err = downloader
-            .download_with_mirror(&manifest, Some(&mirror_base), None)
+        let err = installer
+            .install_from_directory(&target_dir, &manifest)
             .unwrap_err();
 
         assert!(
-            matches!(err, DownloadError::HttpError { status: 404, .. }),
-            "missing mirror artifacts should surface as HTTP 404, got: {err}"
+            matches!(err, InstallError::SourceIsTarget(_)),
+            "installing the target onto itself must be refused, got: {err}"
         );
-        let requests = server.requests();
-        assert_eq!(requests.len(), 1);
-        assert!(
-            requests[0].path.contains("/resolve/"),
-            "mirror request should target the resolved artifact path: {requests:?}"
+        assert_eq!(
+            fs::read(target_dir.join("model.onnx")).unwrap(),
+            b"local-model",
+            "the in-place directory must not be touched"
         );
     }
 
     #[test]
-    fn test_download_with_mirror_discards_corrupt_payload_from_http_mirror() {
-        let manifest = build_test_manifest(
-            "mirror/test-model",
-            "revbad",
-            &[("onnx/model.onnx", b"expected-bytes".as_slice())],
-        );
-        let route_prefix = "/cache";
-        let server = start_mirror_fixture_server(vec![(
-            mirror_route_path(route_prefix, &manifest, &manifest.files[0]),
-            MirrorRoute {
-                body: b"corrupt-bytes".to_vec(),
-                content_type: "application/octet-stream",
-                chunk_size: 64,
-                chunk_delay: Duration::ZERO,
-            },
-        )]);
+    fn test_install_from_directory_rejects_placeholder_checksum_manifest() {
         let tmp = tempfile::tempdir().unwrap();
-        let downloader = ModelDownloader::new(tmp.path().join("model"));
-        let mirror_base = format!("{server_base}/cache", server_base = server.base_url);
+        let manifest = ModelManifest {
+            id: "bake-off-candidate".into(),
+            repo: "repo/model".into(),
+            revision: "rev1".into(),
+            files: vec![ModelFile {
+                name: "model.onnx".into(),
+                sha256: PLACEHOLDER_CHECKSUM.into(),
+                size: 5,
+            }],
+            license: "Apache-2.0".into(),
+        };
+        let source_dir = tmp.path().join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("model.onnx"), b"model").unwrap();
+        let target_dir = tmp.path().join("model");
+        let installer = ModelInstaller::new(target_dir.clone());
 
-        let err = downloader
-            .download_with_mirror(&manifest, Some(&mirror_base), None)
+        let err = installer
+            .install_from_directory(&source_dir, &manifest)
             .unwrap_err();
 
         assert!(
-            matches!(err, DownloadError::VerificationFailed { .. }),
-            "corrupt mirror payloads must fail checksum verification, got: {err}"
+            matches!(err, InstallError::ManifestNotVerified { .. }),
+            "placeholder manifests must be rejected before any copy, got: {err}"
         );
-        assert!(
-            !downloader.temp_dir.exists(),
-            "verification failures should discard the temp directory so corrupt payloads are not reused"
-        );
-        assert!(
-            !downloader.target_dir.exists(),
-            "corrupt mirror payloads must not be promoted into the installed model directory"
-        );
+        assert!(!target_dir.exists());
     }
 
     #[test]
-    fn test_download_with_mirror_resumes_after_cancelled_partial_download() {
-        let large_payload = vec![b'x'; 128 * 1024];
-        let manifest = build_test_manifest(
-            "mirror/test-model",
-            "revresume",
-            &[("onnx/model.onnx", &large_payload)],
-        );
-        let route_prefix = "/cache";
-        let server = start_mirror_fixture_server(vec![(
-            mirror_route_path(route_prefix, &manifest, &manifest.files[0]),
-            MirrorRoute {
-                body: large_payload.clone(),
-                content_type: "application/octet-stream",
-                chunk_size: 1024,
-                chunk_delay: Duration::from_millis(2),
-            },
-        )]);
+    fn test_install_from_directory_replaces_existing_install_atomically() {
+        let files_v1 = [("model.onnx", b"model-v1".as_slice())];
+        let manifest_v1 = build_test_manifest("local/test-model", "rev1", &files_v1);
         let tmp = tempfile::tempdir().unwrap();
-        let downloader = Arc::new(ModelDownloader::new(tmp.path().join("model")));
-        let mirror_base = format!("{server_base}/cache", server_base = server.base_url);
-        let cancel_once = Arc::new(AtomicBool::new(false));
-        let canceller = Arc::clone(&downloader);
-        let cancel_flag = Arc::clone(&cancel_once);
+        let source_v1 = tmp.path().join("source-v1");
+        write_source_dir(&source_v1, &files_v1);
+        let target_dir = tmp.path().join("model");
+        let installer = ModelInstaller::new(target_dir.clone());
+        installer
+            .install_from_directory(&source_v1, &manifest_v1)
+            .unwrap();
+        // Extra junk in the old install must not survive replacement.
+        fs::write(target_dir.join("junk.bin"), b"junk").unwrap();
 
-        let cancelled = downloader.download_with_mirror(
-            &manifest,
-            Some(&mirror_base),
-            Some(Arc::new(move |progress| {
-                if progress.total_bytes >= 16 * 1024
-                    && cancel_flag
-                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                        .is_ok()
-                {
-                    canceller.cancel();
-                }
-            })),
-        );
-
-        assert!(
-            matches!(cancelled, Err(DownloadError::Cancelled)),
-            "first mirror attempt should stop with a cancellation so we can verify resumable recovery"
-        );
-        let partial_path = downloader.temp_dir.join("model.onnx");
-        let partial_size = fs::metadata(&partial_path).unwrap().len();
-        assert!(
-            partial_size > 0 && partial_size < large_payload.len() as u64,
-            "cancelled run should preserve a partial download for resume; got {partial_size} bytes"
-        );
-
-        downloader
-            .download_with_mirror(&manifest, Some(&mirror_base), None)
+        let files_v2 = [("model.onnx", b"model-v2".as_slice())];
+        let manifest_v2 = build_test_manifest("local/test-model", "rev2", &files_v2);
+        let source_v2 = tmp.path().join("source-v2");
+        write_source_dir(&source_v2, &files_v2);
+        installer
+            .install_from_directory(&source_v2, &manifest_v2)
             .unwrap();
 
         assert_eq!(
-            fs::read(downloader.target_dir.join("model.onnx")).unwrap(),
-            large_payload,
-            "rerun after cancellation should finish the mirrored download and install the exact payload"
+            fs::read(target_dir.join("model.onnx")).unwrap(),
+            b"model-v2"
         );
-        let requests = server.requests();
+        let marker = fs::read_to_string(target_dir.join(".verified")).unwrap();
+        assert!(marker.contains("revision=rev2"), "marker: {marker}");
         assert!(
-            requests
-                .iter()
-                .any(|request| request.range_start == Some(partial_size)),
-            "rerun should resume from the preserved partial via Range requests; saw requests: {requests:?}"
+            !target_dir.join("junk.bin").exists(),
+            "the previous install must be fully replaced, not merged"
         );
+        assert!(!installer.temp_dir.exists());
+    }
+
+    #[test]
+    fn test_install_from_directory_rejects_non_directory_source() {
+        let files = [("model.onnx", b"local-model".as_slice())];
+        let manifest = build_test_manifest("local/test-model", "rev1", &files);
+        let tmp = tempfile::tempdir().unwrap();
+        let source_file = tmp.path().join("source.bin");
+        fs::write(&source_file, b"not a dir").unwrap();
+        let target_dir = tmp.path().join("model");
+        let installer = ModelInstaller::new(target_dir.clone());
+
+        let err = installer
+            .install_from_directory(&source_file, &manifest)
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("not a directory"),
+            "unexpected error: {err}"
+        );
+        assert!(!target_dir.exists());
     }
 }

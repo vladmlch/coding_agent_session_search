@@ -388,10 +388,11 @@ Action: this is usually not an archive repair issue. Run:
 cass models status --json
 ```
 
-Install models only when the operator consents:
+Install models only when the operator chooses, and only from local files
+(cass never downloads):
 
 ```bash
-cass models install --json
+cass models install --from-file <model-dir>
 ```
 
 ### Configured Remote Sources

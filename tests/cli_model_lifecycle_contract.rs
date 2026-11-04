@@ -34,15 +34,12 @@ fn models_install_from_file_keeps_acquisition_data_dir_scoped() -> Result<(), St
             "/seeded/models/all-minilm-l6-v2",
             "--data-dir",
             "/cass/models",
-            "--yes",
         ])?;
 
         match cli.command {
             Some(Commands::Models(ModelsCommand::Install {
                 model,
-                mirror: None,
-                from_file: Some(from_file),
-                yes: true,
+                from_file,
                 data_dir: Some(data_dir),
             })) if model == "all-minilm-l6-v2"
                 && from_file.display().to_string() == "/seeded/models/all-minilm-l6-v2"
@@ -58,98 +55,111 @@ fn models_install_from_file_keeps_acquisition_data_dir_scoped() -> Result<(), St
 }
 
 #[test]
-fn models_install_from_mirror_keeps_acquisition_data_dir_scoped() -> Result<(), String> {
+fn models_install_rejects_mirror_flag_as_removed() -> Result<(), String> {
     run_on_large_stack(|| {
-        let cli = parse(&[
-            "cass",
-            "models",
-            "install",
-            "--model",
-            "all-minilm-l6-v2",
-            "--mirror",
-            "https://mirror.example/models",
-            "--data-dir",
-            "/cass/models",
-            "--yes",
-        ])?;
-
-        match cli.command {
-            Some(Commands::Models(ModelsCommand::Install {
-                model,
-                mirror: Some(mirror),
-                from_file: None,
-                yes: true,
-                data_dir: Some(data_dir),
-            })) if model == "all-minilm-l6-v2"
-                && mirror == "https://mirror.example/models"
-                && data_dir.display().to_string() == "/cass/models" =>
-            {
-                Ok(())
+        // cass is local-only: `--mirror` was removed with the downloader and
+        // must fail at parse time, both as a separate flag and with `=` syntax.
+        for args in [
+            vec![
+                "cass",
+                "models",
+                "install",
+                "--mirror",
+                "https://mirror.example/models",
+                "--from-file",
+                "/seeded/models/all-minilm-l6-v2",
+            ],
+            vec![
+                "cass",
+                "models",
+                "install",
+                "--mirror=https://mirror.example/models",
+                "--from-file",
+                "/seeded/models/all-minilm-l6-v2",
+            ],
+        ] {
+            match Cli::try_parse_from(&args) {
+                Err(err) if err.kind() == ErrorKind::UnknownArgument => {}
+                Err(err) => {
+                    return Err(format!(
+                        "expected --mirror to fail as an unknown argument for {args:?}, got {:?}: {err}",
+                        err.kind()
+                    ));
+                }
+                Ok(cli) => {
+                    return Err(format!("expected --mirror to be rejected, parsed: {cli:?}"));
+                }
             }
-            other => Err(format!(
-                "expected mirror model acquisition controls to parse: {other:?}"
-            )),
         }
+        Ok(())
     })
 }
 
 #[test]
-fn models_install_rejects_ambiguous_mirror_and_from_file_sources() -> Result<(), String> {
+fn models_install_rejects_yes_flag_as_removed() -> Result<(), String> {
     run_on_large_stack(|| {
-        let result = Cli::try_parse_from([
-            "cass",
-            "models",
-            "install",
-            "--mirror",
-            "https://mirror.example/models",
-            "--from-file",
-            "/seeded/models/all-minilm-l6-v2",
-            "--data-dir",
-            "/cass/models",
-            "--yes",
-        ]);
+        // There is no download confirmation left to skip: `-y/--yes` was
+        // removed from `models install` with the download prompt.
+        for args in [
+            vec![
+                "cass",
+                "models",
+                "install",
+                "--from-file",
+                "/seeded/models",
+                "--yes",
+            ],
+            vec![
+                "cass",
+                "models",
+                "install",
+                "--from-file",
+                "/seeded/models",
+                "-y",
+            ],
+        ] {
+            match Cli::try_parse_from(&args) {
+                Err(err) if err.kind() == ErrorKind::UnknownArgument => {}
+                Err(err) => {
+                    return Err(format!(
+                        "expected --yes/-y to fail as an unknown argument for {args:?}, got {:?}: {err}",
+                        err.kind()
+                    ));
+                }
+                Ok(cli) => {
+                    return Err(format!("expected --yes to be rejected, parsed: {cli:?}"));
+                }
+            }
+        }
+        Ok(())
+    })
+}
 
-        match result {
-            Err(err) if err.kind() == ErrorKind::ArgumentConflict => Ok(()),
+#[test]
+fn models_install_requires_from_file() -> Result<(), String> {
+    run_on_large_stack(|| {
+        // cass is local-only: `--from-file` is required; a bare
+        // `cass models install` has no remote source to fall back to and
+        // must fail at parse time instead of prompting for a download.
+        match Cli::try_parse_from(["cass", "models", "install", "--data-dir", "/cass/models"]) {
+            Err(err) if err.kind() == ErrorKind::MissingRequiredArgument => Ok(()),
             Err(err) => Err(format!(
-                "expected mirror/from-file acquisition conflict, got {:?}: {err}",
+                "expected missing --from-file to fail as MissingRequiredArgument, got {:?}: {err}",
                 err.kind()
             )),
             Ok(cli) => Err(format!(
-                "expected mirror/from-file acquisition conflict, parsed: {cli:?}"
+                "expected install without --from-file to be rejected, parsed: {cli:?}"
             )),
         }
     })
 }
 
 #[test]
-fn models_install_defaults_to_standard_model_with_confirmation() -> Result<(), String> {
+fn models_verify_rejects_repair_flag_as_removed() -> Result<(), String> {
     run_on_large_stack(|| {
-        let cli = parse(&["cass", "models", "install", "--data-dir", "/cass/models"])?;
-
-        match cli.command {
-            Some(Commands::Models(ModelsCommand::Install {
-                model,
-                mirror: None,
-                from_file: None,
-                yes: false,
-                data_dir: Some(data_dir),
-            })) if model == "all-minilm-l6-v2"
-                && data_dir.display().to_string() == "/cass/models" =>
-            {
-                Ok(())
-            }
-            other => Err(format!(
-                "expected default model acquisition controls to stay confirmation-gated: {other:?}"
-            )),
-        }
-    })
-}
-
-#[test]
-fn models_verify_repair_controls_remain_data_dir_scoped() -> Result<(), String> {
-    run_on_large_stack(|| {
-        let cli = parse(&[
+        // `--repair` re-downloaded corrupted files; with no network path it
+        // was removed. Verification stays read-only.
+        match Cli::try_parse_from([
             "cass",
             "models",
             "verify",
@@ -159,28 +169,19 @@ fn models_verify_repair_controls_remain_data_dir_scoped() -> Result<(), String> 
             "--data-dir",
             "/cass/models",
             "--json",
-        ])?;
-
-        match cli.command {
-            Some(Commands::Models(ModelsCommand::Verify {
-                model,
-                repair: true,
-                data_dir: Some(data_dir),
-                json: true,
-            })) if model == "multilingual-minilm"
-                && data_dir.display().to_string() == "/cass/models" =>
-            {
-                Ok(())
-            }
-            other => Err(format!(
-                "expected data-dir scoped model verify repair controls: {other:?}"
+        ]) {
+            Err(err) if err.kind() == ErrorKind::UnknownArgument => Ok(()),
+            Err(err) => Err(format!(
+                "expected --repair to fail as an unknown argument, got {:?}: {err}",
+                err.kind()
             )),
+            Ok(cli) => Err(format!("expected --repair to be rejected, parsed: {cli:?}")),
         }
     })
 }
 
 #[test]
-fn models_verify_defaults_to_inspection_without_repair() -> Result<(), String> {
+fn models_verify_defaults_to_inspection_only() -> Result<(), String> {
     run_on_large_stack(|| {
         let cli = parse(&[
             "cass",
@@ -194,7 +195,6 @@ fn models_verify_defaults_to_inspection_without_repair() -> Result<(), String> {
         match cli.command {
             Some(Commands::Models(ModelsCommand::Verify {
                 model,
-                repair: false,
                 data_dir: Some(data_dir),
                 json: true,
             })) if model == "all-minilm-l6-v2"
@@ -374,9 +374,11 @@ fn models_remove_defaults_to_interactive_reclamation() -> Result<(), String> {
 }
 
 #[test]
-fn models_check_update_reports_against_scoped_data_dir() -> Result<(), String> {
+fn models_check_update_is_removed() -> Result<(), String> {
     run_on_large_stack(|| {
-        let cli = parse(&[
+        // There is nothing to check an update against: installs pin the
+        // manifest revision and cass never reaches a remote registry.
+        match Cli::try_parse_from([
             "cass",
             "models",
             "check-update",
@@ -385,20 +387,10 @@ fn models_check_update_reports_against_scoped_data_dir() -> Result<(), String> {
             "--data-dir",
             "/cass/models",
             "--json",
-        ])?;
-
-        match cli.command {
-            Some(Commands::Models(ModelsCommand::CheckUpdate {
-                model,
-                data_dir: Some(data_dir),
-                json: true,
-            })) if model == "multilingual-minilm"
-                && data_dir.display().to_string() == "/cass/models" =>
-            {
-                Ok(())
-            }
-            other => Err(format!(
-                "expected scoped model update check controls to parse: {other:?}"
+        ]) {
+            Err(_) => Ok(()),
+            Ok(cli) => Err(format!(
+                "expected `models check-update` to be rejected, parsed: {cli:?}"
             )),
         }
     })
@@ -453,21 +445,21 @@ fn models_backfill_keeps_semantic_work_data_dir_and_db_scoped() -> Result<(), St
 
 // ========================================================================
 // Bead coding_agent_session_search-7hot1 (child of ibuuh.10, scenario G:
-// semantic model acquisition — air-gap entry point, error-envelope E2E).
+// semantic model acquisition — local-file entry point, error-envelope E2E).
 //
 // AGENTS.md's Search Asset Contract promises: "Semantic model acquisition
-// is opt-in... Air-gapped installs use `--from-file <dir>`." The existing
-// arg-parse contract tests above pin the CLI shape, but no test pins the
-// RUNTIME validation error surface emitted by src/lib.rs::run_models_install
-// at line ~26760. Three distinct validation errors can fire there —
-// not-a-directory, missing required file, and mirror/from-file conflict —
-// and all three are silently untested at the user-visible stderr boundary.
+// is opt-in... installs use `--from-file <dir>`." The existing arg-parse
+// contract tests above pin the CLI shape, but no test pins the RUNTIME
+// validation error surface emitted by src/lib.rs::run_models_install.
+// Two distinct validation errors can fire there — not-a-directory and
+// missing required file — and both were silently untested at the
+// user-visible stderr boundary.
 //
 // A regression that changed err.kind from "model" to something else,
 // dropped the hint pointing operators at the expected file set, or
 // silently accepted a partial file set would not be caught by the
 // arg-parse tests above. This gap matters especially for agents
-// running air-gapped installs: they consume the JSON error envelope
+// running local-only installs: they consume the JSON error envelope
 // to decide what to do next.
 //
 // Contract pinned here, for the two cases that don't need the real
@@ -499,7 +491,7 @@ fn models_install_from_file_nonexistent_path_emits_model_error_envelope() {
     let output = std::process::Command::new(cargo_bin("cass"))
         .args(["models", "install", "--from-file"])
         .arg(&nonexistent)
-        .args(["--yes", "--robot-format", "json", "--data-dir"])
+        .args(["--robot-format", "json", "--data-dir"])
         .arg(&data_dir)
         .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -593,7 +585,7 @@ fn models_install_from_file_empty_dir_emits_required_file_error() {
     let output = std::process::Command::new(cargo_bin("cass"))
         .args(["models", "install", "--from-file"])
         .arg(&model_src)
-        .args(["--yes", "--robot-format", "json", "--data-dir"])
+        .args(["--robot-format", "json", "--data-dir"])
         .arg(&data_dir)
         .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -646,8 +638,8 @@ fn models_install_from_file_empty_dir_emits_required_file_error() {
         .and_then(Value::as_str)
         .expect("message must be a string");
     assert!(
-        message.contains("Required file") && message.contains("not found"),
-        "message must name the 'Required file ... not found' condition; got: {message:?}"
+        message.contains("required file") && message.contains("not found"),
+        "message must name the 'required file ... not found' condition; got: {message:?}"
     );
 
     let hint = err_obj

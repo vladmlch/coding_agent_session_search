@@ -502,7 +502,7 @@ Provides unified full-text and semantic search across all local coding agent ses
 - **Lexical search is required and self-healing.** Missing, stale, schema-drifted, or corrupt lexical assets should rebuild from SQLite through scratch-build and atomic-publish semantics.
 - **Hybrid is the default search intent.** Semantic refinement joins when ready; default hybrid search must fail open to lexical with truthful robot metadata when semantic assets are unavailable.
 - **Semantic enrichment is opportunistic.** Lexical-only behavior is expected during first indexing, semantic backfill, disabled semantic policy, missing model files, or vector catch-up.
-- **Semantic model acquisition is opt-in.** `cass models install` downloads the MiniLM model (~90 MB) on explicit operator request. cass never auto-downloads. Air-gapped installs use `--from-file <dir>`. While the model is absent, `fallback_mode="lexical"` is reported in health/status and queries silently degrade to lexical-only.
+- **Semantic model acquisition is opt-in and local-only.** `cass models install --from-file <dir>` installs the MiniLM model (~90 MB) from an operator-supplied directory with SHA256 verification. cass never downloads models — `install` requires `--from-file`, and `check-update`/`--mirror`/`--repair` were removed. While the model is absent, `fallback_mode="lexical"` is reported in health/status and queries silently degrade to lexical-only.
 - **Truth surfaces:** `cass health --json`, `cass status --json`, and search `--robot-meta` expose readiness, active rebuilds, realized search mode, fallback tier, and recommended action. Follow those fields instead of hard-coded manual repair rituals.
 - **No silent substitution.** An input that cannot take effect is a typed error (or, only where the contract says so, a typed warning in `_meta.warnings`), never dropped: a bad `--since`, a flag typo on an exact subcommand, and an ignored env override have each run a different query with exit 0. Search `--robot-meta` echoes what actually ran under `_meta.effective` (database path and its source, the resolved time window with the flag behind each bound, parsed filters, argv auto-corrections, the engine's query grouping and recovered parentheses), and `_meta.wildcard_fallback_skipped` says why a sparse result got no automatic wildcard retry; when you add an input that changes what search does, echo it there and extend `tests/search_metamorphic.rs` (2l1b0.68).
 - **Lexical query fuel is bounded.** cass opens Quill with the engine's deterministic per-query work ceiling (10,000,000 units; `CASS_QUILL_QUERY_FUEL_BUDGET` is an escape hatch, not a tuning knob). If a hybrid search exhausts it, the lexical leg is dropped rather than failing the search and `_meta.lexical_degrade_reason` reports `query_fuel_exhausted`; lexical-only searches get an actionable hint. cass publishes Quill snapshots only on its own commits (`max_visibility_lag_ms` is disabled in `src/search/quill_bridge.rs::cass_quill_config`), which stops the per-second seals that grew append-only archives into hundreds of tiny segments (GH #440/#441); `cass index --full` consolidates an archive that already fragmented.
@@ -537,7 +537,7 @@ Provides unified full-text and semantic search across all local coding agent ses
 
 ### Schema Stability and Golden-Freeze Gates
 
-- Every JSON contract surface is pinned by golden-file regression tests under `tests/golden/robot/` (JSON) and `tests/golden/robot_docs/` (plain-text docs topics). The full set: capabilities, health, status, diag, diag_quarantine, models_status, models_verify, models_check_update, introspect, doctor, doctor_quarantine, api_version, stats (missing-db error envelope), robot_docs topics (paths, env, exit-codes, schemas, guide, robot_help).
+- Every JSON contract surface is pinned by golden-file regression tests under `tests/golden/robot/` (JSON) and `tests/golden/robot_docs/` (plain-text docs topics). The full set: capabilities, health, status, diag, diag_quarantine, models_status, models_verify, introspect, doctor, doctor_quarantine, api_version, stats (missing-db error envelope), robot_docs topics (paths, env, exit-codes, schemas, guide, robot_help).
 - **If you add a new field or change a type**, run `UPDATE_GOLDENS=1 cargo test --test golden_robot_json --test golden_robot_docs`, review the diff via `git diff tests/golden/`, and commit both the code + golden in one change. Do not regenerate goldens without reviewing — every diff is either an intentional schema change or a bug.
 - `cass introspect --json`'s `response_schemas` is `BTreeMap`-backed so the serialized key order is alphabetical and deterministic (bead 8sl73).
 - Error envelopes use **kebab-case `err.kind`** values. For codes 0-9 the numeric code is sufficient; for codes ≥ 10 the code is ambiguous (e.g. 10 covers both `config` and `timeout`) — always branch on `err.kind`. Full taxonomy in src/lib.rs `CliError` literals + the Exit Codes table below (bead wan21).
@@ -588,7 +588,7 @@ coding_agent_session_search/
 │   │   ├── embedder_registry.rs  # Embedder auto-detection
 │   │   ├── reranker.rs           # Cross-encoder reranking
 │   │   ├── reranker_registry.rs  # Reranker management
-│   │   ├── model_download.rs     # Model download management
+│   │   ├── model_download.rs     # Model installation from local files
 │   │   ├── model_manager.rs      # Model lifecycle management
 │   │   ├── canonicalize.rs       # Query canonicalization
 │   │   └── daemon_client.rs      # Search daemon RPC client
@@ -790,16 +790,14 @@ Returns in <50ms on a healthy archive (the archive probe is the same strict, mut
 | 13 | Mapping / not-found | Depends on `err.kind` |
 | 14 | I/O / mapping | Maybe |
 | 15 | Semantic / embedder unavailable | Yes — install model or fall back to `--mode lexical` |
-| 20-21 | Model acquisition failure | Maybe — check `err.kind`, `err.hint` |
-| 22 | I/O during model handling | Maybe |
-| 23 | Download failure | Yes — retry or use `--from-file` |
+| 20 | Model acquisition failure | Maybe — check `err.kind`, `err.hint` |
 | 24 | I/O during model verify/install | Maybe |
 | 70 | `cass index` stalled and aborted (kind `index-stalled` envelope on stderr) | Yes — inspect `cass status --json`, rerun `cass index` |
 | 130 | Interrupted (SIGINT) | Yes — rerun; indexing and search resume from their checkpoints |
 
 Search/pack timeouts are not exit 8: on expiry `search` and `pack` exit 0 with `{"hits": [], "budget": {"timed_out": true, "skipped_sections": [...], "recommended_next_probe": "<command>", ...}}`; `--robot-format sessions` instead fails with exit 10, kind `timeout`. Explicit `--mode semantic` also fails with exit 10, kind `timeout`, retryable, when the budget cannot admit semantic setup or dispatch (ds7uy.4.1); hybrid falls back to lexical with `semantic_budget_limited`.
 
-**Codes ≥ 10 are domain-specific.** The numeric code alone is ambiguous (e.g. code 10 covers both `config` and `timeout` kinds). Agents should branch on `err.kind` from the JSON error envelope, not on the numeric code, when handling codes ≥ 10. Kind names are kebab-case (examples: `missing-index`, `missing-db`, `semantic-unavailable`, `embedder-unavailable`, `ambiguous-source`, `timeout`, `config`, `lock-busy`, `model`, `download`, `io`). The full set (about 90 kinds) lives in `src/model/cli_error_kind.rs`.
+**Codes ≥ 10 are domain-specific.** The numeric code alone is ambiguous (e.g. code 10 covers both `config` and `timeout` kinds). Agents should branch on `err.kind` from the JSON error envelope, not on the numeric code, when handling codes ≥ 10. Kind names are kebab-case (examples: `missing-index`, `missing-db`, `semantic-unavailable`, `embedder-unavailable`, `ambiguous-source`, `timeout`, `config`, `lock-busy`, `model`, `io`). The full set (about 90 kinds) lives in `src/model/cli_error_kind.rs`.
 
 ### Feature Flags
 

@@ -778,7 +778,7 @@
         },
         {
           "name": "model",
-          "description": "Embedding model to use for semantic search. Available models depend on what's been downloaded. `cass models status --json` lists them",
+          "description": "Embedding model to use for semantic search. Available models depend on what's been installed. `cass models status --json` lists them",
           "arg_type": "option",
           "value_type": "string",
           "required": false
@@ -3811,7 +3811,7 @@
       "code": "4",
       "meaning": "I/O failure or unsafe operation refused",
       "retryable": "maybe",
-      "agent_action": "Branch on err.kind: fix the path, permissions, or free space for io/output-not-writable; follow err.hint for refused-unsafe. Not a network code: source problems fail with 12, model downloads with 20-23."
+      "agent_action": "Branch on err.kind: fix the path, permissions, or free space for io/output-not-writable; follow err.hint for refused-unsafe. Not a network code: source problems fail with 12, model errors with 20 or 24."
     },
     {
       "code": "5",
@@ -3874,22 +3874,10 @@
       "agent_action": "Install/verify models or continue with lexical fallback when acceptable."
     },
     {
-      "code": "20-21",
+      "code": "20",
       "meaning": "model acquisition failure",
       "retryable": "maybe",
-      "agent_action": "Check err.kind and err.hint; retry download or use --from-file."
-    },
-    {
-      "code": "22",
-      "meaning": "I/O during model handling",
-      "retryable": "maybe",
-      "agent_action": "Verify model cache permissions and available disk before retrying."
-    },
-    {
-      "code": "23",
-      "meaning": "download failure",
-      "retryable": "yes",
-      "agent_action": "Retry with network available or install from a local model directory."
+      "agent_action": "Check err.kind and err.hint; fix the local model files and retry --from-file."
     },
     {
       "code": "24",
@@ -4294,7 +4282,6 @@
       "first_command": "cass models status --json",
       "follow_up_commands": [
         "cass models verify --json",
-        "cass models install --model minilm",
         "cass models install --from-file <dir> --model minilm",
         "cass models backfill"
       ],

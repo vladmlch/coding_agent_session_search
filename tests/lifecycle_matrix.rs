@@ -3289,7 +3289,7 @@ fn models_status_and_cache_lifecycle_agree_on_state_machine_identity() {
     //   cache_lifecycle:     model_id, state.state, policy_source
     //
     // Acquisition code reads the top level; retention may consult
-    // cache_lifecycle for richer detail (missing_files, needs_consent).
+    // cache_lifecycle for richer detail (missing_files).
     // If the two surfaces diverge on any of these identity/state
     // fields, the layers would disagree about *which* model they are
     // managing and *what phase* that model is in:
@@ -3400,18 +3400,16 @@ fn models_status_and_cache_lifecycle_agree_on_state_machine_identity() {
         "cache_lifecycle.state.missing_files drifted from files[].local_name — acquisition would under-fetch or over-fetch"
     );
 
-    // Invariant E: needs_consent=true ⇒ state=='not_acquired'. A model
-    // cannot simultaneously need consent AND be cached/installed; the
-    // state-machine precondition must hold.
-    let needs_consent = cl["state"]["needs_consent"]
-        .as_bool()
-        .expect("state.needs_consent must be a bool");
-    if needs_consent {
-        assert_eq!(
-            cl_state, "not_acquired",
-            "needs_consent=true but state={cl_state} — needs_consent only makes sense in the not_acquired phase"
-        );
-    }
+    // Invariant E (local-only): the absent state advertises a `--from-file`
+    // next step. cass has no download or consent phase, so acquisition
+    // guidance must name the local install path operators actually have.
+    let next_step = status["next_step"]
+        .as_str()
+        .unwrap_or_else(|| panic!("status.next_step missing; payload: {status}"));
+    assert!(
+        next_step.contains("--from-file"),
+        "status.next_step must name the local install path; got {next_step:?}"
+    );
 }
 
 #[test]
@@ -3663,33 +3661,16 @@ fn models_verify_and_status_agree_on_cache_identity_and_phase() {
 }
 
 #[test]
-fn models_check_update_and_status_agree_on_revision_when_absent() {
-    // ibuuh.19 cross-command revision-agreement row.
+fn models_status_reports_pinned_revision_and_local_install_guidance_when_absent() {
+    // ibuuh.19 revision-agreement row, adapted for the local-only port.
     //
-    // `cass models check-update --json` and `cass models status --json`
-    // both advertise a revision string that keys the model cache for
-    // retention and acquisition:
-    //
-    //   status:        status.revision                 — canonical content-addressing key
-    //   check-update:  check-update.latest_revision    — upstream target revision
-    //                  check-update.current_revision   — locally-installed revision (null if none)
-    //
-    // For retention to reason about "what version we have vs what
-    // version upstream advertises," the two commands MUST agree on
-    // the identity of the upstream model. If `status.revision` and
-    // `check-update.latest_revision` drifted, retention would
-    // compare the installed revision against the wrong target and
-    // either falsely decide "up to date" or falsely decide "stale."
-    //
-    // Plus the absent-gate coherence: when `status.installed=false`,
-    // `check-update.current_revision` must be null (nothing is
-    // installed to report a revision for) and `update_available`
-    // must be false (you cannot "update" something that isn't
-    // installed — the operator should `install` first), with a
-    // non-empty `reason` explaining why.
-    //
-    // This is the first lifecycle-matrix coverage of
-    // `cass models check-update --json`.
+    // `cass models check-update` was removed: there is no remote registry
+    // to compare against. What remains canonical is the *pinned manifest
+    // revision* `cass models status --json` advertises, which keys the
+    // model cache for retention and acquisition. When nothing is
+    // installed the surface must still expose that revision plus a
+    // local-only next step (`--from-file`) so operators know how to
+    // acquire the model.
     let test_home = tempfile::tempdir().expect("tempdir");
 
     let s_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
@@ -3704,31 +3685,13 @@ fn models_check_update_and_status_agree_on_revision_when_absent() {
     let status: serde_json::Value =
         serde_json::from_str(&String::from_utf8(s_out.stdout).expect("utf8")).expect("valid JSON");
 
-    let u_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
-        .args(["models", "check-update", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .env("XDG_DATA_HOME", test_home.path())
-        .env("HOME", test_home.path())
-        .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-        .output()
-        .expect("run cass models check-update --json");
-    assert!(
-        u_out.status.success(),
-        "cass models check-update --json failed"
-    );
-    let check: serde_json::Value =
-        serde_json::from_str(&String::from_utf8(u_out.stdout).expect("utf8")).expect("valid JSON");
-
-    // Invariant A: cross-command revision identity.
+    // Invariant A: the pinned revision stays advertised even when absent.
     let s_rev = status["revision"]
         .as_str()
         .expect("status.revision must be a string");
-    let latest_rev = check["latest_revision"]
-        .as_str()
-        .expect("check-update.latest_revision must be a string");
-    assert_eq!(
-        s_rev, latest_rev,
-        "status.revision ({s_rev}) diverged from check-update.latest_revision ({latest_rev}) — the two commands disagree on which upstream revision is canonical"
+    assert!(
+        !s_rev.trim().is_empty(),
+        "status.revision is empty — retention loses the content-addressing key for the pinned model"
     );
 
     // Precondition: isolated HOME, nothing installed.
@@ -3737,31 +3700,13 @@ fn models_check_update_and_status_agree_on_revision_when_absent() {
         .expect("status.installed must be a bool");
     assert!(!installed, "isolated HOME unexpectedly installed=true");
 
-    // Invariant B: installed=false ⇒ check-update.current_revision=null.
-    let current_rev = &check["current_revision"];
-    assert!(
-        current_rev.is_null(),
-        "installed=false but check-update.current_revision={current_rev:?} — there is no installed revision to report"
-    );
-
-    // Invariant C: installed=false ⇒ update_available=false.
-    let update_available = check["update_available"]
-        .as_bool()
-        .expect("check-update.update_available must be a bool");
-    assert!(
-        !update_available,
-        "installed=false but check-update.update_available=true — you cannot 'update' a model that is not installed; operator should 'install' first"
-    );
-
-    // Invariant D: reason is a non-empty string explaining why
-    // (e.g. 'model_not_installed'). Operators lose triage info if
-    // the reason is empty or null.
-    let reason = check["reason"]
+    // Invariant B: the local-only install path is named in next_step.
+    let next_step = status["next_step"]
         .as_str()
-        .expect("check-update.reason must be a string");
+        .unwrap_or_else(|| panic!("status.next_step missing; payload: {status}"));
     assert!(
-        !reason.trim().is_empty(),
-        "check-update.reason is empty — operator has no explanation for update_available={update_available}"
+        next_step.contains("--from-file"),
+        "status.next_step must name the local install path (`--from-file`); got {next_step:?}"
     );
 }
 

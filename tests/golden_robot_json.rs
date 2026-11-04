@@ -2509,16 +2509,17 @@ fn export_html_shape_matches_golden() {
 }
 
 // `coding_agent_session_search-oy4fd`: README line 103 advertises
-// sessions / models-verify / models-check-update as golden-pinned
-// JSON contract surfaces, but no goldens existed for them. The three
-// tests below close that gap with shape goldens (json_value_schema
-// diffs tolerate run-time values like timestamps while still pinning
-// the envelope keys and types). Each test seeds the minimal state
-// needed to reach a deterministic branch: sessions hits the
-// missing-db error envelope (stderr, mirrors stats_missing_db
-// convention); models verify/check-update run against an empty
-// data_dir where the model is not yet acquired, so they reach the
-// stable `not_acquired` / `model_not_installed` branches.
+// sessions / models-verify as golden-pinned JSON contract surfaces,
+// but no goldens existed for them. The tests below close that gap
+// with shape goldens (json_value_schema diffs tolerate run-time
+// values like timestamps while still pinning the envelope keys and
+// types). Each test seeds the minimal state needed to reach a
+// deterministic branch: sessions hits the missing-db error envelope
+// (stderr, mirrors stats_missing_db convention); models verify runs
+// against an empty data_dir where the model is not yet acquired, so
+// it reaches the stable `not_acquired` branch. (`models check-update`
+// was removed by the local-only port: pinned manifest revisions are
+// the only supported installs.)
 
 // `coding_agent_session_search-q931h`: status and doctor had only
 // variant-scoped goldens (status_quarantine{_full}, status_semantic_*,
@@ -2679,12 +2680,12 @@ fn models_verify_json_not_acquired_shape_matches_golden() {
 }
 
 #[test]
-fn models_check_update_json_not_installed_shape_matches_golden() {
-    // Empty data_dir ⇒ `cass models check-update --json` returns
-    // `reason=model_not_installed` with current_revision=null +
-    // latest_revision=<pinned sha>. Shape golden pins the 4-field
-    // envelope so a regression that renamed/removed any field would
-    // trip CI.
+fn models_check_update_is_rejected_as_removed() {
+    // `cass models check-update` was removed by the local-only port
+    // (REMOVED_COMMANDS): pinned manifest revisions are the only
+    // supported installs, so there is nothing to compare against.
+    // The invocation must fail with the removed-command envelope, not
+    // silently succeed or parse.
     let test_home = tempfile::tempdir().expect("create temp home");
     let out = cass_cmd(test_home.path())
         .args([
@@ -2696,14 +2697,9 @@ fn models_check_update_json_not_installed_shape_matches_golden() {
         ])
         .output()
         .expect("run cass models check-update --json");
-    let stdout = String::from_utf8(out.stdout).expect("utf8 stdout");
-    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|err| {
-        panic!("models check-update stdout is not JSON: {err}\nstdout:\n{stdout}")
-    });
-    let canonical =
-        serde_json::to_string_pretty(&json_value_schema(&parsed)).expect("pretty-print JSON");
-    assert_golden(
-        "robot/models_check_update_not_installed_shape.json.golden",
-        &canonical,
+    assert!(
+        !out.status.success(),
+        "models check-update must be rejected; stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
     );
 }

@@ -65,6 +65,9 @@ pub enum ErrorKind {
     DbOpen,
     DbQuery,
     Doctor,
+    /// Legacy `download` kind — no longer emitted since the local-only
+    /// conversion removed model downloads; retained so historical error
+    /// envelopes (e.g. persisted doctor-run receipts) still round-trip.
     Download,
     EmbedderUnavailable,
     EmptyFile,

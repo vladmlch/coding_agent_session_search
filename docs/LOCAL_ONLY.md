@@ -29,6 +29,31 @@ Ledger for D1: every path deleted by the local-only port, grouped by task.
 **On merge conflict with upstream, keep the deletion.** Newest task first;
 each task appends its own group.
 
+### Task 12 — model downloads/update-check/consent machinery (2026-11-04)
+
+Whole paths removed (all pre-authorized in the task brief's «Удаляемые пути»):
+
+- `tests/golden/robot/models_check_update_not_installed_shape.json.golden` — orphaned golden of the removed `models check-update` response shape
+- `tests/snapshots/cassapp_consent_dialog.snap` — orphaned TUI snapshot of the model-download consent dialog
+- `tests/snapshots/cassapp_consent_dialog_downloading.snap` — orphaned TUI snapshot of the download-progress dialog
+
+Removed in place (no further whole-file deletions):
+
+- `src/search/model_download.rs` — HTTP downloader, resumable downloads, mirrors, Hugging Face URL building, `ensure_rustls_crypto_provider`, download progress/state machine arms; the file is now the local `--from-file` installer (manifest, pinned SHA256, `<target>.installing` staging, `.verified` marker, atomic promote/rollback)
+- `src/search/model_acquisition.rs` — download/offline/repair lifecycle states (`offline_blocked`, `partial_download`, `needs_update`) → local states (`partial_install`, `explicit_install_required`); `next_command` now emits `cass models install --model <id> --from-file <DIR>`
+- `src/search/policy.rs`, `src/policy_registry.rs` — `ModelDownloadPolicy`, its env lookup and report field removed; `CASS_SEMANTIC_DOWNLOAD_POLICY` survives only as a deprecated-ignored introspection entry
+- `src/lib.rs` — `ModelsCommand::CheckUpdate`, `Install::{mirror, yes}`, `Verify::repair` deleted; removed-command/removed-flag tables carry the replacements; exit-code contract drops unemitted 21–23 (emitted model codes are now 20 and 24)
+- `src/search/model_manager.rs`, `src/search/asset_state.rs`, `src/ui/app.rs` — `NeedsConsent`/`Downloading`/`Verifying`/`UpdateAvailable` UI states gone; `SemanticAvailability::IndexStale` serializes `index_stale` (was `update_available`); consent dialog replaced by the local-install hint
+- `tests/golden/robot/` + `tests/fixtures/cli_contract/introspect.json` — regenerated sans `models-check-update` schema, download policy fields and dead exit codes
+
+Kept per the brief: HF repo ids as provenance metadata (`huggingface_id`
+fields, `ModelSource::Mirror` parse-only provenance for `.verified` markers
+written by the pre-local-only downloader), `ErrorKind::Download` as
+historical-envelope vocabulary (same convention as the retained `ssh`,
+`setup`, `lexical-generation` kinds), and the doctor wire fields
+`network_allowed`/`auto_download_*` whose `false` values now truthfully
+describe local-only behaviour.
+
 ### Task 9 — remote source sync/setup/discovery machinery (2026-11-04)
 
 - `src/sources/sync.rs`, `src/sources/sync/rrsync_tests.rs` — SSH/SFTP/rsync mirror sync engine and its rrsync tests
@@ -349,3 +374,32 @@ Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
 | 2026-11-04 | `cass doctor --json` on fixture with remote mirror dir removed | `sources_config` pass; `sessions` warn is `source-authority-unsafe`/`verify-source-authority-before-rebuild` with `fix_available: false`, `default_outcome_kind: "blocked"` — informational, never a deletion/auto-repair trigger |
 
 No production change was needed: `build_scan_roots_with_missing` produces no scan root for a vanished source and nothing prunes canonical rows on that account; `sync_sources_config_to_db` only upserts; `--force-rebuild` on a populated archive is a canonical-only lexical rebuild; deletion stays confined to `forget`/`sources remove --purge`/dedup paths. One fixture correction: the mirror fixture now uses the basename-preserving layout `<safe>/session/<session>/messages.jsonl` — the `mirrored_store` resolver accepts only that shape (or a trailing-slash source) because contents-copy containers require `source.ends_with('/')`.
+
+## Task 12 — models install from local files only (2026-11-04)
+
+Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
+
+| Date (UTC) | Command | Result |
+| ---------- | ------- | ------ |
+| 2026-11-04 | `cargo fmt --all -- --check` | ok |
+| 2026-11-04 | `cargo check --all-targets` | ok |
+| 2026-11-04 | `cargo clippy --all-targets -- -D warnings` | ok |
+| 2026-11-04 | `cargo test --lib search::model_download` | ok: 37 passed — local installer: missing/corrupt manifest files rejected, SHA256 enforced, `.installing` staging + `.verified` marker, atomic promote, previous install preserved on failure, legacy `.downloading` debris reaped |
+| 2026-11-04 | `cargo test --test cli_model_lifecycle_contract` | ok: 14 passed — `install` requires `--from-file`; `--mirror`/`--yes`/`--repair`/`check-update` reject via removed-command/flag machinery; verify read-only and fail-open |
+| 2026-11-04 | `cargo test --test cli_dispatch_coverage` | ok: 106 passed |
+| 2026-11-04 | `cargo test --test e2e_model_acquisition_no_download_gate` | ok: 2 passed — `skipped_network_reason=explicit_install_required`, `fallback_mode=lexical`, `next_command` asserts `cass models install --model <id> --from-file <DIR>` |
+| 2026-11-04 | `cargo test --test e2e_models_build_hnsw_gate` | ok: 61 passed |
+| 2026-11-04 | `cargo test --test tui_flows` | ok: 6 passed — consent snapshots deleted per «Удаляемые пути», no test referenced them |
+| 2026-11-04 | `cargo test --test golden_robot_json` | ok: 52 passed — capabilities/introspect/models-status/health/doctor goldens regenerated; every diff reviewed (local lifecycle states, `--from-file` next steps, `index_stale` wire value, dead exit codes 21–23 dropped, no `models-check-update` schema) |
+| 2026-11-04 | `cargo test --test golden_error_envelope` | ok: 4 passed — regenerated: `download`/`ssh`/`setup`/`lexical-generation` kinds no longer emitted; `model` emits {20}, `io` drops 22 |
+| 2026-11-04 | `cargo test --test spec_exit_codes_documented` | ok: 5 passed — capabilities, README and AGENTS tables now document only emitted codes; `21–23 unused` noted on the robot-docs line like `8 unused` |
+| 2026-11-04 | `cargo test --test semantic_integration` | ok: 85 passed, 2 ignored — `test_offline_mode_environment` migrated to `models status` (scoped via `CASS_DATA_DIR`; `models status` takes no `--data-dir`) |
+| 2026-11-04 | `cargo test --test lifecycle_matrix` | ok: 104 passed |
+| 2026-11-04 | `cargo test --test metamorphic_introspect_schema` | ok: 1 passed — pack probe budget raised 1200 → 4000 tokens: the pack JSON envelope alone is ~1.7k estimated tokens, so a 1200 budget always evicts evidence into `omitted` before the schema probe can inspect it |
+| 2026-11-04 | `cargo test --test cli_robot` | 325/326 — same pre-existing environmental failure as Tasks 2/8 (`html_export_aliases_route_to_export_html_command` requires a populated default data dir; identical on HEAD) |
+| 2026-11-04 | manual probes: `models install` (no flag), `--mirror`, `--yes`, `verify --repair`, `check-update` | all reject: missing-arg clap error for the bare form; removed-command/removed-flag errors with `install --from-file DIR` hints for the rest |
+
+`tests/fixtures/cli_contract/introspect.json` regenerated from the built
+binary (same procedure as Task 9). `models status --json` emits only local
+lifecycle states and `cass models install --from-file` next steps; semantic
+and hybrid search fail open to lexical when the model is absent.

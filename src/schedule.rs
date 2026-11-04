@@ -1124,7 +1124,7 @@ fn run_job_with_gate(
                 if !model_installed {
                     steps.push(skipped_step(
                         "semantic-backfill:quality",
-                        "MiniLM model not installed (`cass models install`); quality tier skipped",
+                        "MiniLM model not installed (`cass models install --from-file <DIR>`); quality tier skipped",
                     ));
                 }
                 let tiers = match nightly_backfill_order(&cfg.data_dir, model_installed, || {
@@ -1306,7 +1306,7 @@ pub fn soften_model_unavailable_backfill_step(step: &mut StepReport) -> bool {
     }
     step.ok = true;
     step.skipped_reason = Some(format!(
-        "semantic provider unavailable (exit {code}); check the worker diagnostic and external consent/configuration, or run `cass models install` for the selected local model"
+        "semantic provider unavailable (exit {code}); check the worker diagnostic and external consent/configuration, or run `cass models install --from-file <DIR>` for the selected local model"
     ));
     true
 }

@@ -68,12 +68,19 @@ while [[ $# -gt 0 ]]; do
             SKIP_MODEL_INSTALL=1
             shift
             ;;
+        --model-source)
+            if [[ $# -gt 0 ]]; then
+                MODEL_SOURCE_DIR="$1"
+                shift
+            fi
+            shift
+            ;;
         --fail-fast)
             FAIL_FAST=1
             shift
             ;;
         --help|-h)
-            echo "Usage: $0 [--no-build] [--embedder fastembed|hash] [--skip-model-install] [--fail-fast]"
+            echo "Usage: $0 [--no-build] [--embedder fastembed|hash] [--model-source DIR] [--skip-model-install] [--fail-fast]"
             exit 0
             ;;
         *)
@@ -239,6 +246,27 @@ PY
     echo "unknown"
 }
 
+# models status --json reports per-model `installed` (usable on disk) and a
+# `state` code like not_acquired/acquired; `installed` is the loadability
+# truth for the active embedder.
+json_installed() {
+    local file=$1
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.installed // false' "$file" 2>/dev/null || echo "false"
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$file" <<'PY' || echo "false"
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    data = json.load(f)
+print("true" if data.get("installed") else "false")
+PY
+        return 0
+    fi
+    echo "false"
+}
+
 json_hits_count() {
     local file=$1
     if command -v jq >/dev/null 2>&1; then
@@ -330,20 +358,28 @@ pushd "${SANDBOX_DIR}" >/dev/null
 
 run_step "models_status" "$CASS_BIN" models status --json
 
-MODEL_STATE=$(json_state "${STDOUT_DIR}/models_status.out")
+MODEL_INSTALLED=$(json_installed "${STDOUT_DIR}/models_status.out")
 
-if [[ "$MODEL_STATE" != "ready" && $SKIP_MODEL_INSTALL -eq 0 ]]; then
-    run_step_optional "models_install" "$CASS_BIN" models install --data-dir "${DATA_DIR}" -y
+# cass is local-only: `models install` requires `--from-file DIR`, so the
+# install step only runs when a local model source directory is supplied
+# (via --model-source or CASS_MODEL_SOURCE_DIR). Without one the script
+# proceeds and the hash-embedder fallback below keeps the run going; no
+# network installation is ever attempted.
+MODEL_SOURCE_DIR="${MODEL_SOURCE_DIR:-${CASS_MODEL_SOURCE_DIR:-}}"
+if [[ "$MODEL_INSTALLED" != "true" && $SKIP_MODEL_INSTALL -eq 0 && -n "$MODEL_SOURCE_DIR" ]]; then
+    run_step_optional "models_install" "$CASS_BIN" models install --data-dir "${DATA_DIR}" --from-file "${MODEL_SOURCE_DIR}"
     run_step_optional "models_status_after_install" "$CASS_BIN" models status --json
     if [[ -f "${STDOUT_DIR}/models_status_after_install.out" ]]; then
-        MODEL_STATE=$(json_state "${STDOUT_DIR}/models_status_after_install.out")
+        MODEL_INSTALLED=$(json_installed "${STDOUT_DIR}/models_status_after_install.out")
     fi
+elif [[ "$MODEL_INSTALLED" != "true" && $SKIP_MODEL_INSTALL -eq 0 ]]; then
+    log "WARN" "Model not installed and no --model-source supplied; skipping install (local-only)"
 fi
 
 run_step "index_full" "$CASS_BIN" index --full --data-dir "${DATA_DIR}"
 ACTIVE_EMBEDDER="${REQUESTED_EMBEDDER}"
-if [[ "${REQUESTED_EMBEDDER}" == "fastembed" && "${MODEL_STATE}" != "ready" ]]; then
-    log "WARN" "Model not ready; falling back to hash embedder"
+if [[ "${REQUESTED_EMBEDDER}" == "fastembed" && "${MODEL_INSTALLED}" != "true" ]]; then
+    log "WARN" "Model not installed; falling back to hash embedder"
     ACTIVE_EMBEDDER="hash"
 fi
 

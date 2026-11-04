@@ -38,7 +38,8 @@ use crate::storage::sqlite::{FrankenStorage, SemanticIdentityTier};
 /// Unified TUI state machine for semantic search availability.
 ///
 /// This enum tracks the full lifecycle of semantic search from the user's perspective:
-/// - Model installation flow (NotInstalled → NeedsConsent → Downloading → Verifying → Ready)
+/// - Model installation flow (NotInstalled/ModelMissing → Ready via
+///   `cass models install --from-file <DIR>`; cass has no download lifecycle)
 /// - Index building flow (Ready → IndexBuilding → Ready)
 /// - Explicit user preferences (HashFallback, Disabled)
 /// - Error states (LoadFailed, ModelMissing, etc.)
@@ -51,25 +52,9 @@ pub enum SemanticAvailability {
     // TUI-centric states for user flow
     // =========================================================================
     /// Model not installed - semantic not available.
-    /// TUI should show an option to download or explicitly choose hash mode.
+    /// TUI should show an option to install from local files or explicitly
+    /// choose hash mode.
     NotInstalled,
-
-    /// User needs to consent before downloading model.
-    /// TUI should show consent dialog.
-    NeedsConsent,
-
-    /// Model download in progress.
-    Downloading {
-        /// Progress percentage (0-100).
-        progress_pct: u8,
-        /// Bytes downloaded so far.
-        bytes_downloaded: u64,
-        /// Total bytes to download.
-        total_bytes: u64,
-    },
-
-    /// Verifying downloaded model (SHA256 check).
-    Verifying,
 
     /// Index is being built or rebuilt.
     IndexBuilding {
@@ -113,24 +98,12 @@ pub enum SemanticAvailability {
 
     /// Failed to load semantic context.
     LoadFailed { context: String },
-
-    /// Model update available - index rebuild needed.
-    UpdateAvailable {
-        embedder_id: String,
-        current_revision: String,
-        latest_revision: String,
-    },
 }
 
 impl SemanticAvailability {
     /// Check if semantic search is ready to use.
     pub fn is_ready(&self) -> bool {
         matches!(self, SemanticAvailability::Ready { .. })
-    }
-
-    /// Check if a model update is available.
-    pub fn has_update(&self) -> bool {
-        matches!(self, SemanticAvailability::UpdateAvailable { .. })
     }
 
     /// Check if the index is being rebuilt.
@@ -142,16 +115,6 @@ impl SemanticAvailability {
     /// describe the current database (GH #404).
     pub fn is_index_stale(&self) -> bool {
         matches!(self, SemanticAvailability::IndexStale { .. })
-    }
-
-    /// Check if a download is in progress.
-    pub fn is_downloading(&self) -> bool {
-        matches!(self, SemanticAvailability::Downloading { .. })
-    }
-
-    /// Check if user consent is needed.
-    pub fn needs_consent(&self) -> bool {
-        matches!(self, SemanticAvailability::NeedsConsent)
     }
 
     /// Check if explicit hash mode is active.
@@ -189,18 +152,6 @@ impl SemanticAvailability {
         )
     }
 
-    /// Get download progress if downloading.
-    pub fn download_progress(&self) -> Option<(u8, u64, u64)> {
-        match self {
-            SemanticAvailability::Downloading {
-                progress_pct,
-                bytes_downloaded,
-                total_bytes,
-            } => Some((*progress_pct, *bytes_downloaded, *total_bytes)),
-            _ => None,
-        }
-    }
-
     /// Get index building progress if building.
     pub fn index_progress(&self) -> Option<(Option<u8>, u64, u64)> {
         match self {
@@ -220,9 +171,6 @@ impl SemanticAvailability {
             SemanticAvailability::Ready { .. } => "SEM",
             SemanticAvailability::HashFallback => "SEM*",
             SemanticAvailability::NotInstalled => "LEX",
-            SemanticAvailability::NeedsConsent => "LEX",
-            SemanticAvailability::Downloading { .. } => "DL...",
-            SemanticAvailability::Verifying => "VFY...",
             SemanticAvailability::IndexBuilding { .. } => "IDX...",
             SemanticAvailability::IndexStale { .. } => "STALE",
             SemanticAvailability::Disabled { .. } => "OFF",
@@ -230,7 +178,6 @@ impl SemanticAvailability {
             SemanticAvailability::IndexMissing { .. } => "NOIDX",
             SemanticAvailability::DatabaseUnavailable { .. } => "NODB",
             SemanticAvailability::LoadFailed { .. } => "ERR",
-            SemanticAvailability::UpdateAvailable { .. } => "UPD",
         }
     }
 
@@ -241,17 +188,6 @@ impl SemanticAvailability {
                 format!("semantic ready ({embedder_id})")
             }
             SemanticAvailability::NotInstalled => "model not installed".to_string(),
-            SemanticAvailability::NeedsConsent => "consent required for model download".to_string(),
-            SemanticAvailability::Downloading {
-                progress_pct,
-                bytes_downloaded,
-                total_bytes,
-            } => {
-                let mb_done = *bytes_downloaded as f64 / 1_048_576.0;
-                let mb_total = *total_bytes as f64 / 1_048_576.0;
-                format!("downloading model: {progress_pct}% ({mb_done:.1}/{mb_total:.1} MB)")
-            }
-            SemanticAvailability::Verifying => "verifying model checksum".to_string(),
             SemanticAvailability::IndexBuilding {
                 items_indexed,
                 total_items,
@@ -282,13 +218,6 @@ impl SemanticAvailability {
             }
             SemanticAvailability::LoadFailed { context } => {
                 format!("semantic load failed ({context})")
-            }
-            SemanticAvailability::UpdateAvailable {
-                current_revision,
-                latest_revision,
-                ..
-            } => {
-                format!("update available: {current_revision} -> {latest_revision}")
             }
         }
     }
@@ -602,10 +531,11 @@ fn load_complete_shard_artifacts_with_fingerprint(
     }
 }
 
-/// Load semantic context with optional version mismatch checking.
+/// Load semantic context.
 ///
-/// If `check_for_updates` is true, this function will check if the installed
-/// model version matches the manifest and return `UpdateAvailable` if they differ.
+/// cass is local-only: there is no update-check path, so an install whose
+/// marker revision predates the pinned manifest simply loads (the files were
+/// already checksum-verified during cache classification).
 pub fn load_semantic_context(data_dir: &Path, db_path: &Path) -> SemanticSetup {
     load_semantic_context_for_embedder(data_dir, db_path, active_policy_embedder_name())
 }
@@ -615,7 +545,6 @@ pub fn load_semantic_context_strict(data_dir: &Path, db_path: &Path) -> Semantic
     load_semantic_context_inner(
         data_dir,
         db_path,
-        true,
         active_policy_embedder_name(),
         false,
         true,
@@ -630,14 +559,7 @@ pub fn load_semantic_context_deferred(data_dir: &Path, db_path: &Path) -> Semant
 /// Strict read-only daemon-first counterpart used by
 /// `search --no-maintenance`.
 pub fn load_semantic_context_deferred_strict(data_dir: &Path, db_path: &Path) -> SemanticSetup {
-    load_semantic_context_inner(
-        data_dir,
-        db_path,
-        true,
-        active_policy_embedder_name(),
-        true,
-        true,
-    )
+    load_semantic_context_inner(data_dir, db_path, active_policy_embedder_name(), true, true)
 }
 
 pub fn load_semantic_context_for_embedder(
@@ -645,7 +567,7 @@ pub fn load_semantic_context_for_embedder(
     db_path: &Path,
     embedder_name: &str,
 ) -> SemanticSetup {
-    load_semantic_context_inner(data_dir, db_path, true, embedder_name, false, false)
+    load_semantic_context_inner(data_dir, db_path, embedder_name, false, false)
 }
 
 pub fn load_semantic_context_for_embedder_strict(
@@ -653,7 +575,7 @@ pub fn load_semantic_context_for_embedder_strict(
     db_path: &Path,
     embedder_name: &str,
 ) -> SemanticSetup {
-    load_semantic_context_inner(data_dir, db_path, true, embedder_name, false, true)
+    load_semantic_context_inner(data_dir, db_path, embedder_name, false, true)
 }
 
 /// Load index/filter metadata now while deferring the local model itself.
@@ -666,7 +588,7 @@ pub fn load_semantic_context_for_embedder_deferred(
     db_path: &Path,
     embedder_name: &str,
 ) -> SemanticSetup {
-    load_semantic_context_inner(data_dir, db_path, true, embedder_name, true, false)
+    load_semantic_context_inner(data_dir, db_path, embedder_name, true, false)
 }
 
 pub fn load_semantic_context_for_embedder_deferred_strict(
@@ -674,7 +596,7 @@ pub fn load_semantic_context_for_embedder_deferred_strict(
     db_path: &Path,
     embedder_name: &str,
 ) -> SemanticSetup {
-    load_semantic_context_inner(data_dir, db_path, true, embedder_name, true, true)
+    load_semantic_context_inner(data_dir, db_path, embedder_name, true, true)
 }
 
 /// Probe semantic availability without loading the embedder or DB-backed
@@ -720,12 +642,9 @@ pub(crate) fn probe_semantic_availability_for_embedder(
     let acquisition_policy = ModelAcquisitionPolicy::from_semantic_policy(&semantic_policy);
     let cache_report = classify_model_cache_metadata(&model_dir, &manifest, &acquisition_policy);
 
-    if let Some(availability) = semantic_availability_from_cache_state(
-        &config.embedder_id,
-        &model_dir,
-        &cache_report.state,
-        true,
-    ) {
+    if let Some(availability) =
+        semantic_availability_from_cache_state(&config.embedder_id, &model_dir, &cache_report.state)
+    {
         return availability;
     }
 
@@ -894,15 +813,13 @@ fn load_hash_semantic_context_inner(
     }
 }
 
-/// Load semantic context without version checking.
-///
-/// Use this when you've already acknowledged an update and want to load
-/// the model anyway.
+/// Load semantic context. Kept for API compatibility with the pre-local-only
+/// build; identical to [`load_semantic_context`] now that no update-check
+/// path exists.
 pub fn load_semantic_context_no_version_check(data_dir: &Path, db_path: &Path) -> SemanticSetup {
     load_semantic_context_inner(
         data_dir,
         db_path,
-        false,
         active_policy_embedder_name(),
         false,
         false,
@@ -912,7 +829,6 @@ pub fn load_semantic_context_no_version_check(data_dir: &Path, db_path: &Path) -
 fn load_semantic_context_inner(
     data_dir: &Path,
     db_path: &Path,
-    check_for_updates: bool,
     embedder_name: &str,
     defer_embedder_load: bool,
     strict_read_only: bool,
@@ -965,12 +881,9 @@ fn load_semantic_context_inner(
     let acquisition_policy = ModelAcquisitionPolicy::from_semantic_policy(&semantic_policy);
     let cache_report = classify_model_cache(&model_dir, &manifest, &acquisition_policy);
 
-    if let Some(availability) = semantic_availability_from_cache_state(
-        &config.embedder_id,
-        &model_dir,
-        &cache_report.state,
-        check_for_updates,
-    ) {
+    if let Some(availability) =
+        semantic_availability_from_cache_state(&config.embedder_id, &model_dir, &cache_report.state)
+    {
         return SemanticSetup {
             availability,
             context: None,
@@ -1214,49 +1127,16 @@ fn semantic_availability_from_cache_state(
     embedder_id: &str,
     model_dir: &Path,
     state: &ModelCacheState,
-    check_for_updates: bool,
 ) -> Option<SemanticAvailability> {
     match state {
         ModelCacheState::Acquired { .. }
         | ModelCacheState::PreseededLocal { .. }
-        | ModelCacheState::MirrorSourced { .. } => None,
-        ModelCacheState::IncompatibleVersion {
-            current_revision,
-            expected_revision,
-        } if check_for_updates => Some(SemanticAvailability::UpdateAvailable {
-            embedder_id: embedder_id.to_string(),
-            current_revision: current_revision.clone(),
-            latest_revision: expected_revision.clone(),
-        }),
-        ModelCacheState::IncompatibleVersion { .. } => None,
-        ModelCacheState::NotAcquired {
-            missing_files,
-            needs_consent,
-        } => {
-            if *needs_consent {
-                Some(SemanticAvailability::NeedsConsent)
-            } else {
-                Some(SemanticAvailability::ModelMissing {
-                    embedder_id: embedder_id.to_string(),
-                    model_dir: model_dir.to_path_buf(),
-                    missing_files: missing_files.clone(),
-                })
-            }
-        }
-        ModelCacheState::Acquiring {
-            bytes_present,
-            total_bytes,
-            ..
-        } => {
-            let progress_pct = if *total_bytes == 0 {
-                0
-            } else {
-                ((*bytes_present as f64 / *total_bytes as f64) * 100.0).min(100.0) as u8
-            };
-            Some(SemanticAvailability::Downloading {
-                progress_pct,
-                bytes_downloaded: *bytes_present,
-                total_bytes: *total_bytes,
+        | ModelCacheState::IncompatibleVersion { .. } => None,
+        ModelCacheState::NotAcquired { missing_files } => {
+            Some(SemanticAvailability::ModelMissing {
+                embedder_id: embedder_id.to_string(),
+                model_dir: model_dir.to_path_buf(),
+                missing_files: missing_files.clone(),
             })
         }
         ModelCacheState::ChecksumMismatch {
@@ -1286,12 +1166,6 @@ fn semantic_availability_from_cache_state(
             context: format!(
                 "model cache quarantined at {}: {reason}",
                 marker_path.display()
-            ),
-        }),
-        ModelCacheState::OfflineBlocked { missing_files } => Some(SemanticAvailability::Disabled {
-            reason: format!(
-                "offline and semantic model is not acquired: missing {}",
-                missing_files.join(", ")
             ),
         }),
     }
@@ -1326,7 +1200,7 @@ pub fn needs_index_rebuild(data_dir: &Path) -> bool {
 
 /// Delete the vector index to force a rebuild.
 ///
-/// Call this after a model upgrade when the user has consented to rebuilding
+/// Call this after a model reinstall when the operator has decided to rebuild
 /// the semantic index. The next index run will rebuild from scratch.
 ///
 /// # Returns
@@ -1373,7 +1247,6 @@ mod tests {
         };
         assert!(ready.summary().contains("semantic ready"));
         assert!(ready.is_ready());
-        assert!(!ready.has_update());
         assert!(ready.can_search());
         assert_eq!(ready.status_label(), "SEM");
     }
@@ -1405,19 +1278,6 @@ mod tests {
     }
 
     #[test]
-    fn test_semantic_availability_update() {
-        let update = SemanticAvailability::UpdateAvailable {
-            embedder_id: "test".into(),
-            current_revision: "v1".into(),
-            latest_revision: "v2".into(),
-        };
-        assert!(update.summary().contains("update available"));
-        assert!(!update.is_ready());
-        assert!(update.has_update());
-        assert_eq!(update.status_label(), "UPD");
-    }
-
-    #[test]
     fn cache_state_preserves_selected_embedder_identity() {
         let model_dir = Path::new("/tmp/cass/models/multilingual-minilm");
         let missing = semantic_availability_from_cache_state(
@@ -1425,9 +1285,7 @@ mod tests {
             model_dir,
             &ModelCacheState::NotAcquired {
                 missing_files: vec!["model.safetensors".to_string()],
-                needs_consent: false,
             },
-            true,
         )
         .expect("missing cache state");
         assert!(matches!(
@@ -1436,21 +1294,17 @@ mod tests {
                 if embedder_id == "multilingual-minilm-384" && actual_dir == model_dir
         ));
 
-        let update = semantic_availability_from_cache_state(
+        // A stale marker revision no longer blocks loading: with no update
+        // path the files (already checksum-verified upstream) are usable.
+        let usable = semantic_availability_from_cache_state(
             "multilingual-minilm-384",
             model_dir,
             &ModelCacheState::IncompatibleVersion {
                 current_revision: "old".to_string(),
                 expected_revision: "new".to_string(),
             },
-            true,
-        )
-        .expect("update cache state");
-        assert!(matches!(
-            update,
-            SemanticAvailability::UpdateAvailable { embedder_id, .. }
-                if embedder_id == "multilingual-minilm-384"
-        ));
+        );
+        assert!(usable.is_none());
     }
 
     #[test]
@@ -1473,24 +1327,6 @@ mod tests {
     }
 
     #[test]
-    fn test_semantic_availability_downloading() {
-        let downloading = SemanticAvailability::Downloading {
-            progress_pct: 50,
-            bytes_downloaded: 10_000_000,
-            total_bytes: 20_000_000,
-        };
-        assert!(downloading.is_downloading());
-        assert!(downloading.summary().contains("downloading"));
-        assert!(downloading.summary().contains("50%"));
-        assert_eq!(downloading.status_label(), "DL...");
-
-        let (pct, bytes, total) = downloading.download_progress().unwrap();
-        assert_eq!(pct, 50);
-        assert_eq!(bytes, 10_000_000);
-        assert_eq!(total, 20_000_000);
-    }
-
-    #[test]
     fn test_semantic_availability_tui_states() {
         let cases: &[AvailabilityTuiCase] = &[
             (
@@ -1498,14 +1334,6 @@ mod tests {
                 "LEX",
                 SemanticAvailability::is_not_installed,
             ),
-            (
-                SemanticAvailability::NeedsConsent,
-                "LEX",
-                SemanticAvailability::needs_consent,
-            ),
-            (SemanticAvailability::Verifying, "VFY...", |state| {
-                state.summary().contains("verifying")
-            }),
             (SemanticAvailability::HashFallback, "SEM*", |state| {
                 state.is_hash_fallback() && state.can_search()
             }),

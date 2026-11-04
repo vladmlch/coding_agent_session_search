@@ -127,12 +127,16 @@ fn check_no_auto_download(acq: &Value) -> Result<(), String> {
         ));
     }
     // Model-name-agnostic: status reports `minilm`, verify reports
-    // `all-minilm-l6-v2`; both must point at the explicit install command.
+    // `all-minilm-l6-v2`; both must point at the explicit local install
+    // command. `--from-file <DIR>` is mandatory: the emitted template keeps
+    // the placeholder because the operator supplies the directory.
     let next_cmd = acq
         .get("next_command")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    if !(next_cmd.starts_with("cass models install --model ") && next_cmd.ends_with(" --json")) {
+    if !(next_cmd.starts_with("cass models install --model ")
+        && next_cmd.ends_with(" --from-file <DIR>"))
+    {
         return Err(format!(
             "an absent model's next_command must be the explicit install; got {next_cmd:?}; acq: {acq}"
         ));

@@ -13,7 +13,7 @@
 //!
 //! The on-disk model lifecycle is already classified by
 //! [`crate::search::model_download::ModelCacheState`] (`not_acquired`,
-//! `acquiring`, `acquired`, `checksum_mismatch`, ...), and the semantic
+//! `acquired`, `checksum_mismatch`, ...), and the semantic
 //! readiness reason vocabulary lives in
 //! [`crate::search::semantic_readiness`]. Both answer "are the model files on
 //! disk and checksum-valid?" — neither can answer **"even if the files are
@@ -29,16 +29,14 @@
 //! policy into a single precise [`ModelAcquisitionState`] plus a hardened
 //! [`ModelAcquisitionReport`]. The report carries exactly the fields the .5.5
 //! acceptance names: a stable [`ModelFingerprint`], the install
-//! [`ModelSource`] provenance, the expected download [`DownloadCostClass`], a
-//! typed [`SkippedNetworkReason`] that *proves* cass never auto-downloads, a
-//! safe (never-destructive) next command, and rollback/cleanup guidance for
-//! corrupt or air-gapped installs.
+//! [`ModelSource`] provenance, the expected install [`InstallCostClass`], a
+//! typed [`SkippedNetworkReason`] that *proves* cass never touches the
+//! network, a safe (never-destructive) next command, and rollback/cleanup
+//! guidance for corrupt or incomplete installs.
 //!
-//! The classifier operates on an explicit [`ModelAcquisitionSignals`] input so
-//! it is fully testable without any model bits; [`probe_on_disk`] builds the
-//! on-disk portion of those signals from real files (reusing
-//! [`crate::search::model_download::compute_sha256`] and `model_file_path`)
-//! and performs **filesystem reads only — never any network I/O**. A bridge
+//! cass is fully local-only: every acquisition path is `cass models install
+//! --from-file <DIR>` and every probe below performs **filesystem reads only
+//! — never any network I/O**. A bridge
 //! ([`ModelAcquisitionSignals::semantic_model_inputs`]) feeds the readiness
 //! classifier in [`crate::search::semantic_readiness`], so the two contracts
 //! compose instead of drifting. All enums serialize as snake_case.
@@ -52,7 +50,7 @@ use crate::search::model_download::{ModelManifest, compute_sha256, model_file_pa
 use crate::search::semantic_readiness::FallbackMode;
 
 /// The on-disk name of the post-install verification marker. Kept identical to
-/// the legacy marker written by the downloader so the existing
+/// the legacy marker written by earlier installers so the existing
 /// `classify_model_cache` reader keeps working unchanged.
 pub(crate) const VERIFIED_MARKER_NAME: &str = ".verified";
 
@@ -127,15 +125,19 @@ impl RuntimeLoadability {
 // ----------------------------------------------------------------------------
 
 /// Where an installed model came from, recorded in the `.verified` marker for
-/// audit and rollback.
+/// audit and rollback. `Registry`/`Mirror` survive only as provenance read
+/// back from markers written before cass became local-only — no code path can
+/// produce them anymore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ModelSource {
-    /// Direct download from the model registry (HuggingFace).
+    /// Installed by the pre-local-only downloader from the model registry
+    /// (HuggingFace). Legacy provenance only.
     Registry,
-    /// Download from a configured mirror base URL.
+    /// Installed by the pre-local-only downloader from a configured mirror
+    /// base URL. Legacy provenance only.
     Mirror,
-    /// Air-gapped install from a local directory (`--from-file`).
+    /// Install from a local directory (`--from-file`).
     FromFile,
     /// Files preseeded locally and verified without a cass-written marker.
     Preseeded,
@@ -145,8 +147,8 @@ pub(crate) enum ModelSource {
 
 impl ModelSource {
     /// The token written into / read from the `.verified` marker's `source=`
-    /// line. Compatible with the legacy values written by the downloader
-    /// (`registry`, `mirror:<url>`, `preseeded_local`).
+    /// line. Compatible with the legacy values written before the local-only
+    /// cut (`registry`, `mirror:<url>`, `preseeded_local`).
     fn marker_token(self) -> &'static str {
         match self {
             Self::Registry => "registry",
@@ -328,16 +330,16 @@ fn field(content: &str, key: &str) -> Option<String> {
 }
 
 // ----------------------------------------------------------------------------
-// Download cost class.
+// Install cost class.
 // ----------------------------------------------------------------------------
 
-/// A coarse, human-facing class for the network/disk cost of acquiring a
-/// model, derived from its total byte size. Lets a robot/human decide whether
-/// an explicit install is worth it without parsing raw byte counts.
+/// A coarse, human-facing class for the disk cost of installing a model,
+/// derived from its total byte size. Lets a robot/human decide whether an
+/// explicit install is worth it without parsing raw byte counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum DownloadCostClass {
-    /// Nothing to download.
+pub(crate) enum InstallCostClass {
+    /// Nothing to install.
     None,
     /// Up to ~100 MiB (e.g. all-minilm-l6-v2, ~90 MB).
     Small,
@@ -347,7 +349,7 @@ pub(crate) enum DownloadCostClass {
     Large,
 }
 
-impl DownloadCostClass {
+impl InstallCostClass {
     const SMALL_MAX: u64 = 100 * 1024 * 1024;
     const MEDIUM_MAX: u64 = 250 * 1024 * 1024;
 
@@ -365,26 +367,25 @@ impl DownloadCostClass {
 }
 
 // ----------------------------------------------------------------------------
-// Skipped-network reason — the typed "cass never auto-downloads" proof.
+// Skipped-network reason — the typed "cass never touches the network" proof.
 // ----------------------------------------------------------------------------
 
 /// Why a non-install surface (search/status/health) did **not** acquire the
-/// model over the network. This is the typed contract behind the project rule
-/// that "no command auto-downloads a model except explicit `cass models
-/// install`". A surface that hits a missing/blocked model reports one of these
-/// instead of silently downloading.
+/// model. cass is local-only, so no code path ever could acquire over the
+/// network; this enum is the typed contract behind the rule that "no command
+/// installs a model except explicit `cass models install --from-file <DIR>`".
+/// A surface that hits a missing/blocked model reports one of these instead of
+/// silently installing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SkippedNetworkReason {
     /// Files are missing/incomplete; acquisition requires an explicit install.
     ExplicitInstallRequired,
-    /// An offline policy forbids network acquisition.
-    OfflinePolicy,
     /// Semantic acquisition is disabled by policy.
     DisabledByPolicy,
     /// The model exceeds the configured byte budget.
     BudgetExceeded,
-    /// The model is already acquired; no network is needed.
+    /// The model is already acquired; nothing to install.
     AlreadyAcquired,
 }
 
@@ -397,13 +398,13 @@ pub(crate) enum SkippedNetworkReason {
 /// → on-disk problems → runtime-load problems → ready; the classifier reports
 /// the first applicable state.
 ///
-/// Legacy mapping: `disabled_by_policy`, `offline_blocked`, `budget_blocked`,
-/// `checksum_mismatch`, and `quarantined_corrupt` use the same codes as
-/// [`crate::search::model_download::ModelCacheState`]; `absent` ⇔ legacy
-/// `not_acquired`, `partial_download` ⇔ legacy `acquiring`, `ready` ⇔ legacy
-/// `acquired`/`preseeded_local`/`mirror_sourced`. `baseline_no_semantic`,
-/// `incompatible_runtime`, and `runtime_load_failed` are new: the runtime
-/// dimension legacy on-disk classification cannot represent.
+/// Mapping: `disabled_by_policy`, `budget_blocked`, `checksum_mismatch`, and
+/// `quarantined_corrupt` use the same codes as
+/// [`crate::search::model_download::ModelCacheState`]; `absent` ⇔ cache
+/// `not_acquired`, `partial_install` ⇔ an incomplete local install, `ready` ⇔
+/// `acquired`/`preseeded_local`. `baseline_no_semantic`,
+/// `incompatible_runtime`, and `runtime_load_failed` are the runtime dimension
+/// on-disk classification cannot represent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ModelAcquisitionState {
@@ -415,12 +416,10 @@ pub(crate) enum ModelAcquisitionState {
     IncompatibleRuntime,
     /// A previously installed cache was found corrupt and quarantined.
     QuarantinedCorrupt,
-    /// A staged/partial acquisition is present but incomplete.
-    PartialDownload,
+    /// Some manifest files are present but the install is incomplete.
+    PartialInstall,
     /// No model acquired (opt-in not taken); lexical search still works.
     Absent,
-    /// Acquisition needed but the host is offline.
-    OfflineBlocked,
     /// The model exceeds the configured byte budget.
     BudgetBlocked,
     /// Files are present but at least one failed checksum verification.
@@ -443,9 +442,8 @@ impl ModelAcquisitionState {
             Self::BaselineNoSemantic => "baseline_no_semantic",
             Self::IncompatibleRuntime => "incompatible_runtime",
             Self::QuarantinedCorrupt => "quarantined_corrupt",
-            Self::PartialDownload => "partial_download",
+            Self::PartialInstall => "partial_install",
             Self::Absent => "absent",
-            Self::OfflineBlocked => "offline_blocked",
             Self::BudgetBlocked => "budget_blocked",
             Self::ChecksumMismatch => "checksum_mismatch",
             Self::RuntimeLoadFailed => "runtime_load_failed",
@@ -472,23 +470,21 @@ impl ModelAcquisitionState {
                  lexical search or run on an AVX2 host"
             }
             Self::QuarantinedCorrupt => {
-                "the model cache was found corrupt and quarantined; repair or reinstall it"
+                "the model cache was found corrupt and quarantined; reinstall it from local files"
             }
-            Self::PartialDownload => {
-                "a partial model acquisition is present; resume it with an explicit install"
+            Self::PartialInstall => {
+                "a partial model install is present; complete it with an explicit install \
+                 from local files"
             }
             Self::Absent => {
                 "no embedding model acquired; lexical search works, semantic is opt-in via \
-                 explicit install"
-            }
-            Self::OfflineBlocked => {
-                "model is not acquired and the host is offline; install from local files"
+                 explicit install from local files"
             }
             Self::BudgetBlocked => {
                 "the model exceeds the configured byte budget; raise the budget or keep lexical"
             }
             Self::ChecksumMismatch => {
-                "model files failed checksum verification; repair or reinstall them"
+                "model files failed checksum verification; reinstall them from local files"
             }
             Self::RuntimeLoadFailed => {
                 "model files are valid but the ONNX runtime failed to load them; reinstall or run \
@@ -505,10 +501,8 @@ impl ModelAcquisitionState {
             Self::DisabledByPolicy => N::EnableSemanticPolicy,
             Self::BaselineNoSemantic => N::UseFullBuildOnCompatibleHost,
             Self::IncompatibleRuntime | Self::RuntimeLoadFailed => N::ReinstallOnCompatibleHost,
-            Self::QuarantinedCorrupt | Self::ChecksumMismatch => N::RepairOrReinstall,
-            Self::PartialDownload => N::ResumeInstall,
-            Self::Absent => N::InstallModel,
-            Self::OfflineBlocked => N::InstallFromFileOffline,
+            Self::QuarantinedCorrupt | Self::ChecksumMismatch => N::ReinstallFromFiles,
+            Self::PartialInstall | Self::Absent => N::InstallFromFiles,
             Self::BudgetBlocked => N::RaiseBudgetOrUseLexical,
         }
     }
@@ -518,13 +512,12 @@ impl ModelAcquisitionState {
         match self {
             Self::DisabledByPolicy => Some(R::DisabledByPolicy),
             Self::Absent
-            | Self::PartialDownload
+            | Self::PartialInstall
             | Self::ChecksumMismatch
             | Self::QuarantinedCorrupt => Some(R::ExplicitInstallRequired),
-            Self::OfflineBlocked => Some(R::OfflinePolicy),
             Self::BudgetBlocked => Some(R::BudgetExceeded),
             Self::Ready => Some(R::AlreadyAcquired),
-            // Host hard-blocks: a download would not help, so there is no
+            // Host hard-blocks: an install would not help, so there is no
             // skipped-network story to tell.
             Self::BaselineNoSemantic | Self::IncompatibleRuntime | Self::RuntimeLoadFailed => None,
         }
@@ -536,12 +529,13 @@ impl ModelAcquisitionState {
                 Some(format!(
                     "Safe to clear: `cass models remove --model {model_name}` removes only the \
                      derived model cache (lexical search keeps working); then reinstall with \
-                     `cass models install --model {model_name}`."
+                     `cass models install --model {model_name} --from-file <DIR>`."
                 ))
             }
-            Self::PartialDownload => Some(format!(
-                "The partial cache is resumable; re-run `cass models install --model {model_name}`, \
-                 or clear it with `cass models remove --model {model_name}` and start fresh."
+            Self::PartialInstall => Some(format!(
+                "The partial install is safe to redo: re-run `cass models install --model \
+                 {model_name} --from-file <DIR>`, or clear it with `cass models remove --model \
+                 {model_name}` and start fresh."
             )),
             _ => None,
         }
@@ -554,20 +548,16 @@ impl ModelAcquisitionState {
 pub(crate) enum ModelAcquisitionNextStep {
     /// Nothing to do; the model is ready.
     None,
-    /// Acquire the model (opt-in, explicit install).
-    InstallModel,
-    /// Resume an interrupted/partial install.
-    ResumeInstall,
+    /// Install the model from a local directory (`--from-file`).
+    InstallFromFiles,
     /// Re-enable semantic acquisition in policy/config.
     EnableSemanticPolicy,
     /// Install the full (non-baseline) artifact on an AVX2 host.
     UseFullBuildOnCompatibleHost,
     /// Reinstall or run on a CPU/runtime-compatible host.
     ReinstallOnCompatibleHost,
-    /// Install from a local directory while offline (`--from-file`).
-    InstallFromFileOffline,
-    /// Repair the verified cache or reinstall.
-    RepairOrReinstall,
+    /// Reinstall the verified cache from local files (`--from-file`).
+    ReinstallFromFiles,
     /// Raise the model byte budget or keep using lexical search.
     RaiseBudgetOrUseLexical,
 }
@@ -583,13 +573,9 @@ impl ModelAcquisitionNextStep {
             | Self::UseFullBuildOnCompatibleHost
             | Self::ReinstallOnCompatibleHost
             | Self::RaiseBudgetOrUseLexical => None,
-            Self::InstallModel | Self::ResumeInstall => {
-                Some(format!("cass models install --model {model_name} --json"))
-            }
-            Self::InstallFromFileOffline => Some(format!(
-                "cass models install --model {model_name} --from-file <dir> --json"
+            Self::InstallFromFiles | Self::ReinstallFromFiles => Some(format!(
+                "cass models install --model {model_name} --from-file <DIR>"
             )),
-            Self::RepairOrReinstall => Some("cass models verify --repair --json".to_string()),
         }
     }
 }
@@ -618,14 +604,12 @@ pub(crate) struct ModelAcquisitionSignals {
     pub checksum_ok: bool,
     /// A corrupt-cache quarantine marker is present.
     pub quarantined: bool,
-    /// An offline policy is in effect.
-    pub offline: bool,
     /// The model exceeds the configured byte budget.
     pub budget_exceeded: bool,
-    /// The manifest's total download size in bytes (for cost class).
-    pub expected_total_bytes: u64,
-    /// An air-gapped install path exists for this model.
-    pub offline_install_available: bool,
+    /// The manifest's total install size in bytes (for cost class).
+    pub expected_install_bytes: u64,
+    /// A local (`--from-file`) install path exists for this model.
+    pub local_install_available: bool,
 }
 
 impl ModelAcquisitionSignals {
@@ -647,10 +631,7 @@ impl ModelAcquisitionSignals {
         }
         if !self.files_present {
             if self.partial_present {
-                return S::PartialDownload;
-            }
-            if self.offline {
-                return S::OfflineBlocked;
+                return S::PartialInstall;
             }
             if self.budget_exceeded {
                 return S::BudgetBlocked;
@@ -675,9 +656,9 @@ impl ModelAcquisitionSignals {
             usable: state.is_usable(),
             runtime: self.runtime,
             source: self.source,
-            cost_class: DownloadCostClass::from_bytes(self.expected_total_bytes),
-            expected_download_bytes: self.expected_total_bytes,
-            offline_install_available: self.offline_install_available,
+            cost_class: InstallCostClass::from_bytes(self.expected_install_bytes),
+            expected_install_bytes: self.expected_install_bytes,
+            local_install_available: self.local_install_available,
             skipped_network_reason: state.skipped_network_reason(),
             // Semantic always fails open to lexical until a model is fully
             // ready; this mirrors the search asset contract.
@@ -723,9 +704,9 @@ pub(crate) struct ModelAcquisitionReport {
     pub usable: bool,
     pub runtime: RuntimeLoadability,
     pub source: ModelSource,
-    pub cost_class: DownloadCostClass,
-    pub expected_download_bytes: u64,
-    pub offline_install_available: bool,
+    pub cost_class: InstallCostClass,
+    pub expected_install_bytes: u64,
+    pub local_install_available: bool,
     pub skipped_network_reason: Option<SkippedNetworkReason>,
     pub fallback_mode: FallbackMode,
     pub next_step: ModelAcquisitionNextStep,
@@ -742,7 +723,6 @@ pub(crate) struct ModelAcquisitionReport {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct OnDiskPolicyInputs {
     pub policy_enabled: bool,
-    pub offline: bool,
     /// Maximum allowed model size; `None` means no budget cap.
     pub budget_max_bytes: Option<u64>,
 }
@@ -807,10 +787,9 @@ pub(crate) fn probe_on_disk(
         // verdict either way.
         checksum_ok: files_present && checksum_ok,
         quarantined,
-        offline: policy.offline,
         budget_exceeded,
-        expected_total_bytes: total,
-        offline_install_available: !manifest.files.is_empty(),
+        expected_install_bytes: total,
+        local_install_available: !manifest.files.is_empty(),
     }
 }
 
@@ -827,9 +806,9 @@ pub(crate) fn probe_on_disk(
 /// The work is an on-disk probe — **filesystem reads only, never a socket** —
 /// so a surface that emits this block *proves* cass did not auto-acquire the
 /// model: the typed `skipped_network_reason` is exactly the "no command
-/// downloads except explicit `cass models install`" contract made machine
-/// checkable. Both `models status` and `models verify` emit this single
-/// projection so the two surfaces cannot drift. Bead
+/// installs a model except explicit `cass models install --from-file <DIR>`"
+/// contract made machine checkable. Both `models status` and `models verify`
+/// emit this single projection so the two surfaces cannot drift. Bead
 /// `coding_agent_session_search-0qxwg` (follow-on to
 /// `cass-fleet-resilience-20260608-uojcg.5.5`).
 pub(crate) fn live_acquisition_block(
@@ -898,17 +877,15 @@ mod tests {
             partial_present: false,
             checksum_ok: true,
             quarantined: false,
-            offline: false,
             budget_exceeded: false,
-            expected_total_bytes: 90 * 1024 * 1024,
-            offline_install_available: true,
+            expected_install_bytes: 90 * 1024 * 1024,
+            local_install_available: true,
         }
     }
 
     fn policy(budget: Option<u64>) -> OnDiskPolicyInputs {
         OnDiskPolicyInputs {
             policy_enabled: true,
-            offline: false,
             budget_max_bytes: budget,
         }
     }
@@ -1005,28 +982,23 @@ mod tests {
             r.skipped_network_reason,
             Some(SkippedNetworkReason::ExplicitInstallRequired)
         );
-        assert_eq!(r.next_step, ModelAcquisitionNextStep::InstallModel);
+        assert_eq!(r.next_step, ModelAcquisitionNextStep::InstallFromFiles);
         assert_eq!(
             r.next_command.as_deref(),
-            Some("cass models install --model minilm --json")
+            Some("cass models install --model minilm --from-file <DIR>")
         );
         assert_eq!(r.fallback_mode, FallbackMode::Lexical);
     }
 
     #[test]
-    fn partial_offline_budget_are_distinct() {
+    fn partial_and_budget_are_distinct() {
         let mut s = ready();
         s.files_present = false;
         s.partial_present = true;
-        assert_eq!(s.state(), ModelAcquisitionState::PartialDownload);
-
-        let mut s = ready();
-        s.files_present = false;
-        s.offline = true;
-        assert_eq!(s.state(), ModelAcquisitionState::OfflineBlocked);
+        assert_eq!(s.state(), ModelAcquisitionState::PartialInstall);
         assert_eq!(
             s.report("minilm").next_step,
-            ModelAcquisitionNextStep::InstallFromFileOffline
+            ModelAcquisitionNextStep::InstallFromFiles
         );
 
         let mut s = ready();
@@ -1044,9 +1016,10 @@ mod tests {
         let guidance = r.rollback_guidance.expect("rollback guidance");
         assert!(guidance.contains("cass models remove --model snowflake-arctic-s"));
         assert!(guidance.contains("lexical search keeps working"));
+        assert_eq!(r.next_step, ModelAcquisitionNextStep::ReinstallFromFiles);
         assert_eq!(
             r.next_command.as_deref(),
-            Some("cass models verify --repair --json")
+            Some("cass models install --model snowflake-arctic-s --from-file <DIR>")
         );
     }
 
@@ -1083,12 +1056,6 @@ mod tests {
             {
                 let mut s = ready();
                 s.files_present = false;
-                s.offline = true;
-                s.state()
-            },
-            {
-                let mut s = ready();
-                s.files_present = false;
                 s.budget_exceeded = true;
                 s.state()
             },
@@ -1111,7 +1078,7 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        assert_eq!(reached.len(), 11, "all eleven states must be reachable");
+        assert_eq!(reached.len(), 10, "all ten states must be reachable");
     }
 
     // --- serialization ------------------------------------------------------
@@ -1153,23 +1120,23 @@ mod tests {
 
     #[test]
     fn cost_class_boundaries() {
-        assert_eq!(DownloadCostClass::from_bytes(0), DownloadCostClass::None);
+        assert_eq!(InstallCostClass::from_bytes(0), InstallCostClass::None);
         assert_eq!(
-            DownloadCostClass::from_bytes(90 * 1024 * 1024),
-            DownloadCostClass::Small
+            InstallCostClass::from_bytes(90 * 1024 * 1024),
+            InstallCostClass::Small
         );
         assert_eq!(
-            DownloadCostClass::from_bytes(120 * 1024 * 1024),
-            DownloadCostClass::Medium
+            InstallCostClass::from_bytes(120 * 1024 * 1024),
+            InstallCostClass::Medium
         );
         assert_eq!(
-            DownloadCostClass::from_bytes(270 * 1024 * 1024),
-            DownloadCostClass::Large
+            InstallCostClass::from_bytes(270 * 1024 * 1024),
+            InstallCostClass::Large
         );
         // Exact boundary at the small cap is still small.
         assert_eq!(
-            DownloadCostClass::from_bytes(100 * 1024 * 1024),
-            DownloadCostClass::Small
+            InstallCostClass::from_bytes(100 * 1024 * 1024),
+            InstallCostClass::Small
         );
     }
 
@@ -1312,7 +1279,7 @@ mod tests {
         let signals = probe_on_disk(&dir, &manifest, RuntimeLoadability::NotProbed, policy(None));
         assert!(!signals.files_present);
         assert!(signals.partial_present);
-        assert_eq!(signals.state(), ModelAcquisitionState::PartialDownload);
+        assert_eq!(signals.state(), ModelAcquisitionState::PartialInstall);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -1401,7 +1368,7 @@ mod tests {
         assert_eq!(block["fallback_mode"].as_str(), Some("lexical"));
         assert_eq!(
             block["next_command"].as_str(),
-            Some("cass models install --model minilm --json")
+            Some("cass models install --model minilm --from-file <DIR>")
         );
         // The fingerprint sub-object is present and deterministic.
         assert_eq!(
