@@ -1319,31 +1319,47 @@ fn golden_regeneration_hints_do_not_use_remote_offload() {
 }
 
 #[test]
-fn agents_md_does_not_recommend_bare_cargo_commands() {
+fn agents_md_does_not_recommend_remote_offload() {
     let agents_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("AGENTS.md");
     let contents = fs::read_to_string(&agents_path)
         .unwrap_or_else(|err| panic!("read {}: {err}", agents_path.display()));
-    let bare_cargo_line = regex::Regex::new(
-        r"^(UPDATE_GOLDENS=1\s+)?(env\s+CARGO_TARGET_DIR=[^\s]+\s+)?cargo\s+(build|test|check|clippy|fmt)\b",
-    )
-    .expect("compile bare cargo command regex");
+    // Development is local-only: cargo runs directly or via
+    // scripts/lib/run_cargo.sh, never through a remote executor, and the rules
+    // must not prescribe an external code-search service either. The plumbing
+    // tokens mirror tests/scripts_local_cargo_compliance.rs's rule.
+    let plumbing = regex::Regex::new(r"(?i)\brch\w*|\bdsr\w*|\bensure_rch\b|warp_grep|mcp__")
+        .expect("compile remote-offload plumbing regex");
 
     let violations = contents
         .lines()
         .enumerate()
         .filter_map(|(index, line)| {
-            let trimmed = line.trim();
-            bare_cargo_line
-                .is_match(trimmed)
-                .then(|| format!("{}:{}", index + 1, trimmed))
+            plumbing
+                .is_match(line)
+                .then(|| format!("{}:{}", index + 1, line.trim()))
         })
         .collect::<Vec<_>>();
 
     assert!(
         violations.is_empty(),
-        "AGENTS.md must show rch-offloaded cargo command examples:\n{}",
+        "AGENTS.md must not recommend remote offload or an external search \
+         service (rch/dsr/warp_grep/MCP tools); cargo runs locally:\n{}",
         violations.join("\n")
     );
+
+    // The local commands are the documented contract; a doc rewrite that drops
+    // them leaves agents without the required compiler checks.
+    for required in [
+        "cargo check --all-targets",
+        "cargo clippy --all-targets",
+        "cargo fmt --check",
+        "scripts/gate.sh",
+    ] {
+        assert!(
+            contents.contains(required),
+            "AGENTS.md must document the local command `{required}`"
+        );
+    }
 }
 
 /// Capture stdout of `cass <args>` in the isolated test home and return

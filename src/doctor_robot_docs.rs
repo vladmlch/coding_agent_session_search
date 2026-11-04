@@ -180,7 +180,7 @@ Per AGENTS.md and the world-class-doctor safety envelope (S1-S12):
   * Bypass the mutate() chokepoint. New writes go through it (Phase 4+).
   * Auto-fix P0 anomalies. Operator-only.
   * Auto-update goldens. Reports the diff; operator owns regeneration.
-  * Touch .env, rust-toolchain.toml, scripts/git-hooks/pre-push.sh.
+  * Touch .env or rust-toolchain.toml.
   * Make network calls offline. `--online` is opt-in.
   * Repair while another doctor repair holds the mutation lock. The outcome
     is repair-blocked (exit 7 index-busy while failed checks remain).

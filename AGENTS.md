@@ -1,11 +1,16 @@
 # State
 
-This is a locally developed project with local changes. My goal is to maintain local fixes, but periodically checkout
+This is a locally developed project with local changes. My goal is to maintain local fixes and the local-only
+direction (no remote sync, fleet operations, hosted deploys, or remote build offload), but periodically checkout
 remote branch and prefer remote changes ONLY when they do the same as local one.
 Meaning that, try to scope every local change as an incremental addition with smallest change in integration point
 with existing code.
 Example: rather then refactoring method (changing arguments, arguments types, name etc.) or changing method logic,
 create a new method which does the new or fixed functionality.
+
+Local-only deletions land as grouped commits (one group per feature area) and every deleted path is logged in
+`docs/LOCAL_ONLY.md`. On merge conflict between an upstream change and a local deletion, **keep the deletion** —
+`docs/LOCAL_ONLY.md` is the ledger that decides which deletions stand.
 
 # Disk space and compilation caches
 
@@ -18,25 +23,18 @@ If I tell you to do something, even if it goes against what follows below, YOU M
 
 ---
 
-## RULE 0.5 - SUITE-WIDE RULES LIVE IN /data/projects/AGENTS.md
+## RULE 0.5 — ANTI-REWARD-HACKING PRINCIPLES
 
-The suite-wide rules in **`/data/projects/AGENTS.md`** bind you here too. Read it. Two sections
-are load-bearing for perf work and are NOT duplicated below, so they cannot drift out of sync:
+Three principles decide whether a reported result here is real:
 
-- **`## Named Reward-Hacking Patterns (ALL FORBIDDEN)`** — 12 named patterns, several already
-  observed in this suite: gate self-weakening (and the exact price of a legitimate gate fix),
-  proof-class inflation, golden regeneration reflex, commit-stream pumping, tautological tests,
-  easy-lever cherry-picking, close-pump abuse, scope-splitting, spec-editing as progress,
-  conformance metastasis, dependency smuggling, bench-path hardcoding.
-- **`### Work-Graph Discipline`** — JSONL is truth and `beads.db` is disposable, `br sync
-  --import-only` after every pull, single-writer on graph structure, closure on cited evidence
-  with blocker beads gated on their named probe, `br dep cycles` stays empty.
-
-The three that most often decide whether a number here is real: a **self-speedup is
-MAINTENANCE, not a win** — a win needs the incumbent live in the SAME invocation; **never
-weaken a gate to land a change**, and if a gate is genuinely defective, meet the evidence
-standard and publish the win/lose split of what the fix admits; and **reporting a loss is a
-success** — one line, revert, next lever, no retraction narrative.
+- **Never weaken a gate to land a change.** If a gate is genuinely defective, meet the
+  evidence standard — a minimal failing reproducer plus an analysis of why the gate is
+  wrong — then publish the win/lose split of what the fix admits (the price of a
+  legitimate gate fix is naming every previously-blocked change it now lets through).
+- **A self-speedup is MAINTENANCE, not a win.** A win needs the incumbent live in the
+  SAME invocation — same inputs, same run, measured side by side.
+- **Reporting a loss is a success.** One line, revert, next lever — no retraction
+  narrative.
 
 ---
 
@@ -75,37 +73,18 @@ success** — one line, revert, next lever, no retraction narrative.
 
 ---
 
-## Swarm Commits: Stage Only What You Changed
+## Commits: Stage Only What You Changed
 
-Several agents edit this working tree at once. On 2026-09-01 two agents committed
-another session's uncommitted files under their own messages, rewrote three shared
-files from older copies (dropping helper functions whose callers had just been
-committed), and left `main` unable to compile for most of an hour. These rules exist
-because of that day:
+Keep commits small, early, and limited to the paths you edited:
 
 - **Never `git add -A`, `git add .`, or `git commit -a`.** Stage the exact paths you
   edited (`git add src/foo.rs tests/bar.rs`). If `git status` shows files you did not
-  touch, they belong to another agent — leave them alone (AGENTS.md rule: never stash,
-  revert, or overwrite concurrent work).
-- **Reserve the shared monoliths before editing them** — `src/lib.rs`,
-  `src/indexer/mod.rs`, `src/storage/sqlite.rs`, `src/search/quill_bridge.rs`,
-  `src/ui/app.rs` — with an Agent Mail file reservation
-  (`file_reservation_paths(project_key, agent, ["src/lib.rs"], ttl_seconds=3600, exclusive=true)`),
-  and install the Agent Mail pre-commit guard (`install_precommit_guard`) so a commit
-  that includes a path reserved by another agent is refused instead of merged blind.
+  touch, leave them out of the commit.
 - **Never restore a file from an older copy** to "fix" a compile error. Fix the
   error in place; a symbol your rewrite removes may already have committed callers.
 - **Commit small and early.** A long-lived uncommitted tree is the surface that gets
   swept. Verify with the batched gate (`scripts/gate.sh`) before pushing; a commit
   titled "restore a compiling main" that does not compile is worse than no commit.
-- **After any commit by another agent touches a file you changed,** `git grep` every
-  symbol you landed there. Presence is not enough: check that the function still does
-  what yours did (an in-process memo is not an on-disk cache).
-- **A GitHub issue gets a bead within 24 hours** (`gh<issue>-<topic>` in the title, the
-  reporter's numbers in the description) and the first triage comment on the issue
-  cites that bead. On 2026-09-01 the five worst open issues (#439, #440, #441, #395,
-  #391) had no bead while 2,000 beads were closed around them; the tracker must track
-  what users report, not only what agents choose.
 
 ---
 
@@ -324,24 +303,41 @@ All console output should be **informative, detailed, stylish, and colorful** by
 
 ## Compiler Checks (CRITICAL)
 
+All compilation runs **locally** — there is no remote build executor.
+
 **After any substantive code changes, you MUST verify no errors were introduced:**
 
 ```bash
 # Check for compiler errors and warnings
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-check-target cargo check --all-targets
+cargo check --all-targets
 
 # Check for clippy lints
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-check-target cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets -- -D warnings
 
 # Verify formatting
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-check-target cargo fmt --check
+cargo fmt --check
 ```
+
+Shared cargo defaults come from `scripts/lib/run_cargo.sh` (sourced by the dev scripts;
+`run_cargo` resolves them and invokes `cargo` locally). Each value resolves by priority —
+**an explicit cargo flag > the environment variable (`CARGO_TARGET_DIR`,
+`CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`/`NEXTEST_TEST_THREADS`) > the user's Cargo config
+(`build.target-dir`, `build.jobs`) > the project default**. Project defaults: the target
+dir is the main checkout's `target/` (worktrees share its dependency cache), build jobs
+and test threads are 2.
 
 If you see errors, **carefully understand and resolve each issue**. Read sufficient context to fix them the RIGHT way.
 
 ### Full gate
 
-Run the whole verification suite as one admission: `scripts/gate.sh` (fmt, clippy `-D warnings`, lib tests, targeted integration tests, goldens; `--lib-filter`, `--integration name:filter,...`, `--regen-goldens`; `GATE_RETRIES=40` retries fleet refusals).
+Run the whole verification suite as one admission: `scripts/gate.sh` — fmt, clippy
+`-D warnings`, the lib suite, targeted integration tests (`--integration name:filter,...`),
+goldens, and a UBS scan, all locally, printing one `STAGE=<name> EXIT=<code>` receipt per
+stage. A stage failure never stops later stages. Split a long run: `--lib-only`
+(fmt + clippy + lib) then `--no-lib` (integration + goldens); narrow with `--lib-filter
+'name ...'`, `--no-bin`, `--no-goldens`, or `--ubs-files a,b`. `--regen-goldens` runs
+`UPDATE_GOLDENS=1` then still verifies — read every golden diff before committing it;
+regeneration is never a way to make a red golden green.
 
 **Local pre-flight before pushing:**
 
@@ -432,16 +428,9 @@ Use `FrankenConnectionManager` for concurrent access:
 
 ## E2E Browser Tests
 
-**IMPORTANT:** Do not run the E2E browser tests (Playwright) on the shared development machine.
+The browser E2E lane runs **locally**: `scripts/browser_e2e_lane.sh --project chromium --project firefox --project webkit` builds the release `cass` and `cass-pages-perf-bundle` with plain cargo, regenerates the HTML exports and the Pages bundle (with password, recovery and revoked key slots) from that binary, runs the HTML-export, encryption, Pages and CDN-fallback Playwright specs, and writes `tests/e2e-lane-receipt.json` (host, commit, binary SHA-256, Playwright and browser versions, per-spec counts, each skip with its reason). A skipped test did not run; it is not a pass.
 
-Running browser tests there:
-- Consumes significant system resources (spawns browser instances)
-- Can freeze or slow down the development machine
-- May have different results than a clean host due to environment differences
-
-GitHub Actions is permanently off, so pushing a branch never runs them. Run browser specs on a dsr build host, one spec file at a time while debugging (`test.only()`), and name the host in the receipt.
-
-The lane is one command on that host: `scripts/browser_e2e_lane.sh --project chromium --project firefox --project webkit` builds the release `cass` and `cass-pages-perf-bundle`, regenerates the HTML exports and the Pages bundle (with password, recovery and revoked key slots) from that binary, runs the HTML-export, encryption, Pages and CDN-fallback specs, and writes `tests/e2e-lane-receipt.json` (host, commit, binary SHA-256, Playwright and browser versions, per-spec counts, each skip with its reason). A skipped test did not run; it is not a pass.
+GitHub Actions is permanently off, so this lane is the only browser coverage. It spawns real browser instances, so while debugging run one spec file at a time (`scripts/browser_e2e_lane.sh e2e/export/html-export-e2e.spec.ts`, or Playwright's `test.only()`) and cite the receipt it writes.
 
 ---
 
@@ -466,16 +455,19 @@ Integration and E2E tests live in the `tests/` directory. Benchmarks live in `be
 
 ```bash
 # Run all tests
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-test-target RUST_MIN_STACK=134217728 cargo test
+RUST_MIN_STACK=134217728 cargo test
 
 # Run with output
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-test-target cargo test -- --nocapture
+RUST_MIN_STACK=134217728 cargo test -- --nocapture
 
 # Run a specific test
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-test-target cargo test test_name
+RUST_MIN_STACK=134217728 cargo test test_name
+
+# Run one integration test target (the plan's verification runs use --locked)
+RUST_MIN_STACK=134217728 cargo test --locked --test <name>
 
 # Run tests with all features enabled
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-test-target cargo test --all-features
+RUST_MIN_STACK=134217728 cargo test --all-features
 ```
 
 ### Test Categories
@@ -537,7 +529,7 @@ Provides unified full-text and semantic search across all local coding agent ses
 - **Stale-on-read catch-up is on by default.** When `search`/`pack`/TUI launch sees a stale (>30 min), partial, or behind index, cass spawns a *detached* `cass index --background` (nice 15 / ionice idle, own process group, 5-min cooldown, honors `index-run.lock`) and returns the current results immediately. `--robot-meta` shows it under `_meta.index_freshness.auto_refresh` (`outcome`: `spawned|disabled|index_run_active|cooldown|guard_busy|spawn_failed`, plus `trigger`). It never fires for data dirs under the OS temp dir or under `TUI_HEADLESS`, so tests are unaffected. `CASS_AUTO_REFRESH=0` disables. Implementation: `src/indexer/background_refresh.rs`, hook `maybe_auto_refresh_index_after_read` in `src/lib.rs`.
 - **A missing or unusable index is rebuilt in the background, never by the search that found it.** When search needs a lexical repair it will not run inline (archive over the inline repair budget, or a robot caller facing `checkpoint_incomplete`), it spawns the same detached child with `--full` (or plain `cass index` for a small archive's checkpoint) and puts the outcome in the error hint: pid, "already rebuilding", or why no spawn happened. A rebuild run inside the search process, or an agent's own `cass index --full`, dies with the command timeout that wraps it and a large archive commits nothing before its first batch, so every retry used to start from zero and the index never converged. While a rebuild runs and no searchable generation exists, robot searches return exit 7 `index-busy` with `N of M conversations processed` at once instead of waiting `CASS_SEARCH_ACTIVE_REBUILD_WAIT_MS`. Implementation: `start_background_lexical_repair_for_search` in `src/lib.rs`.
 - **TUI first run:** launching the TUI with no index starts the same detached `cass index --full --background` child (same guards: never for scratch/temp data dirs or under `TUI_HEADLESS`, honors `CASS_AUTO_REFRESH`, cooldown and breaker), shows its progress in the status line, and opens search once the first generation publishes, without a restart. Implementation: `CassApp::start_first_run_index` / `poll_first_run_index` in `src/ui/app.rs`.
-- **`cass schedule install`** registers launchd LaunchAgents (macOS) / systemd user timers (Linux): incremental every 15 min, nightly full index + bounded `models backfill --scheduled` (fast/hash tier always, quality/MiniLM tier when installed; model-unavailable and index-busy exits count as skips, not failures) + due `sync_schedule` remote syncs, all at OS background priority. `cass schedule status --json` / `schedule run --job incremental|nightly [--force]` / `schedule uninstall`. Unsupported platforms get `err.kind="schedule"` with a manual recipe. Implementation: `src/schedule.rs`.
+- **`cass schedule install`** registers launchd LaunchAgents (macOS) / systemd user timers (Linux): incremental every 15 min, nightly full index + bounded `models backfill --scheduled` (fast/hash tier always, quality/MiniLM tier when installed; model-unavailable and index-busy exits count as skips, not failures), all at OS background priority. `cass schedule status --json` / `schedule run --job incremental|nightly [--force]` / `schedule uninstall`. Unsupported platforms get `err.kind="schedule"` with a manual recipe. Implementation: `src/schedule.rs`.
 - **Daemon timer:** `CASS_DAEMON_INDEX_INTERVAL_SECS=900` makes the resident semantic daemon spawn the same detached incremental index while it lives (`src/daemon/core.rs::spawn_periodic_index`).
 - **Idle gates:** scheduled jobs skip under severe load (Linux loadavg/PSI, macOS `sysctl vm.loadavg` — `responsiveness::machine_pressure_now`); `CASS_RESPONSIVENESS_MIN_USER_IDLE_SECS` adds a macOS console-idle requirement for nightly/backfill work (`responsiveness::user_idle_gate`; fails open elsewhere). Foreground `cass index` is never gated.
 - Every step is a child `cass` process, so exit 7 `index-busy` remains the only concurrency contract; do not add in-process schedulers that bypass the lock.
@@ -560,7 +552,7 @@ Provides unified full-text and semantic search across all local coding agent ses
 ### Schema Stability and Golden-Freeze Gates
 
 - Every JSON contract surface is pinned by golden-file regression tests under `tests/golden/robot/` (JSON) and `tests/golden/robot_docs/` (plain-text docs topics). The full set: capabilities, health, status, diag, diag_quarantine, models_status, models_verify, models_check_update, introspect, doctor, doctor_quarantine, api_version, stats (missing-db error envelope), robot_docs topics (paths, env, exit-codes, schemas, guide, robot_help).
-- **If you add a new field or change a type**, run `UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test golden_robot_json --test golden_robot_docs`, review the diff via `git diff tests/golden/`, and commit both the code + golden in one change. Do not regenerate goldens without reviewing — every diff is either an intentional schema change or a bug.
+- **If you add a new field or change a type**, run `UPDATE_GOLDENS=1 cargo test --test golden_robot_json --test golden_robot_docs`, review the diff via `git diff tests/golden/`, and commit both the code + golden in one change. Do not regenerate goldens without reviewing — every diff is either an intentional schema change or a bug.
 - `cass introspect --json`'s `response_schemas` is `BTreeMap`-backed so the serialized key order is alphabetical and deterministic (bead 8sl73).
 - Error envelopes use **kebab-case `err.kind`** values. For codes 0-9 the numeric code is sufficient; for codes ≥ 10 the code is ambiguous (e.g. 10 covers both `config` and `timeout`) — always branch on `err.kind`. Full taxonomy in src/lib.rs `CliError` literals + the Exit Codes table below (bead wan21).
 
@@ -824,77 +816,6 @@ Search/pack timeouts are not exit 8: on expiry `search` and `pack` exit 0 with `
 
 **Codes ≥ 10 are domain-specific.** The numeric code alone is ambiguous (e.g. code 10 covers both `config` and `timeout` kinds). Agents should branch on `err.kind` from the JSON error envelope, not on the numeric code, when handling codes ≥ 10. Kind names are kebab-case (examples: `missing-index`, `missing-db`, `semantic-unavailable`, `embedder-unavailable`, `ambiguous-source`, `timeout`, `config`, `lock-busy`, `model`, `download`, `io`). The full set (about 90 kinds) lives in `src/model/cli_error_kind.rs`.
 
-### Multi-Machine Search Setup
-
-cass can search across agent sessions from multiple machines. Use the interactive setup wizard for the easiest configuration:
-
-```bash
-cass sources setup
-```
-
-#### What the wizard does:
-1. **Discovers** SSH hosts from your ~/.ssh/config
-2. **Probes** each host to check for:
-   - Existing cass installation (and version)
-   - Agent session data (Claude, Codex, Cursor, Gemini)
-   - System resources (disk, memory)
-3. **Lets you select** which hosts to configure
-4. **Installs cass** on remotes if needed
-5. **Indexes** existing sessions on remotes
-6. **Configures** sources.toml with correct paths
-7. **Syncs** data to your local machine
-
-#### For scripting (non-interactive):
-```bash
-cass sources setup --non-interactive --hosts css,csd,yto
-cass sources setup --json --hosts css  # JSON output for parsing
-```
-
-#### Key flags:
-| Flag | Purpose |
-|------|---------|
-| `--hosts <names>` | Configure only these hosts (comma-separated) |
-| `--dry-run` | Preview without making changes |
-| `--resume` | Resume interrupted setup |
-| `--skip-install` | Don't install cass on remotes |
-| `--skip-index` | Don't run remote indexing |
-| `--skip-sync` | Don't sync after setup |
-| `--json` | Output progress as JSON |
-
-#### After setup:
-```bash
-# Search across all sources
-cass search "database migration"
-
-# Sync latest data
-cass sources sync            # all configured remote sources; --source <name> narrows it
-
-# List configured sources
-cass sources list
-```
-
-#### Manual configuration:
-If you prefer manual setup, edit `~/.config/cass/sources.toml`:
-```toml
-[[sources]]
-name = "my-server"
-type = "ssh"
-host = "user@server.example.com"
-paths = ["~/.claude/projects"]
-
-[[sources.path_mappings]]
-from = "/home/user/projects"
-to = "/Users/me/projects"
-```
-
-#### Troubleshooting:
-- **Host unreachable**: Verify SSH config with `ssh <host>` manually
-- **Permission denied**: Load SSH key with `ssh-add ~/.ssh/id_rsa`
-- **cargo not found**: Use `--skip-install` and install manually
-- **Interrupted setup**: Resume with `cass sources setup --resume`
-
-For machine-readable docs: `cass robot-docs sources`
-
 ### Feature Flags
 
 ```toml
@@ -949,29 +870,6 @@ Parse: `file:line:col` -> location | Suggested fix -> how to fix | Exit 0/1 -> p
 
 ---
 
-## RCH — Remote Compilation Helper
-
-RCH offloads `cargo build`, `cargo test`, `cargo clippy`, and other compilation commands to a fleet of remote build workers instead of building locally.
-
-To manually offload a build:
-```bash
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-rch-target cargo build --release
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-rch-target cargo test
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-rch-target cargo clippy
-```
-
-Quick commands:
-```bash
-rch doctor                    # Health check
-rch workers probe --all       # Test connectivity to all workers
-rch status                    # Overview of current state
-rch queue                     # See active/waiting builds
-```
-
-If rch or its workers are unavailable, it fails open — builds run locally as normal. For proof runs use `RCH_REQUIRE_REMOTE=1 rch exec -- ...`: it fails closed and refuses local fallback (refusal `RCH-I012`, non-zero exit) when the fleet is pressure-blocked or has no admissible worker — that is not a build failure, so retry once `rch status` shows an admissible worker.
-
----
-
 ## ast-grep vs ripgrep
 
 **Use `ast-grep` when structure matters.** It parses code and matches AST nodes, ignoring comments/strings, and can **safely rewrite** code.
@@ -1006,43 +904,6 @@ rg -n 'println!' -t rust
 # Combine speed + precision
 rg -l -t rust 'unwrap\(' | xargs ast-grep run -l Rust -p '$X.unwrap()' --json
 ```
-
----
-
-## Morph Warp Grep — AI-Powered Code Search
-
-**Use `mcp__morph-mcp__warp_grep` for exploratory "how does X work?" questions.** An AI agent expands your query, greps the codebase, reads relevant files, and returns precise line ranges with full context.
-
-**Use `ripgrep` for targeted searches.** When you know exactly what you're looking for.
-
-**Use `ast-grep` for structural patterns.** When you need AST precision for matching/rewriting.
-
-### When to Use What
-
-| Scenario | Tool | Why |
-|----------|------|-----|
-| "How is authentication implemented?" | `warp_grep` | Exploratory; don't know where to start |
-| "Where is rate limiting implemented?" | `warp_grep` | Need to understand architecture |
-| "Find all uses of `embed(`" | `ripgrep` | Targeted literal search |
-| "Find files with `println!`" | `ripgrep` | Simple pattern |
-| "Replace all `unwrap()` with `expect()`" | `ast-grep` | Structural refactor |
-
-### warp_grep Usage
-
-```
-mcp__morph-mcp__warp_grep(
-  repoPath: "/dp/coding_agent_session_search",
-  query: "How is semantic search implemented?"
-)
-```
-
-Returns structured results with file paths, line ranges, and extracted code snippets.
-
-### Anti-Patterns
-
-- **Don't** use `warp_grep` to find a specific function name -> use `ripgrep`
-- **Don't** use `ripgrep` to understand "how does X work" -> wastes time with manual reads
-- **Don't** use `ripgrep` for codemods -> risks collateral edits
 
 ---
 
