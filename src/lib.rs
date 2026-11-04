@@ -6684,10 +6684,12 @@ struct RemovedCommand {
 }
 
 /// Commands removed by the local-only port. Tasks 7–14 append entries as
-/// each surface is deleted, dropping the same names from
+/// each surface is deleted. A one-word entry must drop the name from
 /// `CANONICAL_TOP_LEVEL_COMMANDS` and `SUBCOMMAND_ALIASES` in the same
-/// commit — `removed_invocation_tests` pins that a name may never sit in
-/// the live and the removed list at once.
+/// commit — `removed_invocation_tests` pins that a top-level name may
+/// never sit in the live and the removed list at once. A pair entry
+/// (`["sources","sync"]`) removes that pair alone and keeps its parent
+/// live, so it never touches the top-level lists.
 const REMOVED_COMMANDS: &[RemovedCommand] = &[];
 
 /// A flag (or specific flag values) removed from a command that otherwise
@@ -6712,18 +6714,18 @@ struct RemovedFlag {
 /// Flags removed by the local-only port; see `RemovedFlag`.
 const REMOVED_FLAGS: &[RemovedFlag] = &[];
 
-/// Whether `name` is the top-level word of a removed command path. Removed
-/// names are excluded from fuzzy typo attraction even while a stale
-/// `CANONICAL_TOP_LEVEL_COMMANDS` entry still lists them (the disjointness
-/// test makes that state a hard failure, the filter makes it harmless in
-/// the meantime).
-fn is_removed_command_name(name: &str) -> bool {
-    REMOVED_COMMANDS.iter().any(|entry| {
-        entry
-            .path
-            .first()
-            .is_some_and(|top| top.eq_ignore_ascii_case(name))
-    })
+/// Whether `name` is a removed *top-level* command: a one-word path in
+/// `removed_commands`. Removed names are excluded from fuzzy typo
+/// attraction even while a stale `CANONICAL_TOP_LEVEL_COMMANDS` entry
+/// still lists them (the disjointness test makes that state a hard
+/// failure, the filter makes it harmless in the meantime). A pair entry
+/// (`["sources","sync"]`) removes that pair alone — its parent stays a
+/// live command, so it must keep attracting corrections (`cass sourcess`
+/// → `sources`) instead of falling into the implicit-search fold.
+fn is_removed_command_name(name: &str, removed_commands: &[RemovedCommand]) -> bool {
+    removed_commands
+        .iter()
+        .any(|entry| entry.path.len() == 1 && entry.path[0].eq_ignore_ascii_case(name))
 }
 
 /// Positional argv words in order, program name excluded. Flag tokens are
@@ -6852,7 +6854,7 @@ fn removed_invocation_error(
         .filter(|(_, distance)| *distance <= 2)
         .min_by_key(|(_, distance)| *distance);
     if let Some((entry, removed_distance)) = closest_removed {
-        let live_distance = closest_top_level_command(&command_lc)
+        let live_distance = closest_top_level_command_in(&command_lc, removed_commands)
             .map(|name| strsim::levenshtein(&command_lc, name));
         if live_distance.is_none_or(|distance| removed_distance <= distance) {
             return Some(removed_command_error(entry.path, Some(command), entry.hint));
@@ -6936,6 +6938,17 @@ fn removed_flag_error(entry: &RemovedFlag) -> CliError {
 /// run `stats` (and `import` for `export`) with exit 0 and only a stderr
 /// note (2l1b0.51).
 fn closest_top_level_command(arg: &str) -> Option<&'static str> {
+    closest_top_level_command_in(arg, REMOVED_COMMANDS)
+}
+
+/// `closest_top_level_command` with the removed-command table explicit —
+/// the same parameterized-table pattern as `removed_invocation_error`, so
+/// unit tests can prove a removed pair under a live parent never hides
+/// that parent while the real lists are still empty.
+fn closest_top_level_command_in(
+    arg: &str,
+    removed_commands: &[RemovedCommand],
+) -> Option<&'static str> {
     let lower = arg.to_ascii_lowercase();
     if lower.len() < 3 || CANONICAL_TOP_LEVEL_COMMANDS.contains(&lower.as_str()) {
         return None;
@@ -6947,7 +6960,7 @@ fn closest_top_level_command(arg: &str) -> Option<&'static str> {
         // A removed name must never be a correction candidate either: the
         // disjointness invariant in `removed_invocation_tests` keeps this a
         // no-op while REMOVED_COMMANDS stays disjoint from CANONICAL_*.
-        .filter(|candidate| !is_removed_command_name(candidate))
+        .filter(|candidate| !is_removed_command_name(candidate, removed_commands))
         .map(|candidate| (candidate, strsim::levenshtein(&lower, candidate)))
         .filter(|(_, distance)| *distance <= 2)
         .min_by_key(|(_, distance)| *distance)
@@ -7589,12 +7602,21 @@ mod removed_invocation_tests {
         );
     }
 
-    #[test]
-    fn removed_tables_stay_disjoint_from_live_lists() {
-        // The same commit that adds a REMOVED_COMMANDS entry must drop the
-        // name from CANONICAL_TOP_LEVEL_COMMANDS — a name in both lists
-        // would both reject and still advertise/correct to the command.
-        for entry in REMOVED_COMMANDS {
+    /// The disjointness invariant behind
+    /// `removed_tables_stay_disjoint_from_live_lists`, taking the table so
+    /// tests can prove a pair entry under a live parent is harmless. Only
+    /// one-word paths are checked: `["sources","sync"]` removes that pair
+    /// alone — `sources` stays live, listed, and correctable by design, so
+    /// requiring the parent word out of CANONICAL would break the table.
+    fn assert_disjoint_from_live_lists(removed_commands: &[RemovedCommand]) {
+        // The same commit that adds a one-word REMOVED_COMMANDS entry must
+        // drop the name from CANONICAL_TOP_LEVEL_COMMANDS — a name in both
+        // lists would both reject and still advertise/correct to the
+        // command.
+        for entry in removed_commands {
+            if entry.path.len() != 1 {
+                continue;
+            }
             let top = entry.path[0];
             assert!(
                 !CANONICAL_TOP_LEVEL_COMMANDS
@@ -7610,19 +7632,69 @@ mod removed_invocation_tests {
             );
         }
         // Fuzzy correction can never return a removed name.
-        for entry in REMOVED_COMMANDS {
+        for entry in removed_commands {
+            if entry.path.len() != 1 {
+                continue;
+            }
             let top = entry.path[0];
             for probe in [
                 top.to_string(),
                 top[..top.len().saturating_sub(1)].to_string(),
             ] {
                 assert_ne!(
-                    closest_top_level_command(&probe),
+                    closest_top_level_command_in(&probe, removed_commands),
                     Some(top),
                     "removed command `{top}` is still a typo-correction candidate"
                 );
             }
         }
+    }
+
+    #[test]
+    fn removed_tables_stay_disjoint_from_live_lists() {
+        assert_disjoint_from_live_lists(REMOVED_COMMANDS);
+    }
+
+    /// The exact row task 9 lands while `sources` stays a live top-level
+    /// command: the pair is removed, the parent is not.
+    const PAIR_UNDER_LIVE_PARENT: &[RemovedCommand] = &[RemovedCommand {
+        path: &["sources", "sync"],
+        hint: None,
+    }];
+
+    #[test]
+    fn pair_entry_leaves_its_live_parent_correctable() {
+        // The exclusion helper scopes to one-word paths only.
+        assert!(
+            !is_removed_command_name("sources", PAIR_UNDER_LIVE_PARENT),
+            "a removed pair must not mark its live parent as removed"
+        );
+        assert!(
+            !is_removed_command_name("sources", DEMO_COMMANDS),
+            "the demo table's pair row must not remove `sources` either"
+        );
+        assert!(
+            is_removed_command_name("swarm", DEMO_COMMANDS),
+            "a one-word entry still marks its name removed"
+        );
+        // `cass sourcess` keeps typo-correcting to the live `sources`
+        // instead of falling into the implicit-search fold — with the
+        // unscoped parent-word check this returned `None` and `sourcess`
+        // silently executed as `cass search sourcess`.
+        for table in [PAIR_UNDER_LIVE_PARENT, DEMO_COMMANDS] {
+            assert_eq!(
+                closest_top_level_command_in("sourcess", table),
+                Some("sources"),
+                "a removed pair must not exclude its parent from typo candidates"
+            );
+        }
+        // The real consts agree today: `sources` is live and already the
+        // nearest candidate.
+        assert_eq!(closest_top_level_command("sourcess"), Some("sources"));
+        // Disjointness ignores pair rows — the pair-only table passes
+        // while `sources` is legitimately still listed in CANONICAL.
+        assert_disjoint_from_live_lists(PAIR_UNDER_LIVE_PARENT);
+        assert_disjoint_from_live_lists(REMOVED_COMMANDS);
     }
 }
 

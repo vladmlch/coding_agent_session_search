@@ -5389,6 +5389,17 @@ struct RemovedCommandCase {
     /// `true` while the command is still live — the row is only checked
     /// for "not yet rejected" via a cheap `--help` probe, never executed.
     pending: bool,
+    /// Pending-probe argv after `cass`; `None` falls back to
+    /// `[args[0], "--help"]`. Rows whose full command path is a live
+    /// subcommand today must probe it in full (`["sources","sync","--help"]`)
+    /// so a landed `REMOVED_*` entry with a forgotten `pending` flip goes
+    /// red instead of passing on a still-live parent word. The fallback
+    /// stays for rows whose path does not parse today (`fleet doctor`
+    /// names no live subcommand — the whole `fleet` tree is task 8's
+    /// removal) and is also what flag rows extend: their probe includes
+    /// the still-live flag so a premature `REMOVED_FLAGS` entry is caught
+    /// the same way.
+    probe_args: Option<&'static [&'static str]>,
 }
 
 const REMOVED_COMMAND_CASES: &[RemovedCommandCase] = &[
@@ -5398,25 +5409,31 @@ const REMOVED_COMMAND_CASES: &[RemovedCommandCase] = &[
         display: "cass swarm",
         task: 7,
         pending: true,
+        probe_args: Some(&["swarm", "status", "--help"]),
     },
     RemovedCommandCase {
         args: &["lessons", "list"],
         display: "cass lessons",
         task: 7,
         pending: true,
+        probe_args: Some(&["lessons", "list", "--help"]),
     },
-    // Case-variant and typo of a removed top-level command.
+    // Case-variant and typo of a removed top-level command. Top-word
+    // probes: `cass Swarm --help` exits 0 today via the implicit-search
+    // fold, `cass swarn --help` corrects to `swarm --help`.
     RemovedCommandCase {
         args: &["Swarm"],
         display: "cass swarm",
         task: 7,
         pending: true,
+        probe_args: None,
     },
     RemovedCommandCase {
         args: &["swarn"],
         display: "cass swarm",
         task: 7,
         pending: true,
+        probe_args: None,
     },
     // Task 8 — fleet, release verification, self-upgrade.
     RemovedCommandCase {
@@ -5424,74 +5441,93 @@ const REMOVED_COMMAND_CASES: &[RemovedCommandCase] = &[
         display: "cass fleet",
         task: 8,
         pending: true,
+        // `fleet doctor` is not a live subcommand today (verified: exits
+        // 2) — the whole `fleet` tree is what task 8 removes.
+        probe_args: None,
     },
     RemovedCommandCase {
         args: &["release-verify"],
         display: "cass release-verify",
         task: 8,
         pending: true,
+        probe_args: None,
     },
     RemovedCommandCase {
         args: &["upgrade", "--check"],
         display: "cass upgrade",
         task: 8,
         pending: true,
+        probe_args: None,
     },
-    // Task 9 — remote sources.
+    // Task 9 — remote sources. `sources` itself stays live: each row
+    // probes its own still-live subcommand so a landed pair entry with a
+    // forgotten `pending` flip goes red instead of passing on
+    // `sources --help` (all verified to exit 0 on 2026-11-05).
     RemovedCommandCase {
         args: &["sources", "sync"],
         display: "cass sources sync",
         task: 9,
         pending: true,
+        probe_args: Some(&["sources", "sync", "--help"]),
     },
     RemovedCommandCase {
         args: &["sources", "setup"],
         display: "cass sources setup",
         task: 9,
         pending: true,
+        probe_args: Some(&["sources", "setup", "--help"]),
     },
     RemovedCommandCase {
         args: &["sources", "discover"],
         display: "cass sources discover",
         task: 9,
         pending: true,
+        probe_args: Some(&["sources", "discover", "--help"]),
     },
     RemovedCommandCase {
         args: &["sources", "reingest"],
         display: "cass sources reingest",
         task: 9,
         pending: true,
+        probe_args: Some(&["sources", "reingest", "--help"]),
     },
     RemovedCommandCase {
         args: &["sources", "artifact-manifest"],
         display: "cass sources artifact-manifest",
         task: 9,
         pending: true,
+        probe_args: Some(&["sources", "artifact-manifest", "--help"]),
     },
     RemovedCommandCase {
         args: &["sources", "schedule"],
         display: "cass sources schedule",
         task: 9,
         pending: true,
+        probe_args: Some(&["sources", "schedule", "--help"]),
     },
-    // Task 12 — model download/acquisition surfaces.
+    // Task 12 — model download/acquisition surfaces. The flag rows probe
+    // the flag itself: while pending the flag must still parse, and a
+    // premature REMOVED_FLAGS entry rejects the probe.
     RemovedCommandCase {
         args: &["models", "check-update"],
         display: "cass models check-update",
         task: 12,
         pending: true,
+        probe_args: Some(&["models", "check-update", "--help"]),
     },
     RemovedCommandCase {
         args: &["models", "install", "--mirror", "X"],
         display: "--mirror` on `cass models install",
         task: 12,
         pending: true,
+        probe_args: Some(&["models", "install", "--mirror", "X", "--help"]),
     },
     RemovedCommandCase {
         args: &["models", "verify", "--repair"],
         display: "--repair` on `cass models verify",
         task: 12,
         pending: true,
+        probe_args: Some(&["models", "verify", "--repair", "--help"]),
     },
     // Task 14 — hosted pages deploy targets.
     RemovedCommandCase {
@@ -5499,6 +5535,7 @@ const REMOVED_COMMAND_CASES: &[RemovedCommandCase] = &[
         display: "--target` on `cass pages",
         task: 14,
         pending: true,
+        probe_args: Some(&["pages", "--target", "github", "--help"]),
     },
 ];
 
@@ -5506,9 +5543,10 @@ const REMOVED_COMMAND_CASES: &[RemovedCommandCase] = &[
 /// the canonical `cass … was removed: cass runs fully local-only` message,
 /// an untouched data dir, and no spawned helper — `PATH` is emptied so a
 /// hypothetical `ssh`/`curl` exec could never resolve. Pending rows are
-/// probed only via `<args> --help` (exit 0 today), which keeps them honest
-/// documentation without running network-touching commands like
-/// `cass upgrade --check`.
+/// probed only via `probe_args` — `<top-level word> --help` by default,
+/// the full still-live path (plus its flag, for flag rows) where that
+/// parses today — which keeps them honest documentation without running
+/// network-touching commands like `cass upgrade --check`.
 #[test]
 fn removed_commands_error_without_redirection() {
     // Tasks must never flip `pending` without landing the matching
@@ -5539,19 +5577,26 @@ fn removed_commands_error_without_redirection() {
         };
 
         if case.pending {
-            // Still-live surface: `<top-level word> --help` must exit 0
-            // and must not be turned into a removal error. The probe uses
-            // only the first word because rows like `fleet doctor` name a
-            // subcommand that does not exist even today (the whole `fleet`
-            // tree is what task 8 removes); flag rows likewise only prove
-            // their command still exists until they activate.
-            let output = run(&[case.args[0], "--help"]);
+            // Still-live surface: the probe must exit 0 and must not be
+            // turned into a removal error. `probe_args` probes the full
+            // still-live path (flag included) wherever it parses today —
+            // a landed REMOVED_* entry with a forgotten `pending` flip
+            // then fails here instead of passing on a still-live parent
+            // word. Rows without it fall back to `<top-level word>
+            // --help` because their full path does not parse even today
+            // (`fleet doctor` names no live subcommand; the whole `fleet`
+            // tree is what task 8 removes).
+            let mut probe = vec![case.args[0], "--help"];
+            if let Some(probe_args) = case.probe_args {
+                probe = probe_args.to_vec();
+            }
+            let output = run(&probe);
             assert!(
                 output.status.success(),
-                "task {}: `cass {} --help` must still work while the row is pending; \
+                "task {}: `cass {}` must still work while the row is pending; \
                  land the REMOVED_* entry and flip `pending` together\nstderr: {}",
                 case.task,
-                case.args[0],
+                probe.join(" "),
                 String::from_utf8_lossy(&output.stderr)
             );
             assert!(
