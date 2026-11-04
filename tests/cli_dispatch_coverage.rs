@@ -5408,31 +5408,30 @@ const REMOVED_COMMAND_CASES: &[RemovedCommandCase] = &[
         args: &["swarm", "status"],
         display: "cass swarm",
         task: 7,
-        pending: true,
+        pending: false,
         probe_args: Some(&["swarm", "status", "--help"]),
     },
     RemovedCommandCase {
         args: &["lessons", "list"],
         display: "cass lessons",
         task: 7,
-        pending: true,
+        pending: false,
         probe_args: Some(&["lessons", "list", "--help"]),
     },
-    // Case-variant and typo of a removed top-level command. Top-word
-    // probes: `cass Swarm --help` exits 0 today via the implicit-search
-    // fold, `cass swarn --help` corrects to `swarm --help`.
+    // Case-variant and typo of a removed top-level command. Both must keep
+    // reporting `cass swarm` as removed instead of resolving elsewhere.
     RemovedCommandCase {
         args: &["Swarm"],
         display: "cass swarm",
         task: 7,
-        pending: true,
+        pending: false,
         probe_args: None,
     },
     RemovedCommandCase {
         args: &["swarn"],
         display: "cass swarm",
         task: 7,
-        pending: true,
+        pending: false,
         probe_args: None,
     },
     // Task 8 — fleet, release verification, self-upgrade.

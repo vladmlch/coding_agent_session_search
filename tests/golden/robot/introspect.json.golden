@@ -3763,48 +3763,6 @@
       "has_json_output": true
     },
     {
-      "name": "lessons",
-      "description": "Mine and query durable lessons from local evidence (commits, beads, proofs)",
-      "arguments": [
-        {
-          "name": "robot-format",
-          "description": "Output format for robot mode (overrides --json when specified)",
-          "arg_type": "option",
-          "value_type": "enum",
-          "required": false,
-          "enum_values": [
-            "json",
-            "jsonl",
-            "compact",
-            "sessions",
-            "toon"
-          ]
-        }
-      ],
-      "has_json_output": true
-    },
-    {
-      "name": "swarm",
-      "description": "Read-only swarm operations status, work packets, and coordination lint",
-      "arguments": [
-        {
-          "name": "robot-format",
-          "description": "Output format for robot mode (overrides --json when specified)",
-          "arg_type": "option",
-          "value_type": "enum",
-          "required": false,
-          "enum_values": [
-            "json",
-            "jsonl",
-            "compact",
-            "sessions",
-            "toon"
-          ]
-        }
-      ],
-      "has_json_output": true
-    },
-    {
       "name": "import",
       "description": "Import data from external sources",
       "arguments": [

@@ -209,15 +209,18 @@ fn allowlisted_argv(
             db,
             "--json",
         ],
+        // Evaluated in-process via `resource_readiness`/`privacy_readiness`
+        // (the `cass swarm *` surfaces were removed with the local-only
+        // conversion); the `cass-internal` pseudo-argv marks them as
+        // non-spawnable, same convention as `confirm-key-policy`.
         Adapter::ResourcePlan => vec![
-            "cass",
-            "swarm",
+            "cass-internal",
             "resource-plan",
             "--action",
             "full-index",
             "--json",
         ],
-        Adapter::PrivacyPreview => vec!["cass", "swarm", "privacy-preview", "--json"],
+        Adapter::PrivacyPreview => vec!["cass-internal", "privacy-preview", "--json"],
         Adapter::SupportEvidence => vec![
             "cass",
             "health",

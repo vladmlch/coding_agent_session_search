@@ -33,8 +33,8 @@
 //!         `~/.ssh/config`, `--include-ssh`, `ssh-keygen`, `use_ssh`,
 //!         `SSH_KEY`, `asupersync`. `ssh.exe`-style Windows binary suffixes
 //!         still flag.
-//!     `rch`/`dsr` need no entry in either model: the plumbing rule above
-//!     already scans every extension raw.
+//!         `rch`/`dsr` need no entry in either model: the plumbing rule above
+//!         already scans every extension raw.
 //!   - Bare `cargo build|test|...` is NOT a violation anymore: local Cargo is
 //!     the point of the port. `cargo` may be invoked directly or via
 //!     `run_cargo`.
@@ -488,7 +488,9 @@ fn local_cargo_compliance_scripts_exist() {
         scripts.len()
     );
     assert!(
-        scripts.iter().any(|p| p.ends_with("scripts/lib/run_cargo.sh")),
+        scripts
+            .iter()
+            .any(|p| p.ends_with("scripts/lib/run_cargo.sh")),
         "the scripts tree walk must include scripts/lib/run_cargo.sh"
     );
 }

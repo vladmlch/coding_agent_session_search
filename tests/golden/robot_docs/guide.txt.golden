@@ -20,11 +20,7 @@ guide:
   Doctor repairs: start with `cass doctor check --json`; use repair dry-run fingerprints for apply; support bundles and failure contexts report artifact_manifest_path/event_log_path instead of putting logs in stdout.
   Doctor validation: use `scripts/e2e/doctor_v2.sh list|describe|run --json`; `--artifact-dir` creates a fresh run child, and run-summary.json lists scenario ids, labels, mutation class, log paths, failure_context path, and rerun command.
   Doctor failure reports: attach the redacted failure_context.json plus manifest/commands/events artifacts; do not attach raw session logs, exact source paths, or live archive copies by default.
-  Swarm status: `cass swarm status --json` is read-only. It composes Beads, Agent Mail metadata, git, build pressure, cass health/status, and proof refs without claiming work or releasing reservations.
-  Swarm stale review: stale_candidate_count is advisory. Coordinate through Beads and Agent Mail before reopening, force-releasing, or taking over another agent's work.
-  Swarm packets: `cass swarm work-packet --json --bead ID` suggests reservations, proof commands, and closeout copy; agents must still create reservations, update Beads, run rch proofs, and summarize artifacts.
-  Swarm evidence handoff: use `cass pack "query" --robot` when status points at prior sessions or proof refs; pack is a bounded cited handoff, not a replacement for Beads or Agent Mail.
-  Dependency drift: `cass swarm dependency-drift --json` checks manifest pins against optional sibling checkout state and reports strict validation commands without fetching or mutating.
+  Evidence handoff: use `cass pack "query" --robot` when triage points at prior sessions; pack is a bounded cited handoff.
   Args: accepts --robot-docs=topic and misplaced globals; detailed errors with examples on parse failure
   Source control: use `cass robot-docs sources` for remote sync/setup plus persistent agent-harness exclusions
   TUI drill-in contract: Enter on selected hit opens detail modal (Messages tab); Enter with no selected hit falls back to query submit behavior

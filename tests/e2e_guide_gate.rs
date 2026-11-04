@@ -377,8 +377,8 @@ fn guide_export_session_is_sensitive_high_risk() -> TestResult {
         payload
             .pointer("/plan/privacy/preview_via")
             .and_then(Value::as_str)
-            == Some("cass swarm privacy-preview --json"),
-        || "export-session must point at the privacy-preview surface".to_string(),
+            == Some("cass guide <intent> --apply --json"),
+        || "export-session must point at the guide apply privacy preview".to_string(),
     )?;
     check_read_only_contract(&payload)?;
     log_scenario(&argv, &payload, "export-session → sensitive/high-risk");

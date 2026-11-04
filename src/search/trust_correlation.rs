@@ -1,4 +1,4 @@
-//! Project-scoped, identifier-anchored trust correlation.
+//! Project-scoped, identifier-anchored trust correlation (local-only form).
 //!
 //! Bead: coding_agent_session_search-q4pau (follow-on to
 //! coding_agent_session_search-guided-ops-repro-trust-5u82n.3).
@@ -6,170 +6,115 @@
 //! ## Why
 //!
 //! [`crate::search::trust_scoring`] reduces metadata-only signals to a verdict,
-//! but its strongest inputs — a linked commit, a closed bead, proof status, and
-//! a containing release tag — defaulted to "no signal" live because nothing
-//! populated them. The recency / workspace / source / mode portion of the
-//! verdict worked, but the headline "proven, landed, released vs. unverified"
-//! distinction did not. This module fills that gap with a cheap, conservative
-//! correlation that lights those fields up for results that belong to the
-//! project the agent is working in right now.
+//! but its strongest input — a linked commit — defaulted to "no signal" live
+//! because nothing populated it. The recency / workspace / source / mode
+//! portion of the verdict worked, but the "landed vs. unverified" distinction
+//! did not. This module fills that gap with a cheap, conservative correlation
+//! that lights the commit field up for results that belong to the project the
+//! agent is working in right now.
+//!
+//! ## Local-only scope
+//!
+//! The coordination facts that used to feed this layer (Beads issue state,
+//! Agent Mail provenance, durable lessons, and release-tag containment) were
+//! removed with the local-only port: they required shared-state services cass
+//! no longer consults. What remains is deliberately narrow and fully local:
+//! whether a result explicitly cites a commit that exists in the current
+//! project's own git history. `git` subprocesses stay because explicit commit
+//! references in a local repository are still a meaningful, checkable signal
+//! and there is no cheaper truthful way to resolve them.
 //!
 //! ## How (and why it does not fabricate trust)
 //!
 //! 1. Build once per query a [`CorrelationIndex`] for the CURRENT project (the
-//!    git repo containing the working directory): closed/open bead facts from
-//!    `.beads/issues.jsonl` and the current HEAD. Bead → commit links parsed from
-//!    `(<project>-<id>)` subjects and known commit ids are loaded from that HEAD
-//!    only when an explicit identifier needs corroboration.
+//!    git repo containing the working directory) and pin the observed HEAD.
+//!    Recent commit ids are loaded lazily, only when an explicit commit
+//!    reference needs corroboration.
 //! 2. For each on-project result, [`correlate`] scans the result's own indexed
-//!    text for an EXPLICIT reference to a known bead id or commit id and links
-//!    it. A temporal or workspace coincidence is never enough — we require an
-//!    explicit identifier match — so an unrelated conversation never inherits a
+//!    text for an EXPLICIT commit id reference and links it. A temporal or
+//!    workspace coincidence is never enough — we require an explicit
+//!    identifier match — so an unrelated conversation never inherits a
 //!    "trusted" verdict from work it merely happened near.
-//! 3. Release containment is resolved lazily per matched commit via
-//!    `git tag --contains`, then cached. These facts establish provenance;
-//!    neither a release nor a closed bead proves the excerpt's claim.
 //!
 //! ## Pure vs. live
 //!
 //! Identifier matching and [`proof_for`] are deterministic for an injected
-//! [`CorrelationIndex`] + text. Live indexes defer history and lesson loading
-//! until an explicit reference needs them; history is pinned to construction's
-//! HEAD. The builder and lazy resolvers are fail-open: a missing repo, a git
-//! error, or an unreadable beads file yields no corresponding facts, and the
-//! verdict falls back to the recency / workspace / source / mode portion.
-//! Correlation is advisory metadata only — like the rest
-//! of the trust layer, it never changes result ordering and never emits raw
-//! session text (only sanitized identifiers flow downstream).
+//! [`CorrelationIndex`] + text. Live indexes defer history loading until an
+//! explicit reference needs it; history is pinned to construction's HEAD. The
+//! builder and lazy resolver are fail-open: a missing repo or a git error
+//! yields no facts, and the verdict falls back to the recency / workspace /
+//! source / mode portion. Correlation is advisory metadata only — like the
+//! rest of the trust layer, it never changes result ordering and never emits
+//! raw session text (only sanitized identifiers flow downstream).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use crate::search::trust_scoring::{OutcomeMarker, ProofStatus};
 
-/// How many recent commits to scan for bead → commit links when building the
-/// index. Bounded so the build stays one cheap `git log` invocation.
+/// How many recent commits to index for commit-reference resolution when
+/// building the live index. Bounded so the build stays one cheap `git log`
+/// invocation.
 const GIT_LOG_LIMIT: usize = 5000;
 
-/// Max characters of a result's text scanned for identifier references. Refs
-/// (bead ids, commit ids) appear in titles/early lines in practice, so a bounded
-/// prefix keeps per-result work cheap without missing the common case.
+/// Max characters of a result's text scanned for identifier references. Commit
+/// ids appear in titles/early lines in practice, so a bounded prefix keeps
+/// per-result work cheap without missing the common case.
 const MAX_SCAN_CHARS: usize = 8192;
 
-/// Length of the commit-id prefix used to index/match known commits. Long enough
-/// to be collision-free in any realistic project history, short enough to match
-/// the abbreviated ids agents quote.
+/// Length of the commit-id prefix used to index/match known commits. Long
+/// enough to be collision-free in any realistic project history, short enough
+/// to match the abbreviated ids agents quote.
 const COMMIT_PREFIX_LEN: usize = 12;
 
-/// Facts about one bead needed for correlation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BeadFact {
-    /// Whether the bead is closed (vs. open / in-progress).
-    pub closed: bool,
-}
-
-/// The strongest commit/bead link found for one result. Release tag and final
-/// proof status are resolved by the caller (release lookup is I/O), so this pure
-/// result carries only what an explicit text match can establish on its own.
+/// The strongest commit link found for one result. Final proof status is
+/// resolved by the caller, so this pure result carries only what an explicit
+/// text match can establish on its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommitBeadLink {
-    /// Linked commit id (full 40-char), if a closed bead's commit or a directly
-    /// referenced known commit matched.
+pub struct CorrelationLink {
+    /// Linked commit id (full 40-char), if a directly referenced known commit
+    /// matched project history.
     pub linked_commit: Option<String>,
-    /// Linked closed bead id, if a closed bead was referenced.
-    pub linked_closed_bead: Option<String>,
-    /// Content-stable lessons corroborated by the linked commit/closed Bead.
-    /// These are citation-only and never affect the outcome or trust tier.
-    pub linked_lessons: Vec<String>,
-    /// Outcome marker implied by the match (`Landed` for a closed bead or a real
-    /// commit, `Open` for an open bead, `Unknown` for no match).
+    /// Outcome marker implied by the match (`Landed` for a real commit,
+    /// `Unknown` for no match).
     pub outcome: OutcomeMarker,
 }
 
-impl CommitBeadLink {
+impl CorrelationLink {
     /// The empty link (no correlation found).
     pub fn none() -> Self {
-        CommitBeadLink {
+        CorrelationLink {
             linked_commit: None,
-            linked_closed_bead: None,
-            linked_lessons: Vec::new(),
             outcome: OutcomeMarker::Unknown,
         }
     }
 
     /// Whether any correlation signal was found.
     pub fn is_empty(&self) -> bool {
-        self.linked_commit.is_none()
-            && self.linked_closed_bead.is_none()
-            && matches!(self.outcome, OutcomeMarker::Unknown)
+        self.linked_commit.is_none() && matches!(self.outcome, OutcomeMarker::Unknown)
     }
 }
 
 /// A cheap, once-per-query correlation index for the current project.
 #[derive(Debug, Default)]
 pub struct CorrelationIndex {
-    /// Bead id → facts, keyed by the full bead id (e.g.
-    /// `coding_agent_session_search-q4pau`).
-    beads: HashMap<String, BeadFact>,
-    /// Recent history, loaded once when an explicit Bead/commit reference needs
-    /// it. Ordinary prose and off-project results need no history traversal.
+    /// Recent history, loaded once when an explicit commit reference needs it.
+    /// Ordinary prose and off-project results need no history traversal.
     git_links: OnceLock<GitLinks>,
     /// HEAD at construction, so a concurrent commit cannot change the history
     /// observed by the deferred lookup. None also preserves an unborn history.
     git_revision: Option<String>,
-    /// Commit/Bead `source_ref` -> content-stable lesson ids derived from the
-    /// same live repository evidence as `cass lessons`. Extracted only when
-    /// an explicit commit or closed-Bead reference needs lesson citations.
-    lesson_by_source: OnceLock<HashMap<String, Vec<String>>>,
-    /// The `<project>-` prefix used to recognize this project's bead ids in text
-    /// (e.g. `coding_agent_session_search-`). `None` disables bead matching.
-    project_prefix: Option<String>,
-    /// The project's git root, exposed as the cwd workspace anchor and used for
-    /// lazy release resolution. `None` disables release lookups.
+    /// The project's git root, exposed as the cwd workspace anchor. `None`
+    /// disables live history lookup.
     repo_root: Option<PathBuf>,
-    /// Cache of commit id → containing release tag (`None` = resolved, no tag).
-    release_cache: Mutex<HashMap<String, Option<String>>>,
 }
 
 #[derive(Debug, Default)]
 struct GitLinks {
-    /// Bead id → the newest commit id whose subject referenced it.
-    bead_commit: HashMap<String, String>,
     /// Known full commit ids, indexed by their [`COMMIT_PREFIX_LEN`]-char prefix.
     commit_by_prefix: HashMap<String, String>,
-}
-
-/// Return deterministic lesson ids whose source provenance was already
-/// corroborated by the existing commit/closed-Bead correlation.
-fn corroborated_lesson_ids(
-    index: &CorrelationIndex,
-    bead: Option<&str>,
-    commit: Option<&str>,
-) -> Vec<String> {
-    let lesson_by_source = index.lesson_by_source.get_or_init(|| {
-        index
-            .repo_root
-            .as_deref()
-            .map(build_lesson_source_index)
-            .unwrap_or_default()
-    });
-    let mut lessons = Vec::new();
-    for source_ref in [
-        bead.map(|id| format!("bead:{id}")),
-        commit.map(|sha| format!("commit:{sha}")),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if let Some(ids) = lesson_by_source.get(&source_ref) {
-            lessons.extend(ids.iter().cloned());
-        }
-    }
-    lessons.sort();
-    lessons.dedup();
-    lessons
 }
 
 impl CorrelationIndex {
@@ -178,75 +123,31 @@ impl CorrelationIndex {
             self.repo_root
                 .as_deref()
                 .zip(self.git_revision.as_deref())
-                .map(|(root, revision)| {
-                    read_git_links(root, self.project_prefix.as_deref(), revision)
-                })
+                .map(|(root, revision)| read_git_links(root, revision))
                 .unwrap_or_default()
         })
     }
 
     /// Whether the index carries no correlatable facts (so [`correlate`] can
-    /// return no link). Resolves deferred history if there are no Bead facts.
-    /// An index with a repo root but no beads/commits is still empty.
+    /// return no link). Resolves deferred history when called. An index with a
+    /// repo root but no commits is still empty.
     pub fn is_empty(&self) -> bool {
-        self.beads.is_empty() && self.git_links().commit_by_prefix.is_empty()
+        self.git_links().commit_by_prefix.is_empty()
     }
 
-    /// The current project's workspace anchor (git root as a string), used as the
-    /// `query_workspace` for cwd-relative workspace-match scoring.
+    /// The current project's workspace anchor (git root as a string), used as
+    /// the `query_workspace` for cwd-relative workspace-match scoring.
     pub fn project_workspace(&self) -> Option<String> {
         self.repo_root
             .as_ref()
             .map(|root| root.to_string_lossy().into_owned())
     }
-
-    /// Resolve the earliest release tag containing `commit`, lazily and cached.
-    /// Returns `None` when there is no repo root, no containing release, or git
-    /// is unavailable. A "release tag" is a `v<digit>…` tag, so feature/test tags
-    /// never masquerade as a release.
-    pub fn release_tag_for_commit(&self, commit: &str) -> Option<String> {
-        let root = self.repo_root.as_ref()?;
-        if let Ok(cache) = self.release_cache.lock()
-            && let Some(cached) = cache.get(commit)
-        {
-            return cached.clone();
-        }
-        let resolved = git_output(
-            root,
-            &[
-                "tag",
-                "--contains",
-                commit,
-                "--sort=creatordate",
-                "--format=%(refname:short)",
-            ],
-        )
-        .and_then(|out| {
-            out.lines()
-                .map(str::trim)
-                .find(|tag| is_release_tag(tag))
-                .map(str::to_string)
-        });
-        if let Ok(mut cache) = self.release_cache.lock() {
-            cache.insert(commit.to_string(), resolved.clone());
-        }
-        resolved
-    }
-}
-
-/// Whether `tag` looks like a release tag (`v` followed by a digit, e.g.
-/// `v0.6.15`). Conservative so non-release tags never imply a published release.
-fn is_release_tag(tag: &str) -> bool {
-    let mut chars = tag.chars();
-    matches!(chars.next(), Some('v') | Some('V'))
-        && matches!(chars.next(), Some(c) if c.is_ascii_digit())
 }
 
 /// Map correlated provenance to the proof status it can actually establish.
-/// A landed commit carries `ProofDebt` until claim-specific proof is available,
-/// including when a release contains it. A bare bead or release reference has
-/// no proof signal. This correlation layer does not produce `Proven`.
-pub fn proof_for(outcome: OutcomeMarker, has_commit: bool, _has_release: bool) -> ProofStatus {
+/// A landed commit carries `ProofDebt` until claim-specific proof is
+/// available. This correlation layer does not produce `Proven`.
+pub fn proof_for(outcome: OutcomeMarker, has_commit: bool) -> ProofStatus {
     match outcome {
         OutcomeMarker::Landed if has_commit => ProofStatus::ProofDebt,
         _ => ProofStatus::Unknown,
@@ -299,7 +200,7 @@ pub fn scan_text(parts: &[&str]) -> String {
     out
 }
 
-/// Whether a char can appear inside a bead id or an abbreviated commit id.
+/// Whether a char can appear inside an abbreviated commit id.
 fn is_id_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_')
 }
@@ -340,45 +241,24 @@ fn id_words(text: &str) -> Vec<&str> {
     words
 }
 
-/// Scan `text` for an explicit reference to a known bead id or commit id and
-/// return the strongest link found. Live indexes may load their pinned Git
-/// history and corroborated lesson citations on the first relevant reference.
+/// Scan `text` for an explicit reference to a known commit id and return the
+/// strongest link found. Live indexes load their pinned Git history on the
+/// first plausible commit reference.
 ///
-/// Resolution prefers the strongest provenance: a referenced closed bead (with
-/// its linked commit when known) beats a bare referenced commit, which beats a
-/// referenced open bead. Ties are broken deterministically by sorted id.
-pub fn correlate(index: &CorrelationIndex, text: &str) -> CommitBeadLink {
-    let mut closed_beads: Vec<&str> = Vec::new();
-    let mut open_beads: Vec<&str> = Vec::new();
+/// Deterministic: the first match in sorted-id order wins.
+pub fn correlate(index: &CorrelationIndex, text: &str) -> CorrelationLink {
     let mut commits: Vec<&str> = Vec::new();
 
     for word in id_words(text) {
-        // Bead reference?
-        if let Some(prefix) = index.project_prefix.as_deref()
-            && word.starts_with(prefix)
-        {
-            // Trim trailing id punctuation that commonly abuts a ref in prose
-            // (e.g. "...-q4pau." or "...-q4pau)").
-            let candidate = word.trim_end_matches(['.', '-']);
-            if let Some(fact) = index.beads.get(candidate) {
-                if fact.closed {
-                    closed_beads.push(candidate);
-                } else {
-                    open_beads.push(candidate);
-                }
-                continue;
-            }
-        }
-        // Commit reference?
         if is_commit_word(word) {
             commits.push(word);
         }
     }
 
     // No explicit identifier can match: avoid reading thousands of Git objects
-    // for a pack that only needs workspace/recency trust signals.
-    if closed_beads.is_empty() && open_beads.is_empty() && commits.is_empty() {
-        return CommitBeadLink::none();
+    // for a result that only needs workspace/recency trust signals.
+    if commits.is_empty() {
+        return CorrelationLink::none();
     }
     let git_links = index.git_links();
     commits.retain(|word| {
@@ -388,60 +268,22 @@ pub fn correlate(index: &CorrelationIndex, text: &str) -> CommitBeadLink {
             .contains_key(&word[..COMMIT_PREFIX_LEN].to_ascii_lowercase())
     });
 
-    closed_beads.sort_unstable();
-    closed_beads.dedup();
-    open_beads.sort_unstable();
-    open_beads.dedup();
     commits.sort_unstable();
     commits.dedup();
 
-    let direct_commit = commits.first().and_then(|word| {
+    if let Some(commit) = commits.first().and_then(|word| {
         git_links
             .commit_by_prefix
             .get(&word[..COMMIT_PREFIX_LEN].to_ascii_lowercase())
             .cloned()
-    });
-
-    // Prefer a closed bead that carries a commit link; else the first closed
-    // bead; else fall through to a bare commit / open bead.
-    if let Some(&first_closed) = closed_beads.first() {
-        let chosen = closed_beads
-            .iter()
-            .copied()
-            .find(|id| git_links.bead_commit.contains_key(*id))
-            .unwrap_or(first_closed);
-        let linked_commit = git_links
-            .bead_commit
-            .get(chosen)
-            .cloned()
-            .or(direct_commit.clone());
-        let linked_lessons = corroborated_lesson_ids(index, Some(chosen), linked_commit.as_deref());
-        return CommitBeadLink {
-            linked_commit,
-            linked_closed_bead: Some(chosen.to_string()),
-            linked_lessons,
-            outcome: OutcomeMarker::Landed,
-        };
-    }
-    if let Some(commit) = direct_commit {
+    }) {
         // A real commit in project history is landed work.
-        let linked_lessons = corroborated_lesson_ids(index, None, Some(&commit));
-        return CommitBeadLink {
+        return CorrelationLink {
             linked_commit: Some(commit),
-            linked_closed_bead: None,
-            linked_lessons,
             outcome: OutcomeMarker::Landed,
         };
     }
-    if let Some(open) = open_beads.first() {
-        return CommitBeadLink {
-            linked_commit: git_links.bead_commit.get(*open).cloned(),
-            linked_closed_bead: None,
-            linked_lessons: Vec::new(),
-            outcome: OutcomeMarker::Open,
-        };
-    }
-    CommitBeadLink::none()
+    CorrelationLink::none()
 }
 
 // ---------------------------------------------------------------------------
@@ -449,8 +291,8 @@ pub fn correlate(index: &CorrelationIndex, text: &str) -> CommitBeadLink {
 // ---------------------------------------------------------------------------
 
 /// Build a correlation index for the project containing the working directory.
-/// Always succeeds: returns an empty index when there is no repo, no beads, or
-/// git is unavailable.
+/// Always succeeds: returns an empty index when there is no repo or git is
+/// unavailable.
 pub fn build_for_cwd() -> CorrelationIndex {
     std::env::current_dir()
         .ok()
@@ -459,99 +301,24 @@ pub fn build_for_cwd() -> CorrelationIndex {
 }
 
 /// Build a correlation index for the git repo containing `start`. `None` when
-/// `start` is not inside a git repo (so the caller falls back to an empty index).
+/// `start` is not inside a git repo (so the caller falls back to an empty
+/// index).
 fn build_for_repo(start: &Path) -> Option<CorrelationIndex> {
     let root = git_output(start, &["rev-parse", "--show-toplevel"])?;
     let root = PathBuf::from(root);
 
-    let (beads, project_name) = read_bead_facts(&root.join(".beads").join("issues.jsonl"));
-    let project_prefix = project_name.map(|name| format!("{name}-"));
     let git_revision = git_output(&root, &["rev-parse", "--verify", "HEAD"]);
 
     Some(CorrelationIndex {
-        beads,
         git_links: OnceLock::new(),
         git_revision,
-        lesson_by_source: OnceLock::new(),
-        project_prefix,
         repo_root: Some(root),
-        release_cache: Mutex::new(HashMap::new()),
     })
 }
 
-/// Derive the actual current lesson ids once per live correlation index and
-/// index them by their already-sanitized commit/Bead source references. This
-/// preserves the content-stable id and supersession rules owned by the lessons
-/// core instead of reimplementing either rule in the trust layer.
-fn build_lesson_source_index(root: &Path) -> HashMap<String, Vec<String>> {
-    let gathered = crate::gather_repository_lessons_evidence(root);
-    let rejected = gathered.rejected_records;
-    if rejected.total() > 0 {
-        tracing::warn!(
-            target: "cass::lessons",
-            rejected_beads = rejected.beads,
-            rejected_proofs = rejected.proofs,
-            "lesson citation index is partial because malformed repository evidence was skipped"
-        );
-    }
-    let extraction = crate::lessons_extraction::extract(&gathered.evidence);
-    let graph = crate::lessons::LessonGraph::build(extraction.candidates);
-    let mut by_source: HashMap<String, Vec<String>> = HashMap::new();
-    for lesson in graph.lessons {
-        for source_ref in lesson.source_refs {
-            by_source
-                .entry(source_ref)
-                .or_default()
-                .push(lesson.lesson_id.clone());
-        }
-    }
-    for ids in by_source.values_mut() {
-        ids.sort();
-        ids.dedup();
-    }
-    by_source
-}
-
-/// Read bead status facts from a beads `issues.jsonl` file. Returns the per-id
-/// facts and the project's `source_repo` name (used to build the id prefix).
-/// Fail-open: an unreadable/absent file yields no facts.
-fn read_bead_facts(path: &Path) -> (HashMap<String, BeadFact>, Option<String>) {
-    let mut facts = HashMap::new();
-    let mut project_name = None;
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return (facts, None);
-    };
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        let Some(id) = value.get("id").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let closed = value
-            .get("status")
-            .and_then(|v| v.as_str())
-            .is_some_and(|status| status.eq_ignore_ascii_case("closed"));
-        facts.insert(id.to_string(), BeadFact { closed });
-        if project_name.is_none()
-            && let Some(repo) = value.get("source_repo").and_then(|v| v.as_str())
-            && !repo.trim().is_empty()
-        {
-            project_name = Some(repo.trim().to_string());
-        }
-    }
-    (facts, project_name)
-}
-
-/// Read bead → commit links and known commit prefixes from recent git history.
-/// Parses `(<project>-<id>)` references out of commit subjects. Fail-open: no git
-/// or no repo yields empty maps.
-fn read_git_links(root: &Path, project_prefix: Option<&str>, revision: &str) -> GitLinks {
-    let mut bead_commit = HashMap::new();
+/// Read known commit prefixes from recent git history. Fail-open: no git or no
+/// repo yields an empty map.
+fn read_git_links(root: &Path, revision: &str) -> GitLinks {
     let mut commit_by_prefix = HashMap::new();
     let log = git_output(
         root,
@@ -559,7 +326,7 @@ fn read_git_links(root: &Path, project_prefix: Option<&str>, revision: &str) -> 
             "log",
             &format!("-n{GIT_LOG_LIMIT}"),
             "--no-color",
-            "--format=%H%x09%s",
+            "--format=%H",
             revision,
         ],
     );
@@ -567,55 +334,14 @@ fn read_git_links(root: &Path, project_prefix: Option<&str>, revision: &str) -> 
         return GitLinks::default();
     };
     for line in log.lines() {
-        let Some((sha, subject)) = line.split_once('\t') else {
-            continue;
-        };
-        let sha = sha.trim();
+        let sha = line.trim();
         if sha.len() >= COMMIT_PREFIX_LEN && sha.chars().all(|c| c.is_ascii_hexdigit()) {
             commit_by_prefix
                 .entry(sha[..COMMIT_PREFIX_LEN].to_ascii_lowercase())
                 .or_insert_with(|| sha.to_ascii_lowercase());
         }
-        if let Some(prefix) = project_prefix {
-            for bead_id in parse_bead_refs(subject, prefix) {
-                // git log is newest-first, so the first commit seen for a bead is
-                // its newest reference — keep it.
-                bead_commit
-                    .entry(bead_id)
-                    .or_insert_with(|| sha.to_ascii_lowercase());
-            }
-        }
     }
-    GitLinks {
-        bead_commit,
-        commit_by_prefix,
-    }
-}
-
-/// Extract `<project>-<id>` bead references from a commit subject. References are
-/// expected in `(…)`, but a bare reference is accepted too. Pure.
-fn parse_bead_refs(subject: &str, project_prefix: &str) -> Vec<String> {
-    // `source_repo` comes from repository JSONL, not the identifier tokenizer.
-    // Unsupported prefixes must fail open before byte-based identifier slicing.
-    if project_prefix.is_empty() || !project_prefix.chars().all(is_id_char) {
-        return Vec::new();
-    }
-    let mut refs = Vec::new();
-    let mut rest = subject;
-    while let Some(pos) = rest.find(project_prefix) {
-        let tail = &rest[pos..];
-        let end = tail
-            .char_indices()
-            .find(|(_, c)| !is_id_char(*c))
-            .map(|(i, _)| i)
-            .unwrap_or(tail.len());
-        let candidate = tail[..end].trim_end_matches(['.', '-']);
-        if candidate.len() > project_prefix.len() {
-            refs.push(candidate.to_string());
-        }
-        rest = &tail[end.max(1)..];
-    }
-    refs
+    GitLinks { commit_by_prefix }
 }
 
 /// Run a read-only git command in `repo_path`, returning trimmed stdout on
@@ -637,20 +363,7 @@ fn git_output(repo_path: &Path, args: &[&str]) -> Option<String> {
 mod tests {
     use super::*;
 
-    fn index_with(
-        project_prefix: &str,
-        beads: &[(&str, bool)],
-        bead_commit: &[(&str, &str)],
-        commits: &[&str],
-    ) -> CorrelationIndex {
-        let beads = beads
-            .iter()
-            .map(|(id, closed)| (id.to_string(), BeadFact { closed: *closed }))
-            .collect();
-        let bead_commit = bead_commit
-            .iter()
-            .map(|(id, sha)| (id.to_string(), sha.to_string()))
-            .collect();
+    fn index_with(commits: &[&str]) -> CorrelationIndex {
         let commit_by_prefix = commits
             .iter()
             .map(|sha| {
@@ -661,16 +374,9 @@ mod tests {
             })
             .collect();
         CorrelationIndex {
-            beads,
-            git_links: OnceLock::from(GitLinks {
-                bead_commit,
-                commit_by_prefix,
-            }),
+            git_links: OnceLock::from(GitLinks { commit_by_prefix }),
             git_revision: None,
-            lesson_by_source: OnceLock::new(),
-            project_prefix: Some(project_prefix.to_string()),
             repo_root: None,
-            release_cache: Mutex::new(HashMap::new()),
         }
     }
 
@@ -682,13 +388,6 @@ mod tests {
         let repo = tempfile::tempdir().expect("temporary repository");
         let root = repo.path();
         git_output(root, &["init", "--initial-branch=main"]).expect("initialize repository");
-        std::fs::create_dir(root.join(".beads")).expect("create bead directory");
-        std::fs::write(
-            root.join(".beads/issues.jsonl"),
-            r#"{"id":"proj-fixed","status":"closed","source_repo":"proj"}"#,
-        )
-        .expect("write bead fact");
-        let unborn = build_for_repo(root).expect("unborn repository still has bead facts");
         let commit = |subject| {
             git_output(
                 root,
@@ -708,22 +407,18 @@ mod tests {
             .expect("create real history");
             git_output(root, &["rev-parse", "HEAD"]).expect("read commit id")
         };
-        let original = commit("fix (proj-fixed)");
+        let original = commit("fix the thing");
         let index = build_for_repo(root).expect("build correlation index");
         assert_eq!(index.git_revision.as_deref(), Some(original.as_str()));
         assert!(index.git_links.get().is_none());
-        assert!(correlate(&index, "ordinary text proj-missing ab0d12e").is_empty());
+        assert!(correlate(&index, "ordinary text with no id").is_empty());
         assert!(index.git_links.get().is_none());
-        assert!(index.lesson_by_source.get().is_none());
 
         // Publishing another commit after construction must not change which
-        // commit corroborates this query's Bead reference.
-        let successor = commit("follow-up (proj-fixed)");
-        index.lesson_by_source.set(HashMap::new()).unwrap();
-        unborn.lesson_by_source.set(HashMap::new()).unwrap();
-        let linked = correlate(&index, "fixed by proj-fixed");
+        // commit corroborates this query's reference.
+        let successor = commit("follow-up work");
+        let linked = correlate(&index, &format!("landed as {original}"));
         assert_eq!(linked.linked_commit.as_deref(), Some(original.as_str()));
-        assert_eq!(linked.linked_closed_bead.as_deref(), Some("proj-fixed"));
         assert_eq!(linked.outcome, OutcomeMarker::Landed);
         assert!(index.git_links.get().is_some());
         assert_eq!(
@@ -731,111 +426,30 @@ mod tests {
             Some(original)
         );
         assert!(correlate(&index, &successor).is_empty());
-        assert_eq!(correlate(&unborn, "proj-fixed").linked_commit, None);
     }
 
     #[test]
     fn empty_index_correlates_to_nothing() {
         let idx = CorrelationIndex::default();
         assert_eq!(
-            correlate(&idx, "mentions proj-q4pau"),
-            CommitBeadLink::none()
+            correlate(&idx, "mentions some text"),
+            CorrelationLink::none()
         );
         assert!(idx.is_empty());
     }
 
     #[test]
-    fn closed_bead_reference_links_landed_with_commit() {
-        let idx = index_with(
-            "proj-",
-            &[("proj-q4pau", true)],
-            &[("proj-q4pau", SHA_A)],
-            &[SHA_A],
-        );
-        let link = correlate(&idx, "fixed in proj-q4pau, see the closeout");
-        assert_eq!(link.outcome, OutcomeMarker::Landed);
-        assert_eq!(link.linked_closed_bead.as_deref(), Some("proj-q4pau"));
-        assert_eq!(link.linked_commit.as_deref(), Some(SHA_A));
-    }
-
-    #[test]
-    fn lesson_refs_require_corroborated_source_provenance() {
-        let idx = index_with(
-            "proj-",
-            &[("proj-q4pau", true), ("proj-other", true)],
-            &[("proj-q4pau", SHA_A)],
-            &[SHA_A],
-        );
-        idx.lesson_by_source
-            .set(HashMap::from([
-                (
-                    "bead:proj-q4pau".to_string(),
-                    vec!["lsn-1111111111111111".to_string()],
-                ),
-                (
-                    "commit:ab0d12ef90abcdef1234567890abcdef12345678".to_string(),
-                    vec!["lsn-2222222222222222".to_string()],
-                ),
-                (
-                    "bead:proj-other".to_string(),
-                    vec!["lsn-3333333333333333".to_string()],
-                ),
-            ]))
-            .expect("seed lesson citations");
-
-        let linked = correlate(&idx, "fixed in proj-q4pau closeout");
-        assert_eq!(
-            linked.linked_lessons,
-            vec![
-                "lsn-1111111111111111".to_string(),
-                "lsn-2222222222222222".to_string()
-            ]
-        );
-        assert!(
-            !linked
-                .linked_lessons
-                .contains(&"lsn-3333333333333333".to_string()),
-            "an unrelated lesson must not be cited"
-        );
-
-        let unrelated = correlate(&idx, "no known identifier here");
-        assert!(unrelated.linked_lessons.is_empty());
-    }
-
-    #[test]
-    fn open_bead_reference_is_open_not_landed() {
-        let idx = index_with("proj-", &[("proj-wip1", false)], &[], &[]);
-        let link = correlate(&idx, "still working on proj-wip1 today");
-        assert_eq!(link.outcome, OutcomeMarker::Open);
-        assert_eq!(link.linked_closed_bead, None);
-    }
-
-    #[test]
-    fn closed_bead_beats_open_bead_in_same_text() {
-        let idx = index_with(
-            "proj-",
-            &[("proj-aaa", true), ("proj-zzz", false)],
-            &[("proj-aaa", SHA_A)],
-            &[SHA_A],
-        );
-        let link = correlate(&idx, "proj-zzz blocked until proj-aaa landed");
-        assert_eq!(link.outcome, OutcomeMarker::Landed);
-        assert_eq!(link.linked_closed_bead.as_deref(), Some("proj-aaa"));
-    }
-
-    #[test]
     fn bare_commit_reference_is_landed() {
-        let idx = index_with("proj-", &[], &[], &[SHA_B]);
+        let idx = index_with(&[SHA_B]);
         let text = format!("landed as {SHA_B} last week");
         let link = correlate(&idx, &text);
         assert_eq!(link.outcome, OutcomeMarker::Landed);
         assert_eq!(link.linked_commit.as_deref(), Some(SHA_B));
-        assert_eq!(link.linked_closed_bead, None);
     }
 
     #[test]
     fn abbreviated_commit_reference_matches_by_prefix() {
-        let idx = index_with("proj-", &[], &[], &[SHA_A]);
+        let idx = index_with(&[SHA_A]);
         // 12-char abbreviation of SHA_A.
         let link = correlate(&idx, "see commit ab0d12ef90ab for the fix");
         assert_eq!(link.linked_commit.as_deref(), Some(SHA_A));
@@ -843,7 +457,7 @@ mod tests {
 
     #[test]
     fn short_hex_below_prefix_len_is_ignored() {
-        let idx = index_with("proj-", &[], &[], &[SHA_A]);
+        let idx = index_with(&[SHA_A]);
         // 7-char abbreviation is below COMMIT_PREFIX_LEN; not matched.
         let link = correlate(&idx, "see commit ab0d12e for the fix");
         assert!(link.is_empty());
@@ -851,114 +465,47 @@ mod tests {
 
     #[test]
     fn unrelated_text_does_not_fabricate_a_link() {
-        let idx = index_with(
-            "proj-",
-            &[("proj-q4pau", true)],
-            &[("proj-q4pau", SHA_A)],
-            &[SHA_A],
-        );
+        let idx = index_with(&[SHA_A]);
         let link = correlate(&idx, "a totally unrelated conversation about cooking pasta");
         assert!(link.is_empty(), "no explicit id => no link");
-        assert!(
-            idx.lesson_by_source.get().is_none(),
-            "unrelated evidence must not trigger repository lesson extraction"
-        );
     }
 
     #[test]
-    fn trailing_punctuation_on_ref_still_matches() {
-        let idx = index_with("proj-", &[("proj-q4pau", true)], &[], &[]);
-        let link = correlate(&idx, "(closes proj-q4pau).");
-        assert_eq!(link.linked_closed_bead.as_deref(), Some("proj-q4pau"));
-    }
-
-    #[test]
-    fn proof_for_release_containment_retains_proof_debt() {
+    fn proof_for_landed_commit_is_proof_debt() {
         assert_eq!(
-            proof_for(OutcomeMarker::Landed, true, true),
+            proof_for(OutcomeMarker::Landed, true),
             ProofStatus::ProofDebt
         );
     }
 
     #[test]
-    fn proof_for_landed_unreleased_is_proof_debt() {
+    fn proof_for_no_commit_or_other_outcome_is_unknown() {
         assert_eq!(
-            proof_for(OutcomeMarker::Landed, true, false),
-            ProofStatus::ProofDebt
+            proof_for(OutcomeMarker::Landed, false),
+            ProofStatus::Unknown
         );
-    }
-
-    #[test]
-    fn proof_for_open_or_no_commit_is_unknown() {
-        for has_release in [false, true] {
-            assert_eq!(
-                proof_for(OutcomeMarker::Landed, false, has_release),
-                ProofStatus::Unknown
-            );
-            for outcome in [
-                OutcomeMarker::Open,
-                OutcomeMarker::Unknown,
-                OutcomeMarker::Failed,
-                OutcomeMarker::Superseded,
-            ] {
-                for has_commit in [false, true] {
-                    assert_eq!(
-                        proof_for(outcome, has_commit, has_release),
-                        ProofStatus::Unknown,
-                        "{outcome:?}, commit={has_commit}, release={has_release}"
-                    );
-                }
+        for outcome in [
+            OutcomeMarker::Open,
+            OutcomeMarker::Unknown,
+            OutcomeMarker::Failed,
+            OutcomeMarker::Superseded,
+        ] {
+            for has_commit in [false, true] {
+                assert_eq!(
+                    proof_for(outcome, has_commit),
+                    ProofStatus::Unknown,
+                    "{outcome:?}, commit={has_commit}"
+                );
             }
         }
     }
 
     #[test]
-    fn is_release_tag_only_accepts_versioned_tags() {
-        assert!(is_release_tag("v0.6.15"));
-        assert!(is_release_tag("v1"));
-        assert!(!is_release_tag("nightly"));
-        assert!(!is_release_tag("vendor"));
-        assert!(!is_release_tag("release-candidate"));
-    }
-
-    #[test]
-    fn parse_bead_refs_extracts_parenthesized_and_bare() {
-        let refs = parse_bead_refs(
-            "feat(x): do thing (coding-q4pau) and coding-5u82n.3 too",
-            "coding-",
-        );
-        assert!(refs.contains(&"coding-q4pau".to_string()));
-        assert!(refs.contains(&"coding-5u82n.3".to_string()));
-    }
-
-    #[test]
-    fn parse_bead_refs_ignores_bare_prefix() {
-        // Prefix with no id suffix should not produce a ref.
-        let refs = parse_bead_refs("just the coding- prefix alone", "coding-");
-        assert!(refs.is_empty());
-    }
-
-    #[test]
-    fn parse_bead_refs_rejects_invalid_repository_prefixes_without_panicking() {
-        for prefix in ["", "équipe-", "项目-", "🦀-", "my repo-", "/repo-"] {
-            let subject = format!("fix: ({prefix}abc123) and {prefix}def456");
-            assert!(
-                parse_bead_refs(&subject, prefix).is_empty(),
-                "unsupported repository prefix {prefix:?} must supply no trust link"
-            );
-        }
-        assert_eq!(
-            parse_bead_refs("修复: (repo-abc123) — café repo-def456", "repo-"),
-            ["repo-abc123", "repo-def456"]
-        );
-    }
-
-    #[test]
     fn id_words_is_bounded_and_char_safe() {
         // Non-ASCII before/after an id must not panic or split a char.
-        let text = "héllo proj-q4pau wörld";
+        let text = "héllo ab0d12ef90ab wörld";
         let words = id_words(text);
-        assert!(words.contains(&"proj-q4pau"));
+        assert!(words.contains(&"ab0d12ef90ab"));
     }
 
     #[test]
@@ -988,13 +535,8 @@ mod tests {
 
     #[test]
     fn correlate_is_deterministic() {
-        let idx = index_with(
-            "proj-",
-            &[("proj-aaa", true), ("proj-bbb", true)],
-            &[("proj-aaa", SHA_A), ("proj-bbb", SHA_B)],
-            &[SHA_A, SHA_B],
-        );
-        let text = "proj-bbb and proj-aaa both referenced";
-        assert_eq!(correlate(&idx, text), correlate(&idx, text));
+        let idx = index_with(&[SHA_A, SHA_B]);
+        let text = format!("{SHA_B} and {SHA_A} both referenced");
+        assert_eq!(correlate(&idx, &text), correlate(&idx, &text));
     }
 }

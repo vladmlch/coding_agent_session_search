@@ -29,6 +29,18 @@ Ledger for D1: every path deleted by the local-only port, grouped by task.
 **On merge conflict with upstream, keep the deletion.** Newest task first;
 each task appends its own group.
 
+### Task 7 — swarm, Agent Mail, Beads, lessons and operations dashboards (2026-11-04)
+
+- `src/swarm_status.rs`, `src/swarm_replay_fixture.rs` — swarm operations snapshot and its replay-fixture harness
+- `src/operations_dashboard.rs`, `src/operations_dashboard/projection.rs`, `src/operations_dashboard/repository.rs` — operations dashboard projection/repository
+- `src/lessons.rs`, `src/lessons_extraction.rs` — durable-lessons store and mining
+- `src/context_pack.rs`, `src/repro_capsule.rs` — coordination handoff builders (context pack, repro capsule)
+- `src/dependency_drift.rs` — sibling dependency-drift sentinel for coordinated releases
+- `src/workflow_analytics.rs` — multi-agent workflow analytics fed by coordination events
+- `tests/cli_live_swarm_dashboard.rs`, `tests/coordination_intelligence_gate.rs`, `tests/e2e_guided_ops_golden_gate.rs`, `tests/e2e_lessons_gate.rs`, `tests/e2e_repro_capsule_gate.rs`, `tests/operations_dashboard_contract.rs`, `tests/swarm_status_contract.rs` — contract/e2e suites for the removed surfaces
+- `tests/fixtures/guided_ops/` (3), `tests/fixtures/lessons/corpus.evidence.json`, `tests/fixtures/swarm_status/` (9) — orphaned fixtures
+- `tests/golden/guided_ops/` (2), `tests/golden/swarm_status/` (8) — orphaned goldens
+
 ### Task 5 — coordination-era hooks and bead-id convention (2026-11-04)
 
 - `scripts/git-hooks/install.sh` — opt-in installer that symlinked the pre-push hook into `.git/hooks/` (D10)
@@ -205,3 +217,22 @@ Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
 || 2026-11-04 | `cargo test --locked --test cli_dispatch_coverage removed_commands_error_without_redirection` | ok: 1 passed (17 pending rows probed live via `<cmd> --help`, empty `PATH`, empty data dir) |
 || 2026-11-04 | `UPDATE_GOLDENS=1 cargo test --locked --test golden_error_envelope` | golden regen: +`removed-command` kind `[2]`; `total_kinds` 87→89 (+6 kinds — `removed-command` plus `ambiguous-identity`, `conversation-not-indexed`, `index-read-failure`, `index-unavailable`, `no-renderable-messages` already emitted on HEAD (stale golden); −4 kinds with no remaining producer: `opencode-parse`, `opencode-sqlite-parse`, `session-not-found`, `session-parse`; `unknown-agent` exit_codes `[3]`→`[2,3]`) — full diff explanation in commit `dc0286ff` |
 || 2026-11-04 | `cargo test --locked --test cli_dispatch_coverage --test spec_auto_correction_contracts --test golden_error_envelope --test spec_robot_docs_topics` | ok — see commit message |
+
+## Task 7 — swarm/Agent Mail/Beads/lessons/operations surfaces removed (2026-11-04)
+
+Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
+
+|| Date (UTC) | Command | Result |
+|| ---------- | ------- | ------ |
+|| 2026-11-04 | `cargo test --test cli_dispatch_coverage` | ok: 110 passed (swarm/lessons rows active, `pending: false`; structured `removed-command` rejection verified live) |
+|| 2026-11-04 | `cargo test --test e2e_search_trust_meta_gate` | ok: 61 passed — trust correlation rewritten to local-git commit provenance only; no `bead:`/`lesson:`/`release:` refs |
+|| 2026-11-04 | `cargo test --test legacy_settings_tolerance` | ok: 59 passed — `CASS_SWARM_AGENT_MAIL_{URL,TOKEN}` ignored (status `deprecated-ignored`, never dereferenced) |
+|| 2026-11-04 | `cargo test --test golden_robot_docs` | ok: 16 passed — robot-docs goldens regenerated sans swarm/lessons entries |
+|| 2026-11-04 | `cargo test --test cli_robot capabilities_matches_golden_contract` + introspect golden tests | ok — capabilities/introspect goldens updated for removed commands/env vars |
+|| 2026-11-04 | `cargo test --test tui_flows` | ok: 65 passed — swarm surface removed; persisted `surface:"swarm"` falls back to Search |
+|| 2026-11-04 | `cargo test --test e2e_guide_gate` | ok: 52 passed — guide adapters now evaluate resource-plan/privacy-preview in-process (`cass-internal` pseudo-argv) |
+|| 2026-11-04 | `cargo fmt --check` | ok |
+|| 2026-11-04 | `cargo clippy --all-targets --all-features -- -D warnings` | lint-clean on compiled targets; 3 pre-existing diagnostics fixed (2 test files). `--locked` re-run blocked by machine-level disk-full (`os error 28`, 116Mi free on /) — no lint emitted before I/O failure |
+|| 2026-11-04 | `cargo test --test cli_robot` | 324 passed, 1 pre-existing failure: `html_export_aliases_route_to_export_html_command` — depends on ambient default data dir (fixture must be pre-indexed); identical on HEAD (see Task 2 journal row) |
+|| 2026-11-04 | `cargo test --test spec_exit_codes_documented` | pre-existing failure `every_documented_exit_code_is_emitted`: capabilities documents exit 70 (index stall watchdog, `src/indexer/checkpoint_deadline.rs`), but the spec's `SOURCES` list (lib.rs + doctor*.rs) has never included the emitting file — unemitted={70} on HEAD too |
+|| 2026-11-04 | `cargo test --test spec_starter_workflows_drift --test spec_recommended_commands_drift --test spec_mistake_recoveries_contract --test spec_robot_docs_topics --test spec_introspect_envelope_completeness --test spec_introspect_schema_integrity --test spec_aliases_resolve --test spec_auto_correction_contracts` | ok |

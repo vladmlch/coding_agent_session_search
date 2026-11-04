@@ -4,7 +4,7 @@ use std::fs;
 use std::process::Command;
 use std::thread;
 
-pub const SCHEMA_VERSION: &str = "cass.swarm.resource_plan.v1";
+pub const SCHEMA_VERSION: &str = "cass.guide.resource_plan.v1";
 pub const DEFAULT_TARGET_DIR: &str = "/data/tmp/cass-resource-plan-target";
 pub const ACTIONS: &[&str] = &[
     "full-index",
@@ -111,7 +111,7 @@ fn render_payload(
             "reason": "use a dedicated target dir per agent and keep expensive work off the interactive pane"
         },
         "guided_workflow": {
-            "surface": "cass swarm resource-plan --json",
+            "surface": "cass guide <intent> --apply --json",
             "bead_id": "coding_agent_session_search-guided-ops-repro-trust-5u82n.11",
             "apply_mode_available": false,
             "next_step": summary.get("recommended_action").cloned().unwrap_or_else(|| json!("inspect-health-status"))

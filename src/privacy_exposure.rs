@@ -19,7 +19,7 @@ use chrono::Utc;
 use serde_json::{Value, json};
 
 /// Schema identifier for the privacy exposure preview payload.
-pub const SCHEMA_VERSION: &str = "cass.swarm.privacy_exposure.v1";
+pub const SCHEMA_VERSION: &str = "cass.guide.privacy_exposure.v1";
 
 /// Catalog of sensitive modes that require explicit operator opt-in.
 ///
@@ -105,7 +105,7 @@ pub fn render_privacy_exposure_live() -> Value {
     render_payload("live", "live", live_facts())
 }
 
-/// Render the preview from a checked-in swarm fixture source value.
+/// Render the preview from a checked-in fixture source value.
 #[must_use]
 pub fn render_privacy_exposure_fixture(fixture_id: &str, source: Option<&Value>) -> Value {
     render_payload(fixture_id, "fixture", fixture_facts(source))
@@ -113,8 +113,8 @@ pub fn render_privacy_exposure_fixture(fixture_id: &str, source: Option<&Value>)
 
 /// Redact a single secret-looking sample. Belt-and-suspenders: applies the
 /// ingestion secret redactor (PEM keys, AWS/GitHub/OpenAI/Anthropic tokens,
-/// JWTs, Slack/Stripe keys, DB URLs) and then the strict swarm evidence
-/// redactor (absolute paths, emails, hostnames, env secret assignments). The
+/// JWTs, Slack/Stripe keys, DB URLs) and then the strict evidence redactor
+/// (absolute paths, emails, hostnames, env secret assignments). The
 /// raw value is never returned.
 fn redact_sample(raw: &str) -> String {
     let stage1 = crate::indexer::redact_secrets::redact_text(raw).into_owned();
@@ -216,7 +216,7 @@ fn render_payload(fixture_id: &str, source_kind: &str, facts: ExposureFacts) -> 
             "sampling_is_opt_in": true
         },
         "guided_workflow": {
-            "surface": "cass swarm privacy-preview --json",
+            "surface": "cass guide <intent> --apply --json",
             "bead_id": "coding_agent_session_search-guided-ops-repro-trust-5u82n.5",
             "apply_mode_available": false,
             "next_step": summary.get("recommended_action").cloned().unwrap_or_else(|| json!("review-exposure"))

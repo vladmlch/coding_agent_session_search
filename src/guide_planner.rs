@@ -79,7 +79,7 @@ const INTENT_CATALOG: &[IntentMapping] = &[
 /// Forbidden shortcuts every guided journey must reflect for THIS repo. These
 /// are described, not emitted as runnable destructive strings, so the plan can
 /// never be copy-pasted into harm. Mirrors AGENTS.md and the no-worktrees /
-/// shared-checkout swarm reality.
+/// shared-checkout constraint.
 struct ForbiddenShortcut {
     shortcut: &'static str,
     why: &'static str,
@@ -109,9 +109,10 @@ const BUILD_FORBIDDEN_SHORTCUT: ForbiddenShortcut = ForbiddenShortcut {
     why: "Offload cargo build/test/clippy through rch with a per-agent CARGO_TARGET_DIR to avoid compilation storms.",
 };
 
-/// Map a workflow-macro id to a `cass swarm resource-plan --action` value for a
-/// deeper, host-aware cost/risk estimate. `None` means the journey has no
-/// heavy resource action to model (e.g. a pure build/test loop).
+/// Map a workflow-macro id to a resource-plan `--action` value for a deeper,
+/// host-aware cost/risk estimate evaluated by the guide runner. `None` means
+/// the journey has no heavy resource action to model (e.g. a pure build/test
+/// loop).
 fn resource_action_for_macro(macro_id: &str) -> Option<&'static str> {
     match macro_id {
         "repair-derived-assets" | "onboard-source" => Some("full-index"),
@@ -493,7 +494,7 @@ pub fn render_guide_plan(
         "mutating_step_count": mutating_step_count,
         "resource_action": resource_action,
         "detailed_estimate_via": resource_action
-            .map(|a| format!("cass swarm resource-plan --action {a} --json")),
+            .map(|_| "cass guide <intent> --apply --json"),
         "note": "Coarse advisory band; consult the resource-plan surface for a host-aware CPU/memory/disk/time estimate before any mutating step."
     });
 
@@ -505,7 +506,7 @@ pub fn render_guide_plan(
     let privacy = json!({
         "tier": privacy_tier,
         "preview_via": if has_privacy_preview_step {
-            json!("cass swarm privacy-preview --json")
+            json!("cass guide <intent> --apply --json")
         } else {
             Value::Null
         },
@@ -531,15 +532,15 @@ pub fn render_guide_plan(
     // Robot-safe next surfaces for deeper detail (all --json, never bare TUI).
     let mut next_surfaces = vec![
         json!({ "purpose": "docs", "command": "cass robot-docs guide" }),
-        json!({ "purpose": "macro-detail", "command": format!("cass swarm macros --fixture-id {macro_id} --json") }),
+        json!({ "purpose": "catalog", "command": "cass guide --json" }),
     ];
     if has_privacy_preview_step {
         next_surfaces.push(
-            json!({ "purpose": "privacy-preview", "command": "cass swarm privacy-preview --json" }),
+            json!({ "purpose": "privacy-preview", "command": "cass guide <intent> --apply --json" }),
         );
     }
-    if let Some(a) = resource_action {
-        next_surfaces.push(json!({ "purpose": "resource-estimate", "command": format!("cass swarm resource-plan --action {a} --json") }));
+    if resource_action.is_some() {
+        next_surfaces.push(json!({ "purpose": "resource-estimate", "command": "cass guide <intent> --apply --json" }));
     }
 
     json!({
@@ -751,7 +752,7 @@ mod tests {
         assert_eq!(out["plan"]["cost_risk"]["risk_level"], json!("high"));
         assert_eq!(
             out["plan"]["privacy"]["preview_via"],
-            json!("cass swarm privacy-preview --json")
+            json!("cass guide <intent> --apply --json")
         );
     }
 

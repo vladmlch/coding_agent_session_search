@@ -102,55 +102,9 @@ a long JSONL record in an agent prompt.
 - A derived (SQLite fallback) FTS repair that fails **identically on 5 consecutive `cass index` runs** escalates from a warning to a non-zero exit ([#434](https://github.com/Dicklesworthstone/coding_agent_session_search/issues/434)): the counter persists in `<data_dir>/index/.fts-repair-failure-streak.json`, watch daemons log the escalation instead of exiting, and any run whose repair succeeds — or fails differently — resets it. Canonical rows and the Tantivy index are unaffected; run `cass doctor --rebuild-canonical-fts --yes --json` for the explicit repair.
 
 **Schema stability guarantees**
-- JSON contract surfaces are pinned by golden-file regression tests under `tests/golden/robot/`: `capabilities`, `selftest`, `health`, `status`, `diag`, `models status`/`verify`/`check-update`, `introspect`, `doctor`, `api-version`, `stats`, `search`, `export-html`, `onboarding`, the `quarantine` and `dedup` commands and `analytics incidents`, plus `sessions` and `pack` on their missing-database and error paths only. `swarm status` scenarios are pinned under `tests/golden/swarm_status/`. `triage`, `swarm work-packet` and `swarm lint` have no golden files; their shape is covered only by assertion tests. A change to any field name, type, or nullability fails the golden test suite and requires a deliberate regeneration pass (`UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test golden_robot_json --test golden_robot_docs`).
+- JSON contract surfaces are pinned by golden-file regression tests under `tests/golden/robot/`: `capabilities`, `selftest`, `health`, `status`, `diag`, `models status`/`verify`/`check-update`, `introspect`, `doctor`, `api-version`, `stats`, `search`, `export-html`, `onboarding`, the `quarantine` and `dedup` commands and `analytics incidents`, plus `sessions` and `pack` on their missing-database and error paths only. `triage` has no golden file; its shape is covered only by assertion tests. A change to any field name, type, or nullability fails the golden test suite and requires a deliberate regeneration pass (`UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-golden-target cargo test --test golden_robot_json --test golden_robot_docs`).
 - `cass introspect --json`'s `response_schemas` block enumerates every schema in a stable alphabetical order (`BTreeMap`-backed — see bead coding_agent_session_search-8sl73).
 - Error envelopes (`{error: {code, kind, message, hint, retryable}}`) have a fixed shape. `kind` values are kebab-case; branch on `err.kind`, not on the numeric code, for codes ≥ 10 (see the Error Handling section below).
-
-## 📬 Agent Mail Fallback (When MCP Tools Are Not Exposed)
-
-If your runtime does not expose built-in `mcp-agent-mail` tools (for example, `list_mcp_resources` is empty), you can still coordinate via direct MCP HTTP calls.
-
-### 1) Start the local Agent Mail server
-
-```bash
-~/.local/pipx/venvs/mcp-agent-mail/bin/python -m mcp_agent_mail.cli serve-http --host 127.0.0.1 --port 8765
-```
-
-### 2) Use the Streamable HTTP MCP endpoint (`/mcp`)
-
-```bash
-curl -sS -X POST http://127.0.0.1:8765/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":"health","method":"tools/call","params":{"name":"health_check","arguments":{}}}'
-```
-
-### 3) Minimal coordination flow (project -> agent -> message -> inbox -> ack)
-
-```bash
-# Ensure project
-curl -sS -X POST http://127.0.0.1:8765/mcp -H 'Content-Type: application/json' -d \
-'{"jsonrpc":"2.0","id":"ensure","method":"tools/call","params":{"name":"ensure_project","arguments":{"human_key":"/data/projects/coding_agent_session_search"}}}'
-
-# Register agent
-curl -sS -X POST http://127.0.0.1:8765/mcp -H 'Content-Type: application/json' -d \
-'{"jsonrpc":"2.0","id":"register","method":"tools/call","params":{"name":"register_agent","arguments":{"project_key":"/data/projects/coding_agent_session_search","program":"codex","model":"gpt-5","name":"YourAgentName"}}}'
-
-# Send message
-curl -sS -X POST http://127.0.0.1:8765/mcp -H 'Content-Type: application/json' -d \
-'{"jsonrpc":"2.0","id":"send","method":"tools/call","params":{"name":"send_message","arguments":{"project_key":"/data/projects/coding_agent_session_search","sender_name":"YourAgentName","to":["PeerAgent"],"subject":"[coord] hello","thread_id":"coord-2026-02-13","ack_required":true,"body_md":"Online and starting work."}}}'
-
-# Fetch inbox
-curl -sS -X POST http://127.0.0.1:8765/mcp -H 'Content-Type: application/json' -d \
-'{"jsonrpc":"2.0","id":"inbox","method":"tools/call","params":{"name":"fetch_inbox","arguments":{"project_key":"/data/projects/coding_agent_session_search","agent_name":"YourAgentName","limit":50,"include_bodies":true}}}'
-
-# Acknowledge message id 42
-curl -sS -X POST http://127.0.0.1:8765/mcp -H 'Content-Type: application/json' -d \
-'{"jsonrpc":"2.0","id":"ack","method":"tools/call","params":{"name":"call_extended_tool","arguments":{"tool_name":"acknowledge_message","arguments":{"project_key":"/data/projects/coding_agent_session_search","agent_name":"YourAgentName","message_id":42}}}}'
-```
-
-### Important caveat
-
-`mcp_agent_mail` defaults to `sqlite+aiosqlite:///./storage.sqlite3`. That means the server working directory determines which mailbox database you are using. To avoid "project not found" confusion, start the server from the same directory your team expects for mailbox state.
 
 ## 📸 Screenshots
 
@@ -1084,7 +1038,7 @@ hit can be a landed fix or a failed attempt):
 | `trust_tier` | Meaning | What to do |
 |--------------|---------|------------|
 | `trusted` | Landed and backed by claim-specific proof (schema-defined in `trust_scoring`; live search/pack correlation retains `proof_debt` -> `likely` until claim-specific proof is supplied) | Safe to reuse |
-| `likely` | Has provenance (commit/closed bead/release) with `proof_debt` (not claim-proof-pinned) | Confirm via the cited ref first |
+| `likely` | Has provenance (linked local commit) with `proof_debt` (not claim-proof-pinned) | Confirm via the cited ref first |
 | `unverified` | Relevant but no provenance link, or lexical-only corroboration | Corroborate before reuse |
 | `stale` | Aged out (`aged_out` in live search; `superseded_by_newer` is schema-defined when supersession markers are supplied) | Prefer a newer result |
 | `failed` | A failed/reverted attempt (`failed_attempt`, schema-defined when explicit failure markers are supplied) | Do not reuse |
@@ -1092,7 +1046,7 @@ hit can be a landed fix or a failed attempt):
 The verdict is **advisory metadata only** — it never changes result ordering.
 It is derived from metadata-only signals (recency, source health, realized
 search mode, cwd-relative workspace match, and — opportunistically — linked
-commit/bead/release provenance); it carries no raw session text. Live `cass search`
+local commit provenance); it carries no raw session text. Live `cass search`
 and `cass pack` correlation currently emits `likely`, `unverified`, and `stale`
 (with `stale_reason` values `aged_out`, `source_unhealthy`, `workspace_mismatch`,
 `proof_debt`, `lexical_only`, or `corroboration_needed`), while `trusted` and
@@ -1102,12 +1056,10 @@ Branch on `trust_tier` and `stale_reason`, not on `confidence` alone.
 
 Provenance correlation is **project-scoped and explicit-reference anchored**:
 for a hit from the project you are running `cass` in now, cass links it to a
-closed bead or commit only when the hit's own indexed text references a known
-identifier (`bead:<id>` or `commit:<sha>`), joined against that project's local
-beads and git history. A linked commit's containing release is resolved from
-Git. Release containment preserves provenance but does not establish proof of
-the excerpt's claim: a landed commit remains `proof_debt` and cannot become
-`trusted` from this correlation alone. A temporal or
+commit only when the hit's own indexed text references a commit id that exists
+in that project's local git history. A landed commit remains `proof_debt` and
+cannot become `trusted` from this correlation alone — the verdict does not
+establish proof of the excerpt's claim. A temporal or
 workspace coincidence is never enough, so an unrelated conversation never
 inherits another's trust. Off-project hits report `workspace_mismatch`, and a
 hit whose local source file no longer exists on disk reports `source_unhealthy`
@@ -1151,79 +1103,6 @@ Packs exclude injected skill payloads by default. Add `--include-skill-content`
 to include them explicitly; credential redaction still applies.
 `privacy.skill_content_included` reports whether the selected evidence includes
 skill payloads, including after token-budget trimming.
-
-### Swarm Operations Workflow
-
-Use the swarm surfaces when multiple agents are sharing one repo and you need a
-single read-only view before claiming work:
-
-```bash
-# Current shared-work snapshot; does not claim, reopen, release, or run builds
-cass swarm status --json
-
-# Advisory packet for one bead; still create real reservations and Beads updates yourself
-cass swarm work-packet --json --bead coding_agent_session_search-example
-
-# Coordination hygiene check before closeout or takeover review
-cass swarm lint --json --bead coding_agent_session_search-example
-
-# Read-only sibling dependency drift sentinel
-cass swarm dependency-drift --json
-```
-
-`swarm status`, `swarm work-packet`, `swarm lint`, `swarm evidence`,
-`swarm proof-debt` and `swarm failure-patterns` collect the same bounded
-read-only Git state and Beads exports when run from the repository root
-without a fixture. Git uses
-porcelain-v2 with optional locks disabled. Beads uses `br --no-db` (0.6.x or 0.7.x), so its
-JSONL snapshot is explicitly partial: unexported database changes may exist.
-Recheck Beads and reservations before claiming work. Child commands share a
-single 15-second request budget and each has an 8 MiB output cap; Beads categories
-cap at 512 issues.
-Failures report unavailable providers and unknown summary counts, not zero work.
-RCH contributes aggregate active/queued job counts, fleet slots and posture from
-`rch status --json` (API 1.0, schema 1.0.0). Responses older than 60 seconds or
-more than 5 seconds in the future are unavailable. Worker addresses, commands
-and job details are omitted. This provider remains partial: local Cargo/CPU
-state and build admission are unknown, even when RCH reports no active jobs.
-Agent Mail roster and reservation reads are opt-in: set `CASS_SWARM_AGENT_MAIL_URL`
-to the server's HTTP MCP endpoint and, if required, `CASS_SWARM_AGENT_MAIL_TOKEN`.
-The reader uses only `resources/read`, never a local database fallback or inbox
-read. Mail shares the total request budget with a 3-second cap of its own;
-responses are capped at 8 MiB, rosters at 512 agents, and full 250-row reservation
-pages are refused. The total reservation count remains unknown; source metadata
-reports only the observed active count. Activity and expiry use
-the observation time. Task descriptions, reservation reasons and message bodies
-are omitted. These observations do not authorize claims or establish proof.
-CASS evidence remains unwired. Live lint marks itself partial and adds an
-`agent-mail-unavailable` advisory whenever Agent Mail messages are not
-collected. Fixture selection (`--fixture <file>` or `--fixture-dir <dir>
---fixture-id <id>`) retains deterministic behavior; `swarm dependency-drift`
-also has a live path.
-
-`swarm status` composes Beads, Agent Mail metadata, git state, rch/build
-pressure, cass health/status, and proof references. Stale candidates are
-advisory only: coordinate through Beads and Agent Mail before reopening,
-force-releasing, or taking over work. Suggested commands are robot-safe
-templates, not automatic actions.
-
-The TUI's Swarm tab shows the same live payload for the directory the TUI was
-started in. Open it from the command palette (`Ctrl+P`, "Swarm operations
-cockpit") or by clicking its tab; it has no direct key. Entering the tab
-starts one background read with this collector;
-until it lands, every count shows as `?`. Counts of providers that could not
-be read stay `?`, never zero. `r` reads again. Rendering never runs a provider
-read.
-
-`swarm dependency-drift` reads `Cargo.toml` and optional sibling checkouts to
-report manifest pins, local HEAD/dirty state, strict validation commands, and
-release-risk recommendations. It does not fetch remotes, edit manifests, run
-builds, update Beads, send Agent Mail, delete files, or mutate git state.
-
-When status points at prior evidence, use `cass pack "query" --robot` to create
-a bounded cited handoff for another agent. Packs complement the cockpit; they do
-not replace Beads for ownership, Agent Mail for coordination, or rch for proof
-commands.
 
 ### Token Budget Management
 
@@ -3040,9 +2919,6 @@ cass status --json                    # Quick health snapshot
 cass health                           # Minimal pre-flight check (<50ms)
 cass capabilities --json              # First-stop agent self-description
 cass introspect --json                # Full API schema
-cass swarm status --json              # Read-only Beads/Agent Mail/git/rch swarm snapshot
-cass swarm work-packet --json         # Advisory claim packet; no mutations
-cass swarm lint --json                # Coordination and proof-gap lint
 cass context /path/to/session --json  # Find related sessions
 cass view /path/to/file -n 42 --json  # View source at line
 
@@ -3081,10 +2957,6 @@ cass completions bash > ~/.bash_completion.d/cass
 | `selftest` | Archive-independent executable probe for installers and binary-promotion gates; exercises an in-memory FrankenSQLite write/read round-trip |
 | `capabilities` | First-stop agent self-description: workflow recipes, mistake recoveries, commands, global flags, exit codes, env vars, and limits |
 | `introspect` | Full API schema: commands, arguments, response shapes |
-| `swarm status --json` | Read-only shared-repo operations snapshot across Beads, Agent Mail metadata, git, build pressure, cass readiness, and proof refs |
-| `swarm work-packet --json` | Advisory one-agent packet with readiness, suggested reservations, verification commands, and closeout checklist; it does not claim or reserve |
-| `swarm lint --json` | Read-only coordination protocol lint for missing mail, stale reservations, status mismatches, and proof gaps. Without a fixture it lints the repository's live Git, Beads, Agent Mail and evidence providers (the same bounded collection as `swarm status`); `--fixture`, `--fixture-dir --fixture-id` lint recorded input |
-| `swarm dependency-drift --json` | Read-only sibling dependency sentinel for Cargo.toml pins, optional local checkout HEAD/dirty state, strict validation commands, and release-risk recommendations |
 | `sessions [--workspace DIR] [--current]` | Discover recent session files for follow-up actions |
 | `context <path>` | Find related sessions by workspace, day, or agent |
 | `view <path> -n N` | View source file at specific line (follow-up on search) |
@@ -3112,7 +2984,6 @@ Other subcommands (all present in the `Commands` enum in `src/lib.rs`):
 | `forget` | Prune archived conversations with `--source-glob '<glob>'`, `--workspace-glob '<glob>'`, and/or `--older-than 90d`; at least one selector is required, and supplied selectors are ANDed. Preview is strictly read-only; add `--apply` to delete canonical rows and rebuild FTS, analytics and the lexical index under the indexing maintenance lock. Age means the last message time, strictly before the reported `before_ms` cutoff; sessions with missing message times are kept. Shared stores such as OpenCode/Devin SQLite databases use durable session identities, so forgotten sessions stay out when siblings change while retained siblings keep updating. Single-session files retain size/mtime tombstones: an unchanged file stays forgotten across incremental/full indexing, and a changed file is indexed again. Source files and raw-mirror captures remain. Use `CASS_EXCLUDE_PATHS` or `CASS_EXCLUDE_WORKSPACES` for prospective exclusion, and `cass mirror prune` for explicit raw-capture retention. Semantic vectors are not rewritten: explicit semantic search reports `semantic-unavailable` and hybrid falls back to lexical until `cass index --semantic` catches up. A previously opened `cass serve` keeps its pinned snapshot until `reload`; the TUI drops forgotten hits on its next search. If lexical rebuilding fails, forget exits 5 (`lexical-rebuild`) and the next index repairs the derived data |
 | `forget --list` / `forget --reinclude` | Inspect recorded exclusions or explicitly release matching records. Use literal `--source-path`, `--source-glob`, or exact `--source-id`, `--agent`, and `--external-id` selectors; supplied selectors are ANDed. Re-inclusion requires a selector and previews by default; add `--apply`, then run `cass index`. Other exclusions and current workspace/path policies remain in force. Historical exclusion records cannot be selected by workspace or age. |
 | `fleet upgrade-rehearsal` | Fleet-safe upgrade rehearsal (dry run) with bounded post-upgrade verification; `--live` opts in to SSH probes of configured remotes |
-| `lessons list\|search` | Mine and query durable, redacted lessons from local evidence (commits, closed beads, proof manifests) |
 | `import chatgpt` | Split a ChatGPT web export (`conversations.json`) into files the ChatGPT connector can index |
 | `release-verify` | Verify release distribution channels from a recorded observation (`--from`) or live (`--live`) |
 | `sources discover` | Auto-discover SSH hosts from `~/.ssh/config` |
@@ -3732,7 +3603,7 @@ uniform SQLite 0.4.12 versions, a single resolution per package, and registry so
 - `build.rs` validates every named dependency contract against its exact registry requirement, package name, enabled features, and `default-features` policy. It also rejects git/revision fields for these registry-only contracts.
 - The fsqlite-family gate additionally checks `Cargo.lock` for exactly one registry resolution per package at `0.4.12` and rejects every `[patch.crates-io]` redirect for the family, including the facade.
 - Enable optional sibling-manifest validation with `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-strict-target cargo check --features strict-path-dep-validation` or `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-strict-target CASS_STRICT_PATH_DEP_VALIDATION=1 cargo check`. For sibling checkouts that are present, this verifies package names, versions, and required features before you switch to local path overrides; registry-only contracts do not require a particular sibling branch or clean worktree.
-- Use `cass swarm dependency-drift --json` for a fast read-only preflight. It reports each manifest pin, optional sibling checkout HEAD/dirty state, upstream status as `not_checked`, and the exact strict-validation commands to run; it never fetches remotes or mutates files.
+- Use `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-strict-target CASS_STRICT_PATH_DEP_VALIDATION=1 cargo check` for a fast read-only preflight of sibling pins before changing them.
 
 **Expected interface contract**
 - `frankensqlite` (`fsqlite`): `Connection`, `params!`, and `compat::{ConnectionExt, RowExt}` with `row.get_typed(...)`.

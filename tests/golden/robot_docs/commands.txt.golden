@@ -37,18 +37,6 @@ commands:
     --require-evidence  Return a JSON error envelope instead of an empty successful pack.
     --explain-selection  Include score components and omission diagnostics for audits.
     Output includes health, freshness, privacy, evidence, omitted, and warnings fields.
-  cass swarm status --json [--repo PATH] [--include-evidence]
-    Read-only swarm operations snapshot over Beads, Agent Mail metadata, git, rch/build pressure, cass readiness, and proof evidence.
-    Reports ready/in-progress/blocked beads, stale candidates, reservations, active agents, proof gaps, and safe next actions.
-    Stale detection is advisory only; status never claims, reopens, force-releases, runs builds, rewrites files, or deletes data.
-  cass swarm work-packet --json [--bead ID]
-    Advisory packet for one possible work slice: readiness, suggested reservations, coordination copy, verification commands, and closeout checklist.
-    It does not update Beads, send Agent Mail, create file reservations, or run the proof commands.
-  cass swarm lint --json [--bead ID]
-    Read-only protocol lint for missing start/closeout mail, unacked messages, stale reservations, bead-status mismatches, and proof gaps.
-  cass swarm dependency-drift --json
-    Read-only sibling dependency sentinel over Cargo.toml pins, optional local checkout HEAD/dirty state, strict validation commands, and release-risk recommendations.
-    It never fetches remotes, edits manifests, updates Beads, sends Agent Mail, runs builds, deletes files, or changes git state.
   cass stats [--json] [--data-dir DIR]
   cass triage [--json] [--stale-threshold N] [--data-dir DIR]
     One-shot agent preflight: readiness, next_command, recommended_commands, docs, schemas, workflows, and recoveries.
@@ -133,7 +121,6 @@ commands:
   cass export-html <path> [--output-dir DIR] [--json]  Self-contained HTML export (optional encryption).
   cass pages [--export-only DIR] [--verify PATH] [--agents A1,A2]  Encrypted searchable archive for static hosting.
   cass sources [agents list|exclude|include] [setup|list|sync] [--json]  Manage remote sources + agent exclusions.
-  cass swarm [status|work-packet|lint] --json  Read-only shared-repo operations guidance; complements Beads, Agent Mail, rch, and cass pack.
   cass analytics [status|tokens|tools|models|rebuild|validate] [--json]  Token / tool / model analytics.
   cass import [...]                Import conversation data from external sources.
   cass daemon [...]                Run the semantic model daemon (Unix only).

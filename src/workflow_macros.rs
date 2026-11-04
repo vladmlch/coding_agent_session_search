@@ -13,7 +13,7 @@ use chrono::Utc;
 use serde_json::{Value, json};
 
 /// Schema identifier for the workflow macros payload.
-pub const SCHEMA_VERSION: &str = "cass.swarm.workflow_macros.v1";
+pub const SCHEMA_VERSION: &str = "cass.guide.workflow_macros.v1";
 
 /// One ordered step in a macro. `command` is a structured dotted intent (e.g.
 /// `search.two-tier`), never a runnable `cass …` string, so rendered docs can't
@@ -339,7 +339,7 @@ pub fn render_workflow_macros_live() -> Value {
     render_payload("live", "live", None, None)
 }
 
-/// Render the registry from a checked-in swarm fixture source value.
+/// Render the registry from a checked-in fixture source value.
 ///
 /// The source may carry `{ "facts": { "<fact>": true, ... }, "macro": "<id>" }`
 /// to evaluate preflight readiness and/or filter to one macro.
@@ -432,7 +432,7 @@ fn render_payload(
             "touches_network": false
         },
         "guided_workflow": {
-            "surface": "cass swarm macros --json",
+            "surface": "cass guide <intent> --json",
             "bead_id": "coding_agent_session_search-guided-ops-repro-trust-5u82n.10",
             "apply_mode_available": false
         }
@@ -578,7 +578,7 @@ mod tests {
     fn no_registered_macro_emits_bare_cass_or_bv_or_destructive() {
         let out = render_workflow_macros_live();
         // Scope the lint to the macro recipes themselves (the envelope's
-        // guided_workflow.surface legitimately names the `cass swarm macros` command).
+        // guided_workflow.surface legitimately names the `cass guide` surface).
         let text = serde_json::to_string(&out["macros"]).unwrap();
         // Structured dotted intents only — no runnable `cass `/`bv ` invocations.
         assert!(

@@ -4,6 +4,3 @@ contracts:
   Color auto off when non-TTY unless forced.
   Use --quiet to silence info logs in robot runs.
   JSON errors only to stderr.
-  Swarm status/work-packet/lint are read-only advisory surfaces: they do not claim beads, send mail, reserve files, force-release, run builds, mutate git, or delete data.
-  Swarm stale detection is advisory; takeover-like actions require explicit coordination and human/agent confirmation outside cass.
-  Swarm evidence defaults are privacy-safe: raw session content and full mail bodies are omitted unless a future explicit redacted evidence opt-in allows snippets.

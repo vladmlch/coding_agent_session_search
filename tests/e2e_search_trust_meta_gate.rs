@@ -1,5 +1,5 @@
 //! Real-binary E2E gate for the per-hit trust/provenance verdict on `cass
-//! search` (bead `coding_agent_session_search-guided-ops-repro-trust-5u82n.3`,
+//! search` (`coding_agent_session_search-guided-ops-repro-trust-5u82n.3`,
 //! "Trust-score search results and answer packs with provenance signals").
 //!
 //! Why this gate exists
@@ -239,11 +239,11 @@ fn check_trust_shape(hit: &Value, label: &str) -> TestResult {
     ensure(matches!(confidence, "low" | "medium" | "high"), || {
         format!("{label}: unexpected confidence `{confidence}`")
     })?;
-    // Commit/bead/release correlation (q4pau) is project-scoped: it only fires
+    // Local-git commit correlation (q4pau) is project-scoped: it only fires
     // for hits whose workspace is the project the agent is in now. This fixture
     // runs from a throwaway tempdir that is not a git repo and whose seeded
     // workspace does not match, so correlation cannot fire and refs stay empty.
-    // (The on-project case is proved by `search_on_project_correlation_links_bead`.)
+    // (The on-project case is proved by `search_on_project_correlation_links_commit`.)
     let refs_empty = trust
         .get("provenance_refs")
         .and_then(Value::as_array)
@@ -513,28 +513,6 @@ fn has_provenance_ref(trust: &Value, expected: &str) -> bool {
         .is_some_and(|refs| refs.iter().filter_map(Value::as_str).any(|r| r == expected))
 }
 
-/// Resolve the current content-stable lesson id carrying `source_ref` from a
-/// live `cass lessons list` payload.
-fn lesson_id_for_source(payload: &Value, source_ref: &str) -> Option<String> {
-    payload
-        .get("lessons")
-        .and_then(Value::as_array)?
-        .iter()
-        .find(|lesson| {
-            lesson
-                .get("source_refs")
-                .and_then(Value::as_array)
-                .is_some_and(|refs| {
-                    refs.iter()
-                        .filter_map(Value::as_str)
-                        .any(|candidate| candidate == source_ref)
-                })
-        })?
-        .get("lesson_id")?
-        .as_str()
-        .map(str::to_string)
-}
-
 /// The `stale_reason` string of a hit's trust verdict (empty when absent).
 fn stale_reason_of(hit: &Value) -> String {
     hit.get("trust")
@@ -610,41 +588,23 @@ fn search_source_probe_marks_deleted_source_unhealthy() -> TestResult {
     Ok(())
 }
 
-/// q4pau Part 1+2: from inside a project (a git repo with a closed bead in
-/// `.beads/issues.jsonl`), a hit from that same workspace whose indexed text
-/// references the bead id is correlated to it: the verdict reaches `likely` and
-/// carries a sanitized `bead:` provenance ref. Proves the live join + cwd-
-/// relative workspace match end to end. A containing release retains its
-/// provenance without proving the excerpt's explicitly untested claim (GH465).
+/// q4pau Part 1+2 (local-only form): from inside a project git repo, a hit
+/// from that same workspace whose indexed text explicitly references a commit
+/// in the project's history is correlated to it: the verdict reaches `likely`
+/// and carries a sanitized `commit:` provenance ref. Proves the live join +
+/// cwd-relative workspace match end to end. Beads/lessons/release provenance
+/// was removed with the coordination layer — this test also pins that no
+/// `bead:`/`lesson:`/`release:` ref can appear.
 #[test]
-fn search_on_project_correlation_links_bead() -> TestResult {
+fn search_on_project_correlation_links_commit() -> TestResult {
     let (_tmp, home, data_dir) = isolated_home()?;
     let codex_home = home.join(".codex");
 
-    // A throwaway project repo with a closed bead. `source_repo` drives the
-    // id prefix (`corrproj-`); the bead id must start with it.
+    // A throwaway project repo with one real commit to cite.
     let proj = home.join("proj");
     std::fs::create_dir_all(&proj)?;
     git_run(&proj, &["init", "-q"])?;
     let git_root = git_run(&proj, &["rev-parse", "--show-toplevel"])?;
-    let beads_dir = proj.join(".beads");
-    std::fs::create_dir_all(&beads_dir)?;
-    let bead_id = "corrproj-corrbeadxyz";
-    let bead_line = json!({
-        "id": bead_id,
-        "title": "Preserve correlated lesson provenance",
-        "status": "closed",
-        "source_repo": "corrproj",
-        "issue_type": "task",
-        "labels": ["trust-correlation"],
-        "updated_at": "2026-07-20T12:00:00Z",
-        "closed_at": "2026-07-21T12:00:00Z",
-        "close_reason": "Use the corroborated closed-Bead decision in search and pack citations",
-    });
-    std::fs::write(
-        beads_dir.join("issues.jsonl"),
-        format!("{}\n", serde_json::to_string(&bead_line)?),
-    )?;
     git_run(
         &proj,
         &[
@@ -657,51 +617,18 @@ fn search_on_project_correlation_links_bead() -> TestResult {
             "commit",
             "--allow-empty",
             "-m",
-            &format!("fix ({bead_id})"),
+            "fix the correlated thing",
         ],
     )?;
     let commit_sha = git_run(&proj, &["rev-parse", "HEAD"])?;
-    let release_tag = "v0.0.1";
-    git_run(&proj, &["-c", "tag.gpgsign=false", "tag", release_tag])?;
     let commit_source_ref = format!("commit:{}", commit_sha.chars().take(12).collect::<String>());
-    let release_source_ref = format!("release:{release_tag}");
 
-    // Resolve the actual lesson id from the real live lessons surface. Trust
-    // must reuse this content-stable id, not synthesize a parallel identifier.
-    let lessons_args = ["lessons", "list", "--status", "all", "--json"].map(str::to_string);
-    let lessons_cmd = cass_cmd_in(&proj, &home, &codex_home, &lessons_args);
-    let lessons_out = spawn_with_timeout_or_diag(
-        lessons_cmd,
-        "correlation_lessons",
-        Some(&data_dir),
-        SEARCH_TIMEOUT,
-    );
-    let lessons_stdout = String::from_utf8_lossy(&lessons_out.stdout);
-    let lessons_payload: Value = serde_json::from_str(lessons_stdout.trim()).map_err(|e| {
-        format!(
-            "correlation lessons stdout not JSON: {e}; head: {}",
-            head(&lessons_stdout)
-        )
-    })?;
-    let bead_source_ref = format!("bead:{bead_id}");
-    let lesson_id = lesson_id_for_source(&lessons_payload, &bead_source_ref).ok_or_else(|| {
-        format!(
-            "live lessons did not derive a lesson for `{bead_source_ref}`: {}",
-            head(&lessons_payload.to_string())
-        )
-    })?;
-    ensure(
-        lesson_id.starts_with("lsn-") && lesson_id.len() == "lsn-".len() + 16,
-        || format!("live lessons returned malformed lesson id `{lesson_id}`"),
-    )?;
-    let lesson_provenance_ref = format!("lesson:{lesson_id}");
-
-    // The release tag contains the background commit; it supplies no proof
-    // of this excerpt's proposal.
+    // The session explicitly cites the project's commit. The claim itself is
+    // untested, so `likely` (not `trusted`) is the honest verdict.
     let keyword = "corrfixtureuniqueword";
     let body = format!(
         "{keyword}: Untested proposal; do not rely on it. Background reference: \
-         commit:{commit_sha}, bead:{bead_id}."
+         commit:{commit_sha} plus unrelated prose."
     );
     seed_codex_session_full(
         &codex_home,
@@ -747,45 +674,38 @@ fn search_on_project_correlation_links_bead() -> TestResult {
         .ok_or_else(|| format!("correlation hit not found: {}", head(&payload.to_string())))?;
     check_trust_shape_on_project(hit, "correlation")?;
 
-    // The closed-bead link lifts the verdict to `likely` with a sanitized ref.
+    // The local-commit link lifts the verdict to `likely` with a sanitized ref.
     ensure(tier_of(hit) == "likely", || {
         format!(
-            "on-project closed-bead hit should be `likely`, got `{}`",
+            "on-project commit-cited hit should be `likely`, got `{}`",
             tier_of(hit)
         )
     })?;
     let trust = trust_of(hit, "correlation")?;
-    for provenance in [&commit_source_ref, &release_source_ref] {
-        ensure(has_provenance_ref(trust, provenance), || {
-            format!("search missing released provenance `{provenance}`: {trust}")
+    ensure(has_provenance_ref(trust, &commit_source_ref), || {
+        format!("search missing commit provenance `{commit_source_ref}`: {trust}")
+    })?;
+    // Removed coordination surfaces must never leak provenance refs.
+    for banned in ["bead:", "lesson:", "release:"] {
+        let has_banned = trust
+            .get("provenance_refs")
+            .and_then(Value::as_array)
+            .is_some_and(|refs| {
+                refs.iter()
+                    .filter_map(Value::as_str)
+                    .any(|r| r.starts_with(banned))
+            });
+        ensure(!has_banned, || {
+            format!("provenance refs must not contain `{banned}` refs: {trust}")
         })?;
     }
-    let has_bead_ref = has_provenance_ref(trust, &bead_source_ref);
-    ensure(has_bead_ref, || {
-        format!(
-            "expected provenance ref `{bead_source_ref}`, got {}",
-            trust
-                .get("provenance_refs")
-                .map(ToString::to_string)
-                .unwrap_or_default()
-        )
-    })?;
-    ensure(has_provenance_ref(trust, &lesson_provenance_ref), || {
-        format!(
-            "expected live lesson provenance ref `{lesson_provenance_ref}`, got {}",
-            trust
-                .get("provenance_refs")
-                .map(ToString::to_string)
-                .unwrap_or_default()
-        )
-    })?;
     // On-project: the workspace match must NOT report a mismatch.
     ensure(stale_reason_of(hit) != "workspace_mismatch", || {
         "on-project hit must not report workspace_mismatch".to_string()
     })?;
 
-    // The answer-pack path must attach the exact same corroborated lesson ref
-    // while retaining the existing `likely` trust semantics.
+    // The answer-pack path must attach the exact same commit ref while
+    // retaining the existing `likely` trust semantics.
     let pack_args = argv(
         &[
             "pack", keyword, "--json", "--mode", "lexical", "--limit", "5",
@@ -829,32 +749,22 @@ fn search_on_project_correlation_links_bead() -> TestResult {
         )
     })?;
     let pack_trust = trust_of(pack_evidence, "correlation pack evidence")?;
-    for provenance in [&commit_source_ref, &release_source_ref] {
-        ensure(has_provenance_ref(pack_trust, provenance), || {
-            format!("pack missing released provenance `{provenance}`: {pack_trust}")
+    ensure(has_provenance_ref(pack_trust, &commit_source_ref), || {
+        format!("pack missing commit provenance `{commit_source_ref}`: {pack_trust}")
+    })?;
+    for banned in ["bead:", "lesson:", "release:"] {
+        let has_banned = pack_trust
+            .get("provenance_refs")
+            .and_then(Value::as_array)
+            .is_some_and(|refs| {
+                refs.iter()
+                    .filter_map(Value::as_str)
+                    .any(|r| r.starts_with(banned))
+            });
+        ensure(!has_banned, || {
+            format!("pack provenance refs must not contain `{banned}` refs: {pack_trust}")
         })?;
     }
-    ensure(has_provenance_ref(pack_trust, &bead_source_ref), || {
-        format!(
-            "pack evidence missing `{bead_source_ref}`: {}",
-            pack_trust
-                .get("provenance_refs")
-                .map(ToString::to_string)
-                .unwrap_or_default()
-        )
-    })?;
-    ensure(
-        has_provenance_ref(pack_trust, &lesson_provenance_ref),
-        || {
-            format!(
-                "pack evidence missing `{lesson_provenance_ref}`: {}",
-                pack_trust
-                    .get("provenance_refs")
-                    .map(ToString::to_string)
-                    .unwrap_or_default()
-            )
-        },
-    )?;
     Ok(())
 }
 

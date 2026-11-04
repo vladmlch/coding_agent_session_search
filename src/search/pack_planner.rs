@@ -2390,17 +2390,8 @@ fn pack_trust_assessment(
         let link = correlate(correlation, &scan);
         if !link.is_empty() {
             ctx.outcome = link.outcome;
-            ctx.linked_closed_bead = link.linked_closed_bead;
-            ctx.linked_lessons = link.linked_lessons;
-            if let Some(commit) = link.linked_commit {
-                ctx.release_tag = correlation.release_tag_for_commit(&commit);
-                ctx.linked_commit = Some(commit);
-            }
-            ctx.proof = proof_for(
-                ctx.outcome,
-                ctx.linked_commit.is_some(),
-                ctx.release_tag.is_some(),
-            );
+            ctx.linked_commit = link.linked_commit;
+            ctx.proof = proof_for(ctx.outcome, ctx.linked_commit.is_some());
         }
     }
     let mut signals = derive_trust_signals(&ctx);

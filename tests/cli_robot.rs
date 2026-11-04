@@ -2573,48 +2573,6 @@ fn read_robot_json_golden(name: &str) -> Value {
 }
 
 #[test]
-fn swarm_status_fixture_outputs_match_goldens() {
-    for fixture_id in [
-        "healthy",
-        "busy",
-        "stale_advisory",
-        "reservation_conflict",
-        "unrelated_reservation",
-        "build_pressure",
-        "no_ready_work",
-        "privacy_guardrails",
-    ] {
-        let mut cmd = base_cmd();
-        cmd.args([
-            "swarm",
-            "status",
-            "--json",
-            "--fixture-dir",
-            "tests/fixtures/swarm_status",
-            "--fixture-id",
-            fixture_id,
-        ]);
-        let output = cmd.assert().success().get_output().clone();
-        assert!(
-            output.stderr.is_empty(),
-            "{fixture_id} swarm status should not log to stderr: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-
-        let actual: Value =
-            serde_json::from_slice(&output.stdout).expect("valid swarm status json");
-        let golden_path =
-            Path::new("tests/golden/swarm_status").join(format!("{fixture_id}.json.golden"));
-        let expected: Value = serde_json::from_str(
-            &fs::read_to_string(&golden_path)
-                .unwrap_or_else(|err| panic!("read {}: {err}", golden_path.display())),
-        )
-        .unwrap_or_else(|err| panic!("parse {}: {err}", golden_path.display()));
-        assert_eq!(actual, expected, "{fixture_id} swarm status golden drifted");
-    }
-}
-
-#[test]
 fn capabilities_matches_golden_contract() {
     let mut cmd = base_cmd();
     cmd.args(["capabilities", "--json"]);

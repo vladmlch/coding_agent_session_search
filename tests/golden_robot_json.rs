@@ -1333,11 +1333,8 @@ fn agents_md_does_not_recommend_remote_offload() {
     let violations = contents
         .lines()
         .enumerate()
-        .filter_map(|(index, line)| {
-            plumbing
-                .is_match(line)
-                .then(|| format!("{}:{}", index + 1, line.trim()))
-        })
+        .filter(|&(_index, line)| plumbing.is_match(line))
+        .map(|(index, line)| format!("{}:{}", index + 1, line.trim()))
         .collect::<Vec<_>>();
 
     assert!(

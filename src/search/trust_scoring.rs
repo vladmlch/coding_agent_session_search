@@ -7,20 +7,20 @@
 //! ## Why
 //!
 //! cass surfaces *relevant* old conversations, but relevance is not correctness.
-//! A result can be a landed, release-contained fix — or a failed agent attempt,
-//! a superseded workaround, or advice from a different workspace. This module
-//! reduces a small set of **metadata-only** signals into a compact verdict
+//! A result can be a landed fix — or a failed agent attempt, a superseded
+//! workaround, or advice from a different workspace. This module reduces a
+//! small set of **metadata-only** signals into a compact verdict
 //! ([`TrustAssessment`]) so robot consumers can tell "reuse this" from
 //! "do not copy this" without re-reading the conversation.
 //!
 //! ## Metadata-only, no raw text (by construction)
 //!
 //! [`TrustSignals`] carries only derived signals — ages, booleans, an outcome
-//! marker, and structured identifiers (commit sha, bead id, release tag). There
-//! is no field that holds raw session/prompt/tool text, so this layer cannot
-//! leak it. Provenance refs are compact, sanitized identifiers
-//! ([`sanitize_ref_value`]); commit shas are truncated. The verdict never
-//! changes result ordering — it is advisory metadata only.
+//! marker, and a structured commit identifier. There is no field that holds
+//! raw session/prompt/tool text, so this layer cannot leak it. Provenance refs
+//! are compact, sanitized `commit:<sha>` identifiers; commit shas are
+//! truncated. The verdict never changes result ordering — it is advisory
+//! metadata only.
 //!
 //! ## Pure and deterministic
 //!
@@ -38,17 +38,17 @@ pub const TRUST_SCHEMA_VERSION: u32 = 1;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrustTier {
-    /// Landed, proof-backed work with strong provenance (release-contained
-    /// commit and/or a closed bead with proof). Safe to reuse.
+    /// Landed, proof-backed work with strong provenance (a linked commit with
+    /// proof). Safe to reuse.
     Trusted,
-    /// Probably current — has provenance (a linked commit or closed bead) but is
-    /// not fully proof-backed/release-pinned. Confirm before relying on it.
+    /// Probably current — has provenance (a linked commit) but is not fully
+    /// proof-backed. Confirm before relying on it.
     Likely,
-    /// Relevant but unverified: no provenance links, an open bead, or the result
-    /// could only be corroborated lexically.
+    /// Relevant but unverified: no provenance links, an open outcome, or the
+    /// result could only be corroborated lexically.
     Unverified,
     /// Known to be out of date — superseded by newer work or aged past its
-    /// useful window with no release containment.
+    /// useful window.
     Stale,
     /// A failed or reverted attempt. Do not reuse.
     Failed,
@@ -93,17 +93,17 @@ impl TrustConfidence {
 }
 
 /// The recorded outcome of the work a result represents (a metadata marker
-/// derived from linked commits/beads and known stale/failed signals).
+/// derived from linked commits and known stale/failed signals).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutcomeMarker {
-    /// Linked to a landed commit or a closed bead.
+    /// Linked to a landed commit.
     Landed,
     /// A failed command / reverted attempt.
     Failed,
     /// A newer result supersedes this one.
     Superseded,
-    /// Linked to an open / in-progress bead.
+    /// Linked to open / in-progress work.
     Open,
     /// No outcome signal available.
     Unknown,
@@ -113,7 +113,7 @@ pub enum OutcomeMarker {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProofStatus {
-    /// Linked bead/commit carries proof artifacts (tests/gates/E2E).
+    /// Linked work carries proof artifacts (tests/gates/E2E).
     Proven,
     /// Claimed done but with outstanding proof debt.
     ProofDebt,
@@ -142,20 +142,10 @@ pub struct TrustSignals {
     /// Linked commit sha, if any (provenance; truncated into refs).
     #[serde(default)]
     pub linked_commit: Option<String>,
-    /// Linked closed bead id, if any.
-    #[serde(default)]
-    pub linked_closed_bead: Option<String>,
-    /// Content-stable lesson ids corroborated through the linked commit/Bead.
-    /// Citation-only: these never strengthen the tier on their own.
-    #[serde(default)]
-    pub linked_lessons: Vec<String>,
     /// Recorded outcome marker.
     pub outcome: OutcomeMarker,
     /// Proof status of the linked work.
     pub proof: ProofStatus,
-    /// Release tag that contains the linked commit, if known.
-    #[serde(default)]
-    pub release_tag: Option<String>,
     /// Whether the backing source is healthy/reachable.
     pub source_healthy: bool,
     /// Realized search tier.
@@ -168,11 +158,8 @@ impl Default for TrustSignals {
             age_days: None,
             workspace_match: true,
             linked_commit: None,
-            linked_closed_bead: None,
-            linked_lessons: Vec::new(),
             outcome: OutcomeMarker::Unknown,
             proof: ProofStatus::Unknown,
-            release_tag: None,
             source_healthy: true,
             realized_mode: RealizedMode::Hybrid,
         }
@@ -189,13 +176,12 @@ pub struct TrustAssessment {
     pub trust_tier: TrustTier,
     /// Confidence in the verdict.
     pub confidence: TrustConfidence,
-    /// Sanitized provenance identifiers (e.g. `commit:ab0d12ef90ab`, `bead:xyz`,
-    /// `lesson:lsn-0123456789abcdef`, `release:v0.6.15`). Deterministic order;
-    /// never raw text or paths.
+    /// Sanitized provenance identifiers (e.g. `commit:ab0d12ef90ab`).
+    /// Deterministic order; never raw text or paths.
     pub provenance_refs: Vec<String>,
     /// Stable snake_case code for the dominant reason trust is reduced, when the
     /// result is not fully trusted (e.g. `failed_attempt`, `superseded_by_newer`,
-    /// `linked_bead_open`, `aged_out`, `workspace_mismatch`, `source_unhealthy`).
+    /// `linked_open`, `aged_out`, `workspace_mismatch`, `source_unhealthy`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stale_reason: Option<String>,
     /// Advisory next step (text only — never a destructive command).
@@ -203,23 +189,12 @@ pub struct TrustAssessment {
     pub recommended_followup: Option<String>,
 }
 
-/// Age past which a result with no release containment is treated as stale.
+/// Age past which a result is treated as stale.
 const STALE_AGE_DAYS: u64 = 365;
 /// Age past which an already-unverified result is flagged as aging.
 const AGING_AGE_DAYS: u64 = 180;
 /// Max characters kept from a commit sha in a provenance ref.
 const COMMIT_REF_LEN: usize = 12;
-
-/// Keep only characters safe for a structured identifier ref (alphanumerics and
-/// id punctuation). Drops whitespace, path separators, quotes, and any other
-/// character, so a ref cannot smuggle raw text, paths, or an injection phrase.
-fn sanitize_ref_value(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
-        .take(64)
-        .collect()
-}
 
 /// Build the deterministic, sanitized provenance ref list.
 fn build_provenance_refs(signals: &TrustSignals) -> Vec<String> {
@@ -234,33 +209,6 @@ fn build_provenance_refs(signals: &TrustSignals) -> Vec<String> {
             refs.push(format!("commit:{short}"));
         }
     }
-    if let Some(bead) = &signals.linked_closed_bead {
-        let id = sanitize_ref_value(bead);
-        if !id.is_empty() {
-            refs.push(format!("bead:{id}"));
-        }
-    }
-    let mut lessons = signals
-        .linked_lessons
-        .iter()
-        .filter_map(|lesson| {
-            let id = sanitize_ref_value(lesson);
-            let suffix = id.strip_prefix("lsn-")?;
-            (id == lesson.trim()
-                && suffix.len() == 16
-                && suffix.chars().all(|c| c.is_ascii_hexdigit()))
-            .then(|| format!("lesson:{id}"))
-        })
-        .collect::<Vec<_>>();
-    lessons.sort();
-    lessons.dedup();
-    refs.extend(lessons);
-    if let Some(tag) = &signals.release_tag {
-        let tag = sanitize_ref_value(tag);
-        if !tag.is_empty() {
-            refs.push(format!("release:{tag}"));
-        }
-    }
     refs
 }
 
@@ -269,10 +217,8 @@ fn build_provenance_refs(signals: &TrustSignals) -> Vec<String> {
 pub fn assess_trust(signals: &TrustSignals) -> TrustAssessment {
     let provenance_refs = build_provenance_refs(signals);
     let has_commit = signals.linked_commit.is_some();
-    let has_bead = signals.linked_closed_bead.is_some();
-    let has_release = signals.release_tag.is_some();
     let proven = matches!(signals.proof, ProofStatus::Proven);
-    let has_provenance = has_commit || has_bead;
+    let has_provenance = has_commit;
 
     // 1) Negative outcomes dominate — never reuse a failed or superseded result.
     if matches!(signals.outcome, OutcomeMarker::Failed) {
@@ -302,7 +248,7 @@ pub fn assess_trust(signals: &TrustSignals) -> TrustAssessment {
 
     // 2) Positive provenance strength sets the base tier.
     let landed = matches!(signals.outcome, OutcomeMarker::Landed);
-    let mut tier = if landed && proven && (has_release || has_bead) {
+    let mut tier = if landed && proven && has_commit {
         TrustTier::Trusted
     } else if has_provenance {
         TrustTier::Likely
@@ -326,10 +272,10 @@ pub fn assess_trust(signals: &TrustSignals) -> TrustAssessment {
             tier = TrustTier::Unverified;
         }
         confidence = confidence.floor(TrustConfidence::Medium);
-        reason.get_or_insert("linked_bead_open");
+        reason.get_or_insert("linked_open");
     }
     if let Some(age) = signals.age_days {
-        if age >= STALE_AGE_DAYS && !has_release {
+        if age >= STALE_AGE_DAYS {
             if tier < TrustTier::Stale {
                 tier = TrustTier::Stale;
             }
@@ -359,16 +305,15 @@ pub fn assess_trust(signals: &TrustSignals) -> TrustAssessment {
 
     let recommended_followup = match tier {
         TrustTier::Trusted => None,
-        TrustTier::Likely => Some(
-            "Likely current — confirm via the cited commit or closed bead before relying on it."
-                .to_string(),
-        ),
-        TrustTier::Unverified => Some(
-            "Unverified — corroborate before reuse (no linked commit or closed bead).".to_string(),
-        ),
-        TrustTier::Stale => Some(
-            "Aged out of its useful window — prefer a newer, release-contained result.".to_string(),
-        ),
+        TrustTier::Likely => {
+            Some("Likely current — confirm via the cited commit before relying on it.".to_string())
+        }
+        TrustTier::Unverified => {
+            Some("Unverified — corroborate before reuse (no linked commit).".to_string())
+        }
+        TrustTier::Stale => {
+            Some("Aged out of its useful window — prefer a newer landed result.".to_string())
+        }
         // Failed/Superseded already returned above.
         TrustTier::Failed => None,
     };
@@ -398,9 +343,10 @@ pub enum SourceTrustKind {
 
 /// Metadata available about a single result at projection time, used to derive
 /// [`TrustSignals`]. All metadata-only — no raw session text. The richer
-/// `linked_*`/`outcome`/`proof`/`release_tag` fields are populated by the
-/// commit/bead correlation layer and default to "no signal" until it lands, so
-/// the recency/workspace/source/mode portion of the verdict works on its own.
+/// `linked_commit`/`outcome`/`proof` fields are populated by the local git
+/// commit-reference correlation layer and default to "no signal" until it
+/// lands, so the recency/workspace/source/mode portion of the verdict works on
+/// its own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HitTrustContext {
     /// Result creation/index time (epoch ms), if known.
@@ -417,16 +363,10 @@ pub struct HitTrustContext {
     pub realized_mode: RealizedMode,
     /// Linked commit sha (correlation layer; None until available).
     pub linked_commit: Option<String>,
-    /// Linked closed bead id (correlation layer; None until available).
-    pub linked_closed_bead: Option<String>,
-    /// Content-stable lessons corroborated by the linked commit/Bead.
-    pub linked_lessons: Vec<String>,
     /// Outcome marker (correlation layer; Unknown until available).
     pub outcome: OutcomeMarker,
     /// Proof status (correlation layer; Unknown until available).
     pub proof: ProofStatus,
-    /// Release tag containing the linked commit (correlation layer; None for now).
-    pub release_tag: Option<String>,
 }
 
 impl Default for HitTrustContext {
@@ -439,11 +379,8 @@ impl Default for HitTrustContext {
             source_kind: SourceTrustKind::LocalPresent,
             realized_mode: RealizedMode::Hybrid,
             linked_commit: None,
-            linked_closed_bead: None,
-            linked_lessons: Vec::new(),
             outcome: OutcomeMarker::Unknown,
             proof: ProofStatus::Unknown,
-            release_tag: None,
         }
     }
 }
@@ -476,11 +413,8 @@ pub fn derive_trust_signals(ctx: &HitTrustContext) -> TrustSignals {
         age_days,
         workspace_match,
         linked_commit: ctx.linked_commit.clone(),
-        linked_closed_bead: ctx.linked_closed_bead.clone(),
-        linked_lessons: ctx.linked_lessons.clone(),
         outcome: ctx.outcome,
         proof: ctx.proof,
-        release_tag: ctx.release_tag.clone(),
         source_healthy,
         realized_mode: ctx.realized_mode,
     }
@@ -490,16 +424,13 @@ pub fn derive_trust_signals(ctx: &HitTrustContext) -> TrustSignals {
 mod tests {
     use super::*;
 
-    fn landed_release_proven() -> TrustSignals {
+    fn landed_commit_proven() -> TrustSignals {
         TrustSignals {
             age_days: Some(10),
             workspace_match: true,
             linked_commit: Some("ab0d12ef90abcdef1234567890abcdef12345678".to_string()),
-            linked_closed_bead: Some("xyz123".to_string()),
-            linked_lessons: vec!["lsn-0123456789abcdef".to_string()],
             outcome: OutcomeMarker::Landed,
             proof: ProofStatus::Proven,
-            release_tag: Some("v0.6.15".to_string()),
             source_healthy: true,
             realized_mode: RealizedMode::Hybrid,
         }
@@ -509,52 +440,24 @@ mod tests {
 
     #[test]
     fn landed_commit_is_trusted_high() {
-        let a = assess_trust(&landed_release_proven());
+        let a = assess_trust(&landed_commit_proven());
         assert_eq!(a.trust_tier, TrustTier::Trusted);
         assert_eq!(a.confidence, TrustConfidence::High);
         assert_eq!(a.stale_reason, None);
-        assert!(
-            a.provenance_refs
-                .contains(&"commit:ab0d12ef90ab".to_string())
-        );
-        assert!(a.provenance_refs.contains(&"release:v0.6.15".to_string()));
-        assert!(a.provenance_refs.contains(&"bead:xyz123".to_string()));
-        assert!(
-            a.provenance_refs
-                .contains(&"lesson:lsn-0123456789abcdef".to_string())
-        );
+        assert_eq!(a.provenance_refs, vec!["commit:ab0d12ef90ab".to_string()]);
     }
 
     #[test]
-    fn closed_bead_with_proof_is_trusted() {
-        // Proven, landed, closed bead — but no commit/release.
-        let s = TrustSignals {
-            linked_commit: None,
-            linked_closed_bead: Some("bead-9".to_string()),
-            outcome: OutcomeMarker::Landed,
-            proof: ProofStatus::Proven,
-            release_tag: None,
-            age_days: Some(20),
-            ..TrustSignals::default()
-        };
-        let a = assess_trust(&s);
-        assert_eq!(a.trust_tier, TrustTier::Trusted);
-        assert_eq!(a.confidence, TrustConfidence::High);
-        assert_eq!(a.provenance_refs, vec!["bead:bead-9".to_string()]);
-    }
-
-    #[test]
-    fn open_bead_is_unverified_with_reason() {
+    fn open_outcome_is_unverified_with_reason() {
         let s = TrustSignals {
             outcome: OutcomeMarker::Open,
-            linked_closed_bead: None,
             proof: ProofStatus::ProofDebt,
             age_days: Some(5),
             ..TrustSignals::default()
         };
         let a = assess_trust(&s);
         assert_eq!(a.trust_tier, TrustTier::Unverified);
-        assert_eq!(a.stale_reason.as_deref(), Some("linked_bead_open"));
+        assert_eq!(a.stale_reason.as_deref(), Some("linked_open"));
         assert!(a.confidence <= TrustConfidence::Medium);
     }
 
@@ -588,7 +491,7 @@ mod tests {
     #[test]
     fn lexical_only_fallback_caps_confidence() {
         // Otherwise-trusted result, but only lexical corroboration.
-        let mut s = landed_release_proven();
+        let mut s = landed_commit_proven();
         s.realized_mode = RealizedMode::Lexical;
         let a = assess_trust(&s);
         // Tier unchanged (ordering not affected), but confidence is capped.
@@ -598,7 +501,7 @@ mod tests {
 
     #[test]
     fn workspace_mismatch_lowers_confidence_and_sets_reason() {
-        let mut s = landed_release_proven();
+        let mut s = landed_commit_proven();
         s.workspace_match = false;
         let a = assess_trust(&s);
         assert_eq!(a.trust_tier, TrustTier::Trusted, "ordering/tier unaffected");
@@ -609,13 +512,12 @@ mod tests {
     // ---- additional invariants ---------------------------------------------
 
     #[test]
-    fn aged_unreleased_result_becomes_stale() {
+    fn aged_result_becomes_stale() {
         let s = TrustSignals {
             age_days: Some(400),
             linked_commit: Some("abcabcabcabc".to_string()),
             outcome: OutcomeMarker::Landed,
             proof: ProofStatus::ProofDebt,
-            release_tag: None,
             ..TrustSignals::default()
         };
         let a = assess_trust(&s);
@@ -633,7 +535,7 @@ mod tests {
 
     #[test]
     fn source_unhealthy_dominates_reason_and_drops_confidence() {
-        let mut s = landed_release_proven();
+        let mut s = landed_commit_proven();
         s.source_healthy = false;
         let a = assess_trust(&s);
         assert_eq!(a.confidence, TrustConfidence::Low);
@@ -644,8 +546,7 @@ mod tests {
     fn refs_are_sanitized_to_safe_tokens() {
         // Pathological ids: spaces, path separators, quotes, an injection phrase.
         let s = TrustSignals {
-            linked_closed_bead: Some("bd-1 /home/alice/x 'or' 1=1".to_string()),
-            release_tag: Some("v1.0 (drop table users);".to_string()),
+            linked_commit: Some("ab0d12ef90ab /home/alice/x 'or' 1=1".to_string()),
             outcome: OutcomeMarker::Landed,
             proof: ProofStatus::Proven,
             ..TrustSignals::default()
@@ -673,28 +574,8 @@ mod tests {
     }
 
     #[test]
-    fn lesson_refs_are_validated_and_citation_only() {
-        let signals = TrustSignals {
-            linked_lessons: vec![
-                "lsn-0123456789abcdef".to_string(),
-                "lsn-0123456789abcdef".to_string(),
-                "lsn-0123456789abcdeg".to_string(),
-                "lsn-0123456789abcdef /home/private".to_string(),
-            ],
-            ..TrustSignals::default()
-        };
-        let assessment = assess_trust(&signals);
-
-        assert_eq!(assessment.trust_tier, TrustTier::Unverified);
-        assert_eq!(
-            assessment.provenance_refs,
-            vec!["lesson:lsn-0123456789abcdef".to_string()]
-        );
-    }
-
-    #[test]
     fn assessment_json_contract_is_stable_and_round_trips() {
-        let a = assess_trust(&landed_release_proven());
+        let a = assess_trust(&landed_commit_proven());
         let value = serde_json::to_value(&a).unwrap();
         assert_eq!(value["schema_version"], TRUST_SCHEMA_VERSION);
         assert_eq!(value["trust_tier"], "trusted");
@@ -707,7 +588,7 @@ mod tests {
 
     #[test]
     fn scoring_is_deterministic() {
-        let s = landed_release_proven();
+        let s = landed_commit_proven();
         assert_eq!(assess_trust(&s), assess_trust(&s));
     }
 
