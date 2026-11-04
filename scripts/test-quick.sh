@@ -11,8 +11,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/rch_target_cass_test_quick}"
+
+# Shared local cargo defaults (target dir, jobs, test threads).
+source "$SCRIPT_DIR/lib/run_cargo.sh"
 
 # Colors
 if [[ -t 1 ]]; then
@@ -28,12 +29,7 @@ fi
 cd "$PROJECT_ROOT"
 
 run_cargo_test() {
-    if ! command -v "$RCH_BIN" >/dev/null 2>&1; then
-        echo "ERROR: rch binary not found; quick tests must be offloaded" >&2
-        return 127
-    fi
-
-    "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo test "$@"
+    run_cargo test "$@"
 }
 
 run_lib_tests() {
@@ -87,8 +83,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo -e "${BOLD}Quick Test Runner${NC}"
-echo "Using: rch-backed cargo test"
-echo "Target dir: $RCH_TARGET_DIR"
+echo "Using: local cargo test"
 echo ""
 
 START_TIME=$(date +%s)

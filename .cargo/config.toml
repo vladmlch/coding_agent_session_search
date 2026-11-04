@@ -6,12 +6,12 @@ rustflags = ["-Z", "threads=4"]
 # NOTE: do NOT set `jobs` here. A repo .cargo/config.toml outranks
 # ~/.cargo/config.toml, so pinning it overrides whatever the host decided.
 # This file previously carried `jobs = -1` ("all cores minus one"); on a
-# 128-thread build host that is 127 parallel rustc, each forking a ~1GB
-# rust-lld. The same pattern wedged trj for hours on 2026-08-28 (202GB of
-# linkers, RAM and swap exhausted, 100% disk utilization). Parallelism is a
-# property of the MACHINE, not the project -- let the host set
-# CARGO_BUILD_JOBS (which outranks every config file) or its own
-# ~/.cargo/config.toml.
+# 128-thread machine that is 127 parallel rustc, each forking a ~1GB
+# rust-lld — enough to exhaust RAM and swap. Parallelism is a property of
+# the MACHINE, not the project: scripts/lib/run_cargo.sh resolves it per
+# the shared defaults (env, then user config, then the project default of
+# 2), and the host can still set CARGO_BUILD_JOBS (which outranks every
+# config file) or its own ~/.cargo/config.toml.
 
 [env]
 # fsqlite 0.3.x builds very large debug-mode futures; a single statement poll
@@ -27,11 +27,11 @@ RUST_MIN_STACK = "134217728"
 CARGO_LLVM_COV_EXCLUDE = "tests/*,**/test*.rs,benches/*"
 
 [target.x86_64-unknown-linux-gnu]
-# Linux x86_64: Use LLD for faster linking (available in CI)
+# Linux x86_64: use LLD for faster linking when the toolchain provides it
 rustflags = ["-Z", "threads=4", "-C", "link-arg=-fuse-ld=lld"]
 
-# Note: Linux ARM64 (aarch64-unknown-linux-gnu) uses default linker
-# The ubuntu-24.04-arm GitHub runner does not have LLD installed
+# Note: Linux ARM64 (aarch64-unknown-linux-gnu) uses the default linker;
+# LLD is not guaranteed to be installed there
 
 # macOS targets use the default ld64 linker from Xcode
 # LLD is not available by default on macOS and causes build failures

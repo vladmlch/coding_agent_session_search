@@ -8,19 +8,23 @@
 #   ./scripts/coverage.sh --open    # Open HTML report after generation
 #
 # Environment:
-#   RCH_BIN         rch executable (default: rch)
-#   RCH_TARGET_DIR  cargo target dir for offloaded coverage work
+#   CARGO_TARGET_DIR    build directory (default: main checkout's target/)
+#   CARGO_BUILD_JOBS    cargo build parallelism (default: 2)
 #   CASS_COVERAGE_FEATURES
 #                   cass features to cover; defaults to routine feature set
 #                   without strict-path-dep-validation
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Shared local cargo defaults (target dir, jobs, test threads).
+source "$SCRIPT_DIR/lib/run_cargo.sh"
+
 REPORT_DIR="target/coverage"
 QUICK_MODE=false
 OPEN_REPORT=false
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_coverage}"
 CASS_COVERAGE_FEATURES="${CASS_COVERAGE_FEATURES:-qr encryption backtrace}"
 
 # Parse arguments
@@ -45,23 +49,12 @@ for arg in "$@"; do
 done
 
 # Check dependencies
-ensure_rch() {
-    if ! command -v "$RCH_BIN" >/dev/null 2>&1; then
-        echo "Error: rch binary not found; coverage Cargo work must be offloaded"
-        exit 1
-    fi
-}
-
-run_cargo() {
-    "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
-}
-
-ensure_rch
+cd "$PROJECT_ROOT"
 
 if ! run_cargo llvm-cov --version >/dev/null 2>&1; then
-    echo "Error: cargo-llvm-cov is not available through rch"
+    echo "Error: cargo-llvm-cov is not installed on the local toolchain"
     echo ""
-    echo "Install it on the remote toolchain with:"
+    echo "Install it with:"
     echo "  rustup component add llvm-tools-preview"
     echo "  cargo install cargo-llvm-cov"
     echo ""

@@ -18,8 +18,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-RCH_BIN="${RCH_BIN:-rch}"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_bench_report}"
+
+# Shared local cargo defaults (target dir, jobs, test threads).
+source "$SCRIPT_DIR/lib/run_cargo.sh"
 
 QUICK_MODE=false
 SAVE_BASELINE=false
@@ -66,8 +67,8 @@ for arg in "$@"; do
             echo "  $0 --compare=v1.0     # Compare against 'v1.0' baseline"
             echo ""
             echo "Environment:"
-            echo "  RCH_BIN         rch executable (default: rch)"
-            echo "  RCH_TARGET_DIR  cargo target dir for offloaded benchmarks (default: \${TMPDIR:-/tmp}/rch_target_cass_bench_report)"
+            echo "  CARGO_TARGET_DIR    build directory (default: main checkout's target/)"
+            echo "  CARGO_BUILD_JOBS    cargo build parallelism (default: 2)"
             echo ""
             exit 0
             ;;
@@ -75,19 +76,6 @@ for arg in "$@"; do
 done
 
 cd "$PROJECT_ROOT"
-
-ensure_rch() {
-    if ! command -v "$RCH_BIN" &> /dev/null; then
-        echo "Error: rch binary not found; benchmark cargo work must be offloaded"
-        exit 1
-    fi
-}
-
-run_cargo() {
-    "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
-}
-
-ensure_rch
 
 echo "==================================="
 echo "  cass Performance Benchmarks"
@@ -137,18 +125,19 @@ if grep -q "time:" /tmp/bench-output.txt; then
     grep -E "^(test |    time:|    thrpt:|    change:)" /tmp/bench-output.txt | head -30
 fi
 
-# Show report location
+# Show report location. CASS_CARGO_TARGET_DIR was resolved by run_cargo.sh
+# when the build/bench commands above ran.
 echo ""
 echo "-----------------------------------"
-echo "Reports generated in: $RCH_TARGET_DIR/criterion/"
+echo "Reports generated in: $CASS_CARGO_TARGET_DIR/criterion/"
 echo ""
 echo "Key reports:"
-echo "  - $RCH_TARGET_DIR/criterion/report/index.html (summary)"
-echo "  - $RCH_TARGET_DIR/criterion/*/report/index.html (per-benchmark)"
+echo "  - $CASS_CARGO_TARGET_DIR/criterion/report/index.html (summary)"
+echo "  - $CASS_CARGO_TARGET_DIR/criterion/*/report/index.html (per-benchmark)"
 
 # Open report if requested
 if [ "$OPEN_REPORT" = true ]; then
-    REPORT_PATH="$RCH_TARGET_DIR/criterion/report/index.html"
+    REPORT_PATH="$CASS_CARGO_TARGET_DIR/criterion/report/index.html"
     if [ -f "$REPORT_PATH" ]; then
         echo ""
         echo "Opening report in browser..."

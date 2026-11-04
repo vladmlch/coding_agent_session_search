@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
-# tafss_compliance_scanner_e2e.sh — end-to-end exercise of the rch-compliance scanner.
+# tafss_compliance_scanner_e2e.sh — end-to-end exercise of the local-cargo
+# compliance scanner.
 #
 # Per coding_agent_session_search-tafss. Validates:
 #   1. The scripts/lib/run_cargo.sh helper sources cleanly.
-#   2. The cargo-test target (tests/scripts_rch_compliance.rs) passes against HEAD.
-#   3. The synthetic-fixture tests (in the same test file) verify scanner correctness.
+#   2. The cargo-test target (tests/scripts_local_cargo_compliance.rs) passes
+#      against HEAD.
+#   3. The synthetic-fixture tests (in the same test file) verify scanner
+#      correctness.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-RCH_TARGET_DIR="${RCH_TARGET_DIR:-/tmp/cass-tafss-target}"
-LOG="$RCH_TARGET_DIR/tafss-e2e.log"
-mkdir -p "$RCH_TARGET_DIR"
+
+# Shared local cargo defaults (target dir, jobs, test threads).
+source "$PROJECT_ROOT/scripts/lib/run_cargo.sh"
+
+LOG_DIR="${TMPDIR:-/tmp}/cass-local-cargo-compliance"
+LOG="$LOG_DIR/tafss-e2e.log"
+mkdir -p "$LOG_DIR"
 exec > >(tee -a "$LOG") 2>&1
 
 cleanup() {
@@ -29,6 +36,8 @@ trap cleanup EXIT
 PASS=0
 FAIL=0
 
+cd "$PROJECT_ROOT"
+
 # Source the helper to confirm it's syntactically valid bash and defines run_cargo.
 echo "[tafss_e2e] sourcing scripts/lib/run_cargo.sh"
 if ( source "$PROJECT_ROOT/scripts/lib/run_cargo.sh" && declare -f run_cargo >/dev/null ); then
@@ -40,10 +49,9 @@ else
 fi
 
 # Run the cargo-test target.
-echo "[tafss_e2e] running cargo test scripts_rch_compliance"
-if rch exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" \
-    cargo test --test scripts_rch_compliance -- --nocapture 2>&1 | tee /tmp/tafss-cargo.log; then
-    if grep -q "test result: ok" /tmp/tafss-cargo.log; then
+echo "[tafss_e2e] running cargo test scripts_local_cargo_compliance"
+if run_cargo test --locked --test scripts_local_cargo_compliance -- --nocapture 2>&1 | tee "$LOG_DIR/tafss-cargo.log"; then
+    if grep -q "test result: ok" "$LOG_DIR/tafss-cargo.log"; then
         echo "[tafss_e2e] OK: scanner tests pass"
         PASS=$((PASS + 1))
     else
@@ -51,7 +59,7 @@ if rch exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" \
         FAIL=$((FAIL + 1))
     fi
 else
-    echo "[tafss_e2e] FAIL: cargo test failed (see /tmp/tafss-cargo.log)"
+    echo "[tafss_e2e] FAIL: cargo test failed (see $LOG_DIR/tafss-cargo.log)"
     FAIL=$((FAIL + 1))
 fi
 

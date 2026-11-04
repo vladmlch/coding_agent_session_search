@@ -296,6 +296,16 @@ name = "e2e-run-bundle"
 path = "src/bin/e2e-run-bundle.rs"
 test = false
 
+# Dev and test builds keep line-table debug info so backtraces and coverage
+# stay useful without paying for full variable debug info. Host-level
+# CARGO_PROFILE_DEV_DEBUG / CARGO_PROFILE_TEST_DEBUG and user-level cargo
+# config profiles still outrank these manifest values.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+
 # fsqlite 0.3.x's async engine builds enormous debug-mode futures; at
 # opt-level 0 a single statement poll can overflow even a 16 MiB test-thread
 # stack (analytics::query storage tests SIGABRT'd during the 0.3.1 gate).

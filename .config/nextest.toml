@@ -9,8 +9,9 @@
 [profile.default]
 # Fail fast during local development
 fail-fast = true
-# Run tests in parallel (default: number of CPUs)
-test-threads = "num-cpus"
+# Shared local default: 2 test threads (NEXTEST_TEST_THREADS or
+# --test-threads can still override)
+test-threads = 2
 # Output format for local development
 status-level = "pass"
 final-status-level = "fail"

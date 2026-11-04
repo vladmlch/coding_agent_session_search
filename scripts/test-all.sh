@@ -15,6 +15,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Shared local cargo defaults (target dir, jobs, test threads).
+source "$SCRIPT_DIR/lib/run_cargo.sh"
+
 LOG_DIR="${PROJECT_ROOT}/test-logs"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="${LOG_DIR}/test_${TIMESTAMP}.log"
@@ -41,8 +45,6 @@ INCLUDE_SLOW=${INCLUDE_SLOW:-0}
 USE_NEXTEST=${USE_NEXTEST:-1}
 FAIL_FAST=${FAIL_FAST:-0}
 QUICK_MODE=${QUICK_MODE:-0}
-RCH_BIN=${RCH_BIN:-rch}
-RCH_TARGET_DIR=${RCH_TARGET_DIR:-${TMPDIR:-/tmp}/rch_target_cass_test_all}
 
 # Results tracking
 declare -A TIMINGS
@@ -121,23 +123,12 @@ time_end() {
 # Test Runner Functions
 # =============================================================================
 
-ensure_rch() {
-    if ! command -v "$RCH_BIN" &> /dev/null; then
-        log ERROR "rch binary not found; test-all cargo tests must be offloaded"
-        return 1
-    fi
-}
-
-run_cargo() {
-    "$RCH_BIN" exec -- env CARGO_TARGET_DIR="$RCH_TARGET_DIR" cargo "$@"
-}
-
 check_nextest() {
     if [[ $USE_NEXTEST -eq 1 ]]; then
-        if run_cargo nextest --version > /dev/null 2>&1; then
+        if cargo nextest --version > /dev/null 2>&1; then
             return 0
         else
-            log WARN "cargo-nextest unavailable through rch, falling back to run_cargo test"
+            log WARN "cargo-nextest unavailable, falling back to cargo test"
             USE_NEXTEST=0
         fi
     fi
@@ -466,8 +457,9 @@ Environment Variables:
   INCLUDE_SSH=1       Same as --include-ssh
   INCLUDE_SLOW=1      Same as --include-slow
   USE_NEXTEST=0       Same as --no-nextest
-  RCH_BIN=rch         Remote compilation helper binary
-  RCH_TARGET_DIR=...  Remote Cargo target dir (default: \${TMPDIR:-/tmp}/rch_target_cass_test_all)
+  CARGO_TARGET_DIR    Build directory (default: main checkout's target/)
+  CARGO_BUILD_JOBS    Cargo build parallelism (default: 2)
+  RUST_TEST_THREADS   Test threads for cargo test (default: 2)
 
 Examples:
   $0                  # Standard test run
@@ -493,9 +485,7 @@ main() {
     log INFO "Options: QUICK_MODE=$QUICK_MODE PARALLEL=$PARALLEL INCLUDE_SSH=$INCLUDE_SSH INCLUDE_SLOW=$INCLUDE_SLOW"
 
     cd "$PROJECT_ROOT"
-    ensure_rch || exit 1
-    log INFO "RCH binary: $RCH_BIN"
-    log INFO "RCH target dir: $RCH_TARGET_DIR"
+    log INFO "Cargo: local (see [run_cargo] lines for resolved defaults)"
 
     # Check for nextest
     check_nextest
