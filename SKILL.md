@@ -206,9 +206,9 @@ cass search "error" --robot --aggregate agent,workspace,date
 # Request correlation
 cass search "bug" --robot --request-id "req-12345"
 
-# Source filtering (for multi-machine setups)
+# Source filtering (named local sources and historical mirrors)
 cass search "auth" --robot --source laptop
-cass search "error" --robot --source remote
+cass search "error" --robot --source archive-box
 
 # Traceability (for debugging agent pipelines)
 cass search "error" --robot --trace-file /tmp/cass-trace.json
@@ -288,49 +288,31 @@ Top 10 buckets returned per field, with `other_count` for remaining items.
 
 ---
 
-## Remote Sources (Multi-Machine Search)
+## Local Sources
 
-Search across sessions from multiple machines via SSH/rsync.
+cass runs fully local-only: sources are extra local directories indexed
+under a name. There is no remote discovery, sync, or scheduling — the old
+verbs (`sources sync`, `sources setup`, `sources discover`,
+`sources reingest`, `sources artifact-manifest`, `sources schedule`, and
+the `sources add user@host` form) fail with a removed-command error.
 
-### Setup Wizard (Recommended)
-
-```bash
-cass sources setup
-```
-
-The wizard:
-1. Discovers SSH hosts from `~/.ssh/config`
-2. Probes each for agent data and cass installation
-3. Optionally installs cass on remotes
-4. Indexes sessions on remotes
-5. Configures `sources.toml`
-6. Syncs data locally
+Legacy `type = "ssh"` entries in `sources.toml` stay readable as inert
+archive records: their already-mirrored conversations remain searchable
+and source-filterable, and ordinary `cass index` keeps indexing any
+existing `<data-dir>/remotes/<name>/mirror` directories read-only.
 
 ```bash
-cass sources setup --hosts css,csd,yto  # Specific hosts only
-cass sources setup --dry-run             # Preview without changes
-cass sources setup --resume              # Resume interrupted setup
-```
+# Add a local directory as a named source (--path repeatable)
+cass sources add archive-box --path /Volumes/old-sessions
+cass sources add archive-box -p /data/a -p /data/b
 
-### Manual Setup
-
-```bash
-# Add a remote machine
-cass sources add user@laptop.local --preset macos-defaults
-cass sources add dev@workstation --path ~/.claude/projects --path ~/.codex/sessions
-
-# List sources
+# List sources (legacy-remote entries report supported: false)
 cass sources list --json
 
-# Sync sessions
-cass sources sync
-cass sources sync --source laptop --verbose
+# Local checks only — configured remote hosts are warnings, never probed
+cass sources doctor --json
 
-# Check connectivity
-cass sources doctor
-cass sources doctor --source laptop --json
-
-# Path mappings (rewrite remote paths to local)
+# Path mappings (rewrite archived remote paths to local)
 cass sources mappings list laptop
 cass sources mappings add laptop --from /home/user/projects --to /Users/me/projects
 cass sources mappings test laptop /home/user/projects/myapp/src/main.rs
@@ -365,7 +347,7 @@ cass robot-docs examples   # copy-paste invocations
 cass robot-docs exit-codes # error handling
 cass robot-docs guide      # quick-start walkthrough
 cass robot-docs contracts  # API versioning
-cass robot-docs sources    # remote sources guide
+cass robot-docs sources    # local sources guide
 ```
 
 ### Forgiving Syntax (Agent-Friendly)
