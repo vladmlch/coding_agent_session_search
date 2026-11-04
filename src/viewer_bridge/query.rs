@@ -53,6 +53,7 @@ use coding_agent_search::franken_sync::{Connection, SqliteValue};
 use serde_json::{Map, Value, json};
 
 use super::annotations;
+use super::facts_bag;
 use super::identity;
 use super::protocol::{ListFilters, RESPONSE_BYTES, refuse};
 use super::revisions;
@@ -979,7 +980,8 @@ c.title, c.started_at, c.ended_at, c.last_message_idx, \
 c.last_message_created_at, c.primary_model, c.approx_tokens, \
 c.grand_total_tokens, c.estimated_cost_usd, c.api_call_count, \
 c.tool_call_count, c.user_message_count, c.assistant_message_count, \
-c.workspace_id \
+c.workspace_id, c.total_input_tokens, c.total_output_tokens, \
+c.total_cache_read_tokens, c.total_cache_creation_tokens \
 FROM conversations c WHERE c.id IN (";
 
 const HYDRATE_TAIL_SQL: &str = "\
@@ -993,19 +995,38 @@ FROM viewer_annotations va WHERE va.conversation_id IN (";
 
 const HYDRATE_FACTS_SQL: &str = "\
 SELECT f.conversation_id, f.is_subagent, f.task_category, \
-f.coverage_state, f.step_count, f.artifact_count, f.parent_conversation_id \
+f.coverage_state, f.step_count, f.artifact_count, f.parent_conversation_id, \
+f.turn_count, f.thinking_block_count, f.subagent_count, f.tool_error_count, \
+f.tool_calls_with_exit_status, f.file_fact_count, f.compaction_count, \
+f.model_set_json, f.first_prompt \
 FROM viewer_session_facts f WHERE f.conversation_id IN (";
+
+/// Metrics probe — the `viewer_session_metrics` twin of the facts bag.
+/// Presence is probed on `sqlite_master` first (the table only exists in
+/// the full extension profile), so a facts-only archive still serves
+/// every fact field with the metric fields typed NULL.
+const HYDRATE_METRICS_SQL: &str = "\
+SELECT m.conversation_id, m.ttfe_seconds, m.one_shot_rate, m.retries_count, \
+m.self_corrections_count, m.user_corrections_count, m.tools_used_json, \
+m.task_breakdown_json, m.health_score, m.health_grade, \
+m.health_issues_count, m.potential_waste_tokens, m.potential_savings_usd \
+FROM viewer_session_metrics m WHERE m.conversation_id IN (";
 
 const HYDRATE_WORKSPACES_SQL: &str = "SELECT w.id, w.path FROM workspaces w WHERE w.id IN (";
 
 const HYDRATE_SOURCES_SQL: &str =
     "SELECT s.id, s.kind, s.host_label FROM sources s WHERE s.id IN (";
 
-/// `decode_item`'s 32-cell row contract, assembled in Rust from the
-/// bounded per-table probes — index-for-index the same shape the old
-/// single `FROM_SQL` join produced (see `select_columns`).
+/// `decode_item`'s row contract, assembled in Rust from the bounded
+/// per-table probes — index-for-index the same shape the old single
+/// `FROM_SQL` join produced (see `select_columns`), with the four
+/// cumulative token sub-totals appended (cells 32–35) and the merged
+/// persisted fact/metrics bag carried alongside (Task 7).
 struct HydratedRow {
     cells: Vec<SqliteValue>,
+    /// `null` when no `viewer_session_facts` row was persisted for this
+    /// session; otherwise the merged facts+metrics bag.
+    metrics: Value,
 }
 
 impl HydratedRow {
@@ -1091,6 +1112,10 @@ fn hydrate_rows(
         user_message_count: Option<i64>,
         assistant_message_count: Option<i64>,
         workspace_id: Option<i64>,
+        total_input_tokens: Option<i64>,
+        total_output_tokens: Option<i64>,
+        total_cache_read_tokens: Option<i64>,
+        total_cache_creation_tokens: Option<i64>,
     }
     let mut convs: std::collections::BTreeMap<i64, Conv> = std::collections::BTreeMap::new();
     let mut workspace_ids = std::collections::BTreeSet::new();
@@ -1120,6 +1145,10 @@ fn hydrate_rows(
                 user_message_count: row.get_typed(16)?,
                 assistant_message_count: row.get_typed(17)?,
                 workspace_id,
+                total_input_tokens: row.get_typed(19)?,
+                total_output_tokens: row.get_typed(20)?,
+                total_cache_read_tokens: row.get_typed(21)?,
+                total_cache_creation_tokens: row.get_typed(22)?,
             },
         );
     }
@@ -1170,9 +1199,16 @@ fn hydrate_rows(
         step_count: Option<i64>,
         artifact_count: Option<i64>,
         parent_conversation_id: Option<i64>,
+        /// Raw `model_set_json`/`first_prompt` cells — kept for the byte
+        /// profile (the bag holds the decoded/guarded values).
+        model_set_json: Option<String>,
+        first_prompt: Option<String>,
+        bag: facts_bag::SessionFactBag,
     }
     let mut facts: std::collections::BTreeMap<i64, Facts> = std::collections::BTreeMap::new();
     for row in run_in_probe(connection, HYDRATE_FACTS_SQL, ")", ids)? {
+        let model_set_json: Option<String> = row.get_typed(14)?;
+        let first_prompt: Option<String> = row.get_typed(15)?;
         facts.insert(
             row.get_typed(0)?,
             Facts {
@@ -1182,8 +1218,77 @@ fn hydrate_rows(
                 step_count: row.get_typed(4)?,
                 artifact_count: row.get_typed(5)?,
                 parent_conversation_id: row.get_typed(6)?,
+                bag: facts_bag::SessionFactBag {
+                    turn_count: row.get_typed(7)?,
+                    step_count: row.get_typed(4)?,
+                    thinking_block_count: row.get_typed(8)?,
+                    artifact_count: row.get_typed(5)?,
+                    subagent_count: row.get_typed(9)?,
+                    tool_error_count: row.get_typed(10)?,
+                    tool_calls_with_exit_status: row.get_typed(11)?,
+                    file_fact_count: row.get_typed(12)?,
+                    compaction_count: row.get_typed(13)?,
+                    model_set: facts_bag::decode_string_list(model_set_json.as_deref()),
+                    // Same per-column guard the canonical text cells get:
+                    // absurd payloads stay unknown, never page bytes.
+                    first_prompt: first_prompt
+                        .as_ref()
+                        .filter(|text| text.len() as i64 <= TEXT_GUARD_BYTES)
+                        .cloned(),
+                    ..Default::default()
+                },
+                model_set_json,
+                first_prompt,
             },
         );
+    }
+
+    // ---- viewer_session_metrics: the quality/health half of the bag ----
+    // Additive table — probe `sqlite_master` first so a facts-only
+    // archive still serves every fact field with the metric half NULL.
+    let metrics_installed = !connection
+        .query(
+            "SELECT 1 FROM sqlite_master WHERE type='table' \
+             AND name='viewer_session_metrics' LIMIT 1",
+        )?
+        .is_empty();
+    struct Metrics {
+        /// Raw JSON cells kept for the byte profile.
+        tools_used_json: Option<String>,
+        task_breakdown_json: Option<String>,
+        bag: facts_bag::SessionFactBag,
+    }
+    let mut metrics: std::collections::BTreeMap<i64, Metrics> = std::collections::BTreeMap::new();
+    if metrics_installed {
+        for row in run_in_probe(connection, HYDRATE_METRICS_SQL, ")", ids)? {
+            let tools_used_json: Option<String> = row.get_typed(6)?;
+            let task_breakdown_json: Option<String> = row.get_typed(7)?;
+            metrics.insert(
+                row.get_typed(0)?,
+                Metrics {
+                    tools_used_json: tools_used_json.clone(),
+                    task_breakdown_json: task_breakdown_json.clone(),
+                    bag: facts_bag::SessionFactBag {
+                        ttfe_seconds: row.get_typed(1)?,
+                        one_shot_rate: row.get_typed(2)?,
+                        retries_count: row.get_typed(3)?,
+                        self_corrections_count: row.get_typed(4)?,
+                        user_corrections_count: row.get_typed(5)?,
+                        tools_used: facts_bag::decode_string_list(
+                            tools_used_json.as_deref(),
+                        ),
+                        task_breakdown: task_breakdown_json
+                            .and_then(|text| serde_json::from_str(&text).ok()),
+                        health_score: row.get_typed(8)?,
+                        health_grade: row.get_typed(9)?,
+                        health_issues_count: row.get_typed(10)?,
+                        potential_waste_tokens: row.get_typed(11)?,
+                        potential_savings_usd: row.get_typed(12)?,
+                        ..Default::default()
+                    },
+                },
+            );
+        }
     }
 
     // ---- dimension lookups: the page's workspaces + sources ------------
@@ -1243,6 +1348,27 @@ fn hydrate_rows(
             .cloned()
             .unwrap_or((None, None));
 
+        // The persisted fact/metrics bag rides every emitted item (Task 7):
+        // facts fields + metrics fields merged in one wire object, NULL
+        // when the facts row was never persisted — the unknown contract.
+        let mut bag = fact.map(|f| f.bag.clone()).unwrap_or_default();
+        if let Some(entry) = metrics.get(&id) {
+            let metric = &entry.bag;
+            bag.ttfe_seconds = metric.ttfe_seconds;
+            bag.one_shot_rate = metric.one_shot_rate;
+            bag.retries_count = metric.retries_count;
+            bag.self_corrections_count = metric.self_corrections_count;
+            bag.user_corrections_count = metric.user_corrections_count;
+            bag.tools_used = metric.tools_used.clone();
+            bag.task_breakdown = metric.task_breakdown.clone();
+            bag.health_score = metric.health_score;
+            bag.health_grade = metric.health_grade.clone();
+            bag.health_issues_count = metric.health_issues_count;
+            bag.potential_waste_tokens = metric.potential_waste_tokens;
+            bag.potential_savings_usd = metric.potential_savings_usd;
+        }
+        let metrics_bag = bag.emit(fact.is_some());
+
         // The byte profile sums RAW cell bytes (never the guarded value),
         // mirroring the SQL `COALESCE(length(CAST(col AS BLOB)),0)` list.
         let byte_sum = byte_len(conv.source_id.as_deref())
@@ -1256,7 +1382,19 @@ fn hydrate_rows(
             + byte_len(workspace_path.as_deref())
             + byte_len(source_kind.as_deref())
             + byte_len(source_label.as_deref())
-            + byte_len(fact.and_then(|f| f.task_category.as_deref()));
+            + byte_len(fact.and_then(|f| f.task_category.as_deref()))
+            + byte_len(fact.and_then(|f| f.first_prompt.as_deref()))
+            + byte_len(fact.and_then(|f| f.model_set_json.as_deref()))
+            + byte_len(
+                metrics
+                    .get(&id)
+                    .and_then(|m| m.tools_used_json.as_deref()),
+            )
+            + byte_len(
+                metrics
+                    .get(&id)
+                    .and_then(|m| m.task_breakdown_json.as_deref()),
+            );
 
         let cells = vec![
             SqliteValue::Integer(id), // 0
@@ -1300,8 +1438,18 @@ fn hydrate_rows(
             integer_or_null(fact.and_then(|f| f.parent_conversation_id)), // 29
             guarded_text(workspace_path), // 30
             SqliteValue::Integer(byte_sum), // 31
+            integer_or_null(conv.total_input_tokens), // 32
+            integer_or_null(conv.total_output_tokens), // 33
+            integer_or_null(conv.total_cache_read_tokens), // 34
+            integer_or_null(conv.total_cache_creation_tokens), // 35
         ];
-        out.insert(id, HydratedRow { cells });
+        out.insert(
+            id,
+            HydratedRow {
+                cells,
+                metrics: metrics_bag,
+            },
+        );
     }
     Ok(out)
 }
@@ -1568,11 +1716,29 @@ pub fn list_sessions(
         .collect();
     let public_ids = identity::resolve_public_ids(connection, &emitted_ids)?;
     let tags = annotations::tags_for(connection, &emitted_ids)?;
+    // Parent identities resolve through the same canonical identity
+    // machinery — one bounded primary-key probe per distinct parent id
+    // (identity::resolve_public_id recomputes and verifies the public
+    // id; an unresolvable/ambiguous parent stays typed NULL).
+    let parent_ids: std::collections::BTreeSet<i64> = items
+        .iter()
+        .filter_map(|item| item["parent_conversation_id"].as_i64())
+        .collect();
+    let mut parent_public_ids: std::collections::BTreeMap<i64, String> =
+        std::collections::BTreeMap::new();
+    for parent_id in parent_ids {
+        if let Ok(identity) = identity::resolve_public_id(connection, parent_id) {
+            parent_public_ids.insert(parent_id, identity.public_id);
+        }
+    }
     for item in &mut items {
         let id = item["conversation_id"].as_i64().expect("decoded id");
         if let Some(identity) = public_ids.get(&id) {
             item["public_id"] = json!(identity.public_id);
             item["provider"] = json!(identity.provider);
+        }
+        if let Some(parent_id) = item["parent_conversation_id"].as_i64() {
+            item["parent_public_id"] = json!(parent_public_ids.get(&parent_id));
         }
         item["tags"] = json!(tags.get(&id).cloned().unwrap_or_default());
     }
@@ -1686,10 +1852,21 @@ fn decode_item(row: &HydratedRow) -> Result<Value> {
         ("tool_call_count", 18),
         ("user_message_count", 19),
         ("assistant_message_count", 20),
+        ("total_input_tokens", 32),
+        ("total_output_tokens", 33),
+        ("total_cache_read_tokens", 34),
+        ("total_cache_creation_tokens", 35),
     ] {
         item.insert(key.into(), nonnegative_val(row.get_typed(index)?)?);
     }
     item.insert("estimated_cost_usd".into(), json!(cost));
+    // The persisted fact/metrics bag (Task 7): `null` when the facts row
+    // was never persisted — unknown stays NULL, known zero stays 0.
+    item.insert("metrics".into(), row.metrics.clone());
+    // `parent_public_id` is filled after page emission: resolving one
+    // parent's verified public identity is a bounded canonical identity
+    // probe (`identity::resolve_public_id`), never a registry scan.
+    item.insert("parent_public_id".into(), Value::Null);
     item.insert(
         "is_subagent".into(),
         json!(is_subagent.map(|value| value != 0)),

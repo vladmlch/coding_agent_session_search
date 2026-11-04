@@ -1149,6 +1149,9 @@ fn revisions_engine_trigger_semantics_probe() -> Result<()> {
 #[path = "../src/viewer_bridge/annotations.rs"]
 #[allow(dead_code)]
 mod annotations;
+#[path = "../src/viewer_bridge/facts_bag.rs"]
+#[allow(dead_code)]
+mod facts_bag;
 #[path = "../src/viewer_bridge/extra.rs"]
 #[allow(dead_code)]
 mod extra;
@@ -1581,6 +1584,148 @@ fn list_sessions_classification_filters() -> Result<()> {
         "op":"list_sessions","filters":{"category":"bugfix"}}))?;
     ensure!(pending["ok"] == false, "{pending}");
     ensure!(pending["error"]["kind"] == "facts_pending", "{pending}");
+    bridge.shutdown()
+}
+
+#[test]
+fn list_sessions_items_carry_persisted_facts_and_parent_public_id() -> Result<()> {
+    // Task 7: the list page must emit every fact `viewer_session_facts`
+    // already persisted plus the measured `viewer_session_metrics` fields —
+    // the Python mapper can only surface what the wire actually carries.
+    let fixtures = (1..=3_i64)
+        .map(|id| {
+            SeedConversation::new(
+                id,
+                "claude_code",
+                &format!("/missing/fixture-{id}.jsonl"),
+                &format!("fixture-{id}"),
+            )
+            .started_at(Some(id * 1_000))
+            .agent_messages(Some(id * 2_000), 1)
+        })
+        .collect::<Vec<_>>();
+    let mut bridge = BridgeHarness::with_seed(&fixtures, &[])?;
+    init_extensions(&bridge)?;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    // conv2 is the proven child of conv1; conv3 keeps only a facts row with
+    // a known-zero payload (a measured zero must stay a zero on the wire).
+    writer.execute_with_params(
+        "INSERT INTO viewer_session_facts \
+         (conversation_id,extractor_version,source_revision,coverage_state,is_subagent,\
+          task_category,turn_count,step_count,thinking_block_count,artifact_count,\
+          subagent_count,tool_error_count,tool_calls_with_exit_status,file_fact_count,\
+          compaction_count,model_set_json,first_prompt,parent_conversation_id) \
+         VALUES (?1,1,1,'complete',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+        &param_slice_to_values(params![
+            1_i64, 0_i64, "feature", 4_i64, 9_i64, 2_i64, 3_i64, 1_i64, 2_i64,
+            6_i64, 5_i64, 1_i64, "[\"claude-opus\",\"claude-sonnet\"]",
+            "fix the flaky test", Option::<i64>::None,
+        ]),
+    )?;
+    writer.execute_with_params(
+        "INSERT INTO viewer_session_facts \
+         (conversation_id,extractor_version,source_revision,coverage_state,is_subagent,\
+          task_category,turn_count,step_count,artifact_count,subagent_count,\
+          tool_error_count,model_set_json,first_prompt,parent_conversation_id) \
+         VALUES (?1,1,1,'complete',?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        &param_slice_to_values(params![
+            2_i64, 1_i64, "delegation", 2_i64, 4_i64, 0_i64, 0_i64, 1_i64,
+            "[\"claude-opus\"]", "nested task", 1_i64,
+        ]),
+    )?;
+    writer.execute_with_params(
+        "INSERT INTO viewer_session_facts \
+         (conversation_id,extractor_version,source_revision,coverage_state,is_subagent,\
+          task_category,turn_count,step_count,artifact_count,subagent_count,\
+          tool_error_count) \
+         VALUES (?1,1,1,'complete',?2,?3,?4,?5,?6,?7,?8)",
+        &param_slice_to_values(params![
+            3_i64, 0_i64, Option::<&str>::None, 0_i64, 0_i64, 0_i64, 0_i64, 0_i64,
+        ]),
+    )?;
+    coding_agent_search::viewer_extensions::facts::ensure_metrics_schema(&writer)?;
+    writer.execute_with_params(
+        "INSERT INTO viewer_session_metrics \
+         (conversation_id,extractor_version,source_revision,ttfe_seconds,one_shot_rate,\
+          retries_count,self_corrections_count,user_corrections_count,tools_used_json,\
+          health_score,health_grade,health_issues_count,potential_waste_tokens,\
+          potential_savings_usd,computed_at_ms) \
+         VALUES (?1,1,1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,1700000000000)",
+        &param_slice_to_values(params![
+            1_i64, 12.5_f64, 80.0_f64, 1_i64, 0_i64, 0_i64,
+            "[\"Bash\",\"Read\"]", 82_i64, "B", 1_i64, 400_i64, 0.02_f64,
+        ]),
+    )?;
+    writer.execute(
+        "UPDATE conversations SET total_input_tokens=800,total_output_tokens=150,\
+         total_cache_read_tokens=50,total_cache_creation_tokens=25,grand_total_tokens=1025 \
+         WHERE id=1",
+    )?;
+    drop(writer);
+
+    let page = bridge.exchange(json!({
+        "op":"list_sessions","filters":{"include_subagents":true},
+        "sort":"created_asc","pin_first":false,"limit":10}))?;
+    ensure!(page["ok"] == true, "{page}");
+    let first = item(&page, 0);
+    // Canonical token subfields ride the same row — never dropped.
+    ensure!(first["total_input_tokens"] == 800, "{first}");
+    ensure!(first["total_output_tokens"] == 150, "{first}");
+    ensure!(first["total_cache_read_tokens"] == 50, "{first}");
+    ensure!(first["total_cache_creation_tokens"] == 25, "{first}");
+    // The persisted fact/metrics bag is the delivery channel.
+    let metrics = &first["metrics"];
+    ensure!(metrics["turn_count"] == 4 && metrics["step_count"] == 9, "{metrics}");
+    ensure!(metrics["thinking_block_count"] == 2 && metrics["artifact_count"] == 3, "{metrics}");
+    ensure!(metrics["subagent_count"] == 1 && metrics["tool_error_count"] == 2, "{metrics}");
+    ensure!(metrics["tool_calls_with_exit_status"] == 6 && metrics["file_fact_count"] == 5, "{metrics}");
+    ensure!(metrics["compaction_count"] == 1, "{metrics}");
+    ensure!(metrics["first_prompt"] == "fix the flaky test", "{metrics}");
+    ensure!(metrics["model_set"] == json!(["claude-opus", "claude-sonnet"]), "{metrics}");
+    ensure!(metrics["tools_used"] == json!(["Bash", "Read"]), "{metrics}");
+    ensure!(metrics["health_score"] == 82 && metrics["health_grade"] == "B", "{metrics}");
+    ensure!(metrics["health_issues_count"] == 1, "{metrics}");
+    ensure!(metrics["potential_waste_tokens"] == 400, "{metrics}");
+    ensure!(metrics["potential_savings_usd"] == 0.02, "{metrics}");
+    ensure!(metrics["ttfe_seconds"] == 12.5 && metrics["one_shot_rate"] == 80.0, "{metrics}");
+    ensure!(metrics["retries_count"] == 1, "{metrics}");
+
+    // The proven child's persisted parent link resolves to the parent's
+    // verified public id inside the same snapshot.
+    let child = item(&page, 1);
+    ensure!(child["is_subagent"] == true, "{child}");
+    ensure!(child["parent_conversation_id"] == 1, "{child}");
+    ensure!(child["parent_public_id"] == "claude:fixture-1", "{child}");
+    ensure!(child["metrics"]["first_prompt"] == "nested task", "{child}");
+
+    // A persisted known-zero payload stays zero — unknown would be NULL.
+    let zeros = item(&page, 2);
+    ensure!(zeros["metrics"]["step_count"] == 0, "{zeros}");
+    ensure!(zeros["metrics"]["subagent_count"] == 0, "{zeros}");
+    ensure!(zeros["metrics"]["tool_error_count"] == 0, "{zeros}");
+    bridge.shutdown()
+}
+
+#[test]
+fn list_sessions_items_without_facts_emit_null_metrics() -> Result<()> {
+    // No facts row → `metrics: null` (unknown), never an all-zero object.
+    let fixtures = (1..=2_i64)
+        .map(|id| {
+            SeedConversation::new(
+                id,
+                "claude_code",
+                &format!("/missing/fixture-{id}.jsonl"),
+                &format!("fixture-{id}"),
+            )
+            .agent_messages(Some(id * 1_000), 1)
+        })
+        .collect::<Vec<_>>();
+    let mut bridge = BridgeHarness::with_seed(&fixtures, &[])?;
+    init_extensions(&bridge)?;
+    let page = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(page["ok"] == true, "{page}");
+    ensure!(item(&page, 0)["metrics"].is_null(), "{page}");
+    ensure!(item(&page, 0)["classification_coverage"].is_null(), "{page}");
     bridge.shutdown()
 }
 
@@ -4057,6 +4202,105 @@ fn analytics_projects_group_by_workspace() -> Result<()> {
         projects.len() == 1 && projects[0]["project_name"] == "alpha",
         "{projects:?}"
     );
+    bridge.shutdown()
+}
+
+#[test]
+fn analytics_classification_reports_measured_coverage() -> Result<()> {
+    // Task 7: `classification` is derived from the scoped eligible-session
+    // facts coverage — `complete` only when every selected row has a
+    // non-unknown classification, never a hardcoded marker.
+    //
+    // The analytics fixture seeds complete-coverage facts for convs
+    // 1,2,3,4,6 and NO row for conv5: the default dashboard scope (conv3
+    // excluded as a proven subagent) therefore leaves exactly conv5
+    // uncertain.
+    let proj = tempfile::tempdir()?;
+    let workspace_a = proj.path().join("alpha").to_string_lossy().into_owned();
+    std::fs::create_dir(&workspace_a)?;
+    let workspace_b = proj.path().join("beta").to_string_lossy().into_owned();
+    std::fs::create_dir(&workspace_b)?;
+    let mut bridge = BridgeHarness::with_seed(&analytics_seeds(&workspace_a, &workspace_b), &[])?;
+    init_extensions(&bridge)?;
+    analytics_fixture(&bridge)?;
+
+    let reply = bridge.exchange(json!({"op":"dashboard"}))?;
+    ensure!(reply["ok"] == true, "{reply}");
+    let classification = &reply["result"]["classification"];
+    ensure!(classification["complete"] == false, "{classification}");
+    ensure!(classification["uncertain_count"] == 1, "{classification}");
+
+    // The beta workspace's selected rows are fully classified — a scoped
+    // dashboard reports complete coverage for the same universe.
+    let beta = bridge.exchange(json!({"op":"dashboard","scope":{"project":"beta"}}))?;
+    ensure!(beta["ok"] == true, "{beta}");
+    ensure!(
+        beta["result"]["classification"] == json!({"complete": true, "uncertain_count": 0}),
+        "{beta}"
+    );
+
+    // Projects carry the same per-scope report: alpha keeps conv5's
+    // unknown classification, beta is fully covered.
+    let projects = bridge.exchange(json!({"op":"projects"}))?;
+    ensure!(projects["ok"] == true, "{projects}");
+    let items = projects["result"]["projects"].as_array().expect("projects");
+    let alpha = items
+        .iter()
+        .find(|item| item["project_name"] == "alpha")
+        .expect("alpha project");
+    ensure!(
+        alpha["classification"] == json!({"complete": false, "uncertain_count": 1}),
+        "{alpha}"
+    );
+    let beta_proj = items
+        .iter()
+        .find(|item| item["project_name"] == "beta")
+        .expect("beta project");
+    ensure!(
+        beta_proj["classification"] == json!({"complete": true, "uncertain_count": 0}),
+        "{beta_proj}"
+    );
+    bridge.shutdown()
+}
+
+#[test]
+fn analytics_recent_sessions_carry_persisted_facts() -> Result<()> {
+    // The recent-sessions slice is the dashboard's per-session surface —
+    // it must carry the persisted fact/metrics bag, the persisted parent
+    // link's public id and the canonical token subfields the summary row
+    // needs, not just the headline aggregates.
+    let proj = tempfile::tempdir()?;
+    let workspace_a = proj.path().join("alpha").to_string_lossy().into_owned();
+    std::fs::create_dir(&workspace_a)?;
+    let workspace_b = proj.path().join("beta").to_string_lossy().into_owned();
+    std::fs::create_dir(&workspace_b)?;
+    let mut bridge = BridgeHarness::with_seed(&analytics_seeds(&workspace_a, &workspace_b), &[])?;
+    init_extensions(&bridge)?;
+    analytics_fixture(&bridge)?;
+
+    let reply = bridge.exchange(json!({"op":"dashboard"}))?;
+    ensure!(reply["ok"] == true, "{reply}");
+    let recents = reply["result"]["recent_sessions"]
+        .as_array()
+        .expect("recent_sessions");
+    ensure!(!recents.is_empty(), "{recents:?}");
+    let conv1 = recents
+        .iter()
+        .find(|item| item["conversation_id"] == 1)
+        .expect("conv1 recent row");
+    ensure!(conv1["total_input_tokens"] == 40_000, "{conv1}");
+    ensure!(conv1["metrics"]["step_count"] == 8, "{conv1}");
+    ensure!(conv1["metrics"]["turn_count"] == 4, "{conv1}");
+    ensure!(conv1["metrics"]["tools_used"] == json!(["Bash", "Read", "Edit"]), "{conv1}");
+    ensure!(conv1["metrics"]["health_score"] == 85, "{conv1}");
+    ensure!(conv1["classification_coverage"] == "complete", "{conv1}");
+    ensure!(conv1["is_subagent"] == false, "{conv1}");
+    // conv5 has no facts row: `metrics` stays null, coverage stays unknown.
+    let conv5 = recents
+        .iter()
+        .find(|item| item["conversation_id"] == 5)
+        .expect("conv5 recent row");
+    ensure!(conv5["metrics"].is_null(), "{conv5}");
     bridge.shutdown()
 }
 

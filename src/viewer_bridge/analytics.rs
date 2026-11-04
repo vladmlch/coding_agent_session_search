@@ -35,6 +35,7 @@ use coding_agent_search::franken_sync::compat::RowExt;
 use coding_agent_search::franken_sync::{Connection, SqliteValue};
 use serde_json::{Map, Value, json};
 
+use super::facts_bag;
 use super::identity;
 use super::protocol::{AnalyticsScope, refuse};
 use super::revisions;
@@ -906,16 +907,41 @@ fn provider_model_distribution(
     Ok((providers, models, unknown_model))
 }
 
+/// Uncertain-classification fold over the scoped universe: a row whose
+/// facts row was never persisted (`f.is_subagent IS NULL`) or whose
+/// persisted coverage isn't `complete` has no measured verdict yet —
+/// `classification_complete` is therefore `uncertain == 0`, never a
+/// constant (Task 7).
+const UNCERTAIN_CLASSIFICATION_SQL: &str = "\
+SUM(CASE WHEN f.is_subagent IS NULL \
+     OR COALESCE(f.coverage_state,'') <> 'complete' \
+THEN 1 ELSE 0 END)";
+
 fn recent_sessions(
     connection: &Connection,
     metrics: bool,
     scope: &ResolvedScope,
 ) -> Result<Vec<Value>> {
+    // The full summary-item shape the list lane emits plus the persisted
+    // fact/metrics bag (Task 7): the dashboard's per-session surface must
+    // not drop measurement the archive already holds.
     let select = format!(
         "c.id, c.source_id, c.external_id, c.source_path, c.origin_host, s.kind, \
          s.host_label, c.title, c.started_at, {ACTIVITY_SQL}, c.estimated_cost_usd, \
          c.grand_total_tokens, c.primary_model, w.path, COALESCE(va.is_pinned,0), \
-         va.custom_title, f.task_category, f.is_subagent"
+         va.custom_title, f.task_category, f.is_subagent, f.conversation_id, \
+         COALESCE(t.ended_at, c.ended_at), \
+         COALESCE(t.last_message_created_at, c.last_message_created_at), \
+         c.total_input_tokens, c.total_output_tokens, \
+         c.total_cache_read_tokens, c.total_cache_creation_tokens, \
+         f.coverage_state, f.parent_conversation_id, \
+         f.turn_count, f.step_count, f.thinking_block_count, f.artifact_count, \
+         f.subagent_count, f.tool_error_count, f.tool_calls_with_exit_status, \
+         f.file_fact_count, f.compaction_count, f.model_set_json, f.first_prompt, \
+         m.ttfe_seconds, m.one_shot_rate, m.retries_count, \
+         m.self_corrections_count, m.user_corrections_count, \
+         m.tools_used_json, m.task_breakdown_json, m.health_score, m.health_grade, \
+         m.health_issues_count, m.potential_waste_tokens, m.potential_savings_usd"
     );
     let mut params = Vec::new();
     let mut clauses = Vec::new();
@@ -940,6 +966,39 @@ fn recent_sessions(
         let origin_host: Option<String> = row
             .get_typed::<Option<String>>(4)?
             .or(row.get_typed::<Option<String>>(6)?);
+        // The persisted fact bag: `null` when no facts row rides this row
+        // (`f.conversation_id` is the presence marker), otherwise every
+        // measured column — a known zero stays a zero.
+        let model_set_json: Option<String> = row.get_typed(36)?;
+        let tools_used_json: Option<String> = row.get_typed(43)?;
+        let task_breakdown_json: Option<String> = row.get_typed(44)?;
+        let bag = facts_bag::SessionFactBag {
+            turn_count: row.get_typed(27)?,
+            step_count: row.get_typed(28)?,
+            thinking_block_count: row.get_typed(29)?,
+            artifact_count: row.get_typed(30)?,
+            subagent_count: row.get_typed(31)?,
+            tool_error_count: row.get_typed(32)?,
+            tool_calls_with_exit_status: row.get_typed(33)?,
+            file_fact_count: row.get_typed(34)?,
+            compaction_count: row.get_typed(35)?,
+            model_set: facts_bag::decode_string_list(model_set_json.as_deref()),
+            first_prompt: row.get_typed(37)?,
+            ttfe_seconds: row.get_typed(38)?,
+            one_shot_rate: row.get_typed(39)?,
+            retries_count: row.get_typed(40)?,
+            self_corrections_count: row.get_typed(41)?,
+            user_corrections_count: row.get_typed(42)?,
+            tools_used: facts_bag::decode_string_list(tools_used_json.as_deref()),
+            task_breakdown: task_breakdown_json
+                .and_then(|text| serde_json::from_str(&text).ok()),
+            health_score: row.get_typed(45)?,
+            health_grade: row.get_typed(46)?,
+            health_issues_count: row.get_typed(47)?,
+            potential_waste_tokens: row.get_typed(48)?,
+            potential_savings_usd: row.get_typed(49)?,
+        };
+        let facts_present: Option<i64> = row.get_typed(18)?;
         items.push(json!({
             "conversation_id": row.get_typed::<i64>(0)?,
             "source_id": row.get_typed::<Option<String>>(1)?,
@@ -951,14 +1010,23 @@ fn recent_sessions(
             "custom_title": row.get_typed::<Option<String>>(15)?,
             "is_pinned": row.get_typed::<i64>(14)? != 0,
             "started_at_ms": row.get_typed::<Option<i64>>(8)?,
+            "ended_at_ms": row.get_typed::<Option<i64>>(19)?,
+            "last_message_created_at_ms": row.get_typed::<Option<i64>>(20)?,
             "activity_ms": row.get_typed::<Option<i64>>(9)?,
             "estimated_cost_usd": row.get_typed::<Option<f64>>(10)?,
             "total_tokens": row.get_typed::<Option<i64>>(11)?,
+            "total_input_tokens": row.get_typed::<Option<i64>>(21)?,
+            "total_output_tokens": row.get_typed::<Option<i64>>(22)?,
+            "total_cache_read_tokens": row.get_typed::<Option<i64>>(23)?,
+            "total_cache_creation_tokens": row.get_typed::<Option<i64>>(24)?,
             "primary_model": row.get_typed::<Option<String>>(12)?,
             "workspace_path": workspace_path,
             "project": workspace_path.as_deref().map(identity::path_name).filter(|n| !n.is_empty()),
             "task_category": row.get_typed::<Option<String>>(16)?,
             "is_subagent": row.get_typed::<Option<i64>>(17)?.map(|v| v != 0),
+            "classification_coverage": row.get_typed::<Option<String>>(25)?,
+            "parent_conversation_id": row.get_typed::<Option<i64>>(26)?,
+            "metrics": bag.emit(facts_present.is_some()),
         }));
     }
     let ids: Vec<i64> = items
@@ -966,6 +1034,20 @@ fn recent_sessions(
         .map(|item| item["conversation_id"].as_i64().expect("decoded id"))
         .collect();
     let public_ids = identity::resolve_public_ids(connection, &ids)?;
+    // Parent public ids resolve through the same verified canonical
+    // identity probe the list lane uses — one bounded primary-key lookup
+    // per distinct parent, never a registry walk.
+    let parent_ids: std::collections::BTreeSet<i64> = items
+        .iter()
+        .filter_map(|item| item["parent_conversation_id"].as_i64())
+        .collect();
+    let mut parent_public_ids: std::collections::BTreeMap<i64, String> =
+        std::collections::BTreeMap::new();
+    for parent_id in parent_ids {
+        if let Ok(identity) = identity::resolve_public_id(connection, parent_id) {
+            parent_public_ids.insert(parent_id, identity.public_id);
+        }
+    }
     for item in &mut items {
         let id = item["conversation_id"].as_i64().expect("decoded id");
         if let Some(identity) = public_ids.get(&id) {
@@ -975,6 +1057,10 @@ fn recent_sessions(
             item["public_id"] = Value::Null;
             item["provider"] = Value::Null;
         }
+        item["parent_public_id"] = item["parent_conversation_id"]
+            .as_i64()
+            .and_then(|parent_id| parent_public_ids.get(&parent_id).cloned())
+            .map_or(Value::Null, Value::String);
     }
     Ok(items)
 }
@@ -1180,6 +1266,7 @@ pub fn projects(connection: &Connection, scope: &AnalyticsScope) -> Result<Value
     for (_, column) in PROJECT_METRICS {
         select.push_str(&format!(", SUM({column}), COUNT({column})"));
     }
+    select.push_str(&format!(", {UNCERTAIN_CLASSIFICATION_SQL}"));
     let rows = run_scoped(
         connection,
         metrics,
@@ -1218,12 +1305,17 @@ pub fn projects(connection: &Connection, scope: &AnalyticsScope) -> Result<Value
             index += 2;
             metric_map.insert((*name).to_owned(), aggregate(total, known));
         }
+        let uncertain: i64 = row.get_typed::<Option<i64>>(index)?.unwrap_or(0);
         items.push(json!({
             "project_path": path,
             "project_name": identity::path_name(&path),
             "session_count": session_count,
             "last_activity_ms": last_activity,
             "metrics": Value::Object(metric_map),
+            "classification": {
+                "complete": uncertain == 0,
+                "uncertain_count": uncertain,
+            },
         }));
     }
     Ok(json!({
@@ -1290,6 +1382,23 @@ pub fn dashboard(connection: &Connection, scope: &AnalyticsScope) -> Result<Valu
     let (providers_dist, model_dist, unknown_model) =
         provider_model_distribution(connection, metrics, &scope)?;
     let recent = recent_sessions(connection, metrics, &scope)?;
+
+    // Measured classification coverage over the FULL selected universe
+    // (Task 7): `complete` only when every eligible session's persisted
+    // verdict is known — one scoped fold, never a constant and never
+    // bounded to the recent-sessions page.
+    let uncertain_rows = run_scoped(
+        connection,
+        metrics,
+        UNCERTAIN_CLASSIFICATION_SQL,
+        &scope,
+        &[],
+        "",
+    )?;
+    let uncertain: i64 = uncertain_rows
+        .first()
+        .and_then(|row| row.get_typed::<Option<i64>>(0).ok().flatten())
+        .unwrap_or(0);
 
     // project_path: first non-empty workspace path in scope (oracle
     // `_project_path_query`), or the scope argument's resolved name.
@@ -1366,6 +1475,10 @@ pub fn dashboard(connection: &Connection, scope: &AnalyticsScope) -> Result<Valu
         "summary": summary,
         "recent_sessions": recent,
         "recent_conversations": recent,
+        "classification": {
+            "complete": uncertain == 0,
+            "uncertain_count": uncertain,
+        },
         "metric_coverage": metric_coverage(&core, &[
             ("total_duration_seconds", "duration"),
             ("avg_one_shot_rate", "one_shot"),

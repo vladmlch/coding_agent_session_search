@@ -7,6 +7,7 @@ mod deadline;
 mod detail;
 mod event_stream;
 mod extra;
+mod facts_bag;
 mod identity;
 mod protocol;
 mod query;
