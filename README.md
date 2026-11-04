@@ -678,7 +678,7 @@ agents = ["claude_code"]
 | `type` | Connection type: `ssh` or `local` |
 | `host` | SSH host (`user@hostname`) |
 | `paths` | Paths to sync (supports `~` expansion) |
-| `sync_schedule` | `manual`, `hourly`, or `daily`. Only the jobs installed by `cass schedule install` run it; without them it is a label and syncs happen when you run `cass sources sync` |
+| `sync_schedule` | `manual`, `hourly`, or `daily`. Legacy label only — `cass schedule` performs no synchronization, and `cass schedule status` reports how many sources still set it; syncs happen only when you run `cass sources sync` |
 | `path_mappings` | Rewrite remote paths to local equivalents |
 
 #### CLI Commands
@@ -690,7 +690,8 @@ cass sources list [--verbose] [--json]
 # Add a new source
 cass sources add <user@host> [--name <name>] [--preset macos-defaults|linux-defaults] [--path <path>...] [--no-test] [--json]
 
-# Set how often `cass schedule install` jobs sync a remote source (default: manual)
+# Set the legacy sync_schedule label on a remote source (default: manual);
+# nothing executes it — `cass schedule status` reports it as ignored
 cass sources schedule <name> <manual|hourly|daily> [--json]
 
 # Remove a source
@@ -2394,7 +2395,7 @@ An index that is always a little behind is the most common complaint about any l
 | Layer | What | When it runs | Enable |
 |-------|------|--------------|--------|
 | **Stale-on-read catch-up** | `search`, `pack`, and TUI launch check index freshness. If the index is stale (> 30 min), partial, or has pending sessions, a *detached* incremental `cass index --background` is spawned in its own process group and the current results are returned immediately. The next search is fresh. | On demand, at most once per 5 min per data dir (`CASS_AUTO_REFRESH_COOLDOWN_SECS`). Never for data dirs under the OS temp dir, and never for `search --no-maintenance`. A catch-up that ends without advancing the index is not respawned blindly: 1 h, then 6 h between attempts, and three failures trip the breaker until any run completes. | On by default. `CASS_AUTO_REFRESH=0` disables globally. `--robot-meta` reports `index_freshness.auto_refresh.{outcome,trigger,pid,consecutive_failures,detail}`. |
-| **OS scheduler** (`cass schedule install`) | launchd LaunchAgents (macOS) or systemd user timers (Linux): an **incremental** job every 15 min and a **nightly** job (03:00) that performs a full source census with conditional lexical rebuilding, then one bounded `models backfill --scheduled` worker per tier (fast/hash always; quality/MiniLM when installed). Due remote-source syncs run first. Priority is delegated to the OS: launchd jobs set `Nice=15` only, without `ProcessType=Background` or `LowPriorityIO` (background I/O throttling starved scheduled indexing on macOS). systemd units set `Nice=19`, `IOSchedulingClass=idle` and `CPUSchedulingPolicy=idle`. | On the timer, even when no cass process is running; survives reboots (`Persistent=true` / launchd). | `cass schedule install [--interval-mins 15] [--nightly-hour 3] [--no-nightly] [--no-semantic] [--dry-run]`; `cass schedule status`; `cass schedule uninstall`. |
+| **OS scheduler** (`cass schedule install`) | launchd LaunchAgents (macOS) or systemd user timers (Linux): an **incremental** job every 15 min and a **nightly** job (03:00) that performs a full source census with conditional lexical rebuilding, then one bounded `models backfill --scheduled` worker per tier (fast/hash always; quality/MiniLM when installed). Priority is delegated to the OS: launchd jobs set `Nice=15` only, without `ProcessType=Background` or `LowPriorityIO` (background I/O throttling starved scheduled indexing on macOS). systemd units set `Nice=19`, `IOSchedulingClass=idle` and `CPUSchedulingPolicy=idle`. | On the timer, even when no cass process is running; survives reboots (`Persistent=true` / launchd). | `cass schedule install [--interval-mins 15] [--nightly-hour 3] [--no-nightly] [--no-semantic] [--dry-run]`; `cass schedule status`; `cass schedule uninstall`. |
 | **Resident daemon timer** | The warm-model daemon (`cass daemon`, started by hand or auto-spawned by a human-mode semantic/hybrid search with `--daemon`; robot searches never spawn it) can also kick an incremental background index while it is resident. | Every `CASS_DAEMON_INDEX_INTERVAL_SECS` seconds while the daemon lives (it exits after its idle timeout). | Off by default; `CASS_DAEMON_INDEX_INTERVAL_SECS=900` recommended. |
 
 Idle awareness: scheduled work skips a run when the machine is under severe load (Linux `/proc/loadavg` + PSI; macOS `sysctl vm.loadavg`). On macOS you can additionally require the console to have been idle — `CASS_RESPONSIVENESS_MIN_USER_IDLE_SECS=600` makes the nightly job and scheduled semantic backfill wait until nobody has touched the keyboard for ten minutes (the gate fails open where idle time is unavailable). Foreground `cass index` is never gated.

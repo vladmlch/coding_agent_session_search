@@ -4,16 +4,16 @@
 //! Two jobs are registered:
 //!
 //! * **incremental** (default every 15 min): `cass index --background`
-//!   (incremental; cheap: readdir+stat, unchanged files are never re-parsed),
-//!   preceded by any remote-source syncs whose `sync_schedule` in
-//!   `sources.toml` is due. This is the executor `sync_schedule = "hourly" |
-//!   "daily"` never had.
-//! * **nightly** (default 03:00 local): remote syncs that are due, a full
+//!   (incremental; cheap: readdir+stat, unchanged files are never re-parsed).
+//! * **nightly** (default 03:00 local): a full
 //!   `cass index --full --background`, then bounded semantic backfill batches
 //!   (`cass models backfill --scheduled --max-batches N`) in one worker per
 //!   tier — resume the pending checkpoint's owner first, otherwise start with
 //!   the fast (hash) tier, then the configured quality tier — until the
 //!   backlog drains or the scheduler gates (load, console idle) say stop.
+//!
+//! The scheduler performs no remote synchronization: a legacy `sync_schedule`
+//! in `sources.toml` is diagnosed by `schedule status`, never executed.
 //!
 //! Priority is delegated to the OS: launchd uses `Nice=15` with explicit
 //! `ProcessType=Interactive` to avoid its implicit I/O throttling, while systemd
@@ -51,8 +51,6 @@ mod discovery;
 mod execution;
 mod outcomes;
 
-pub use discovery::{SourceScheduleError, due_remote_sources};
-
 pub const DEFAULT_INTERVAL_MINS: u32 = 15;
 pub const DEFAULT_NIGHTLY_HOUR: u8 = 3;
 pub const DEFAULT_NIGHTLY_MINUTE: u8 = 0;
@@ -63,9 +61,9 @@ pub const SYSTEMD_UNIT_PREFIX: &str = "cass";
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum ScheduleJob {
-    /// Incremental index (+ due remote syncs). Cheap; runs every N minutes.
+    /// Incremental index. Cheap; runs every N minutes.
     Incremental,
-    /// Full index + semantic backfill (+ due remote syncs). Runs once a day.
+    /// Full index + semantic backfill. Runs once a day.
     Nightly,
 }
 
@@ -849,9 +847,9 @@ fn run_step(
     // resolved by the CLI layer, never user-supplied input.
     //
     // CASS_DATA_DIR is exported to every step because some child commands
-    // (`sources sync`, `models status`) have no `--data-dir` flag and fall
-    // back to the platform default otherwise — which would silently target
-    // the wrong archive when `schedule run --data-dir` names a custom one.
+    // (`models status`) have no `--data-dir` flag and fall back to the
+    // platform default otherwise — which would silently target the wrong
+    // archive when `schedule run --data-dir` names a custom one.
     let mut command = Command::new(binary);
     command
         .args(args)
@@ -1040,8 +1038,8 @@ fn run_job_with_gate(
     cfg: &RunConfig,
     skipped_reason: Option<String>,
 ) -> JobReport {
-    // Hold this distinct scheduler lease through source sync, all child work,
-    // and receipt publication. The child's index lock alone is not enough.
+    // Hold this distinct scheduler lease through all child work and receipt
+    // publication. The child's index lock alone is not enough.
     let _lease = match execution::acquire(&cfg.data_dir) {
         Ok(lease) => lease,
         Err(error) => return error.report(job),
@@ -1066,69 +1064,7 @@ fn run_job_with_gate(
     }
 
     if skipped_reason.is_none() {
-        // 1. Remote syncs that are due.
-        let discovery_started = Instant::now();
-        let due = match due_remote_sources(&cfg.data_dir, started_ms) {
-            Ok(due) => due,
-            Err(error) => {
-                steps.push(StepReport {
-                    name: "sources-discovery".to_string(),
-                    argv: Vec::new(),
-                    exit_code: None,
-                    ok: false,
-                    duration_ms: u64::try_from(discovery_started.elapsed().as_millis())
-                        .unwrap_or(u64::MAX),
-                    skipped_reason: None,
-                    result: Some(serde_json::json!({
-                        "status": "failed",
-                        "reason": error.reason_code(),
-                        "dependent_work_started": false,
-                    })),
-                    stderr_tail: Some(error.to_string()),
-                });
-                // No sync, index, or model process may start from an unknown
-                // source plan. Persist the failure, not fabricated freshness.
-                return persist_job_report(
-                    cfg,
-                    JobReport {
-                        job,
-                        started_ms,
-                        finished_ms: now_ms(),
-                        ok: false,
-                        skipped_reason: None,
-                        steps,
-                        pressure,
-                        user_idle,
-                    },
-                );
-            }
-        };
-        if due.is_empty() {
-            steps.push(skipped_step("sources-sync", "no remote source is due"));
-        } else {
-            for (name, why) in due {
-                let args = vec![
-                    "--color=never".to_string(),
-                    "sources".to_string(),
-                    "sync".to_string(),
-                    "--source".to_string(),
-                    name.clone(),
-                    "--no-index".to_string(),
-                    "--json".to_string(),
-                ];
-                info!(source = %name, reason = %why, "scheduled remote sync");
-                steps.push(run_step(
-                    &format!("sources-sync:{name}"),
-                    &cfg.binary,
-                    &cfg.data_dir,
-                    &args,
-                    &[],
-                    log.as_mut(),
-                ));
-            }
-        }
-
-        // 2. Index. Exit 7 is an expected lock-contention deferral, but no
+        // Index. Exit 7 is an expected lock-contention deferral, but no
         // indexing completed. Preserve the non-success outcome so repeated
         // contention cannot masquerade as refreshed history; the next timer
         // firing still retries normally.
@@ -1157,7 +1093,7 @@ fn run_job_with_gate(
         steps.push(index_step);
         let prerequisites_ok = steps.iter().all(|step| step.ok);
 
-        // 3. Semantic backfill (nightly only). Two tiers: the fast (hash)
+        // Semantic backfill (nightly only). Two tiers: the fast (hash)
         // tier needs no model files. The local quality tier requires an
         // installed model; its missing-assets exit is an optional tier skip.
         // Explicit external quality selection is different: endpoint failures
@@ -1176,7 +1112,7 @@ fn run_job_with_gate(
             } else if !prerequisites_ok {
                 steps.push(skipped_step(
                     "semantic-backfill",
-                    "source sync or indexing failed; semantic backfill requires a successful run",
+                    "indexing failed; semantic backfill requires a successful run",
                 ));
             } else {
                 let (probe, model_installed, quality_policy) =
@@ -1641,6 +1577,9 @@ pub struct StatusReport {
     pub state: ScheduleState,
     pub auto_refresh: Option<crate::indexer::background_refresh::AutoRefreshState>,
     pub log_dir: PathBuf,
+    /// Diagnostics-only notes about legacy configuration the scheduler no
+    /// longer acts on (e.g. a `sync_schedule` still set in `sources.toml`).
+    pub warnings: Vec<String>,
 }
 
 pub fn status(data_dir: &Path) -> StatusReport {
@@ -1707,6 +1646,9 @@ pub fn status(data_dir: &Path) -> StatusReport {
         state,
         auto_refresh: crate::indexer::background_refresh::load_state(data_dir),
         log_dir: schedule_dir(data_dir),
+        warnings: discovery::legacy_sync_schedule_notice()
+            .into_iter()
+            .collect(),
     }
 }
 

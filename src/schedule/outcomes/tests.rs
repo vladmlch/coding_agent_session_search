@@ -58,7 +58,7 @@ fn legacy_busy_receipts_are_not_successful_for_either_job() {
 #[test]
 fn normalization_preserves_independent_failures_and_non_index_exit_codes() {
     let mut step = index_step(ScheduleJob::Incremental, Some(7), true);
-    step.name = "sources-sync:remote".to_string();
+    step.name = "models-status".to_string();
     let state = normalize_state(ScheduleState {
         last_incremental: Some(report(ScheduleJob::Incremental, step, false)),
         last_nightly: None,
@@ -105,12 +105,12 @@ fn real_failure_takes_precedence_over_busy_deferral() {
         index_step(ScheduleJob::Nightly, Some(7), false),
         false,
     );
-    let mut sync = index_step(ScheduleJob::Nightly, Some(1), false);
-    sync.name = "sources-sync:remote".to_string();
-    report.steps.insert(0, sync);
+    let mut probe = index_step(ScheduleJob::Nightly, Some(1), false);
+    probe.name = "models-status".to_string();
+    report.steps.insert(0, probe);
     assert_eq!(
         run_detail(&report),
-        "last run failed: sources-sync:remote (exit 1), index-full (exit 7)"
+        "last run failed: models-status (exit 1), index-full (exit 7)"
     );
 }
 

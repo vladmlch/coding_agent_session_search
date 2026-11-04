@@ -1,7 +1,7 @@
 //! One nonblocking, cross-process lease for the complete scheduled job.
 //!
 //! Index children already use the index lock, but that lock does not serialize
-//! preceding source syncs or the scheduler's read/modify/write receipts. Both
+//! the scheduler's read/modify/write receipts or the whole job. Both
 //! jobs and `--force` share this lease. Never unlink or truncate its inode:
 //! kernel ownership, not a PID file or a timeout, releases it after process death.
 

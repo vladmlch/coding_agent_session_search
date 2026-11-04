@@ -116190,6 +116190,9 @@ fn run_schedule_command(subcmd: ScheduleCommand, cli: &Cli) -> CliResult<()> {
                     );
                 }
             }
+            for warning in &report.warnings {
+                println!("  {} {}", "note:".yellow().bold(), warning);
+            }
             println!("  logs: {}", report.log_dir.display());
             Ok(())
         }

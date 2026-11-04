@@ -862,3 +862,58 @@ fn schedule_status_json_reports_never_run_then_last_run() {
     let after = status("after");
     assert_eq!(after["state"]["last_incremental"]["ok"], Value::Bool(true));
 }
+
+#[test]
+fn schedule_status_reports_legacy_sync_schedule_as_ignored() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    let data_dir = tmp.path().join("dd");
+    std::fs::create_dir_all(&home).unwrap();
+    // A sources.toml entry left over from when the scheduler executed remote
+    // syncs: `sync_schedule` must be diagnosed, never run or rewritten.
+    let config_dir = home.join(".config/cass");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let sources_toml = "[[sources]]\nname = 'legacy-laptop'\ntype = 'ssh'\nhost = 'fixture.invalid'\npaths = ['~/.claude/projects']\nsync_schedule = 'hourly'\n";
+    std::fs::write(config_dir.join("sources.toml"), sources_toml).unwrap();
+
+    let output = cass_cmd(&home)
+        // The diagnostic honors the test-isolation switch like every other
+        // sources.toml consumer, so this probe must run without it.
+        .env_remove("CASS_IGNORE_SOURCES_CONFIG")
+        .args(["schedule", "status", "--json", "--data-dir"])
+        .arg(&data_dir)
+        .output()
+        .expect("run cass schedule status");
+    assert!(
+        output.status.success(),
+        "status must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = parse_single_json_document(&output.stdout);
+    let warnings = report["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings.iter().any(|warning| {
+            warning
+                .as_str()
+                .is_some_and(|text| text.contains("sync_schedule") && text.contains("1 source"))
+        }),
+        "status must report the ignored legacy sync_schedule: {report}"
+    );
+    // The report carries no synchronization fields for the removed machinery.
+    let fields: Vec<&str> = report
+        .as_object()
+        .expect("status object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert!(
+        !fields.iter().any(|field| field.contains("sync")),
+        "status must not expose sync fields: {fields:?}"
+    );
+    // sources.toml is diagnosed, never rewritten.
+    assert_eq!(
+        std::fs::read_to_string(config_dir.join("sources.toml")).unwrap(),
+        sources_toml
+    );
+    assert!(!data_dir.join("sync_status.json").exists());
+}

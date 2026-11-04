@@ -1,77 +1,50 @@
-//! Read-only source-schedule admission. Unknown configuration or sync history is
-//! not an empty plan: never launch sync/index/backfill from a fabricated default.
+//! Read-only diagnostics for legacy scheduling knobs left in `sources.toml`.
+//!
+//! The scheduler performs no remote synchronization: `sync_schedule` is a
+//! dead field that nothing executes. The file is only inspected — never used
+//! to plan work and never written — so `schedule status` can tell the
+//! operator how many sources still carry the ignored setting.
 
 use std::path::Path;
 
 use crate::sources::config::{SourcesConfig, SyncSchedule};
-use crate::sources::sync::{SourceSyncAction, SyncStatus};
 
-/// Deliberately omits underlying parser text, paths and remote credentials.
-/// The configuration and sync ledger remain untouched for operator inspection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum SourceScheduleError {
-    #[error("cannot read or validate source configuration; no scheduled work was started")]
-    Configuration,
-    #[error("cannot read or validate sync history; no scheduled work was started")]
-    SyncHistory,
+/// Warn when `sources.toml` still carries `sync_schedule`. Remote
+/// synchronization was removed, so every value is ignored; the scheduler only
+/// indexes the local archive. Returns the notice `schedule status` should
+/// surface, or `None` when there is nothing to report — no configuration, or
+/// no non-`manual` `sync_schedule`. An unreadable configuration still earns a
+/// notice: whatever it might set is ignored all the same. The file is never
+/// created, rewritten, or repaired by this diagnostic.
+pub(super) fn legacy_sync_schedule_notice() -> Option<String> {
+    // The test-isolation switch means "act as if sources.toml does not
+    // exist"; a diagnostic honors it like every other consumer does.
+    if dotenvy::var("CASS_IGNORE_SOURCES_CONFIG").is_ok() {
+        return None;
+    }
+    let path = SourcesConfig::config_path().ok()?;
+    legacy_sync_schedule_notice_at(&path)
 }
 
-impl SourceScheduleError {
-    pub fn reason_code(self) -> &'static str {
-        match self {
-            Self::Configuration => "source_configuration_unavailable",
-            Self::SyncHistory => "source_sync_history_unavailable",
+fn legacy_sync_schedule_notice_at(path: &Path) -> Option<String> {
+    match SourcesConfig::load_from(&path.to_path_buf()) {
+        Ok(config) => {
+            let count = config
+                .sources
+                .iter()
+                .filter(|source| !matches!(source.sync_schedule, SyncSchedule::Manual))
+                .count();
+            (count > 0).then(|| {
+                format!(
+                    "ignoring deprecated sync_schedule on {count} source{}; remote synchronization was removed, only local indexing is scheduled",
+                    if count == 1 { "" } else { "s" }
+                )
+            })
         }
+        Err(_) => Some(
+            "cannot read sources.toml; any sync_schedule it sets is ignored — remote synchronization was removed, only local indexing is scheduled".to_string(),
+        ),
     }
-}
-
-/// Remote sources whose automatic schedule is due now. A genuinely absent
-/// configuration or first-run sync ledger is supported; unreadable or malformed
-/// state is a failure, not permission to sync everything or claim nothing is due.
-pub fn due_remote_sources(
-    data_dir: &Path,
-    now_ms: i64,
-) -> Result<Vec<(String, String)>, SourceScheduleError> {
-    let path = SourcesConfig::config_path().map_err(|_| SourceScheduleError::Configuration)?;
-    due_sources_at(&path, data_dir, now_ms)
-}
-
-fn due_sources_at(
-    config_path: &Path,
-    data_dir: &Path,
-    now_ms: i64,
-) -> Result<Vec<(String, String)>, SourceScheduleError> {
-    // SourcesConfig's convenience loader treats `exists() == false` as absent.
-    // Preserve that intentional first-run case, but do not mask metadata errors
-    // or a dangling configured symlink as "no remote sources".
-    match std::fs::symlink_metadata(config_path) {
-        Ok(_) => {
-            std::fs::metadata(config_path).map_err(|_| SourceScheduleError::Configuration)?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => return Err(SourceScheduleError::Configuration),
-    }
-    let config = SourcesConfig::load_from(&config_path.to_path_buf())
-        .map_err(|_| SourceScheduleError::Configuration)?;
-    // The sync ledger is irrelevant to a local-only/manual-only configuration.
-    // Do not make an unrelated corrupt ledger prevent ordinary local indexing.
-    if !config
-        .remote_sources()
-        .any(|source| !matches!(source.sync_schedule, SyncSchedule::Manual))
-    {
-        return Ok(Vec::new());
-    }
-    let status = SyncStatus::load(data_dir).map_err(|_| SourceScheduleError::SyncHistory)?;
-    Ok(config
-        .remote_sources()
-        .filter_map(|source| {
-            let decision = status.decision_for_source_at(source, now_ms, false);
-            match decision.action {
-                SourceSyncAction::Sync => Some((source.name.clone(), decision.reasons.join("; "))),
-                SourceSyncAction::Skip | SourceSyncAction::Defer => None,
-            }
-        })
-        .collect())
 }
 
 #[cfg(test)]
@@ -81,97 +54,53 @@ mod tests {
     const AUTOMATIC: &str = "[[sources]]\nname = 'fixture'\ntype = 'ssh'\nhost = 'fixture.invalid'\npaths = ['~/.claude/projects']\nsync_schedule = 'hourly'\n";
 
     #[test]
-    fn missing_configuration_and_first_run_history_are_distinct_valid_cases() {
+    fn missing_and_manual_only_configurations_report_nothing() {
         let directory = tempfile::tempdir().unwrap();
         let config = directory.path().join("sources.toml");
-        assert!(
-            due_sources_at(&config, directory.path(), 100)
-                .unwrap()
-                .is_empty()
-        );
+        assert_eq!(legacy_sync_schedule_notice_at(&config), None);
         assert!(!config.exists());
-        std::fs::write(&config, AUTOMATIC).unwrap();
-        let due = due_sources_at(&config, directory.path(), 100).unwrap();
-        assert_eq!(due.len(), 1);
-        assert_eq!(due[0].0, "fixture");
-        assert!(!directory.path().join("sync_status.json").exists());
-        assert_eq!(std::fs::read_to_string(config).unwrap(), AUTOMATIC);
+        std::fs::write(&config, AUTOMATIC.replace("hourly", "manual")).unwrap();
+        assert_eq!(legacy_sync_schedule_notice_at(&config), None);
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            AUTOMATIC.replace("hourly", "manual")
+        );
     }
 
     #[test]
-    fn malformed_configuration_is_not_an_empty_plan_and_diagnostics_are_redacted() {
+    fn every_non_manual_sync_schedule_is_counted_without_touching_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = directory.path().join("sources.toml");
+        std::fs::write(&config, AUTOMATIC).unwrap();
+        let notice = legacy_sync_schedule_notice_at(&config).unwrap();
+        assert!(notice.contains("sync_schedule"), "{notice}");
+        assert!(notice.contains("1 source"), "{notice}");
+        assert!(notice.contains("ignoring deprecated"), "{notice}");
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), AUTOMATIC);
+        // Both automatic entries are counted; the manual one is not.
+        std::fs::write(
+            &config,
+            format!(
+                "{AUTOMATIC}[[sources]]\nname = 'second'\ntype = 'ssh'\nhost = 'fixture.invalid'\npaths = ['~/.codex']\nsync_schedule = 'daily'\n[[sources]]\nname = 'local-box'\ntype = 'local'\npaths = ['/x']\nsync_schedule = 'manual'\n"
+            ),
+        )
+        .unwrap();
+        let notice = legacy_sync_schedule_notice_at(&config).unwrap();
+        assert!(notice.contains("2 sources"), "{notice}");
+    }
+
+    #[test]
+    fn an_unreadable_configuration_is_still_an_ignored_setting() {
         let directory = tempfile::tempdir().unwrap();
         let config = directory.path().join("sources.toml");
         let bytes = "private-configuration-sentinel = [unterminated";
         std::fs::write(&config, bytes).unwrap();
-        let error = due_sources_at(&config, directory.path(), 100).unwrap_err();
-        assert_eq!(error, SourceScheduleError::Configuration);
-        assert_eq!(error.reason_code(), "source_configuration_unavailable");
-        assert!(!format!("{error:?} {error}").contains("private-configuration-sentinel"));
-        assert_eq!(std::fs::read_to_string(config).unwrap(), bytes);
-    }
-
-    #[test]
-    fn invalid_sync_ledger_cannot_reset_failure_backoff() {
-        let directory = tempfile::tempdir().unwrap();
-        let config = directory.path().join("sources.toml");
-        let ledger = directory.path().join("sync_status.json");
-        std::fs::write(&config, AUTOMATIC).unwrap();
-        let bytes = "{\"private-ledger-sentinel\":";
-        std::fs::write(&ledger, bytes).unwrap();
-        let error = due_sources_at(&config, directory.path(), 100).unwrap_err();
-        assert_eq!(error, SourceScheduleError::SyncHistory);
-        assert_eq!(error.reason_code(), "source_sync_history_unavailable");
-        assert!(!format!("{error:?} {error}").contains("private-ledger-sentinel"));
-        assert_eq!(std::fs::read_to_string(ledger).unwrap(), bytes);
-    }
-
-    #[test]
-    fn filesystem_errors_are_not_first_run_defaults() {
-        let directory = tempfile::tempdir().unwrap();
-        let config = directory.path().join("sources.toml");
-        std::fs::create_dir(&config).unwrap();
-        assert_eq!(
-            due_sources_at(&config, directory.path(), 100).unwrap_err(),
-            SourceScheduleError::Configuration
-        );
-        let other_config = directory.path().join("valid.toml");
-        std::fs::write(&other_config, AUTOMATIC).unwrap();
-        std::fs::create_dir(directory.path().join("sync_status.json")).unwrap();
-        assert_eq!(
-            due_sources_at(&other_config, directory.path(), 100).unwrap_err(),
-            SourceScheduleError::SyncHistory
-        );
-    }
-
-    #[test]
-    fn manual_only_configuration_does_not_consult_an_unused_ledger() {
-        let directory = tempfile::tempdir().unwrap();
-        let config = directory.path().join("sources.toml");
-        std::fs::write(&config, AUTOMATIC.replace("hourly", "manual")).unwrap();
-        std::fs::write(directory.path().join("sync_status.json"), "not json").unwrap();
-        assert!(
-            due_sources_at(&config, directory.path(), 100)
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn dangling_configuration_symlink_is_an_error_not_a_missing_configuration() {
-        let directory = tempfile::tempdir().unwrap();
-        let config = directory.path().join("sources.toml");
-        std::os::unix::fs::symlink(directory.path().join("missing.toml"), &config).unwrap();
-        assert_eq!(
-            due_sources_at(&config, directory.path(), 100).unwrap_err(),
-            SourceScheduleError::Configuration
-        );
-        assert!(
-            std::fs::symlink_metadata(config)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
+        let notice = legacy_sync_schedule_notice_at(&config).unwrap();
+        assert!(notice.contains("sync_schedule"), "{notice}");
+        assert!(notice.contains("ignored"), "{notice}");
+        assert!(notice.contains("cannot read"), "{notice}");
+        // The diagnostic discloses nothing from the file it failed to parse.
+        assert!(!notice.contains("private-configuration-sentinel"));
+        assert_eq!(std::fs::read_to_string(&config).unwrap(), bytes);
     }
 }

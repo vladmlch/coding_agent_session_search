@@ -29,6 +29,14 @@ Ledger for D1: every path deleted by the local-only port, grouped by task.
 **On merge conflict with upstream, keep the deletion.** Newest task first;
 each task appends its own group.
 
+### Task 10 — scheduler remote-sync stages (2026-11-04)
+
+No whole files deleted — remote scheduling machinery removed in place:
+
+- `src/schedule.rs` — remote-source sync stage (`due_remote_sources` call, `sources-sync:{name}`/`sources-discovery`/`sources-sync` steps, `use crate::sources::sync` reach), `pub use discovery::{SourceScheduleError, due_remote_sources}`, sync mentions in module/enum/step docs
+- `src/schedule/discovery.rs` — `due_remote_sources`/`due_sources_at` remote-due planner, `SourceScheduleError::{Configuration, SyncHistory}`, `use crate::sources::sync::{SourceSyncAction, SyncStatus}` — module kept as the read-only legacy-`sync_schedule` diagnostic
+- `tests/schedule_admission.rs` — source-planning refusal cases (`sources-discovery`, `source_configuration_unavailable`, `source_sync_history_unavailable`) replaced by never-consulted coverage
+
 ### Task 8 — fleet, release verification, self-update and remote doctor surfaces (2026-11-04)
 
 - `src/fleet_archive_coverage.rs`, `src/fleet_doctor_schema.rs`, `src/fleet_platform_compat.rs`, `src/fleet_probe.rs`, `src/fleet_upgrade_rehearsal.rs`, `src/fleet_version_skew.rs` — fleet command tree: archive coverage, doctor schema, platform compat, live probe, upgrade rehearsal, version skew
@@ -274,3 +282,16 @@ Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
 One flaky observation: `cli_dispatch_coverage::
 gh519_export_indexed_source_live_wal_exits_successfully_repeatedly` failed once
 under parallel load and passed on re-run and in the final full run.
+
+## Task 10 — scheduler remote-sync stages dropped (2026-11-04)
+
+Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
+
+| Date (UTC) | Command | Result |
+| ---------- | ------- | ------ |
+| 2026-11-04 | `cargo test --locked --lib schedule::` | ok: 48 passed — new `schedule::discovery` unit tests pin the ignored-`sync_schedule` notice; existing outcome/lease/backfill tests unchanged |
+| 2026-11-04 | `cargo test --locked --test schedule_admission` | ok: 4 passed — forced incremental+nightly on a `type = "ssh"`, `sync_schedule = "hourly"` fixture index locally, spawn no `sources-*` step, and leave `sync_status.json` byte-identical/never created; lease and lock-control refusals intact |
+| 2026-11-04 | `cargo test --locked --test cli_schedule` | ok: 9 passed — `schedule status --json` reports `warnings: ["ignoring deprecated sync_schedule on 1 source; …"]`, no sync fields; install dry-run renders identical unit argv |
+| 2026-11-04 | `cass schedule install --dry-run --json` (manual, isolated HOME) | unit `ProgramArguments` still `cass --color=never schedule run --job {incremental,nightly} --data-dir <dir> --json` — unchanged vs Task 0 snapshot; existing launchd/systemd units need no rewrite |
+| 2026-11-04 | `cargo fmt --all -- --check` | ok |
+| 2026-11-04 | `cargo clippy --all-targets --locked -- -D warnings` | ok |
