@@ -78,6 +78,26 @@ impl SessionFactBag {
             "potential_savings_usd": self.potential_savings_usd,
         })
     }
+
+    /// Overlay the `viewer_session_metrics` half onto a facts-half bag —
+    /// the detail lane merges its two primary-key reads through this;
+    /// the list/recent lanes merge the same fields inside their join
+    /// decode. Only the metrics-table fields move; facts fields are
+    /// untouched.
+    pub(crate) fn merge_metrics(&mut self, metrics: &SessionFactBag) {
+        self.ttfe_seconds = metrics.ttfe_seconds;
+        self.one_shot_rate = metrics.one_shot_rate;
+        self.retries_count = metrics.retries_count;
+        self.self_corrections_count = metrics.self_corrections_count;
+        self.user_corrections_count = metrics.user_corrections_count;
+        self.tools_used = metrics.tools_used.clone();
+        self.task_breakdown = metrics.task_breakdown.clone();
+        self.health_score = metrics.health_score;
+        self.health_grade = metrics.health_grade.clone();
+        self.health_issues_count = metrics.health_issues_count;
+        self.potential_waste_tokens = metrics.potential_waste_tokens;
+        self.potential_savings_usd = metrics.potential_savings_usd;
+    }
 }
 
 /// Decode a persisted string-list JSON cell (`model_set_json`,

@@ -22,6 +22,11 @@
 //!   pairing, thinking blocks, health, files, memory — Task 7/8) are
 //!   recognized names answered with typed `unavailable`, never silently
 //!   dropped.
+//! * **The `metrics` bag is shared verbatim** — the summary emits the
+//!   same merged `viewer_session_facts` + `viewer_session_metrics`
+//!   object the list/recent lanes carry (`SessionFactBag::emit`):
+//!   `null` when no facts row was persisted, otherwise every measured
+//!   column — a persisted zero stays `0`, a NULL stays `null`.
 //! * **`expected_revision` on `get_tool_output` binds the logical
 //!   `canonical_revision` counter** — global, not a per-session digest.
 //!   Any committed canonical change invalidates conservatively: an anchor
@@ -35,6 +40,7 @@ use serde_json::{Map, Value, json};
 
 use super::annotations;
 use super::catalog;
+use super::facts_bag;
 use super::identity;
 use super::protocol::{StepAnchor, refuse};
 use super::revisions;
@@ -262,6 +268,84 @@ fn read_facts(connection: &Connection, conversation_id: i64) -> Result<Option<Fa
         },
         first_prompt_column,
         extracted_at_ms: row.get_typed(17)?,
+    }))
+}
+
+impl FactsRow {
+    /// The facts half of the shared `metrics` bag — the same field set
+    /// the list/recent lanes emit. `first_prompt` keeps their byte
+    /// guard: an absurd payload stays unknown, never wire bytes.
+    fn fact_bag(&self) -> facts_bag::SessionFactBag {
+        facts_bag::SessionFactBag {
+            turn_count: self.turn_count,
+            step_count: self.step_count,
+            thinking_block_count: self.thinking_block_count,
+            artifact_count: self.artifact_count,
+            subagent_count: self.subagent_count,
+            tool_error_count: self.tool_error_count,
+            tool_calls_with_exit_status: self.tool_calls_with_exit_status,
+            file_fact_count: self.file_fact_count,
+            compaction_count: self.compaction_count,
+            model_set: self.model_set.clone(),
+            first_prompt: self
+                .first_prompt
+                .as_ref()
+                .filter(|text| text.len() as i64 <= TEXT_GUARD_BYTES)
+                .cloned(),
+            ..Default::default()
+        }
+    }
+}
+
+/// `viewer_session_metrics` twin of `read_facts` — the quality/health
+/// half of the shared fact bag (Task 7). `None` when the additive table
+/// is absent (a facts-only profile) or no row was persisted for this
+/// conversation; every metric column stays NULL-able, never zero-filled.
+fn read_metrics(
+    connection: &Connection,
+    conversation_id: i64,
+) -> Result<Option<facts_bag::SessionFactBag>> {
+    if connection
+        .query(
+            "SELECT 1 FROM sqlite_master WHERE type='table' \
+             AND name='viewer_session_metrics' LIMIT 1",
+        )?
+        .is_empty()
+    {
+        return Ok(None);
+    }
+    let rows = connection.query_with_params(
+        "SELECT ttfe_seconds,one_shot_rate,retries_count,self_corrections_count,\
+         user_corrections_count,tools_used_json,task_breakdown_json,health_score,\
+         health_grade,health_issues_count,potential_waste_tokens,potential_savings_usd \
+         FROM viewer_session_metrics WHERE conversation_id = ?1 LIMIT 2",
+        &param_slice_to_values(params![conversation_id]),
+    )?;
+    if rows.len() > 1 {
+        return Err(refuse(
+            "canonical_coordinates_invalid",
+            "Ambiguous metrics row",
+        ));
+    }
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let tools_used_json: Option<String> = row.get_typed(5)?;
+    let task_breakdown_json: Option<String> = row.get_typed(6)?;
+    Ok(Some(facts_bag::SessionFactBag {
+        ttfe_seconds: row.get_typed(0)?,
+        one_shot_rate: row.get_typed(1)?,
+        retries_count: row.get_typed(2)?,
+        self_corrections_count: row.get_typed(3)?,
+        user_corrections_count: row.get_typed(4)?,
+        tools_used: facts_bag::decode_string_list(tools_used_json.as_deref()),
+        task_breakdown: task_breakdown_json.and_then(|text| serde_json::from_str(&text).ok()),
+        health_score: row.get_typed(7)?,
+        health_grade: row.get_typed(8)?,
+        health_issues_count: row.get_typed(9)?,
+        potential_waste_tokens: row.get_typed(10)?,
+        potential_savings_usd: row.get_typed(11)?,
+        ..Default::default()
     }))
 }
 
@@ -802,7 +886,11 @@ fn files_section(connection: &Connection, conversation_id: i64) -> Result<Value>
 /// metric names its known/unknown quality and its provenance column;
 /// metrics canonical + `viewer_*` cannot express keep the oracle's
 /// `unavailable:canonical_catalog` marker. Unknown is never a zero.
-fn metric_quality(map: &Map<String, Value>, facts: Option<&FactsRow>) -> (Value, Value) {
+fn metric_quality(
+    map: &Map<String, Value>,
+    facts: Option<&FactsRow>,
+    metrics: Option<&facts_bag::SessionFactBag>,
+) -> (Value, Value) {
     let mut quality = Map::new();
     let mut sources = Map::new();
     for key in [
@@ -904,21 +992,65 @@ fn metric_quality(map: &Map<String, Value>, facts: Option<&FactsRow>) -> (Value,
             "viewer_session_facts.first_prompt"
         }),
     );
+    // `viewer_session_metrics` columns ride the same bag: a persisted
+    // facts row upgrades each metric's provenance to its serving column
+    // (a NULL stays a known-provenance unknown, a measured 0 stays a
+    // KNOWN zero); no facts row keeps the verified `facts_not_persisted`
+    // marker — identical to the list/recent provenance rules.
+    for (key, column, measured) in [
+        (
+            "tools_used",
+            "tools_used_json",
+            metrics.is_some_and(|m| m.tools_used.is_some()),
+        ),
+        (
+            "health_grade",
+            "health_grade",
+            metrics.is_some_and(|m| m.health_grade.is_some()),
+        ),
+        (
+            "health_score",
+            "health_score",
+            metrics.is_some_and(|m| m.health_score.is_some()),
+        ),
+        (
+            "health_issues_count",
+            "health_issues_count",
+            metrics.is_some_and(|m| m.health_issues_count.is_some()),
+        ),
+        (
+            "potential_waste_tokens",
+            "potential_waste_tokens",
+            metrics.is_some_and(|m| m.potential_waste_tokens.is_some()),
+        ),
+        (
+            "potential_savings_usd",
+            "potential_savings_usd",
+            metrics.is_some_and(|m| m.potential_savings_usd.is_some()),
+        ),
+    ] {
+        quality.insert(
+            key.to_owned(),
+            json!(if measured { "known" } else { "unknown" }),
+        );
+        sources.insert(
+            key.to_owned(),
+            json!(if facts_present {
+                format!("viewer_session_metrics.{column}")
+            } else {
+                "unavailable:facts_not_persisted".to_owned()
+            }),
+        );
+    }
     // The oracle's unmeasured set: not expressible from canonical columns
     // and not yet persisted facts — unknown, never zero.
     for key in [
         "message_count",
         "has_subagents",
-        "tools_used",
         "has_error",
         "has_security_alert",
         "anomalies_count",
         "cache_hit_rate",
-        "health_grade",
-        "health_score",
-        "health_issues_count",
-        "potential_waste_tokens",
-        "potential_savings_usd",
     ] {
         quality.entry(key.to_owned()).or_insert(json!("unknown"));
         sources
@@ -955,6 +1087,7 @@ fn summary_section(
     verified: &identity::VerifiedIdentity,
     annotation: Option<&Value>,
     facts: Option<&FactsRow>,
+    metrics: Option<&facts_bag::SessionFactBag>,
     parent_public_id: Option<&str>,
 ) -> Result<Value> {
     let mut map = session.as_object().cloned().unwrap_or_default();
@@ -1037,23 +1170,16 @@ fn summary_section(
         ),
     );
 
-    map.insert(
-        "metrics".into(),
-        json!({
-            "turn_count": facts.and_then(|f| f.turn_count),
-            "step_count": facts.and_then(|f| f.step_count),
-            "thinking_block_count": facts.and_then(|f| f.thinking_block_count),
-            "artifact_count": facts.and_then(|f| f.artifact_count),
-            "subagent_count": facts.and_then(|f| f.subagent_count),
-            "tool_error_count": facts.and_then(|f| f.tool_error_count),
-            "tool_calls_with_exit_status": facts.and_then(|f| f.tool_calls_with_exit_status),
-            "file_fact_count": facts.and_then(|f| f.file_fact_count),
-            "compaction_count": facts.and_then(|f| f.compaction_count),
-            "first_prompt": facts.and_then(|f| f.first_prompt.clone()),
-            "model_set": facts.and_then(|f| f.model_set.clone()),
-        }),
-    );
-    let (quality, sources) = metric_quality(&map, facts);
+    // The shared persisted fact+metrics bag — identical to the list and
+    // recent lanes' emit: `null` when no facts row was ever persisted,
+    // otherwise every measured column. `viewer_session_metrics` fields
+    // overlay onto the facts half and stay NULL when that row is absent.
+    let mut bag = facts.map(FactsRow::fact_bag).unwrap_or_default();
+    if let Some(metrics) = metrics {
+        bag.merge_metrics(metrics);
+    }
+    map.insert("metrics".into(), bag.emit(facts.is_some()));
+    let (quality, sources) = metric_quality(&map, facts, metrics);
     map.insert("metric_quality".into(), quality);
     map.insert("metric_sources".into(), sources);
     Ok(Value::Object(map))
@@ -1119,13 +1245,19 @@ pub fn session_details(
     let mut out = Map::new();
     for name in &requested {
         let value = match name.as_str() {
-            "summary" => summary_section(
-                &session,
-                &verified,
-                annotation.as_ref(),
-                facts.as_ref(),
-                parent_public_id.as_deref(),
-            )?,
+            "summary" => {
+                // The metrics half is a summary-only read — one bounded
+                // primary-key probe, skipped when summary isn't served.
+                let metrics = read_metrics(connection, conversation_id)?;
+                summary_section(
+                    &session,
+                    &verified,
+                    annotation.as_ref(),
+                    facts.as_ref(),
+                    metrics.as_ref(),
+                    parent_public_id.as_deref(),
+                )?
+            }
             "messages" => messages_section(page.as_ref().expect("messages section paged")),
             "raw" => raw_section(page.as_ref().expect("raw section paged"))?,
             "facts" => facts_section(facts.as_ref()),

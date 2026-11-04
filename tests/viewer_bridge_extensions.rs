@@ -3196,6 +3196,105 @@ fn details_rich_session_bound_reads() -> Result<()> {
 }
 
 #[test]
+fn details_summary_carries_metrics_half_and_null_without_facts() -> Result<()> {
+    // Task 7 review: the detail summary must serve the identical merged
+    // fact+metrics bag the list/recent lanes emit — a persisted
+    // `viewer_session_metrics` row surfaces on `summary.metrics` with
+    // `viewer_session_metrics.*` provenance — and a fact-less session
+    // reports `metrics: null`, never an all-null object.
+    let mut bridge = BridgeHarness::with_seed(&detail_fixture(), &[])?;
+    seed_detail_extras(&bridge)?;
+    init_extensions(&bridge)?;
+    seed_detail_overlays(&bridge)?;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    coding_agent_search::viewer_extensions::facts::ensure_metrics_schema(&writer)?;
+    writer.execute_with_params(
+        "INSERT INTO viewer_session_metrics \
+         (conversation_id,extractor_version,source_revision,ttfe_seconds,one_shot_rate,\
+          retries_count,self_corrections_count,user_corrections_count,tools_used_json,\
+          task_breakdown_json,health_score,health_grade,health_issues_count,\
+          potential_waste_tokens,potential_savings_usd,computed_at_ms) \
+         VALUES (?1,1,77,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,1700000000000)",
+        &param_slice_to_values(params![
+            1_i64, 12.5_f64, 80.0_f64, 1_i64, 0_i64, 0_i64,
+            "[\"Bash\",\"Read\"]",
+            "{\"bugfix\":3,\"reworked_files\":{\"/src/lib.rs\":2}}",
+            82_i64, "B", 1_i64, 400_i64, 0.02_f64,
+        ]),
+    )?;
+    drop(writer);
+
+    let detail = bridge.exchange(json!({
+        "op":"get_session_details","conversation_id":1,"sections":["summary"]}))?;
+    ensure!(detail["ok"] == true, "{detail}");
+    let summary = &detail["result"]["sections"]["summary"];
+    let metrics = &summary["metrics"];
+    // Facts half — `viewer_session_facts` columns.
+    ensure!(metrics["turn_count"] == 3 && metrics["step_count"] == 5, "{metrics}");
+    ensure!(metrics["thinking_block_count"] == 1, "{metrics}");
+    ensure!(metrics["compaction_count"] == 0, "{metrics}");
+    ensure!(metrics["model_set"] == json!(["claude-test"]), "{metrics}");
+    // Metrics half — the columns only `viewer_session_metrics` carries;
+    // measured zeros stay zero, never degrade to unknown.
+    ensure!(metrics["ttfe_seconds"] == 12.5, "{metrics}");
+    ensure!(metrics["one_shot_rate"] == 80.0, "{metrics}");
+    ensure!(metrics["retries_count"] == 1, "{metrics}");
+    ensure!(metrics["self_corrections_count"] == 0, "{metrics}");
+    ensure!(metrics["user_corrections_count"] == 0, "{metrics}");
+    ensure!(metrics["tools_used"] == json!(["Bash", "Read"]), "{metrics}");
+    ensure!(
+        metrics["task_breakdown"]["reworked_files"]["/src/lib.rs"] == 2,
+        "{metrics}"
+    );
+    ensure!(metrics["health_score"] == 82 && metrics["health_grade"] == "B", "{metrics}");
+    ensure!(metrics["health_issues_count"] == 1, "{metrics}");
+    ensure!(metrics["potential_waste_tokens"] == 400, "{metrics}");
+    ensure!(metrics["potential_savings_usd"] == 0.02, "{metrics}");
+
+    // Provenance names the serving column on both halves.
+    let quality = &summary["metric_quality"];
+    let sources = &summary["metric_sources"];
+    ensure!(quality["turn_count"] == "known", "{quality}");
+    ensure!(sources["turn_count"] == "viewer_session_facts.turn_count", "{sources}");
+    ensure!(quality["health_score"] == "known", "{quality}");
+    ensure!(sources["health_score"] == "viewer_session_metrics.health_score", "{sources}");
+    ensure!(sources["health_grade"] == "viewer_session_metrics.health_grade", "{sources}");
+    ensure!(sources["tools_used"] == "viewer_session_metrics.tools_used_json", "{sources}");
+    ensure!(
+        sources["potential_waste_tokens"] == "viewer_session_metrics.potential_waste_tokens",
+        "{sources}"
+    );
+    ensure!(
+        sources["potential_savings_usd"] == "viewer_session_metrics.potential_savings_usd",
+        "{sources}"
+    );
+    // The seeded facts row left first_prompt NULL → known-provenance unknown.
+    ensure!(quality["first_prompt"] == "unknown", "{quality}");
+    ensure!(sources["first_prompt"] == "viewer_session_facts.first_prompt", "{sources}");
+
+    // The fact-less remote conversation reports `metrics: null`, never an
+    // all-null object — the same verified unknown contract list/recent use.
+    let remote = bridge.exchange(json!({
+        "op":"get_session_details","conversation_id":2,"sections":["summary"]}))?;
+    ensure!(remote["ok"] == true, "{remote}");
+    let remote_summary = &remote["result"]["sections"]["summary"];
+    ensure!(remote_summary["metrics"].is_null(), "{remote_summary}");
+    ensure!(
+        remote_summary["metric_quality"]["turn_count"] == "unknown",
+        "{remote_summary}"
+    );
+    ensure!(
+        remote_summary["metric_sources"]["turn_count"] == "unavailable:facts_not_persisted",
+        "{remote_summary}"
+    );
+    ensure!(
+        remote_summary["metric_sources"]["health_score"] == "unavailable:facts_not_persisted",
+        "{remote_summary}"
+    );
+    bridge.shutdown()
+}
+
+#[test]
 fn details_pagination_and_typed_refusals() -> Result<()> {
     let mut bridge = BridgeHarness::with_seed(&detail_fixture(), &[])?;
     seed_detail_extras(&bridge)?;
