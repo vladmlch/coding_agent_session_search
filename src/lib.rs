@@ -7803,7 +7803,6 @@ async fn execute_cli(
                         robot_trace_ingest,
                         background,
                         None,
-                        None,
                     )?;
                 }
                 Commands::Search {
@@ -101022,7 +101021,6 @@ fn run_index_with_data(
     robot_trace_ingest: bool,
     background: bool,
     mut captured_result: Option<&mut Option<serde_json::Value>>,
-    mirror_source_ids: Option<Vec<String>>,
 ) -> CliResult<()> {
     use std::time::Instant;
 
@@ -101094,7 +101092,6 @@ fn run_index_with_data(
         build_hnsw.hash(&mut hasher);
         embedder.hash(&mut hasher);
         robot_trace_ingest.hash(&mut hasher);
-        mirror_source_ids.hash(&mut hasher);
         format!("{}", data_dir.display()).hash(&mut hasher);
         // Only a non-default profile enters the hash, so keys cached before
         // --rebuild-profile existed keep matching their default-profile runs.
@@ -101296,7 +101293,7 @@ fn run_index_with_data(
     let previous_robot_trace_ingest =
         robot_trace_ingest.then(|| indexer::set_robot_trace_ingest_enabled(true));
     let index_handle = index_worker_thread_builder()
-        .spawn(move || indexer::run_cli_index(opts_clone, mirror_source_ids))
+        .spawn(move || indexer::run_cli_index(opts_clone))
         .map_err(|error| CliError {
             code: 9,
             kind: CliErrorKind::Index.kind_str(),

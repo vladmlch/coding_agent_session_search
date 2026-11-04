@@ -17280,42 +17280,14 @@ pub fn run_index(
     opts: IndexOptions,
     event_channel: Option<(Sender<IndexerEvent>, Receiver<IndexerEvent>)>,
 ) -> Result<()> {
-    run_index_inner(opts, event_channel, None, None, false)
+    run_index_inner(opts, event_channel, None, false)
 }
 
 /// Preserve the existing explicit `cass index` admission for automatic raw
 /// retention. Refresh, doctor, TUI and library indexing do not acquire it just
 /// because maintenance now lives inside the observed index owner.
-pub(crate) fn run_cli_index(opts: IndexOptions, source_ids: Option<Vec<String>>) -> Result<()> {
-    match source_ids {
-        Some(source_ids) => run_index_for_mirror_sources_inner(opts, source_ids, true),
-        None => run_index_inner(opts, None, None, None, true),
-    }
-}
-
-/// Re-read only the selected remote mirrors, without advancing local scan
-/// watermarks or treating unchanged mirror metadata as proof of ingestion.
-pub fn run_index_for_mirror_sources(opts: IndexOptions, source_ids: Vec<String>) -> Result<()> {
-    run_index_for_mirror_sources_inner(opts, source_ids, false)
-}
-
-fn run_index_for_mirror_sources_inner(
-    opts: IndexOptions,
-    source_ids: Vec<String>,
-    maintain_raw_mirror: bool,
-) -> Result<()> {
-    anyhow::ensure!(!source_ids.is_empty(), "mirror reingest requires a source");
-    anyhow::ensure!(
-        !opts.watch && opts.watch_once_paths.is_none() && !opts.force_rebuild,
-        "mirror reingest cannot run a watch or canonical-only rebuild"
-    );
-    run_index_inner(
-        opts,
-        None,
-        Some(Arc::new(HashMap::new())),
-        Some(source_ids),
-        maintain_raw_mirror,
-    )
+pub(crate) fn run_cli_index(opts: IndexOptions) -> Result<()> {
+    run_index_inner(opts, None, None, true)
 }
 
 /// qu81y class-B injection seam: run one index pass with the connectors'
@@ -17335,7 +17307,6 @@ pub fn run_index_with_local_connector_roots(
         opts,
         event_channel,
         Some(Arc::new(local_connector_roots)),
-        None,
         false,
     )
 }
@@ -17424,7 +17395,6 @@ fn run_index_inner(
     opts: IndexOptions,
     event_channel: Option<(Sender<IndexerEvent>, Receiver<IndexerEvent>)>,
     local_connector_roots: LocalConnectorRootsOverride,
-    mirror_source_ids: Option<Vec<String>>,
     maintain_raw_mirror: bool,
 ) -> Result<()> {
     let progress = opts.progress.clone();
@@ -17432,7 +17402,6 @@ fn run_index_inner(
         opts,
         event_channel,
         local_connector_roots,
-        mirror_source_ids,
         maintain_raw_mirror,
     );
     // Some archive diagnostics intentionally turn engine errors into reason
@@ -17455,7 +17424,6 @@ fn run_index_with_storage_ownership(
     opts: IndexOptions,
     event_channel: Option<(Sender<IndexerEvent>, Receiver<IndexerEvent>)>,
     local_connector_roots: LocalConnectorRootsOverride,
-    mirror_source_ids: Option<Vec<String>>,
     maintain_raw_mirror: bool,
 ) -> Result<()> {
     let _raw_mirror_io = observe_index_raw_mirror_io(opts.progress.as_ref());
@@ -18162,9 +18130,7 @@ fn run_index_with_storage_ownership(
     preflight_phase!("watch_startup:probe_lexical_checkpoint");
     let mut initial_matching_lexical_checkpoint = MatchingLexicalRebuildStateStatus::default();
     let mut restart_pending_lexical_rebuild_from_zero = false;
-    let resume_lexical_rebuild = if opts.force_rebuild || mirror_source_ids.is_some() {
-        // A mirror-only request must reach its selected scan, rather than
-        // returning after resuming a pre-existing canonical lexical rebuild.
+    let resume_lexical_rebuild = if opts.force_rebuild {
         false
     } else if initial_canonical_sessions_before_salvage > 0 {
         if let Some(status) = nonresumable_pending_lexical_rebuild_status_without_fingerprint(
@@ -18567,14 +18533,13 @@ fn run_index_with_storage_ownership(
         // automatic path for explicit full/rebuilt/empty recovery, and expose
         // the old populated-incremental discovery behavior behind
         // CASS_PREFLIGHT_HISTORICAL_SALVAGE_DISCOVERY=1.
-        let probe_pending_historical_bundles = mirror_source_ids.is_none()
-            && should_probe_pending_historical_bundles(
-                opts.full,
-                canonical_storage_rebuilt,
-                canonical_sessions_before_salvage,
-                canonical_only_full_rebuild,
-                preflight_historical_salvage_discovery_enabled(),
-            );
+        let probe_pending_historical_bundles = should_probe_pending_historical_bundles(
+            opts.full,
+            canonical_storage_rebuilt,
+            canonical_sessions_before_salvage,
+            canonical_only_full_rebuild,
+            preflight_historical_salvage_discovery_enabled(),
+        );
         let mut has_pending_historical_bundles = if probe_pending_historical_bundles {
             storage.has_pending_historical_bundles(&opts.db_path)?
         } else {
@@ -18596,8 +18561,7 @@ fn run_index_with_storage_ownership(
             canonical_sessions_before_salvage,
         );
         targeted_watch_once_only_run = targeted_watch_once_only;
-        let should_salvage_historical = mirror_source_ids.is_none()
-            && !targeted_watch_once_only
+        let should_salvage_historical = !targeted_watch_once_only
             && should_salvage_historical_databases(
                 canonical_storage_rebuilt,
                 canonical_sessions_before_salvage,
@@ -19030,15 +18994,7 @@ fn run_index_with_storage_ownership(
                 // qu81y closed-world override: sources.toml resolution is
                 // HOME/XDG-scoped, so an env-free run must not consult it —
                 // the override map is the complete scan universe.
-                let additional_scan_roots = if let Some(source_ids) = &mirror_source_ids {
-                    additional_scan_roots_for_scan_or_watch(&storage, &opts.data_dir, false)
-                        .into_iter()
-                        .filter(|root| {
-                            root.origin.kind.is_remote()
-                                && source_ids.contains(&root.origin.source_id)
-                        })
-                        .collect()
-                } else if local_connector_roots.is_some() {
+                let additional_scan_roots = if local_connector_roots.is_some() {
                     Vec::new()
                 } else {
                     additional_scan_roots_for_scan_or_watch(&storage, &opts.data_dir, false)
@@ -19048,12 +19004,8 @@ fn run_index_with_storage_ownership(
                 // be fully re-scanned every run), and capture fingerprints to
                 // persist for the roots we still scan.
                 let (additional_scan_roots, mirror_fingerprints_to_store) =
-                    if mirror_source_ids.is_some() {
-                        (additional_scan_roots, Vec::new())
-                    } else {
-                        plan_remote_mirror_scan_skips(&storage, &opts, additional_scan_roots)
-                    };
-                let scan_watermark = mirror_source_ids.is_none().then_some(scan_start_ts);
+                    plan_remote_mirror_scan_skips(&storage, &opts, additional_scan_roots);
+                let scan_watermark = Some(scan_start_ts);
                 let scan_requires_tantivy =
                     lexical_population_strategy_requires_inline_tantivy(lexical_strategy);
 
@@ -19751,15 +19703,13 @@ fn run_index_with_storage_ownership(
     } else {
         let now_ms = FrankenStorage::now_millis();
         let preserve_scan_watermark = scan_watermark_preservation_active();
-        let performed_scan_for_global_watermark = performed_scan
-            && mirror_source_ids.is_none()
-            && !preserve_scan_watermark
-            && !scan_had_errors;
+        let performed_scan_for_global_watermark =
+            performed_scan && !preserve_scan_watermark && !scan_had_errors;
         // `scanned_connectors` already excludes the exact connector that
         // skipped an active source (and excludes every connector when path
         // exclusions are configured). Persist the remaining safe connector
         // watermarks even when one unrelated connector must stay behind.
-        let performed_scan_for_connector_watermarks = performed_scan && mirror_source_ids.is_none();
+        let performed_scan_for_connector_watermarks = performed_scan;
         if performed_scan && preserve_scan_watermark {
             tracing::info!(
                 db_path = %opts.db_path.display(),
