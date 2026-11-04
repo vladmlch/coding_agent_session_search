@@ -15,29 +15,13 @@ Aggregates sessions from Codex, Claude Code, Gemini CLI, Cline, OpenCode, Amp, C
 <div align="center">
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/coding_agent_session_search/main/install.sh?$(date +%s)" \
-  | bash -s -- --easy-mode --verify
+git clone https://github.com/Dicklesworthstone/coding_agent_session_search
+cd coding_agent_session_search
+cargo install --path . --locked --bin cass
 ```
 
-```powershell
-# Windows (PowerShell)
-& ([scriptblock]::Create((irm "https://raw.githubusercontent.com/Dicklesworthstone/coding_agent_session_search/main/install.ps1"))) -EasyMode -Verify
-```
-
-Installs the latest release by default. Pass `--version <tag>` / `-Version <tag>` to pin a specific version.
-
-**Or via package managers:**
-
-```bash
-# Homebrew (Apple Silicon macOS + Linux)
-brew install dicklesworthstone/tap/cass
-
-# Windows (Scoop)
-scoop bucket add dicklesworthstone https://github.com/Dicklesworthstone/scoop-bucket
-scoop install dicklesworthstone/cass
-```
-
-The Homebrew tap installs prebuilt release tarballs (not bottles) for Linux and Apple Silicon macOS. On Intel macOS, use the install script with `--from-source`.
+`cass` is local-only: installed from a source checkout with Cargo (`publish = false`).
+There are no prebuilt binaries, install scripts, or package-manager taps.
 
 </div>
 
@@ -581,7 +565,7 @@ When the wizard installs `cass` on remote machines, it tries every viable method
 | 2 | **Source build** | ~30 min | rustup and cargo, curl/wget, 6GB free disk in `$HOME`, 10GB RAM |
 | 3 | **Full bootstrap** | ~30 min | curl, 6GB free disk in `$HOME`, 10GB RAM (installs rustup, then builds as in 2) |
 
-The source build does what `install.sh --from-source` does: it downloads the
+The source build downloads the
 release tag's source archive into `$HOME`, installs the Rust toolchain that
 tag's `rust-toolchain.toml` pins (a dated nightly; cass does not build on
 stable), and runs `cargo install --locked --path . --bin cass` inside it, so the
@@ -593,12 +577,10 @@ published one. Measured building v0.10.0 on a fresh account (two build jobs):
 1.5 GB toolchain, 0.8 GB cargo cache and a 2.6 GB build tree. The wizard
 offers it only to hosts above those floors.
 
-> **crates.io lags the releases:** the newest version on crates.io is 0.7.0
-> (2026-08-25), so `cargo install coding-agent-search` builds 0.7.0. Later
-> versions depend on `franken-agent-detection` at a git revision, and crates.io
-> does not accept git dependencies, so they cannot be published there until FAD
-> is (bead zztql). Use the installer or the GitHub Release binaries for a
-> current version.
+> **crates.io lags the source:** the last published crates.io version is 0.7.0
+> (2026-08-25), so `cargo install coding-agent-search` builds 0.7.0. The crate
+> is now `publish = false` — install from a source checkout
+> (`cargo install --path . --locked --bin cass`) for a current version.
 
 **Resource Requirements**:
 - Minimum 1GB free disk in `$HOME` for the pre-built binary
@@ -2952,7 +2934,7 @@ cass completions powershell >> $PROFILE
 
 - **CPU**: any x86_64 or ARM64 processor. Semantic search runs on a pure-Rust inference backend (frankensearch/native) with runtime-dispatched SIMD — NEON on Apple Silicon, AVX2/FMA when present on x86, SSE2/scalar fallback otherwise — so there is no AVX requirement and no `SIGILL` hazard (the historical ONNX Runtime dependency was removed in cass#308).
 - **OS**: Linux, macOS, or Windows
-- **Linux glibc**: Pre-built Linux binaries require **glibc 2.28+**: Debian 10+, Ubuntu 20.04+, RHEL/Rocky/Alma 8+, Amazon Linux 2023. They are cross-built against a pinned 2.28 floor (`cargo zigbuild --target <arch>-unknown-linux-gnu.2.28`). On the v0.10.0 artifacts, `objdump -p cass` shows `GLIBC_2.28` for both amd64 and arm64. Older systems (e.g. Ubuntu 18.04 with glibc 2.27) should build from source with `cargo install --git https://github.com/Dicklesworthstone/coding_agent_session_search`. The install script checks the host's glibc (`ldd --version`) before downloading a Linux prebuilt binary. If it is older than 2.28, the script warns and builds from source instead. `--from-source` forces that route, and `--artifact-url` skips the check for an artifact you choose.
+- **Linux glibc**: building from source needs only the pinned Rust toolchain. (The historical prebuilt binaries — no longer shipped — required **glibc 2.28+**; on older systems like Ubuntu 18.04 with glibc 2.27 a local source build is the supported route.)
 - **`sqlite3` command-line tool (optional)**: four repairs run the stock `sqlite3` binary:
   - the duplicate FTS schema-row repair, which some opens of an older archive run;
   - recovering a historical bundle during salvage;
@@ -2968,44 +2950,18 @@ cass completions powershell >> $PROFILE
 
 ### 1. Install
 
-**Recommended: Homebrew (Apple Silicon macOS + Linux)**
+Install `cass` from a source checkout (requires the pinned Rust nightly in
+`rust-toolchain.toml`; `rustup` picks it up automatically):
+
 ```bash
-brew install dicklesworthstone/tap/cass
-
-# Update later
-brew upgrade cass
+git clone https://github.com/Dicklesworthstone/coding_agent_session_search
+cd coding_agent_session_search
+cargo install --path . --locked --bin cass
 ```
 
-The Homebrew tap installs prebuilt release tarballs (not bottles) for Linux and Apple Silicon macOS. On Intel macOS, use the install script with `--from-source`.
-
-**Windows: Scoop**
-```powershell
-scoop bucket add dicklesworthstone https://github.com/Dicklesworthstone/scoop-bucket
-scoop install dicklesworthstone/cass
-```
-
-**Alternative: Install Script**
-```bash
-curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/coding_agent_session_search/main/install.sh?$(date +%s)" \
-  | bash -s -- --easy-mode --verify
-```
-
-**Alternative: GitHub Release Binaries**
-1. Download the asset for your platform from GitHub Releases.
-2. Verify `SHA256SUMS.txt` against the downloaded archive.
-3. Extract and move `cass` into your PATH.
-
-Example (Linux x86_64, replace `VERSION` with an explicit release tag):
-```bash
-VERSION=v0.2.0  # e.g. v0.2.0
-curl -L -o cass-linux-amd64.tar.gz \
-  "https://github.com/Dicklesworthstone/coding_agent_session_search/releases/download/${VERSION}/cass-linux-amd64.tar.gz"
-curl -L -o SHA256SUMS.txt \
-  "https://github.com/Dicklesworthstone/coding_agent_session_search/releases/download/${VERSION}/SHA256SUMS.txt"
-sha256sum -c SHA256SUMS.txt
-tar -xzf cass-linux-amd64.tar.gz
-install -m 755 cass ~/.local/bin/cass
-```
+The binary lands in `~/.cargo/bin/cass`. To upgrade, pull the checkout and
+re-run the same command. `cass` is local-only (`publish = false`): there are
+no prebuilt binaries, install scripts, or package-manager taps.
 
 ### 2. Launch
 ```bash
@@ -3145,7 +3101,7 @@ Other subcommands (all present in the `Commands` enum in `src/lib.rs`):
 |---------|---------|
 | `pages` | Export an encrypted, searchable static-site archive with GitHub Pages / Cloudflare Pages deploy; runs the interactive wizard by default, with `--export-only DIR`, `--verify BUNDLE`, `--preview BUNDLE`, and `--scan-secrets` as non-wizard modes. `--share-profile public\|team\|personal` (config: `bundle.share_profile`; wizard: step 4) redacts every exported text, including titles, paths, metadata values, message bodies, their search indexes and snippets. `public` covers home paths, usernames, project names, hostnames, emails, phone numbers, IP addresses, social-security and card numbers, and internal URLs; `team` covers home paths, emails, social-security and card numbers; `personal` rewrites nothing. No profile rewrites a credential (API keys, private keys, connection strings): the staged secret scan rejects an export that contains one, so it fails closed instead of publishing a rewritten secret. The default is `public` for a plaintext export and `team` when encrypted. The bundle's `export_meta` records the profile and per-kind redaction counts, never the values. For a plaintext bundle, `--verify` (which every export also runs before it reports success) reads the declared profile and rescans every exported text surface, including both search indexes, with that profile's rules. It fails if any value the profile removes remains, reporting counts per surface. The home-path and username rules use the verifying account's home directory. An encrypted bundle keeps its profile inside the payload, which `--verify` does not open. |
 | `pages key list\|add-password\|add-recovery\|revoke\|rotate --archive BUNDLE` | Manage the key slots of an exported encrypted bundle (LUKS-style: several independently wrapped copies of one data key). Passwords come from an interactive prompt or `--password-stdin` (current password on line 1, new password on line 2), never from argv; `--json` for automation; recovery secrets are printed once and never stored. See `docs/RECOVERY.md` |
-| `upgrade` | Check for a newer release and optionally run the same checksum-verified installer the TUI uses (`--check`, `--yes`, `--force`) |
+| `upgrade` | Check for a newer release and optionally run the checksum-verified upgrade flow (`--check`, `--yes`, `--force`) |
 | `man` | Generate the man page to stdout |
 | `storage` | On-disk storage footprint by component (DB, WAL, lexical index, raw mirror, semantic, quarantine) |
 | `dedup` | Collapse pre-existing duplicate conversation rows (`projects/<rel>` vs `<rel>` external-id twins); dry-run unless `--apply` |
@@ -3158,7 +3114,7 @@ Other subcommands (all present in the `Commands` enum in `src/lib.rs`):
 | `fleet upgrade-rehearsal` | Fleet-safe upgrade rehearsal (dry run) with bounded post-upgrade verification; `--live` opts in to SSH probes of configured remotes |
 | `lessons list\|search` | Mine and query durable, redacted lessons from local evidence (commits, closed beads, proof manifests) |
 | `import chatgpt` | Split a ChatGPT web export (`conversations.json`) into files the ChatGPT connector can index |
-| `release-verify` | Verify release distribution channels (GitHub, Homebrew, Scoop, crates.io, installer) from a recorded observation (`--from`) or live (`--live`) |
+| `release-verify` | Verify release distribution channels from a recorded observation (`--from`) or live (`--live`) |
 | `sources discover` | Auto-discover SSH hosts from `~/.ssh/config` |
 | `sources reingest` | Re-ingest an already-synced mirror into the canonical archive without re-running rsync |
 | `sources artifact-manifest` | Build or verify a lexical-artifact evidence manifest for remote exchange |
@@ -3335,7 +3291,7 @@ In `cass status --json`, `semantic.preferred_backend` is `"fastembed"` when the 
 
 ## 🔒 Integrity & Safety
 
-- **Verified Install**: The installer enforces SHA256 checksums.
+- **Reproducible Install**: `cargo install --path . --locked` builds only against the committed `Cargo.lock` pins.
 
 - **Sandboxed Data**: All indexes/DBs live in standard platform data directories (`~/.local/share/coding-agent-search` on Linux).
 
@@ -3456,17 +3412,16 @@ the Unicode build: about 9.5 times the ingest throughput per CPU second. A unit
 test rejects any secret pattern that reintroduces a Unicode `\b`, so the cliff
 cannot quietly come back.
 
-## 📦 Installer Strategy
+## 📦 Installation
 
-The project ships with a robust installer (`install.sh` / `install.ps1`) designed for CI/CD and local use:
+`cass` is local-only: built from source and never published (`publish = false`
+in `Cargo.toml`). The former network installers and prebuilt release binaries
+were removed with release publishing.
 
-- **Checksum Verification**: Validates artifacts against a `.sha256` file or explicit `--checksum` flag.
-
-- **Rustup Bootstrap**: Source installs use the dated nightly and components pinned by the release's `rust-toolchain.toml`. The installer bootstraps rustup without an unrelated default toolchain when needed.
-
-- **Easy Mode**: `--easy-mode` automates installation to `~/.local/bin` without prompts.
-
-- **Platform Agnostic**: Detects OS/Arch (Linux/macOS/Windows, x86_64/arm64) and fetches the correct binary.
+- **Install**: `cargo install --path . --locked --bin cass` from a repository
+  checkout (uses the dated nightly pinned by `rust-toolchain.toml`).
+- **Build only**: `cargo build --release --locked`.
+- **Upgrade**: pull the checkout and re-run the same `cargo install` command.
 
 
 
@@ -3496,24 +3451,13 @@ Update v<current> -> v<latest> | Alt+U upgrade | Alt+N notes | Alt+I ignore | Es
 
 ### Self-Update Installation
 
-Confirming **Alt+U** runs the same verified installer used for initial installation:
-
-macOS/Linux:
+The installer scripts Alt+U used to execute were removed with release
+publishing; self-update is being reworked as part of the local-only
+conversion. Until it lands, upgrade by reinstalling from the checkout:
 
 ```bash
-curl -fsSL https://...install.sh | bash -s -- --easy-mode --verify
+cargo install --path . --locked --bin cass
 ```
-
-Windows (PowerShell):
-
-```powershell
-& ([scriptblock]::Create((irm "https://...install.ps1"))) -EasyMode -Verify
-```
-
-The update process:
-1. Downloads `install.sh` (or `install.ps1`) and verifies it against the release `SHA256SUMS.txt`
-2. Replaces the current process with `install.sh --easy-mode --verify --version <tag>` (PowerShell equivalent on Windows), which downloads and checksum-verifies the new binary
-3. There is no separate binary backup or rollback step; reinstall an earlier tag with the installer's `--version` flag if needed
 
 ### Skip Version
 
@@ -3812,11 +3756,9 @@ When intentionally updating one of these sibling crates, update the manifest pin
   If you intentionally want monochrome, use `CASS_NO_COLOR=1 cass`.
   If a wrapper keeps forcing `TERM=dumb` and UI still degrades, either fix `TERM` or force raw mode explicitly with `CASS_ALLOW_DUMB_TERM=1 cass`.
 
-- **Checksum mismatch**: Ensure `.sha256` is reachable or pass `--checksum` explicitly. Check proxies/firewalls.
+- **Binary not on PATH**: `cargo install` places `cass` in `~/.cargo/bin`; append it to `PATH` and re-open the shell.
 
-- **Binary not on PATH**: Append `~/.local/bin` (or your `--dest`) to `PATH`; re-open shell.
-
-- **Rust toolchain missing in CI**: Set `RUSTUP_INIT_SKIP=1` if the pinned toolchain is preinstalled; otherwise allow installer to run rustup.
+- **Rust toolchain missing in CI**: if the pinned toolchain is preinstalled no rustup run is needed; otherwise let `rustup` install the toolchain named by `rust-toolchain.toml`.
 
 - **Watch mode not triggering**: Confirm `watch_state.json` updates and that connector roots are accessible; `notify` relies on OS file events (inotify/FSEvents).
 
@@ -3841,7 +3783,6 @@ rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-dev-target cargo test
 
 # Run End-to-End Tests
 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-dev-target cargo test --test e2e_index_tui
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-dev-target cargo test --test install_scripts
 ```
 
 ### Snapshot Baseline Workflow (FrankenTUI)

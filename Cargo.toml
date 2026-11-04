@@ -8,18 +8,9 @@ license-file = "LICENSE"
 resolver = "2"
 repository = "https://github.com/Dicklesworthstone/coding_agent_session_search"
 default-run = "cass"
-include = [
-    "/Cargo.toml",
-    "/Cargo.lock",
-    "/build.rs",
-    "/build_support/**",
-    "/CHANGELOG.md",
-    "/CHANGELOG_RESEARCH.md",
-    "/LICENSE",
-    "/README.md",
-    "/src/**/*.rs",
-    "/src/pages_assets/**",
-]
+# Local-only tool: never published to crates.io (or any other registry).
+# Install from a checkout with `cargo install --path . --locked --bin cass`.
+publish = false
 
 [dependencies]
 # Resident-memory supervision reuses the sysinfo version already in Cargo.lock.
@@ -393,11 +384,6 @@ strip = false
 # frankensearch-lexical = { path = "../frankensearch/crates/frankensearch-lexical" }
 # frankensearch-quill = { path = "../frankensearch/crates/frankensearch-quill" }
 # frankensearch-rerank = { path = "../frankensearch/crates/frankensearch-rerank" }
-
-[workspace.metadata.dist]
-targets = ["x86_64-unknown-linux-gnu"]
-installers = ["shell", "powershell"]
-ci = ["github"]
 
 [[bench]]
 name = "index_perf"

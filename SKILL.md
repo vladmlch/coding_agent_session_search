@@ -976,12 +976,10 @@ cm reflect
 ## Installation
 
 ```bash
-# One-liner install
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/coding_agent_session_search/main/install.sh \
-  | bash -s -- --easy-mode --verify
-
-# Windows
-irm https://raw.githubusercontent.com/Dicklesworthstone/coding_agent_session_search/main/install.ps1 | iex
+# Local-only: install from a source checkout (pinned nightly toolchain)
+git clone https://github.com/Dicklesworthstone/coding_agent_session_search
+cd coding_agent_session_search
+cargo install --path . --locked --bin cass
 ```
 
 ---

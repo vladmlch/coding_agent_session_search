@@ -968,7 +968,6 @@ fn e2e_subprocess_sources_cannot_mutate_the_parent_environment() -> SchemaTestRe
         "tests/e2e_filters.rs",
         "tests/e2e_full_integration.rs",
         "tests/e2e_index_tui.rs",
-        "tests/e2e_install_easy.rs",
         "tests/e2e_jsonl_schema_test.rs",
         "tests/e2e_large_dataset.rs",
         "tests/e2e_multi_connector.rs",

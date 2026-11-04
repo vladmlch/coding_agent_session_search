@@ -83,11 +83,10 @@ COMMON_OPTS=(
     --ignore-filename-regex='(tests/|benches/|\.cargo/)'
 )
 
-# Test exclusions (same as CI)
+# Test exclusions (same as CI); none currently — the install-script tests
+# (--skip install_sh / --skip install_ps1) were removed with the installers.
 TEST_OPTS=(
     --
-    --skip install_sh
-    --skip install_ps1
 )
 
 # Run tests ONCE with coverage instrumentation (no report yet)

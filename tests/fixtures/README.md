@@ -17,7 +17,6 @@ Fixtures follow the project's **no-mock policy** — see `TESTING.md`.
 | [`connectors/`](#connectors) | Connector manifest | Fixture provenance tracking |
 | [`gemini/`](#gemini) | Gemini session format | Hash-based directory parsing |
 | [`html_export/`](#html_export) | HTML export test data | Edge cases, real sessions |
-| [`install/`](#install) | Installation artifacts | Installer script testing |
 | [`models/`](#models) | ONNX model fixtures | Embedding/reranker loading |
 | [`multi_source/`](#multi_source) | Multi-machine sources | Source sync testing |
 | [`opencode_json/`](#opencode_json) | OpenCode JSON format | Message/part/session parsing |
@@ -181,21 +180,6 @@ Fixtures follow the project's **no-mock policy** — see `TESTING.md`.
 | Pi Agent | `pi_agent_personal_assistant.jsonl` |
 
 **Tested by:** `tests/e2e_html_export.rs`, `src/html_export/`
-
----
-
-### install/
-
-**Scenario:** Testing the installation script with mock artifacts.
-
-| File | Description |
-|------|-------------|
-| `coding-agent-search` | Mock Linux binary |
-| `coding-agent-search.exe` | Mock Windows binary |
-| `*.tar.gz`, `*.zip` | Mock release archives |
-| `*.sha256` | Checksum files for integrity verification |
-
-**Tested by:** `tests/e2e_install_easy.rs`
 
 ---
 
