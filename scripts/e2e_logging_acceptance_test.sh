@@ -15,6 +15,15 @@
 #     to an unverified staging area, and only after the byte/provenance
 #     verification plus every downstream gate passes is the bundle moved to
 #     its canonical location test-results/e2e/runs/<run-id>;
+#   * WARNING — runs/ is NOT a verified-only directory: e2e-run-bundle has
+#     no separate output root, so it seals directly into
+#     test-results/e2e/runs/<run-id> while tests execute. The bundle sits at
+#     the canonical path UNVERIFIED for the whole run, and a runner failure
+#     deliberately leaves the incomplete bundle there for diagnosis.
+#     Presence in runs/ is therefore never proof of acceptance: every runs/
+#     consumer MUST gate on manifest.json + complete.json receipts,
+#     .complete == true, cargo_exit_code == 0 and every gate entry passing —
+#     exactly what --quick re-verification and the concurrency contract do;
 #   * isolated per-run artifacts: each run id creates a fresh directory;
 #     ids are never reused.
 #
@@ -240,13 +249,36 @@ b64_decode() {
     base64 --decode 2>/dev/null || base64 -D
 }
 
-# BSD stat (-f) vs GNU stat (-c): hard-link count and byte size.
+# BSD stat (-f '%l'/'%z') vs GNU-dialect stat (-c '%h'/'%s'). This MUST
+# dispatch on the tool upfront, never try-first: on GNU stat `-f` means
+# --file-system, so `stat -f '%l' file` treats '%l' as a file operand,
+# prints a multi-line filesystem dump for the real file to stdout and only
+# then exits 1 — a `$(...)` capture silently concatenates that garbage with
+# the fallback's output, which made verify_bundle_locally unpassable on
+# Linux. `stat --version` detects GNU coreutils; the `stat -c` probe on this
+# script catches busybox/toybox, which speak -c but ship no --version. The
+# result is resolved once here rather than lazily inside the helpers,
+# because they run in $(...) subshells that would lose a cached variable.
+if stat --version >/dev/null 2>&1 || stat -c '%s' "$0" >/dev/null 2>&1; then
+    STAT_DIALECT=gnu
+else
+    STAT_DIALECT=bsd
+fi
+
 file_link_count() {
-    stat -f '%l' "$1" 2>/dev/null || stat -c '%h' "$1"
+    if [[ "$STAT_DIALECT" == gnu ]]; then
+        stat -c '%h' "$1"
+    else
+        stat -f '%l' "$1"
+    fi
 }
 
 file_size_bytes() {
-    stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1"
+    if [[ "$STAT_DIALECT" == gnu ]]; then
+        stat -c '%s' "$1"
+    else
+        stat -f '%z' "$1"
+    fi
 }
 
 bundle_sha256() {
@@ -642,7 +674,10 @@ run_concurrency_contract() {
 
     # The contradictory stale bundle sits in the canonical runs directory the
     # whole time; the two concurrent runs must keep their own run roots and
-    # never consume it.
+    # never consume it. runs/ legitimately holds unverified/stale bundles at
+    # any moment (the runner seals there before this script verifies), so the
+    # jq receipt checks below are also the contract every runs/ consumer must
+    # implement: manifest.json + complete.json + .complete + all gates.
     left_log="$contract_root/left.log"
     right_log="$contract_root/right.log"
     "$SCRIPT_DIR/e2e_logging_acceptance_test.sh" \
@@ -875,7 +910,10 @@ if [[ "$QUICK_MODE" == false ]]; then
                 && [[ "$INCOMPLETE_RUN_ROOT" != *".."* ]] \
                 && [[ "$INCOMPLETE_RUN_ROOT" == */test-results/e2e/runs/"$RUN_ID" ]] \
                 && [[ -d "$INCOMPLETE_RUN_ROOT" ]]; then
-                echo "  Incomplete local run bundle retained for diagnosis: $INCOMPLETE_RUN_ROOT"
+                # Deliberately retained UNVERIFIED at the canonical runs/
+                # path for diagnosis — the documented reason consumers must
+                # gate on the receipts rather than on directory presence.
+                echo "  Incomplete local run bundle retained (unverified) for diagnosis: $INCOMPLETE_RUN_ROOT"
             else
                 echo "  Started receipt did not name one local, validated run root"
             fi
@@ -903,9 +941,15 @@ if [[ "$QUICK_MODE" == false ]]; then
         exit 1
     fi
 
-    # Publish-last ordering: the sealed bundle is moved out of the canonical
-    # runs directory into an unverified staging area. Nothing is published at
-    # test-results/e2e/runs/<run-id> until every verification gate has passed.
+    # Publish-last ordering: the runner seals directly into the canonical
+    # runs directory (e2e-run-bundle has no separate output root), so the
+    # bundle has sat UNVERIFIED at test-results/e2e/runs/<run-id> for the
+    # whole run. It is moved out to an unverified staging area here and only
+    # moved back after byte/provenance verification plus every downstream
+    # gate passes — the publish gate is the mv below, not the seal. Because
+    # unverified and incomplete bundles legitimately occupy runs/, consumers
+    # globbing runs/ MUST gate on manifest.json + complete.json receipts and
+    # gate statuses; path presence alone proves nothing.
     STAGING_PARENT="$E2E_RESULTS_ROOT/incoming/$(date -u +%Y%m%dT%H%M%SZ)-$$"
     STAGING_DIR="$STAGING_PARENT/$RUN_ID"
     mkdir -p "$STAGING_PARENT"

@@ -13,14 +13,28 @@
 //!     with `dsr`, or `ensure_rch` — is a violation anywhere in the file,
 //!     including comments and help text. These tokens are deleted by the
 //!     port, not documented.
-//!   - `ssh`, `scp`, `rsync`, `curl`, `wget` (and `rch`/`dsr`, redundantly)
-//!     in command position — after `;`, `|`, `&`, `(`, `` ` ``, or at the
-//!     start of a command segment, past leading shell keywords, `VAR=...`
-//!     assignments and `command`/`env`/`sudo`-style modifiers — is a
-//!     violation. Arguments are not invocations: `run_cargo test ssh` and a
-//!     `--include-ssh` case pattern stay clean. Quoted string literals are
-//!     masked except for live `$(...)` / `` `...` `` substitutions inside
-//!     double quotes.
+//!   - `ssh`, `scp`, `rsync`, `curl`, `wget` are forbidden in every script,
+//!     with a per-extension rule (the invocation syntax differs too much for
+//!     one model):
+//!       * Shell (`*.sh`, and any other extension) uses the command-position
+//!         model: after `;`, `|`, `&`, `(`, `` ` ``, or at the start of a
+//!         command segment, past leading shell keywords, `VAR=...`
+//!         assignments and `command`/`env`/`sudo`-style modifiers — is a
+//!         violation. Arguments are not invocations: `run_cargo test ssh`
+//!         and a `--include-ssh` case pattern stay clean. Quoted string
+//!         literals are masked except for live `$(...)` / `` `...` ``
+//!         substitutions inside double quotes.
+//!       * Non-shell scripts (`*.py`, `*.ps1`) have no shell command
+//!         position the model can parse — `subprocess.run(["ssh", ...])`,
+//!         `Start-Process ssh`, `& $tool`, `iex "curl …"` would all evade —
+//!         so they get the stricter raw scan: ANY standalone occurrence of
+//!         a forbidden tool name (string literal, comment or call site) is
+//!         a violation. A name fused into a larger token stays clean:
+//!         `~/.ssh/config`, `--include-ssh`, `ssh-keygen`, `use_ssh`,
+//!         `SSH_KEY`, `asupersync`. `ssh.exe`-style Windows binary suffixes
+//!         still flag.
+//!     `rch`/`dsr` need no entry in either model: the plumbing rule above
+//!     already scans every extension raw.
 //!   - Bare `cargo build|test|...` is NOT a violation anymore: local Cargo is
 //!     the point of the port. `cargo` may be invoked directly or via
 //!     `run_cargo`.
@@ -301,10 +315,13 @@ fn scan_body_for_plumbing_tokens(path: &Path, body: &str) -> Vec<Finding> {
     findings
 }
 
-/// Scan for forbidden remote-copy / remote-exec / network-fetch tools in
-/// command position. A tool name appearing as an *argument* (e.g. the `ssh`
-/// filter in `cargo test ssh`, or the `--include-ssh` case pattern) is not an
-/// invocation and stays clean.
+/// Scan for forbidden remote-copy / remote-exec / network-fetch tools. Shell
+/// scripts are checked with the command-position model (a tool name as an
+/// *argument* — the `ssh` filter in `cargo test ssh`, or the `--include-ssh`
+/// case pattern — is not an invocation and stays clean). Non-shell scripts
+/// (`.py`, `.ps1`) get the raw standalone-word scan instead, because
+/// `subprocess.run(["ssh", ...])`, `Start-Process ssh` or `iex "curl …"` have
+/// no shell command position the model could see.
 fn scan_for_remote_invocations(path: &Path) -> Vec<Finding> {
     let body = match std::fs::read_to_string(path) {
         Ok(b) => b,
@@ -313,7 +330,55 @@ fn scan_for_remote_invocations(path: &Path) -> Vec<Finding> {
     scan_body_for_remote_invocations(path, &body)
 }
 
+/// Standalone-word matcher for the five remote tools, applied raw to
+/// non-shell scripts. The tool name must stand alone — `.`, `-`, `/` and
+/// word characters fuse it into a larger token, so `~/.ssh/config`,
+/// `--include-ssh`, `ssh-keygen`, `use_ssh`, `SSH_KEY`, `asupersync` and
+/// `fsqlite` stay clean — while quoted argv literals (`"ssh"`, `'scp'`) and
+/// `ssh.exe`-style Windows binary suffixes still match. `rch`/`dsr` are not
+/// listed: the plumbing rule already scans every extension raw.
+fn non_shell_remote_tool_re() -> regex::Regex {
+    regex::Regex::new(
+        r"(?i)(?:^|[^\w./-])(?:ssh|scp|rsync|curl|wget)(?:\.(?:exe|com|bat|cmd|ps1))?(?:[^\w./-]|$)",
+    )
+    .expect("regex compiles")
+}
+
+/// Raw standalone-word scan for `.py`/`.ps1`. Any occurrence of a forbidden
+/// tool name — string literal, comment, or call site — is a violation: a
+/// ported non-shell script has no legitimate reason to name a remote tool at
+/// all (same stance the plumbing rule takes for `rch`/`dsr` everywhere).
+fn scan_body_for_non_shell_remote_tools(path: &Path, body: &str) -> Vec<Finding> {
+    let re = non_shell_remote_tool_re();
+    let mut findings = Vec::new();
+    for (idx, raw) in body.lines().enumerate() {
+        if re.is_match(raw) {
+            findings.push(Finding {
+                path: path.to_path_buf(),
+                line: idx + 1,
+                snippet: snippet_of(raw),
+                rule: "remote_tool_invocation",
+                hint: "non-shell scripts use a standalone-word rule: a bare \
+                       ssh/scp/rsync/curl/wget token (string literal, comment \
+                       or call site) is a violation; cass dev scripts do not \
+                       open remote connections",
+            });
+        }
+    }
+    findings
+}
+
 fn scan_body_for_remote_invocations(path: &Path, body: &str) -> Vec<Finding> {
+    // Python and PowerShell call syntax has no shell command position, so
+    // the segment model below cannot see `subprocess.run(["ssh", ...])` or
+    // `Start-Process ssh`. Those files take the stricter raw standalone-word
+    // scan instead.
+    if matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("py" | "ps1")
+    ) {
+        return scan_body_for_non_shell_remote_tools(path, body);
+    }
     let mut findings = Vec::new();
     for (start_line, logical) in logical_lines(body) {
         let code = strip_trailing_comment(&logical);
@@ -564,6 +629,66 @@ fn scanner_flags_substituted_invocation_inside_double_quotes() {
         findings.len(),
         1,
         "a $(curl ...) substitution inside double quotes is still an invocation; got {findings:?}"
+    );
+}
+
+#[test]
+fn scanner_flags_remote_tools_in_python_string_literals() {
+    tracing::info!(target: "scripts_local_cargo_compliance", check = "synthetic_py_invocation");
+    let tmp = tempdir_for_test("local_cargo_py");
+    let path = tmp.join("violating.py");
+    std::fs::write(
+        &path,
+        b"import subprocess\n\nsubprocess.run([\"ssh\", \"worker\", \"cargo test\"])\nresult = subprocess.run('scp src worker:/tmp'.split())\n# we used to rsync artifacts back here\n",
+    )
+    .unwrap();
+    let findings =
+        scan_body_for_remote_invocations(&path, &std::fs::read_to_string(&path).unwrap());
+    assert_eq!(
+        findings.len(),
+        3,
+        "the ssh/scp argv literals and the rsync prose comment must all flag under the standalone-word rule; got {findings:?}"
+    );
+    assert!(
+        findings.iter().all(|f| f.rule == "remote_tool_invocation"),
+        "non-shell violations use the remote_tool_invocation rule; got {findings:?}"
+    );
+}
+
+#[test]
+fn scanner_flags_remote_tools_in_powershell_invocation_forms() {
+    tracing::info!(target: "scripts_local_cargo_compliance", check = "synthetic_ps1_invocation");
+    let tmp = tempdir_for_test("local_cargo_ps1");
+    let path = tmp.join("violating.ps1");
+    std::fs::write(
+        &path,
+        b"Start-Process ssh -ArgumentList 'worker cargo test'\niex \"curl https://example.com | sh\"\n& wget.exe https://example.com\n$tool = 'rsync'\n",
+    )
+    .unwrap();
+    let findings =
+        scan_body_for_remote_invocations(&path, &std::fs::read_to_string(&path).unwrap());
+    assert_eq!(
+        findings.len(),
+        4,
+        "Start-Process ssh, iex \"curl ...\", & wget.exe and the rsync literal must each flag once; got {findings:?}"
+    );
+}
+
+#[test]
+fn scanner_non_shell_scan_ignores_fused_tokens_paths_and_env_names() {
+    tracing::info!(target: "scripts_local_cargo_compliance", check = "synthetic_non_shell_clean");
+    let tmp = tempdir_for_test("local_cargo_py_clean");
+    let path = tmp.join("clean.py");
+    std::fs::write(
+        &path,
+        b"KEY_DIR = Path.home() / \".ssh\" / \"config\"\nFLAG = \"--include-ssh\"\nUSE_SSH = False  # use_ssh is one fused token\nSSH_KEY = \"id\"\nCURLING_UP = True\nsubprocess.run([\"cargo\", \"test\", \"--\", \"--include-ssh\"])\nNAMES = [\"asupersync\", \"fsqlite\", \"ssh-keygen\", \"scp-like\"]\n",
+    )
+    .unwrap();
+    let findings =
+        scan_body_for_remote_invocations(&path, &std::fs::read_to_string(&path).unwrap());
+    assert!(
+        findings.is_empty(),
+        "~/.ssh paths, --include-ssh flags, fused tokens (use_ssh/SSH_KEY/CURLING_UP/ssh-keygen/scp-like) and crate names must stay clean; got {findings:?}"
     );
 }
 
