@@ -333,3 +333,19 @@ Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
 | 2026-11-04 | `cargo test --locked --test spec_starter_workflows_drift --test spec_recommended_commands_drift --test spec_mistake_recoveries_contract --test spec_robot_docs_topics --test spec_aliases_resolve --test spec_auto_correction_contracts` | ok |
 | 2026-11-04 | `cargo test --locked --test spec_exit_codes_documented` | ok: 5 passed — `every_documented_exit_code_is_emitted` green for the first time: dead `8` entry removed from the contract + README/AGENTS rows, the real `process::exit(70)` emitter (`src/viewer_bridge/deadline.rs`) added to the scan SOURCES (fixes the pre-existing {70} baseline gap), and the still-real 130 exit made scannable via a literal `code: 130` CliError on the no-signal-registered `IndexInterrupted` arm |
 | 2026-11-04 | `UPDATE_GOLDENS=1 cargo test --locked --test golden_robot_json` | ok: 52 passed — capabilities golden regenerated; diff is exactly the removed `code: "8"` entry and the retexted `130` `agent_action` |
+
+## Task 11 — full reindex preserves archived remote rows (2026-11-04)
+
+Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
+
+| Date (UTC) | Command | Result |
+| ---------- | ------- | ------ |
+| 2026-11-04 | `cargo test --test local_archive_preservation` | ok: 63 passed — extended the Task-0 fixture with: configured `type = "ssh"` mirror ingest under `remotes/<src>/mirror/<safe>/<basename>/…`, emptied `sources.toml` (DB-fallback scan roots), manual mirror-dir deletion, remote row with no `sources` entry, `index --full` vs `--force-rebuild` snapshot equality, remote `origin_kind` after force rebuild, `cass forget` tombstone surviving a later `--full`, and a read-surface sweep (search/view/expand/export/`export-html --encrypt`/`pages --export-only`/timeline/`analytics tokens`/`models backfill` + semantic hit) |
+| 2026-11-04 | `cargo test --test remote_mirror_ingestion` | ok: 2 passed |
+| 2026-11-04 | `cargo test --test cli_forget` | ok: 78 passed — explicit deletion path intact |
+| 2026-11-04 | `cargo test --lib indexer::` | 1533 passed, 26 failed — same documented macOS environmental classes as the Task 9 baseline (non-UTF8 `os error 92`, `/var`↔`/private/var` canonicalization, HNSW index-version, watch timing); all `build_scan_roots_*`, `mirror_scan_skip_tests` and `forgotten_source_admission` tests green |
+| 2026-11-04 | `cargo fmt --all -- --check` | ok |
+| 2026-11-04 | `cargo clippy --test local_archive_preservation` | ok |
+| 2026-11-04 | `cass doctor --json` on fixture with remote mirror dir removed | `sources_config` pass; `sessions` warn is `source-authority-unsafe`/`verify-source-authority-before-rebuild` with `fix_available: false`, `default_outcome_kind: "blocked"` — informational, never a deletion/auto-repair trigger |
+
+No production change was needed: `build_scan_roots_with_missing` produces no scan root for a vanished source and nothing prunes canonical rows on that account; `sync_sources_config_to_db` only upserts; `--force-rebuild` on a populated archive is a canonical-only lexical rebuild; deletion stays confined to `forget`/`sources remove --purge`/dedup paths. One fixture correction: the mirror fixture now uses the basename-preserving layout `<safe>/session/<session>/messages.jsonl` — the `mirrored_store` resolver accepts only that shape (or a trailing-slash source) because contents-copy containers require `source.ends_with('/')`.
