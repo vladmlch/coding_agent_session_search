@@ -1151,21 +1151,28 @@ fn prefetch_gated_message_texts(
     quill_possible: &HashMap<String, HashMap<i64, HashSet<i64>>>,
     stats: &mut HydrateStats,
 ) -> Result<()> {
+    // Literal-scoped work hoisted out of the session×literal loop: the
+    // ASCII check, the `matcher.never` verdict and the
+    // `"{value}|{exact}"` gate-map key all depend only on the literal, so
+    // each is resolved once per literal per request instead of once per
+    // pair.
+    let gated_literals: Vec<Option<&HashMap<i64, HashSet<i64>>>> = literals
+        .iter()
+        .map(|(value, exact)| {
+            if !value.is_ascii()
+                || matchers
+                    .get(&(value.clone(), *exact))
+                    .is_some_and(|matcher| matcher.never)
+            {
+                return None;
+            }
+            quill_possible.get(&format!("{value}|{exact}"))
+        })
+        .collect();
     let mut pending: BTreeSet<i64> = BTreeSet::new();
     for session in sessions {
-        for (value, exact) in literals {
-            if !value.is_ascii() {
-                continue;
-            }
-            if matchers
-                .get(&(value.clone(), *exact))
-                .is_some_and(|matcher| matcher.never)
-            {
-                continue;
-            }
-            let Some(gate) = quill_possible
-                .get(&format!("{value}|{exact}"))
-                .and_then(|by_session| by_session.get(&session.conversation_id))
+        for by_session in &gated_literals {
+            let Some(gate) = by_session.and_then(|gates| gates.get(&session.conversation_id))
             else {
                 continue;
             };

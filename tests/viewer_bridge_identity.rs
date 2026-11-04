@@ -474,6 +474,59 @@ fn multi_chunk_same_public_id_collapses_to_lowest_conversation_id() -> Result<()
     Ok(())
 }
 
+/// The revision-bound reverse index fills per queried `source_id` scope —
+/// a narrow lookup must pay its provenance range, never the whole catalog.
+/// `rows_scanned` counts the conversation rows every scope build verified:
+/// a one-row scope reads one row, a repeat resolve on the same revision
+/// reads nothing, a second scope reads only its own range, and a new
+/// physical revision still pays only the queried scope.
+#[test]
+fn cached_reverse_lookup_cost_scales_with_scope_not_catalog() -> Result<()> {
+    let mut rows = vec![FixtureRow::new("claude", "/c/needle.jsonl", Some("needle"))];
+    // A 64-row scope the first lookups never touch — the whole-catalog
+    // build this replaces would have verified all 65 rows per revision.
+    for i in 0..64_u32 {
+        let path: &'static str = Box::leak(format!("/r/fill-{i}.jsonl").into_boxed_str());
+        let ext: &'static str = Box::leak(format!("fill-{i}").into_boxed_str());
+        rows.push(FixtureRow::new("antigravity", path, Some(ext)).remote("office", "office"));
+    }
+    let fixture = IdentityFixture::build(&rows)?;
+    let conn = fixture.connect()?;
+    let remote_public = identity::resolve_public_id(&conn, 2)?.public_id;
+    let mut slot: Option<identity::ReverseIdentityIndex> = None;
+
+    // Narrow lookup: exactly the one "local" row, not the 64-row scope.
+    let hit = identity::resolve_conversation_id_cached(&conn, "claude:needle", &mut slot, "rev-1")?;
+    ensure!(hit == Some(1));
+    ensure!(
+        slot.as_ref().map(|index| index.rows_scanned) == Some(1),
+        "narrow scope must scan its own rows only"
+    );
+
+    // Same revision + same scope: pure in-memory hit, zero new rows.
+    let hit = identity::resolve_conversation_id_cached(&conn, "claude:needle", &mut slot, "rev-1")?;
+    ensure!(hit == Some(1));
+    ensure!(slot.as_ref().map(|index| index.rows_scanned) == Some(1));
+
+    // A different scope pays only its own range on top: 1 + 64 total.
+    let hit = identity::resolve_conversation_id_cached(&conn, &remote_public, &mut slot, "rev-1")?;
+    ensure!(hit == Some(2));
+    ensure!(
+        slot.as_ref().map(|index| index.rows_scanned) == Some(65),
+        "second scope must scan its own range only"
+    );
+
+    // A new physical revision re-keys the index — the repeat narrow
+    // lookup still pays just its scope, never the whole catalog.
+    let hit = identity::resolve_conversation_id_cached(&conn, "claude:needle", &mut slot, "rev-2")?;
+    ensure!(hit == Some(1));
+    ensure!(
+        slot.as_ref().map(|index| index.rows_scanned) == Some(1),
+        "re-keyed index must still scan scope-sized ranges"
+    );
+    Ok(())
+}
+
 #[test]
 fn conversation_id_never_leaks_into_public_identity() -> Result<()> {
     let fixture =

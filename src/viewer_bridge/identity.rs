@@ -1015,73 +1015,104 @@ pub fn resolve_conversation_id(connection: &Connection, public_id: &str) -> Resu
 // Revision-bound reverse index.
 // ---------------------------------------------------------------------------
 
-/// Every canonical conversation resolved once, keyed to the strict-snapshot
-/// revision it was read under. The uncached resolver scans a whole
-/// `source_id` range and re-verifies each candidate (`resolve_row` plus
-/// `extra::decode` on the metadata evidence) per call — quadratic across
-/// the read→CAS→read flow a metadata edit performs. Built once per
-/// physical archive revision, this index turns later `public_id`
-/// resolutions on that revision into in-memory lookups; the snapshot
-/// `before` token is the key, so the index can never bind an identity the
-/// archive no longer proves.
+/// The verified (and failed-to-verify) rows of ONE queried `source_id`
+/// scope — [`REVERSE_CANDIDATE_SQL`]'s exact candidate range, in the
+/// rowid order the provenance index yields it.
+struct SourceScope {
+    /// Rows that verified — every one already belongs to the queried
+    /// `source_id`, so the range scan replaces the old catalog-wide
+    /// build's per-row `source_id` filter.
+    resolved: Vec<ResolvedIdentity>,
+    /// Rows that failed verification, retained so the plausible-claim
+    /// path can re-resolve the exact stored error on demand — error
+    /// values are never flattened or re-typed.
+    failed: Vec<Row>,
+}
+
+/// Revision-bound reverse identity index: the provider registry and the
+/// dimension lookups are pinned once to the strict-snapshot `before`
+/// token, while the conversation rows are resolved LAZILY per queried
+/// `source_id` scope — a `public_id` resolve pays exactly the provenance
+/// range scan the uncached resolver performs, amortized across repeat
+/// resolves of the same `(revision, source_id)`. The whole-catalog build
+/// this replaces charged every new physical revision a full verification
+/// pass even when the query touched a one-row scope; the snapshot
+/// `before` token still keys the index, so it can never bind an identity
+/// the archive no longer proves.
 pub struct ReverseIdentityIndex {
     /// The `snapshot_stamped` `before` token this index was built under.
     revision: String,
     /// Provider namespaces at build time — `KNOWN_PROVIDERS` plus the
     /// normalized agent slugs, the same set `provider_namespaces` queries.
     namespaces: BTreeSet<String>,
-    /// Every row that verified, in canonical `id` order — the same
-    /// relative order the provenance index's per-source range scan yields
-    /// (rowid order within each `source_id`).
-    resolved: Vec<ResolvedIdentity>,
-    /// Rows that failed verification, retained so the plausible-claim path
-    /// can re-resolve the exact stored error on demand — error values are
-    /// never flattened or re-typed.
-    failed: Vec<Row>,
     /// The dimension lookups the index was built against — re-resolution
     /// of a failed row must see the same registry the build saw.
     lookups: IdentityLookups,
+    /// Lazily filled per-`source_id` scopes — one entry per queried
+    /// provenance range.
+    scopes: std::collections::HashMap<String, SourceScope>,
+    /// Conversation rows read across every scope build — the counter the
+    /// scale test uses to prove a lookup pays its queried scope, never
+    /// the whole catalog.
+    pub(crate) rows_scanned: usize,
 }
 
-/// One whole-catalog verification pass in canonical row order — the
-/// superset of every per-`source_id` range scan the uncached resolver
-/// performs, so any parsed scope resolves from the same build.
-fn build_reverse_index(connection: &Connection, revision: &str) -> Result<ReverseIdentityIndex> {
-    let lookups = load_lookups(connection)?;
-    let mut namespaces: BTreeSet<String> =
-        KNOWN_PROVIDERS.iter().map(|s| s.to_string()).collect();
-    for slug in lookups.agents.values() {
-        if let Ok(provider) = normalize_agent_slug(slug) {
-            namespaces.insert(provider);
+impl ReverseIdentityIndex {
+    /// The revision-bound skeleton — namespaces and dimension lookups at
+    /// snapshot time, no conversation rows; each `source_id` scope fills
+    /// on first use.
+    fn fresh(connection: &Connection, revision: &str) -> Result<Self> {
+        let lookups = load_lookups(connection)?;
+        let mut namespaces: BTreeSet<String> =
+            KNOWN_PROVIDERS.iter().map(|s| s.to_string()).collect();
+        for slug in lookups.agents.values() {
+            if let Ok(provider) = normalize_agent_slug(slug) {
+                namespaces.insert(provider);
+            }
         }
+        Ok(Self {
+            revision: revision.to_owned(),
+            namespaces,
+            lookups,
+            scopes: std::collections::HashMap::new(),
+            rows_scanned: 0,
+        })
     }
-    let rows = connection.query(
-        "SELECT c.id, c.agent_id, c.source_id, c.external_id, c.source_path, \
-         c.origin_host, c.metadata_bin, c.metadata_json \
-         FROM conversations c ORDER BY c.id",
-    )?;
-    let mut resolved = Vec::with_capacity(rows.len());
-    let mut failed = Vec::new();
-    for row in rows {
-        match resolve_row(&row, &lookups) {
-            Ok(identity) => resolved.push(identity),
-            Err(_) => failed.push(row),
+
+    /// Lazily resolve + retain one `source_id` scope — the uncached
+    /// resolver's exact candidate query, verified row-by-row into the
+    /// resolved/failed halves it would fold. A no-op once filled, so a
+    /// repeat resolve on the same revision is a pure in-memory lookup.
+    fn ensure_scope(&mut self, connection: &Connection, source_id: &str) -> Result<()> {
+        if self.scopes.contains_key(source_id) {
+            return Ok(());
         }
+        let rows = connection.query_with_params(
+            REVERSE_CANDIDATE_SQL,
+            &param_slice_to_values(params![source_id]),
+        )?;
+        self.rows_scanned += rows.len();
+        let mut resolved = Vec::with_capacity(rows.len());
+        let mut failed = Vec::new();
+        for row in rows {
+            match resolve_row(&row, &self.lookups) {
+                Ok(identity) => resolved.push(identity),
+                Err(_) => failed.push(row),
+            }
+        }
+        self.scopes
+            .insert(source_id.to_owned(), SourceScope { resolved, failed });
+        Ok(())
     }
-    Ok(ReverseIdentityIndex {
-        revision: revision.to_owned(),
-        namespaces,
-        resolved,
-        failed,
-        lookups,
-    })
 }
 
-/// [`resolve_conversation_id`] over a revision-bound index, building the
-/// index inside the caller's snapshot when the slot is empty or keyed to
-/// an older `observe` token. Same parse, same scope filter, same
-/// plausible-claim error surface, same multi-match collapse — only the
-/// per-call scan is amortized.
+/// [`resolve_conversation_id`] over a revision-bound index, filling the
+/// queried `source_id` scope inside the caller's snapshot when the slot
+/// is empty, keyed to an older `observe` token, or missing that scope.
+/// Same parse, same scope filter, same plausible-claim error surface,
+/// same multi-match collapse — only the per-call scan is amortized, and
+/// the build cost now scales with the queried scope instead of the
+/// catalog.
 pub fn resolve_conversation_id_cached(
     connection: &Connection,
     public_id: &str,
@@ -1089,10 +1120,12 @@ pub fn resolve_conversation_id_cached(
     revision: &str,
 ) -> Result<Option<i64>> {
     if slot.as_ref().is_none_or(|index| index.revision != revision) {
-        *slot = Some(build_reverse_index(connection, revision)?);
+        *slot = Some(ReverseIdentityIndex::fresh(connection, revision)?);
     }
-    let index = slot.as_ref().expect("just built");
-    let parsed = parse_public_id_with(|| Ok(index.namespaces.clone()), public_id)?;
+    let parsed = parse_public_id_with(
+        || Ok(slot.as_ref().expect("just built").namespaces.clone()),
+        public_id,
+    )?;
     let (scope_source_id, native_id) = match &parsed {
         ParsedPublicId::Qualified {
             source_id,
@@ -1101,11 +1134,11 @@ pub fn resolve_conversation_id_cached(
         } => (source_id.as_str(), native_id.as_str()),
         ParsedPublicId::Bare { native_id } => (LOCAL_SOURCE_ID, native_id.as_str()),
     };
+    let index = slot.as_mut().expect("just built");
+    index.ensure_scope(connection, scope_source_id)?;
+    let scope = index.scopes.get(scope_source_id).expect("just filled");
     let mut matched: Vec<(i64, String, String)> = Vec::new();
-    for resolved in &index.resolved {
-        if resolved.source_id != scope_source_id {
-            continue;
-        }
+    for resolved in &scope.resolved {
         let hit = match &parsed {
             ParsedPublicId::Qualified { provider, .. } => {
                 resolved.provider == *provider && resolved.public_id == public_id
@@ -1120,11 +1153,7 @@ pub fn resolve_conversation_id_cached(
             ));
         }
     }
-    for row in &index.failed {
-        let row_source: String = row.get_typed(2)?;
-        if row_source != scope_source_id {
-            continue;
-        }
+    for row in &scope.failed {
         if plausibly_claims(row, native_id)?
             && let Err(error) = resolve_row(row, &index.lookups)
         {

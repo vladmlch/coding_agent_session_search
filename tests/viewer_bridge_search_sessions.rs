@@ -1807,3 +1807,142 @@ fn region_derivation_anchors_large_session_in_linear_time() -> Result<()> {
     Ok(())
 }
 
+/// A `canonical_read_failed` (the replaced-inode signal) must also rebind
+/// the deferred converge lane: without it the worker's `OwnedWriter` keeps
+/// probing/draining/certifying the DEAD inode — reporting success — while
+/// the live file's marks stay `meta_pending` for the rest of the session.
+/// The marks row on the live archive is the durable proof: only a converge
+/// committed through the REBOUND writer can publish it.
+#[cfg(unix)]
+#[test]
+fn search_sessions_replaced_archive_inode_rebinds_converge_lane() -> Result<()> {
+    let mut bridge = gold_harness_full(&gold_fixture(), &["--enable-viewer-writes"])?;
+
+    // One healthy deferred converge first: the worker is spawned and its
+    // writer is bound to the ORIGINAL archive inode.
+    let patch = bridge.exchange(json!({
+        "op":"patch_annotations","conversation_id":1,"expected_revision":1,
+        "patch":{"notes":"prebind note"}
+    }))?;
+    ensure!(patch["ok"] == true, "patch refused: {patch}");
+    let page = search(&mut bridge, json!({"query":"prebind"}))?;
+    assert_members(&page, &[1])?;
+
+    // Swap the archive path for a symlink — the strict reader refuses a
+    // non-regular archive as `canonical_read_failed`; that arm drops the
+    // writable handles and must queue the lane rebind too.
+    let original = bridge.data_dir.join("archive.db.original");
+    std::fs::rename(&bridge.db, &original)?;
+    std::os::unix::fs::symlink(&original, &bridge.db)?;
+    let refused = bridge.exchange(json!({"op":"session","conversation_id":1}))?;
+    ensure!(
+        refused["ok"] == false,
+        "symlinked archive must refuse: {refused}"
+    );
+    ensure!(
+        refused["error"]["kind"] == "canonical_read_failed",
+        "expected canonical_read_failed, got {refused}"
+    );
+
+    // Restore byte-identical content on a NEW inode — the live file the
+    // rebound lane must write. Every present family member is copied so a
+    // live WAL comes along byte-faithfully.
+    std::fs::remove_file(&bridge.db)?;
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        let from = if suffix.is_empty() {
+            original.clone()
+        } else {
+            bridge.data_dir.join(format!("archive.db{suffix}"))
+        };
+        if !from.exists() {
+            continue;
+        }
+        let next = bridge.data_dir.join(format!("archive.db.next{suffix}"));
+        std::fs::copy(&from, &next)?;
+        std::fs::rename(&next, bridge.data_dir.join(format!("archive.db{suffix}")))?;
+    }
+
+    // The next patch converges through the REBOUND lane: the queued
+    // `Rebind` drops the worker's dead-inode writer before its `Converge`
+    // reopens on the replacement. `get_annotations` joins the lane without
+    // running an index read, so `published` marks here can only come from
+    // the worker's own converge — never the inline fold a search pays.
+    let patch = bridge.exchange(json!({
+        "op":"patch_annotations","conversation_id":1,"expected_revision":2,
+        "patch":{"notes":"postbind note"}
+    }))?;
+    ensure!(patch["ok"] == true, "patch refused: {patch}");
+    let annotations = bridge.exchange(json!({"op":"get_annotations","conversation_id":1}))?;
+    ensure!(annotations["ok"] == true, "{annotations}");
+
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let marks = writer
+        .query("SELECT docs_state FROM viewer_search_region_marks WHERE conversation_id = 1")?;
+    ensure!(marks.len() == 1, "marks row present: {marks:?}");
+    ensure!(
+        marks[0].get_typed::<String>(0)? == "published",
+        "rebound lane must converge the live inode, not the dead one: {marks:?}"
+    );
+    drop(writer);
+
+    let page = search(&mut bridge, json!({"query":"postbind"}))?;
+    assert_members(&page, &[1])?;
+    bridge.shutdown()
+}
+
+/// The deferred-converge debt latch is PERSISTENT, not a per-flush window:
+/// a failed `Converge` followed by TWO flush joins must leave
+/// `converge_needed` set until a real drain. The earlier latch reset on
+/// the first flush, so the second reported success, cleared the flag and
+/// stranded `meta_pending` marks — and every later index read — forever.
+#[cfg(unix)]
+#[test]
+fn search_sessions_failed_converge_debt_survives_repeated_flushes() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut bridge = gold_harness_full(&gold_fixture(), &["--enable-viewer-writes"])?;
+    let index_dir = expected_index_dir(&bridge.data_dir);
+
+    // Force the worker's converge pass to fail: the published Quill index
+    // stays readable (the fingerprint probe still reports it live) but its
+    // directory refuses writes, so the region-doc open/commit errors.
+    std::fs::set_permissions(&index_dir, std::fs::Permissions::from_mode(0o555))?;
+
+    let patch = bridge.exchange(json!({
+        "op":"patch_annotations","conversation_id":1,"expected_revision":1,
+        "patch":{"notes":"debtfragment owed"}
+    }))?;
+    ensure!(patch["ok"] == true, "patch refused: {patch}");
+
+    // Flush join #1: the queued Converge runs before the ack — under the
+    // read-only index it fails, latching the debt. This op folds nothing.
+    let annotations = bridge.exchange(json!({"op":"get_annotations","conversation_id":1}))?;
+    ensure!(annotations["ok"] == true, "{annotations}");
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let marks = writer
+        .query("SELECT docs_state FROM viewer_search_region_marks WHERE conversation_id = 1")?;
+    ensure!(
+        marks.len() == 1 && marks[0].get_typed::<String>(0)? == "meta_pending",
+        "the injected converge failure must leave marks pending: {marks:?}"
+    );
+
+    // Restore writability, then flush join #2 with NO intervening command:
+    // the persistent latch must still report the owed work — the old
+    // per-flush window reported success here and cleared the flag.
+    std::fs::set_permissions(&index_dir, std::fs::Permissions::from_mode(0o755))?;
+    let annotations = bridge.exchange(json!({"op":"get_annotations","conversation_id":1}))?;
+    ensure!(annotations["ok"] == true, "{annotations}");
+
+    // The index read then folds the owed converge inline: the new meta
+    // fragment matches and the durable marks row publishes.
+    let page = search(&mut bridge, json!({"query":"debtfragment"}))?;
+    assert_members(&page, &[1])?;
+    let marks = writer
+        .query("SELECT docs_state FROM viewer_search_region_marks WHERE conversation_id = 1")?;
+    ensure!(
+        marks.len() == 1 && marks[0].get_typed::<String>(0)? == "published",
+        "the retried converge must publish the owed marks: {marks:?}"
+    );
+    drop(writer);
+    bridge.shutdown()
+}

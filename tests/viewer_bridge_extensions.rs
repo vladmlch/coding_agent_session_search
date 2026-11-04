@@ -1174,6 +1174,14 @@ mod query;
 #[path = "../src/viewer_bridge/revisions.rs"]
 #[allow(dead_code)]
 mod revisions;
+// The strict reader's open-time capability probe is exercised below; it
+// needs the same `super::` sibling set the reader itself names.
+#[path = "../src/viewer_bridge/catalog.rs"]
+#[allow(dead_code)]
+mod catalog;
+#[path = "../src/viewer_bridge/reader.rs"]
+#[allow(dead_code)]
+mod reader;
 
 /// Five seeded conversations, canonical IDs = insertion order but activity
 /// deliberately out of order, two providers, NULL timestamps, a workspace
@@ -6653,5 +6661,69 @@ fn fsqlite_sort_index_capability_probe() -> Result<()> {
         eprintln!("probe9 [{label}] eqp: {eqp:?} ops: {ops:?}");
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Strict-reader metadata-token capability probe
+// ---------------------------------------------------------------------------
+
+/// The open-time capability probe earns the metadata-token fast path only
+/// on evidence: on this filesystem the simulated rewrite + `set_modified`
+/// mtime restore must be caught (a real inode change-time moves the hashed
+/// tuple); on a path that cannot exist or whose data directory refuses the
+/// probe write, the wrapper retires the token instead of ever risking a
+/// false "unchanged".
+#[cfg(unix)]
+#[test]
+fn meta_token_probe_earns_and_denies_the_fast_path() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir()?;
+    // Behavioral half: rewrite content, restore mtime — only a real ctime
+    // still proves the write. A capable filesystem returns Some(true).
+    let probe = temp.path().join("probe.bin");
+    ensure!(
+        reader::meta_token_probe(&probe) == Some(true),
+        "local filesystem must report an unforgeable inode change-time"
+    );
+
+    // Capability wrapper: a real archive path in a writable directory earns
+    // the token; the probe file is cleaned up behind it.
+    let archive = temp.path().join("archive.db");
+    std::fs::write(&archive, b"x")?;
+    ensure!(
+        reader::meta_token_trusted(&archive),
+        "a local writable data dir must keep the metadata fast path"
+    );
+    ensure!(
+        std::fs::read_dir(temp.path())?
+            .filter_map(|entry| entry.ok())
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .contains("meta-token-probe")),
+        "the probe must not leak files into the data directory"
+    );
+
+    // Fallback: a path that cannot exist fails the probe → distrust.
+    let missing = temp.path().join("no-such-dir").join("archive.db");
+    ensure!(
+        !reader::meta_token_trusted(&missing),
+        "an unresolvable archive path must retire the metadata token"
+    );
+
+    // Fallback: a data directory the probe cannot write to retires the
+    // token too — the failure is never mistaken for capability.
+    let sealed = temp.path().join("sealed");
+    std::fs::create_dir(&sealed)?;
+    let inner = sealed.join("archive.db");
+    std::fs::write(&inner, b"x")?;
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o555))?;
+    ensure!(
+        !reader::meta_token_trusted(&inner),
+        "an unwritable data dir must retire the metadata token"
+    );
+    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
 }

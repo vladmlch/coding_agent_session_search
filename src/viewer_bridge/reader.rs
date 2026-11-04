@@ -176,13 +176,180 @@ fn meta_revision(path: &Path) -> Result<String> {
 }
 
 /// Non-Unix fallback: without an unforgeable inode change-time the metadata
-/// token cannot prove "no write happened", so every call yields a distinct
-/// marker and [`StrictArchive::observe`] always verifies content the slow
-/// way — identical to the pre-token behavior.
+/// token cannot prove "no write happened". Retained for compile symmetry —
+/// [`meta_token_trusted`] is always `false` there, so [`StrictArchive`]
+/// stores `None` and `observe` never reaches this call.
 #[cfg(not(unix))]
 fn meta_revision(path: &Path) -> Result<String> {
     let _ = path;
     Ok(format!("uncached:{}", rand::random::<u128>()))
+}
+
+/// The exact fields [`meta_revision`] mixes per file — `(len, dev, ino,
+/// mtime, mtime_nsec, ctime, ctime_nsec)` — compared directly by the
+/// capability probe so it proves a difference in the same fields the
+/// token hashes.
+#[cfg(unix)]
+fn meta_tuple(meta: &std::fs::Metadata) -> (u64, u64, u64, i64, i64, i64, i64) {
+    use std::os::unix::fs::MetadataExt;
+    (
+        meta.len(),
+        meta.dev(),
+        meta.ino(),
+        meta.mtime(),
+        meta.mtime_nsec(),
+        meta.ctime(),
+        meta.ctime_nsec(),
+    )
+}
+
+/// The behavioral half of the open-time capability probe: simulate the
+/// exact defeat the metadata token must survive — a content rewrite
+/// followed by a `utimens`-style mtime restore (`File::set_modified`)
+/// — and require the tuple the token hashes to move. Repeated three
+/// times so a coarse-granularity clock cannot pass by straddling one
+/// tick boundary.
+///
+/// `Some(true)` = the platform reports a real, unforgeable inode
+/// change-time (every simulated restore was caught); `Some(false)` = a
+/// simulated restore went unreported (no real ctime, or granularity so
+/// coarse a same-tick rewrite is invisible); `None` = the probe itself
+/// failed — the caller treats it as untrusted either way, so the fast
+/// path is only ever earned on evidence.
+#[cfg(unix)]
+pub(crate) fn meta_token_probe(probe: &Path) -> Option<bool> {
+    for round in 0..3_u8 {
+        let seed = vec![0xA5_u8 ^ round; 64];
+        std::fs::write(probe, &seed).ok()?;
+        let before = meta_tuple(&std::fs::symlink_metadata(probe).ok()?);
+        let mtime = std::fs::symlink_metadata(probe).ok()?.modified().ok()?;
+        // The defeat: rewrite content (mtime bumps), then restore the
+        // captured mtime. Only a real ctime still proves the write —
+        // `len`/`dev`/`ino` are unchanged by construction.
+        std::fs::write(probe, seed.iter().map(|b| !b).collect::<Vec<_>>()).ok()?;
+        let file = std::fs::OpenOptions::new().write(true).open(probe).ok()?;
+        file.set_modified(mtime).ok()?;
+        drop(file);
+        let after = meta_tuple(&std::fs::symlink_metadata(probe).ok()?);
+        if after == before {
+            return Some(false);
+        }
+    }
+    Some(true)
+}
+
+/// Linux mount-table refusal for filesystems whose attribute reports the
+/// behavioral probe structurally cannot verify: network and cluster
+/// clients serve `lstat(2)` cached attributes a REMOTE write already
+/// invalidated (NFS `acregmin`/`acregmax`, CIFS, SSHFS-style FUSE mounts,
+/// 9p/virtio shares), and the probe cannot simulate a remote writer.
+/// Longest-prefix mountpoint match over `/proc/self/mounts`; an
+/// unreadable mount table is not a refusal (the behavioral probe still
+/// runs).
+#[cfg(target_os = "linux")]
+fn mount_fstype_denied(archive: &Path) -> bool {
+    /// fstypes whose attribute reports may be stale or fabricated.
+    const DENIED: &[&str] = &[
+        "nfs",
+        "nfs4",
+        "cifs",
+        "smb3",
+        "smbfs",
+        "9p",
+        "afs",
+        "davfs",
+        "sshfs",
+        "glusterfs",
+        "lustre",
+        "gfs2",
+        "ocfs2",
+        "ceph",
+        "vboxsf",
+        "prl_fs",
+        "virtiofs",
+        "fuse",
+    ];
+    /// `/proc/self/mounts` escapes space/tab/newline/backslash as
+    /// `\040`/`011`/`012`/`\134`; the backslash unescape must run last so
+    /// a literal `\134` cannot re-form another escape.
+    fn unescape_mount(value: &str) -> String {
+        value
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\")
+    }
+    let Ok(mounts) = std::fs::read_to_string("/proc/self/mounts") else {
+        return false;
+    };
+    let mut best: Option<(usize, &str)> = None;
+    for line in mounts.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(_device), Some(mountpoint), Some(fstype)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let mountpoint = unescape_mount(mountpoint);
+        let mount_path = Path::new(&mountpoint);
+        if !archive.starts_with(mount_path) {
+            continue;
+        }
+        let depth = mount_path.components().count();
+        if best.is_none_or(|(best_depth, _)| depth > best_depth) {
+            best = Some((depth, fstype));
+        }
+    }
+    best.is_some_and(|(_, fstype)| {
+        let base = fstype.split('.').next().unwrap_or(fstype);
+        DENIED.contains(&base)
+    })
+}
+
+/// One-time capability probe at [`StrictArchive::open`]: can this
+/// filesystem's metadata prove "no write since the token was captured"?
+/// The probe file lives next to the archive — the verdict must describe
+/// the filesystem that actually hosts the canonical files — and is
+/// removed immediately (a failed remove leaves a stray byte file, never
+/// wrong state).
+///
+/// Two checks: the behavioral rewrite+restore probe, and on Linux a
+/// mount-table refusal for network/cluster filesystems whose attribute
+/// caches the probe cannot see through. `false` retires the metadata
+/// token for the whole archive handle: every `observe` pays the full
+/// content hash — the pre-token behavior, never a false "unchanged".
+/// On non-Linux Unix a network mount slips past the mount-table check,
+/// so mounting the archive directory on a local POSIX filesystem
+/// remains a documented precondition of the fast path there.
+#[cfg(unix)]
+pub(crate) fn meta_token_trusted(archive: &Path) -> bool {
+    let Ok(archive) = std::fs::canonicalize(archive) else {
+        return false;
+    };
+    #[cfg(target_os = "linux")]
+    if mount_fstype_denied(&archive) {
+        return false;
+    }
+    let Some(dir) = archive.parent() else {
+        return false;
+    };
+    let probe = dir.join(format!(
+        ".cass-meta-token-probe-{}-{:016x}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let verdict = meta_token_probe(&probe);
+    let _ = std::fs::remove_file(&probe);
+    verdict.unwrap_or(false)
+}
+
+/// Non-Unix: no unforgeable inode change-time exists, so the token can
+/// never prove "no write" — every `observe` verifies content the slow
+/// way, identical to the pre-token behavior.
+#[cfg(not(unix))]
+pub(crate) fn meta_token_trusted(archive: &Path) -> bool {
+    let _ = archive;
+    false
 }
 
 fn stamp(path: &Path, schema_version: i64) -> Result<(ArchiveStamp, u64)> {
@@ -259,8 +426,11 @@ pub struct StrictArchive {
     disk_revision: String,
     /// Last observed [`meta_revision`] token — the cheap staleness proof
     /// that lets [`StrictArchive::observe`] skip the full content hash
-    /// when nothing on disk could have changed.
-    meta_revision: String,
+    /// when nothing on disk could have changed. `None` retires the fast
+    /// path: the open-time [`meta_token_trusted`] probe could not prove
+    /// this filesystem reports a real inode change-time, so every
+    /// `observe` pays the content hash — the pre-token behavior.
+    meta_revision: Option<String>,
 }
 
 /// Extension-lane visibility observed through the strict read connection.
@@ -298,6 +468,11 @@ impl StrictArchive {
                 ));
             }
             let data_version = connection.query_row("PRAGMA data_version")?.get_typed(0)?;
+            // One-time capability probe: can this filesystem's metadata
+            // prove "no write" (see `meta_token_trusted`)? `false` retires
+            // the token for the whole handle — `observe` then pays the
+            // content hash per call, the pre-token behavior.
+            let meta_trusted = meta_token_trusted(path);
             return Ok(Self {
                 path: path.to_owned(),
                 connection,
@@ -309,7 +484,11 @@ impl StrictArchive {
                 // If the file moved between the stability check and this
                 // probe, the next `observe` sees a meta mismatch and takes
                 // the full hash path — self-healing, never a false "fresh".
-                meta_revision: meta_revision(path)?,
+                meta_revision: if meta_trusted {
+                    Some(meta_revision(path)?)
+                } else {
+                    None
+                },
             });
         }
         unreachable!()
@@ -323,13 +502,23 @@ impl StrictArchive {
                 "Canonical archive identity changed",
             ));
         }
-        // Cheap staleness gate: an unchanged metadata token proves no write
-        // touched the archive family (see `meta_revision`), so the full
-        // content hash — the per-RPC cost this replaces — is skipped only
-        // when it is provably redundant. Metadata churn takes the same
-        // refresh path the hash did.
-        let current_meta = meta_revision(&self.path)?;
-        if current_meta != self.meta_revision {
+        // Cheap staleness gate, live only while the open-time probe
+        // trusts this filesystem's metadata (`Some` token): an unchanged
+        // token proves no write touched the archive family (see
+        // `meta_revision`), so the full content hash — the per-RPC cost
+        // this replaces — is skipped only when it is provably redundant.
+        // A `None` token is untrusted and always reports "moved" — every
+        // observe pays the hash, the pre-token behavior.
+        let current_meta = self
+            .meta_revision
+            .is_some()
+            .then(|| meta_revision(&self.path))
+            .transpose()?;
+        let meta_moved = match (&self.meta_revision, &current_meta) {
+            (Some(before), Some(now)) => before != now,
+            _ => true,
+        };
+        if meta_moved {
             let current_disk = disk_revision(&self.path)?;
             if current_disk != self.disk_revision {
                 for attempt in 0..4 {
@@ -347,16 +536,22 @@ impl StrictArchive {
                         )
                     })?;
                     let (rechecked, rechecked_size) = stamp(&self.path, STRICT_SCHEMA_VERSION)?;
-                    let rechecked_meta = meta_revision(&self.path)?;
+                    let rechecked_meta = self
+                        .meta_revision
+                        .is_some()
+                        .then(|| meta_revision(&self.path))
+                        .transpose()?;
                     // The stability proof the hash supplied is redundant
-                    // when the metadata token still matches `current_meta`
-                    // (no write could have landed); only fresh metadata
-                    // churn pays for another content read.
-                    let rechecked_disk = if rechecked_meta == current_meta {
-                        target_disk.clone()
-                    } else {
-                        disk_revision(&self.path)?
-                    };
+                    // when a TRUSTED metadata token still matches
+                    // `current_meta` (no write could have landed); an
+                    // untrusted token (`None`) can never skip the fresh
+                    // content read — `None == None` must not pass here.
+                    let rechecked_disk =
+                        if rechecked_meta.is_some() && rechecked_meta == current_meta {
+                            target_disk.clone()
+                        } else {
+                            disk_revision(&self.path)?
+                        };
                     if rechecked != self.stamp || rechecked_size < size {
                         return Err(refuse(
                             "stale_snapshot",

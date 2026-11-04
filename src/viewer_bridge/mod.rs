@@ -212,9 +212,11 @@ enum ConvergeCmd {
     Rebind,
     /// Acknowledge that every command queued BEFORE this one has fully
     /// completed — the FIFO join point the observable invariant needs.
-    /// `true` reports every queued `Converge` ran its pass to a real
-    /// commit-or-legitimate-skip; `false` means work is still owed (the
-    /// caller folds it inline so `converge_needed` never lies).
+    /// `true` reports no converge debt: every queued `Converge` drained
+    /// (or legitimately skipped) and no earlier failed/undrained pass is
+    /// still latched as owed; `false` means work is still owed and the
+    /// caller folds it inline so `converge_needed` never lies. The debt
+    /// latch survives the Flush — only a `Converge` that drains clears it.
     Flush(std::sync::mpsc::SyncSender<bool>),
     /// Exit the worker loop (bridge shutdown).
     Quit,
@@ -255,21 +257,24 @@ fn converge_worker_main(
             None
         }
     };
-    // `true` once a Converge pass errors mid-way — reported through the
-    // next Flush so the session folds the still-owed work inline instead
-    // of clearing `converge_needed` on a lane failure it cannot see.
-    let mut failed_since_flush = false;
+    // Outstanding converge debt: `true` once a Converge pass errors or
+    // exits its drain budget with marks still arriving, cleared ONLY by a
+    // Converge that probes the pending set empty — never by a Flush. The
+    // latch is debt, not a per-flush window: a second Flush with no
+    // intervening command must still report the owed work so the session
+    // folds it inline instead of clearing `converge_needed` on a lane
+    // failure it cannot see.
+    let mut outstanding = false;
     while let Ok(cmd) = rx.recv() {
         match cmd {
             ConvergeCmd::Converge => {
                 // Skip cleanly with no published index — the same early
                 // return `converge_search_region_docs` performs; a
                 // fabricated region-only index is never created.
-                let index_ready = coding_agent_search::search::tantivy::searchable_index_fingerprint(
-                    &index_dir,
-                )
-                .map(|fingerprint| fingerprint.is_some())
-                .unwrap_or(false);
+                let index_ready =
+                    coding_agent_search::search::tantivy::searchable_index_fingerprint(&index_dir)
+                        .map(|fingerprint| fingerprint.is_some())
+                        .unwrap_or(false);
                 if !index_ready {
                     continue;
                 }
@@ -281,13 +286,13 @@ fn converge_worker_main(
                                 error = %format!("{error:#}"),
                                 "converge worker writer open failed; durable marks stay pending"
                             );
-                            failed_since_flush = true;
+                            outstanding = true;
                             continue;
                         }
                     }
                 }
                 let Some(writer) = writer.as_mut() else {
-                    failed_since_flush = true;
+                    outstanding = true;
                     continue;
                 };
                 // The pass runs the converge UNCONDITIONALLY first —
@@ -304,6 +309,7 @@ fn converge_worker_main(
                 // reports not-drained so the session folds it inline.
                 let mut pass_failed = false;
                 let mut drained = false;
+                let mut committed = false;
                 for pass in 0..CONVERGE_MAX_PASSES {
                     if pass > 0 {
                         match writer.region_docs_pending() {
@@ -330,15 +336,28 @@ fn converge_worker_main(
                         pass_failed = true;
                         break;
                     }
+                    committed = true;
                 }
-                failed_since_flush |= pass_failed || !drained;
+                outstanding = pass_failed || !drained;
+                // The certification commit now lands off the request
+                // path — wake a listening event pump so `index_ready`/
+                // `lexical_generation` reach subscribers inside ~ms
+                // instead of one `event_poll_ms` tick (~250ms). A failed
+                // or never-ran converge journals nothing, so it wakes
+                // nothing.
+                if committed {
+                    coding_agent_search::viewer_extensions::changes::send_bridge_wakeup_best_effort(
+                        &db,
+                    );
+                }
             }
             ConvergeCmd::Rebind => {
                 writer = None;
             }
             ConvergeCmd::Flush(ack) => {
-                let _ = ack.send(!failed_since_flush);
-                failed_since_flush = false;
+                // Debt, not a window: report whether owed work remains;
+                // only a Converge that drains clears the latch.
+                let _ = ack.send(!outstanding);
             }
             ConvergeCmd::Quit => return,
         }
@@ -364,6 +383,13 @@ struct Session {
     converge_needed: bool,
     /// In-flight deferred converge pass, if any.
     converge_worker: Option<ConvergeWorker>,
+    /// A `Rebind` still owed to the lane — set when a reload or a
+    /// canonical read failure may have replaced the archive inode,
+    /// cleared once the command is queued or the lane is gone (a
+    /// respawned worker binds a fresh writer anyway). A full command
+    /// queue can drop a `try_send`, so the debt is latched here and
+    /// retried from every later lane touch.
+    pending_rebind: bool,
     /// Opt-in Task-12 push channel: loopback event listener + pump threads,
     /// fully independent of this serialized request/response FIFO.
     events: Option<event_stream::EventStreamHandle>,
@@ -449,6 +475,9 @@ impl Session {
     /// request; this only schedules the work — certification still comes
     /// exclusively from `commit_with_region_doc_stamps`.
     fn kick_converge(&mut self) {
+        // An owed Rebind lands before this Converge: the queued converge
+        // then runs on the rebound writer, not the replaced inode.
+        self.retry_rebind();
         if !self.converge_needed {
             return;
         }
@@ -462,6 +491,11 @@ impl Session {
                 Ok(()) => {
                     self.readers = None;
                     self.converge_needed = false;
+                    // The inline converge committed a real publication —
+                    // same post-commit wakeup the deferred lane sends.
+                    coding_agent_search::viewer_extensions::changes::send_bridge_wakeup_best_effort(
+                        &self.db,
+                    );
                 }
                 Err(error) => {
                     tracing::warn!(
@@ -488,12 +522,16 @@ impl Session {
     /// invariant ("no subsequent op observes a certification still being
     /// committed") that inline convergence gave for free. Bounded by the
     /// queued work; a dead lane is reaped instead of waited on. When the
-    /// lane reports every queued Converge finished (real commit or the
-    /// legitimate no-index skip), `converge_needed` is cleared — the
+    /// lane reports no outstanding debt — every queued Converge drained to
+    /// a real commit or the legitimate no-index skip, with no failed or
+    /// undrained pass still latched — `converge_needed` is cleared: the
     /// worker's completion, never the pending probe, is the signal that
     /// the owed publication happened.
     fn flush_converge_lane(&mut self) {
         self.reap_dead_converge();
+        // An owed Rebind is retried BEFORE the Flush join point, so the
+        // join below also covers the rebind reaching the worker.
+        self.retry_rebind();
         let Some(worker) = &self.converge_worker else {
             return;
         };
@@ -555,6 +593,13 @@ impl Session {
             Ok(()) => {
                 self.readers = None;
                 self.converge_needed = false;
+                // The inline converge committed a real publication — same
+                // post-commit wakeup the deferred lane sends, so
+                // `index_ready`/`lexical_generation` do not lag one
+                // `event_poll_ms` tick behind the commit.
+                coding_agent_search::viewer_extensions::changes::send_bridge_wakeup_best_effort(
+                    &self.db,
+                );
             }
             Err(error) => {
                 tracing::warn!(
@@ -567,11 +612,35 @@ impl Session {
 
     /// Tell the lane its writable handle may pin a replaced archive inode
     /// (Reload / canonical read failure); it reopens on the next Converge.
+    /// The debt is latched: a `Rebind` that does not fit the bounded queue
+    /// is retried from every later lane touch instead of silently leaving
+    /// a dead-inode writer bound.
     fn converge_rebind(&mut self) {
-        if let Some(worker) = &self.converge_worker
-            && worker.tx.try_send(ConvergeCmd::Rebind).is_err()
-        {
-            self.reap_dead_converge();
+        self.pending_rebind = true;
+        self.retry_rebind();
+    }
+
+    /// Queue the owed `Rebind` if the lane can take it. A live-but-full
+    /// queue keeps `pending_rebind` for the next retry point; a lane that
+    /// is already gone discharges the debt — a respawned worker binds a
+    /// fresh writer and never holds the stale one.
+    fn retry_rebind(&mut self) {
+        if !self.pending_rebind {
+            return;
+        }
+        let queued = self
+            .converge_worker
+            .as_ref()
+            .is_some_and(|worker| worker.tx.try_send(ConvergeCmd::Rebind).is_ok());
+        if queued || self.converge_worker.is_none() {
+            self.pending_rebind = false;
+            return;
+        }
+        // Live-but-full keeps the flag; a dead lane is reaped so the next
+        // kick respawns — and a respawn binds a fresh writer anyway.
+        self.reap_dead_converge();
+        if self.converge_worker.is_none() {
+            self.pending_rebind = false;
         }
     }
 
@@ -760,10 +829,16 @@ impl Session {
             )?;
             detail::session_details(connection, id, sections, cursor, limit)
         });
-        let (mut page, revision) = result?;
-        page["archive_stamp"] = serde_json::to_value(&archive.stamp)?;
-        page["catalog_revision"] = revision.into();
+        let stamp = archive.stamp.clone();
+        // Keep-on-error, the same rule `resolve_conversation_target`
+        // follows: the index is keyed to the snapshot's `before` token, so
+        // a failed page can never make it serve an identity the archive no
+        // longer proves — restoring here only skips a rebuild the next
+        // snapshot would redo anyway.
         self.identity_index = slot;
+        let (mut page, revision) = result?;
+        page["archive_stamp"] = serde_json::to_value(&stamp)?;
+        page["catalog_revision"] = revision.into();
         Ok(page)
     }
 
@@ -818,10 +893,16 @@ impl Session {
             )?;
             detail::tool_output(connection, id, anchor, expected_revision, byte_offset)
         });
-        let (mut page, revision) = result?;
-        page["archive_stamp"] = serde_json::to_value(&archive.stamp)?;
-        page["catalog_revision"] = revision.into();
+        let stamp = archive.stamp.clone();
+        // Keep-on-error, the same rule `resolve_conversation_target`
+        // follows: the index is keyed to the snapshot's `before` token, so
+        // a failed read can never make it serve an identity the archive no
+        // longer proves — restoring here only skips a rebuild the next
+        // snapshot would redo anyway.
         self.identity_index = slot;
+        let (mut page, revision) = result?;
+        page["archive_stamp"] = serde_json::to_value(&stamp)?;
+        page["catalog_revision"] = revision.into();
         Ok(page)
     }
 
@@ -1186,6 +1267,12 @@ fn serve(session: &mut Session, input: &mut impl BufRead, output: &mut impl Writ
                     // The writable handle may point at a replaced archive
                     // inode; re-open it against the current file next write.
                     session.writer = None;
+                    // The worker's OwnedWriter pins the same dead inode —
+                    // without this it keeps converging/stamping/certifying
+                    // the old file while the live file's marks stay
+                    // `meta_pending` all session (same replaced-inode rule
+                    // the Reload arm already follows).
+                    session.converge_rebind();
                 }
                 (protocol::failure(id, &error), false)
             }
@@ -1276,6 +1363,7 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         identity_index: None,
         converge_needed: false,
         converge_worker: None,
+        pending_rebind: false,
         events,
         event_poll,
     };
