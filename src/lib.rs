@@ -19786,7 +19786,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "exit-codes:".to_string(),
             " 0 ok | 1 health-failed | 2 usage | 3 missing index/db | 4 io|refused-unsafe | 5 data-corrupt | 6 input-required | 7 lock/busy | 8 unused | 9 unknown".to_string(),
             " 10 config|timeout | 11 config | 12 source | 13 mapping|not_found | 14 io|mapping | 15 semantic-unavailable|embedder-unavailable".to_string(),
-            " 20 model | 21-23 unused | 24 io | 70 index-stalled (cass index abort) | 130 interrupted (SIGINT)".to_string(),
+            " 20-21 model | 22 io | 23 unused | 24 io | 70 index-stalled (cass index abort) | 130 interrupted (SIGINT)".to_string(),
             " NOTE: codes >= 10 cover domain-specific failures (sources/models/semantic/analytics).".to_string(),
             "       Use `err.kind` from the JSON envelope as the canonical identifier — kinds are".to_string(),
             "       kebab-case (e.g. missing-index, missing-db, semantic-unavailable, embedder-unavailable,".to_string(),
@@ -23964,7 +23964,7 @@ fn configure_bounded_search_semantics(
             code: 15,
             kind: CliErrorKind::EmbedderUnavailable.kind_str(),
             message: format!("Embedder validation failed: {error}"),
-            hint: Some("Run 'cass models list' to see available embedders".to_string()),
+            hint: Some("Run 'cass models status' to see available embedders".to_string()),
             retryable: false,
         });
     }
@@ -24778,7 +24778,7 @@ fn run_cli_search(
             code: 15,
             kind: CliErrorKind::EmbedderUnavailable.kind_str(),
             message: format!("Embedder validation failed: {error}"),
-            hint: Some("Run 'cass models list' to see available embedders".to_string()),
+            hint: Some("Run 'cass models status' to see available embedders".to_string()),
             retryable: false,
         });
     }
@@ -88637,7 +88637,7 @@ fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
             "4",
             "I/O failure or unsafe operation refused",
             "maybe",
-            "Branch on err.kind: fix the path, permissions, or free space for io/output-not-writable; follow err.hint for refused-unsafe. Not a network code: source problems fail with 12, model errors with 20 or 24.",
+            "Branch on err.kind: fix the path, permissions, or free space for io/output-not-writable; follow err.hint for refused-unsafe. Not a network code: source problems fail with 12, model errors with 20-22 or 24.",
         ),
         exit_code_capability(
             "5",
@@ -88700,10 +88700,16 @@ fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
             "Install/verify models or continue with lexical fallback when acceptable.",
         ),
         exit_code_capability(
-            "20",
+            "20-21",
             "model acquisition failure",
             "maybe",
             "Check err.kind and err.hint; fix the local model files and retry --from-file.",
+        ),
+        exit_code_capability(
+            "22",
+            "I/O during model handling",
+            "maybe",
+            "Verify model cache permissions and available disk before retrying.",
         ),
         exit_code_capability(
             "24",
@@ -111710,34 +111716,45 @@ fn run_models_install(
         .map_err(|error| {
             use crate::search::model_download::InstallError;
             let rendered = error.to_string();
+            let message = format!("Model install failed: {rendered}");
+            let hint = Some(format!(
+                "Provide a directory containing the manifest's files \
+                 ({}); each file is SHA256-verified before anything is published",
+                manifest
+                    .files
+                    .iter()
+                    .map(|f| f.local_name().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
             // Validation failures (not a directory, missing file, checksum
             // mismatch, source==target, unverified manifest) are operator
             // errors: rerunning the same command cannot succeed, so they are
             // reported non-retryable. Only genuine I/O failures qualify as
-            // retryable and keep the Io kind/code.
-            let (code, kind, retryable) = match &error {
+            // retryable and keep the Io kind/code. The literal `code:` field
+            // values are load-bearing: the exit-code audit scanners
+            // (spec_exit_codes_documented, golden_error_envelope) only see
+            // `code: <digits>` directly above `kind:` in a CliError literal,
+            // not destructured tuple variables.
+            match &error {
                 InstallError::IoError(io_error)
                     if io_error.kind() != std::io::ErrorKind::NotADirectory =>
                 {
-                    (22, CliErrorKind::Io.kind_str(), true)
+                    CliError {
+                        code: 22,
+                        kind: CliErrorKind::Io.kind_str(),
+                        message,
+                        hint,
+                        retryable: true,
+                    }
                 }
-                _ => (21, CliErrorKind::Model.kind_str(), false),
-            };
-            CliError {
-                code,
-                kind,
-                message: format!("Model install failed: {rendered}"),
-                hint: Some(format!(
-                    "Provide a directory containing the manifest's files \
-                 ({}); each file is SHA256-verified before anything is published",
-                    manifest
-                        .files
-                        .iter()
-                        .map(|f| f.local_name().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )),
-                retryable,
+                _ => CliError {
+                    code: 21,
+                    kind: CliErrorKind::Model.kind_str(),
+                    message,
+                    hint,
+                    retryable: false,
+                },
             }
         })?;
 

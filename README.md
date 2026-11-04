@@ -913,7 +913,8 @@ Errors are structured, actionable, and include recovery hints. A real sample fro
 | 13 | Mapping / not-found | Depends on `err.kind` |
 | 14 | I/O / mapping | Retry or inspect path |
 | 15 | Semantic / embedder unavailable | Install model or `--mode lexical` |
-| 20 | Model acquisition | Check `err.kind`, `err.hint` |
+| 20-21 | Model acquisition | Check `err.kind`, `err.hint`; fix the local model files and retry `--from-file` |
+| 22 | I/O during model handling | Retry |
 | 24 | I/O during model verify/install | Retry |
 | 70 | `cass index` stalled and aborted (kind `index-stalled` envelope on stderr) | Inspect `cass status --json`, then rerun `cass index` |
 | 130 | Interrupted (SIGINT) | Rerun the command; indexing and search resume from their checkpoints |

@@ -790,7 +790,8 @@ Returns in <50ms on a healthy archive (the archive probe is the same strict, mut
 | 13 | Mapping / not-found | Depends on `err.kind` |
 | 14 | I/O / mapping | Maybe |
 | 15 | Semantic / embedder unavailable | Yes — install model or fall back to `--mode lexical` |
-| 20 | Model acquisition failure | Maybe — check `err.kind`, `err.hint` |
+| 20-21 | Model acquisition failure | Maybe — check `err.kind`, `err.hint` |
+| 22 | I/O during model handling | Maybe |
 | 24 | I/O during model verify/install | Maybe |
 | 70 | `cass index` stalled and aborted (kind `index-stalled` envelope on stderr) | Yes — inspect `cass status --json`, rerun `cass index` |
 | 130 | Interrupted (SIGINT) | Yes — rerun; indexing and search resume from their checkpoints |

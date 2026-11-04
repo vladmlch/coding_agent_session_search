@@ -680,7 +680,7 @@ impl DerivedAssetTruthTable {
             SemanticReadinessState::Absent => {
                 return SafeNextCommand::new(
                     A::InstallSemanticModel,
-                    Some("cass models install"),
+                    Some("cass models install --from-file <DIR>"),
                     "semantic tier absent; install the model for hybrid refinement (lexical works now)",
                 );
             }
