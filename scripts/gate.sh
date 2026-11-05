@@ -361,7 +361,11 @@ UBS_FILES=()
 # 20 of them sat red for days because no gate ran the target (2l1b0.77).
 # search_service compiles the `cass serve` sources and their unit tests (the
 # cass bin itself is `test = false`); 8 of them sat red for 9 days (5188e).
-INTEGRATION_TESTS=(cli_robot bookmarks_cli search_metamorphic pages_bundle search_service)
+# local_only_audit is the Task 17 final audit: remote-client/remote-spawn/
+# non-loopback-bind source scan, pages-assets + export-template resource
+# scan, docs/scripts remote-instruction scan, Cargo manifest+lockfile
+# banned-crate scan, and the removed-command matrix liveness check.
+INTEGRATION_TESTS=(cli_robot bookmarks_cli search_metamorphic pages_bundle search_service local_only_audit)
 while [ $# -gt 0 ]; do
     case "$1" in
         --lib-filter) LIB_FILTER="$2"; shift 2 ;;

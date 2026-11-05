@@ -1205,11 +1205,61 @@ fn search_query_assignment_attaches_to_query_positional() {
 
 #[test]
 fn html_export_aliases_route_to_export_html_command() {
+    // Index-first export resolves only the archived snapshot: the selector is
+    // an identity key, not a file the exporter opens. Stage the fixture into a
+    // private Claude-shaped home and ingest it with a real `index --watch-once`
+    // run, mirroring `tests/html_export_integration.rs::stage_indexed_session`.
+    // The previous form pointed the aliases at the ambient archive and only
+    // passed on hosts whose real data dir already had this fixture indexed.
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    let project = home.join(".claude/projects/alias-fixture");
+    fs::create_dir_all(&project).unwrap();
+    let staged = project.join("single_message.jsonl");
+    fs::copy(
+        "tests/fixtures/html_export/edge_cases/single_message.jsonl",
+        &staged,
+    )
+    .unwrap();
+    let data = tmp.path().join("cass-data");
+    let index_output = base_cmd()
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", tmp.path().join("xdg-config"))
+        .env("XDG_DATA_HOME", &data)
+        .env("CASS_DATA_DIR", &data)
+        .env_remove("CASS_DB_PATH")
+        .args(["index", "--watch-once"])
+        .arg(&staged)
+        .output()
+        .expect("run cass index --watch-once");
+    assert!(
+        index_output.status.success(),
+        "index failed: {}",
+        String::from_utf8_lossy(&index_output.stderr)
+    );
+
+    let db = data.join("agent_search.db");
+    let storage = coding_agent_search::storage::sqlite::SqliteStorage::open_readonly(&db)
+        .expect("open archive read-only");
+    let convos = storage
+        .list_conversations(1000, 0)
+        .expect("list archived conversations");
+    let identity = convos
+        .iter()
+        .find(|c| {
+            c.source_path
+                .to_string_lossy()
+                .contains("single_message.jsonl")
+        })
+        .map(|c| c.source_path.to_string_lossy().into_owned())
+        .expect("staged fixture was indexed");
+    storage.close().expect("close archive");
+
     for alias in ["html-export", "html_export", "exporthtml"] {
         let mut cmd = base_cmd();
-        cmd.args([
+        cmd.env_remove("CASS_DB_PATH").arg("--db").arg(&db).args([
             alias,
-            "tests/fixtures/html_export/edge_cases/single_message.jsonl",
+            identity.as_str(),
             "--json",
             "--dry-run",
         ]);
@@ -1221,7 +1271,7 @@ fn html_export_aliases_route_to_export_html_command() {
         assert_eq!(json["valid"].as_bool(), Some(true), "{alias}");
         assert_eq!(
             json["session_path"].as_str(),
-            Some("tests/fixtures/html_export/edge_cases/single_message.jsonl"),
+            Some(identity.as_str()),
             "{alias}"
         );
         assert_eq!(json["messages"].as_u64(), Some(1), "{alias}");

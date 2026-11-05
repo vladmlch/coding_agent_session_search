@@ -25,6 +25,18 @@ pub(super) fn sql_indexes_snippets_message_id_first(create_sql: &str) -> bool {
 }
 
 pub(super) fn ensure_snippets_message_id_index(conn: &Connection) -> Result<()> {
+    // Archives older than the `snippets` table's schema version have nothing
+    // to index: a repair pass that still created the index here failed the
+    // whole open with `no such table: main.snippets` (v13 fixture).
+    let table_exists = conn
+        .query(
+            "SELECT 1 FROM sqlite_master \
+             WHERE type = 'table' AND name = 'snippets' LIMIT 1;",
+        )
+        .with_context(|| "checking snippets table")?;
+    if table_exists.is_empty() {
+        return Ok(());
+    }
     let rows = conn
         .query(
             "SELECT sql FROM sqlite_master \

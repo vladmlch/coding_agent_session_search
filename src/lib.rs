@@ -114201,7 +114201,7 @@ mod subcommand_robot_output_tests {
                     "--json",
                 ],
                 vec!["cass", "export-html", "session.jsonl", "--json"],
-                vec!["cass", "sources", "setup", "--json"],
+                vec!["cass", "sources", "list", "--json"],
             ];
 
             for args in cases {

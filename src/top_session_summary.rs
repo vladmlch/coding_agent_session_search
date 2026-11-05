@@ -432,9 +432,11 @@ mod tests {
     #[test]
     fn aggregates_hits_and_category_breadth_per_session() {
         let hits = vec![
-            hit("s1", "local", "remote_sync_auth"),
+            // `remote_sync_auth` was removed with the fleet machinery; fixtures
+            // use `host_pressure`, another retained canonical category.
+            hit("s1", "local", "host_pressure"),
             hit("s1", "local", "storage_busy_corrupt"),
-            hit("s1", "local", "remote_sync_auth"),
+            hit("s1", "local", "host_pressure"),
             hit("s2", "ts1", "cass_status_health"),
         ];
         let summary = summarize_top_sessions(&hits, 10);
@@ -445,7 +447,7 @@ mod tests {
         assert_eq!(s1.session_id, "s1");
         assert_eq!(s1.hit_count, 3);
         assert_eq!(s1.category_breadth, 2);
-        assert_eq!(s1.dominant_categories[0], "remote_sync_auth");
+        assert_eq!(s1.dominant_categories[0], "host_pressure");
     }
 
     #[test]
@@ -453,7 +455,7 @@ mod tests {
         let mut hits = Vec::new();
         // busy: 5 hits, 1 category.
         for _ in 0..5 {
-            hits.push(hit("busy", "local", "remote_sync_auth"));
+            hits.push(hit("busy", "local", "host_pressure"));
         }
         // broad: 5 hits, 3 categories (more breadth, same hit count).
         hits.push(hit("broad", "ts1", "cass_status_health"));
@@ -526,7 +528,7 @@ mod tests {
     #[test]
     fn composite_provenance_keeps_same_session_id_separate() {
         let local = hit("shared", "local", "storage_busy_corrupt");
-        let mut remote = hit("shared", "ts1", "remote_sync_auth");
+        let mut remote = hit("shared", "ts1", "host_pressure");
         remote.conversation_id = remote.conversation_id.saturating_add(1);
         remote.source_id = "remote-ts1".to_string();
         let summary = summarize_top_sessions(&[local, remote], 10);
@@ -546,7 +548,7 @@ mod tests {
             ("index_stale_missing", 5),
             ("index_stall_progress", 4),
             ("quarantine_oom", 3),
-            ("remote_sync_auth", 2),
+            ("host_pressure", 2),
             ("semantic", 1),
         ] {
             for _ in 0..n {
@@ -564,7 +566,7 @@ mod tests {
                 "index_stale_missing",
                 "index_stall_progress",
                 "quarantine_oom",
-                "remote_sync_auth",
+                "host_pressure",
             ]
         );
     }
@@ -646,7 +648,7 @@ mod tests {
 
     #[test]
     fn json_contract_is_stable_and_round_trips() {
-        let summary = summarize_top_sessions(&[hit("s1", "local", "remote_sync_auth")], 10);
+        let summary = summarize_top_sessions(&[hit("s1", "local", "host_pressure")], 10);
         let value = serde_json::to_value(&summary).unwrap();
         assert_eq!(value["schema_version"], TOP_SESSION_SCHEMA_VERSION);
         assert_eq!(value["top_sessions"][0]["exists_state"], "exists");

@@ -586,9 +586,13 @@ mod tests {
             .iter()
             .map(|scenario| scenario.commands.len())
             .sum::<usize>();
-        if command_count != 11 {
+        // Nine commands across the seven scenarios: the local-only conversion
+        // removed `remote_unreachable_old_host` (two `sources doctor` runs
+        // against an unreachable remote host — no remote source dial exists
+        // to exercise any more) and the opt-in `live_remote_replay`.
+        if command_count != 9 {
             return Err(format!(
-                "the deterministic matrix must execute all eleven report-derived commands; found {command_count}"
+                "the deterministic matrix must execute all nine report-derived commands; found {command_count}"
             ));
         }
         Ok(())

@@ -42399,7 +42399,8 @@ See also: [RFC-2847](https://internal/rfc/2847) for the full design doc.
 
         for section in [
             "Data Locations",
-            "Updates",
+            // "Updates" section removed with the update machinery
+            // (local-only conversion); no updater help remains to render.
             "Search",
             "Surfaces",
             "Filters",

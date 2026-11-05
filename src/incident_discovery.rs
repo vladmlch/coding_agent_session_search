@@ -859,7 +859,7 @@ mod tests {
                  (2, 1, 1,
                   'cass index-ingest-out-of-memory quarantined_conversations=1'),
                  (3, 2, 0,
-                  'cass source sync ssh permission denied auth timeout'),
+                  'cass semantic fallback lexical model missing'),
                  (4, 3, 0,
                   'our app model auth timeout busy status rebuild is flaky');",
         )
@@ -1108,7 +1108,7 @@ mod tests {
              ) VALUES (4, 2, 20, '   ', 'legacy-remote',
                  '/remote/private/legacy.jsonl', 400, 'legacy-host');
              INSERT INTO messages(id, conversation_id, idx, content) VALUES
-                 (5, 4, 0, 'cass remote sync over ssh failed: permission denied');",
+                 (5, 4, 0, 'cass semantic fallback model missing');",
         )
         .unwrap();
 

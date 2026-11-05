@@ -47564,6 +47564,12 @@ sys.exit('stock writer does not own WAL_WRITE_LOCK')
         seed_forget_fixture(&storage, &other_agent)?;
         let mut other_path = local;
         other_path.source_path = directory.path().join("other.db");
+        // The canonical merge identity is (source_id, agent, external_id) —
+        // sharing `shared-id` under a different path now merges into `local`
+        // instead of creating a sibling row. A distinct external id keeps this
+        // fixture a real path sibling again.
+        other_path.external_id = Some("other-path-id".into());
+        other_path.title = other_path.external_id.clone();
         seed_forget_fixture(&storage, &other_path)?;
         assert_eq!(
             storage

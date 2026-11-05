@@ -539,16 +539,18 @@ mod tests {
     /// drift immediately at CI time.
     #[test]
     fn variant_count_matches_audited_lib_rs_kind_literals() {
-        // 97 unique kinds: GH #450 added `migration-repair-pending` (95), then
+        // 98 unique kinds: GH #450 added `migration-repair-pending` (95), then
         // 2l1b0.58 folded the duplicate spellings `index-missing` into
         // `missing-index` and `io-error` into `io`, and dropped `update-check`,
         // whose only producer (the pre-TUI update prompt) 2l1b0.56 removed.
         // The index-first export contract (2026-11-02 plan, Tasks 4/5) added
         // `ambiguous-identity`, `conversation-not-indexed`, `index-read-failure`,
         // `index-unavailable` and `no-renderable-messages` (92 -> 97).
+        // The local-only conversion's removed-command matrix (dc0286ff) added
+        // `removed-command` (97 -> 98).
         // If lib.rs grows a new kind, bump this count AND add the variant +
         // arms above.
-        const AUDITED_KIND_COUNT: usize = 97;
+        const AUDITED_KIND_COUNT: usize = 98;
         assert_eq!(
             ErrorKind::all_variants().len(),
             AUDITED_KIND_COUNT,

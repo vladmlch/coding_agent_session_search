@@ -661,3 +661,187 @@ Notes:
   `rs_files_over_1000_lines.txt`, `scripts/count_large_rs_files.sh`,
   `tests/fixtures/search_demo_data/agent_search.db.*`) remain untracked,
   not staged, matching Task 14/15 precedent.
+
+## Task 17 — final audit: source sweep, CLI-surface diff, offline proof (2026-11-05)
+
+Machine: macOS (Darwin 27.0.0 arm64, sw_vers 27.0.1). Rust nightly-2026-08-31 (pinned). Debug binary at the shared target dir.
+
+### Audit gate (new)
+
+`tests/local_only_audit.rs` — 8 tests, wired into `scripts/gate.sh`
+`INTEGRATION_TESTS` (runs under `--no-lib`):
+
+- `src_code_has_no_remote_client_or_remote_tool` — production `src/**`
+  (every `#[cfg(test)]` item stripped, comments masked, the named
+  diagnostics allowlist exempted): no `reqwest::`/`ssh2::`, no
+  `Command::new` literal or `sh -c` wrapper naming
+  `ssh|scp|sftp|rsync|tailscale|gh|wrangler|curl|wget`, no
+  non-loopback `TcpStream::connect`/`TcpListener::bind`/`UdpSocket`, no
+  `0.0.0.0`/`INADDR_ANY` literal.
+- `pages_assets_load_only_archive_local_resources` — every text asset
+  under `src/pages_assets/**` incl. `vendor/**` (minus
+  `vendor/manifest.json` + comments): no `http(s)://`/`//` arg to
+  `src=`, restricted `rel=`, `@import`, `url(`, `fetch(`,
+  `importScripts(`, `new Worker(`, `import(`, `location=`.
+- `export_templates_reference_no_external_resources` — same patterns on
+  `src/html_export/*.rs` production code.
+- `scripts_and_docs_carry_no_remote_instructions` — `scripts/**`,
+  `docs/**` (.md/.txt/.sh/.py/.ps1/.toml), `AGENTS.md`, `README.md`,
+  `SKILL.md`, `.config/nextest.toml`, `.cargo/config.toml`,
+  `Cargo.toml`: no `rch exec`, `dsr`, `ssh `/`scp `/`sftp `/`rsync `/
+  `tailscale `, `curl|wget … |sh`, removed `cass sources …|swarm|
+  lessons|fleet|upgrade|release-verify` invocations, `models
+  check-update`, `models install` without `--from-file`, removed
+  `pages` deploy flags, `--embedder external`, `--allow-rch`,
+  `--no-cdns` — unless the enclosing paragraph is a marked removal
+  ledger / historical note.
+- `cargo_manifest_and_lockfile_carry_no_remote_deps` — banned-crate
+  list absent from `Cargo.toml`/`Cargo.lock`; `url` only via
+  `franken-agent-detection`; `semver` dev-only.
+- `removed_command_matrix_is_fully_active` — `REMOVED_COMMANDS` /
+  `REMOVED_FLAGS` live in `src/lib.rs`; all 26
+  `REMOVED_COMMAND_CASES` rows `pending: false`.
+- `scanner_detects_synthetic_violations` — anti-tautology self-check:
+  the scanner must fire on planted `Command::new("ssh")`,
+  `reqwest::`, remote `<script src>`/stylesheet/`fetch`, and an
+  unannotated `cass swarm` line (and stay silent on `<a href>`,
+  relative src, `#[cfg(test)]` code, annotated ledgers).
+- `audit_exception_surface_is_narrow` — every allowlist file still
+  exists; every doc exemption keeps its marker; `.github/workflows`
+  absent.
+
+First gate run: `cargo test --test local_only_audit` → 8 passed / 0 failed (0.93 s).
+
+### CLI surface comparison vs Task 0 baseline (`$TMPDIR/cass-baseline` → `cass-current`, same capture script)
+
+| Surface | Result |
+| ------- | ------ |
+| Recursive `--help` | 116 files vs baseline 150. The 34 vanished files are exactly the removed-command set: `fleet*`(3), `lessons*`(5), `models check-update`, `release-verify`, `sources sync|setup|discover|reingest|artifact-manifest|schedule`(6), `swarm*`(16), `upgrade`. No retained command lost its help file. |
+| Retained `--help` diffs (16 files) | All removal deltas: `export-html` (`--no-cdns` gone, `--include-secrets` reordered), `guide` (`fix-ci`/`prepare-release` intents + `--allow-rch` gone), `index`/`models backfill` (`external` embedder gone), `models install` (`--mirror`,`-y` gone; `--from-file` required), `models verify` (`--repair` gone), `pages` (deploy flags gone, "static hosting"→"local browsing"), `schedule run` ("+ due remote syncs" gone), `search` ("downloaded"→"installed"), `serve` (external embedder marked REMOVED), `sources`/`sources add`/`sources doctor`/`sources remove` (remote verbs/flags gone, local-only wording), `root` (removed entries). |
+| `robot-docs` (10 of 14 topics differ) | commands: removed blocks; contracts: swarm rows gone; doctor: `pre-push.sh` hook gone; env: update-prompt + `CASS_FLEET_*` gone, `CASS_SSH_CONFIG`/`CASS_EXTERNAL_EMBEDDING*` now `deprecated-ignored`; exit-codes: 8→unused, 12→source, 23→unused, `download` kind gone, 143 added; examples: `rch exec` contributor check → `cargo test`; guide/recipes/schemas/sources: removed blocks, `legacy_external_embedding_space` field added. |
+| `capabilities`/`introspect`/`api-version` JSON | version 0.10.0→0.11.0, `contract_version` 1→2; removed command/env/exit-code entries gone; `remote_source_sync`/`remote-source-sync-gaps`/`models-check-update` schemas gone; models-status contract rewritten (`partial_download`→`partial_install`, `expected_download_bytes`→`expected_install_bytes`, `skipped_network_reason` = never acquires outside `install --from-file`); subsystem_coverage 15→14. |
+| `completions` (all 5 shells) | Diffs = removed commands/flags gone; only-in-current tokens are new local-only wording (`--from-file`, "local browsing", "Retained for CLI compatibility", "REMOVED:", "hosted targets removed"). |
+| `man` | 0.10.0→0.11.0 + the same removed entries/descriptions. |
+| Removed names in current surface | `fleet` only inside "the 2026-06-08 fleet report" (dated report name); `sources sync|setup|…` and `` `sources add user@host` `` only inside "Removed remote verbs (each fails with a removed-command error)"; `'local' or 'ssh'` only as the inert origin-kind field description; `SSH/rsync/SFTP` only inside "never attribute a failure to". No live invocations. |
+
+### Offline proof — sandbox-exec, macOS (2026-11-05T03:08Z)
+
+Profile (verbatim, per the brief):
+
+```
+(version 1)
+(allow default)
+(deny network-outbound)
+(allow network-outbound (remote ip "localhost:*"))
+```
+
+All proxy vars unset (`env -u HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy NO_PROXY no_proxy`); scratch `HOME`/`CODEX_HOME`/`CASS_DATA_DIR` bounding the corpus to one real Codex-format fixture session; `CASS_AUTO_REFRESH=0` so no background indexer spawns. Every stderr scanned for `connection refused|network is unreachable|could not resolve|temporary failure|timed out|econnrefused|dns|no route to host` → zero hits.
+
+| # | Command (under sandbox) | Exit | Evidence |
+| - | ----------------------- | ---- | -------- |
+| 1 | `cass index --full --data-dir $SBX/data --json` | 0 | session indexed, lexical published |
+| 2 | `cass models install --model all-minilm-l6-v2 --from-file $SBX/model-stub/nonexistent --data-dir … --robot-format json` | 21 | `kind: model`, `retryable: false`: "source … is not a directory" — local I/O diagnostic, no network attempt |
+| 3 | `cass models install --model all-minilm-l6-v2 --from-file $SBX/model-stub …` (stub files, wrong bytes) | 21 | "verification failed for model.safetensors: expected 53aa5117… got 6a38abc4…" — pinned SHA256 checked locally, names required files, `retryable: false` |
+| 4 | `cass search "rate limiting" --mode lexical --json` | 0 | 4 hits from the fixture session |
+| 5 | `cass index --semantic --embedder hash --data-dir … --json` | 0 | hash-embedder vector artifacts built locally |
+| 6 | `cass search "rate limiting" --mode hybrid --json` | 0 | 4 hits (`--mode hybrid` is the hybrid-preferred clap value; `hybrid-preferred` literal is rejected with a tip — flag spelling drift vs the brief, not a remote path) |
+| 7 | `TUI_HEADLESS=1 cass tui --once` | 0 | headless frame rendered |
+| 8 | `printf 'pw\n' \| cass export-html <session> --source local --output-dir … --encrypt --password-stdin --json` | 0 | `codex_standalone_2024_11_20_1600_session.html` (encrypted) written |
+| 9 | `cass pages --export-only …/archive.casspages --json` | 0 | SQLite bundle, `secret_scan.approval_state: clean` |
+| 10 | `cass pages --config cfg --json` (password via `env:CASS_EXPORT_PASSWORD`) | 0 | full encrypted export → `site2/site` (40 files) |
+| 11 | `cass pages --verify $SBX/site2/site --json` | 0 | `"status": "valid"` — required_files, config_schema, payload_manifest, size_limits, integrity, no_secrets_in_site, share_profile all passed |
+| 12 | `cass pages --preview $SBX/site2/site --port 18080 --no-open` + `curl http://127.0.0.1:18080/` inside the same sandbox | serve + 200 | loopback-only outbound allowed by the profile; `default-src 'self'` CSP served; server stopped after probe |
+| 13 | `cass schedule run --job incremental --force --data-dir … --json` | 0 | scheduled incremental job ran locally |
+| 14 | `cass doctor --json --data-dir …` | 0 | structured doctor report offline |
+
+`models install` happy path: not runnable — the pinned MiniLM files
+(90,868,376-byte `model.safetensors`, sha256 `53aa5117…`) do not exist on
+this machine and cannot be fetched offline; acquiring them is exactly the
+operator's out-of-band step. Both failure paths prove the verifier works
+entirely on local bytes with pinned SHA256s and emits local-file
+diagnostics, never a download attempt. This is itself the strongest
+evidence the acquisition path cannot reach the network.
+
+### Platform matrix
+
+| Platform | Targeted tests (T1–16) | `gate.sh --lib-only` | `gate.sh --no-lib` | Offline scenario |
+| -------- | -------------------- | -------------------- | ------------------ | ---------------- |
+| macOS (executed, this machine) | local_only_audit 8/8 green (see report for the per-task suite table) | fmt/clippy/lib-build green; lib-tests: 8092 passed / 54 failed → 18 stale-test debt cases fixed in place (list below); 36 remain — 14 frankensearch v1↔v2 format drift + ~22 macOS-environmental, categorized in the report | all stages green incl. `test-local_only_audit` and `test-cli_robot` (326/326 after hermetic fix); `ubs` red on first-ever run — 73 critical/29.5k warnings, heuristic noise in test fixtures, categorized in the report | sandbox-exec run above: all commands green or correctly-failing locally, zero network errors |
+| Linux (`unshare -rn`) | not executed — no Linux machine available | not executed | not executed | not executed |
+| Windows | not executed — no Windows machine available; semantic portability audited by source inspection (no cfg-gated remote code remains to port) | not executed | not executed | not executed |
+
+### Gate findings fixed during this task
+
+`test-cli_robot` had one real failure: `html_export_aliases_route_to_export_html_command`
+(`tests/cli_robot.rs`) pointed the three export aliases at the *ambient* archive —
+a leftover of the pre-index-first era (`c38aef9c`) that `aef4862e`'s index-first
+test migration missed; it only passed on hosts whose real data dir already held
+`tests/fixtures/html_export/edge_cases/single_message.jsonl` indexed. Fixed
+hermetically (smallest integration point = the test itself): stage the fixture
+into a private Claude-shaped home, ingest with `cass index --watch-once`, resolve
+the stored identity via `SqliteStorage::open_readonly`, then assert the same
+dry-run JSON contract per alias — mirroring
+`tests/html_export_integration.rs::stage_indexed_session`. Win/lose split of
+what the fix admits: identical alias-routing + dry-run assertions, now
+deterministic; the ambient-archive dependence it loses was accidental, never a
+designed assertion. Verified: 326/326 green inside the gate.
+
+The `--lib-only` run (8092 passed / 54 failed) also carried real leftover debt
+from the removal commits, each fixed at its smallest point:
+
+- `src/model/cli_error_kind.rs` — `dc0286ff` added `ErrorKind::RemovedCommand`
+  but never bumped `AUDITED_KIND_COUNT` (97→98) or its audit comment.
+- `src/lib.rs` `subcommand_robot_output_tests` — one case still parsed removed
+  `cass sources setup`; the match arm already expected `SourcesCommand::List`,
+  so the argv is now `sources list`.
+- `src/search/e2e_scenarios.rs` — `7a87ffed` updated the CI scenario count
+  8→7 when it deleted `remote_unreachable_old_host` + `live_remote_replay`
+  but left the command total at 11; now 9 with a comment naming the removals.
+- `src/ui/app.rs` help test — expected an "Updates" help section that no
+  longer exists; removed from the list with a note.
+- `tests/snapshots/cassapp_search_surface_*.snap` (6 files) — stale goldens
+  still rendering the removed `· Swarm ·` tab; regenerated with `BLESS=1`
+  after verifying every removed content line contains `Swarm` and nothing
+  else (win/lose: production intentionally changed, goldens stale — the
+  only legitimate regen case).
+- `src/top_session_summary.rs` — test fixtures used the deleted
+  `remote_sync_auth` incident category; substituted retained `host_pressure`.
+- `src/incident_discovery.rs` — fixture messages triggered the deleted
+  `remote_sync_auth` category; substituted retained `semantic` signal text.
+- `src/storage/sqlite.rs` — `reinclude_exact_session` seeded a "sibling"
+  differing only in source_path, but the canonical merge identity
+  `(source_id, agent, external_id)` has long ignored path; a distinct
+  external id restores it to a real path sibling.
+- `src/storage/sqlite/local_lookup_indexes.rs` — REAL PRODUCT BUG found by
+  the audit: `ensure_snippets_message_id_index` ran `CREATE INDEX … ON
+  snippets` on archives that predate the `snippets` table (v13 fixture),
+  failing the whole open with `no such table`. Now guards on table
+  existence first.
+
+Remaining 36 failures are not local-only scope (categorized, all in the
+report): 14 frankensearch fsvi v1↔v2 format-drift tests (12
+`hnsw::incremental_tests` + 2 `ann_shards::wal_tests`), ~22 macOS-environmental
+cases (non-UTF8 pathname `os error 92`, `/var`→`/private/var` TMPDIR
+canonicalization, daemon `nice` range / non-UTF8 socket path, one
+timeout-sensitive reconnect assertion).
+
+Final `--no-lib` receipt on the committed tree (2026-11-05T03:50Z):
+`cass-gate.XXXXXX.640SZ3RZLz`, DIFF_SHA256 `39fe969f…a6b5b` — all product
+stages `EXIT=0` (fmt, clippy, all six integration tests, bin, goldens),
+`ubs EXIT=1` as categorized above.
+
+### User-data immutability (real default data dir)
+
+SHA-256 before/after the whole sandboxed run — byte-identical:
+
+| File | SHA-256 |
+| ---- | ------- |
+| `tui_state.json` | `d2a83c76…d3d049` |
+| `update_state.json` | `b1aaff75…f4186` (legacy inert record, untouched) |
+| `auto-refresh-state.json` | `504a801e…18ba` |
+| `watch_state.json` | `5b598288…3d73` |
+| `theme.json` | `b594de15…1ee90` |
+| `sources.toml` | ABSENT before → ABSENT after (never created) |
+| `~/Library/LaunchAgents/*cass*` | ABSENT before → ABSENT after |
+| `*external*`/`*vector*` dirs | none exist |
+| scratch `sources.toml` | ABSENT (run created none) |
