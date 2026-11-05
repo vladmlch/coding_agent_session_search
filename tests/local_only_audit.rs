@@ -30,6 +30,8 @@
 //!   `minreq`, `attohttpc`, `curl*`, `surf`, `git2`/`libgit2-sys`); `url`
 //!   may exist only as a franken-agent-detection transitive dep and
 //!   `semver` only under `[dev-dependencies]`.
+//! * `.config/nextest.toml` keeps the local-gate invariants: no `ci`-family
+//!   profile and no `test-threads = "num-cpus"` unbound parallelism.
 //! * The removed-command matrix stays fully active: every row in
 //!   `tests/cli_dispatch_coverage.rs` has `pending: false` and the
 //!   `REMOVED_COMMANDS`/`REMOVED_FLAGS` tables live in `src/lib.rs`.
@@ -42,6 +44,7 @@
 //! be rewritten.
 
 use regex::Regex;
+use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -849,12 +852,28 @@ fn remote_resource_patterns() -> Vec<(&'static str, Regex)> {
     ]
 }
 
+/// Collapse backslash runs before a quote (`\"`, `\'`, `\\\"`, …) down to
+/// the quote itself so a remote reference planted inside an escaped-quote
+/// literal — `"src=\"https://evil\""`, `fetch(\"…\")` — is still matched.
+/// Only `\` bytes are removed, never `\n`, so line numbers stay exact.
+fn unescape_quoted_view(view: &str) -> Cow<'_, str> {
+    if !view.contains('\\') {
+        return Cow::Borrowed(view);
+    }
+    let re = Regex::new(r#"\\+(["'])"#).unwrap();
+    Cow::Owned(re.replace_all(view, "$1").into_owned())
+}
+
 fn scan_remote_resources(
     view: &str,
     file: &str,
     violations: &mut Vec<Violation>,
     patterns: &[(&'static str, Regex)],
 ) {
+    // Scan the unescaped view: string literals hide remote references
+    // behind escaped quotes that the patterns would otherwise skip.
+    let view = unescape_quoted_view(view);
+    let view: &str = &view;
     for (rule, re) in patterns {
         for m in re.find_iter(view) {
             violations.push(Violation {
@@ -1232,6 +1251,34 @@ fn cargo_manifest_and_lockfile_carry_no_remote_deps() {
 }
 
 // ---------------------------------------------------------------------------
+// Audit 4b — .config/nextest.toml keeps the local-only invariants
+// ---------------------------------------------------------------------------
+
+/// The gate is the only verification lane and it runs locally with bounded
+/// parallelism: the nextest config must never regrow a `ci`-family profile
+/// or a `test-threads = "num-cpus"` unbound-threads knob.
+#[test]
+fn nextest_config_keeps_local_only_invariants() {
+    let toml = read_text(&repo_root().join(".config/nextest.toml"));
+    // `[profile.ci]`, `[profile.ci-coverage]`, `[[profile.ci.overrides]]`,
+    // any `ci-*` family member — but not `profile.cider`/`profile.circuit`.
+    let ci_profile = Regex::new(r"(?m)^\s*\[\s*\[?\s*profile\.ci(?:[^A-Za-z0-9_]|$)").unwrap();
+    assert!(
+        !ci_profile.is_match(&toml),
+        "audit: .config/nextest.toml defines a ci-family profile — the \
+         project has no remote CI; keep profiles local-only"
+    );
+    // Exact bare key only: `threads-required = "num-cpus"` (the override
+    // serializing UI tests) is a different knob and stays allowed.
+    let unbound = Regex::new(r#"(?m)(?:^|[^A-Za-z0-9_-])test-threads\s*=\s*"num-cpus""#).unwrap();
+    assert!(
+        !unbound.is_match(&toml),
+        "audit: .config/nextest.toml sets test-threads = \"num-cpus\" — \
+         test threads stay bounded (shared local default: 2)"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Audit 5 — removed-command matrix stays fully active
 // ---------------------------------------------------------------------------
 
@@ -1339,6 +1386,32 @@ fn scanner_detects_synthetic_violations() {
         "relative src must not flag; <a href> must not flag: {:?}",
         v
     );
+
+    // Escaped-quote literals must not evade the scan: the view unescapes
+    // \" and \' before matching, so a planted `src=\"https://evil\"` or
+    // `fetch(\"…\")` inside a string still flags.
+    let mut ev = Vec::new();
+    scan_remote_resources(
+        r#"let a = "<img src=\"https://evil.example/x.png\">";
+           let b = "fetch(\"https://evil.example/api\")";
+           let c = "url(\'https://evil.example/y.css\')";
+           let d = "<link rel=\"stylesheet\" href=\"https://evil.example/z.css\">";"#,
+        "synthetic.rs",
+        &mut ev,
+        &patterns,
+    );
+    let erules: Vec<_> = ev.iter().map(|x| x.rule).collect();
+    for rule in [
+        "src-remote",
+        "fetch-remote",
+        "css-url-remote",
+        "link-rel-remote",
+    ] {
+        assert!(
+            erules.contains(&rule),
+            "escaped-quote literal must flag {rule}: {erules:?}"
+        );
+    }
 
     // Doc paragraph annotation: unannotated removal-command mention flags,
     // annotated one does not.

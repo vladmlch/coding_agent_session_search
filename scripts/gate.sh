@@ -365,7 +365,10 @@ UBS_FILES=()
 # non-loopback-bind source scan, pages-assets + export-template resource
 # scan, docs/scripts remote-instruction scan, Cargo manifest+lockfile
 # banned-crate scan, and the removed-command matrix liveness check.
-INTEGRATION_TESTS=(cli_robot bookmarks_cli search_metamorphic pages_bundle search_service local_only_audit)
+# cli_dispatch_coverage holds the pending:false removed-command rejection
+# probes the audit cross-checks; outside the gate a regrowing matrix ran
+# in no receipt.
+INTEGRATION_TESTS=(cli_robot bookmarks_cli search_metamorphic pages_bundle search_service local_only_audit cli_dispatch_coverage)
 while [ $# -gt 0 ]; do
     case "$1" in
         --lib-filter) LIB_FILTER="$2"; shift 2 ;;
