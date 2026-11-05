@@ -619,3 +619,45 @@ Notes:
   `rs_files_over_1000_lines.txt`, `scripts/count_large_rs_files.sh`,
   `tests/fixtures/search_demo_data/agent_search.db.*`) remain untracked,
   not staged, matching Task 14 precedent.
+
+## Task 16 — stale-reference sweep: docs, plans, comments, goldens (2026-11-05)
+
+Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
+
+| Date (UTC) | Command | Result |
+| ---------- | ------- | ------ |
+| 2026-11-05 | `UPDATE_GOLDENS=1 cargo test --test golden_robot_docs --test golden_robot_json` | ok — 16+52; diffs limited to the `pages` description (`static hosting` → `local browsing`) in capabilities/introspect and the model-cache `notes` string (`opt-in downloads` → `operator-installed files`) in doctor/doctor_quarantine |
+| 2026-11-05 | `cargo test --test golden_robot_docs --test golden_robot_json` (non-update) | ok — 16+52 deterministic |
+| 2026-11-05 | `cargo build --locked --bin cass` | ok |
+| 2026-11-05 | `cargo test --locked --test docs_safety_invariants --test spec_robot_docs_topics --test golden_robot_docs` | ok — 3+4+16 |
+| 2026-11-05 | `scripts/validate_docs.sh --truth` | 122 errors, all in the pre-existing macOS `grep -P`/`--include` cascade (README key-arm check); real checks pass (460 flag usages, 87 env vars). The earlier run also flagged a bogus `CASS_EXTERNAL_EMBEDDING_` glob token introduced by this sweep's env row — fixed by spelling the vars out, count back to the base class |
+
+Notes:
+
+- Sweep covered docs/, README.md, AGENTS.md, SKILL.md, src/ comments/help,
+  tests comments/matrices, and dev configs. Stale `rch exec` offload
+  prescriptions replaced with local Cargo everywhere they prescribed action;
+  historical bead IDs and removal ledgers kept verbatim.
+- `docs/reference/E2E_LOGGING_SCHEMA.md` strict-RCH section rewritten to
+  describe the local bundle contract actually implemented by
+  `scripts/e2e_logging_acceptance_test.sh` (no SSH handoff/artifact sync).
+- `docs/UNIT_TEST_HARNESS_REQUIREMENTS.md` §6 rewritten from removed
+  fleet/source-sync files to the surviving local source-archive surface;
+  `docs/RESILIENCE_TEST_MATRIX.md` Epics 6/8 annotated `(removed 0.11.0)`
+  rather than deleted (matrix is a historical rollout record).
+- `tests/e2e_jsonl_schema_test.rs` source-scan list dropped three deleted
+  files (`e2e_deploy.rs`, `e2e_ssh_sources.rs`, `ssh_sync_integration.rs`)
+  that made `fs::read_to_string` fail — restores the test instead of
+  weakening it.
+- Retained-for-compat names reported, not renamed: `fleet_fixtures()`
+  (readiness fixture generator), `redact_swarm_text` /
+  `swarm_evidence_redaction_config` (pages redactor), `RunMode::Live` and
+  `PerfWorkloadKind::SourceSync` (wire enums), `PLACEHOLDER_CHECKSUM`
+  sentinel, `source_sync_deferral_card` (uncalled, kept per no-delete rule).
+- `tests/fixtures/cli_contract/introspect.json` still carries the old
+  `static hosting` pages description; unreferenced by tests and under the
+  protected `tests/fixtures/**` umbrella — left untouched, flagged here.
+- Untracked leftovers (`repomix-output.xml.zip`,
+  `rs_files_over_1000_lines.txt`, `scripts/count_large_rs_files.sh`,
+  `tests/fixtures/search_demo_data/agent_search.db.*`) remain untracked,
+  not staged, matching Task 14/15 precedent.

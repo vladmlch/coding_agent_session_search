@@ -118,8 +118,8 @@ Run accessibility tests:
 # Playwright axe-core tests
 cd tests && npm run test:e2e
 
-# Rust accessibility tests
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-accessibility-target cargo test --test pages_accessibility_e2e
+# Rust accessibility tests (local Cargo; no remote build offload)
+cargo test --test pages_accessibility_e2e
 ```
 
 ### Manual Testing Checklist

@@ -158,9 +158,10 @@ The fixtures use real Quill and FrankenSQLite data. Fuel is configured on each
 child process, not by changing environment variables in a parallel test runner.
 Every child has an external teardown bound in addition to the service deadline.
 
-Run the repository's normal RCH gate with the new integration target and the
-existing service target. Check `scripts/gate.sh --help` for the gate's selection
-syntax and fleet setup. Direct native test selections are:
+Run the repository's local gate (`scripts/gate.sh`) with the new integration
+target and the existing service target — the gate runs entirely on this
+machine; there is no remote fleet. Check `scripts/gate.sh --help` for the
+gate's selection syntax. Direct native test selections are:
 
 ```sh
 RUST_MIN_STACK=134217728 cargo test --locked --test quill_fuel_fallback

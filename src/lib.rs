@@ -1513,7 +1513,7 @@ pub enum Commands {
         #[arg(long)]
         source: Option<String>,
     },
-    /// Export encrypted searchable archive for static hosting (P4.x)
+    /// Export encrypted searchable archive for local browsing (P4.x)
     Pages {
         /// Key-slot management for an exported bundle (`cass pages key …`);
         /// without a subcommand the export flags below apply.
@@ -34026,7 +34026,7 @@ const DOCTOR_ASSET_POLICY_TABLE: &[DoctorAssetPolicy] = &[
         auto_delete_allowed: false,
         safe_to_gc_allowed: false,
         allowed_operations: DOCTOR_ASSET_DERIVED_REBUILDABLE_OPS,
-        notes: "Model caches are opt-in downloads; do not silently delete them.",
+        notes: "Model caches are operator-installed files; do not silently delete them.",
     },
     DoctorAssetPolicy {
         asset_class: DoctorAssetClass::MemoCache,
@@ -78950,8 +78950,8 @@ fn run_triage(
 
 /// Assemble and emit the redacted recovery/support evidence bundle (bead
 /// `coding_agent_session_search-6f1lm`; the `.13.3` contract). Composes the
-/// canonical readiness, next-command, source-doctor, quarantine, fleet (when
-/// applicable), and root-cause contracts — verbatim — into one share-safe
+/// canonical readiness, next-command, source-doctor, quarantine, and
+/// root-cause contracts — verbatim — into one share-safe
 /// bundle via [`crate::recovery_support_bundle::build_support_bundle`], so the
 /// bundle can never contradict the matching robot JSON.
 ///
@@ -79022,7 +79022,7 @@ fn run_support_bundle(
     let inputs = rsb::SupportBundleInputs {
         bundle_id: format!("support-bundle-{generated_at_ms}"),
         cass_version: env!("CARGO_PKG_VERSION").to_string(),
-        // Single local host/source: identity fields are fleet/multi-source
+        // Single local host/source: identity fields are multi-source
         // concepts and are omitted (not guessed) for the local surface.
         host_id: None,
         source_id: None,

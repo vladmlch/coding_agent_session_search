@@ -492,7 +492,7 @@ If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to f
 
 ### What It Does
 
-Provides unified full-text and semantic search across all local coding agent session histories, with a rich TUI, robot-mode JSON API, multi-machine sync, HTML export with optional encryption, and analytics.
+Provides unified full-text and semantic search across all local coding agent session histories, with a rich TUI, robot-mode JSON API, HTML export with optional encryption, and analytics. cass is fully local-only: remote sync, fleet/swarm coordination, hosted pages deploys, model downloads, and update checks were removed (see docs/VERSION_HISTORY.md 0.11.0 and docs/LOCAL_ONLY.md).
 
 ### Search Asset Contract
 
@@ -591,25 +591,23 @@ coding_agent_session_search/
 │   │   ├── canonicalize.rs       # Query canonicalization
 │   │   └── daemon_client.rs      # Search daemon RPC client
 │   ├── indexer/                  # Session indexing pipeline
-│   ├── storage/                  # SQLite persistence (frankensqlite + rusqlite)
+│   ├── storage/                  # SQLite persistence (frankensqlite)
 │   ├── ui/                       # TUI components
 │   ├── pages/                    # Web pages generation
 │   ├── pages_assets/             # Static assets for pages
 │   ├── html_export/              # Self-contained HTML export
 │   ├── analytics/                # Usage analytics
 │   ├── daemon/                   # Background search daemon
-│   ├── sources/                  # Multi-machine source management
+│   ├── sources/                  # Local source config/provenance (legacy-remote records stay readable)
 │   ├── model/                    # Data models
 │   ├── bookmarks.rs              # Session bookmarking
 │   ├── bakeoff.rs                # Embedder comparison tool
 │   ├── encryption.rs             # AES-GCM encryption
 │   ├── export.rs                 # Export pipeline
-│   ├── update_check.rs           # Auto-update checking
 │   └── tui_asciicast.rs          # Terminal recording
 ├── tests/                        # Integration + E2E tests
 ├── benches/                      # Criterion benchmarks
 ├── scripts/                      # Helper scripts
-├── web/                          # Web assets
 ├── docs/                         # Documentation
 └── fuzz/                         # Fuzz testing
 ```
@@ -784,7 +782,7 @@ Returns in <50ms on a healthy archive (the archive probe is the same strict, mut
 | 9 | Unknown error | Maybe |
 | 10 | Config / timeout (domain-specific) | Depends on `err.kind` |
 | 11 | Config validation | No — fix config |
-| 12 | Source / SSH problem | Maybe — check remote host |
+| 12 | Source problem (e.g. unknown source name) | Maybe — branch on `err.kind` |
 | 13 | Mapping / not-found | Depends on `err.kind` |
 | 14 | I/O / mapping | Maybe |
 | 15 | Semantic / embedder unavailable | Yes — install model or fall back to `--mode lexical` |

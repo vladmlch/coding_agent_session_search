@@ -146,5 +146,5 @@ exits. Transcript process tests compare stdio results, reassemble Unicode/NUL
 content across fresh processes, and reject changed cursor messages. Unix
 lifecycle tests also inject a pre-filled output socket and require exit 124
 plus released pool locks in one-shot and stdio modes. Run these through the
-repository's batched RCH gate; test presence is not evidence that a particular
-build has passed them.
+repository's local gate (`scripts/gate.sh`); test presence is not evidence
+that a particular build has passed them.

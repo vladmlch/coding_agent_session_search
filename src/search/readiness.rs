@@ -926,11 +926,13 @@ fn parse_rfc3339_millis(ts: &str) -> Option<i64> {
         .map(|dt| dt.timestamp_millis())
 }
 
-/// The seven canonical fleet states from the 2026-06-08 analysis, exposed
-/// as fixtures so downstream beads (.1.5 readiness fixture matrix, .12.1
-/// test matrix, fleet doctor goldens) consume one source of truth instead
-/// of hand-rolling node states. Returned as `(name, table)` pairs in a
-/// stable order. Timestamps are fixed literals for determinism.
+/// The seven canonical readiness states from the 2026-06-08 fleet report,
+/// exposed as fixtures so downstream beads (.1.5 readiness fixture matrix,
+/// .12.1 test matrix) consume one source of truth instead of hand-rolling
+/// node states. The fleet-doctor surface that prompted the names is removed;
+/// the states themselves are reused for local archive readiness. Returned as
+/// `(name, table)` pairs in a stable order. Timestamps are fixed literals
+/// for determinism.
 pub(crate) fn fleet_fixtures() -> Vec<(&'static str, DerivedAssetTruthTable)> {
     // A fixed reference clock (ms) so fixtures are byte-deterministic.
     const NOW_MS: i64 = 1_749_350_000_000; // ~2026-06-08T00:00:00Z

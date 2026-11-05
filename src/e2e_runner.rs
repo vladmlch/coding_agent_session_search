@@ -20,8 +20,10 @@
 //!
 //! The execution core is deliberately command-agnostic so it is unit-testable
 //! with portable stand-in commands; the live cass-surface scenarios
-//! (health/status/search/view/doctor/source/fleet) and the CI/quick/live mode
-//! recipe drive this same runner from the integration tier.
+//! (health/status/search/view/doctor/source) and the quick mode
+//! recipe drive this same runner from the integration tier. Everything is
+//! local: the former fleet/live-host scenarios were removed with the
+//! remote-sync surface.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -38,16 +40,18 @@ pub const E2E_RUNNER_SCHEMA_VERSION: u32 = 2;
 /// Stable schema version for the scenario artifact manifest.
 pub const E2E_SCENARIO_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
-/// Execution mode. Quick/CI are deterministic and never require live hosts;
-/// Live is opt-in and must never be mandatory for CI.
+/// Execution mode. Quick/CI are deterministic and local; `Live` is a
+/// retained wire variant from the removed remote-host era — nothing
+/// constructs it and it must never become mandatory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunMode {
     /// Local fast subset.
     Quick,
-    /// Full deterministic CI suite (no live hosts).
+    /// Full deterministic local suite.
     Ci,
-    /// Opt-in live fleet mode (real remote hosts).
+    /// Retained for wire compatibility only (the former opt-in remote-host
+    /// mode; there are no remote hosts to run against).
     Live,
 }
 

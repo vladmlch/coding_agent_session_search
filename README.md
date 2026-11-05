@@ -3018,8 +3018,8 @@ were removed with release publishing.
   There is no update checker or self-updater — cass never contacts a release
   API, and the legacy opt-out variables (`CODING_AGENT_SEARCH_NO_UPDATE_PROMPT`,
   `CASS_SKIP_UPDATE`, `CASS_UPDATE_API_BASE_URL`) are `deprecated-ignored`.
-  A stale `update_state.json` left in the data directory is only diagnosed,
-  never read for update decisions.
+  A stale `update_state.json` left in the data directory by a pre-0.11.0
+  install is inert and safe to delete.
 
 ---
 
@@ -3127,7 +3127,6 @@ Forgetting is always an explicit operation. CASS does not automatically delete o
 | `CASS_DB_PATH` | `$CASS_DATA_DIR/agent_search.db` | Same as `--db` (the flag wins): path of the canonical database. When it lies outside the data dir, derived assets (lexical index, checkpoints, locks) follow its directory unless `--data-dir` is given |
 | `CASS_EXCLUDE_PATHS` | unset | Comma/newline-delimited files or directory prefixes to skip without advancing scan/watch watermarks |
 | `CASS_OUTPUT_FORMAT` | unset | `json`, `jsonl`, `compact`, `sessions` or `toon` makes robot output the default, as if `--robot-format` were given |
-| `CASS_SSH_CONFIG` | unset | Deprecated-ignored: remote sync was removed by the local-only conversion; no SSH config is consulted |
 | `CASS_RAW_MIRROR` | `1` | Raw-mirror capture of session source files into `raw-mirror/v1/`. `0`, `false`, `no` or `off` stops capturing (GH #506). Indexing is unchanged, and existing captures stay until `cass mirror prune`. Doctor reports `raw_mirror_capture_disabled`, because a file its provider deletes then survives only in the archive DB. |
 | `CASS_DOCTOR_RAW_MIRROR_FULL_VERIFY` | unset | Set to `1` to hash every raw-mirror descriptor/chunk during a read-only doctor run, overriding the default bounded verification limits |
 | `CASS_DOCTOR_RAW_MIRROR_FULL_VERIFY_MANIFEST_LIMIT` | `256` | Defer full raw-mirror hashing above this manifest count while retaining metadata-only amplification diagnostics |
@@ -3204,6 +3203,11 @@ Forgetting is always an explicit operation. CASS does not automatically delete o
 | `CODING_AGENT_SEARCH_NO_UPDATE_PROMPT` | unset | `deprecated-ignored` — update checks were removed; cass never contacts a release API, so no opt-out is needed |
 | `CASS_SKIP_UPDATE` | unset | `deprecated-ignored` — update checks were removed |
 | `CASS_UPDATE_API_BASE_URL` | unset | `deprecated-ignored` — cass never contacts a release API |
+| `CASS_SSH_CONFIG` | unset | `deprecated-ignored` — remote sync was removed by the local-only conversion; no SSH config is consulted |
+| `CASS_SEMANTIC_DOWNLOAD_POLICY` | unset | `deprecated-ignored` — cass never downloads models; `cass models install --from-file` is the only acquisition path |
+| `CASS_EXTERNAL_EMBEDDINGS` | unset | `deprecated-ignored` — the external HTTP embedder was removed; `--embedder external` is rejected |
+| `CASS_EXTERNAL_EMBEDDING_URL`, `CASS_EXTERNAL_EMBEDDING_MODEL`, `CASS_EXTERNAL_EMBEDDING_DIMENSION`, `CASS_EXTERNAL_EMBEDDING_REVISION`, `CASS_EXTERNAL_EMBEDDING_TIMEOUT_MS`, `CASS_EXTERNAL_EMBEDDING_BATCH_SIZE`, `CASS_EXTERNAL_EMBEDDING_MAX_REQUEST_BYTES`, `CASS_EXTERNAL_EMBEDDING_API_KEY`, `CASS_EXTERNAL_EMBEDDING_MAX_RETRIES` | unset | `deprecated-ignored` — endpoint/model/credential settings of the removed external HTTP embedder |
+| `CASS_SWARM_AGENT_MAIL_URL` / `CASS_SWARM_AGENT_MAIL_TOKEN` | unset | `deprecated-ignored` — the swarm coordination layer was removed |
 | `CASS_FLEET_BUDGET_MS` / `CASS_FLEET_PER_HOST_BUDGET_MS` | unset | `deprecated-ignored` — fleet commands were removed |
 | **Connector Overrides** | | |
 | `CASS_AIDER_DATA_ROOT` | `~/.aider.chat.history.md` | Aider history location |

@@ -132,7 +132,7 @@ match WildcardPattern::parse(term_str) {
 1. Agent filter    -> TermQuery on "agent" field
 2. Workspace filter -> TermQuery on "workspace" field  
 3. Time range      -> RangeQuery on "created_at"
-4. Source filter   -> TermQuery on "origin_kind" ("local" vs "ssh")
+4. Source filter   -> TermQuery on "origin_kind" ("local" vs "remote"; stored legacy "ssh" values normalize to "remote")
 5. Session paths   -> Applied post-search (source_path not indexed)
 ```
 
@@ -336,7 +336,7 @@ cache_key = format!(
 1. Agent filter       -> TermQuery (STRING field, exact match)
 2. Workspace filter   -> TermQuery (STRING field, exact match)
 3. Time range         -> RangeQuery (I64 field with FAST flag)
-4. Source origin      -> TermQuery (STRING field: "local" vs "ssh")
+4. Source origin      -> TermQuery (STRING field: "local" vs "remote")
 ```
 
 ### Post-Search Filters (Content-aware)
@@ -361,7 +361,7 @@ pub struct SearchFilters {
 pub enum SourceFilter {
   All,                                    // No filtering
   Local,                                  // Only local sources
-  Remote,                                 // Only remote (SSH) sources
+  Remote,                                 // Only legacy remote archive records (SSH-era; never connected to)
   SourceId(String),                       // Specific source ID
 }
 ```
@@ -388,7 +388,7 @@ fn deduplicate_hits(hits: Vec<SearchHit>) -> Vec<SearchHit> {
 ### Source Boundary Respect (P2.3)
 ```rust
 // Different sources = different conversations
-// Same content from local and SSH sources appear separately
+// Same content from local and legacy remote sources appear separately
 // Maintains clear source attribution
 ```
 

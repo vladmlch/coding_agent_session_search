@@ -152,8 +152,7 @@ Pack vs search/export-html/doctor/status:
 Contributor verification for robot-doc changes:
 
 ```bash
-rch exec -- env CARGO_TARGET_DIR=${TMPDIR:-/tmp}/rch_target_cass_answer_pack_docs \
-  cargo test --test golden_robot_docs
+cargo test --test golden_robot_docs
 ```
 
 ## TUI drill-in contract (operator reference)

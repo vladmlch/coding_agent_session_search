@@ -2166,9 +2166,9 @@ const PACK_CONTRACT_MATRIX: &[PackContractRequirement] = &[
     },
     PackContractRequirement {
         level: "SHOULD",
-        requirement: "operators have an rch-based golden regeneration workflow",
+        requirement: "operators have a local-Cargo golden regeneration workflow",
         proof_tests: &[
-            "golden_regeneration_hints_do_not_use_bare_cargo",
+            "golden_regeneration_hints_do_not_use_remote_offload",
             "pack_robot_docs_contract_matrix_is_current",
         ],
         status: "covered",

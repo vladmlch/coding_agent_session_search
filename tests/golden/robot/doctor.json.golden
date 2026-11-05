@@ -1291,7 +1291,7 @@
         "rebuild",
         "support_bundle"
       ],
-      "notes": "Model caches are opt-in downloads; do not silently delete them."
+      "notes": "Model caches are operator-installed files; do not silently delete them."
     },
     {
       "asset_class": "memo_cache",

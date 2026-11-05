@@ -353,7 +353,7 @@ mod tests {
             Some("minilm"),
             "lexical",
             "model files are absent",
-            "run cass models install",
+            "run cass models install --from-file <dir>",
         );
         let value = serde_json::to_value(card).unwrap();
         assert_eq!(value["surface"], "health_robot");

@@ -94,7 +94,7 @@ fuzzy search over ~28 action variants organized into 7 groups:
 
 | Group      | Actions |
 |------------|---------|
-| Chrome     | Theme toggle, density, help strip, update check |
+| Chrome     | Theme toggle, density, help strip |
 | Filter     | Agent, workspace, time-range filters |
 | View       | Saved views, bulk actions, reload |
 | Analytics  | 8 sub-views (Dashboard, Explorer, Heatmap, Breakdowns, Tools, Cost, Plans, Coverage) |

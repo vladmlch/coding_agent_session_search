@@ -59,7 +59,7 @@ impl Default for PreviewConfig {
     }
 }
 
-/// Resolve the deployable site directory from either a bundle root or site path.
+/// Resolve the publishable site directory from either a bundle root or site path.
 fn resolve_site_dir(path: &std::path::Path) -> Result<PathBuf, PreviewError> {
     super::resolve_site_dir(path)
         .map_err(|_| PreviewError::SiteDirectoryNotFound(path.to_path_buf()))

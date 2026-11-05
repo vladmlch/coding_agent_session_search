@@ -3139,7 +3139,7 @@ fn fts_repair_liveness_index_cmd(home: &std::path::Path, data_dir: &std::path::P
     .arg(data_dir)
     .env("CASS_AUTO_REFRESH", "0")
     .env("CASS_FTS_REBUILD_BATCH_SIZE", "1")
-    // Loose enough for the pre-index phases on a loaded fleet worker (the
+    // Loose enough for the pre-index phases on a loaded worker machine (the
     // first attempt used 2 s / 6 s and was aborted during connector scanning),
     // tight enough that the repair's 20 s of injected work exceeds it.
     .env("CASS_INDEX_STALL_DETECT_SECS", "5")
@@ -4161,8 +4161,8 @@ fn gh439_slow_post_publish_fts_repair_is_not_aborted_while_it_heartbeats() {
     // 40 s abort window. With the per-page heartbeat every silent stretch is
     // 12 s (< 40 s) and the run survives; without it the 48 s stretch would
     // exceed the window and abort. The window is deliberately wider than the
-    // parked variant's 20 s so a slow `preparing` phase on a loaded fleet
-    // worker (debug build) cannot trip the abort before the repair starts.
+    // parked variant's 20 s so a slow `preparing` phase on a loaded machine
+    // (debug build) cannot trip the abort before the repair starts.
     let output = fts_repair_liveness_index_cmd(home, &data_dir)
         .env("CASS_TEST_FTS_REPAIR_PAGE_SLEEP_MS", "12000")
         .env("CASS_INDEX_STALL_DETECT_SECS", "10")
@@ -4234,7 +4234,7 @@ fn gh382_final_wal_checkpoint_is_bounded_and_leaves_the_wal_for_the_next_run() {
         .env("CASS_AUTO_REFRESH", "0")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         // Discrimination by wall clock: a full run of this fixture takes up
-        // to ~30 s on a loaded debug-build fleet worker, so the park is 60 s
+        // to ~30 s on a loaded debug-build worker, so the park is 60 s
         // against a 1 s budget — a run that waited for the parked checkpoint
         // cannot finish under 60 s; a bounded one finishes in the base time
         // plus one second.

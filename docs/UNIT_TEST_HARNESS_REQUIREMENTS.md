@@ -75,7 +75,7 @@ has the four categories present (or an explicit, justified N/A).
   fall through to a default "looks healthy".
 - **Boundary / empty:** zero sessions, no lexical metadata, no semantic
   vectors, unknown/un-evaluated axes.
-- **Regression:** the named fleet-host fixtures (`mac-mini-old` unreachable,
+- **Regression:** the named readiness fixtures (`mac-mini-old` unreachable,
   `ts1` high-archive-risk, etc.) round-trip through JSON in stable order.
 
 ### 2. Command envelopes
@@ -131,35 +131,46 @@ has the four categories present (or an explicit, justified N/A).
 - **Regression:** a fingerprint-mismatch incident reproduces lexical fallback +
   truthful realized-mode reporting.
 
-### 6. Fleet / source / remote
+### 6. Source archive / legacy-remote records
 
-- **Home:** `src/fleet_doctor_schema.rs`, `src/source_doctor_health.rs`,
-  `src/fleet_version_skew.rs`, `src/fleet_archive_coverage.rs`,
-  `src/sources/sync.rs` (see [`RESILIENCE_TEST_MATRIX.md`](RESILIENCE_TEST_MATRIX.md)).
-- **Happy:** reachable + current host → healthy; consistent mirror → no gap.
-- **Negative:** host capability differences (macOS/Linux paths/tools),
-  **unreachable / timed-out / auth-denied** hosts stay visible as explicit
-  states (never dropped from summaries); stale source paths and **remote-pruned**
-  sources preserve local evidence; **SSH/rsync → scp → ssh2/SFTP fallback
-  selection** picks the OpenSSH-first transport and records the decision.
-- **Boundary / empty:** no configured sources, archive-only host (drilldown),
-  mirror ahead vs. behind by exactly one, additive remote mirror preservation
-  (never `--delete` / prune / source-log mutation in any suggested command).
-- **Regression:** the documented unreachable hosts (`mac-mini-old`,
-  intermittent `ts2`/`mac-mini-max`) classify to their preserved states; a
-  doctor run is asserted **mutation-free**.
+The fleet probe/sync files this family originally covered
+(`src/fleet_doctor_schema.rs`, `src/source_doctor_health.rs`,
+`src/fleet_version_skew.rs`, `src/fleet_archive_coverage.rs`,
+`src/sources/sync.rs`) were removed by the local-only conversion (0.11.0).
+What remains is the local source archive: config, provenance, and the
+legacy `ssh`-kind records that stay readable without ever opening a
+connection (see [`RESILIENCE_TEST_MATRIX.md`](RESILIENCE_TEST_MATRIX.md)).
+
+- **Home:** `src/sources/config.rs`, `src/sources/config_validation.rs`,
+  `src/sources/provenance.rs`, `src/source_onboarding.rs`, and the source
+  checks in `src/doctor.rs`.
+- **Happy:** configured local source → healthy; consistent mirror → no gap;
+  a legacy `type = "ssh"` entry reports `kind: legacy-remote`,
+  `supported: false`.
+- **Negative:** missing/unreadable source paths stay visible as explicit
+  states (never dropped from summaries); stale source paths and
+  remote-pruned sources preserve local evidence; a legacy-remote entry is a
+  doctor **warning**, never a probe target.
+- **Boundary / empty:** no configured sources, archive-only record
+  (drilldown), mirror ahead vs. behind by exactly one, additive mirror
+  preservation (never `--delete` / prune / source-log mutation in any
+  suggested command).
+- **Regression:** the named readiness fixtures (`mac-mini-old`,
+  `ts1`/`ts2`, etc. in `src/search/readiness_fixtures.rs`) classify to
+  their preserved states; a doctor run is asserted **mutation-free** and
+  never opens a connection for a legacy-remote record.
 
 ### 7. Root-cause and incident mining
 
 - **Home:** `src/root_cause_taxonomy.rs`, `src/crash_replay.rs`,
-  `src/workflow_analytics.rs` (incident rollups).
+  `src/analytics/` (incident rollups).
 - **Happy:** a known failure signature maps to its **deterministic** category.
 - **Negative:** ambiguous/unknown signatures fall to an explicit
   `unknown`/`other` family (never a confident wrong guess); redaction removes
   secrets/PII from snippets.
 - **Boundary / empty:** empty corpus, a single incident, a scan hitting the
-  **bounded scan cap** (must report truncation, not silently stop), host
-  rollups with one host.
+  **bounded scan cap** (must report truncation, not silently stop),
+  rollups with one entry.
 - **Regression:** mined issue classes from the report reproduce their category
   and **privacy-safe snippet** redaction.
 

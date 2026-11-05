@@ -168,7 +168,7 @@ pub enum CoverageGap {
     MissingArtifact { subsystem: String, artifact: String },
 }
 
-/// The fifteen-row subsystem coverage matrix. Order matches
+/// The fourteen-row subsystem coverage matrix. Order matches
 /// [`REPORT_SUBSYSTEM_FILES`].
 pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
     vec![

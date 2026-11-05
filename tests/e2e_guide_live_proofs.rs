@@ -14,7 +14,7 @@ const PRIVATE_BODY: &str = "guide-live-private-session-body-sentinel";
 fn cass(home: &Path) -> Command {
     let mut command = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
     // Do not inherit connector roots, remote sources, or agent-home overrides
-    // from the developer or RCH worker running this test. Keep only OS/loader
+    // from the developer machine running this test. Keep only OS/loader
     // infrastructure needed to launch the already-built executable.
     command.env_clear();
     for key in [

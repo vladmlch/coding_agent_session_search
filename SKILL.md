@@ -429,11 +429,10 @@ Errors are JSON with actionable hints:
 | 1 | Health check failed | Inspect the reported condition; no automatic rebuild |
 | 2 | Usage error | Fix syntax (hint provided) |
 | 3 | Index/DB missing | Report missing assets; indexing is a separate mutating task |
-| 4 | Network error | Check connectivity |
+| 4 | I/O failure or unsafe operation refused | Branch on `err.kind` (`io`, `output-not-writable`, `refused-unsafe`) — not a network code |
 | 5 | Data/maintenance failure | Read error kind; preserve the archive and report the blocker |
-| 6 | Incompatible version | Update cass |
+| 6 | Required input missing | Supply the input named by `err.kind` (e.g. `--password-stdin`) and rerun |
 | 7 | Lock/busy | Retry later |
-| 8 | Partial result | Report incomplete coverage; do not silently retry |
 | 9 | Unknown error | Check `retryable` flag |
 
 Codes are command-specific: consult `cass robot-docs exit-codes` and the JSON
@@ -971,5 +970,3 @@ cargo install --path . --locked --bin cass
 |------|-------------|
 | **CM** | CASS provides episodic memory, CM extracts procedural memory |
 | **NTM** | Robot mode flags for searching past sessions |
-| **Agent Mail** | Search threads across agent history |
-| **BV** | Cross-reference beads with past solutions |

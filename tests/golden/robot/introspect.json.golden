@@ -3158,7 +3158,7 @@
     },
     {
       "name": "pages",
-      "description": "Export encrypted searchable archive for static hosting (P4.x)",
+      "description": "Export encrypted searchable archive for local browsing (P4.x)",
       "arguments": [
         {
           "name": "export-only",

@@ -2043,7 +2043,7 @@ pub struct SearchHit {
     /// Source identifier (e.g., "local", "work-laptop")
     #[serde(default = "default_source_id")]
     pub source_id: String,
-    /// Origin kind ("local" or "ssh")
+    /// Origin kind ("local" or "remote"; legacy "ssh" normalizes to "remote")
     #[serde(default = "default_source_id")]
     pub origin_kind: String,
     /// Origin host label for remote sources

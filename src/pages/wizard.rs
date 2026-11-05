@@ -1492,7 +1492,7 @@ impl PagesWizard {
         writeln!(term)?;
 
         // Stage export/encryption artifacts in a temp directory so the final
-        // bundle root only contains deployable output (site/ + private/).
+        // bundle root only contains publishable output (site/ + private/).
         let staging_dir = tempfile::tempdir()?;
         let export_db_path = staging_dir.path().join("export.db");
         let encrypted_dir = staging_dir.path().join("encrypted");
@@ -1788,7 +1788,7 @@ impl PagesWizard {
             writeln!(term)?;
             writeln!(
                 term,
-                "Deployable site directory: {}",
+                "Exported site directory: {}",
                 style(site_dir.display()).cyan()
             )?;
             writeln!(term)?;

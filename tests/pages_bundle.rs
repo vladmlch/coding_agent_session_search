@@ -317,7 +317,7 @@ mod tests {
         // BundleBuilder embeds every first-party page asset from
         // src/pages/bundle.rs::PAGES_ASSETS plus whatever payload chunks the
         // encrypted archive produced. Missing an imported module produces a
-        // deployable bundle whose viewer fails only at browser runtime, so the
+        // publishable bundle whose viewer fails only at browser runtime, so the
         // test names the complete asset set instead of checking a loose count.
         let minimum_runtime_assets = EXPECTED_PAGE_ASSETS.len() + EXPECTED_VENDOR_ASSETS.len();
         assert!(

@@ -7,7 +7,7 @@
 //! This module is the shared **foundation** for that bead: a reusable execution
 //! budget ([`RobotBudget`]) and a generic partial/error envelope
 //! ([`BudgetEnvelope`]) that any robot surface (status, doctor check, view,
-//! search, triage, pack, fleet probes) can wrap its payload in. When rich work
+//! search, triage, pack) can wrap its payload in. When rich work
 //! would exceed the budget, the surface returns a *partial* JSON document that
 //! still carries `elapsed_ms`, `timed_out`, `budget_ms`, the `skipped_sections`,
 //! a `recommended_next_probe`, and whatever facts completed — enough for an agent

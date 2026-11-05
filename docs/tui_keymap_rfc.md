@@ -72,8 +72,9 @@ Related issues: coding_agent_session_search-2noh9.1.4, coding_agent_session_sear
 - `Ctrl+T` — Toggle theme (dark/light)
 - `F2` — Theme toggle (legacy alias)
 
-## Update Assistant
-- When banner shown: `U` upgrade, `s` skip this version, `d` view notes, `Esc` dismiss
+## Update Assistant (removed 0.11.0)
+- The update banner and its keys (`U` upgrade, `s` skip, `d` notes) went away
+  with update checking; cass performs no version checks.
 
 ## Minimal / Robot Mode Behavior
 - When `TUI_HEADLESS=1` or stdout non-TTY: disable command palette, animation, icons; only allow `search`/`stats`/`view` via CLI.
@@ -98,7 +99,7 @@ Related issues: coding_agent_session_search-2noh9.1.4, coding_agent_session_sear
 - Keymap is conflict-free, discoverable (help strip + palette), and defined for degraded terminals.
 - ESC always backs out safely; no orphaned modal states.
 - Saved view, density, and theme toggles have keybindings and documented fallbacks.
-- Update assistant keys defined.
+- ~~Update assistant keys defined.~~ Removed in 0.11.0 (no update checking).
 
 ## FrankenTUI Architecture Mapping (coding_agent_session_search-2noh9.1.4)
 
@@ -215,7 +216,7 @@ Filter ribbon (top) plus collapsible filter drawer (narrow mode):
   - custom: since/until
 - Agent: multi-select with fuzzy match
 - Workspace: multi-select with fuzzy match
-- Source: all/local/remote/source-id
+- Source: all/local/legacy-remote/source-id
 - Optional advanced: role filter for message role segmentation
 
 Persistence rules:
@@ -354,7 +355,7 @@ active.
 | `F7` | Cycle context window (Small / Medium / Large / XLarge) | |
 | `F8` | Open selected result in $EDITOR | No-op if nothing selected |
 | `F9` | Cycle match mode (Standard / Prefix) | |
-| `F11` | Cycle source filter (All / Local / Remote / per-host) | |
+| `F11` | Cycle source filter (All / Local / legacy-Remote / per-source) | Remote matches archived legacy-source records only |
 | `Shift+F11` | Open source filter popup menu | |
 | `F12` | Cycle ranking mode (Recent / Balanced / Relevance / Quality / Date Newest / Date Oldest) | |
 | `Alt+S` | Cycle search mode (Lexical / Semantic / Hybrid) | |
@@ -518,6 +519,10 @@ the original design only.
 | `Esc` | Cancel dialog (or cancel active download) | |
 
 #### 1.13 Update Assistant (when version banner shown)
+
+Removed (0.11.0, local-only conversion). Update checks were removed; the
+banner never renders and `U`/`s`/`d` in this context are unbound. The table
+records the original design only.
 
 | Key | Action | Notes |
 |---|---|---|

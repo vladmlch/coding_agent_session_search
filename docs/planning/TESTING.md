@@ -37,16 +37,14 @@ Mocks are problematic because they:
 
 ### Allowlist: True Boundaries
 
-Some scenarios require deterministic fixture constructors. These are explicitly
-allowlisted (see `tests/policies/no_mock_allowlist.json`):
+Some scenarios could in principle require deterministic fixture constructors.
+The allowlist (`tests/policies/no_mock_allowlist.json`) is currently **empty** —
+no mock/fake/stub exception is active. Any new exception must follow the
+request process below.
 
-1. **Fixture constructors** (`#[cfg(test)]` only):
-   - `mock_system_info` in `src/sources/install.rs` - deterministic SystemInfo for pure logic tests
-   - `mock_resources` in `src/sources/install.rs` - deterministic ResourceInfo for pure logic tests
+### Validation Enforcement
 
-### CI Enforcement
-
-The CI pipeline enforces repository artifact hygiene before the no-mock policy:
+The local validation script enforces repository artifact hygiene before the no-mock policy:
 
 ```bash
 # Run only the tracked-artifact hygiene check
@@ -61,7 +59,7 @@ belongs under `docs/artifacts/`, project-owned images under `docs/assets/`,
 planning material under `docs/planning/`, and machine-enforced policy inputs
 under `tests/policies/`.
 
-The CI pipeline also enforces the no-mock policy:
+The validation script also enforces the no-mock policy:
 
 ```bash
 # Run the no-mock check
@@ -136,7 +134,8 @@ Tests that exercise multiple components together:
 
 **Browser E2E** (`tests/e2e/`):
 - Playwright tests for HTML exports
-- Run on CI only (see AGENTS.md "E2E Browser Tests")
+- Run locally through `scripts/browser_e2e_lane.sh` (never auto-provisions;
+  Playwright deps and browsers are manual prerequisites)
 
 **Shell E2E** (`scripts/e2e/*.sh`):
 - `connector_stress.sh` - Stress-test connector parsing with malformed/edge fixtures
@@ -173,8 +172,7 @@ tests/fixtures/
 ├── html_export/          # Real exported sessions
 │   └── real_sessions/
 ├── messages/             # Sample JSONL messages
-├── models/               # Small valid ONNX models (if needed)
-└── sources/              # Multi-machine sync fixtures
+└── models/               # Small valid ONNX models (if needed)
 ```
 
 ### Creating Fixtures
@@ -285,51 +283,6 @@ fn test_semantic_search() {
 - Embedding: `Xenova/paraphrase-MiniLM-L3-v2` (Apache-2.0)
 - Reranker: `Xenova/ms-marco-MiniLM-L-6-v2` (Apache-2.0)
 
-### SSH Test Fixtures
-
-SSH-related tests use Docker containers with a real SSH server:
-
-**Docker infrastructure:**
-```
-tests/docker/
-├── Dockerfile.sshd    # SSH server image
-└── entrypoint.sh      # Container startup script
-```
-
-**Probe fixtures:** `tests/fixtures/sources/probe/`
-- `indexed_host.json` - Host with cass indexed (847 sessions)
-- `not_indexed_host.json` - Host with cass but not indexed
-- `no_cass_host.json` - Host without cass installed
-- `unreachable_host.json` - Connection failure scenario
-
-**Usage:**
-
-```rust
-use crate::ssh_test_helper::SshTestServer;
-
-#[test]
-#[ignore = "requires Docker"]
-fn test_ssh_sync() {
-    // Start ephemeral SSH server with auto-generated keys
-    let server = SshTestServer::start().expect("SSH server should start");
-
-    // Use server.ssh_target() for connections
-    let target = server.ssh_target();
-    // ... run SSH-based tests ...
-
-    // Container auto-cleaned on drop
-}
-```
-
-**Running SSH tests:**
-```bash
-# Build SSH test image first
-docker build -t cass-ssh-test:latest -f tests/docker/Dockerfile.sshd tests/docker/
-
-# Run ignored tests (requires Docker)
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-ssh-tests-target cargo test -- --ignored
-```
-
 ### PTY-Based TUI Testing
 
 TUI tests support two modes:
@@ -374,23 +327,26 @@ a PTY crate (e.g., `portable_pty`). Current tests use headless mode with CLI equ
 
 ### Local Development
 
+All test runs are local Cargo invocations (`scripts/lib/run_cargo.sh` resolves a
+shared `CARGO_TARGET_DIR`; there is no remote build offload):
+
 ```bash
 # Run all tests
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-tests-target cargo test
+cargo test
 
 # Run specific test file
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-connector-tests-target cargo test --test connector_claude
+cargo test --test connector_claude
 
 # Run with logging
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-tests-target RUST_LOG=debug cargo test
+RUST_LOG=debug cargo test
 
 # Skip expensive tests
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-lib-tests-target cargo test --lib  # Unit tests only
+cargo test --lib  # Unit tests only
 ```
 
-### CI Pipeline
+### Local Validation Pipeline
 
-The full CI pipeline runs:
+The local validation pipeline runs:
 
 ```bash
 ./scripts/validate_ci.sh
@@ -405,14 +361,15 @@ Which includes:
 6. Crypto vector tests
 7. `cargo audit` (if installed)
 
+The project has no remote CI (`.github/workflows` must stay empty — see
+`tests/no_github_actions.rs`); `scripts/gate.sh` is the batched local gate.
+
 ### Browser E2E Tests
 
-**Do not run locally** - they consume significant resources.
-
-Push to a branch and let GitHub Actions run them:
-- Workflow: `.github/workflows/browser-tests.yml`
-- Runs on: Chromium, Firefox, WebKit
-- Uploads: Test artifacts and reports
+Run them locally via `scripts/browser_e2e_lane.sh` — the lane builds `cass`
+through `scripts/lib/run_cargo.sh`, invokes Playwright via `npx --no-install`,
+and exits with manual setup guidance when `tests/node_modules` or browser
+builds are missing (it never installs packages or downloads browsers).
 
 ---
 
@@ -433,9 +390,9 @@ Snapshot baselines are a **UI contract**, not a convenience artifact. Never run 
 Run these first to confirm whether snapshots are stale:
 
 ```bash
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-target cargo test snapshot_baseline_ -- --nocapture
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-target cargo test snapshot_search_surface_ -- --nocapture
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-target cargo test --test ftui_harness_snapshots -- --nocapture
+cargo test snapshot_baseline_ -- --nocapture
+cargo test snapshot_search_surface_ -- --nocapture
+cargo test --test ftui_harness_snapshots -- --nocapture
 ```
 
 ### Targeted Regeneration (Intentional Changes Only)
@@ -443,9 +400,9 @@ rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-target cargo test --tes
 Use `BLESS=1` only for the suite you intentionally changed:
 
 ```bash
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-bless-target BLESS=1 cargo test snapshot_baseline_ -- --nocapture
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-bless-target BLESS=1 cargo test snapshot_search_surface_ -- --nocapture
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-bless-target BLESS=1 cargo test --test ftui_harness_snapshots -- --nocapture
+BLESS=1 cargo test snapshot_baseline_ -- --nocapture
+BLESS=1 cargo test snapshot_search_surface_ -- --nocapture
+BLESS=1 cargo test --test ftui_harness_snapshots -- --nocapture
 ```
 
 ### Mandatory Review Protocol
@@ -457,15 +414,15 @@ rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-bless-target BLESS=1 ca
    ```
 3. Validate behavior guards still pass:
    ```bash
-   rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-guards-target cargo test search_surface_interaction_matrix_enter_click_escape -- --nocapture
-   rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-guards-target cargo test detail_markdown_ -- --nocapture
-   rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-guards-target cargo test markdown_theme_ -- --nocapture
+   cargo test search_surface_interaction_matrix_enter_click_escape -- --nocapture
+   cargo test detail_markdown_ -- --nocapture
+   cargo test markdown_theme_ -- --nocapture
    ```
 4. Run project quality gates:
    ```bash
-   rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-quality-target cargo fmt --check
-   rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-quality-target cargo check --all-targets
-   rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-quality-target cargo clippy --all-targets -- -D warnings
+   cargo fmt --check
+   cargo check --all-targets
+   cargo clippy --all-targets -- -D warnings
    ```
 5. In the bead/PR note, explicitly record:
    - Which snapshot suite was regenerated
@@ -486,16 +443,15 @@ rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-snapshot-bless-target BLESS=1 ca
 
 | Metric | Threshold | Enforcement |
 |--------|-----------|-------------|
-| Line coverage | **60%** minimum | Required on PR merge |
-| Target coverage | **80%** | Recommended, shown in CI summary |
+| Line coverage | **60%** minimum | Local policy floor (`scripts/coverage-uncovered.sh --fail`) |
+| Target coverage | **80%** | Recommended |
 
-### CI Enforcement
+### Enforcement
 
-Coverage is enforced via `.github/workflows/coverage.yml`:
-
-- **On PRs**: Coverage below 60% **blocks merge**
-- **On main**: Coverage is reported to Codecov for tracking
-- **Summary**: Each run shows coverage status in GitHub Actions summary
+The project has no remote CI, so coverage is a **local policy target**, not a
+merge gate: run `scripts/coverage.sh` (or the commands below) and keep the lib
+line rate at or above the threshold. `scripts/coverage-uncovered.sh --fail`
+exits non-zero below the configured floor.
 
 ### Running Coverage Locally
 
@@ -541,7 +497,7 @@ When coverage drops on a PR:
 
 ### Unified JSONL Schema
 
-All E2E test infrastructure emits structured JSONL logs following a unified schema. This enables consistent log aggregation, CI integration, and debugging across all test runners.
+All E2E test infrastructure emits structured JSONL logs following a unified schema. This enables consistent log aggregation, gate integration, and debugging across all test runners.
 
 **Schema Documentation:** `docs/reference/E2E_LOGGING_SCHEMA.md`
 
@@ -631,7 +587,6 @@ The unified test runner executes all E2E suites and produces consolidated report
 - `test-results/e2e/summary.md` - Human-readable Markdown summary
 
 **Retention:**
-- CI keeps E2E artifacts (logs/traces/summary) for 7 days by default.
 - Local `test-results/e2e/` can be cleaned manually when no longer needed.
 
 ### Parsing JSONL Logs
@@ -678,8 +633,8 @@ The `validate-e2e-jsonl.sh` script validates E2E log files conform to the expect
   - `test_start` count matches `test_end` count
   - `run_start` present if tests exist
 
-**CI Integration:**
-The validator runs automatically in CI after E2E tests. Schema violations fail the build with actionable error messages like:
+**Gate integration:**
+Run the validator after local E2E runs. Schema violations fail with actionable error messages like:
 ```
 file.jsonl:15: Event 'test_end' missing required field 'result.status'
 ```
@@ -694,12 +649,13 @@ Doctor v2 tests split portability into two layers:
    - mutating repair receipts name the filesystem method through `fallback_kind`
    - before/after inventories, receipts, event logs, parsed doctor JSON, and command transcripts are captured for every scripted e2e mutation
 
-2. Platform-specific behavior that must be tested where CI support exists:
+2. Platform-specific behavior that must be tested where a machine for that platform exists:
    - Linux: atomic rename/exchange paths and simulated cross-device fallback
    - macOS: parked-rename fallback, case-sensitive/case-insensitive path expectations, and standard app-support data roots
    - Windows: reserved-name rejection, drive-prefix refusal, locked-file behavior, long paths where enabled, and non-Unix rename semantics
 
-When Linux CI cannot exercise a non-Linux filesystem behavior directly, the
+When a developer machine cannot exercise a foreign-platform filesystem behavior
+directly, the
 doctor e2e runner must use a documented simulation instead of silently skipping
 the contract. The current cross-device promotion coverage uses
 `CASS_TEST_DOCTOR_RENAME_FAILURE=cross-device` and the
@@ -724,8 +680,7 @@ outside generated-output directories:
 
 | File | Description |
 |------|-------------|
-| `docs/artifacts/no-mock-audit.md` | Preserved mock pattern audit narrative |
-| `tests/policies/no_mock_allowlist.json` | Approved mock-pattern exceptions consumed by CI |
+| `tests/policies/no_mock_allowlist.json` | Approved mock-pattern exceptions (currently empty) |
 | `docs/reference/E2E_LOGGING_SCHEMA.md` | Durable E2E logging schema documentation |
 | `e2e/<suite>/<test>/` | Per-test artifacts (stdout/stderr/cass.log/trace.jsonl) |
 | `e2e/*.jsonl` | Per-suite JSONL logs |
@@ -763,15 +718,14 @@ fn test_parsing() { }
 ## Related Documentation
 
 - `AGENTS.md` - Agent guidelines (E2E browser test policy)
-- `docs/artifacts/no-mock-audit.md` - Current mock audit
-- `tests/policies/no_mock_allowlist.json` - Approved exceptions
+- `tests/policies/no_mock_allowlist.json` - Approved exceptions (currently empty)
 - `docs/reference/E2E_LOGGING_SCHEMA.md` - Unified E2E logging schema
 - `scripts/tests/run_all.sh` - Orchestrated E2E runner
+- `scripts/browser_e2e_lane.sh` - Local Playwright lane
 - `scripts/lib/e2e_log.sh` - Shell E2E logging library
 - `tests/util/e2e_log.rs` - Rust E2E logging module
 - `tests/e2e/reporters/jsonl-reporter.ts` - Playwright JSONL reporter
-- `.github/workflows/` - CI workflow definitions
 
 ---
 
-*Last updated: 2026-02-09*
+*Last updated: 2026-11-05 (local-only conversion sweep)*

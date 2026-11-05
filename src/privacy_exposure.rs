@@ -9,7 +9,7 @@
 //! Hard guarantees enforced by this module:
 //! * It never mutates files, the database, or the network.
 //! * It never emits a raw secret value or raw absolute path: every sample is
-//!   passed through both the ingestion secret redactor and the strict swarm
+//!   passed through both the ingestion secret redactor and the strict
 //!   evidence redactor before it leaves this module.
 //! * Higher-risk reads (live secret scanning, export decryption, support/repro
 //!   capsule capture, source-mirror capture) are reported as opt-in only and

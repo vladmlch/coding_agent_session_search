@@ -1631,7 +1631,7 @@ fn doctor_fix_force_rebuild_refuses_archive_risk_rebuild_without_plan_fingerprin
 fn doctor_fix_auto_runs_derived_lexical_rebuild_from_readable_archive() {
     let temp = tempfile::tempdir().expect("tempdir");
     let test_home = temp.path();
-    // RCH may place TMPDIR beneath the checkout. Establish a fixture-local
+    // A shared TMPDIR may sit beneath the checkout. Establish a fixture-local
     // repository boundary so the parent repository's ignore rules cannot add
     // an unrelated config-exclusion approval requirement to this scenario.
     fs::create_dir_all(test_home.join(".git")).expect("create repo boundary");

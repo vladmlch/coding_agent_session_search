@@ -174,7 +174,7 @@ fn project_indexed_conversation(
 
 - [ ] Document: “export reads the last indexed snapshot; run `cass index` to refresh”; source paths are identifiers, original files are optional; missing archive is an error; `--include-tools` only exports archived tool data.
 - [ ] Verify existing flags and privacy defaults; compare old/new CLI JSON and robot JSON outputs, and update goldens only for deliberate, reviewed changes.
-- [ ] Run targeted regression tests, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and the repository's `scripts/gate.sh` using its documented execution environment (`rch` where available, `RUST_MIN_STACK=134217728` for tests). Report unavailable infrastructure separately from code failures.
+- [ ] Run targeted regression tests, `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and the repository's local `scripts/gate.sh` (`RUST_MIN_STACK=134217728` for tests). Report unavailable infrastructure separately from code failures.
 - [ ] Ensure `cass view`, `cass expand`, search, and non-target agent exports are not accidentally broken; run relevant existing compatibility tests.
 - [ ] Provide a final evidence matrix (provider × CLI Markdown/JSON/HTML × TUI × source missing × tools on/off × redaction) with passing test names and outstanding gaps. Stage and commit only files actually changed.
 

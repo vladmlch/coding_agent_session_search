@@ -135,7 +135,7 @@ pub enum SourceFilter {
     All,
     /// Match only local sources.
     Local,
-    /// Match only remote sources (any SSH source).
+    /// Match only remote sources (legacy SSH-era archive records).
     Remote,
     /// Match a specific source by ID.
     SourceId(String),

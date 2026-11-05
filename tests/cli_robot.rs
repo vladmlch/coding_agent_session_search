@@ -6845,7 +6845,7 @@ fn blocking_sessions_file_pack_returns_bounded_partial_without_fabricated_eviden
 
 /// Budget for the pack timeout tests, derived from an unstalled run on the
 /// same fixture. The timeout must expire inside the injected planner/render
-/// stall, not in `search_setup`: on the debug-build fleet the archive open
+/// stall, not in `search_setup`: on the debug-build workers the archive open
 /// alone took anywhere from under 0.5 s to over 2 s across runs, so any fixed
 /// budget was wrong on some worker (bead zgzva). Returns `(budget_ms,
 /// stall_ms)`: three times the unstalled wall time (at least 2 s) and a stall

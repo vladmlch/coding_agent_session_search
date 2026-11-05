@@ -160,7 +160,7 @@ Applied as MUST clauses in BooleanQuery:
 - **Agents**: TermQuery on `agent` field (STRING/exact)
 - **Workspaces**: TermQuery on `workspace` field (STRING/exact)
 - **Time Range**: RangeQuery on `created_at` field (I64/FAST)
-- **Source**: TermQuery on `origin_kind` (local/ssh)
+- **Source**: TermQuery on `origin_kind` (local/remote; legacy "ssh" normalizes to "remote")
 
 ### Post-Search (Content-aware)
 Applied after document retrieval:
@@ -434,7 +434,7 @@ Key: (source_id, normalized_content)
 Example:
   Hit 1: source="local",  content="foo bar", score=5.0
   Hit 2: source="local",  content="foo bar", score=3.0  ← Dropped
-  Hit 3: source="ssh",    content="foo bar", score=4.0  ← Kept (different source)
+  Hit 3: source="remote", content="foo bar", score=4.0  ← Kept (different source)
 
 Result: 2 hits (P2.3: respect source boundaries)
 ```

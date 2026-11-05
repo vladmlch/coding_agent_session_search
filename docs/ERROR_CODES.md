@@ -63,7 +63,7 @@ local-only port:
 
 **Resolution**:
 - Verify you're opening the correct file
-- Try downloading the archive again
+- Re-copy or re-export the archive
 - Check that the file hasn't been modified or corrupted during transfer
 
 ### E1004: Integrity Check Failed
@@ -73,7 +73,7 @@ local-only port:
 **Cause**: The archive's cryptographic integrity verification failed, indicating data corruption or modification.
 
 **Resolution**:
-- Download the archive again from the original source
+- Re-copy or re-export the archive from the original source
 - Check that the file transferred completely
 - The archive may have been damaged during storage
 
@@ -84,8 +84,8 @@ local-only port:
 **Cause**: The archive version is newer than the viewer can handle.
 
 **Resolution**:
-- Update to the latest version of CASS
-- Check the CASS releases page for updates
+- Rebuild and reinstall the current CASS (`cargo install --path . --locked --bin cass`)
+- Re-export the archive with the current build if possible
 
 ### E1006: No Matching Key Slot
 
@@ -106,7 +106,7 @@ local-only port:
 
 **Resolution**:
 - Try again - this may be a transient error
-- If persisting, download the archive again
+- If persisting, re-copy or re-export the archive
 - Report the issue if it continues
 
 ### E1008: Unsupported Metadata
@@ -116,7 +116,7 @@ local-only port:
 **Cause**: The archive requests an encryption, compression, chunking, or key-derivation option that this CASS build does not support.
 
 **Resolution**:
-- Update to the latest version of CASS
+- Rebuild and reinstall the current CASS (`cargo install --path . --locked --bin cass`)
 - If you created the archive, export it again with a supported format
 - Do not retry the same archive as though the password were wrong
 
@@ -127,7 +127,7 @@ local-only port:
 **Cause**: Archive metadata was readable, but an encrypted chunk failed authentication or decompression.
 
 **Resolution**:
-- Download or copy the archive again from the original source
+- Re-copy the archive again from the original source
 - Re-export the archive if the source remains available
 - Treat unexpected payload changes as possible tampering
 
@@ -140,7 +140,7 @@ local-only port:
 **Cause**: The SQLite database inside the archive is damaged.
 
 **Resolution**:
-- Download the archive again
+- Re-copy the archive
 - Re-export from the original source if available
 - The archive may have been damaged during creation
 
@@ -240,31 +240,37 @@ local-only port:
 **Cause**: SharedArrayBuffer is required but not available due to missing COOP/COEP headers.
 
 **Resolution**:
-- Serve the archive from a properly configured web server
-- Contact the site administrator about enabling required headers
+- Serve the archive from a properly configured local server (the `cass
+  pages --preview` loopback server sets the required headers)
+- If you serve the bundle some other way, enable the COOP/COEP headers
+  yourself
 
-## Network Errors (E4xxx)
+## Fetch Errors (E4xxx)
+
+These fire inside the archive **viewer** when its `fetch` of the archive
+payload fails — on the loopback preview server, or on any other local server
+you point it at. cass itself never reaches the network.
 
 ### E4001: Fetch Failed
 
 **Message**: "Failed to download the archive."
 
-**Cause**: The network request to fetch the archive failed.
+**Cause**: The viewer's request for the archive bytes failed.
 
 **Resolution**:
-- Check your internet connection
+- Check that the preview/local server serving the bundle is still running
 - Try again in a few moments
-- Verify the archive URL is correct
+- Verify the archive path/URL is correct
 
 ### E4002: Incomplete Download
 
 **Message**: "The download was incomplete."
 
-**Cause**: The file was only partially downloaded.
+**Cause**: The archive payload was only partially transferred to the viewer.
 
 **Resolution**:
-- Try downloading again
-- Check your internet connection stability
+- Retry loading the archive
+- Check that the preview/local server is still running
 - Clear browser cache and retry
 
 ### E4003: Timeout
@@ -275,19 +281,19 @@ local-only port:
 
 **Resolution**:
 - Try again later
-- Check server status
+- Check the local server's status
 - The archive may be too large for the current connection
 
 ### E4004: Server Error
 
 **Message**: "The server returned an error."
 
-**Cause**: The web server returned an error status code.
+**Cause**: The HTTP server serving the bundle returned an error status code.
 
 **Resolution**:
 - Try again later
-- Check that the archive URL is correct
-- Contact the server administrator
+- Check that the archive path/URL is correct
+- Check the local server's logs
 
 ## Export Errors (E5xxx)
 

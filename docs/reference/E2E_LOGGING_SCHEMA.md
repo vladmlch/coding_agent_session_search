@@ -23,14 +23,14 @@ alphanumeric, `_`, or `-` bytes, begins and ends alphanumerically, and names a
 previously absent directory. Without that variable, developer-focused tests
 retain their ordinary non-acceptance output paths.
 
-## Immutable strict-RCH run bundles
+## Immutable local run bundles
 
 Bundle schema v2 is content-addressed. `e2e-run-bundle` executes explicit Cargo
 test targets, captures bounded stdout/stderr, validates the selected run's
 JSONL, and writes:
 
 - `manifest.json`: source SHA, clean diff digest, canonical source-tree digest,
-  exact worker ID and hostname, complete Cargo command and command digest,
+  run label (`worker_id`) and hostname, complete Cargo command and command digest,
   timestamps, exit status, every file's relative path/SHA-256/byte
   count/event count/schema, deterministic aggregates, and named gate outcomes.
 - `complete.json`: a completion receipt binding the exact manifest bytes.
@@ -38,76 +38,78 @@ JSONL, and writes:
 Both control files are created without overwrite and fsynced. Verification
 walks the directory again and rejects missing or extra files, changed bytes,
 path traversal, symlinks, hard links, duplicate declarations, receipt
-tampering, source drift, worker drift, failed tests, failed schema validation,
+tampering, source drift, failed tests, failed schema validation,
 truncated command capture, empty artifacts, empty traces, or missing aggregate
 `run_start`, `test_start`, `test_end`, and `run_end` coverage.
 
-The repository acceptance entry point requires an explicit RCH worker. It pins
-RCH to the committed source SHA and uses `--clean-overlay --no-overlay`, which
-streams a fresh Git archive into an isolated remote root without applying
-ambient workspace changes. It runs and finalizes the bundle in that root on
-the same exact worker. It resolves that worker's SSH user and host from
-`rch --json workers list` and joins that exact host to the unique identity
-reported by `rch --json workers discover`; the opaque worker ID is never assumed
-to be an SSH alias. It takes the remote manifest path only from the runner's
-versioned JSON receipt rather than inferring a project directory from
-`remote_base` or searching for whichever artifact happens to exist. It copies
-exactly that named remote run into a fresh local staging directory. The
-committed acceptance script then independently recomputes the receipt, command
-digest, exact file set, regular-file/link policy, every file
-hash/size/event count/schema, aggregate counts, and event histogram without
-invoking local Cargo. It performs the remaining aggregate gates and only then
-publishes the run at
+The repository acceptance entry point is
+`scripts/e2e_logging_acceptance_test.sh` and it runs **entirely on the local
+machine** — there is no remote execution, SSH handoff, or artifact
+synchronization. It invokes the sealed runner through `cargo run --locked
+--bin e2e-run-bundle`, which wraps `cargo test --locked` with bounded capture
+and a 1-thread schedule. The runner seals `manifest.json` and `complete.json`
+after every artifact, the produced run directory is moved to an unverified
+staging area, and only after the byte/provenance verification plus every
+downstream gate passes is the bundle moved to its canonical location
 `test-results/e2e/runs/<run_id>/`.
-Failed or incomplete staging directories are retained for diagnosis and cannot
-be mistaken for published passes.
-
-SSH discovery, probes, and rsync handoff are bounded by a validated
-`CASS_E2E_HANDOFF_TIMEOUT_SECONDS` value (900 seconds by default), an SSH
-connect timeout, and server-alive failure detection. A timeout is a failed
-handoff, never permission to inspect an older local bundle.
-
-The concurrency contract requires two distinct explicitly resolved workers.
-RCH deliberately excludes simultaneous jobs for the same project from one
-worker checkout, so treating one worker as a concurrency target would test only
-the scheduler's rejection path. The contract creates the same uniquely named
-contradictory stale witness locally and on both workers before launching either
-child run. All three stale copies remain present after the two no-mock runs,
-while both independently verified reports and manifests bind their expected
-worker and run ID and prove they consumed no stale copy. The test never deletes
-a previous local or remote witness.
 
 The runner emits one flushed `e2e-run-started` JSON receipt after creating its
 absent run directory, then one `e2e-run-finalized` receipt only after the
-manifest and completion receipt are durable. If execution fails between those
-points, the acceptance script uses only the validated started-receipt path to
-retrieve and retain the unfinalized directory; it never publishes it.
+manifest and completion receipt are durable; the acceptance script validates
+both against the expected run id, label, and source digests, and takes the
+manifest path only from the finalized receipt. If execution fails between
+those points, the started receipt's validated run root is retained at the
+canonical path — deliberately UNVERIFIED — for diagnosis.
+
+> **Warning — `runs/` is NOT a verified-only directory.** `e2e-run-bundle` has
+> no separate output root, so it seals directly into
+> `test-results/e2e/runs/<run_id>` while tests execute. The bundle sits at the
+> canonical path UNVERIFIED for the whole run, and a runner failure
+> deliberately leaves the incomplete bundle there for diagnosis. Presence in
+> `runs/` is therefore never proof of acceptance: every consumer MUST gate on
+> `manifest.json` + `complete.json` receipts, `.complete == true`,
+> `cargo_exit_code == 0`, and every gate entry passing — exactly what `--quick`
+> re-verification and the concurrency contract do.
+
+Local test execution is bounded by `CASS_E2E_TEST_TIMEOUT_SEC` (7200 seconds
+by default, maximum 14400). A timeout is a failed run, never permission to
+inspect an older bundle.
+
+The concurrency contract runs two isolated contract bundles concurrently under
+two distinct run labels (`--worker` and `--peer-worker`, defaults `local` and
+`local-peer`; the labels are recorded as `worker_id` inside each sealed
+manifest). The contract creates a uniquely named contradictory stale witness
+in `runs/` before launching either child run. The stale copy remains present
+after the two no-mock runs, while both independently verified reports and
+manifests bind their expected label and run ID and prove they consumed no
+stale copy. The test never deletes a previous witness.
 
 Before dispatch, the caller requires a clean committed source tree apart from
 tracker-only `.beads/` and retained `test-results/` state. It rejects tracked
 symlinks, submodules, and control-byte paths, then hashes every other tracked
-file in byte-sorted relative-path order. After Cargo starts the runner in the
-fresh overlay, the worker independently walks all non-transient entries and
-recomputes that source-tree digest without requiring `.git`. Symbolic links,
-hard links, non-files, non-UTF-8/control-byte paths, changed bytes, missing
-files, or extra source files fail before the test command begins. The worker
-repeats the same check after the test and schema commands and before sealing the
-manifest, so source mutation during execution leaves only an explicitly
-incomplete diagnostic run.
+file in byte-sorted relative-path order. The runner independently walks all
+non-transient entries and recomputes that source-tree digest without requiring
+`.git`. Symbolic links, hard links, non-files, non-UTF-8/control-byte paths,
+changed bytes, missing files, or extra source files fail before the test
+command begins. The runner repeats the same check after the test and schema
+commands and before sealing the manifest, so source mutation during execution
+leaves only an explicitly incomplete diagnostic run.
 
-The only top-level entries omitted from source-tree identity are the explicit
-transport/output surfaces `.git`, `.beads`, `.rch-tmp`, `.rch-target-*`,
-`target`, and `test-results`. A same-named directory below another source
-directory remains covered. The language-neutral digest stream is the
-concatenation, in byte-sorted relative-path order, of:
+The only top-level entries omitted from source-tree identity are `.git`,
+`.beads`, `target`, and `test-results`. Staging directories left over from the
+removed remote-offload tooling (`.rch-tmp`, `.rch-target-*`) are NOT excluded,
+so a stray leftover directory makes the runner's recompute disagree and the
+run fails closed. A same-named directory below another source directory
+remains covered. The language-neutral digest stream is the concatenation, in
+byte-sorted relative-path order, of:
 
 ```text
 <lowercase-file-sha256><two spaces><relative-path><NUL>
 ```
 
 The final SHA-256 of that stream is `source_tree_sha256`. This is exactly GNU
-`sha256sum --zero` framing, so the shell caller and Rust worker verify the same
-bytes independently.
+`sha256sum --zero` framing, so the shell caller and the sealed runner verify
+the same bytes independently.
 
 The command digest has a language-neutral framing so Rust and shell verification
 cannot accidentally hash different argument boundaries:
@@ -119,24 +121,22 @@ cass-e2e-command-v1\n
 ...
 ```
 
-This verifier deliberately remains a small shell/jq/SHA-256 handoff rather
-than copying the remote debug runner: the application facade can make that
-binary enormous, while the run's raw evidence is small and bounded. Failed
-remote jobs therefore remain inspectable even when RCH does not perform its
-ordinary successful-build artifact retrieval.
+This verifier deliberately remains a small shell/jq/SHA-256 gate rather than a
+second copy of the runner: the application facade can make that binary
+enormous, while the run's raw evidence is small and bounded.
 
 ```bash
-RCH_WORKER=ovh-a ./scripts/e2e_logging_acceptance_test.sh
+./scripts/e2e_logging_acceptance_test.sh
 
-# Prove two simultaneous no-mock semantic runs on distinct exact workers remain
-# isolated from one another and from retained contradictory stale runs on the
-# caller and both workers.
-RCH_WORKER=ovh-a ./scripts/e2e_logging_acceptance_test.sh \
+# Prove two simultaneous no-mock semantic runs under distinct run labels remain
+# isolated from one another and from a retained contradictory stale run.
+./scripts/e2e_logging_acceptance_test.sh \
   --concurrency-contract \
-  --peer-worker ovh-b
+  --worker local-a \
+  --peer-worker local-b
 
 # Exercise one explicit target/filter while developing the bundle contract.
-RCH_WORKER=ovh-a ./scripts/e2e_logging_acceptance_test.sh \
+./scripts/e2e_logging_acceptance_test.sh \
   --contract-only \
   --contract-target e2e_semantic_search \
   --contract-filter parallel_cass_children_keep_corpus_and_trace_artifacts_isolated

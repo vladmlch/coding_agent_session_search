@@ -39,7 +39,7 @@ can refine the plan without reconstructing the original prompt exchange.
 
 | Rank | Idea | Current Bead Coverage | Phase-6 Verdict |
 |------|------|-----------------------|-----------------|
-| 1 | Deterministic answer packs for swarm handoffs | `coding_agent_session_search-uuwye`, `.1`, `.2`, `.3`, `.5` | Covered. Keep planner, renderers, and CLI separate so agents can ship and test them in dependency order. |
+| 1 | Deterministic answer packs for agent handoffs | `coding_agent_session_search-uuwye`, `.1`, `.2`, `.3`, `.5` | Covered. Keep planner, renderers, and CLI separate so agents can ship and test them in dependency order. |
 | 2 | Freshness and SLO proof on handoffs | `.4`, `.8` | Covered. Health/readiness metadata and latency budgets stay separate because correctness and performance need different fixtures. |
 | 3 | Privacy-safe evidence bundles | `.9`, `.7`, conformance rows AP-PRIV-* | Covered, but must stay blocking for CLI exposure so early robot users do not receive unredacted handoff artifacts. |
 | 4 | Contract and golden gates | `.6`, this matrix, `ANSWER_PACKS_CONTRACT.md` | Covered. Planner-only evidence remains explicitly non-conformant until command, renderer, schema, and no-mock layers exist. |
@@ -146,12 +146,12 @@ are clear.
 | AP-BOUND-007 | MUST | Non-Goals | Pack never auto-downloads semantic models; missing models must use truthful lexical fallback or semantic errors. | Missing-model fixture that checks no model artifact is created and no acquisition path runs. | Planned |
 | AP-BOUND-008 | MUST | Non-Goals | Pack does not run hidden `doctor --fix`, manual index repair, or quarantine garbage collection. | `structured_pack_refuses_unreadable_lexical_assets_without_repair` preserves the full archive snapshot and requires an actionable separate index command. Other output modes remain to reconcile. | CLI Partial |
 | AP-BOUND-009 | MUST | Non-Goals | Pack does not delete or clean up derived assets while preparing output. | Structured-pack success/refusal and abandoned-lock fixtures require unchanged archive paths and bytes. Other output modes remain to reconcile. | CLI Partial |
-| AP-GATE-001 | MUST | Verification Commands | `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-answer-pack-target cargo fmt --check` is part of closeout. | Implementation closeout evidence. | Planned |
-| AP-GATE-002 | MUST | Verification Commands | `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-answer-pack-target cargo check --all-targets` is part of closeout. | Implementation closeout evidence. | Planned |
-| AP-GATE-003 | MUST | Verification Commands | `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-answer-pack-target cargo clippy --all-targets -- -D warnings` is part of closeout. | Implementation closeout evidence. | Planned |
-| AP-GATE-004 | MUST | Verification Commands | `rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-answer-pack-target cargo test pack` is part of closeout. | Implementation closeout evidence. | Planned |
-| AP-GATE-005 | MUST | Verification Commands | Golden robot JSON/docs tests run through `rch exec` and reviewed diffs. | Implementation closeout evidence. | Planned |
-| AP-GATE-006 | MUST | Verification Commands | Intentional golden updates use `UPDATE_GOLDENS=1 rch exec -- ...` and reviewed `tests/golden/` diffs. | Implementation closeout evidence. | Planned |
+| AP-GATE-001 | MUST | Verification Commands | `cargo fmt --check` (local) is part of closeout. | Implementation closeout evidence. | Planned |
+| AP-GATE-002 | MUST | Verification Commands | `cargo check --all-targets` (local) is part of closeout. | Implementation closeout evidence. | Planned |
+| AP-GATE-003 | MUST | Verification Commands | `cargo clippy --all-targets -- -D warnings` (local) is part of closeout. | Implementation closeout evidence. | Planned |
+| AP-GATE-004 | MUST | Verification Commands | `cargo test pack` (local) is part of closeout. | Implementation closeout evidence. | Planned |
+| AP-GATE-005 | MUST | Verification Commands | Golden robot JSON/docs tests run locally with reviewed diffs. | Implementation closeout evidence. | Planned |
+| AP-GATE-006 | MUST | Verification Commands | Intentional golden updates use `UPDATE_GOLDENS=1 cargo test --test golden_robot_json --test golden_robot_docs` and reviewed `tests/golden/` diffs. | Implementation closeout evidence. | Planned |
 
 ## Harness Shape
 
@@ -182,7 +182,7 @@ The original planner-only proof set lives in `src/search/pack_planner.rs`:
 ## Focused CLI and Renderer Evidence (2026-09-05)
 
 Bead `coding_agent_session_search-2l1b0.20` records the commands, failures and
-remaining TODOs. The isolated RCH run in
+remaining TODOs. The isolated verification run logged in
 `/tmp/cass-pack-repair-gate-20260905-r.log` verified source-content SHA-256
 `80ae0231bf80f6e16735c106ccefe86fcf2eb12e9e2bada326df733d96f06a25`.
 Formatting and all-target clippy passed. The 194 selected test executions were:
@@ -291,5 +291,5 @@ regenerated, no finding waived, and no full-contract or performance claim made.
 - The pack conformance gate must not be marked passing from planner unit tests
   alone; robot output and no-mock citation resolution are separate obligations.
 - Planner unit rows above were verified against `c9eafb8b` with
-  `rch exec -- env CARGO_TARGET_DIR=/tmp/rch_target_olive_pack_planner_review cargo test pack_planner --lib -- --nocapture`
+  `cargo test pack_planner --lib -- --nocapture` (local run)
   passing 7/7, but they remain below full contract-surface conformance.

@@ -38,7 +38,7 @@ This document defines explicit coverage targets, phased threshold increases, and
 ## 3. Phased Coverage Targets
 
 ### Phase 1: Foundation (Current - Q1 2026)
-- **Target**: 60% line coverage (current CI gate)
+- **Target**: 60% line coverage (current local gate)
 - **Focus**: Maintain existing coverage, close critical gaps
 - **Status**: ACHIEVED
 
@@ -68,12 +68,13 @@ This document defines explicit coverage targets, phased threshold increases, and
 
 ---
 
-## 4. CI Enforcement
+## 4. Local Enforcement
 
-### Current Configuration
-```yaml
-# .github/workflows/coverage.yml
-THRESHOLD=60  # Phase 1 target
+Coverage is enforced locally — there is no hosted CI (`.github/` is empty).
+The phase-1 threshold is checked by the local coverage command:
+
+```bash
+cargo llvm-cov --lib --ignore-filename-regex "(tests/|benches/)" --fail-under-lines 60
 ```
 
 ### Threshold Schedule
@@ -87,9 +88,9 @@ THRESHOLD=60  # Phase 1 target
 | 2027-04-01 | 90% | Phase 4 Complete |
 
 ### Enforcement Rules
-1. **PRs**: Must not decrease coverage below threshold
-2. **Main branch**: Coverage report uploaded to Codecov
-3. **Releases**: Must meet current phase target
+1. **Before merging**: must not decrease coverage below threshold
+2. **Coverage reports**: generated locally with `cargo llvm-cov` (see §7)
+3. **Releases**: must meet the current phase target
 
 ---
 
@@ -127,16 +128,16 @@ Certain code paths are intentionally excluded from coverage requirements. These 
 
 ### For Contributors
 
-1. **Before submitting PR**:
+1. **Before submitting**:
    ```bash
-   # Run coverage through rch
-   rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-coverage-target cargo llvm-cov --lib --ignore-filename-regex "(tests/|benches/)"
+   # Run coverage locally
+   cargo llvm-cov --lib --ignore-filename-regex "(tests/|benches/)"
    ```
 
 2. **Check coverage delta**:
    ```bash
    # Compare with main branch
-   rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-coverage-target cargo llvm-cov --lib --json > coverage.json
+   cargo llvm-cov --lib --json > coverage.json
    jq '.data[0].totals.lines.percent' coverage.json
    ```
 
@@ -155,24 +156,19 @@ Certain code paths are intentionally excluded from coverage requirements. These 
 ### Generate Coverage Report
 ```bash
 # Full HTML report
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-coverage-target cargo llvm-cov --lib --html \
+cargo llvm-cov --lib --html \
   --ignore-filename-regex "(tests/|benches/)"
 
 # JSON summary
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-coverage-target cargo llvm-cov --lib --json \
+cargo llvm-cov --lib --json \
   --ignore-filename-regex "(tests/|benches/)" \
   > coverage.json
-
-# Codecov format
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-coverage-target cargo llvm-cov --lib --codecov \
-  --ignore-filename-regex "(tests/|benches/)" \
-  > codecov.json
 ```
 
 ### Find Uncovered Lines
 ```bash
 # Show uncovered regions
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-coverage-target cargo llvm-cov --lib --show-missing-lines \
+cargo llvm-cov --lib --show-missing-lines \
   --ignore-filename-regex "(tests/|benches/)"
 
 # Uncovered functions
@@ -182,7 +178,7 @@ scripts/coverage-uncovered.sh
 ### Per-Module Coverage
 ```bash
 # Filter to specific module
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-coverage-target cargo llvm-cov --lib --json | \
+cargo llvm-cov --lib --json | \
   jq '.data[0].files[] | select(.filename | contains("connectors"))'
 ```
 
@@ -196,7 +192,7 @@ rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-coverage-target cargo llvm-cov -
 
 ### P1 - High (Next Sprint)
 - [ ] encryption.rs expanded tests - More vectors, error paths
-- [ ] update_check.rs integration tests - Version comparison, network errors
+- [ ] ~~update_check.rs integration tests~~ — module removed in 0.11.0 (local-only)
 - [ ] Large archive performance tests - 10K+ conversation benchmarks
 
 ### P2 - Medium (Backlog)
@@ -213,18 +209,17 @@ rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-coverage-target cargo llvm-cov -
 
 ## 9. Monitoring and Reporting
 
-### Dashboards
-- **Codecov**: https://codecov.io/gh/Dicklesworthstone/coding_agent_session_search
-- **GitHub Actions**: Coverage workflow runs on every PR
+All coverage reporting is local — there is no hosted CI and no hosted
+coverage dashboard.
 
 ### Alerts
-- Coverage drops >2% trigger PR comment
-- Coverage below threshold blocks merge
+- A coverage drop >2% on a change should be called out in review
+- Coverage below the threshold fails the local gate
 
 ### Reports
-- Weekly: Coverage trend in team Slack
-- Monthly: Module-level gap report
-- Quarterly: Exclusion list review
+- Ad hoc: `cargo llvm-cov --lib --html` (see §7) and `scripts/coverage-uncovered.sh`
+- Monthly: module-level gap report (see §7 per-module filtering)
+- Quarterly: exclusion list review
 
 ---
 
@@ -232,7 +227,7 @@ rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-coverage-target cargo llvm-cov -
 
 ### Q: Why 90% instead of 100%?
 A: Diminishing returns. The last 10% typically involves:
-- Platform-specific code we can't test in CI
+- Platform-specific code we can't exercise on this platform
 - Error paths triggered by hardware failures
 - UI rendering code better tested via snapshots
 
@@ -244,10 +239,10 @@ A: Only if:
 
 ### Q: How do I exclude a file from coverage?
 A: Add to the `--ignore-filename-regex` pattern in:
-- `.github/workflows/coverage.yml`
+- The local coverage invocation (§4 and §7)
 - This document's exclusion table
 
-### Q: What if CI fails due to coverage?
+### Q: What if the local coverage gate fails?
 A: Either:
 1. Add tests for your new code
 2. If justified, propose an exclusion with rationale

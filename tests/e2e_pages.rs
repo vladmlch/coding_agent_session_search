@@ -413,7 +413,7 @@ fn build_full_pipeline(
     );
 
     // Step 4: Bundle
-    let start = tracker.start("bundle", Some("Create deployable web bundle"));
+    let start = tracker.start("bundle", Some("Create local web bundle"));
     let bundle_dir = temp_dir.path().join("bundle");
     let mut builder = BundleBuilder::new()
         .title("E2E Test Archive")
@@ -427,7 +427,7 @@ fn build_full_pipeline(
     let bundle = builder
         .build(&encrypt_dir, &bundle_dir, |_, _| {})
         .expect("Bundle failed");
-    tracker.end("bundle", Some("Create deployable web bundle"), start);
+    tracker.end("bundle", Some("Create local web bundle"), start);
 
     tracker.flush();
 

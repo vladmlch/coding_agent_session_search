@@ -8,6 +8,12 @@ closed. It exists so a "just add tests" instruction can never let an
 important failure mode slip through, and so reviewers and closure audits
 share one definition of "done".
 
+> **Local-only note (0.11.0):** the fleet surfaces behind Epic 6 and the remote
+> source-sync surface behind Epic 8 were removed by the local-only conversion.
+> Their rows are retained as provenance for the completed rollout and gate
+> nothing today; legacy remote archive records remain readable (Epic 7's
+> "remote" provenance case is now an inert archive record, never a live host).
+
 It pairs with:
 - **`.12.2`** — the bounded E2E runner with structured logs.
 - **`.12.3`** — the proof logging schema, artifact manifest, and retention.
@@ -48,7 +54,7 @@ separate slice whose closure proof is `e2e` + `logs`.
 
 | Family | Mandatory | Optional |
 |--------|-----------|----------|
-| Derived-asset truth-table schema & readiness vocabulary | `unit` (enum wire forms, `safe_next_command` priority, fixture round-trip) + `golden` (fleet-state fixtures) | — |
+| Derived-asset truth-table schema & readiness vocabulary | `unit` (enum wire forms, `safe_next_command` priority, fixture round-trip) + `golden` (readiness-state fixtures) | — |
 | Archive-risk safety envelope (`unsafe_until`, backup-first) | `unit` (high-risk gates mutating actions; low-risk-stale keeps refresh) | — |
 | Readiness wired into health/status/triage/search `_meta` | `e2e` (robot JSON includes readiness + recommended_action) + `logs` | `unit` projection |
 | Archive-risk states surfaced in status/doctor/index-preflight | `e2e` (high-risk never emits casual rebuild advice) + `golden` JSON | — |
@@ -87,15 +93,15 @@ separate slice whose closure proof is `e2e` + `logs`.
 | Backfill progress sink enable/inspect | `unit` (ordering, required fields, failure events, best-effort write failure) + `golden` (pinned JSONL schema) | live `e2e` tail |
 | Checkpoint resume + partial-publish safety | `unit` (never publish a tier that lies about DB coverage; conversation-safe resume) | — |
 | Truthful hybrid fallback metadata | `e2e` (`--robot-meta` fallback_tier/reason matches reality) | — |
-| Model acquisition checksum / air-gapped UX | `integration` (checksum mismatch path) | live download `e2e` |
+| Model acquisition checksum / local-file UX | `integration` (checksum mismatch path; `models install --from-file` only) | — |
 
-## Epic 6 — Bounded fleet doctor and version harmonization
+## Epic 6 — Bounded fleet doctor and version harmonization (removed 0.11.0)
 
 | Family | Mandatory | Optional |
 |--------|-----------|----------|
 | Bounded fleet-doctor probe schema | `unit` + `golden` | — |
 | Probe timeouts / unreachable-host handling | `unit` (bounded; unreachable surfaced) + `e2e` | — |
-| Upgrade rehearsal + post-upgrade verification | `integration` | live fleet `e2e` |
+| Upgrade rehearsal + post-upgrade verification | `integration` | — |
 
 ## Epic 7 — Workspace/source-path mismatch and archive fallback ergonomics
 
@@ -107,7 +113,7 @@ separate slice whose closure proof is `e2e` + `logs`.
 | Archive-first drill-down (view/expand/pack) | `unit` (resolution + `not-found`/`ambiguous-source` err.kind) + `e2e` (archive-only fixture returns content; missing → err.kind) | — |
 | Moved-workspace / stale-source fixtures | `unit` (canonical suggestion + provenance per scenario) + `golden` redaction | — |
 
-## Epic 8 — Remote source sync, auth fallback, and unreachable-host safety
+## Epic 8 — Remote source sync, auth fallback, and unreachable-host safety (removed 0.11.0)
 
 | Family | Mandatory | Optional |
 |--------|-----------|----------|
@@ -122,7 +128,7 @@ separate slice whose closure proof is `e2e` + `logs`.
 |--------|-----------|----------|
 | Root-cause attribution taxonomy (families + confidence) | `unit` (stable families, `Unknown` fallback never omitted) + `golden` | — |
 | Dependency pin ↔ upstream-fix correlation | `unit` + `golden` | — |
-| Root-cause family projected into status/doctor/fleet | `e2e` + `golden` | — |
+| Root-cause family projected into status/doctor | `e2e` + `golden` | — |
 
 ## Epic 10 — Native bounded incident mining over CASS/session history
 
@@ -152,7 +158,7 @@ separate slice whose closure proof is `e2e` + `logs`.
 | Proof logging schema + artifact manifest + retention | `unit` (schema) + `golden` | — |
 | Per-workstream unit/E2E harness requirements | design/docs + cross-refs here | — |
 | Report-derived E2E scenario scripts | `e2e` + `logs` | — |
-| CI/local proof recipe + log-completeness gate | `e2e` (CI) + `logs` | — |
+| Local proof recipe + log-completeness gate | `e2e` + `logs` | — |
 
 ## Epic 13 — User-facing recovery journeys and human/robot guidance parity
 

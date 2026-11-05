@@ -139,9 +139,9 @@ be silently skipped during closeout.
 - **Failure modes:** fm-models-native-minilm-missing, fm-models-native-load-failure, fm-models-checksum-mismatch
 - **Mandatory proofs:** integration
 - **Proof artifacts:** `tests/cli_model_lifecycle_contract.rs`, `tests/e2e_analytics_models.rs`
-- **Optional diagnostics:** live model download (opt-in; never CI-required)
+- **Optional diagnostics:** `cass models verify` checksum pass on installed files
 - **Fixture provenance:** missing/mismatched model dirs; no network at test time
-- **Log expectation:** deterministic contract test result line; live download is opt-in only
+- **Log expectation:** deterministic contract test result line
 - **Redaction:** no-user-content
 - **Closure evidence:** cargo test --test cli_model_lifecycle_contract
 

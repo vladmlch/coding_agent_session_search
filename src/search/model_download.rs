@@ -280,7 +280,7 @@ impl ModelManifest {
     /// Check if this manifest has verified checksums for all files.
     ///
     /// Returns `false` if any file has the placeholder checksum, indicating
-    /// the model has not been downloaded and verified yet.
+    /// the model files have not been obtained and verified yet.
     pub fn has_verified_checksums(&self) -> bool {
         self.files.iter().all(|f| f.sha256 != PLACEHOLDER_CHECKSUM)
     }
@@ -337,7 +337,7 @@ impl ModelManifest {
                 },
                 // FastEmbed requires special_tokens_map.json and tokenizer_config.json
                 // to construct a tokenizer with correct padding/truncation behavior.
-                // We download and verify them alongside the core model files.
+                // We install and verify them alongside the core model files.
                 ModelFile {
                     name: "special_tokens_map.json".into(),
                     sha256: "303df45a03609e4ead04bc3dc1536d0ab19b5358db685b6f3da123d05ec200e3"

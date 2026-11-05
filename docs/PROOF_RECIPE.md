@@ -2,8 +2,8 @@
 
 Bead: `coding_agent_session_search-cass-fleet-resilience-20260608-uojcg.12.6`.
 
-The single named proof suite that implementers run **identically locally and
-in CI** for the resilience rollout, plus the log-completeness gate that makes
+The single named proof suite that implementers run locally for the resilience
+rollout (the project has no remote CI), plus the log-completeness gate that makes
 the integrated resilience gate (`.11.5`) unable to pass by doing nothing.
 
 Pairs with:
@@ -13,14 +13,16 @@ Pairs with:
 - **`.12.5`** — `src/search/e2e_scenarios.rs`: the CI/live scenarios.
 - **`.12.2`** — `src/e2e_runner.rs`: the bounded runner.
 
-All commands follow `AGENTS.md`: remote compilation via `rch`, an isolated
-`CARGO_TARGET_DIR`, and `-D warnings` on clippy.
+All commands follow `AGENTS.md`: local Cargo compilation
+(`scripts/lib/run_cargo.sh` resolves a shared `CARGO_TARGET_DIR`), and
+`-D warnings` on clippy.
 
 ## 0. Conventions
 
-- **Remote build/test:** prefix cargo with
-  `rch exec -- env CARGO_TARGET_DIR=<isolated-dir> ...`. Use a per-agent dir
-  (e.g. `/data/tmp/cass-check-target`) so concurrent agents don't collide.
+- **Local build/test:** run `cargo` directly on the development machine;
+  `scripts/lib/run_cargo.sh` resolves the shared `CARGO_TARGET_DIR`,
+  job-count and test-thread defaults for scripted runs. There is no remote
+  build offload.
 - **Success signal:** grep the output for `Finished` and the
   `test result: ok.` line — do **not** trust a piped exit code (a `| tail`
   pipeline masks cargo's status).
@@ -31,9 +33,9 @@ All commands follow `AGENTS.md`: remote compilation via `rch`, an isolated
 
 ```sh
 # Full compile of every target (lib, tests, benches):
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-check-target cargo check --all-targets
+cargo check --all-targets
 # Lint, warnings-as-errors, crate-wide:
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-check-target cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets -- -D warnings
 # Format check:
 cargo fmt --check
 # Bug scan on changed files (exit 0 required; #[cfg(test)] helper panics and
@@ -71,8 +73,8 @@ resilience contract cores live under `src/search/` and `src/indexer/`:
 # E2E scenarios (.12.5):                      cargo test --lib search::e2e_scenarios
 ```
 
-Each prefixed with `rch exec -- env CARGO_TARGET_DIR=<dir>`. A green run is
-`test result: ok. N passed; 0 failed`.
+Each run as a plain `cargo test --lib <filter>` on the development machine. A
+green run is `test result: ok. N passed; 0 failed`.
 
 ## 3. Golden update flow
 
@@ -80,7 +82,7 @@ Golden artifacts (pinned JSON/JSONL wire forms) change **only** through a
 reviewed run:
 
 ```sh
-UPDATE_GOLDENS=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-check-target cargo test <golden-target>
+UPDATE_GOLDENS=1 cargo test <golden-target>
 ```
 
 A `UPDATE_GOLDENS=1` diff must be reviewed as an intentional contract change
@@ -94,14 +96,14 @@ binary into an artifact directory under a bounded timeout, emitting one
 `.12.3` `ProofLogRecord` per command:
 
 ```sh
-# quick: the CI scenario set (no live host) — the default gate.
+# quick: the deterministic scenario set (no live host) — the default gate.
 cass-e2e-runner --mode quick --artifacts <dir> --timeout-ms <budget>
-# full: quick + opt-in live-host scenarios (operator only; never CI-required).
+# full: quick + opt-in live-host scenarios (operator only; never required).
 cass-e2e-runner --mode full --live-hosts <hosts> --artifacts <dir>
 ```
 
 `--mode quick` runs exactly `e2e_scenarios::ci_scenarios()` (every named
-fleet/archive state, deterministically, no live host). Live scenarios
+archive state, deterministically, no live host). Live scenarios
 (`requires_live_host=true`) run only under `--mode full`.
 
 ## 5. Log-completeness gate (the integrated gate cannot pass by doing nothing)
@@ -129,15 +131,15 @@ not satisfy the closure checklist in `RESILIENCE_TEST_MATRIX.md`.
 
 ## 6. The named suite (one command surface)
 
-Implementers and CI invoke the same logical suite:
+Implementers invoke the same logical suite:
 
 1. §1 compile/lint/format gate.
-2. §2 targeted family tests for changed families (or all, in CI).
+2. §2 targeted family tests for changed families (or all, for a full gate).
 3. §4 `--mode quick` E2E runner into an artifact dir.
 4. §5 log-completeness gate over the artifacts.
 
-Local and CI differ only in scope (`--mode quick` vs a nightly `--mode full`)
-and target-dir isolation — never in the assertions. This is the recipe a
+Runs differ only in scope (`--mode quick` vs an operator's `--mode full`) —
+never in the assertions. This is the recipe a
 closure must cite by exact command + artifact path.
 
 ## 7. Real-binary robot dispatch smoke gate (`.2.4`)
@@ -150,11 +152,9 @@ handbook) slip past every golden/unit check, because those checked the right
 
 ```sh
 # Routine (sub-second per surface against an isolated empty data dir):
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-check-target \
-  cargo test --test e2e_robot_smoke_gate
-# CI proof artifacts (.12.3 structured log + manifest via PhaseTracker):
-E2E_LOG=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-check-target \
-  cargo test --test e2e_robot_smoke_gate
+cargo test --test e2e_robot_smoke_gate
+# Gate proof artifacts (.12.3 structured log + manifest via PhaseTracker):
+E2E_LOG=1 cargo test --test e2e_robot_smoke_gate
 ```
 
 `tests/e2e_robot_smoke_gate.rs` runs the real `cass` binary across
@@ -217,106 +217,41 @@ severe outcome for a one-line rollup.
 Wiring into a gate (reference adopter):
 
 ```sh
-# Each scenario emits one `<label>.proof.json` into $CASS_PROOF_DIR:
-CASS_PROOF_DIR=<dir> rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-check-target \
-  cargo test --test e2e_repro_capsule_gate
+# Each gate check emits one `<label>.proof.json` into $CASS_PROOF_DIR:
+CASS_PROOF_DIR=<dir> cargo test --test e2e_resilience_capstone_gate
 ```
 
-`tests/e2e_repro_capsule_gate.rs` is the reference adopter: its `run_capsule`
-emits a proof artifact per invocation when `CASS_PROOF_DIR` is set, and
-`proof_artifacts_emit_and_distinguish_pass_from_timeout` proves end-to-end that a
-real passing run emits a `pass` artifact while a timeout-before-assertions emits
-`timeout` (and sinks the manifest). A closure citing this layer points at the
+`tests/e2e_resilience_capstone_gate.rs` is the reference adopter: every gate
+check emits a proof artifact when `CASS_PROOF_DIR` is set, and its
+`emit_proof_artifact` cases prove end-to-end that a real passing run emits a
+`pass` artifact while a timeout-before-assertions emits `timeout` (and sinks
+the manifest). A closure citing this layer points at the
 `$CASS_PROOF_DIR` artifact files + the exact `cargo test` command above — not
 prose. The lib classifier itself is proven by
 `cargo test --lib proof_artifact` (`test result: ok`).
 
-## 9. Local guided-operations dashboard (`5u82n.12`)
+## 9. Removed: guided-operations dashboard and golden gate (`5u82n.12`/`.13`)
 
-The dashboard is a human-readable, read-only projection over existing robot
-contracts. Render its self-contained offline HTML to stdout:
+The swarm coordination layer — `cass swarm dashboard|macros|resource-plan|
+privacy-preview|repro-capsule|evidence`, `src/operations_dashboard.rs`, the
+`operations_dashboard_contract`/`e2e_guided_ops_golden_gate` suites, and the
+`tests/golden/guided_ops/` goldens — was removed by the local-only conversion
+(0.11.0). The remaining guided surface is `cass guide` (§10) plus plain
+`cass search --robot --robot-meta`. The removed invocations fail with a
+structured `removed-command` error; the live proof for that rejection is
+`cargo test --test cli_dispatch_coverage`.
 
-```sh
-cass swarm dashboard --html > /tmp/cass-operations-dashboard.html
-```
-
-The report has no JavaScript, network dependency, form, apply mode, or file/DB
-mutation path. The shell redirection above is the operator's explicit choice;
-`cass` itself never writes the report. For deterministic test or support
-fixtures, pass `--fixture <path>` (or `--fixture-dir <dir> --fixture-id <id>`).
-
-Agents must not parse the HTML. Consume the underlying JSON contracts directly:
-
-```sh
-cass guide <intent> --json
-cass swarm macros --json
-cass swarm resource-plan --json
-cass swarm privacy-preview --json
-cass swarm repro-capsule --json
-cass search <query> --robot --robot-meta
-cass swarm evidence --json
-```
-
-The capsule's `rerun.command_template` is the real read-only surface:
-`cass swarm repro-capsule --json --fixture repro-capsule.fixture.json`.
-The emitted capsule is itself a valid, redacted input fixture. Save it under
-that fixed filename and run the command from the same directory. The operator's
-original path is intentionally omitted, and the capsule id remains provenance
-metadata rather than a command-line flag.
-Replay guarantees the same scrubbed capsule body and capsule id. Run-local
-timestamps, redaction counters, and diagnostic status are regenerated and may
-differ from the first render.
-
-Use `cass swarm dashboard --json` only when automation needs the normalized
-cross-surface rollup (current goal, blockers, warning counts, recent capsule
-metadata, and the next proof command). Search/session content is never copied
-into that model; trust is metadata-only, paths/secrets are redacted, and local
-capsule links must be safe relative paths.
-
-Proof the fixture adapter, byte-for-byte deterministic HTML, hostile-input
-escaping, long-path behavior, empty/partial/blocked states, redaction, and the
-no-network/no-mutation contract with:
-
-```sh
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-dashboard-target \
-  cargo test --lib operations_dashboard
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-dashboard-target \
-  cargo test --test operations_dashboard_contract
-```
-
-## 10. Integrated guided-operations golden gate (`5u82n.13`)
-
-The capstone gate runs the guided surfaces together against checked-in,
-synthetic fixtures and freezes their composed contract. It writes runtime audit
-artifacts into an isolated temporary directory: stdout, stderr, and parsed JSON
-for each scenario plus redaction, fixture-manifest, timing, and assertion
-summaries. The temporary artifact set is validated during the test; the stable,
-scrubbed robot rollup and reviewed command matrix live under
-`tests/golden/guided_ops/`.
-
-```sh
-rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-guided-golden-target \
-  cargo test --test e2e_guided_ops_golden_gate
-```
-
-The pass contract requires an unchanged before/after HOME and data-directory
-snapshot, zero private-marker leaks, robot-safe recommendations, every command
-inside its timing budget, and a full `bv --robot-insights` result with zero
-dependency cycles. Regeneration is opt-in via `UPDATE_GUIDED_OPS_GOLDENS=1` and
-must be followed by byte-level review of both goldens and a second non-update
-run.
-
-## 11. Gated guide apply/run mode (`5u82n.17`)
+## 10. Gated guide apply/run mode (`5u82n.17`)
 
 `cass guide` remains a dry-run unless `--apply` (alias `--run`) is explicit.
 Every recognized plan now includes a deterministic `execution` transcript with
-tokenized argv, allowlist decision, mutation class, rch decision, proof-gate
+tokenized argv, allowlist decision, mutation class, proof-gate
 result/source, and per-step confirmation evidence. Macro command identifiers are
 never passed to a shell.
 
 Before a mutating adapter can run, apply mode requires ready prerequisites,
-clear stop conditions, exact privacy/cost-tier acceptance where applicable, the
-macro's rch grant, all preceding proof gates, and `--confirm-step <N>` for that
+clear stop conditions, exact privacy/cost-tier acceptance where applicable,
+all preceding proof gates, and `--confirm-step <N>` for that
 exact mutation. Confirmations do not carry between steps. Fixture apply is
 permanently non-mutating, even when every grant is present; this is the stable
 way to exercise a fully authorized transcript in tests.
@@ -343,9 +278,8 @@ this slice. Other mutation identifiers remain honestly `adapter-unavailable`
 until they have equally strict typed inputs and rollback/proof coverage.
 
 Proof the real CLI contract, fixture no-mutation guarantee, deterministic
-transcript, and the readiness/privacy/cost/rch/stop/confirmation gates with:
+transcript, and the readiness/privacy/cost/stop/confirmation gates with:
 
 ```sh
-RCH_REQUIRE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/cass-guide-apply-target \
-  cargo test --locked --test e2e_guide_apply_gate
+cargo test --locked --test e2e_guide_apply_gate
 ```

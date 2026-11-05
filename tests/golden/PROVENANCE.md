@@ -135,28 +135,14 @@ output):
 - `robot/robot_docs.json.golden` — needs a topic-specific fixture
   since the output is a large formatted doc string per topic.
 
-## Guided-operations capstone goldens
+## Guided-operations capstone goldens (removed 0.11.0)
 
-`guided_ops/robot.json.golden` freezes the normalized robot payloads from the
-integrated guided-operations E2E gate. The gate runs nine isolated scenarios:
-clean first run, workflow macros, blocked privacy risk, stale search trust,
-failed-command repro, release-channel drift, dependency-pin risk, low-resource
-host, and dashboard empty state. Wall-clock `generated_at` values are scrubbed;
-fixture digests, schemas, recommendations, mutation contracts, redaction
-reports, and assertion summaries remain exact.
-
-`guided_ops/contract.md.golden` is the reviewed operator-facing matrix for the
-same scenarios and artifact contract. Neither golden may contain a fixture's
-synthetic private-session markers or an ambient host path.
-
-Regenerate only through the focused golden gate, then review every byte:
-
-```sh
-UPDATE_GUIDED_OPS_GOLDENS=1 cargo test --test e2e_guided_ops_golden_gate
-git diff -- tests/golden/guided_ops/
-```
-
-Run the gate again without the update variable before accepting the result.
+The `guided_ops/` goldens were deleted with the swarm/operations-dashboard
+surface: `e2e_guided_ops_golden_gate` and its scenarios (workflow macros,
+privacy risk, repro capsule, dashboard empty state, …) no longer exist, and
+`UPDATE_GUIDED_OPS_GOLDENS` is retired. `cass guide` (the surviving local
+guided surface) is covered by `cargo test --test e2e_guide_apply_gate` and the
+robot goldens above, not by a guided_ops golden directory.
 
 ## Quarantine retry robot shape
 

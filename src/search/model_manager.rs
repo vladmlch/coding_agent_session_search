@@ -7,7 +7,8 @@
 //! - detecting model version mismatches
 //!
 //! It does **not** download models. Missing files are surfaced as availability
-//! states so the UI can guide the user. Downloads are handled by [`model_download`].
+//! states so the UI can guide the user. Local installs are handled by
+//! [`model_download`] (`cass models install --from-file <DIR>`).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
