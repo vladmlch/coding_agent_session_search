@@ -22,7 +22,6 @@ use tempfile::TempDir;
 /// Build a `cass` command with an isolated data dir and no update prompts.
 fn cmd_in(temp_home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     let data_dir = temp_home.join("data");
     std::fs::create_dir_all(&data_dir).ok();
     cmd.env("HOME", temp_home);

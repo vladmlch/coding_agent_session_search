@@ -1006,7 +1006,6 @@ fn test_config_export_fails_closed_on_exact_staged_secret_scan() {
     write_pages_config(&config_path, &bundle_dir);
 
     let output = std::process::Command::new(cass_bin_path())
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .arg("--db")
         .arg(&db_path)
         .arg("pages")
@@ -1043,7 +1042,6 @@ fn test_robot_export_only_rejects_secret_before_replacing_prior_output() {
     fs::write(&output_path, b"previous approved generation").expect("write prior output");
 
     let output = std::process::Command::new(cass_bin_path())
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .arg("--db")
         .arg(&db_path)
         .arg("pages")

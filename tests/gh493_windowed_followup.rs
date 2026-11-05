@@ -95,7 +95,6 @@ impl Fixture {
             .env("XDG_DATA_HOME", self.root.path().join("data"))
             .env("XDG_CACHE_HOME", self.root.path().join("cache"))
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("CASS_VIEW_BUDGET_MS", "30000")
             .env_remove("CASS_TEST_VIEW_SLOW_MS")
             .env_remove("CASS_OUTPUT_FORMAT")

@@ -97,7 +97,6 @@ fn assert_parseable_and_bounded(label: &str, stdout: &str, stderr: &str) -> Valu
 
 fn robot_cmd(rust_log: &str) -> Command {
     let mut cmd = Command::new(cass_bin());
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1");
     cmd.env("RUST_LOG", rust_log);
     cmd

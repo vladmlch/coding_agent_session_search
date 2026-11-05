@@ -114,7 +114,6 @@ fn health_json_surfaces_runtime_queue_and_byte_budget_headroom() {
             data_dir.to_str().expect("utf8"),
             "--json",
         ])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_TANTIVY_REBUILD_PIPELINE_CHANNEL_SIZE", "5")
         .env("XDG_DATA_HOME", test_home.path())
@@ -216,7 +215,6 @@ fn status_recommended_action_during_active_rebuild_says_wait_not_reindex() {
             data_dir.to_str().expect("utf8"),
             "--json",
         ])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
@@ -305,7 +303,6 @@ fn health_recommended_action_during_active_rebuild_says_wait_not_reindex() {
             data_dir.to_str().expect("utf8"),
             "--json",
         ])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
@@ -410,7 +407,6 @@ fn seed_codex_session_cold_start(codex_home: &std::path::Path, filename: &str, k
 
 fn isolated_cass_cmd(home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1");
     cmd.env("HOME", home);
     cmd.env("XDG_DATA_HOME", home.join(".local/share"));
@@ -940,7 +936,6 @@ fn cass_status_reaps_stale_index_run_lock_and_reports_not_active() {
             data_dir.to_str().expect("utf8"),
             "--json",
         ])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
@@ -1062,7 +1057,6 @@ fn sigkill_mid_index_run_still_allows_cass_status_and_subsequent_index_to_recove
         .arg("--json")
         .arg("--data-dir")
         .arg(&data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("HOME", home)
         .env("XDG_DATA_HOME", home.join(".local/share"))
@@ -1112,7 +1106,6 @@ fn sigkill_mid_index_run_still_allows_cass_status_and_subsequent_index_to_recove
             data_dir.to_str().expect("utf8"),
             "--json",
         ])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("HOME", home)
         .env("XDG_DATA_HOME", home.join(".local/share"))
@@ -1141,7 +1134,6 @@ fn sigkill_mid_index_run_still_allows_cass_status_and_subsequent_index_to_recove
     let rerun = Command::new(cass)
         .args(["index", "--full", "--json", "--data-dir"])
         .arg(&data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("HOME", home)
         .env("XDG_DATA_HOME", home.join(".local/share"))
@@ -1163,7 +1155,6 @@ fn sigkill_mid_index_run_still_allows_cass_status_and_subsequent_index_to_recove
     let search_out = Command::new(cass)
         .args(["search", "yc4h7keyword-01", "--json", "--data-dir"])
         .arg(&data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("HOME", home)
         .env("XDG_DATA_HOME", home.join(".local/share"))
@@ -1248,7 +1239,6 @@ fn health_and_status_agree_on_shared_fields_during_active_rebuild() {
                 data_dir.to_str().expect("utf8"),
                 "--json",
             ])
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .env("XDG_DATA_HOME", test_home.path())
             .env("HOME", test_home.path())

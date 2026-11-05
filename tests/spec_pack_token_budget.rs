@@ -93,7 +93,6 @@ struct PackOutcome {
 
 fn run_pack(data_dir: &Path, max_tokens: i64) -> Result<PackOutcome, Box<dyn Error>> {
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["--color=never", "pack", "the", "--robot"])
         .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])
         .args(["--max-tokens", &max_tokens.to_string()])

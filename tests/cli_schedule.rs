@@ -43,7 +43,6 @@ fn cass_cmd(home: &Path) -> Command {
     cmd.env("CODEX_HOME", home.join(".codex"));
     cmd.env("RUST_MIN_STACK", "134217728");
     cmd.env("TUI_HEADLESS", "1");
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1");
     // Deterministic gates: never load-gate or idle-gate a test run.
     cmd.env("CASS_RESPONSIVENESS_DISABLE", "1");

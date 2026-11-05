@@ -82,7 +82,6 @@ fn run_status_json(data_dir: &Path, db_path: &Path) -> TestResult<Value> {
         .arg("--db")
         .arg(db_path)
         .args(["--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .timeout(Duration::from_secs(45))
         .output()?;
     assert!(
@@ -123,7 +122,6 @@ fn cass_status_reports_quality_tier_published_and_semantic_only_search_available
         .arg("--db")
         .arg(&db_path)
         .arg("--json")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .timeout(Duration::from_secs(60))
         .output()?;
     assert!(

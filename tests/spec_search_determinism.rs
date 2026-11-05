@@ -79,7 +79,6 @@ fn copy_search_demo_fixture(test_home: &Path) -> Result<PathBuf, Box<dyn Error>>
 /// Run `cass search <args>` against the fixture and return the parsed JSON.
 fn run_search(data_dir: &Path, args: &[&str]) -> Result<Value, Box<dyn Error>> {
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["--color=never", "search"])
         .args(args)
         .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])

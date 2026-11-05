@@ -34,7 +34,6 @@ const NOISY_RUST_LOG: &str = "trace,fsqlite=trace,fsqlite_core=trace";
 
 fn noisy_robot_cmd() -> Command {
     let mut cmd = Command::new(cass_bin());
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("RUST_LOG", NOISY_RUST_LOG);
     cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1");
     cmd

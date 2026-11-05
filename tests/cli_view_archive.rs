@@ -74,7 +74,6 @@ fn run_view_json(
     source_id: &str,
 ) -> (Value, std::process::Output) {
     let output = Command::new(cass_bin())
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .args([
             "view",
@@ -179,7 +178,6 @@ fn view_distinguishes_missing_archive_row_from_missing_file() {
     SqliteStorage::open(&db).expect("create empty db");
     let missing = "/home/operator/.claude/projects/none/missing.jsonl";
     let output = Command::new(cass_bin())
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .args([
             "view",

@@ -44,7 +44,6 @@ fn test_pages_verify_valid_bundle_json() {
         .args(["pages", "--verify"])
         .arg(&fixture)
         .arg("--json")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("run cass pages --verify (valid)");
 
@@ -76,7 +75,6 @@ fn test_pages_verify_missing_required_file_fails() {
         .args(["pages", "--verify"])
         .arg(&fixture)
         .arg("--json")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("run cass pages --verify (missing required)");
 
@@ -103,7 +101,6 @@ fn test_pages_verify_secret_leak_fails() {
         .args(["pages", "--verify"])
         .arg(&fixture)
         .arg("--json")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("run cass pages --verify (secret leak)");
 

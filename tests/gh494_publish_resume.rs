@@ -18,7 +18,6 @@ const SESSIONS: usize = 3;
 fn cass(home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
     cmd.current_dir(home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env_remove("CASS_AUTO_REFRESH")
         .env("HOME", home)
@@ -404,7 +403,6 @@ fn gh494_killed_after_atomic_swap_remains_searchable_without_inline_rebuild() {
     // checkpoint: the child parks after the real exchange and sidecar park.
     let child = std::process::Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .current_dir(tmp.path())
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_AUTO_REFRESH", "0")
         .env("HOME", tmp.path())

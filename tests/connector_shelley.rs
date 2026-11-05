@@ -110,7 +110,6 @@ fn command(home: &Path, data: &Path, db: &Path) -> Command {
         .env("CASS_DATA_DIR", data)
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_AUTO_REFRESH", "0")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("RUST_MIN_STACK", "134217728")
         .current_dir(home);
     if let Ok(system_root) = dotenvy::var("SystemRoot") {

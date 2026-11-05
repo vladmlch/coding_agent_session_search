@@ -30,7 +30,6 @@ fn command(home: &Path, db: &Path) -> Command {
         .env("CODEX_HOME", home.join(".codex"))
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_AUTO_REFRESH", "0")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("RUST_MIN_STACK", "134217728")
         .arg("--db")
         .arg(db)

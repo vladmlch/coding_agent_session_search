@@ -97,7 +97,6 @@ fn copy_search_demo_fixture(test_home: &Path) -> Result<PathBuf, Box<dyn Error>>
 /// agent names are checked separately against the typed error contract.
 fn run_search(data_dir: &Path, extra_args: &[&str]) -> Result<Value, Box<dyn Error>> {
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["--color=never", "search", "the", "--robot"])
         .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])
         .args(extra_args)
@@ -212,7 +211,6 @@ fn search_agent_filter_unknown_agent_returns_usage_error_before_archive_access()
         .env("CASS_DATA_DIR", &data_dir)
         .env("CASS_AUTO_REFRESH", "0")
         .env("RUST_LOG", "error")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env_remove("CASS_DB_PATH")
         .args(["--color=never", "search", "the", "--robot"])
         .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])

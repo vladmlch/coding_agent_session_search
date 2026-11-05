@@ -53,8 +53,7 @@ const CMD_TIMEOUT: Duration = Duration::from_secs(60);
 /// stderr for every non-robot-native failure without touching stdout payloads.
 fn base_cmd(home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("cass").expect("cass binary");
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .env("NO_COLOR", "1")
+    cmd.env("NO_COLOR", "1")
         .env("HOME", home)
         .env("USERPROFILE", home)
         .env("XDG_DATA_HOME", home.join(".local/share"))

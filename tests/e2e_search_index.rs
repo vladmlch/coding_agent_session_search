@@ -245,7 +245,6 @@ mod gh472 {
                 .env("CASS_RESPONSIVENESS_DISABLE", "1")
                 .env("CASS_PREP_PROFILE", "1")
                 .env("CASS_INDEX_NO_PROGRESS_EVENTS", "1")
-                .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
                 .env("RUST_MIN_STACK", "134217728")
                 .env("TUI_HEADLESS", "1")
                 .env("NO_COLOR", "1")
@@ -1266,7 +1265,6 @@ fn force_federated_publish_env(cmd: &mut assert_cmd::Command) {
 fn cass_std_cmd(command_env: &E2eCommandEnvironment, home: &Path) -> StdCommand {
     let mut cmd = command_env.cass_std_command();
     cmd.current_dir(home);
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1");
     cmd
 }

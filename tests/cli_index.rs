@@ -33,7 +33,6 @@ fn parse_cli_ok<const N: usize>(args: [&'static str; N], context: &'static str) 
 
 fn base_cmd(temp_home: &std::path::Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     // Isolate connectors by pointing HOME and XDG vars to temp dir
     cmd.env("HOME", temp_home);
     cmd.env("XDG_DATA_HOME", temp_home.join(".local/share"));
@@ -250,7 +249,6 @@ fn cdzcl_index_idempotency_rejects_invalid_cached_payloads() {
             .env("XDG_CONFIG_HOME", home.join(".config"))
             .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
             .env("CODEX_HOME", home.join(".codex"))
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728")
             .args(["--db"])
             .arg(&db_path)
@@ -412,7 +410,6 @@ fn gh459_full_scan_repairs_cursor_workspace_without_reinserting_messages() {
             // On Windows the default ~/.cursor/projects is the profile known
             // folder, which ignores HOME and USERPROFILE.
             .env("CASS_CURSOR_PROJECTS_ROOT", home.join(".cursor/projects"))
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728");
         cmd
     };
@@ -1707,7 +1704,6 @@ fn gh478_watch_once_retains_codex_hint_when_symlink_target_has_no_provider_marke
             .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
             .env("CODEX_HOME", home.join(".codex"))
             .env("CASS_AUTO_REFRESH", "0")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728");
         cmd
     };
@@ -2790,7 +2786,6 @@ fn gh413_full_rebuild_drains_when_one_conversation_exceeds_the_inflight_budget()
         "--json",
         "--no-progress-events",
     ])
-    .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
     .env("HOME", tmp.path())
     .env("XDG_DATA_HOME", tmp.path().join(".local/share"))
     .env("CODEX_HOME", data_dir.join(".codex"))
@@ -2856,7 +2851,6 @@ fn gh413_full_rebuild_drains_when_one_conversation_exceeds_the_inflight_budget()
                 "--data-dir",
                 data_dir.to_str().unwrap(),
             ])
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("HOME", tmp.path())
             .env("XDG_DATA_HOME", tmp.path().join(".local/share"))
             .env("XDG_CONFIG_HOME", tmp.path().join(".config"))
@@ -4514,7 +4508,6 @@ fn gh440_plain_index_resumes_a_force_rebuild_killed_between_commit_and_checkpoin
             "--data-dir",
         ])
         .arg(&data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_AUTO_REFRESH", "0")
         .env("HOME", home)
         .env("XDG_DATA_HOME", home.join(".local/share"))

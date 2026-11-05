@@ -98,7 +98,6 @@ fn copy_search_demo_fixture(test_home: &Path) -> Result<PathBuf, Box<dyn Error>>
 
 fn run_cass_json(args: &[&str]) -> Result<Value, Box<dyn Error>> {
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["--color=never"])
         .args(args)
         .output()?;

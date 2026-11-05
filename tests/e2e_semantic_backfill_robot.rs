@@ -167,7 +167,6 @@ fn robot_backfill_process(data_dir: &Path, db_path: &Path) -> std::process::Comm
         ])
         .arg(data_dir)
         .arg("--json")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("RUST_MIN_STACK", "134217728");
     command
 }
@@ -493,7 +492,6 @@ fn run_robot_scheduled_backfill_paused(data_dir: &Path, db_path: &Path) -> TestR
         .arg("--db")
         .arg(db_path)
         .arg("--json")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_SEMANTIC_BACKFILL_FOREGROUND_ACTIVE", "1")
         .timeout(Duration::from_secs(20))
         .output()?;
@@ -655,7 +653,6 @@ fn run_live_robot_capture(
     let mut command = cargo_bin_cmd!("cass");
     command
         .args(args.iter().map(String::as_str))
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .timeout(config.timeout);
 
@@ -815,7 +812,6 @@ fn robot_models_backfill_keeps_archive_and_assets_scoped_to_path_overrides() -> 
         }
         let output = command
             .env("CASS_DATA_DIR", &ambient)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .timeout(Duration::from_secs(20))
             .output()?;
         assert!(
@@ -931,7 +927,6 @@ fn gh467_robot_quality_backfill_resolves_native_aliases_before_loading_models() 
             .env("HOME", temp.path())
             .env("XDG_CONFIG_HOME", temp.path().join("config"))
             .env("CASS_SEMANTIC_EMBEDDER", environment_embedder)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env_remove("FRANKENSEARCH_MODEL_DIR")
             .timeout(Duration::from_secs(20))
             .output()
@@ -1232,7 +1227,6 @@ fn gh470_robot_backfill_resumes_whole_messages_with_multiple_passages() -> TestR
                 .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
                 .env("CODEX_HOME", home.join(".codex"))
                 .env("TUI_HEADLESS", "1")
-                .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
                 .env("CASS_RESPONSIVENESS_DISABLE", "1")
                 .env("RUST_MIN_STACK", "134217728")
                 .env("CASS_SEMANTIC_BATCH_SIZE", "2")
@@ -1371,7 +1365,6 @@ mod gh471_native_worker {
             .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
             .env("CODEX_HOME", home.join(".codex"))
             .env("TUI_HEADLESS", "1")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("CASS_RESPONSIVENESS_DISABLE", "1")
             .env("RUST_MIN_STACK", "134217728")
             .env(

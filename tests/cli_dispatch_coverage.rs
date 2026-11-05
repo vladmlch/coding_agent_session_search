@@ -22,7 +22,6 @@ use tempfile::TempDir;
 /// Create a base command with isolated test environment.
 fn base_cmd(temp_home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     let data_dir = temp_home.join(".local/share/coding-agent-search");
     // Isolate test environment
     cmd.env("HOME", temp_home);
@@ -38,7 +37,6 @@ fn base_cmd(temp_home: &Path) -> Command {
 /// Create base command without HOME isolation (for simple tests), but with isolated XDG_DATA_HOME.
 fn simple_cmd() -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("NO_COLOR", "1");
 
     // Create an isolated empty database with schema to avoid hitting the real user DB
@@ -5497,8 +5495,7 @@ fn removed_commands_error_without_redirection() {
 
         let run = |args: &[&str]| {
             let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-            cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-                .env("HOME", temp_home.path())
+            cmd.env("HOME", temp_home.path())
                 .env("XDG_DATA_HOME", temp_home.path().join(".local/share"))
                 .env("CASS_DATA_DIR", &data_dir)
                 .env("XDG_CONFIG_HOME", temp_home.path().join(".config"))

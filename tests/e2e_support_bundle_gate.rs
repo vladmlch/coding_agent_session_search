@@ -86,7 +86,6 @@ fn cass_command(fixture: &Fixture, base: &[&str]) -> Command {
         .env("XDG_DATA_HOME", fixture.home.join("xdg-data"))
         .env("XDG_CONFIG_HOME", fixture.home.join("xdg-config"))
         .env("XDG_CACHE_HOME", fixture.home.join("xdg-cache"))
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_SEMANTIC_EMBEDDER", "hash")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("NO_COLOR", "1")

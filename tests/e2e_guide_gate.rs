@@ -64,7 +64,6 @@ fn cass_cmd(home: &Path, args: &[String]) -> Command {
         .env("XDG_DATA_HOME", home.join("xdg-data"))
         .env("XDG_CONFIG_HOME", home.join("xdg-config"))
         .env("XDG_CACHE_HOME", home.join("xdg-cache"))
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_SEMANTIC_EMBEDDER", "hash")
         .env("NO_COLOR", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")

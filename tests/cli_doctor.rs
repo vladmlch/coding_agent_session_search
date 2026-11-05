@@ -218,8 +218,7 @@ fn rewrite_raw_mirror_manifest(data_dir: &Path, manifest: &Value, next_manifest:
 
 fn cass_cmd(test_home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .env("CASS_IGNORE_SOURCES_CONFIG", "1")
+    cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("XDG_DATA_HOME", test_home)
         .env("XDG_CONFIG_HOME", test_home)
         .env("HOME", test_home)

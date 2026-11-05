@@ -33,9 +33,7 @@ fn fixture_path(category: &str, name: &str) -> PathBuf {
 
 #[allow(deprecated)]
 fn cass_cmd() -> Command {
-    let mut cmd = Command::cargo_bin("cass").unwrap();
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
-    cmd
+    Command::cargo_bin("cass").unwrap()
 }
 
 /// Index `session` once into an isolated archive and return

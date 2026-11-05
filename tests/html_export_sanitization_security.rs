@@ -224,7 +224,6 @@ fn export_command(home: &Path) -> Result<assert_cmd::Command, String> {
         .env("CASS_DATA_DIR", home.join("cass-data"))
         .env("CASS_INDEX_REDACTION", "off")
         .env("CASS_AUTO_REFRESH", "0")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("NO_COLOR", "1")
         .env_remove("CODEX_HOME")
         .env_remove("CASS_DB_PATH")

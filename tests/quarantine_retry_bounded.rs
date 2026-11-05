@@ -253,7 +253,6 @@ fn cli_list_and_clear_include_poison_only_quarantine_records() -> anyhow::Result
             .env("XDG_DATA_HOME", dir.path().join("xdg-data"))
             .env("XDG_CONFIG_HOME", dir.path().join("xdg-config"))
             .env("XDG_CACHE_HOME", dir.path().join("xdg-cache"))
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .env("NO_COLOR", "1")
             .env_remove("CLAUDE_CONFIG_DIR");
@@ -387,7 +386,6 @@ fn cli_health_pointer_lists_conversations_and_list_status_offers_only_useful_ret
             .env("XDG_DATA_HOME", dir.path().join("xdg-data"))
             .env("XDG_CONFIG_HOME", dir.path().join("xdg-config"))
             .env("XDG_CACHE_HOME", dir.path().join("xdg-cache"))
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .env("CASS_AUTO_REFRESH", "0")
             .env("NO_COLOR", "1")
@@ -560,7 +558,6 @@ fn cli_dry_run_plans_then_apply_reingests_exact_quarantine_key() -> anyhow::Resu
         .env("XDG_DATA_HOME", dir.path().join("xdg-data"))
         .env("XDG_CONFIG_HOME", dir.path().join("xdg-config"))
         .env("XDG_CACHE_HOME", dir.path().join("xdg-cache"))
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("NO_COLOR", "1")
         .env_remove("CLAUDE_CONFIG_DIR");
@@ -602,7 +599,6 @@ fn cli_dry_run_plans_then_apply_reingests_exact_quarantine_key() -> anyhow::Resu
         .env("XDG_DATA_HOME", dir.path().join("xdg-data"))
         .env("XDG_CONFIG_HOME", dir.path().join("xdg-config"))
         .env("XDG_CACHE_HOME", dir.path().join("xdg-cache"))
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("NO_COLOR", "1")
         .env_remove("CLAUDE_CONFIG_DIR");
@@ -762,7 +758,6 @@ fn cass_stdout_in(
         .env("XDG_DATA_HOME", home.join("xdg-data"))
         .env("XDG_CONFIG_HOME", home.join("xdg-config"))
         .env("XDG_CACHE_HOME", home.join("xdg-cache"))
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_AUTO_REFRESH", "0")
         .env("NO_COLOR", "1")

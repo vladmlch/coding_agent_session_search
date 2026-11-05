@@ -17,7 +17,6 @@ fn cass_serve_dispatches_stdio_without_entering_ordinary_cli_setup() -> anyhow::
         .args(["serve", "--stdio", "--index"])
         .arg(&absent)
         .env("CASS_DATA_DIR", temp.path().join("unrelated"))
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

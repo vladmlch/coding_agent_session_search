@@ -84,7 +84,6 @@ fn run_diag_quarantine_with_retention(test_home: &Path, data_dir: &Path, retenti
             "--data-dir",
             data_dir.to_str().expect("utf8"),
         ])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_LEXICAL_PUBLISH_BACKUP_RETENTION", retention)
         .env("XDG_DATA_HOME", test_home)
@@ -176,7 +175,6 @@ fn diag_json_quarantine_surfaces_retained_artifacts() {
             "--data-dir",
             data_dir.to_str().expect("utf8"),
         ])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_LEXICAL_PUBLISH_BACKUP_RETENTION", "1")
         .env("XDG_DATA_HOME", test_home.path())
@@ -522,7 +520,6 @@ fn diag_and_doctor_agree_on_quarantine_summary_on_empty_data_dir() {
     let diag_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["diag", "--json", "--quarantine", "--data-dir"])
         .arg(data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("HOME", data_dir)
         .env("XDG_DATA_HOME", data_dir.join(".local/share"))
@@ -541,7 +538,6 @@ fn diag_and_doctor_agree_on_quarantine_summary_on_empty_data_dir() {
     let doctor_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["doctor", "--json", "--data-dir"])
         .arg(data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("HOME", data_dir)
         .env("XDG_DATA_HOME", data_dir.join(".local/share"))
@@ -748,7 +744,6 @@ fn diag_and_doctor_agree_on_quarantine_summary_on_seeded_state() {
             .args(args)
             .arg("--data-dir")
             .arg(data_dir)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             // Keep retention policy deterministic — same value as the
             // sibling diag-only test so every cross-command field

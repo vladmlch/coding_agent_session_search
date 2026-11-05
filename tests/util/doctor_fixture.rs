@@ -286,8 +286,7 @@ impl DoctorFixtureFactory {
 
     pub fn cass_cmd(&self) -> Command {
         let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-        cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-            .env("CASS_IGNORE_SOURCES_CONFIG", "1")
+        cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .env("XDG_DATA_HOME", &self.home_dir)
             .env("XDG_CONFIG_HOME", &self.home_dir)
             .env("HOME", &self.home_dir);

@@ -118,7 +118,6 @@ mod budget_override {
             .env("CASS_DATA_DIR", root.join("archive"))
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .env("CASS_AUTO_REFRESH", "0")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728");
         if let Ok(system_root) = dotenvy::var("SystemRoot") {
             command.env("SystemRoot", system_root);

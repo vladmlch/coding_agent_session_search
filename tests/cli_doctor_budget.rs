@@ -22,7 +22,6 @@ use util::cass_bin;
 
 fn doctor_json(data_dir: &str, budget_ms: &str) -> Value {
     let output = Command::new(cass_bin())
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_DOCTOR_BUDGET_MS", budget_ms)
         .args(["doctor", "--check", "--json", "--data-dir", data_dir])

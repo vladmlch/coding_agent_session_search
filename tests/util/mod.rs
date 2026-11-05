@@ -45,7 +45,6 @@ pub fn prepare_copied_search_fixture(
         .env("XDG_CONFIG_HOME", home.path().join(".config"))
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_AUTO_REFRESH", "0")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args([
             "search",
             "the",

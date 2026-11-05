@@ -96,7 +96,6 @@ fn copy_search_demo_fixture(test_home: &Path) -> Result<PathBuf, Box<dyn Error>>
 /// drops to an error path surfaces as a clean diagnostic.
 fn run_search_format(data_dir: &Path, format: &str) -> Result<String, Box<dyn Error>> {
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["--color=never", "search", "the"])
         .args(["--robot-format", format])
         .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])

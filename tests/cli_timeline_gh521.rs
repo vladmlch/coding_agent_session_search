@@ -94,7 +94,6 @@ fn command(root: &Path) -> std::process::Command {
         .env_remove("CASS_DB_PATH")
         .env_remove("CASS_ROBOT_FORMAT")
         .env_remove("CASS_FORMAT")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("NO_COLOR", "1")
         .env("RAYON_NUM_THREADS", "2")
         .env("RUST_LOG", "error")

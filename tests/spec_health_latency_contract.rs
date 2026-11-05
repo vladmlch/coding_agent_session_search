@@ -92,7 +92,6 @@ const HEALTH_LATENCY_THRESHOLD_MS: i64 = 150;
 
 fn run_health(data_dir: &Path) -> Result<Value, Box<dyn Error>> {
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["--color=never", "health", "--json"])
         .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])
         .output()?;

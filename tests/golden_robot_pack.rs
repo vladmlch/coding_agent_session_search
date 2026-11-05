@@ -30,7 +30,6 @@ fn pack_error_envelope(data_dir: &Path, args: &[&str]) -> String {
     let dir = data_dir.to_str().expect("utf8 data dir path");
     let output = Command::cargo_bin("cass")
         .expect("cass binary builds")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(args)
         .args(["--data-dir", dir])
         .output()

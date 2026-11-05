@@ -50,8 +50,7 @@ fn cass_cmd(test_home: &std::path::Path) -> Command {
     let opencode_root = test_home.join(".opencode");
     let aider_root = test_home.join(".aider-missing");
     let xdg_config_home = test_home.join(".config");
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .current_dir(test_home)
+    cmd.current_dir(test_home)
         // Pin data dir so the test never touches the user's real cache.
         .env("XDG_DATA_HOME", test_home)
         .env("XDG_CONFIG_HOME", xdg_config_home)

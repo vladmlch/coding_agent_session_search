@@ -93,7 +93,6 @@ fn install_aider_fixture_project() -> Result<(TempDir, PathBuf, PathBuf), Box<dy
 /// envelope and asserts exit 0.
 fn run_index_in(project_dir: &Path, data_dir: &Path, home: &Path) -> Result<Value, Box<dyn Error>> {
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("config"))
         .env("XDG_DATA_HOME", home.join("data"))
@@ -166,7 +165,6 @@ fn lexical_strategy_reason(envelope: &Value) -> Result<&str, Box<dyn Error>> {
 /// Lexical hits for `query` in `data_dir`, from a fresh `cass search`.
 fn lexical_hit_count(data_dir: &Path, home: &Path, query: &str) -> Result<usize, Box<dyn Error>> {
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("config"))
         .env("XDG_DATA_HOME", home.join("data"))

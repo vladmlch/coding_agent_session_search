@@ -21,7 +21,6 @@ fn command(home: &Path, data: &Path, doctor: bool) -> Command {
         .env("XDG_CONFIG_HOME", home.join("config"))
         .env("XDG_DATA_HOME", home.join("data"))
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_LEXICAL_QUARANTINE_RETENTION", "1")
         .env_remove("CASS_OUTPUT_FORMAT")
         .env_remove("TOON_DEFAULT_FORMAT")

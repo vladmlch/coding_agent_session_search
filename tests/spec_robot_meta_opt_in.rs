@@ -97,7 +97,6 @@ fn copy_search_demo_fixture(test_home: &Path) -> Result<PathBuf, Box<dyn Error>>
 
 fn run_search_json(data_dir: &Path, extra_args: &[&str]) -> Result<Value, Box<dyn Error>> {
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["--color=never", "search", "the", "--robot"])
         .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])
         .args(extra_args)

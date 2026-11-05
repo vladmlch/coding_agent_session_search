@@ -107,7 +107,6 @@ fn run_diag_json() -> Result<Value, Box<dyn Error>> {
     // drift onto the developer's real ~/.cass/.
     let tmp = TempDir::new()?;
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .args(["--color=never", "diag", "--json"])
         .args(["--data-dir", tmp.path().to_str().ok_or("non-utf8 path")?])

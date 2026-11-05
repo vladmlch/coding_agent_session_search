@@ -70,7 +70,6 @@ impl Fixture {
             .env("XDG_DATA_HOME", &self.xdg_data)
             .env("CASS_DATA_DIR", &self.data_dir)
             .env("CASS_AUTO_REFRESH", "0")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             // The legacy environment this test characterizes. All three point
             // at unreachable loopback/config paths: if any of them is ever
             // dereferenced, the command fails fast instead of hanging.

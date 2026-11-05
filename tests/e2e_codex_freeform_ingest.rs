@@ -20,7 +20,6 @@ fn cass(home: &Path) -> Command {
         .env("CODEX_HOME", home.join(".codex"))
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_AUTO_REFRESH", "0")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("NO_COLOR", "1")
         .env_remove("CLAUDE_CONFIG_DIR")
         .timeout(Duration::from_secs(240));

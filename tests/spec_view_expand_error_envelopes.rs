@@ -121,7 +121,6 @@ struct CmdOutcome {
 
 fn run_cass(iso: &IsolatedHome, args: &[&str]) -> Result<CmdOutcome, Box<dyn Error>> {
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("HOME", &iso.home)
         .env("XDG_CONFIG_HOME", &iso.config)
         .env("XDG_DATA_HOME", &iso.data)

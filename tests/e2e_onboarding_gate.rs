@@ -122,7 +122,6 @@ fn cass_cmd(home: &Path, codex_home: Option<&Path>, args: &[String]) -> Command 
         .env("XDG_DATA_HOME", home.join("xdg-data"))
         .env("XDG_CONFIG_HOME", home.join("xdg-config"))
         .env("XDG_CACHE_HOME", home.join("xdg-cache"))
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_SEMANTIC_EMBEDDER", "hash")
         .env("NO_COLOR", "1")
         .env_remove("CLAUDE_CONFIG_DIR");
@@ -325,7 +324,6 @@ fn onboarding_tty_runs_readonly_wizard_and_exits_without_bare_tui() -> TestResul
         "GEMINI_HOME",
         home.join(".gemini-empty").to_string_lossy().as_ref(),
     );
-    command.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     command.env("CASS_SEMANTIC_EMBEDDER", "hash");
     command.env("NO_COLOR", "1");
     command.env("TERM", "xterm-256color");

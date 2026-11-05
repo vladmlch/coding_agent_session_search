@@ -37,7 +37,6 @@ fn execute(
             .args(arguments)
             .current_dir(root)
             .env("CASS_QUILL_QUERY_FUEL_BUDGET", fuel.to_string())
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_LOG", "error")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -34,7 +34,6 @@ fn run_isolated_cass(
     let start = std::time::Instant::now();
     let output = std::process::Command::new(cargo_bin("cass"))
         .args(args)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("HOME", home)
         .env("XDG_DATA_HOME", home.join(".local/share"))
@@ -289,7 +288,6 @@ fn no_download_proof_emits_redaction_safe_proof_log_artifact() -> Result<(), Str
     // sanitized_env: only the safe, non-secret variables this harness sets.
     let sanitized_env = json!({
         "CASS_IGNORE_SOURCES_CONFIG": "1",
-        "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT": "1",
     });
     let outcome = if matches!(code, Some(0)) {
         "passed"

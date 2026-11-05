@@ -18,8 +18,6 @@ use tempfile::TempDir;
 /// Create a base command with isolated environment for testing.
 fn base_cmd(temp_home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-    // Disable update prompts
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     // Enable headless mode for TUI
     cmd.env("TUI_HEADLESS", "1");
     // Isolate connectors by pointing HOME and XDG vars to temp dir

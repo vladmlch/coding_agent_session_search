@@ -130,7 +130,6 @@ fn cass_bin() -> String {
 
 fn real_cass_command(harness: &RealIndexHarness) -> Command {
     let mut cmd = Command::new(&harness.bin);
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("CASS_INDEX_NO_PROGRESS_EVENTS", "1");
     cmd.env("CASS_RAW_MIRROR_FSYNC", "0");
     cmd.env("RUST_BACKTRACE", "1");

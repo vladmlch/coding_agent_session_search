@@ -205,7 +205,6 @@ fn serve(fixture: &Fixture, enabled: bool, fuel: u64, requests: &[Value]) -> Res
         .env("XDG_CONFIG_HOME", control.path().join("config"))
         .env("XDG_CACHE_HOME", control.path().join("cache"))
         .env("CASS_QUILL_QUERY_FUEL_BUDGET", fuel.to_string())
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("RUST_LOG", "error")
         .stdin(Stdio::piped())
         .stdout(Stdio::from(stdout.try_clone()?))

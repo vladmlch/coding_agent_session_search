@@ -31,7 +31,6 @@ fn command(home: &Path) -> Command {
         .env("CASS_DATA_DIR", home.join("unused-default"))
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_AUTO_REFRESH", "0")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_VIEW_BUDGET_MS", "30000")
         .env_remove("CASS_TEST_VIEW_SLOW_MS")
         .env_remove("CASS_OUTPUT_FORMAT")

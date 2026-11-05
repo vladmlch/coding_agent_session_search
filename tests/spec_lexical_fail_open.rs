@@ -96,7 +96,6 @@ fn run_search_capture(
     extra_envs: &[(&str, &str)],
 ) -> Result<SearchOutcome, Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("cass")?;
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     for (k, v) in extra_envs {
         cmd.env(k, v);
     }

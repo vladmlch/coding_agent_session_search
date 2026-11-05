@@ -111,7 +111,6 @@ fn semantic_backfill_emits_progress_jsonl_with_named_events_when_env_var_is_set(
         .arg("--db")
         .arg(&db_path)
         .arg("--json")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_SEMANTIC_PROGRESS_JSONL", &jsonl_path)
         .timeout(Duration::from_secs(60))
         .output()?;
@@ -291,7 +290,6 @@ fn semantic_backfill_progress_jsonl_silent_when_env_var_is_unset() -> TestResult
         .arg("--db")
         .arg(&db_path)
         .arg("--json")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         // Deliberately do NOT set CASS_SEMANTIC_PROGRESS_JSONL.
         .env_remove("CASS_SEMANTIC_PROGRESS_JSONL")
         .timeout(Duration::from_secs(60))

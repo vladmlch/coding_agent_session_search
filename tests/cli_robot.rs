@@ -22,7 +22,6 @@ use util::cass_bin;
 
 fn base_cmd() -> Command {
     let mut cmd = Command::new(cass_bin());
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     // WS-A.6 (2w1sc): tests here used to read the committed fixture archive in
     // place, and a `search` on a fleet worker spawned a detached
     // `cass index --background` INTO it, ingesting that worker's real
@@ -2557,7 +2556,6 @@ fn robot_docs_env_lists_key_vars_and_no_ansi() {
     for removed in [
         "CASS_FLEET_PER_HOST_BUDGET_MS",
         "CASS_FLEET_BUDGET_MS",
-        "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT",
         "CASS_SKIP_UPDATE",
         "CASS_UPDATE_API_BASE_URL",
     ] {
@@ -8722,7 +8720,6 @@ fn seed_codex_session_s0cmk(codex_home: &std::path::Path, filename: &str, keywor
 fn isolated_cass_cmd(temp_home: &std::path::Path) -> Command {
     let mut cmd = Command::new(cass_bin());
     cmd.current_dir(temp_home);
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1");
     cmd.env("HOME", temp_home);
     cmd.env("XDG_DATA_HOME", temp_home.join(".local/share"));
@@ -9548,7 +9545,6 @@ fn broken_stdout_pipe_terminates_via_sigpipe_not_abort() {
     // write regardless of scheduling.
     let mut child = StdCommand::new(cass_bin())
         .args(["robot-docs", "schemas"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

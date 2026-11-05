@@ -74,7 +74,6 @@ impl Fixture {
             .env("CODEX_HOME", self.home.join(".codex"))
             .env("RUST_MIN_STACK", "134217728")
             .env("TUI_HEADLESS", "1")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("CASS_RESPONSIVENESS_DISABLE", "1")
             .env("CASS_AUTO_REFRESH", "0")
             .args([

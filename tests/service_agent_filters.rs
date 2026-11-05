@@ -69,7 +69,6 @@ fn run(
         .env("CASS_DATA_DIR", root)
         .env("CASS_AUTO_REFRESH", "0")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("RUST_LOG", "error")
         .env_remove("CASS_DB_PATH")
         .env_remove("CASS_OUTPUT_FORMAT")

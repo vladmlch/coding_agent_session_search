@@ -30,7 +30,6 @@ fn view_json(budget_ms: &str, test_delay_ms: Option<&str>) -> ViewRun {
     // README.md is a real file at the repo root, so view takes the file fast path.
     let mut command = Command::new(cass_bin());
     command
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_VIEW_BUDGET_MS", budget_ms);
     if let Some(test_delay_ms) = test_delay_ms {
@@ -154,7 +153,6 @@ fn stalled_view_projection_is_bounded_and_preserves_compact_retry_format() {
     const VIEW_BUDGET_MS: u64 = 500;
     let mut command = Command::new(cass_bin());
     command
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_TEST_VIEW_PROJECTION_SLOW_MS", "2000");
     let started = Instant::now();
@@ -209,7 +207,6 @@ fn physical_command(root: &std::path::Path, path: &std::path::Path, subcommand: 
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_CACHE_HOME", root.join("cache"))
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_VIEW_BUDGET_MS", "60000")
         .env_remove("CASS_OUTPUT_FORMAT")

@@ -78,7 +78,6 @@ fn codebuff_cli_indexes_shared_manicode_history_and_updates_native_messages() {
             .env("CASS_DATA_DIR", &data)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .env("CASS_AUTO_REFRESH", "0")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728")
             .current_dir(&home)
             .timeout(Duration::from_secs(180));
@@ -194,7 +193,6 @@ fn gh511_cass(home: &Path, data: &Path) -> assert_cmd::Command {
         .env("CASS_DATA_DIR", data)
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_AUTO_REFRESH", "0")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("RUST_MIN_STACK", "134217728")
         .current_dir(home)
         .timeout(std::time::Duration::from_secs(180));
@@ -481,7 +479,6 @@ fn gh511_default_discovery_permission_error_names_the_manicode_directory() {
             .env("CASS_DATA_DIR", &data)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .env("CASS_AUTO_REFRESH", "0")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("CASS_STREAMING_INDEX", streaming)
             .env("RUST_MIN_STACK", "134217728")
             .current_dir(&home)
@@ -1046,7 +1043,6 @@ fn gh499_date_window_after_a_native_revision_tombstones_a_sealed_segment() {
             .env("CASS_DATA_DIR", &data)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .env("CASS_AUTO_REFRESH", "0")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728")
             .env("TZ", "UTC")
             .current_dir(&home)
@@ -1190,7 +1186,6 @@ fn grok_bot_fifo_cli_preserves_evicted_and_new_messages() {
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .env("CASS_STREAMING_INDEX", streaming)
             .env("CASS_AUTO_REFRESH", "0")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728")
             .current_dir(home)
             .timeout(Duration::from_secs(180));

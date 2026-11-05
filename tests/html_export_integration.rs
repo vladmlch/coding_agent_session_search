@@ -107,9 +107,7 @@ fn create_test_session(dir: &Path, messages: &[(&str, &str)]) -> PathBuf {
 
 #[allow(deprecated)]
 fn base_cmd() -> Command {
-    let mut cmd = Command::cargo_bin("cass").unwrap();
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
-    cmd
+    Command::cargo_bin("cass").unwrap()
 }
 
 // =============================================================================

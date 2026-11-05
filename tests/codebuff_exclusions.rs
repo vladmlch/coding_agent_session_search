@@ -97,7 +97,6 @@ impl Fixture {
             .env("CASS_EXCLUDE_PATHS", exclusions)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .env("CASS_AUTO_REFRESH", "0")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728")
             .current_dir(home)
             .timeout(Duration::from_secs(180));

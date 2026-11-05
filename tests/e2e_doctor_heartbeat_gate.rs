@@ -72,7 +72,6 @@ fn run(fixture: &Fixture, label: &str, args: &[&str], env: &[(&str, &str)]) -> O
         .env("XDG_DATA_HOME", fixture.home.join("xdg-data"))
         .env("XDG_CONFIG_HOME", fixture.home.join("xdg-config"))
         .env("XDG_CACHE_HOME", fixture.home.join("xdg-cache"))
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_SEMANTIC_EMBEDDER", "hash")
         .env("CODEX_HOME", &fixture.codex_home)
         .env("NO_COLOR", "1")

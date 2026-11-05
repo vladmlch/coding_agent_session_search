@@ -40,7 +40,6 @@ fn gh461_mirror_prune_cli_composes_provider_and_path_selectors() {
             .arg(&data_dir)
             .args(["--older-than", "0s", "--safety-hold-down", "0s", "--json"])
             .args(extra)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .timeout(std::time::Duration::from_secs(30));
         command.assert()
     };

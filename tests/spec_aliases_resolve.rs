@@ -70,7 +70,6 @@ fn parse_alias_pair_target(line: &str) -> Option<String> {
 fn canonical_commands() -> BTreeSet<String> {
     let output = Command::cargo_bin("cass")
         .expect("cass binary builds")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["introspect", "--json"])
         .output()
         .expect("run cass introspect --json");

@@ -62,7 +62,6 @@ fn make_claude_session(root: &std::path::Path, project: &str, content: &str) {
 fn base_cmd(command_env: &E2eCommandEnvironment) -> Command {
     let mut cmd = Command::cargo_bin("cass").unwrap();
     command_env.apply_to_assert(&mut cmd);
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd
 }
 
@@ -1162,7 +1161,6 @@ fn capabilities_command_lists_features() {
     let command_env = tracker.command_environment();
     let output = base_cmd(&command_env)
         .args(["capabilities", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .unwrap();
 

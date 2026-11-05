@@ -493,7 +493,6 @@ fn cass_command(home: &Path, codex_home: &Path, args: &[&str]) -> Command {
         // replaces the expected typed state. Widen the budget so the gate
         // asserts classification, not host speed.
         .env("CASS_STORAGE_PROBE_TIMEOUT_MS", "2000")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_SEMANTIC_EMBEDDER", "hash")
         .env("NO_COLOR", "1")
         .env("CODEX_HOME", codex_home)

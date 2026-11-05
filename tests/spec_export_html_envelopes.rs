@@ -139,8 +139,7 @@ struct CmdOutcome {
 
 fn run_export_html(args: &[&str], db: Option<&Path>) -> Result<CmdOutcome, Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("cass")?;
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .arg("--color=never");
+    cmd.arg("--color=never");
     if let Some(db) = db {
         cmd.arg("--db").arg(db);
     }
@@ -283,7 +282,6 @@ fn empty_stdin_password_is_rejected_as_password_required() -> TestResult {
     let db = tmp.path().join("envelope.db");
     seed_fixture_archive(&db, &session);
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["--color=never", "--db"])
         .arg(&db)
         .arg("export-html")

@@ -60,7 +60,6 @@ fn deadline_releases_pool_after_blocked_output(one_shot: bool) -> Result<()> {
         .args(["--admission-slots", "1"])
         .current_dir(temp.path())
         .env("CASS_QUILL_QUERY_FUEL_BUDGET", "10000000")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("RUST_LOG", "error")
         .stdin(Stdio::piped())
         .stdout(output)

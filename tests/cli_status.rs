@@ -138,7 +138,6 @@ fn write_remote_source_config(config_home: &Path) {
 
 fn isolated_cass_cmd(temp_home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1");
     cmd.env("HOME", temp_home);
     cmd.env("XDG_DATA_HOME", temp_home.join(".local/share"));
@@ -755,7 +754,6 @@ fn status_and_health_json_omit_remote_source_sync_after_local_only() {
             data_dir.to_str().expect("utf8"),
             "--json",
         ])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("XDG_CONFIG_HOME", test_home.path())
         .env("HOME", test_home.path())
@@ -787,7 +785,6 @@ fn status_and_health_json_omit_remote_source_sync_after_local_only() {
             data_dir.to_str().expect("utf8"),
             "--json",
         ])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("XDG_CONFIG_HOME", test_home.path())
         .env("HOME", test_home.path())
@@ -821,7 +818,6 @@ fn status_json_surfaces_runtime_queue_and_byte_budget_headroom() {
             data_dir.to_str().expect("utf8"),
             "--json",
         ])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_TANTIVY_REBUILD_PIPELINE_CHANNEL_SIZE", "5")
         .env("XDG_DATA_HOME", test_home.path())
@@ -940,7 +936,6 @@ fn status_json_surfaces_quarantine_gc_summary() {
             "--data-dir",
             data_dir.to_str().expect("utf8"),
         ])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_LEXICAL_PUBLISH_BACKUP_RETENTION", "1")
         .env("XDG_DATA_HOME", test_home.path())
@@ -1118,7 +1113,6 @@ fn status_json_surfaces_lexical_generation_lifecycle_inventory() {
             "--data-dir",
             data_dir.to_str().expect("utf8"),
         ])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("XDG_CONFIG_HOME", test_home.path())

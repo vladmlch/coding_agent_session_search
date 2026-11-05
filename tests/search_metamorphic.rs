@@ -74,7 +74,6 @@ impl Corpus {
             .env("CASS_DATA_DIR", &self.data_dir)
             .env("CASS_AUTO_REFRESH", "0")
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("CASS_AUTOMATIC_WILDCARD_FALLBACK_MAX_DOCS", "0")
             .env("TZ", "UTC");
         cmd
@@ -550,7 +549,6 @@ fn agent_filter_typos_fail_before_archive_access_on_all_retrieval_commands() -> 
                 .env("CASS_DATA_DIR", &data_dir)
                 .env("CASS_AUTO_REFRESH", "0")
                 .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-                .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
                 .env("RUST_LOG", "error")
                 .env_remove("CASS_DB_PATH")
                 .args(&args)

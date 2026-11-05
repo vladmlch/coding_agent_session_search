@@ -40,7 +40,6 @@ Copy-Item $Fixture $session
 $env:CLAUDE_CONFIG_DIR = $claude
 $env:CASS_AUTO_REFRESH = '0'
 $env:CASS_IGNORE_SOURCES_CONFIG = '1'
-$env:CODING_AGENT_SEARCH_NO_UPDATE_PROMPT = '1'
 $env:NO_COLOR = '1'
 
 function Invoke-Cass {

@@ -47,7 +47,6 @@ fn stats_source_filter_preserves_date_range() {
         .expect("insert message");
 
     let out = cargo_bin_cmd!("cass")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .arg("stats")
         .arg("--json")
         .arg("--source")
@@ -112,7 +111,6 @@ fn stats_storage_errors_never_report_successful_zero_counts() {
     ] {
         let tmp = stats_test_archive(Some(omitted));
         let output = cargo_bin_cmd!("cass")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .args(["stats", "--json", "--data-dir"])
             .arg(tmp.path())
             .assert()
@@ -143,7 +141,6 @@ fn stats_empty_archive_and_unmatched_source_are_real_zeros() {
     for source in [None, Some("absent")] {
         let mut command = cargo_bin_cmd!("cass");
         command
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .args(["stats", "--json", "--data-dir"])
             .arg(tmp.path());
         if let Some(source) = source {
@@ -176,7 +173,6 @@ fn stats_refuses_invalid_fts_schema_even_when_canonical_counts_are_empty() {
         .expect("plant invalid FTS schema");
     conn.close().expect("publish malformed derived object");
     let output = cargo_bin_cmd!("cass")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["stats", "--json", "--data-dir"])
         .arg(tmp.path())
         .assert()
@@ -221,7 +217,6 @@ fn stats_workspace_ties_filter_orphans_before_top_ten() {
         .expect("message");
     conn.close().expect("publish archive");
     let output = cargo_bin_cmd!("cass")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["stats", "--json", "--data-dir"])
         .arg(tmp.path())
         .assert()
@@ -246,7 +241,6 @@ fn stats_workspace_ties_filter_orphans_before_top_ten() {
         .collect();
     assert_eq!(json["top_workspaces"], serde_json::json!(expected));
     let unmatched = cargo_bin_cmd!("cass")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["stats", "--json", "--source", "absent", "--data-dir"])
         .arg(tmp.path())
         .assert()

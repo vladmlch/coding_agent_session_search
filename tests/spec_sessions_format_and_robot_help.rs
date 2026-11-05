@@ -99,9 +99,7 @@ struct CmdOutcome {
 
 fn run_cass(data_dir: Option<&Path>, args: &[&str]) -> Result<CmdOutcome, Box<dyn Error>> {
     let mut cmd = Command::cargo_bin("cass")?;
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .args(["--color=never"])
-        .args(args);
+    cmd.args(["--color=never"]).args(args);
     if let Some(dir) = data_dir {
         cmd.args(["--data-dir", dir.to_str().ok_or("non-utf8 path")?]);
     }

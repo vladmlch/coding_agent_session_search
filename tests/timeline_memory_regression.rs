@@ -127,7 +127,6 @@ fn command(root: &Path, window: &[&str], extra: &[&str], json_output: bool) -> C
         .env("XDG_DATA_HOME", root)
         .env("XDG_CONFIG_HOME", root)
         .env("CASS_DATA_DIR", root)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("NO_COLOR", "1")
         .env_remove("CASS_DB_PATH")
         .env_remove("CASS_CONFIG_PATH")

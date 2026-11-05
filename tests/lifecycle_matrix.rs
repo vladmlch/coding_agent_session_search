@@ -38,7 +38,6 @@ use util::search_asset_simulation::{
 fn isolated_health_json(test_home: Arc<tempfile::TempDir>) -> String {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
     cmd.args(["health", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1");
@@ -211,7 +210,6 @@ fn cass_json_with_data_dir(data_dir: &Path, subcommand: &str) -> serde_json::Val
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args([subcommand, "--json", "--data-dir"])
         .arg(data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .output()
         .expect("run cass command");
@@ -369,7 +367,6 @@ fn cross_surface_version_agreement() {
 
     let version_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["--version"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -391,7 +388,6 @@ fn cross_surface_version_agreement() {
 
     let caps_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["capabilities", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -430,7 +426,6 @@ fn capabilities_surface_is_home_independent() {
     fn caps_json(home: &Path) -> String {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(["capabilities", "--json"])
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home)
             .env("HOME", home)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1197,7 +1192,6 @@ fn api_and_contract_versions_agree_across_capabilities_and_api_version() {
     fn json_out(home: &Path, args: &[&str]) -> serde_json::Value {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(args)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home)
             .env("HOME", home)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1243,7 +1237,6 @@ fn capabilities_and_diag_connectors_enumerate_the_same_set() {
     fn json_out(home: &Path, args: &[&str]) -> serde_json::Value {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(args)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home)
             .env("HOME", home)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1301,7 +1294,6 @@ fn health_and_diag_agree_on_db_and_index_presence() {
     ) -> (serde_json::Value, std::process::ExitStatus) {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(args)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home)
             .env("HOME", home)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1361,7 +1353,6 @@ fn health_status_and_healthy_flag_are_internally_consistent() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["health", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1415,7 +1406,6 @@ fn health_and_status_agree_on_readiness_contract() {
     fn json_out(home: &Path, args: &[&str]) -> serde_json::Value {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(args)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home)
             .env("HOME", home)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1462,7 +1452,6 @@ fn health_and_status_agree_on_semantic_fallback_state() {
     fn json_out(home: &Path, args: &[&str]) -> serde_json::Value {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(args)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home)
             .env("HOME", home)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1551,7 +1540,6 @@ fn semantic_readiness_reports_lexical_fallback_when_models_absent() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["health", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1610,7 +1598,6 @@ fn diag_reports_zero_sizes_for_absent_db_and_index() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["diag", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1672,7 +1659,6 @@ fn concurrent_diag_readings_agree_on_inventory_snapshot() {
     fn isolated_diag(home: Arc<tempfile::TempDir>) -> String {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(["diag", "--json"])
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home.path())
             .env("HOME", home.path())
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1725,7 +1711,6 @@ fn concurrent_introspect_readings_agree_after_btreemap_fix() {
     fn isolated_introspect(home: Arc<tempfile::TempDir>) -> String {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(["introspect", "--json"])
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home.path())
             .env("HOME", home.path())
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1778,7 +1763,6 @@ fn capabilities_features_and_connectors_contain_no_duplicates() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["capabilities", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1844,7 +1828,6 @@ fn semantic_readiness_block_has_expected_shape() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["health", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1913,7 +1896,6 @@ fn index_readiness_exposes_stale_refresh_config() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["health", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -1971,7 +1953,6 @@ fn diag_artifact_paths_nest_inside_data_dir_for_safe_gc() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["diag", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -2077,7 +2058,6 @@ fn diag_quarantine_gc_flags_match_retention_and_cleanup_policy() {
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["diag", "--json", "--quarantine", "--data-dir"])
         .arg(&data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -2202,7 +2182,6 @@ fn status_diag_and_doctor_quarantine_summaries_stay_in_lockstep() {
     fn json_out(home: &Path, data_dir: &Path, args: &[&str]) -> serde_json::Value {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(args)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home)
             .env("XDG_CONFIG_HOME", home)
             .env("HOME", home)
@@ -2309,7 +2288,6 @@ fn status_diag_and_doctor_cleanup_payloads_stay_in_lockstep() {
     fn json_out(home: &Path, data_dir: &Path, args: &[&str]) -> serde_json::Value {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(args)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home)
             .env("XDG_CONFIG_HOME", home)
             .env("HOME", home)
@@ -2409,7 +2387,6 @@ fn index_subcommand_exposes_all_entrypoint_flags() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["index", "--help"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -2455,7 +2432,6 @@ fn diag_connector_entries_have_uniform_shape() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["diag", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -2524,7 +2500,6 @@ fn db_and_index_surface_flags_match_actual_filesystem() {
     fn cass_json(home: &Path, args: &[&str]) -> serde_json::Value {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(args)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home)
             .env("HOME", home)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -2597,7 +2572,6 @@ fn index_checkpoint_and_fingerprint_blocks_have_stable_shape() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["health", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -2679,7 +2653,6 @@ fn diag_paths_use_canonical_filename_and_index_parent() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["diag", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -2767,7 +2740,6 @@ fn diag_absent_artifacts_report_zero_counters_and_sizes() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["diag", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -2857,7 +2829,6 @@ fn models_status_model_dir_nests_under_data_dir_and_coheres_on_absence() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["models", "status", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -2873,7 +2844,6 @@ fn models_status_model_dir_nests_under_data_dir_and_coheres_on_absence() {
     // Re-derive data_dir from diag so we do not hard-code the layout.
     let diag_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["diag", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -2974,7 +2944,6 @@ fn absent_db_drives_null_checkpoint_and_fingerprint_state() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["health", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -3075,7 +3044,6 @@ fn absent_index_collapses_timestamp_and_document_fields_to_null() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["health", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -3173,7 +3141,6 @@ fn models_status_aggregates_equal_component_sums_and_files_cohere_on_absence() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["models", "status", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -3309,7 +3276,6 @@ fn models_status_and_cache_lifecycle_agree_on_state_machine_identity() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["models", "status", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -3447,7 +3413,6 @@ fn models_status_fail_open_and_manifest_integrity_invariants() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["models", "status", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -3560,7 +3525,6 @@ fn models_verify_and_status_agree_on_cache_identity_and_phase() {
 
     let s_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["models", "status", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -3572,7 +3536,6 @@ fn models_verify_and_status_agree_on_cache_identity_and_phase() {
 
     let v_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["models", "verify", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -3675,7 +3638,6 @@ fn models_status_reports_pinned_revision_and_local_install_guidance_when_absent(
 
     let s_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["models", "status", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -3740,7 +3702,6 @@ fn model_dir_lives_under_canonical_models_parent() {
 
     let s_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["models", "status", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -3752,7 +3713,6 @@ fn model_dir_lives_under_canonical_models_parent() {
 
     let d_out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["diag", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -3840,7 +3800,6 @@ fn semantic_not_initialized_collapses_readiness_and_path_fields() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["health", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -3929,7 +3888,6 @@ fn status_and_diag_agree_on_db_path_and_absence_coherence() {
     fn json_out(home: &Path, args: &[&str]) -> serde_json::Value {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(args)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home)
             .env("HOME", home)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -4056,7 +4014,6 @@ fn status_and_health_stale_threshold_diverge_in_default_only_not_in_computation(
     fn threshold_from(home: &Path, args: &[&str], path: &[&str]) -> u64 {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(args)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home)
             .env("HOME", home)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -4172,7 +4129,6 @@ fn idle_rebuild_block_collapses_metadata_and_has_actionable_recommendation() {
     let test_home = tempfile::tempdir().expect("tempdir");
     let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
         .args(["status", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("XDG_DATA_HOME", test_home.path())
         .env("HOME", test_home.path())
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
@@ -4282,7 +4238,6 @@ fn doctor_dry_run_is_read_only_and_counters_agree_with_checks() {
     fn json_out(home: &Path, args: &[&str]) -> serde_json::Value {
         let out = Command::new(assert_cmd::cargo::cargo_bin!("cass"))
             .args(args)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("XDG_DATA_HOME", home)
             .env("HOME", home)
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")

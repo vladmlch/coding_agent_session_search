@@ -236,7 +236,6 @@ fn isolated_cass(home: &std::path::Path) -> Result<Command, String> {
         .env("XDG_CONFIG_HOME", home.join("xdg-config"))
         .env("XDG_CACHE_HOME", home.join("xdg-cache"))
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("NO_COLOR", "1")
         .env_remove("CASS_DATA_DIR")
         .env_remove("CODEX_HOME")

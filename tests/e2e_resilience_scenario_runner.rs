@@ -96,10 +96,6 @@ fn isolated_env(fixture: &PreparedFixture) -> BTreeMap<String, String> {
             fixture.root.join(".codex").display().to_string(),
         ),
         ("CASS_IGNORE_SOURCES_CONFIG".to_string(), "1".to_string()),
-        (
-            "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT".to_string(),
-            "1".to_string(),
-        ),
         ("CASS_SEMANTIC_EMBEDDER".to_string(), "hash".to_string()),
         ("NO_COLOR".to_string(), "1".to_string()),
     ])

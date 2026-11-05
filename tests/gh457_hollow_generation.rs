@@ -27,7 +27,6 @@ const SESSIONS: usize = 6;
 
 fn cass(home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1");
     cmd.env("CASS_AUTO_REFRESH", "0");
     cmd.env("HOME", home);

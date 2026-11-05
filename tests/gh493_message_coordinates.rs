@@ -638,7 +638,6 @@ impl Fixture {
             .env("XDG_DATA_HOME", self._root.path().join("data"))
             .env("XDG_CACHE_HOME", self._root.path().join("cache"))
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env_remove("CASS_OUTPUT_FORMAT")
             .env_remove("TOON_DEFAULT_FORMAT")
             .env_remove("CASS_TEST_VIEW_SLOW_MS")

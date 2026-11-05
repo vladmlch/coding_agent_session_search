@@ -108,7 +108,6 @@ impl Fixture {
             .env("CASS_DATA_DIR", &self.data)
             .env("CASS_STREAMING_INDEX", self.mode)
             .env("CASS_AUTO_REFRESH", "0")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728")
             .current_dir(&self.home)
             .timeout(Duration::from_secs(180));

@@ -43,7 +43,6 @@ fn documented_exit_codes() -> Result<BTreeSet<i32>, Box<dyn Error>> {
         .env("HOME", home.path())
         .env("CASS_DATA_DIR", home.path().join("cass-data"))
         .env("CASS_AUTO_REFRESH", "0")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()?;
     ensure(
         output.status.success(),

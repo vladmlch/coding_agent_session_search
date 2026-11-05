@@ -3507,7 +3507,6 @@ fn validate_doctor_support_bundle_payload(value: &Value, failures: &mut Vec<Stri
 
 fn doctor_command_env(fixture: &DoctorFixtureFactory) -> BTreeMap<String, String> {
     [
-        ("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1".to_string()),
         ("CASS_IGNORE_SOURCES_CONFIG", "1".to_string()),
         ("NO_COLOR", "1".to_string()),
         ("CASS_NO_COLOR", "1".to_string()),

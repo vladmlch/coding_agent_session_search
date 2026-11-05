@@ -51391,7 +51391,6 @@ fn run_doctor_emit_capabilities(structured_format: Option<RobotFormat>) -> CliRe
             {"name": "CASS_FLEET_BUDGET_MS", "status": "deprecated-ignored", "note": "Fleet commands were removed by the local-only conversion; the value is ignored."},
             {"name": "CASS_FLEET_PER_HOST_BUDGET_MS", "status": "deprecated-ignored", "note": "Fleet commands were removed by the local-only conversion; the value is ignored."},
             {"name": "CASS_SKIP_UPDATE", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; cass never phones home, so no opt-out is needed."},
-            {"name": "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; the prompt no longer exists, so the value is ignored."},
             {"name": "CASS_UPDATE_API_BASE_URL", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; cass never contacts a release API, so the value is ignored."},
             {"name": "CASS_SSH_CONFIG", "status": "deprecated-ignored", "note": "Remote synchronization was removed by the local-only conversion; no SSH config is consulted, so the value is ignored."},
             {"name": "CASS_SEMANTIC_DOWNLOAD_POLICY", "status": "deprecated-ignored", "note": "Model downloads were removed by the local-only conversion; models install only via `cass models install --from-file <DIR>`, so the value is ignored."},

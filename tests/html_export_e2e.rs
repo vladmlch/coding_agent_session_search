@@ -18,9 +18,7 @@ use tracing::{debug, info};
 // ============================================================================
 
 fn base_cmd() -> Command {
-    let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
-    cmd
+    Command::new(assert_cmd::cargo::cargo_bin!("cass"))
 }
 
 // ----------------------------------------------------------------------------

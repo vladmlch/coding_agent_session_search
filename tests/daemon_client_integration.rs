@@ -752,7 +752,6 @@ mod native_daemon_process {
             .env("CASS_AUTO_REFRESH", "0")
             .env("CASS_RESPONSIVENESS_DISABLE", "1")
             .env("TUI_HEADLESS", "1")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728")
             .args(["daemon", "--socket"])
             .arg(&socket)
@@ -1113,7 +1112,6 @@ mod indexer_process_coexistence {
                 .env("CASS_RESPONSIVENESS_DISABLE", "1")
                 .env("CASS_IGNORE_SOURCES_CONFIG", "1")
                 .env("TUI_HEADLESS", "1")
-                .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
                 .env("RUST_MIN_STACK", "134217728")
                 .env("RUST_LOG", "coding_agent_search::daemon::worker=debug");
             command

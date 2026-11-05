@@ -106,7 +106,6 @@ fn robot_meta_reports_why_the_automatic_wildcard_retry_was_skipped() {
             .env("CASS_DATA_DIR", &data_dir)
             .env("CASS_AUTO_REFRESH", "0")
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env_remove("CASS_AUTOMATIC_WILDCARD_FALLBACK_MAX_DOCS");
         if let Some(max_docs) = max_docs {
             cmd.env("CASS_AUTOMATIC_WILDCARD_FALLBACK_MAX_DOCS", max_docs);

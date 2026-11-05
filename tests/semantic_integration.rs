@@ -43,7 +43,6 @@ fn make_codex_session(
 fn test_models_status_command() {
     let output = cargo_bin_cmd!("cass")
         .args(["models", "status"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models status command");
 
@@ -68,7 +67,6 @@ fn test_models_status_command() {
 fn test_models_status_json_output() {
     let output = cargo_bin_cmd!("cass")
         .args(["models", "status", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models status --json command");
 
@@ -116,7 +114,6 @@ fn test_models_verify_command() {
     let output = cargo_bin_cmd!("cass")
         .args(["models", "verify", "--data-dir"])
         .arg(&data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models verify command");
 
@@ -138,7 +135,6 @@ fn test_models_verify_json_output() {
     let output = cargo_bin_cmd!("cass")
         .args(["models", "verify", "--json", "--data-dir"])
         .arg(&data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models verify --json command");
 
@@ -187,7 +183,6 @@ fn test_models_check_update_command_removed() {
     let output = cargo_bin_cmd!("cass")
         .args(["models", "check-update", "--data-dir"])
         .arg(&data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models check-update command");
 
@@ -208,7 +203,6 @@ fn test_models_check_update_json_output_removed() {
     let output = cargo_bin_cmd!("cass")
         .args(["models", "check-update", "--json", "--data-dir"])
         .arg(&data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models check-update --json command");
 
@@ -224,7 +218,6 @@ fn test_models_check_update_json_output_removed() {
 fn test_models_help_shows_subcommands() {
     let output = cargo_bin_cmd!("cass")
         .args(["models", "--help"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models --help command");
 
@@ -285,7 +278,6 @@ fn test_mode_flag_lexical() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -301,7 +293,6 @@ fn test_mode_flag_lexical() {
         ])
         .arg(&data_dir)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("search --mode lexical");
 
@@ -342,7 +333,6 @@ fn test_mode_flag_semantic() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -358,7 +348,6 @@ fn test_mode_flag_semantic() {
         ])
         .arg(&data_dir)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("search --mode semantic");
 
@@ -401,7 +390,6 @@ fn test_mode_flag_hybrid() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -417,7 +405,6 @@ fn test_mode_flag_hybrid() {
         ])
         .arg(&data_dir)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("search --mode hybrid");
 
@@ -466,7 +453,6 @@ fn test_same_query_same_results() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -482,7 +468,6 @@ fn test_same_query_same_results() {
             ])
             .arg(&data_dir)
             .env("HOME", home)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .output()
             .expect("deterministic search");
 
@@ -541,7 +526,6 @@ fn test_result_ordering_deterministic() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -552,7 +536,6 @@ fn test_result_ordering_deterministic() {
             .args(["search", "ordering_test_shared", "--robot", "--data-dir"])
             .arg(&data_dir)
             .env("HOME", home)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .output()
             .expect("ordering search");
 
@@ -611,7 +594,6 @@ fn test_robot_output_schema() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -620,7 +602,6 @@ fn test_robot_output_schema() {
         .args(["search", "schema_test_content", "--robot", "--data-dir"])
         .arg(&data_dir)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("robot schema search");
 
@@ -714,7 +695,6 @@ fn test_incremental_index_skips_unchanged() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("first index");
     assert!(output1.status.success(), "First index should succeed");
@@ -725,7 +705,6 @@ fn test_incremental_index_skips_unchanged() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("second index");
     assert!(output2.status.success(), "Second index should succeed");
@@ -767,7 +746,6 @@ fn test_incremental_index_picks_up_new_files() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -786,7 +764,6 @@ fn test_incremental_index_picks_up_new_files() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -800,7 +777,6 @@ fn test_incremental_index_picks_up_new_files() {
         ])
         .arg(&data_dir)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("search for new content");
 
@@ -844,7 +820,6 @@ fn test_filter_parity_agent_filter() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -862,7 +837,6 @@ fn test_filter_parity_agent_filter() {
         ])
         .arg(&data_dir)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("lexical search with agent filter");
 
@@ -910,7 +884,6 @@ fn test_offline_mode_environment() {
         // `models status` takes no --data-dir; scope via CASS_DATA_DIR.
         .env("CASS_DATA_DIR", &data_dir)
         .env("CASS_OFFLINE", "1")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("offline models status");
 
@@ -960,7 +933,6 @@ fn test_search_mode_flag_consistency() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -978,7 +950,6 @@ fn test_search_mode_flag_consistency() {
             ])
             .arg(&data_dir)
             .env("HOME", home)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .output()
             .unwrap_or_else(|e| panic!("search invocation {i}: {e}"));
 
@@ -1016,7 +987,6 @@ fn test_models_install_from_file_directory_validates_checksums() {
         .arg(&fixture_dir)
         .arg("--data-dir")
         .arg(&data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models install from-file command");
 
@@ -1053,7 +1023,6 @@ fn test_models_install_rejects_mirror_flag() {
         ])
         .arg("--data-dir")
         .arg(&data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models install with removed mirror flag");
 
@@ -1085,7 +1054,6 @@ fn test_models_install_rejects_mirror_and_from_file() {
             "--from-file",
         ])
         .arg(&fixture_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models install with conflicting flags");
 
@@ -1116,7 +1084,6 @@ fn test_models_install_from_file_missing_directory() {
         .arg(&missing_dir)
         .arg("--data-dir")
         .arg(&data_dir)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("models install with missing directory");
 
@@ -1169,7 +1136,6 @@ fn test_approximate_flag_semantic_mode() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -1187,7 +1153,6 @@ fn test_approximate_flag_semantic_mode() {
         ])
         .arg(&data_dir)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("search with --approximate");
 
@@ -1233,7 +1198,6 @@ fn test_approximate_flag_lexical_mode_warning() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -1250,7 +1214,6 @@ fn test_approximate_flag_lexical_mode_warning() {
         ])
         .arg(&data_dir)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("search with --approximate in lexical mode");
 
@@ -1296,7 +1259,6 @@ fn test_approximate_flag_hybrid_mode() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .assert()
         .success();
 
@@ -1313,7 +1275,6 @@ fn test_approximate_flag_hybrid_mode() {
         ])
         .arg(&data_dir)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("search with --approximate in hybrid mode");
 
@@ -1365,7 +1326,6 @@ fn test_index_build_hnsw_flag() {
         .arg(&data_dir)
         .env("CODEX_HOME", &codex_home)
         .env("HOME", home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("index with --build-hnsw");
 
@@ -1393,7 +1353,6 @@ fn test_index_build_hnsw_flag() {
 fn test_introspect_includes_models_command() {
     let output = cargo_bin_cmd!("cass")
         .args(["introspect", "--json"])
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .output()
         .expect("introspect command");
 
@@ -2252,7 +2211,6 @@ mod gh470_native_long_messages {
             .env("TUI_HEADLESS", "1")
             .env("CASS_AUTO_REFRESH", "0")
             .env("CASS_RESPONSIVENESS_DISABLE", "1")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728")
             .arg("--db")
             .arg(&db_path)

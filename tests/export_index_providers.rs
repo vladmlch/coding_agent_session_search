@@ -147,7 +147,6 @@ fn archived_roles(convo: &ArchivedConvo) -> Vec<String> {
 fn cass_cmd(home: &Path) -> Command {
     let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
     cmd.current_dir(home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_AUTO_REFRESH", "0")
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join("xdg-config"))

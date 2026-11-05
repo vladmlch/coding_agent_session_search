@@ -288,7 +288,6 @@ fn apply_ftui_env(cmd: &mut CommandBuilder, env: &FtuiPtyEnv) {
     cmd.env("CASS_DATA_DIR", env.data_dir.to_string_lossy().as_ref());
     cmd.env("CODEX_HOME", env.codex_home.to_string_lossy().as_ref());
     cmd.env("CASS_TUI_RUNTIME", "ftui");
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("NO_COLOR", "1");
     cmd.env("CASS_RESPECT_NO_COLOR", "1");
     cmd.env("TERM", "xterm-256color");
@@ -621,12 +620,7 @@ fn tui_pty_launches_without_update_banner_or_release_requests() {
     // The old update-check opt-out switches must be absent, and the release
     // API override still points at the stub: after the local-only removal the
     // TUI must ignore it and never contact the endpoint.
-    for disabled in [
-        "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT",
-        "CASS_SKIP_UPDATE",
-        "TUI_HEADLESS",
-        "CI",
-    ] {
+    for disabled in ["CASS_SKIP_UPDATE", "TUI_HEADLESS", "CI"] {
         tui_cmd.env_remove(disabled);
     }
     tui_cmd.env("CASS_UPDATE_API_BASE_URL", format!("http://{endpoint}"));
@@ -745,7 +739,6 @@ fn tui_pty_first_run_indexes_then_searches_without_a_manual_index() {
     }
     tui_cmd.env("CASS_TUI_RUNTIME", "ftui");
     tui_cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1");
-    tui_cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     tui_cmd.env("NO_COLOR", "1");
     tui_cmd.env("CASS_RESPECT_NO_COLOR", "1");
     tui_cmd.env("TERM", "xterm-256color");

@@ -52,7 +52,6 @@ impl StatsFixture {
             .arg(&self.data_dir)
             .env("CODEX_HOME", &self.codex_home)
             .env("HOME", &self.home)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .assert()
             .success();
@@ -71,7 +70,6 @@ impl StatsFixture {
             .args(&args)
             .env("HOME", &self.home)
             .env("CODEX_HOME", &self.codex_home)
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .output()
             .expect("run cass stats");
@@ -216,7 +214,6 @@ fn mr_stats_empty_data_dir_produces_zero_counters_or_structured_error() {
         .arg(&fixture.data_dir)
         .env("HOME", &fixture.home)
         .env("CODEX_HOME", &fixture.codex_home)
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .output()
         .expect("run cass stats on empty dir");

@@ -161,8 +161,7 @@ impl Fixture {
             .env("XDG_CONFIG_HOME", &self.config)
             .env("XDG_DATA_HOME", &self.xdg_data)
             .env("CASS_DATA_DIR", &self.data_dir)
-            .env("CASS_AUTO_REFRESH", "0")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
+            .env("CASS_AUTO_REFRESH", "0");
         cmd
     }
 

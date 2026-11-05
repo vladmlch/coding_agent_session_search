@@ -21,7 +21,6 @@ fn cass(home: &Path, streaming: &str) -> Command {
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_STREAMING_INDEX", streaming)
         .env("CASS_AUTO_REFRESH", "0")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("NO_COLOR", "1")
         .env_remove("CLAUDE_CONFIG_DIR")
         .timeout(Duration::from_secs(240));
@@ -328,7 +327,6 @@ fn compressed_empty_rollout_cli(streaming: &str) {
                 .env("CASS_AUTO_REFRESH", "0")
                 .env("CASS_CODEX_MAX_SOURCE_BYTES", "4096")
                 .env("RUST_MIN_STACK", "134217728")
-                .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
                 .env("NO_COLOR", "1")
                 .args(["index", "--json", "--data-dir"])
                 .arg(home.join("archive"))

@@ -28,7 +28,6 @@ fn command(home: &Path) -> Command {
         .env("CASS_DATA_DIR", home.join("unused-default"))
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_AUTO_REFRESH", "0")
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env_remove("CASS_OUTPUT_FORMAT")
         .env_remove("TOON_DEFAULT_FORMAT")
         .timeout(Duration::from_secs(180));

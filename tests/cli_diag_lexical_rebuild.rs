@@ -7,7 +7,6 @@ use std::path::Path;
 fn cass(home: &Path) -> Command {
     let mut command = Command::new(assert_cmd::cargo::cargo_bin!("cass"));
     command
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
         .env("CASS_LEXICAL_QUARANTINE_RETENTION", "1")
         .env("HOME", home)

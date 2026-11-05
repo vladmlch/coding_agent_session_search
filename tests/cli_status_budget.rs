@@ -25,7 +25,6 @@ use util::cass_bin;
 
 fn status_cmd(data_dir: &str) -> Command {
     let mut cmd = Command::new(cass_bin());
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1");
     cmd.args(["status", "--json", "--data-dir", data_dir]);
     cmd
@@ -33,7 +32,6 @@ fn status_cmd(data_dir: &str) -> Command {
 
 fn triage_cmd(data_dir: &str) -> Command {
     let mut cmd = Command::new(cass_bin());
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1");
     cmd.env("CASS_IGNORE_SOURCES_CONFIG", "1");
     cmd.args(["triage", "--json", "--data-dir", data_dir]);
     cmd

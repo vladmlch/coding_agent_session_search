@@ -478,7 +478,6 @@ mod prime_ingestion {
             .env("CASS_DATA_DIR", data)
             .env("CASS_AUTO_REFRESH", "0")
             .env("CASS_ACTIVE_SESSION_RECENT_WRITE_WINDOW_SECS", "0")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728")
             .current_dir(home);
         if let Ok(system_root) = dotenvy::var("SystemRoot") {
@@ -745,7 +744,6 @@ mod prime_ingestion {
                 .env("CASS_IGNORE_SOURCES_CONFIG", "1")
                 .env("CASS_AUTO_REFRESH", "0")
                 .env("CASS_ACTIVE_SESSION_RECENT_WRITE_WINDOW_SECS", "0")
-                .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
                 .env("RUST_MIN_STACK", "134217728")
                 .current_dir(home.path())
                 .arg("--data-dir")
@@ -929,7 +927,6 @@ mod devin_ingestion {
             .env("CASS_DEVIN_DATA_ROOT", home.join("sessions.db"))
             .env("CASS_IGNORE_SOURCES_CONFIG", "1")
             .env("CASS_AUTO_REFRESH", "0")
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("RUST_MIN_STACK", "134217728")
             .current_dir(home)
             .arg("--data-dir")

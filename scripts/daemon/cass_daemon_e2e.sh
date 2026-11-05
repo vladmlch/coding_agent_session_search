@@ -321,7 +321,6 @@ e2e_phase_end "setup_sandbox" 0
 export CASS_DATA_DIR="${DATA_DIR}"
 export CODEX_HOME="${CODEX_HOME}"
 export HOME="${HOME_DIR}"
-export CODING_AGENT_SEARCH_NO_UPDATE_PROMPT=1
 
 pushd "${SANDBOX_DIR}" >/dev/null
 

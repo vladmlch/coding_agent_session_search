@@ -17,8 +17,7 @@ use std::path::{Path, PathBuf};
 #[allow(deprecated)]
 fn cass_cmd(test_home: &Path) -> Command {
     let mut cmd = Command::cargo_bin("cass").expect("cass binary");
-    cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-        .env("XDG_DATA_HOME", test_home)
+    cmd.env("XDG_DATA_HOME", test_home)
         .env("XDG_CONFIG_HOME", test_home.join(".config"))
         .env("HOME", test_home)
         .env("CODEX_HOME", test_home.join(".codex"))

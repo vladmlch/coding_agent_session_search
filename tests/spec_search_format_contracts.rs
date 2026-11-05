@@ -111,7 +111,6 @@ fn copy_search_demo_fixture(test_home: &Path) -> Result<PathBuf, Box<dyn Error>>
 /// Run `cass search <args>` against the seeded fixture and return stdout.
 fn run_search(data_dir: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["--color=never", "search"])
         .args(args)
         .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])
@@ -264,7 +263,6 @@ fn completed_no_match_search_does_not_claim_a_timeout_on_stderr() -> TestResult 
     let tmp = TempDir::new()?;
     let data_dir = copy_search_demo_fixture(tmp.path())?;
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args([
             "--color=never",
             "search",
@@ -301,7 +299,6 @@ fn timed_out_search_returns_before_slow_operation_and_names_shed_sections() -> T
     let data_dir = copy_search_demo_fixture(tmp.path())?;
     let started = Instant::now();
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_TEST_SEARCH_SLOW_MS", "2000")
         .args([
             "--color=never",
@@ -423,7 +420,6 @@ fn timed_out_search_setup_returns_partial_before_asset_validation_finishes() -> 
     let data_dir = copy_search_demo_fixture(tmp.path())?;
     let started = Instant::now();
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_TEST_SEARCH_SETUP_SLOW_MS", "2000")
         .args([
             "--color=never",
@@ -474,7 +470,6 @@ fn timed_out_search_meta_preserves_completed_hits_and_names_metadata_gaps() -> T
     let data_dir = copy_search_demo_fixture(tmp.path())?;
     let started = Instant::now();
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_TEST_SEARCH_META_SLOW_MS", "6000")
         .args([
             "--color=never",
@@ -531,7 +526,6 @@ fn timed_out_search_trust_projection_is_shed_without_discarding_hits() -> TestRe
     let data_dir = copy_search_demo_fixture(tmp.path())?;
     let started = Instant::now();
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_TEST_SEARCH_TRUST_SLOW_MS", "6000")
         .args([
             "--color=never",
@@ -584,7 +578,6 @@ fn timed_out_sessions_format_fails_closed_with_empty_stdout() -> TestResult {
     let tmp = TempDir::new()?;
     let data_dir = copy_search_demo_fixture(tmp.path())?;
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_TEST_SEARCH_SLOW_MS", "2000")
         .args([
             "--color=never",
@@ -627,7 +620,6 @@ fn robot_search_refresh_is_deferred_to_explicit_index_command() -> TestResult {
     let tmp = TempDir::new()?;
     let data_dir = copy_search_demo_fixture(tmp.path())?;
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args([
             "--color=never",
             "search",
@@ -690,7 +682,6 @@ fn blocking_sessions_file_search_returns_bounded_partial_without_broadening_scop
     let started = Instant::now();
     let output = Command::cargo_bin("cass")?
         .timeout(Duration::from_secs(3))
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args([
             "--color=never",
             "search",
@@ -767,8 +758,7 @@ fn robot_search_configures_semantics_once_on_its_bounded_worker() -> TestResult 
     let data = data_dir.to_str().ok_or("non-utf8 path")?;
     let run = |robot: bool, delay_ms: &str| -> Result<(bool, Duration, String), Box<dyn Error>> {
         let mut cmd = Command::cargo_bin("cass")?;
-        cmd.env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
-            .env("CASS_TEST_SEARCH_DIRECT_SEMANTIC_SETUP_SLOW_MS", delay_ms)
+        cmd.env("CASS_TEST_SEARCH_DIRECT_SEMANTIC_SETUP_SLOW_MS", delay_ms)
             .args([
                 "--color=never",
                 "search",
@@ -823,7 +813,6 @@ fn explicit_semantic_timeout_never_substitutes_lexical_hits() -> TestResult {
     let tmp = TempDir::new()?;
     let data_dir = copy_search_demo_fixture(tmp.path())?;
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("CASS_TEST_SEARCH_SEMANTIC_SETUP_SLOW_MS", "2000")
         .args([
             "--color=never",
@@ -882,7 +871,6 @@ fn timeout_budget_contract_is_present_in_compact_jsonl_and_toon() -> TestResult 
 
     for format in ["compact", "jsonl", "toon"] {
         let output = Command::cargo_bin("cass")?
-            .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
             .env("CASS_TEST_SEARCH_SLOW_MS", "2000")
             .args([
                 "--color=never",

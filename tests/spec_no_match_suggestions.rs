@@ -100,7 +100,6 @@ const NO_MATCH_QUERY: &str = "zzznomatchquery_xyz_unique_token_42";
 
 fn run_no_match_search(data_dir: &Path) -> Result<Value, Box<dyn Error>> {
     let output = Command::cargo_bin("cass")?
-        .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .args(["--color=never", "search", NO_MATCH_QUERY, "--robot"])
         .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])
         .output()?;
