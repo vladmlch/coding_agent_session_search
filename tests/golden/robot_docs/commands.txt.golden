@@ -93,7 +93,7 @@ commands:
   cass doctor --gc-before <ISO> --yes --json
                     Quarantine doctor runs older than the cutoff. Never deletes (per AGENTS.md RULE NUMBER 1).
   cass doctor --watch --watch-interval-ms <N> --watch-iterations <N> --json
-                    Long-running JSONL monitor; emits one `kind: watch-tick` event per poll. SIGINT exits 130.
+                    Long-running JSONL monitor; emits one `kind: watch-tick` event per poll. SIGINT exits 130, SIGTERM 143.
   cass doctor --explain <RUN_ID> --json
                     Single envelope with run manifest + every recorded action + flattened band timeline.
   cass doctor --emit-capabilities --json
@@ -118,7 +118,7 @@ commands:
   cass context <path> [--json]     Find related sessions for a given source path.
   cass export <path> [--format markdown] [--output FILE]  Export a conversation to markdown / other formats.
   cass export-html <path> [--output-dir DIR] [--json]  Self-contained HTML export (optional encryption).
-  cass pages [--export-only DIR] [--verify PATH] [--agents A1,A2]  Encrypted searchable archive for static hosting.
+  cass pages [--export-only DIR] [--verify PATH] [--agents A1,A2]  Encrypted searchable archive for local preview/sharing.
   cass sources [list|add|remove|doctor|mappings|agents ...] [--json]  Manage local sources + persisted agent-harness exclusions.
   cass analytics [status|tokens|tools|models|rebuild|validate] [--json]  Token / tool / model analytics.
   cass import [...]                Import conversation data from external sources.

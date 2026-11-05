@@ -159,7 +159,8 @@
     "index": {
       "exit_codes": [
         9,
-        130
+        130,
+        143
       ]
     },
     "index-busy": {
@@ -361,7 +362,9 @@
     },
     "semantic-backfill": {
       "exit_codes": [
-        5
+        5,
+        130,
+        143
       ]
     },
     "semantic-manifest": {

@@ -918,6 +918,7 @@ Errors are structured, actionable, and include recovery hints. A real sample fro
 | 24 | I/O during model verify/install | Retry |
 | 70 | `cass index` stalled and aborted (kind `index-stalled` envelope on stderr) | Inspect `cass status --json`, then rerun `cass index` |
 | 130 | Interrupted (SIGINT) | Rerun the command; indexing and search resume from their checkpoints |
+| 143 | Interrupted (SIGTERM) | Rerun the command; indexing and semantic backfill resume from their checkpoints |
 
 Search/pack timeouts are not exit 8: on expiry `search` and `pack` exit 0 with `{"hits": [], "budget": {"timed_out": true, "skipped_sections": [...], "recommended_next_probe": "<command>", ...}}`, and `--robot-format sessions` instead fails with exit 10, kind `timeout`. Explicit `--mode semantic` is the other exception: when the remaining budget cannot admit semantic setup or dispatch, search fails with exit 10, kind `timeout`, `retryable: true`, and a `semantic_budget checkpoint=...` message, rather than returning an empty or lexical result. Hybrid (explicit or default) instead falls back to lexical and reports `semantic_budget_limited`.
 
@@ -3015,8 +3016,8 @@ were removed with release publishing.
 - **Build only**: `cargo build --release --locked`.
 - **Upgrade**: pull the checkout and re-run the same `cargo install` command.
   There is no update checker or self-updater — cass never contacts a release
-  API, and the legacy opt-out variables (`CASS_SKIP_UPDATE`,
-  `CASS_UPDATE_API_BASE_URL`) are `deprecated-ignored`.
+  API, and the legacy opt-out variables (`CODING_AGENT_SEARCH_NO_UPDATE_PROMPT`,
+  `CASS_SKIP_UPDATE`, `CASS_UPDATE_API_BASE_URL`) are `deprecated-ignored`.
   A stale `update_state.json` left in the data directory is only diagnosed,
   never read for update decisions.
 
@@ -3200,6 +3201,7 @@ Forgetting is always an explicit operation. CASS does not automatically delete o
 | `CASS_DISABLE_ANIMATIONS` | unset | Disable UI animations |
 | `EDITOR` | then `$VISUAL`, then `code` | External editor command (line-number flags are chosen per editor) |
 | **Deprecated (diagnosed, never honored)** | | |
+| `CODING_AGENT_SEARCH_NO_UPDATE_PROMPT` | unset | `deprecated-ignored` — update checks were removed; cass never contacts a release API, so no opt-out is needed |
 | `CASS_SKIP_UPDATE` | unset | `deprecated-ignored` — update checks were removed |
 | `CASS_UPDATE_API_BASE_URL` | unset | `deprecated-ignored` — cass never contacts a release API |
 | `CASS_FLEET_BUDGET_MS` / `CASS_FLEET_PER_HOST_BUDGET_MS` | unset | `deprecated-ignored` — fleet commands were removed |

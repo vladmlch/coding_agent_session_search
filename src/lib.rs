@@ -19495,7 +19495,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "  cass doctor --gc-before <ISO> --yes --json".to_string(),
             "                    Quarantine doctor runs older than the cutoff. Never deletes (per AGENTS.md RULE NUMBER 1).".to_string(),
             "  cass doctor --watch --watch-interval-ms <N> --watch-iterations <N> --json".to_string(),
-            "                    Long-running JSONL monitor; emits one `kind: watch-tick` event per poll. SIGINT exits 130.".to_string(),
+            "                    Long-running JSONL monitor; emits one `kind: watch-tick` event per poll. SIGINT exits 130, SIGTERM 143.".to_string(),
             "  cass doctor --explain <RUN_ID> --json".to_string(),
             "                    Single envelope with run manifest + every recorded action + flattened band timeline.".to_string(),
             "  cass doctor --emit-capabilities --json".to_string(),
@@ -19705,7 +19705,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "exit-codes:".to_string(),
             " 0 ok | 1 health-failed | 2 usage | 3 missing index/db | 4 io|refused-unsafe | 5 data-corrupt | 6 input-required | 7 lock/busy | 8 unused | 9 unknown".to_string(),
             " 10 config|timeout | 11 config | 12 source | 13 mapping|not_found | 14 io|mapping | 15 semantic-unavailable|embedder-unavailable".to_string(),
-            " 20-21 model | 22 io | 23 unused | 24 io | 70 index-stalled (cass index abort) | 130 interrupted (SIGINT)".to_string(),
+            " 20-21 model | 22 io | 23 unused | 24 io | 70 index-stalled (cass index abort) | 130 interrupted (SIGINT) | 143 interrupted (SIGTERM)".to_string(),
             " NOTE: codes >= 10 cover domain-specific failures (sources/models/semantic/analytics).".to_string(),
             "       Use `err.kind` from the JSON envelope as the canonical identifier — kinds are".to_string(),
             "       kebab-case (e.g. missing-index, missing-db, semantic-unavailable, embedder-unavailable,".to_string(),
@@ -51391,6 +51391,7 @@ fn run_doctor_emit_capabilities(structured_format: Option<RobotFormat>) -> CliRe
             {"name": "CASS_FLEET_BUDGET_MS", "status": "deprecated-ignored", "note": "Fleet commands were removed by the local-only conversion; the value is ignored."},
             {"name": "CASS_FLEET_PER_HOST_BUDGET_MS", "status": "deprecated-ignored", "note": "Fleet commands were removed by the local-only conversion; the value is ignored."},
             {"name": "CASS_SKIP_UPDATE", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; cass never phones home, so no opt-out is needed."},
+            {"name": "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; the prompt no longer exists, so the value is ignored."},
             {"name": "CASS_UPDATE_API_BASE_URL", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; cass never contacts a release API, so the value is ignored."},
             {"name": "CASS_SSH_CONFIG", "status": "deprecated-ignored", "note": "Remote synchronization was removed by the local-only conversion; no SSH config is consulted, so the value is ignored."},
             {"name": "CASS_SEMANTIC_DOWNLOAD_POLICY", "status": "deprecated-ignored", "note": "Model downloads were removed by the local-only conversion; models install only via `cass models install --from-file <DIR>`, so the value is ignored."},
@@ -88657,6 +88658,12 @@ fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
             "yes",
             "Rerun the command; indexing and search resume from their checkpoints.",
         ),
+        exit_code_capability(
+            "143",
+            "interrupted (SIGTERM)",
+            "yes",
+            "Rerun the command; indexing and semantic backfill resume from their checkpoints.",
+        ),
     ]
 }
 
@@ -97943,15 +97950,36 @@ impl IndexShutdownSignals {
         } else {
             return;
         };
-        let error = CliError {
-            code,
-            kind: CliErrorKind::Index.kind_str(),
-            message: format!("index interrupted: {reason}; exiting without waiting for the worker"),
-            hint: Some(
-                "Committed work and the database WAL are retained. Rerun the same index command to resume from committed source observations."
-                    .to_string(),
-            ),
-            retryable: true,
+        // Literal `code:` fields and literal `process::exit` arguments are
+        // load-bearing: the emitted-exit-code scanners
+        // (spec_exit_codes_documented, golden_error_envelope) only see
+        // `code: <digits>` directly above `kind:` and `process::exit(<digits>)`
+        // calls — not signal-carried `received` variables.
+        let error = match code {
+            143 => CliError {
+                code: 143,
+                kind: CliErrorKind::Index.kind_str(),
+                message: format!(
+                    "index interrupted: {reason}; exiting without waiting for the worker"
+                ),
+                hint: Some(
+                    "Committed work and the database WAL are retained. Rerun the same index command to resume from committed source observations."
+                        .to_string(),
+                ),
+                retryable: true,
+            },
+            _ => CliError {
+                code: 130,
+                kind: CliErrorKind::Index.kind_str(),
+                message: format!(
+                    "index interrupted: {reason}; exiting without waiting for the worker"
+                ),
+                hint: Some(
+                    "Committed work and the database WAL are retained. Rerun the same index command to resume from committed source observations."
+                        .to_string(),
+                ),
+                retryable: true,
+            },
         };
         // A closed stderr must not panic and divert forced cancellation into
         // unwinding before the process exit releases the worker's locks.
@@ -97965,7 +97993,10 @@ impl IndexShutdownSignals {
         // connection or waiting for destructors here can block on that same
         // operation and swallow SIGTERM again. Exit releases its OS locks;
         // committed WAL frames remain available to the next indexing run.
-        std::process::exit(code);
+        match code {
+            143 => std::process::exit(143),
+            _ => std::process::exit(130),
+        }
     }
 }
 
@@ -101531,12 +101562,28 @@ fn run_index_with_data(
                         retryable: true,
                     };
                 }
-                return CliError {
-                    code: shutdown_signals.received.unwrap_or(130),
-                    kind: CliErrorKind::Index.kind_str(),
-                    message: "index interrupted after finishing the in-flight batch".into(),
-                    hint: Some("Rerun the same index command to resume from committed source observations.".into()),
-                    retryable: true,
+                // The signal streams register 130 (SIGINT) and 143 (SIGTERM);
+                // the received code is a runtime value, so each arm spells the
+                // `code:` field as a literal. The literal fields are
+                // load-bearing: the emitted-exit-code scanners
+                // (spec_exit_codes_documented, golden_error_envelope) only see
+                // `code: <digits>` directly above `kind:` in a CliError
+                // literal, not `received`/`Option` variables.
+                return match shutdown_signals.received {
+                    Some(143) => CliError {
+                        code: 143,
+                        kind: CliErrorKind::Index.kind_str(),
+                        message: "index interrupted after finishing the in-flight batch".into(),
+                        hint: Some("Rerun the same index command to resume from committed source observations.".into()),
+                        retryable: true,
+                    },
+                    _ => CliError {
+                        code: 130,
+                        kind: CliErrorKind::Index.kind_str(),
+                        message: "index interrupted after finishing the in-flight batch".into(),
+                        hint: Some("Rerun the same index command to resume from committed source observations.".into()),
+                        retryable: true,
+                    },
                 };
             }
             if e.downcast_ref::<indexer::ConnectorScanFailure>().is_some()
@@ -101597,13 +101644,24 @@ fn run_index_with_data(
     {
         // The final batch can complete just as the CLI observes a signal.
         // Honor the request without certifying an interrupted invocation as
-        // successful merely because the worker won that race.
-        res = Err(CliError {
-            code,
-            kind: CliErrorKind::Index.kind_str(),
-            message: "index completed its current work after a stop was requested".into(),
-            hint: Some("Rerun the same index command to confirm completion.".into()),
-            retryable: true,
+        // successful merely because the worker won that race. Literal per-arm
+        // `code:` fields: the emitted-exit-code scanners only see
+        // `code: <digits>` directly above `kind:`.
+        res = Err(match code {
+            143 => CliError {
+                code: 143,
+                kind: CliErrorKind::Index.kind_str(),
+                message: "index completed its current work after a stop was requested".into(),
+                hint: Some("Rerun the same index command to confirm completion.".into()),
+                retryable: true,
+            },
+            _ => CliError {
+                code: 130,
+                kind: CliErrorKind::Index.kind_str(),
+                message: "index completed its current work after a stop was requested".into(),
+                hint: Some("Rerun the same index command to confirm completion.".into()),
+                retryable: true,
+            },
         });
     }
     if let Some(previous) = previous_robot_trace_ingest {
@@ -112205,13 +112263,26 @@ fn run_models_backfill(
     loop {
         // A received signal stops at a durable batch boundary. Each completed
         // helper call has already dropped its archive, manifest and lock.
+        // The streams register 130 (SIGINT) and 143 (SIGTERM); the literal
+        // per-arm `code:` fields are load-bearing for the emitted-exit-code
+        // scanners (spec_exit_codes_documented, golden_error_envelope), which
+        // only see `code: <digits>` directly above `kind:`.
         if let Some(code) = exit_code() {
-            failure = Some(CliError {
-                code,
-                kind: CliErrorKind::SemanticBackfill.kind_str(),
-                message: "Semantic backfill cancelled at a batch boundary".to_string(),
-                hint: Some("Rerun the command to resume from the saved checkpoint".into()),
-                retryable: true,
+            failure = Some(match code {
+                143 => CliError {
+                    code: 143,
+                    kind: CliErrorKind::SemanticBackfill.kind_str(),
+                    message: "Semantic backfill cancelled at a batch boundary".to_string(),
+                    hint: Some("Rerun the command to resume from the saved checkpoint".into()),
+                    retryable: true,
+                },
+                _ => CliError {
+                    code: 130,
+                    kind: CliErrorKind::SemanticBackfill.kind_str(),
+                    message: "Semantic backfill cancelled at a batch boundary".to_string(),
+                    hint: Some("Rerun the command to resume from the saved checkpoint".into()),
+                    retryable: true,
+                },
             });
             break;
         }
@@ -112252,9 +112323,23 @@ fn run_models_backfill(
                 }
             }
             Err(error) => {
+                // Same literal-code contract as the boundary-cancel arm above:
+                // the signal-derived code is spelled per arm so the
+                // emitted-exit-code scanners see both 130 and 143.
                 let error = match exit_code() {
-                    Some(code) => CliError {
-                        code,
+                    Some(143) => CliError {
+                        code: 143,
+                        kind: CliErrorKind::SemanticBackfill.kind_str(),
+                        message:
+                            "Semantic backfill cancelled; unfinished batch was not checkpointed"
+                                .into(),
+                        hint: Some(
+                            "Rerun the command to resume from the last durable checkpoint".into(),
+                        ),
+                        retryable: true,
+                    },
+                    Some(_) => CliError {
+                        code: 130,
                         kind: CliErrorKind::SemanticBackfill.kind_str(),
                         message:
                             "Semantic backfill cancelled; unfinished batch was not checkpointed"

@@ -38,18 +38,27 @@ No whole-file deletions this task. Removed in place:
   `[dev-dependencies]` (only `spec_version_semver_format` and
   `spec_diag_version_coherence` consume it); `asupersync` feature
   `tls-native-roots` dropped (no remote TLS callers remain).
-- `Cargo.lock` — removal-only diff: `ssh2`, `libssh2-sys`, `openssl`,
+- `Cargo.lock` — `ssh2`, `libssh2-sys`, `openssl`,
   `openssl-sys`, `openssl-src`, `openssl-macros`, `openssl-probe`,
   `foreign-types`, `schannel`, `rustls`, `rustls-pki-types`,
   `rustls-webpki`, `rustls-native-certs`, `asn1-rs*`, `der-parser`,
   `oid-registry`, `rusticata-macros`, `x509-parser`, `num-bigint`,
   `num-integer`, `libz-sys` leave the graph; `url` stays only as a
-  `franken-agent-detection` transitive.
+  `franken-agent-detection` transitive. Review fix-round 1 disclosure:
+  not strictly removal-only — cass's `base64` dependency edge re-unified
+  `0.23.1 → 0.22.1` (resolver noise from the removed crates; both versions
+  remain in the graph and cass's `base64 = ">=0.21"` requirement is
+  satisfied by either). No other version changes; the crate's own version
+  bump `0.10.0 → 0.11.0` is the D8 contract bump, not dep drift.
 - `build.rs` — asupersync `expected_features` contract updated to
   `["test-internals"]` (exact-match gate).
 - `src/lib.rs` — `CONTRACT_VERSION` `"1" → "2"` (D8); the
   `CODING_AGENT_SEARCH_NO_UPDATE_PROMPT` `deprecated_env_vars` entry removed
-  inside the mechanical D12 commit.
+  inside the mechanical D12 commit — **re-added in review fix-round 1**:
+  the rg-zero mandate applies to test/script setup lines, while the
+  deprecated-list entry is the tolerance mechanism that gives a stale env
+  var its deprecation diagnostic (parity with `CASS_SKIP_UPDATE` /
+  `CASS_UPDATE_API_BASE_URL`, which stayed deprecated-ignored).
 - `tests/html_export_e2e.rs` — three `export_redaction_*` tests moved from
   removed `cass sources reingest --source fixture --full --json` to
   `cass index --full` pinned to the scratch `HOME`; `index --full` reads the
@@ -70,10 +79,21 @@ diagnostic surfaces with zero in-tree consumers; retained as public library
 API (file deletion is out of scope without explicit authorization).
 `with_verified_bundle_for_deployment` is consumed by in-module tests.
 `explainability.rs` `run cass models install` card text is live local-command
-guidance, not stale. Exit-143 emissions in `src/lib.rs` are the
-`SignalKind::terminate() → 143` mapping and `130|143` cancellation
-classification — structurally sound, not scanner-invisible bypasses. The
-ssh2/SFTP clause in `docs/UNIT_TEST_HARNESS_REQUIREMENTS.md` is retained
+guidance, not stale. Exit-143 in `src/lib.rs` is really emitted: the
+`(signal(SignalKind::terminate()), 143)` tuple at
+`IndexShutdownSignals::new` carries the code as a runtime value through
+`received`/`poll_exit_code()` into five `CliError` constructions (index
+join path, index completed-after-stop, `abort_if_needed` stderr
+envelope, both `run_models_backfill` cancellation arms) and one
+`process::exit`, and the backfill report classifies cancellation via
+`matches!(error.code, 130 | 143)`. Review fix-round 1 corrected this
+entry's earlier assessment: those emissions WERE scanner-invisible
+(variable `code:` fields) and 143 was missing from the capabilities
+exit_codes contract. Every emission site now spells per-arm literal
+`code: <digits>` CliErrors / `process::exit(<digits>)` (semantics
+identical), and 143 is documented in `cass capabilities --json`,
+robot-docs exit-codes, and the README/AGENTS tables. The ssh2/SFTP clause
+in `docs/UNIT_TEST_HARNESS_REQUIREMENTS.md` is retained
 historical spec text for a completed rollout bead.
 
 ### Task 13 — external HTTP embedding provider (2026-11-05)
@@ -568,10 +588,10 @@ Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
 
 | Date (UTC) | Command | Result |
 | ---------- | ------- | ------ |
-| 2026-11-05 | `rg -l 'NO_UPDATE_PROMPT' .` | only `docs/LOCAL_ONLY.md` historical journal refs (2) remain after the mechanical sweep |
+| 2026-11-05 | `rg -l 'NO_UPDATE_PROMPT' .` | at sweep time: only `docs/LOCAL_ONLY.md` historical journal refs (2) outside `.beads/`/`.superpowers/`/`test-results/` artifacts. Review fix-round 1 re-added the `src/lib.rs` `deprecated_env_vars` entry and the README deprecated-vars row (the tolerance mechanism, not setup code) |
 | 2026-11-05 | `cargo fmt --all -- --check` | ok |
 | 2026-11-05 | `cargo check --tests --locked` (D12 commit) | ok — 156-file env-var sweep compiles |
-| 2026-11-05 | `cargo check` (lockfile regen) | ok — removal-only lock diff: ssh2, libssh2-sys, openssl*, rustls*, libz-sys and exclusive transitives leave the graph |
+| 2026-11-05 | `cargo check` (lockfile regen) | ok — lock diff removes ssh2, libssh2-sys, openssl*, rustls*, libz-sys and exclusive transitives; review fix-round 1 disclosed one non-removal: cass's `base64` edge re-unified 0.23.1→0.22.1 (both stay in graph, `>=0.21` satisfied) |
 | 2026-11-05 | `cargo tree -i {ssh2,libssh2-sys,openssl,openssl-sys,rustls,webpki-roots,rustls-native-certs}` | all absent from the resolved graph |
 | 2026-11-05 | `python3 scripts/check_dependency_features.py` | ok — 11/11 explicit dependency feature contracts match |
 | 2026-11-05 | `cargo check --tests` | ok (semver dev-dep move, html_export_e2e repair, contract v2) |

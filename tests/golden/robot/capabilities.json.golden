@@ -3862,6 +3862,12 @@
       "meaning": "interrupted (SIGINT)",
       "retryable": "yes",
       "agent_action": "Rerun the command; indexing and search resume from their checkpoints."
+    },
+    {
+      "code": "143",
+      "meaning": "interrupted (SIGTERM)",
+      "retryable": "yes",
+      "agent_action": "Rerun the command; indexing and semantic backfill resume from their checkpoints."
     }
   ],
   "env_vars": [
