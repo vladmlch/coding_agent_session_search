@@ -617,11 +617,15 @@ fn is_transient_e2e_source_entry(root: &Path, path: &Path) -> bool {
 
 /// Hash every non-transient source file using GNU `sha256sum --zero` framing.
 ///
-/// RCH clean overlays do not contain `.git`, and Cargo/RCH create transient
-/// output directories while the runner is starting. Those top-level transport
-/// and output directories are excluded; every other entry is part of the
-/// source identity. Symbolic links, hard links, non-files, and non-UTF-8 paths
-/// fail closed so an overlay cannot alias bytes outside the attested tree.
+/// The attested local source tree carries no `.git`, and local Cargo/test
+/// runs create transient output directories while the runner is starting.
+/// Those top-level VCS and output directories are excluded — the inert
+/// `.rch-tmp`/`.rch-target-*` names are retained exclusions from the removed
+/// remote-offload tooling (the shell caller does not exclude them, so a
+/// stray leftover still fails closed on the recompute mismatch). Every other
+/// entry is part of the source identity. Symbolic links, hard links,
+/// non-files, and non-UTF-8 paths fail closed so the tree cannot alias bytes
+/// outside the attested tree.
 pub fn e2e_source_tree_sha256(root: &Path) -> Result<String, E2eRunBundleError> {
     let root_metadata = fs::symlink_metadata(root).map_err(|error| bundle_io(root, error))?;
     if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {

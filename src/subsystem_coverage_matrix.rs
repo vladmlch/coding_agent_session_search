@@ -344,7 +344,7 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
                 "tests/cli_model_lifecycle_contract.rs",
                 "tests/e2e_analytics_models.rs",
             ],
-            optional_diagnostics: &["local model install via --from-file (never CI-required)"],
+            optional_diagnostics: &["`cass models verify` checksum pass on installed files"],
             fixture_provenance: "missing/mismatched model dirs; no network exists anywhere",
             log_expectation: "deterministic contract test result line; local installs are opt-in only",
             redaction: RedactionExpectation::NoUserContent,

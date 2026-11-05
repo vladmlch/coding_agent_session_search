@@ -4,7 +4,7 @@
 #
 # Usage:
 #   ./scripts/test-all.sh           # Run all standard tests
-#   ./scripts/test-all.sh --all     # Include SSH and slow tests
+#   ./scripts/test-all.sh --all     # Include slow tests
 #   ./scripts/test-all.sh --help    # Show all options
 
 set -euo pipefail
@@ -40,7 +40,6 @@ fi
 # Options with defaults
 VERBOSE=${VERBOSE:-0}
 PARALLEL=${PARALLEL:-1}
-INCLUDE_SSH=${INCLUDE_SSH:-0}
 INCLUDE_SLOW=${INCLUDE_SLOW:-0}
 USE_NEXTEST=${USE_NEXTEST:-1}
 FAIL_FAST=${FAIL_FAST:-0}
@@ -289,55 +288,14 @@ run_ui_tests() {
     return $exit_code
 }
 
-run_ssh_tests() {
-    if [[ $INCLUDE_SSH -eq 0 ]]; then
-        log_section "PHASE 5: SSH Tests (SKIPPED - use --include-ssh to run)"
-        RESULTS["ssh_tests"]="skipped"
-        return 0
-    fi
-
-    log_section "PHASE 5: SSH Integration Tests"
-    time_start "ssh_tests"
-
-    # Check Docker is available
-    if ! command -v docker &> /dev/null; then
-        log WARN "Docker not available, skipping SSH tests"
-        RESULTS["ssh_tests"]="skipped"
-        return 0
-    fi
-
-    local exit_code=0
-
-    # Run SSH tests (marked with #[ignore] so need --ignored flag)
-    if [[ $USE_NEXTEST -eq 1 ]]; then
-        if run_cargo nextest run --profile e2e -E 'test(ssh)' --run-ignored=all --color=always 2>&1 | tee -a "$LOG_FILE"; then
-            log INFO "SSH tests passed"
-        else
-            log ERROR "SSH tests failed"
-            exit_code=1
-        fi
-    else
-        if run_cargo test ssh -- --ignored --color=always 2>&1 | tee -a "$LOG_FILE"; then
-            log INFO "SSH tests passed"
-        else
-            log ERROR "SSH tests failed"
-            exit_code=1
-        fi
-    fi
-
-    time_end "ssh_tests"
-    RESULTS["ssh_tests"]=$exit_code
-    return $exit_code
-}
-
 run_slow_tests() {
     if [[ $INCLUDE_SLOW -eq 0 ]]; then
-        log_section "PHASE 6: Slow Tests (SKIPPED - use --include-slow to run)"
+        log_section "PHASE 5: Slow Tests (SKIPPED - use --include-slow to run)"
         RESULTS["slow_tests"]="skipped"
         return 0
     fi
 
-    log_section "PHASE 6: Slow/Performance Tests"
+    log_section "PHASE 5: Slow/Performance Tests"
     time_start "slow_tests"
 
     local test_files=("watch_e2e" "regression_behavioral")
@@ -387,7 +345,7 @@ print_summary() {
     printf "${BOLD}%-25s %12s %10s${NC}\n" "Phase" "Duration" "Status"
     printf "%-25s %12s %10s\n" "-------------------------" "------------" "----------"
 
-    local phases=("unit_tests" "connector_tests" "cli_tests" "ui_tests" "ssh_tests" "slow_tests")
+    local phases=("unit_tests" "connector_tests" "cli_tests" "ui_tests" "slow_tests")
     local total_failed=0
 
     for phase in "${phases[@]}"; do
@@ -444,7 +402,6 @@ Options:
   -q, --quick         Quick mode (skip connector and slow tests)
   --no-parallel       Run tests sequentially
   --fail-fast         Stop on first failure
-  --include-ssh       Include SSH integration tests (requires Docker)
   --include-slow      Include slow/performance tests
   --all               Include all optional tests
   --no-nextest        Use run_cargo test instead of run_cargo nextest
@@ -454,7 +411,6 @@ Environment Variables:
   VERBOSE=1           Same as --verbose
   QUICK_MODE=1        Same as -q/--quick
   PARALLEL=0          Same as --no-parallel
-  INCLUDE_SSH=1       Same as --include-ssh
   INCLUDE_SLOW=1      Same as --include-slow
   USE_NEXTEST=0       Same as --no-nextest
   CARGO_TARGET_DIR    Build directory (default: main checkout's target/)
@@ -463,7 +419,7 @@ Environment Variables:
 
 Examples:
   $0                  # Standard test run
-  $0 --all            # Full test suite including SSH and slow tests
+  $0 --all            # Full test suite including slow tests
   $0 --fail-fast      # Stop on first failure
   $0 -q               # Quick tests only
 
@@ -482,7 +438,7 @@ main() {
     log INFO "Project root: $PROJECT_ROOT"
     log INFO "Log directory: $LOG_DIR"
     log INFO "Timestamp: $TIMESTAMP"
-    log INFO "Options: QUICK_MODE=$QUICK_MODE PARALLEL=$PARALLEL INCLUDE_SSH=$INCLUDE_SSH INCLUDE_SLOW=$INCLUDE_SLOW"
+    log INFO "Options: QUICK_MODE=$QUICK_MODE PARALLEL=$PARALLEL INCLUDE_SLOW=$INCLUDE_SLOW"
 
     cd "$PROJECT_ROOT"
     log INFO "Cargo: local (see [run_cargo] lines for resolved defaults)"
@@ -506,7 +462,6 @@ main() {
     run_ui_tests || ((failed += 1))
     [[ $FAIL_FAST -eq 1 ]] && [[ $failed -gt 0 ]] && { print_summary; exit 1; }
 
-    run_ssh_tests || ((failed += 1))
     run_slow_tests || ((failed += 1))
 
     print_summary
@@ -528,9 +483,8 @@ while [[ $# -gt 0 ]]; do
         -q|--quick)      QUICK_MODE=1; shift ;;
         --no-parallel)   PARALLEL=0; shift ;;
         --fail-fast)     FAIL_FAST=1; shift ;;
-        --include-ssh)   INCLUDE_SSH=1; shift ;;
         --include-slow)  INCLUDE_SLOW=1; shift ;;
-        --all)           INCLUDE_SSH=1; INCLUDE_SLOW=1; shift ;;
+        --all)           INCLUDE_SLOW=1; shift ;;
         --no-nextest)    USE_NEXTEST=0; shift ;;
         -h|--help)       show_help ;;
         *)

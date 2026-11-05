@@ -87,7 +87,7 @@ Fixtures follow the project's **no-mock policy** — see `TESTING.md`.
 | `capabilities.json` | Feature capabilities (connectors, limits, features) |
 | `introspect.json` | Full introspection response for CLI contract testing |
 
-**Tested by:** `tests/e2e_cli_contract.rs`
+**Tested by:** `tests/cli_robot.rs` (`read_fixture` contract checks)
 
 **Use case:** Verifies CLI JSON output matches expected schema across versions.
 

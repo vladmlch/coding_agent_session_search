@@ -1841,7 +1841,6 @@ Press `Ctrl+P` to open the command palette—a fuzzy-searchable menu of all avai
 | Toggle theme | Switch between dark/light mode |
 | Toggle density | Cycle Compact → Cozy → Spacious |
 | Toggle help strip | Pin/unpin the contextual help bar |
-| Check updates | Show update assistant banner |
 | Filter: agent | Open agent filter picker |
 | Filter: workspace | Open workspace filter picker |
 | Filter: today | Restrict results to today |

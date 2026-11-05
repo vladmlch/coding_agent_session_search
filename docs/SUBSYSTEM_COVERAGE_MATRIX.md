@@ -140,8 +140,8 @@ be silently skipped during closeout.
 - **Mandatory proofs:** integration
 - **Proof artifacts:** `tests/cli_model_lifecycle_contract.rs`, `tests/e2e_analytics_models.rs`
 - **Optional diagnostics:** `cass models verify` checksum pass on installed files
-- **Fixture provenance:** missing/mismatched model dirs; no network at test time
-- **Log expectation:** deterministic contract test result line
+- **Fixture provenance:** missing/mismatched model dirs; no network exists anywhere
+- **Log expectation:** deterministic contract test result line; local installs are opt-in only
 - **Redaction:** no-user-content
 - **Closure evidence:** cargo test --test cli_model_lifecycle_contract
 
