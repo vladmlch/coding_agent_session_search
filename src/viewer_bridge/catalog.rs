@@ -40,13 +40,34 @@ const CONV_GUARDED_COLUMNS: &str = "id,agent_id,source_id,\
     COALESCE(length(CAST(metadata_json AS BLOB)),0)";
 const MESSAGE_COLUMNS: &str =
     "id,conversation_id,idx,role,author,created_at,content,extra_bin,extra_json";
-const MSG_GUARDED_COLUMNS: &str = "id,conversation_id,idx,\
+/// `pub(super)`: the detail lane (`detail.rs`) reuses the same guarded
+/// message projection for its targeted single-message reads.
+pub(super) const MSG_GUARDED_COLUMNS: &str = "id,conversation_id,idx,\
     CASE WHEN COALESCE(length(CAST(role AS BLOB)),0)<=524288 THEN role ELSE NULL END,\
     CASE WHEN COALESCE(length(CAST(author AS BLOB)),0)<=524288 THEN author ELSE NULL END,\
     created_at,\
     CASE WHEN COALESCE(length(CAST(content AS BLOB)),0)<=524288 THEN content ELSE NULL END,\
     CASE WHEN COALESCE(length(extra_bin),0)<=524288 THEN extra_bin ELSE NULL END,\
     CASE WHEN COALESCE(length(CAST(extra_json AS BLOB)),0)<=524288 THEN extra_json ELSE NULL END,\
+    COALESCE(length(CAST(role AS BLOB)),0)+\
+    COALESCE(length(CAST(author AS BLOB)),0)+\
+    COALESCE(length(CAST(content AS BLOB)),0)+\
+    COALESCE(length(extra_bin),0)+\
+    COALESCE(length(CAST(extra_json AS BLOB)),0)";
+/// The message-row byte total shared by the guarded projection, the
+/// suppressed-row emission and the tool-output anchor precheck — the three
+/// readers must agree on what "one canonical row" weighs.
+pub(super) const MSG_ROW_BYTES: &str = "COALESCE(length(CAST(role AS BLOB)),0)+\
+    COALESCE(length(CAST(author AS BLOB)),0)+\
+    COALESCE(length(CAST(content AS BLOB)),0)+\
+    COALESCE(length(extra_bin),0)+\
+    COALESCE(length(CAST(extra_json AS BLOB)),0)";
+/// Unguarded message columns plus the byte total: the tool-output resource
+/// is the one lane allowed to materialize a single row larger than
+/// `ROW_BYTES`, and only after the byte precheck below bounds it at
+/// `TOOL_OUTPUT_ROW_BYTES`.
+pub(super) const MSG_FULL_COLUMNS: &str = "id,conversation_id,idx,role,author,\
+    created_at,content,extra_bin,extra_json,\
     COALESCE(length(CAST(role AS BLOB)),0)+\
     COALESCE(length(CAST(author AS BLOB)),0)+\
     COALESCE(length(CAST(content AS BLOB)),0)+\
@@ -72,7 +93,7 @@ pub fn check_schema(connection: &Connection) -> Result<()> {
         let version: Option<i64> = connection
             .query_row("SELECT MAX(version) FROM _schema_migrations")?
             .get_typed(0)?;
-        if version != Some(22) {
+        if version != Some(super::reader::STRICT_SCHEMA_VERSION) {
             return Err(refuse(
                 "incompatible_schema",
                 "Canonical schema tracking disagrees with meta version",
@@ -286,7 +307,9 @@ fn decode_session_row(row: &Row, lookup: &SessionLookup) -> Result<Value> {
     Ok(Value::Object(value))
 }
 
-fn read_session(connection: &Connection, id: i64) -> Result<Option<Value>> {
+/// `pub(super)`: the detail lane's `summary` section is built on the exact
+/// canonical session decode the protocol-1 `session` op serves.
+pub(super) fn read_session(connection: &Connection, id: i64) -> Result<Option<Value>> {
     let rows = connection.query_with_params(
         &format!("SELECT {CONV_GUARDED_COLUMNS} FROM conversations WHERE id=?1 LIMIT 2"),
         &param_slice_to_values(params![id]),
@@ -304,7 +327,9 @@ fn read_session(connection: &Connection, id: i64) -> Result<Option<Value>> {
     Ok(Some(decode_session_row(row, &lookup)?))
 }
 
-fn decode_message_row(row: &Row) -> Result<Value> {
+/// `pub(super)`: `detail::tool_output` decodes its anchor message through
+/// this same decoder so the two consumers can never drift.
+pub(super) fn decode_message_row(row: &Row) -> Result<Value> {
     let bytes: i64 = row.get_typed(9)?;
     if !(0..=ROW_BYTES).contains(&bytes) {
         return Err(refuse(
@@ -312,6 +337,13 @@ fn decode_message_row(row: &Row) -> Result<Value> {
             "Canonical row exceeds the strict bridge byte profile",
         ));
     }
+    decode_message_row_uncapped(row)
+}
+
+/// Same decode without the `ROW_BYTES` page guard: only the tool-output
+/// resource may use it, and only after the byte-precheck bounded the row at
+/// `TOOL_OUTPUT_ROW_BYTES`. Never call this on a paged result.
+pub(super) fn decode_message_row_uncapped(row: &Row) -> Result<Value> {
     let id: i64 = row.get_typed(0)?;
     let conversation_id: i64 = row.get_typed(1)?;
     let idx: i64 = row.get_typed(2)?;
@@ -328,7 +360,57 @@ fn decode_message_row(row: &Row) -> Result<Value> {
     }))
 }
 
-fn push_bounded(rows: &mut Vec<Value>, row: Value, bytes: &mut usize) -> Result<bool> {
+/// One page item for a row the guarded projection could not serve whole:
+/// the guarded columns still arrive (NULL where they exceeded their
+/// per-column bound), the suppressed payload is marked honestly, and the
+/// extra reports `complete:false` with an explicit issue — the page
+/// degrades this one record instead of failing the whole conversation.
+fn suppressed_message_row(row: &Row) -> Result<Value> {
+    let id: i64 = row.get_typed(0)?;
+    let conversation_id: i64 = row.get_typed(1)?;
+    let idx: i64 = row.get_typed(2)?;
+    if id <= 0 || conversation_id <= 0 || idx < 0 {
+        return Err(refuse(
+            "canonical_coordinates_invalid",
+            "Invalid canonical message coordinates",
+        ));
+    }
+    let mut extra: Value =
+        serde_json::to_value(extra::decode(row.get_typed(7)?, row.get_typed(8)?))?;
+    extra["complete"] = Value::Bool(false);
+    extra["origin"] = Value::String("absent".into());
+    extra["value"] = Value::Null;
+    let issues = extra["issues"].as_array_mut();
+    match issues {
+        Some(list) => list.push("canonical_row_exceeds_wire_guard".into()),
+        None => {
+            extra["issues"] = json!(["canonical_row_exceeds_wire_guard"]);
+        }
+    }
+    Ok(json!({
+        "id":id,"conversation_id":conversation_id,"idx":idx,
+        "role":row.get_typed::<Option<String>>(3)?,
+        "author":row.get_typed::<Option<String>>(4)?,
+        "created_at_ms":row.get_typed::<Option<i64>>(5)?,
+        "content":row.get_typed::<Option<String>>(6)?,
+        "extra":extra,
+        "wire_suppressed":true,
+    }))
+}
+
+/// Page item for one guarded message row: decode when the row fits the
+/// strict profile, emit the honest suppressed placeholder when it does not.
+fn message_page_item(row: &Row) -> Result<Value> {
+    let bytes: i64 = row.get_typed(9)?;
+    if !(0..=ROW_BYTES).contains(&bytes) {
+        return suppressed_message_row(row);
+    }
+    decode_message_row(row)
+}
+
+/// `pub(super)`: the detail lane applies the same response byte budget to
+/// its `snippets` section.
+pub(super) fn push_bounded(rows: &mut Vec<Value>, row: Value, bytes: &mut usize) -> Result<bool> {
     let row_bytes = serde_json::to_vec(&row)?.len() + 2;
     if *bytes + row_bytes > RESPONSE_BYTES - 8192 {
         if rows.is_empty() {
@@ -344,6 +426,56 @@ fn push_bounded(rows: &mut Vec<Value>, row: Value, bytes: &mut usize) -> Result<
     Ok(true)
 }
 
+/// Bounded canonical messages page for ONE conversation: `idx,id` keyset
+/// ordering over `idx_messages_conv_idx`, per-column byte guards and the
+/// `limit + 1` continuation probe. Shared by the protocol-1 `messages_page`
+/// op and the `cass_owned_queries_v1` detail lane so the two consumers can
+/// never drift.
+pub(super) fn read_messages_page_body(
+    connection: &Connection,
+    conversation_id: i64,
+    after_idx: Option<i64>,
+    limit: usize,
+) -> Result<Value> {
+    let generation = super::revisions::generation(connection)?;
+    let limit_plus_one = (limit + 1) as i64;
+    let msg_rows = if let Some(after) = after_idx {
+        connection.query_with_params(
+            &format!("SELECT {MSG_GUARDED_COLUMNS} FROM messages WHERE conversation_id=?1 AND idx > ?2 ORDER BY idx,id LIMIT ?3"),
+            &param_slice_to_values(params![conversation_id, after, limit_plus_one]),
+        )?
+    } else {
+        connection.query_with_params(
+            &format!("SELECT {MSG_GUARDED_COLUMNS} FROM messages WHERE conversation_id=?1 ORDER BY idx,id LIMIT ?2"),
+            &param_slice_to_values(params![conversation_id, limit_plus_one]),
+        )?
+    };
+    let (mut items, mut bytes, mut last, mut truncated) =
+        (Vec::new(), 0, after_idx.unwrap_or(-1), false);
+    for (offset, row) in msg_rows.iter().enumerate() {
+        let idx: i64 = row.get_typed(2)?;
+        if idx <= last {
+            return Err(refuse(
+                "canonical_coordinates_invalid",
+                "Duplicated or unordered message index",
+            ));
+        }
+        if offset == limit {
+            break;
+        }
+        if !push_bounded(&mut items, message_page_item(row)?, &mut bytes)? {
+            truncated = true;
+            break;
+        }
+        last = idx;
+    }
+    let has_more = truncated || msg_rows.len() > limit;
+    Ok(
+        json!({"items":items,"next_idx":if has_more { Some(last) } else { None },
+        "generation":generation}),
+    )
+}
+
 impl StrictArchive {
     pub fn read_catalog_page(&mut self, after_id: Option<i64>, limit: usize) -> Result<Value> {
         page_limit(limit)?;
@@ -351,6 +483,7 @@ impl StrictArchive {
             return Err(refuse("invalid_request", "after_id must be positive"));
         }
         let (mut page, revision) = self.snapshot(|connection| {
+            let generation = super::revisions::generation(connection)?;
             let limit_plus_one = (limit + 1) as i64;
             let conv_rows = if let Some(after) = after_id {
                 connection.query_with_params(
@@ -364,7 +497,8 @@ impl StrictArchive {
                 )?
             };
             if conv_rows.is_empty() {
-                return Ok(json!({"rows":Vec::<Value>::new(),"next_conversation_id":None::<i64>}));
+                return Ok(json!({"rows":Vec::<Value>::new(),"next_conversation_id":None::<i64>,
+                    "generation":generation}));
             }
             let take_count = conv_rows.len().min(limit);
             let min_id: i64 = conv_rows[0].get_typed(0)?;
@@ -381,7 +515,8 @@ impl StrictArchive {
                 last = Some(id);
             }
             let has_more = truncated || conv_rows.len() > limit;
-            Ok(json!({"rows":rows,"next_conversation_id":if has_more { last } else { None }}))
+            Ok(json!({"rows":rows,"next_conversation_id":if has_more { last } else { None },
+                "generation":generation}))
         })?;
         page["archive_stamp"] = serde_json::to_value(&self.stamp)?;
         page["catalog_revision"] = revision.into();
@@ -395,9 +530,15 @@ impl StrictArchive {
                 "conversation_id must be positive",
             ));
         }
-        let (row, revision) =
-            self.snapshot(|connection| read_session(connection, conversation_id))?;
-        Ok(json!({"row":row,"archive_stamp":self.stamp,"catalog_revision":revision}))
+        let ((row, generation), revision) = self.snapshot(|connection| {
+            let row = read_session(connection, conversation_id)?;
+            let generation = super::revisions::generation(connection)?;
+            Ok((row, generation))
+        })?;
+        Ok(
+            json!({"row":row,"archive_stamp":self.stamp,"catalog_revision":revision,
+            "generation":generation}),
+        )
     }
 
     pub fn read_messages_page(
@@ -414,31 +555,7 @@ impl StrictArchive {
             ));
         }
         let (mut page, revision) = self.snapshot(|connection| {
-            let limit_plus_one = (limit + 1) as i64;
-            let msg_rows = if let Some(after) = after_idx {
-                connection.query_with_params(
-                    &format!("SELECT {MSG_GUARDED_COLUMNS} FROM messages WHERE conversation_id=?1 AND idx > ?2 ORDER BY idx,id LIMIT ?3"),
-                    &param_slice_to_values(params![conversation_id, after, limit_plus_one]),
-                )?
-            } else {
-                connection.query_with_params(
-                    &format!("SELECT {MSG_GUARDED_COLUMNS} FROM messages WHERE conversation_id=?1 ORDER BY idx,id LIMIT ?2"),
-                    &param_slice_to_values(params![conversation_id, limit_plus_one]),
-                )?
-            };
-            let (mut items, mut bytes, mut last, mut truncated) = (Vec::new(), 0, after_idx.unwrap_or(-1), false);
-            for (offset, row) in msg_rows.iter().enumerate() {
-                let idx: i64 = row.get_typed(2)?;
-                if idx <= last { return Err(refuse("canonical_coordinates_invalid", "Duplicated or unordered message index")); }
-                if offset == limit { break; }
-                if !push_bounded(&mut items, decode_message_row(row)?, &mut bytes)? {
-                    truncated = true;
-                    break;
-                }
-                last = idx;
-            }
-            let has_more = truncated || msg_rows.len() > limit;
-            Ok(json!({"items":items,"next_idx":if has_more { Some(last) } else { None }}))
+            read_messages_page_body(connection, conversation_id, after_idx, limit)
         })?;
         page["archive_stamp"] = serde_json::to_value(&self.stamp)?;
         page["catalog_revision"] = revision.into();

@@ -2908,8 +2908,12 @@ fn matching_completed_lexical_rebuild_state_status_without_fingerprint(
         has_pending_resume: false,
         has_completed_checkpoint,
         completed_indexed_docs: has_completed_checkpoint.then_some(state.indexed_docs),
-        completed_exact_totals: has_completed_checkpoint
-            .then_some((state.db.total_conversations, state.indexed_docs)),
+        // Task 5: `indexed_docs` includes converged search-region
+        // documents; the exact message total is its canonical share.
+        completed_exact_totals: has_completed_checkpoint.then_some((
+            state.db.total_conversations,
+            state.indexed_docs.saturating_sub(state.indexed_region_docs),
+        )),
         completed_storage_fingerprint: has_completed_checkpoint
             .then_some(state.db.storage_fingerprint),
     }))
@@ -2932,8 +2936,12 @@ fn matching_lexical_rebuild_state_status_for_loaded_state(
         has_pending_resume: state.is_incomplete(),
         has_completed_checkpoint,
         completed_indexed_docs: has_completed_checkpoint.then_some(state.indexed_docs),
-        completed_exact_totals: has_completed_checkpoint
-            .then_some((state.db.total_conversations, state.indexed_docs)),
+        // Task 5: `indexed_docs` includes converged search-region
+        // documents; the exact message total is its canonical share.
+        completed_exact_totals: has_completed_checkpoint.then_some((
+            state.db.total_conversations,
+            state.indexed_docs.saturating_sub(state.indexed_region_docs),
+        )),
         completed_storage_fingerprint: has_completed_checkpoint
             .then_some(state.db.storage_fingerprint),
     }
@@ -7039,6 +7047,12 @@ struct LexicalRebuildState {
     committed_conversation_id: Option<i64>,
     processed_conversations: usize,
     indexed_docs: usize,
+    /// Task 5: the share of `indexed_docs` that is search-region documents
+    /// (persisted `viewer_search_regions` inventory, not canonical
+    /// messages). `#[serde(default)]` reads receipts written before region
+    /// documents existed as zero — those archives genuinely had none.
+    #[serde(default)]
+    indexed_region_docs: usize,
     committed_meta_fingerprint: Option<String>,
     pending: Option<PendingLexicalCommit>,
     completed: bool,
@@ -7064,6 +7078,7 @@ impl LexicalRebuildState {
             committed_conversation_id: None,
             processed_conversations: 0,
             indexed_docs: 0,
+            indexed_region_docs: 0,
             committed_meta_fingerprint: None,
             pending: None,
             completed: false,
@@ -7119,6 +7134,9 @@ impl LexicalRebuildState {
             self.committed_conversation_id = pending.next_conversation_id;
             self.processed_conversations = pending.processed_conversations;
             self.indexed_docs = pending.indexed_docs;
+            // Pending counts track canonical message documents only; the
+            // region share is stamped separately at completion.
+            self.indexed_region_docs = 0;
         }
         self.committed_meta_fingerprint = committed_meta_fingerprint;
         self.completed = false;
@@ -9494,7 +9512,14 @@ fn lexical_state_can_certify_publication(state: &LexicalRebuildState) -> bool {
         && lexical_rebuild_page_size_is_compatible(state.page_size)
         && state.processed_conversations == state.db.total_conversations
         && usize::try_from(state.committed_offset).ok() == Some(state.db.total_conversations)
-        && state.indexed_docs <= state.db.total_messages
+        // Task 5: `indexed_docs` totals canonical message documents PLUS
+        // converged search-region documents. The message-share bound is
+        // preserved exactly by subtracting the recorded region share —
+        // the live-count match in `lexical_publication_receipt_matches_live`
+        // still compares the full total against the index.
+        && state.indexed_region_docs <= state.indexed_docs
+        && state.indexed_docs.saturating_sub(state.indexed_region_docs)
+            <= state.db.total_messages
         && completed_lexical_storage_fingerprint_matches_total(
             &state.db.storage_fingerprint,
             state.db.total_conversations,
@@ -11314,6 +11339,12 @@ struct IncrementalCanonicalLexicalRepairContext {
     expected_lexical_docs: usize,
     tantivy_requires_rebuild: bool,
     observed_tantivy_docs: Option<usize>,
+    /// Task 5: upper bound on live search-region documents — the
+    /// non-canonical share of `observed_tantivy_docs`. The sparse gate
+    /// subtracts it so converged `meta:*`/derived region documents can
+    /// never mask a genuinely sparse canonical index (the same split the
+    /// checkpoint refresh applies at `live_region_doc_bound`).
+    region_doc_bound: usize,
     /// True when a completed lexical-rebuild checkpoint records this exact
     /// canonical data (matching storage fingerprint). This is diagnostic
     /// context only: SQLite remains authoritative, and a fresh sparse live-doc
@@ -11328,6 +11359,11 @@ pub(crate) struct LexicalRebuildOutcome {
     /// count-free restart paths when the interrupted checkpoint is stale.
     pub observed_conversations: usize,
     pub indexed_docs: usize,
+    /// Task 5: the share of `indexed_docs` that is persisted search-region
+    /// documents. `indexed_docs - indexed_region_docs` is the canonical
+    /// message-document share; `observed_messages` already reports the
+    /// canonical count.
+    pub indexed_region_docs: usize,
     pub observed_messages: Option<usize>,
     pub exact_checkpoint_persisted: bool,
     /// Equivalence proof emitted by the authoritative streaming rebuild (ibuuh.29).
@@ -11373,12 +11409,19 @@ fn choose_incremental_canonical_lexical_repair_plan(
     }
 
     let observed_tantivy_docs = context.observed_tantivy_docs?;
+    // Task 5: live documents include converged search-region documents
+    // alongside canonical message documents — subtract the persisted
+    // bound so the sparse gate compares the canonical-message share, not
+    // a region-inflated total. The bound counts persisted doc-backed rows
+    // plus queued stale deletes, so it can only UNDER-state the share
+    // (repair too eagerly — conservative, never mask a sparse index).
+    let observed_message_docs = observed_tantivy_docs.saturating_sub(context.region_doc_bound);
     // cass#317: compare against the noise-adjusted expected doc count, not the
     // raw `canonical_messages`. The sink drops hard-noise messages (empty /
     // tool-acks), so a healthy live index holds `expected_lexical_docs` docs
     // (<= canonical_messages). Using the raw message count made any corpus with
     // tool-ack traffic look permanently sparse and rebuilt every run.
-    if observed_tantivy_docs < context.expected_lexical_docs {
+    if observed_message_docs < context.expected_lexical_docs {
         if context.published_index_validated_for_current_data {
             tracing::warn!(
                 canonical_messages = context.canonical_messages,
@@ -12140,6 +12183,10 @@ pub(crate) struct LexicalRebuildCheckpoint {
     pub committed_conversation_id: Option<i64>,
     pub processed_conversations: usize,
     pub indexed_docs: usize,
+    /// Task 5: the share of `indexed_docs` that is search-region
+    /// documents; `indexed_docs - indexed_region_docs` is the canonical
+    /// message count.
+    pub indexed_region_docs: usize,
     pub schema_hash: String,
     pub page_size: i64,
     pub completed: bool,
@@ -12977,6 +13024,7 @@ pub(crate) fn load_lexical_rebuild_checkpoint(
         committed_conversation_id,
         processed_conversations,
         indexed_docs,
+        indexed_region_docs: state.indexed_region_docs,
         schema_hash: state.schema_hash,
         page_size: state.page_size,
         completed: state.completed,
@@ -13318,6 +13366,16 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
             observed_tantivy_docs
         }
     };
+    // Task 5: live documents include converged search-region documents
+    // alongside canonical message documents. Subtract the persisted marks
+    // bound (region rows + queued stale deletes) so the coverage gate below
+    // compares the canonical-message share exactly like it did before
+    // region documents existed. A pending or partial region publication
+    // under-counts live region docs against the bound, which only makes
+    // this refresh skip — conservative, never a false certification.
+    let region_doc_bound =
+        crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw()).unwrap_or(0);
+    let observed_message_docs = observed_tantivy_docs.saturating_sub(region_doc_bound as usize);
     // GH #435: the lexical sink intentionally drops hard-noise messages
     // (empty content / tool-acks via `is_hard_message_noise`), so on such
     // corpora a HEALTHY live index always has fewer docs than the raw
@@ -13327,7 +13385,7 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
     // Gate on the same noise-adjusted expectation the rebuild planner uses
     // (#317). The per-conversation content scan is only paid when the cheap
     // raw equality does not already prove coverage.
-    let expected_docs = if observed_tantivy_docs == total_messages {
+    let expected_docs = if observed_message_docs == total_messages {
         total_messages
     } else {
         let Some(expected_docs) = expected_live_lexical_doc_count_cached_with_scan_policy(
@@ -13347,7 +13405,7 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
         };
         expected_docs
     };
-    if observed_tantivy_docs != expected_docs {
+    if observed_message_docs != expected_docs {
         tracing::debug!(
             path = %index_path.display(),
             observed_tantivy_docs,
@@ -13394,6 +13452,7 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
         && state.committed_conversation_id == max_conversation_id
         && state.processed_conversations == total_conversations
         && state.indexed_docs == observed_tantivy_docs
+        && state.indexed_region_docs == region_doc_bound as usize
         && state.committed_meta_fingerprint == committed_meta_fingerprint
         && state.pending.is_none()
         && state.completed
@@ -13419,6 +13478,7 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
     // like `should_skip_post_full_scan_authoritative_rebuild` compare the
     // checkpoint's indexed_docs against live Tantivy observations.
     state.indexed_docs = observed_tantivy_docs;
+    state.indexed_region_docs = region_doc_bound as usize;
     state.pending = None;
     state.completed = true;
     state.committed_meta_fingerprint = committed_meta_fingerprint;
@@ -15613,7 +15673,14 @@ impl StreamingCommitPacer {
 
     /// Commit, then fold small segments when due, then restart the interval.
     /// The fold is a publish too, so its time counts toward the pacing cost.
-    fn commit(&mut self, t_index: Option<&mut TantivyIndex>) {
+    /// `db` lets a successful commit flush the region-doc marks stamps its
+    /// staged documents earned (`None` leaves them queued for a later
+    /// stamp-aware commit — never stamped pre-commit).
+    fn commit(
+        &mut self,
+        t_index: Option<&mut TantivyIndex>,
+        db: Option<&crate::franken_sync::Connection>,
+    ) {
         if let Some(t_index) = t_index {
             let started = std::time::Instant::now();
             match t_index.commit() {
@@ -15622,6 +15689,13 @@ impl StreamingCommitPacer {
                         commit_ms = started.elapsed().as_millis() as u64,
                         "incremental commit completed"
                     );
+                    if let Some(db) = db
+                        && let Err(error) = t_index.commit_region_doc_stamps(db)
+                    {
+                        // A stamp failure leaves the marks honestly
+                        // pending; the next stamp-aware commit retries.
+                        tracing::warn!(%error, "region-doc marks stamp failed");
+                    }
                     self.fold_small_segments(t_index);
                 }
                 Err(error) => tracing::warn!(%error, "incremental commit failed"),
@@ -15783,7 +15857,7 @@ fn run_streaming_consumer(
             .is_some_and(|progress| progress.stop_requested())
         {
             if let Some(index) = t_index.as_deref_mut() {
-                index.commit()?;
+                index.commit_with_region_doc_stamps(storage.raw())?;
             }
             best_effort_abort_wal_checkpoint_for_db(&storage.database_path()?);
             return Err(anyhow::Error::new(IndexInterrupted));
@@ -15958,7 +16032,7 @@ fn run_streaming_consumer(
                 // the pipeline. It never drops below a multiple of what the
                 // last commit cost (see `paced_streaming_commit_interval`).
                 if commit_pacer.due() {
-                    commit_pacer.commit(t_index.as_deref_mut());
+                    commit_pacer.commit(t_index.as_deref_mut(), Some(storage.raw()));
                     // Do not advance the legacy global `last_scan_ts` from a
                     // partial streaming run: a later connector scan error would
                     // make that global watermark unsafe for legacy fallback.
@@ -16061,7 +16135,7 @@ fn run_streaming_consumer(
                 stats.conversations += count;
                 stats.messages += messages;
                 if commit_pacer.due() {
-                    commit_pacer.commit(t_index.as_deref_mut());
+                    commit_pacer.commit(t_index.as_deref_mut(), Some(storage.raw()));
                 }
                 if completion_written {
                     tracing::info!(
@@ -16191,7 +16265,10 @@ fn run_streaming_consumer(
     if let Some(t_index) = t_index
         && !ingest_outcome.lexical_update_deferred
     {
-        t_index.commit()?;
+        // Final streaming commit seals every region document staged
+        // during the run — the queued marks stamps land `published`
+        // only after the commit succeeds.
+        t_index.commit_with_region_doc_stamps(storage.raw())?;
     } else if ingest_outcome.lexical_update_deferred {
         tracing::warn!(
             "skipping final streaming Tantivy commit because lexical updates were deferred; authoritative DB rebuild will replace derived lexical assets"
@@ -18664,6 +18741,9 @@ fn run_index_with_storage_ownership(
             expected_lexical_docs: 0,
             tantivy_requires_rebuild,
             observed_tantivy_docs,
+            // Placeholder: the persisted region-doc bound is a marks-table
+            // query, computed lazily below only when the sparse branch runs.
+            region_doc_bound: 0,
             // Placeholder: validating the published index opens the DB read-only
             // and runs COUNT scans, so it is computed lazily below — only when the
             // live index actually looks sparse — to keep normal index/watch runs
@@ -18687,6 +18767,16 @@ fn run_index_with_storage_ownership(
         {
             preflight_phase!("watch_startup:count_total_messages");
             let canonical_messages = count_total_messages_exact(&storage)?;
+            // Task 5: live documents include converged search-region
+            // documents alongside canonical message documents — the
+            // persisted bound splits the observed total into its
+            // canonical-message share so region docs can never mask a
+            // genuinely sparse index.
+            let region_doc_bound =
+                crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw())
+                    .unwrap_or(0) as usize;
+            let observed_message_docs =
+                observed_tantivy_docs.map(|docs| docs.saturating_sub(region_doc_bound));
             // cass#317: the true sparseness threshold is the noise-adjusted
             // expected doc count (reachable messages the sink actually indexes),
             // not the raw `canonical_messages`. Only pay for that per-conversation
@@ -18696,7 +18786,7 @@ fn run_index_with_storage_ownership(
             // Computed under the same `count_total_messages` preflight phase so
             // the scan stays watchdog-covered without a new taxonomy sub-phase.
             let expected_lexical_docs =
-                if observed_tantivy_docs.is_some_and(|docs| docs < canonical_messages) {
+                if observed_message_docs.is_some_and(|docs| docs < canonical_messages) {
                     expected_live_lexical_doc_count_cached(
                         &storage,
                         &index_path,
@@ -18717,7 +18807,7 @@ fn run_index_with_storage_ownership(
             // choose_incremental_canonical_lexical_repair_plan via
             // tantivy_requires_rebuild), so skip the check then.
             let published_index_validated_for_current_data = !tantivy_requires_rebuild
-                && observed_tantivy_docs.is_some_and(|docs| docs < expected_lexical_docs)
+                && observed_message_docs.is_some_and(|docs| docs < expected_lexical_docs)
                 && !preflight_skip("watch_startup:published_index_validate")
                 && {
                     preflight_phase!("watch_startup:published_index_validate");
@@ -18732,6 +18822,7 @@ fn run_index_with_storage_ownership(
                 IncrementalCanonicalLexicalRepairContext {
                     canonical_messages,
                     expected_lexical_docs,
+                    region_doc_bound,
                     published_index_validated_for_current_data,
                     ..repair_context
                 },
@@ -19133,7 +19224,10 @@ fn run_index_with_storage_ownership(
                     let t_index = t_index
                         .as_mut()
                         .expect("tantivy index must remain open for lexical commit");
-                    t_index.commit()?;
+                    // Seals any region documents staged during the run;
+                    // their queued marks stamps land `published` only
+                    // after the commit succeeds.
+                    t_index.commit_with_region_doc_stamps(storage.raw())?;
                     // #441: an append-only archive never trips Quill's
                     // tombstone-driven compaction, and its width-tiered merge
                     // cannot fold the sparse per-session docid leases, so
@@ -26067,6 +26161,7 @@ fn rebuild_tantivy_from_db_via_staged_shards(
     options: LexicalRebuildStartupOptions,
     prep_profile_started: Option<Instant>,
     storage: FrankenStorage,
+    build_start_floor: Option<crate::viewer_extensions::changes::JournalRevisions>,
     mut rebuild_state: LexicalRebuildState,
     shard_plan: LexicalShardPlan,
     pipeline_settings: LexicalRebuildPipelineSettingsSnapshot,
@@ -27141,6 +27236,42 @@ fn rebuild_tantivy_from_db_via_staged_shards(
             indexed_docs
         ));
     }
+    // Task 5: the merged candidate owns no region documents — converge
+    // EVERY marked session into the publish path BEFORE the manifest and
+    // fingerprint are recorded, so the staged swap ships the persisted
+    // inventory whole and the post-publish doc-count verify stays exact.
+    let (region_docs, certification_floor, marks_storage) = {
+        let mut region_index = TantivyIndex::open_or_create(&final_merge_artifact.publish_path)
+            .with_context(|| {
+                format!(
+                    "opening merged lexical candidate {} for search-region convergence",
+                    final_merge_artifact.publish_path.display()
+                )
+            })?;
+        // Task 8: arm the floor captured at build start — a lazy capture
+        // here would cover canonical commits the merged candidate does
+        // not contain.
+        region_index.arm_publication_floor(build_start_floor);
+        let marks_storage = FrankenStorage::open_writer(db_path).with_context(|| {
+            format!(
+                "opening writable database to stamp search-region docs published: {}",
+                db_path.display()
+            )
+        })?;
+        let (_sessions, docs) =
+            region_index.converge_all_search_region_docs(marks_storage.raw(), i64::MAX)?;
+        // Two-phase: the commit seals the staged region documents, then
+        // the queued marks stamps land `published` — never before.
+        // Task 8: certification is DEFERRED past the staged swap and the
+        // post-publish doc-count verify — `commit_with_region_doc_stamps`
+        // would certify this candidate manifest before it goes live, and
+        // a refusal below would leave the receipt forever claiming a
+        // generation that was never published.
+        region_index.commit()?;
+        region_index.replay_region_doc_stamps(marks_storage.raw())?;
+        indexed_docs += docs;
+        (docs, region_index.take_publication_floor(), marks_storage)
+    };
     let final_total_conversations = if options.defer_initial_content_fingerprint {
         processed_conversations
     } else {
@@ -27155,7 +27286,9 @@ fn rebuild_tantivy_from_db_via_staged_shards(
     } else {
         rebuild_state.db.storage_fingerprint.clone()
     };
-    let final_observed_messages = observed_messages.max(indexed_docs);
+    // `indexed_docs` now includes the converged region documents — the
+    // canonical message count must not inherit them.
+    let final_observed_messages = observed_messages.max(indexed_docs.saturating_sub(region_docs));
     let lexical_rebuild_duration = lexical_rebuild_started.elapsed();
     let publish_started = Instant::now();
     // #282: entering the finalize→publish stretch (manifest persistence,
@@ -27186,6 +27319,12 @@ fn rebuild_tantivy_from_db_via_staged_shards(
         )
     })?;
     verify_published_lexical_doc_count(index_path, indexed_docs, "staged")?;
+    // Task 8: certify ONLY now — the staged swap published this
+    // generation and the post-swap verify proved the manifest readers
+    // actually open. A refusal above never reached this point, so no
+    // durable certification can outlive a manifest that never went live.
+    TantivyIndex::certify_published_manifest(marks_storage.raw(), index_path, certification_floor);
+    drop(marks_storage);
     let refresh_ledger =
         build_authoritative_lexical_refresh_ledger(AuthoritativeLexicalRefreshLedgerInput {
             publish_mode: "atomic_staged_swap",
@@ -27213,6 +27352,7 @@ fn rebuild_tantivy_from_db_via_staged_shards(
     rebuild_state.committed_conversation_id = last_processed_conversation_id;
     rebuild_state.processed_conversations = processed_conversations;
     rebuild_state.indexed_docs = indexed_docs;
+    rebuild_state.indexed_region_docs = region_docs;
     rebuild_state.mark_completed(staged_published_meta_fingerprint);
     persist_lexical_rebuild_state(index_path, &rebuild_state)?;
 
@@ -27235,6 +27375,7 @@ fn rebuild_tantivy_from_db_via_staged_shards(
     Ok(LexicalRebuildOutcome {
         observed_conversations: final_total_conversations,
         indexed_docs,
+        indexed_region_docs: region_docs,
         observed_messages: Some(final_observed_messages),
         exact_checkpoint_persisted: true,
         equivalence: Some(equivalence_evidence),
@@ -27323,6 +27464,17 @@ fn rebuild_tantivy_from_db_once(
     })?;
 
     log_prep_step("open_readonly", &mut prep_step_started);
+
+    // Task 8: capture the publication coverage floor at BUILD START —
+    // before the streaming loop stages a single document. A canonical
+    // commit landing mid-build then lands ABOVE the floor, so the
+    // certification this build's terminal publication writes can never
+    // claim revisions the generation does not contain. `None` on an
+    // unextended archive — certification binds current revisions there
+    // anyway.
+    let build_start_floor =
+        crate::viewer_extensions::changes::current_journal_revisions(storage.raw())
+            .context("capturing the lexical build-start coverage floor")?;
 
     let index_path = index_dir(data_dir)?;
     let db_state = if options.defer_initial_content_fingerprint {
@@ -27432,11 +27584,18 @@ fn rebuild_tantivy_from_db_once(
         return Ok(LexicalRebuildOutcome {
             observed_conversations: rebuild_state.processed_conversations,
             indexed_docs: rebuild_state.indexed_docs,
+            indexed_region_docs: rebuild_state.indexed_region_docs,
             observed_messages: Some(
-                rebuild_state
-                    .db
-                    .total_messages
-                    .max(rebuild_state.indexed_docs),
+                rebuild_state.db.total_messages.max(
+                    // Task 5: `indexed_docs` also counts converged
+                    // search-region documents; the canonical-message
+                    // share is the total minus the persisted region
+                    // share, so reused generations never report region
+                    // docs as messages.
+                    rebuild_state
+                        .indexed_docs
+                        .saturating_sub(rebuild_state.indexed_region_docs),
+                ),
             ),
             exact_checkpoint_persisted: false,
             equivalence: None,
@@ -27805,6 +27964,7 @@ fn rebuild_tantivy_from_db_once(
             options,
             prep_profile.then_some(prep_started),
             storage,
+            build_start_floor,
             rebuild_state,
             shard_plan.clone(),
             pipeline_settings,
@@ -27870,6 +28030,11 @@ fn rebuild_tantivy_from_db_once(
             return Err(err);
         }
     };
+
+    // Task 8: arm the coverage floor captured at build start — the lazy
+    // stage-time captures below must never move it forward past a commit
+    // this generation cannot contain.
+    t_index.arm_publication_floor(build_start_floor);
 
     // #440: fence the resume cursor against the published authority. The
     // checkpoint says how many documents the last durable commit covered;
@@ -28519,7 +28684,41 @@ fn rebuild_tantivy_from_db_once(
         indexed_docs,
         processed_conversations,
     );
+    // Task 5: the authoritative rebuild is the deferred-lexical lane's
+    // convergence point. A from-scratch candidate owns NO region
+    // documents, so EVERY session carrying a marks row re-materializes
+    // here (not only `pending`) — otherwise `published` marks would
+    // certify docs this generation never wrote. The marks stamp needs a
+    // writable handle; the rebuild's page reader stays strictly
+    // read-only by design.
+    let (region_docs, marks_storage) = {
+        let marks_storage = FrankenStorage::open_writer(db_path).with_context(|| {
+            format!(
+                "opening writable database to stamp search-region docs published: {}",
+                db_path.display()
+            )
+        })?;
+        let (_sessions, docs) =
+            t_index.converge_all_search_region_docs(marks_storage.raw(), i64::MAX)?;
+        indexed_docs += docs;
+        (docs, marks_storage)
+    };
     publication.run("commit_candidate", || t_index.commit())?;
+    // Two-phase region-doc publication: only NOW — after the candidate
+    // commit sealed the staged documents — do the marks rows move to
+    // `published`. A failed commit or crash above leaves them pending so
+    // the next run re-materializes instead of certifying documents that
+    // never shipped. Each stamp is a compare-and-swap on the stage-time
+    // marks snapshot, so a concurrent republish/meta-edit is refused
+    // rather than overwritten.
+    //
+    // Task 8: the marks stamps land WITHOUT certification here — the
+    // post-stamp fold and the terminal checkpoint commit below still
+    // rewrite this candidate's MANIFEST, so the generation sealed at this
+    // point is an intermediate the published manifest supersedes. The
+    // writer's armed coverage floor survives for the deferred
+    // `certify_published_manifest` call after the swap validates.
+    t_index.replay_region_doc_stamps(marks_storage.raw())?;
     if let Some(p) = &progress {
         p.tick_activity();
     }
@@ -28577,6 +28776,15 @@ fn rebuild_tantivy_from_db_once(
         )
     })?;
 
+    // Task 8: certification must wait for the candidate to be validated
+    // and — for a staged build — swapped live and re-verified at the
+    // published path. A receipt written here would durably survive a
+    // refusal below and certify a manifest that never went live. Disarm
+    // the build-start coverage floor across the writer drop so the
+    // post-publish call can bind it to the manifest readers actually
+    // open; `marks_storage` stays open for that call.
+    let certification_floor = t_index.take_publication_floor();
+
     // Release the bulk writer before opening a fresh validation reader. Large
     // archives must not retain both writer and reader working sets here.
     publication.run("release_writer", || {
@@ -28616,7 +28824,9 @@ fn rebuild_tantivy_from_db_once(
             count_total_messages_exact(&storage)
         })?
     } else {
-        observed_messages.max(indexed_docs)
+        // `indexed_docs` includes the Task-5 region documents converged
+        // above — the canonical message count must not inherit them.
+        observed_messages.max(indexed_docs.saturating_sub(region_docs))
     };
     publication.run("close_canonical_reader", || {
         storage.close_without_checkpoint().with_context(|| {
@@ -28649,6 +28859,7 @@ fn rebuild_tantivy_from_db_once(
     rebuild_state.committed_conversation_id = last_processed_conversation_id;
     rebuild_state.processed_conversations = processed_conversations;
     rebuild_state.indexed_docs = indexed_docs;
+    rebuild_state.indexed_region_docs = region_docs;
     // GH #494: prepare the complete generation in its CONTENT directory before
     // swapping. Keeping the completed checkpoint only on the old live path
     // loses it during the swap; a crash then exposes new documents without
@@ -28699,6 +28910,14 @@ fn rebuild_tantivy_from_db_once(
         crate::search::tantivy::validate_searchable_index_contract(&index_path)?;
         verify_published_lexical_doc_count(&index_path, indexed_docs, "direct")
     })?;
+    // Task 8: certify ONLY now — the candidate passed validation, any
+    // staged swap published it, and the post-swap verify proved the
+    // manifest readers actually open. A refusal above never reached this
+    // point, so no durable certification can outlive a manifest that
+    // never went live. The floor captured at build start bounds the
+    // receipt's coverage claim.
+    TantivyIndex::certify_published_manifest(marks_storage.raw(), &index_path, certification_floor);
+    drop(marks_storage);
     log_lexical_generation_manifest_published(&generation_manifest, &equivalence_evidence);
 
     if let Some(p) = &progress {
@@ -28736,6 +28955,7 @@ fn rebuild_tantivy_from_db_once(
     Ok(LexicalRebuildOutcome {
         observed_conversations: final_total_conversations,
         indexed_docs,
+        indexed_region_docs: region_docs,
         observed_messages: Some(final_observed_messages),
         exact_checkpoint_persisted: true,
         equivalence: Some(equivalence_evidence),
@@ -31086,7 +31306,7 @@ fn targeted_quarantine_retry_inner(
                 .unwrap_or_else(|| "targeted retry deferred its lexical update".to_string()),
         ));
     }
-    lexical.commit()?;
+    lexical.commit_with_region_doc_stamps(storage.raw())?;
     persist::with_ephemeral_writer(
         &storage,
         false,
@@ -34453,10 +34673,21 @@ fn reindex_paths_with_semantic_delta(
                 if chunk_needs_publication {
                     #[cfg(test)]
                     inject_watch_lexical_test_failure(WatchLexicalTestFault::Commit)?;
-                    t_index_guard
+                    if let Err(error) = t_index_guard
                         .as_mut()
                         .expect("watch Tantivy writer must still be open before commit")
-                        .commit()?;
+                        .commit_with_region_doc_stamps(storage.raw())
+                    {
+                        // A failed commit leaves every staged document —
+                        // canonical AND region — inside this writer's
+                        // uncommitted generation. Dropping the writer is the
+                        // only way a later commit cannot certify work this
+                        // chunk never shipped; replay debt already covers
+                        // the republish (see 34507 / 34644 for the same
+                        // discard pattern).
+                        *t_index_guard = None;
+                        return Err(error);
+                    }
                     published_conversations = published_conversations.saturating_add(
                         chunk_outcome.batch_outcome.canonical_conversation_ids.len(),
                     );
@@ -35441,10 +35672,18 @@ fn recover_absent_watch_source_publications(
         if page_replayed > 0 {
             #[cfg(test)]
             inject_watch_lexical_test_failure(WatchLexicalTestFault::Commit)?;
-            index
+            if let Err(error) = index
                 .as_mut()
                 .expect("canonical watch replay writer is open")
-                .commit()?;
+                .commit_with_region_doc_stamps(storage.raw())
+            {
+                // Same discard contract as the chunk commit: the failed
+                // commit leaves staged replay documents in this writer's
+                // uncommitted generation — drop it so no later commit can
+                // certify them.
+                *index = None;
+                return Err(error);
+            }
             recovered.published_conversations = recovered
                 .published_conversations
                 .saturating_add(page_replayed);
@@ -38804,7 +39043,29 @@ pub mod persist {
                 } else {
                     None
                 };
-                franken.insert_conversation_tree(agent_id, workspace_id, internal)
+                let outcome = franken.insert_conversation_tree(agent_id, workspace_id, internal)?;
+                // One coherent extension generation (facts + structural
+                // projection + durable viewer_meta receipt) rides the same
+                // ingest pass — pending → one transaction → complete, or a
+                // durable failed mark the backfill lane reconciles.
+                crate::viewer_extensions::projection::publish_ingest_generation_best_effort(
+                    franken.raw(),
+                    internal,
+                    outcome.conversation_id,
+                );
+                // Task 11: post-commit change-journal notify — canonical
+                // events were already journaled by the observer triggers
+                // inside the ingest commit; this coalesces them and stamps
+                // canonical_ready (SQLite journal is truth, IPC is wakeup-only).
+                crate::viewer_extensions::changes::notify_committed_change_best_effort(
+                    franken.raw(),
+                );
+                // Task 12: wake any bridge event listener on this archive.
+                // Wakeup-only — a missed wake only delays the poll fallback.
+                if let Ok(db_path) = franken.database_path() {
+                    crate::viewer_extensions::changes::send_bridge_wakeup_best_effort(&db_path);
+                }
+                Ok(outcome)
             }) {
                 Ok(outcome) => outcomes.push((idx, outcome)),
                 Err(err) if is_retryable_franken_error(&err) => {
@@ -39086,16 +39347,41 @@ pub mod persist {
             // Quill resolves replacement identities against published state.
             // Publish any preceding incremental additions once at this batch
             // boundary, rather than sealing every canonical conversation.
+            // The same commit seals region documents that preceding batch
+            // staged — flush its queued marks stamps `published` with it.
             t_index
                 .as_deref_mut()
                 .expect("inline rebuild requires Tantivy writer")
-                .commit()?;
+                .commit_with_region_doc_stamps(storage.raw())?;
         }
         let mut rebuilt_conversation_ids = HashSet::new();
         let mut skip_inline_lexical_updates = false;
+        // Task 5 region-doc prelude: stage every admitted session's region
+        // documents — including the pending-mark convergence sweep — BEFORE
+        // any canonical staging. Quill's `upsert` publishes pending work
+        // when a re-staged identity already lives in the committed snapshot
+        // (a republish), so a region upsert issued after canonical staging
+        // would flush the batch mid-generation: a failed outer commit would
+        // then leave canonical docs searchable without their publication
+        // receipt. Region-only early commits stay honest — marks remain
+        // `pending` and session reads gate on them until the post-commit
+        // stamp. The per-conversation hooks inside the loop dedupe.
+        if !defer_lexical_updates && let Some(index) = t_index.as_deref_mut() {
+            index.converge_pending_search_region_docs(storage.raw(), 4096)?;
+            for (_, outcome) in &ordered {
+                index.stage_search_region_docs(storage.raw(), outcome.conversation_id)?;
+            }
+        }
         for (_, outcome) in ordered {
             batch_outcome.record_insert_outcome(&outcome);
             if defer_lexical_updates || skip_inline_lexical_updates {
+                // The prelude may already have staged this session's region
+                // docs; rescind the queued stamp so the persisted mark stays
+                // `pending` with the canonical debt instead of publishing
+                // region docs without their messages.
+                if let Some(index) = t_index.as_deref_mut() {
+                    index.unstage_search_region_docs(outcome.conversation_id);
+                }
                 if capture_semantic_delta {
                     let (inputs, max_message_id) =
                         packet_semantic_delta_for_outcome(storage, &outcome)?;
@@ -39124,6 +39410,15 @@ pub mod persist {
                                 .expect("inline rebuild requires Tantivy writer"),
                             outcome.conversation_id,
                         )?;
+                        // Task 5: region documents ride the same writer —
+                        // the persisted region rows are already committed
+                        // by the generation publication above. Staging
+                        // only queues the marks stamp; `published` lands
+                        // after this writer's commit.
+                        t_index
+                            .as_deref_mut()
+                            .expect("inline rebuild requires Tantivy writer")
+                            .stage_search_region_docs(storage.raw(), outcome.conversation_id)?;
                     }
                 }
                 LexicalPopulationStrategy::IncrementalInline => {
@@ -39153,6 +39448,13 @@ pub mod persist {
                                 if should_defer_incremental_lexical_update_after_error(&error) {
                                     batch_outcome.record_deferred_lexical_update(&error);
                                     skip_inline_lexical_updates = true;
+                                    // The prelude already staged this
+                                    // session's region docs; rescind its
+                                    // queued stamp so the mark stays
+                                    // `pending` with the canonical debt.
+                                    if let Some(index) = t_index.as_deref_mut() {
+                                        index.unstage_search_region_docs(outcome.conversation_id);
+                                    }
                                     tracing::warn!(
                                         error = %error,
                                         "incremental lexical update ran out of memory; preserving SQLite ingest and deferring lexical repair"
@@ -39160,6 +39462,21 @@ pub mod persist {
                                 } else {
                                     return Err(error);
                                 }
+                            } else {
+                                // Task 5: region documents converge with
+                                // the message documents — the generation
+                                // publication already committed the new
+                                // region inventory for this session.
+                                // Staging only queues the marks stamp;
+                                // `published` lands after this writer's
+                                // commit.
+                                t_index
+                                    .as_deref_mut()
+                                    .expect("incremental inline updates require Tantivy writer")
+                                    .stage_search_region_docs(
+                                        storage.raw(),
+                                        outcome.conversation_id,
+                                    )?;
                             }
                         }
                     }
@@ -39172,10 +39489,19 @@ pub mod persist {
                 batch_outcome.extend_semantic_delta(inputs, max_message_id);
             }
         }
+        // The pending-mark convergence sweep runs in the pre-canonical
+        // prelude above: sessions whose region inventory was republished
+        // but whose Quill region documents are still pending reconcile
+        // inside this index run. Sessions whose canonical staging was
+        // skipped (flag or mid-batch OOM) had their stamps rescinded in
+        // the loop and keep `pending` marks with the canonical debt.
         if rebuild_inline {
+            // The commit seals the staged region documents; the queued
+            // marks stamps land `published` only after it succeeds —
+            // never on documents a failed commit could have dropped.
             t_index
                 .expect("inline rebuild requires Tantivy writer")
-                .commit()?;
+                .commit_with_region_doc_stamps(storage.raw())?;
         }
 
         Ok(batch_outcome)
@@ -39603,8 +39929,38 @@ pub mod persist {
                 None
             };
 
-            writer.insert_conversation_tree(agent_id, workspace_id, &internal_conv)
+            let outcome =
+                writer.insert_conversation_tree(agent_id, workspace_id, &internal_conv)?;
+            // One coherent extension generation (facts + structural
+            // projection + durable viewer_meta receipt) in the same ingest
+            // pass — pending → one transaction → complete, or a durable
+            // failed mark the backfill lane reconciles.
+            crate::viewer_extensions::projection::publish_ingest_generation_best_effort(
+                writer.raw(),
+                &internal_conv,
+                outcome.conversation_id,
+            );
+            // Task 11: post-commit change-journal notify (see the batch
+            // site below for the trigger-vs-notify split).
+            crate::viewer_extensions::changes::notify_committed_change_best_effort(writer.raw());
+            // Task 12: wake any bridge event listener (wakeup-only).
+            if let Ok(db_path) = writer.database_path() {
+                crate::viewer_extensions::changes::send_bridge_wakeup_best_effort(&db_path);
+            }
+            Ok(outcome)
         })?;
+
+        // Task 5: the generation publication above already committed this
+        // session's region inventory; its region documents stage on the
+        // same writer and stamp `published` after this writer's commit
+        // (a no-op marks row — e.g. a lane without the extension profile —
+        // leaves docs_state absent and is skipped honestly by the
+        // persisted-mark lookup). Staged BEFORE the canonical documents:
+        // Quill's `upsert` publishes pending work when a re-staged
+        // identity already lives in the committed snapshot, so staging
+        // regions after canonical docs would flush this generation's
+        // messages ahead of the writer's real commit boundary.
+        t_index.stage_search_region_docs(storage.raw(), conversation_id)?;
 
         // Publish inserted messages and replace revised native messages.
         // Routed through the packet pipeline per
@@ -40258,7 +40614,9 @@ pub mod persist {
                 && lexical_strategy == LexicalPopulationStrategy::IncrementalInline
                 && let Some(index) = t_index.as_deref_mut()
             {
-                index.commit()?;
+                // Slice-bound commit seals staged region documents too —
+                // flush their queued marks stamps `published` with it.
+                index.commit_with_region_doc_stamps(storage.raw())?;
                 changed_parts_since_commit = 0;
             }
             heartbeat.tick();
@@ -40443,6 +40801,31 @@ pub mod persist {
                     heartbeat.tick();
                 }
 
+                // One coherent extension generation per conversation rides
+                // the same ingest pass — pending → one transaction →
+                // complete — each with its durable viewer_meta receipt so
+                // a failure names the reason instead of silently skipping
+                // the lane. Idempotent on the receipt's
+                // (source_revision, extractor_version, projection_version).
+                crate::viewer_extensions::projection::publish_ingest_generations_batch_best_effort(
+                    writer.raw(),
+                    prepared
+                        .iter()
+                        .zip(&outcomes)
+                        .map(|((_, _, conv), outcome)| (*conv, outcome.conversation_id)),
+                );
+                // Task 11: post-commit change-journal notify — canonical
+                // events were already journaled by the observer triggers
+                // inside the ingest commit; this coalesces them and stamps
+                // canonical_ready (SQLite journal is truth, IPC is wakeup-only).
+                crate::viewer_extensions::changes::notify_committed_change_best_effort(
+                    writer.raw(),
+                );
+                // Task 12: wake any bridge event listener (wakeup-only).
+                if let Ok(db_path) = writer.database_path() {
+                    crate::viewer_extensions::changes::send_bridge_wakeup_best_effort(&db_path);
+                }
+
                 Ok(outcomes)
             },
         )?;
@@ -40455,11 +40838,30 @@ pub mod persist {
             if rebuild_inline {
                 // A prior direct or batched incremental call may still have
                 // staged identities. Establish the published batch boundary
-                // before Quill resolves canonical replacements.
+                // before Quill resolves canonical replacements. The same
+                // commit seals any region documents that call staged —
+                // flush its queued marks stamps `published` with it.
                 t_index
                     .as_deref_mut()
                     .expect("inline rebuild requires Tantivy writer")
-                    .commit()?;
+                    .commit_with_region_doc_stamps(storage.raw())?;
+            }
+            // Task 5 region-doc prelude: stage every pending region
+            // document — the convergence sweep plus this batch's sessions —
+            // BEFORE any canonical staging. Quill's `upsert` publishes
+            // pending work when a re-staged identity already lives in the
+            // committed snapshot (a republish), so a region upsert issued
+            // after canonical staging would flush the batch
+            // mid-generation: a failed outer commit would leave canonical
+            // docs searchable without their publication receipt.
+            // Region-only early commits stay honest — marks remain
+            // `pending` and session reads gate on them until the
+            // post-commit stamp.
+            if let Some(index) = t_index.as_deref_mut() {
+                index.converge_pending_search_region_docs(storage.raw(), 4096)?;
+                for outcome in &outcomes {
+                    index.stage_search_region_docs(storage.raw(), outcome.conversation_id)?;
+                }
             }
             // ibuuh.32 / 5b9p0: route the serial-batched lexical sink
             // through the packet pipeline. Build each packet ONCE and
@@ -40475,6 +40877,14 @@ pub mod persist {
                 // giant conversation).
                 heartbeat.tick();
                 if skip_inline_lexical_updates {
+                    // The prelude may already have staged this session's
+                    // region docs; rescind the queued stamp so the
+                    // persisted mark stays `pending` with the canonical
+                    // debt instead of publishing region docs without
+                    // their messages.
+                    if let Some(index) = t_index.as_deref_mut() {
+                        index.unstage_search_region_docs(outcome.conversation_id);
+                    }
                     continue;
                 }
                 match lexical_strategy {
@@ -40520,6 +40930,14 @@ pub mod persist {
                                     if should_defer_incremental_lexical_update_after_error(&error) {
                                         batch_outcome.record_deferred_lexical_update(&error);
                                         skip_inline_lexical_updates = true;
+                                        // Rescind this session's queued
+                                        // region-doc stamp — its mark stays
+                                        // `pending` with the canonical debt.
+                                        if let Some(index) = t_index.as_deref_mut() {
+                                            index.unstage_search_region_docs(
+                                                outcome.conversation_id,
+                                            );
+                                        }
                                         tracing::warn!(
                                             error = %error,
                                             "incremental lexical update ran out of memory; preserving SQLite ingest and deferring lexical repair"
@@ -40533,15 +40951,25 @@ pub mod persist {
                     }
                 }
             }
+            // The pending-mark convergence sweep runs in the
+            // pre-canonical prelude above — same contract as the other
+            // batch lane. Sessions skipped after the prelude (mid-batch
+            // OOM) had their stamps rescinded in the loop and keep
+            // `pending` marks with the canonical debt.
             if rebuild_inline {
+                // Same two-phase rule: the commit seals the staged
+                // documents, then the queued marks stamps land
+                // `published` — never before.
                 t_index
                     .expect("inline rebuild requires Tantivy writer")
-                    .commit()?;
+                    .commit_with_region_doc_stamps(storage.raw())?;
             }
         } else {
             for outcome in &outcomes {
                 batch_outcome.record_insert_outcome(outcome);
             }
+            // Deferred-lexical lane: region docs wait for the authoritative
+            // rebuild, which reconciles every pending marks row.
         }
 
         if capture_semantic_delta {
@@ -41233,11 +41661,22 @@ pub mod persist {
             assert_eq!(fingerprint, "content-v1:2:9:11");
         }
 
+        /// Canonical message documents live in the committed index.
+        /// Task 5 persists search-region documents alongside them in the
+        /// `msg_idx >= REGION_DOC_BASE` space; every assertion in this
+        /// module counts the canonical share only, matching the meaning
+        /// the call sites had before region documents existed.
         fn tantivy_doc_count(index: &mut crate::search::tantivy::TantivyIndex) -> u64 {
             index.commit().expect("commit tantivy");
             let reader = index.reader().expect("reader");
             crate::search::quill_bridge::refresh_reader(&reader).expect("reload");
-            reader.doc_count().expect("doc count")
+            let query = crate::search::quill_bridge::canonical_message_query(
+                frankensearch::quill::query::Query::all(),
+            );
+            crate::search::quill_bridge::search_paginated(&reader, &query, 1, 0, true)
+                .expect("canonical doc count")
+                .total_count
+                .unwrap_or(0) as u64
         }
 
         fn assert_gh466_canonical_prefix_cap(agent_slug: &str, route: usize, expand_prefix: bool) {
@@ -41531,7 +41970,18 @@ pub mod persist {
             {
                 let reader = scan_index.reader().unwrap();
                 crate::search::quill_bridge::refresh_reader(&reader).unwrap();
-                assert_eq!(reader.doc_count().unwrap(), expected_docs);
+                // Task 5: the raw live count binds canonical messages AND
+                // materialized region documents — canonical expected count
+                // plus the persisted doc-backed region bound (the batch's
+                // stamp pass already drained the stale-delete queue).
+                assert_eq!(
+                    reader.doc_count().unwrap(),
+                    expected_docs
+                        + crate::viewer_extensions::search_regions::live_region_doc_bound(
+                            storage.raw()
+                        )
+                        .unwrap()
+                );
             }
             assert_eq!(tantivy_doc_count(&mut scan_index), expected_docs);
             persist_conversations_batched(
@@ -41551,7 +42001,12 @@ pub mod persist {
             );
             let rebuilt =
                 crate::indexer::rebuild_tantivy_from_db(&db_path, dir.path(), 1, None).unwrap();
-            assert_eq!(rebuilt.indexed_docs, expected_docs as usize);
+            // Task 5: `indexed_docs` binds every published document;
+            // `indexed_docs - indexed_region_docs` is the canonical share.
+            assert_eq!(
+                rebuilt.indexed_docs - rebuilt.indexed_region_docs,
+                expected_docs as usize
+            );
             assert_eq!(
                 marker_hit(&index_path),
                 incremental_hit,
@@ -42216,7 +42671,16 @@ pub mod persist {
                 let index = TantivyIndex::open_or_create(&index_path).unwrap();
                 assert_eq!(hits(&index, "durableneedle"), original_hit);
                 assert!(hits(&index, "newneedle").is_empty());
-                assert_eq!(index.doc_count().unwrap(), 4);
+                // Task 5: one `meta:title` region doc per conversation also
+                // lives in the index; count the canonical message share.
+                assert_eq!(
+                    index.doc_count().unwrap()
+                        - crate::viewer_extensions::search_regions::live_region_doc_bound(
+                            storage.raw(),
+                        )
+                        .unwrap_or(0) as u64,
+                    4
+                );
                 assert!(
                     super::super::load_lexical_rebuild_state(&index_path)
                         .unwrap()
@@ -43305,6 +43769,7 @@ pub mod persist {
                 expected_lexical_docs: 0,
                 tantivy_requires_rebuild: true,
                 observed_tantivy_docs: None,
+                region_doc_bound: 0,
                 published_index_validated_for_current_data: false,
             };
 
@@ -43366,6 +43831,7 @@ pub mod persist {
                         expected_lexical_docs: 42,
                         tantivy_requires_rebuild: true,
                         observed_tantivy_docs: None,
+                        region_doc_bound: 0,
                         published_index_validated_for_current_data: false,
                     },
                 ),
@@ -43391,6 +43857,7 @@ pub mod persist {
                         expected_lexical_docs: 42,
                         tantivy_requires_rebuild: false,
                         observed_tantivy_docs: Some(3),
+                        region_doc_bound: 0,
                         published_index_validated_for_current_data: false,
                     },
                 ),
@@ -43459,10 +43926,66 @@ pub mod persist {
                         expected_lexical_docs: 42,
                         tantivy_requires_rebuild: false,
                         observed_tantivy_docs: Some(42),
+                        region_doc_bound: 0,
                         published_index_validated_for_current_data: false,
                     },
                 ),
                 None
+            );
+        }
+
+        #[test]
+        fn incremental_canonical_lexical_repair_plan_region_docs_never_mask_sparse_index() {
+            // Task 5: live docs now include converged search-region
+            // documents — observed = canonical share + region share. An
+            // index missing ONE canonical doc but carrying a region doc
+            // reports the expected total: without the bound subtraction
+            // the sparse gate would call that healthy and never repair.
+            assert_eq!(
+                crate::indexer::choose_incremental_canonical_lexical_repair_plan(
+                    crate::indexer::IncrementalCanonicalLexicalRepairContext {
+                        full_refresh: false,
+                        force_rebuild: false,
+                        resume_lexical_rebuild: false,
+                        targeted_watch_once_only: false,
+                        salvage_messages_imported: 0,
+                        canonical_messages: 42,
+                        expected_lexical_docs: 42,
+                        tantivy_requires_rebuild: false,
+                        // 41 live message docs + 1 region doc = 42 total.
+                        observed_tantivy_docs: Some(42),
+                        region_doc_bound: 1,
+                        published_index_validated_for_current_data: false,
+                    },
+                ),
+                Some(crate::indexer::IncrementalCanonicalLexicalRepairPlan {
+                    canonical_messages: 42,
+                    observed_tantivy_docs: Some(42),
+                    reason: "incremental_index_repairs_sparse_tantivy_from_authoritative_canonical_db_before_scan",
+                }),
+                "a region doc must never substitute for a missing canonical doc"
+            );
+            // ...and a fully covered index with its region docs stays
+            // healthy — the bound splits them out of the comparison.
+            assert_eq!(
+                crate::indexer::choose_incremental_canonical_lexical_repair_plan(
+                    crate::indexer::IncrementalCanonicalLexicalRepairContext {
+                        full_refresh: false,
+                        force_rebuild: false,
+                        resume_lexical_rebuild: false,
+                        targeted_watch_once_only: false,
+                        salvage_messages_imported: 0,
+                        canonical_messages: 42,
+                        expected_lexical_docs: 42,
+                        tantivy_requires_rebuild: false,
+                        // 42 live message docs + 2 region docs = 44 total.
+                        observed_tantivy_docs: Some(44),
+                        region_doc_bound: 2,
+                        published_index_validated_for_current_data: false,
+                    },
+                ),
+                None,
+                "a covered index with region docs is healthy, not sparse"
             );
         }
 
@@ -43488,6 +44011,7 @@ pub mod persist {
                         tantivy_requires_rebuild: false,
                         // The live index holds exactly the non-noise docs.
                         observed_tantivy_docs: Some(63),
+                        region_doc_bound: 0,
                         published_index_validated_for_current_data: false,
                     },
                 ),
@@ -43513,6 +44037,7 @@ pub mod persist {
                         expected_lexical_docs: 63,
                         tantivy_requires_rebuild: false,
                         observed_tantivy_docs: Some(40),
+                        region_doc_bound: 0,
                         published_index_validated_for_current_data: false,
                     },
                 ),
@@ -43540,6 +44065,7 @@ pub mod persist {
                         expected_lexical_docs: 42,
                         tantivy_requires_rebuild: false,
                         observed_tantivy_docs: Some(3),
+                        region_doc_bound: 0,
                         published_index_validated_for_current_data: true,
                     },
                 ),
@@ -43565,6 +44091,7 @@ pub mod persist {
                         expected_lexical_docs: 42,
                         tantivy_requires_rebuild: true,
                         observed_tantivy_docs: None,
+                        region_doc_bound: 0,
                         published_index_validated_for_current_data: true,
                     },
                 )
@@ -43928,7 +44455,7 @@ pub mod persist {
 
             let rebuild = crate::indexer::rebuild_tantivy_from_db(&db_path, &data_dir, 1, None)
                 .expect("canonical lexical rebuild should succeed");
-            assert_eq!(rebuild.indexed_docs, 1);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 1);
 
             let rebuilt_client = SearchClient::open(&index_path, None)
                 .unwrap()
@@ -55001,12 +55528,20 @@ mod tests {
         assert_eq!(telemetry.ordered_buffered_pages, 0);
     }
 
+    /// Canonical message documents in the published index for `data_dir`.
+    /// Task 5 persists search-region documents in the same index
+    /// (`msg_idx >= REGION_DOC_BASE`); the call sites count the canonical
+    /// share only, matching their pre-region-document meaning.
     fn tantivy_doc_count_for_data_dir(data_dir: &Path) -> u64 {
         let index_path = index_dir(data_dir).unwrap();
-        crate::search::tantivy::searchable_index_summary(&index_path)
-            .unwrap()
-            .expect("searchable lexical index summary")
-            .docs as u64
+        let reader = crate::search::quill_bridge::open_cass_reader(&index_path).unwrap();
+        let query = crate::search::quill_bridge::canonical_message_query(
+            frankensearch::quill::query::Query::all(),
+        );
+        crate::search::quill_bridge::search_paginated(&reader, &query, 1, 0, true)
+            .expect("canonical doc count")
+            .total_count
+            .unwrap_or(0) as u64
     }
 
     fn token_usage_extra(input_tokens: i64, output_tokens: i64) -> serde_json::Value {
@@ -60617,7 +61152,7 @@ mod tests {
 
         let mut pacer = StreamingCommitPacer::new();
         pacer.last_fold_attempt = Some(std::time::Instant::now());
-        pacer.commit(Some(&mut t_index));
+        pacer.commit(Some(&mut t_index), None);
         assert_eq!(
             t_index.segment_count(),
             planted_segments,
@@ -60625,7 +61160,7 @@ mod tests {
         );
 
         pacer.last_fold_attempt = None;
-        pacer.commit(Some(&mut t_index));
+        pacer.commit(Some(&mut t_index), None);
         assert!(
             pacer.last_fold_attempt.is_some(),
             "the attempt must be recorded"
@@ -63535,6 +64070,51 @@ c.close()
         );
     }
 
+    /// Task 8: the authoritative rebuild lane certifies ONLY after the
+    /// candidate validates and (for the staged lanes) swaps live — the
+    /// durable receipt, the `lexical_generation` bump and the
+    /// `index_ready` journal row land atomically at the end of the
+    /// publish path, bound to the coverage floor captured at build start.
+    #[test]
+    fn rebuild_tantivy_certifies_published_manifest_after_validation() {
+        let dir = TempDir::new().unwrap();
+        let data_dir = dir.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("rebuild-certify.db");
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+        crate::viewer_extensions::schema::ensure_schema(storage.raw()).unwrap();
+        seed_lexical_rebuild_fixture(&storage);
+        drop(storage);
+
+        rebuild_tantivy_from_db(&db_path, &data_dir, 2, None).unwrap();
+
+        let reader = FrankenStorage::open_readonly(&db_path).unwrap();
+        let receipt = crate::viewer_extensions::changes::latest_lexical_publication(reader.raw())
+            .unwrap()
+            .expect("a published rebuild must leave a durable PublicationReceipt");
+        assert_eq!(receipt.lexical_generation, 1);
+        assert!(
+            receipt.quill_generation >= 1,
+            "the receipt must name the committed Quill generation: {receipt:?}"
+        );
+        let revisions = crate::viewer_extensions::changes::current_journal_revisions(reader.raw())
+            .unwrap()
+            .expect("revisions");
+        assert_eq!(
+            revisions.lexical_generation, 1,
+            "viewer_revisions must carry the certified ordinal"
+        );
+        let page = crate::viewer_extensions::changes::changes_since(reader.raw(), 0, 64).unwrap();
+        assert!(
+            page.events
+                .iter()
+                .any(|e| e.kind == crate::viewer_extensions::changes::kind::INDEX_READY),
+            "the certified publication must journal index_ready: {:?}",
+            page.events
+        );
+    }
+
     /// #439: the fallback-FTS shadow maintenance must report liveness per
     /// streamed page, otherwise the post-publish `--full` tail looks like a
     /// finalize wedge to the stall watchdog.
@@ -63792,13 +64372,26 @@ c.close()
         ensure_fts_schema(&storage);
         let mut index = TantivyIndex::open_or_create(&index_dir(&data_dir).unwrap()).unwrap();
 
+        // Task 5: persist also stages one `meta:title` search-region
+        // document per conversation in the `msg_idx >= REGION_DOC_BASE`
+        // space; this test counts canonical message documents only.
+        let canonical_doc_count = |reader: &frankensearch::quill::QuillSearchIndex| {
+            let query = crate::search::quill_bridge::canonical_message_query(
+                frankensearch::quill::query::Query::all(),
+            );
+            crate::search::quill_bridge::search_paginated(reader, &query, 1, 0, true)
+                .expect("canonical doc count")
+                .total_count
+                .unwrap_or(0)
+        };
+
         let conv1 = norm_conv(Some("ext"), vec![norm_msg(0, 100), norm_msg(1, 200)]);
         persist::persist_conversation(&storage, &mut index, &conv1).unwrap();
         index.commit().unwrap();
 
         let reader = index.reader().unwrap();
         crate::search::quill_bridge::refresh_reader(&reader).unwrap();
-        assert_eq!(reader.doc_count().expect("doc count"), 2);
+        assert_eq!(canonical_doc_count(&reader), 2);
 
         let conv2 = norm_conv(
             Some("ext"),
@@ -63809,7 +64402,7 @@ c.close()
 
         let reader = index.reader().unwrap();
         crate::search::quill_bridge::refresh_reader(&reader).unwrap();
-        assert_eq!(reader.doc_count().expect("doc count"), 3);
+        assert_eq!(canonical_doc_count(&reader), 3);
     }
 
     #[test]
@@ -63837,7 +64430,7 @@ c.close()
 
         let logs = capture_logs(|| {
             let rebuild = rebuild_tantivy_from_db(&db_path, &data_dir, 2, None).unwrap();
-            assert_eq!(rebuild.indexed_docs, 4);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 4);
         });
 
         // Bead 9752r: commit 9e6c0ef7 (9ct8r) routes restart_from_zero
@@ -63925,7 +64518,7 @@ c.close()
         let _prep_profile = set_env("CASS_PREP_PROFILE", "1");
         let logs = capture_logs(|| {
             let rebuild = rebuild_tantivy_from_db(&db_path, &data_dir, 2, None).unwrap();
-            assert_eq!(rebuild.indexed_docs, 4);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 4);
             assert_eq!(rebuild.observed_messages, Some(4));
             assert!(!rebuild.exact_checkpoint_persisted);
         });
@@ -63982,7 +64575,7 @@ c.close()
 
         let logs = capture_logs(|| {
             let rebuild = rebuild_tantivy_from_db(&db_path, &data_dir, 2, None).unwrap();
-            assert_eq!(rebuild.indexed_docs, 4);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 4);
             assert_eq!(rebuild.observed_messages, Some(4));
         });
 
@@ -64037,7 +64630,7 @@ c.close()
 
         let logs = capture_logs(|| {
             let rebuild = rebuild_tantivy_from_db(&db_path, &data_dir, 2, None).unwrap();
-            assert_eq!(rebuild.indexed_docs, 4);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 4);
             let evidence = rebuild
                 .equivalence
                 .as_ref()
@@ -64112,7 +64705,7 @@ c.close()
                 .equivalence
                 .as_ref()
                 .expect("authoritative rebuild must emit equivalence evidence");
-            assert_eq!(rebuild.indexed_docs, 4);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 4);
 
             let index_path = index_dir(&data_dir).unwrap();
             let loaded = lexical_generation::load_manifest(&index_path)
@@ -64696,7 +65289,7 @@ c.close()
 
         let logs = capture_logs(|| {
             let rebuild = rebuild_tantivy_from_db(&db_path, &data_dir, 4, None).unwrap();
-            assert_eq!(rebuild.indexed_docs, 8);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 8);
             assert_eq!(rebuild.observed_messages, Some(8));
             assert!(rebuild.exact_checkpoint_persisted);
         });
@@ -64824,7 +65417,12 @@ c.close()
 
         let rebuild = rebuild_tantivy_from_db(&db_path, &data_dir, conversations.len(), None)
             .expect("reduced GH #382 geometry must make forward progress to completion");
-        assert_eq!(rebuild.indexed_docs, conversations.len() * 2);
+        // Task 5: `indexed_docs` includes converged search-region
+        // documents; the canonical share is what this test means.
+        assert_eq!(
+            rebuild.indexed_docs - rebuild.indexed_region_docs,
+            conversations.len() * 2
+        );
         assert_eq!(rebuild.observed_messages, Some(conversations.len() * 2));
         assert!(rebuild.exact_checkpoint_persisted);
         assert_eq!(
@@ -64865,7 +65463,7 @@ c.close()
         drop(index);
 
         let rebuild = rebuild_tantivy_from_db(&db_path, &data_dir, 2, None).unwrap();
-        assert_eq!(rebuild.indexed_docs, 4);
+        assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 4);
         assert_eq!(rebuild.observed_messages, Some(4));
         assert!(rebuild.exact_checkpoint_persisted);
         let checkpoint = load_lexical_rebuild_checkpoint(&index_path)
@@ -64874,7 +65472,7 @@ c.close()
         assert!(checkpoint.completed);
         assert_eq!(checkpoint.processed_conversations, 2);
         assert_eq!(checkpoint.committed_offset, 2);
-        assert_eq!(checkpoint.indexed_docs, 4);
+        assert_eq!(checkpoint.indexed_docs - checkpoint.indexed_region_docs, 4);
         let state = load_lexical_rebuild_state(&index_path)
             .unwrap()
             .expect("completed lexical rebuild state after rebuild");
@@ -64985,7 +65583,10 @@ c.close()
         );
 
         let rebuild = rebuild_handle.join().unwrap().unwrap();
-        assert_eq!(rebuild.indexed_docs, expected_docs);
+        assert_eq!(
+            rebuild.indexed_docs - rebuild.indexed_region_docs,
+            expected_docs
+        );
         assert_eq!(rebuild.observed_messages, Some(expected_docs));
         assert!(
             load_active_lexical_rebuild_pipeline_runtime(&index_path, &db_path)
@@ -65022,7 +65623,7 @@ c.close()
         )
         .unwrap();
         assert_eq!(rebuild.observed_conversations, 2);
-        assert_eq!(rebuild.indexed_docs, 4);
+        assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 4);
         assert_eq!(rebuild.observed_messages, Some(4));
         assert!(rebuild.exact_checkpoint_persisted);
 
@@ -65096,7 +65697,7 @@ c.close()
         let logs = capture_logs(|| {
             let rebuild =
                 rebuild_tantivy_from_db_deferred_startup(&db_path, &data_dir, 2, None).unwrap();
-            assert_eq!(rebuild.indexed_docs, 4);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 4);
             assert_eq!(rebuild.observed_messages, Some(4));
         });
 
@@ -65176,7 +65777,7 @@ c.close()
                 None,
             )
             .unwrap();
-            assert_eq!(rebuild.indexed_docs, 4);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 4);
             assert_eq!(rebuild.observed_messages, Some(4));
             assert!(rebuild.exact_checkpoint_persisted);
         });
@@ -65299,7 +65900,7 @@ c.close()
                 None,
             )
             .unwrap();
-            assert_eq!(rebuild.indexed_docs, 8);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 8);
             assert_eq!(rebuild.observed_messages, Some(8));
             assert!(rebuild.exact_checkpoint_persisted);
         });
@@ -65419,7 +66020,7 @@ c.close()
                 None,
             )
             .unwrap();
-            assert_eq!(rebuild.indexed_docs, 6);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 6);
             assert_eq!(rebuild.observed_messages, Some(6));
             assert!(rebuild.exact_checkpoint_persisted);
         });
@@ -67414,7 +68015,7 @@ c.close()
                 None,
             )
             .unwrap();
-            assert_eq!(rebuild.indexed_docs, 30);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 30);
             assert_eq!(rebuild.observed_messages, Some(30));
             assert!(rebuild.exact_checkpoint_persisted);
             rebuild_equivalence = rebuild.equivalence.clone();
@@ -67573,7 +68174,7 @@ c.close()
                 None,
             )
             .unwrap();
-            assert_eq!(rebuild.indexed_docs, 4);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 4);
             assert_eq!(rebuild.observed_messages, Some(4));
         });
 
@@ -67640,7 +68241,7 @@ c.close()
             .expect("completed checkpoint after staged checkpoint reset");
         assert!(checkpoint.completed);
         assert_eq!(checkpoint.processed_conversations, 2);
-        assert_eq!(checkpoint.indexed_docs, 4);
+        assert_eq!(checkpoint.indexed_docs - checkpoint.indexed_region_docs, 4);
         assert_eq!(tantivy_doc_count_for_data_dir(&data_dir), 4);
     }
 
@@ -67724,7 +68325,7 @@ c.close()
 
         let logs = capture_logs(|| {
             let rebuild = rebuild_tantivy_from_db(&db_path, &data_dir, 1, None).unwrap();
-            assert_eq!(rebuild.indexed_docs, 3);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 3);
             assert_eq!(rebuild.observed_messages, Some(3));
             assert!(rebuild.exact_checkpoint_persisted);
         });
@@ -67818,7 +68419,7 @@ c.close()
 
         let logs = capture_logs(|| {
             let rebuild = rebuild_tantivy_from_db(&db_path, &data_dir, 2, None).unwrap();
-            assert_eq!(rebuild.indexed_docs, 7);
+            assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 7);
             assert_eq!(rebuild.observed_messages, Some(7));
             assert!(rebuild.exact_checkpoint_persisted);
         });
@@ -67833,7 +68434,7 @@ c.close()
             .expect("completed checkpoint");
         assert!(checkpoint.completed);
         assert_eq!(checkpoint.processed_conversations, 2);
-        assert_eq!(checkpoint.indexed_docs, 7);
+        assert_eq!(checkpoint.indexed_docs - checkpoint.indexed_region_docs, 7);
 
         let client = SearchClient::open(&index_dir(&data_dir).unwrap(), None)
             .unwrap()
@@ -67942,7 +68543,7 @@ c.close()
         );
 
         let rebuild = rebuild_tantivy_from_db(&db_path, &data_dir, 3, None).unwrap();
-        assert_eq!(rebuild.indexed_docs, 4);
+        assert_eq!(rebuild.indexed_docs - rebuild.indexed_region_docs, 4);
         assert_eq!(rebuild.observed_messages, Some(4));
         assert_eq!(tantivy_doc_count_for_data_dir(&data_dir), 4);
 
@@ -71389,9 +71990,13 @@ c.close()
             term,
             &frankensearch::quill::query::CassQueryFilters::default(),
         );
+        // Task 5: persisted region documents share the index in the
+        // `msg_idx >= REGION_DOC_BASE` space and their meta fragments can
+        // match these probe terms; the assertions identify canonical
+        // message bodies, so apply the same guard the chat path uses.
+        let query = crate::search::quill_bridge::canonical_message_query(query.query);
         let page =
-            crate::search::quill_bridge::search_paginated(&reader, &query.query, 32, 0, true)
-                .unwrap();
+            crate::search::quill_bridge::search_paginated(&reader, &query, 32, 0, true).unwrap();
         let ids: BTreeSet<_> = page
             .hits
             .iter()
@@ -76646,7 +77251,7 @@ c.close()
         assert!(checkpoint.completed);
         assert_eq!(checkpoint.total_conversations, 1);
         assert_eq!(checkpoint.processed_conversations, 1);
-        assert_eq!(checkpoint.indexed_docs, 2);
+        assert_eq!(checkpoint.indexed_docs - checkpoint.indexed_region_docs, 2);
         assert_eq!(
             checkpoint.storage_fingerprint,
             lexical_rebuild_storage_fingerprint(&db_path).unwrap()
@@ -76771,9 +77376,16 @@ c.close()
         let total_messages = count_total_messages_exact(&storage).unwrap();
         assert_eq!(total_messages, 3, "canonical DB must hold all 3 messages");
         assert_eq!(
-            live_tantivy_doc_count(&index_path).unwrap(),
+            live_tantivy_doc_count(&index_path)
+                .unwrap()
+                .map(|docs| docs.saturating_sub(
+                    crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw())
+                        .unwrap_or(0) as usize,
+                )),
             Some(2),
-            "the lexical sink must have dropped the hard-noise message"
+            "the lexical sink must have dropped the hard-noise message \
+             (Task 5: live docs also include the session's region documents; \
+             subtract their persisted bound to compare the canonical share)"
         );
         assert_eq!(
             expected_live_lexical_doc_count(&storage).unwrap(),
@@ -76803,8 +77415,10 @@ c.close()
             "GH #435: the checkpoint must advance when the live index equals the noise-adjusted expected count"
         );
         assert_eq!(
-            checkpoint.indexed_docs, 2,
-            "GH #435: the checkpoint must record the OBSERVED live doc count, not the raw message count"
+            checkpoint.indexed_docs - checkpoint.indexed_region_docs,
+            2,
+            "GH #435: the checkpoint must record the OBSERVED live doc count, not the raw message count \
+             (Task 5: subtract the region-document share for the canonical count)"
         );
     }
 
@@ -77146,6 +77760,22 @@ c.close()
             status.completed_storage_fingerprint.as_deref(),
             Some("content-v1:7:42:42")
         );
+
+        // Task 5: persisted search-region documents share the completed
+        // checkpoint's `indexed_docs`; the exact message total is the
+        // canonical share only.
+        state.indexed_region_docs = 9;
+        persist_lexical_rebuild_state(&index_path, &state).unwrap();
+        let region_status = matching_completed_lexical_rebuild_state_status_without_fingerprint(
+            &index_path,
+            &db_path,
+            7,
+        )
+        .unwrap()
+        .expect("completed checkpoint with region docs still matches");
+        assert_eq!(region_status.completed_indexed_docs, Some(42));
+        assert_eq!(region_status.completed_exact_totals, Some((7, 33)));
+        state.indexed_region_docs = 0;
 
         state.execution_mode = None;
         persist_lexical_rebuild_state(&index_path, &state).unwrap();
@@ -78214,8 +78844,11 @@ c.close()
             "cass339toolargsneedle",
             &frankensearch::quill::query::CassQueryFilters::default(),
         );
+        // Task 5: the session's tool-region document also carries the
+        // needle in its bounded `indexed_text`; count canonical messages.
+        let canonical = crate::search::quill_bridge::canonical_message_query(parsed.query.clone());
         let lexical_matches =
-            crate::search::quill_bridge::search_paginated(&reader, &parsed.query, 100, 0, true)
+            crate::search::quill_bridge::search_paginated(&reader, &canonical, 100, 0, true)
                 .unwrap()
                 .total_count
                 .unwrap_or(0);

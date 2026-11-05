@@ -12,7 +12,7 @@ use super::protocol::{
 };
 use super::reader::{ArchiveStamp, StrictArchive};
 use super::search::{
-    RawRankHit, ReaderSet, decode_hit, engine_filters, parse_lexical_query, raw_page,
+    RawRankHit, ReaderSet, decode_hit, engine_filters, parse_lexical_query, raw_page_canonical,
 };
 
 const IDLE_TTL: Duration = Duration::from_secs(60);
@@ -31,26 +31,47 @@ struct RankCursor {
     seen_docs: HashSet<(usize, u32)>,
     archive_stamp: ArchiveStamp,
     catalog_revision: String,
+    /// Logical canonical revision pinned at cursor start, present only when
+    /// the extension profile AND all canonical-observer triggers were
+    /// installed. `Some` authorizes the metadata-tolerance path below;
+    /// `None` keeps the strict physical-token comparison.
+    canonical_revision: Option<i64>,
     deadline: Instant,
     last_used: Instant,
 }
 
 impl RankCursor {
-    fn check(&self, archive: &mut StrictArchive) -> Result<()> {
+    fn check(&mut self, archive: &mut StrictArchive) -> Result<()> {
         if Instant::now() >= self.deadline {
             return Err(refuse(
                 "ranking_budget_exceeded",
                 "Raw enumeration exceeded its scan deadline",
             ));
         }
-        if self.last_used.elapsed() >= IDLE_TTL
-            || archive.stamp != self.archive_stamp
-            || archive.observe()? != self.catalog_revision
-        {
+        if self.last_used.elapsed() >= IDLE_TTL || archive.stamp != self.archive_stamp {
             return Err(refuse(
                 "stale_snapshot",
                 "Raw enumeration lease or canonical snapshot changed",
             ));
+        }
+        let observed = archive.observe()?;
+        if observed != self.catalog_revision {
+            // Physical bytes moved. When the observer triggers are verified
+            // installed, a stable logical canonical revision proves the
+            // commit touched only extension/metadata rows (e.g. an
+            // annotation write): the canonical bytes this enumeration reads
+            // are unchanged, so the cursor retokens instead of dying.
+            let tolerated = match (self.canonical_revision, archive.read_generation()?) {
+                (Some(pinned), Some(now)) => now.canonical_revision == pinned,
+                _ => false,
+            };
+            if !tolerated {
+                return Err(refuse(
+                    "stale_snapshot",
+                    "Raw enumeration lease or canonical snapshot changed",
+                ));
+            }
+            self.catalog_revision = observed;
         }
         Ok(())
     }
@@ -68,7 +89,7 @@ impl RankCursor {
             }
             let reader = &self.readers.readers[self.reader_index];
             let count = (max_hits - hits.len()).min(expected - self.offset);
-            let page = raw_page(reader, &self.query, &self.filters, self.offset, count)?;
+            let page = raw_page_canonical(reader, &self.query, &self.filters, self.offset, count)?;
             if page.total_count != Some(expected) || page.hits.len() != count {
                 return Err(refuse(
                     "stale_snapshot",
@@ -172,6 +193,15 @@ impl CursorStore {
         }
         let deadline = Instant::now() + Duration::from_millis(budget.deadline_ms);
         let revision = archive.observe()?;
+        // Pin the logical canonical revision only when the observer triggers
+        // make it content-complete; otherwise the physical token rules.
+        let canonical_revision = if archive.canonical_observers()? {
+            archive
+                .read_generation()?
+                .map(|generation| generation.canonical_revision)
+        } else {
+            None
+        };
         let (mut totals, mut total) = (Vec::new(), 0_usize);
         for reader in &readers.readers {
             if Instant::now() >= deadline {
@@ -180,7 +210,7 @@ impl CursorStore {
                     "Raw count deadline exceeded",
                 ));
             }
-            let page = raw_page(reader, &query, &compiled_filters, 0, 1)?;
+            let page = raw_page_canonical(reader, &query, &compiled_filters, 0, 1)?;
             let count = page.total_count.ok_or_else(|| {
                 refuse(
                     "ranking_budget_exceeded",
@@ -222,6 +252,7 @@ impl CursorStore {
             seen_docs: HashSet::new(),
             archive_stamp: archive.stamp.clone(),
             catalog_revision: revision,
+            canonical_revision,
             deadline,
             last_used: Instant::now(),
         };

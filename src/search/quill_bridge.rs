@@ -339,6 +339,42 @@ pub fn search_paginated(
     })
 }
 
+/// Canonical-message guard for persisted search-region documents.
+///
+/// Task 5 publishes `meta:*`/derived region documents into the SAME Quill
+/// index as canonical message documents, in the synthetic `msg_idx` space
+/// starting at `REGION_DOC_BASE`. They exist so session search can gate
+/// region membership on index hits; chat-surface consumers (plain `cass
+/// search`, viewer raw rank cursors) must never see them as ordinary
+/// hits. A `MustNot` range over the indexed `msg_idx` field excludes them
+/// inside the engine, so page boundaries and exact totals stay identical
+/// to a region-free index — filtering a materialized page instead would
+/// misreport `total_count` and could starve a page whose matches were
+/// already charged to `limit` upstream.
+#[must_use]
+pub fn canonical_message_query(
+    query: frankensearch::quill::query::Query,
+) -> frankensearch::quill::query::Query {
+    use frankensearch::quill::query::{BooleanClause, Occur, QueryValue};
+    use std::ops::Bound;
+    frankensearch::quill::query::Query::boolean(
+        Vec::from([
+            BooleanClause::new(Occur::Must, query),
+            BooleanClause::new(
+                Occur::MustNot,
+                frankensearch::quill::query::Query::range(
+                    frankensearch::quill::cass::field::MSG_IDX,
+                    Bound::Included(QueryValue::U64(
+                        crate::viewer_extensions::search_regions::REGION_DOC_BASE,
+                    )),
+                    Bound::Unbounded,
+                ),
+            ),
+        ]),
+        None,
+    )
+}
+
 /// Read one stored text column for a hit, if the column holds anything.
 ///
 /// # Errors
