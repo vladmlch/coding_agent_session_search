@@ -21,7 +21,7 @@ use clap::{Args, Parser, Subcommand};
 use coding_agent_search::proof_artifact::{
     E2E_RUN_BUNDLE_SCHEMA_VERSION, E2eRunBundleExpectation, E2eRunBundleMetadata, E2eRunGateResult,
     e2e_source_tree_sha256, finalize_e2e_run_bundle, validate_e2e_run_id,
-    validate_e2e_source_identity, validate_rch_worker_id, verify_e2e_run_bundle,
+    validate_e2e_source_identity, validate_e2e_worker_id, verify_e2e_run_bundle,
 };
 use serde::Serialize;
 use walkdir::WalkDir;
@@ -264,7 +264,7 @@ fn worker_hostname() -> Result<String> {
 
 fn validate_run_args(args: &RunArgs) -> Result<()> {
     validate_e2e_run_id(&args.run_id)?;
-    validate_rch_worker_id(&args.worker_id)?;
+    validate_e2e_worker_id(&args.worker_id)?;
     validate_e2e_source_identity(
         &args.source_sha,
         &args.source_diff_sha256,
@@ -275,7 +275,7 @@ fn validate_run_args(args: &RunArgs) -> Result<()> {
             .as_str()
             .cmp(CLEAN_SOURCE_DIFF_SHA256)
             .is_eq(),
-        "clean-overlay evidence requires an empty source diff"
+        "clean-tree evidence requires an empty source diff"
     );
     ensure!(
         (1..=14_400).contains(&args.timeout_seconds),
@@ -308,7 +308,7 @@ fn validate_run_args(args: &RunArgs) -> Result<()> {
 }
 
 fn verify_worker_source(project_root: &Path, args: &RunArgs) -> Result<()> {
-    let actual = e2e_source_tree_sha256(project_root).context("hash clean-overlay source tree")?;
+    let actual = e2e_source_tree_sha256(project_root).context("hash clean source tree")?;
     ensure!(
         actual.as_str().cmp(&args.source_tree_sha256).is_eq(),
         "worker source-tree SHA-256 mismatch: expected {}, found {}",
@@ -657,7 +657,7 @@ fn verify_bundle(args: VerifyArgs) -> Result<i32> {
         validate_e2e_run_id(run_id)?;
     }
     if let Some(worker_id) = &args.worker_id {
-        validate_rch_worker_id(worker_id)?;
+        validate_e2e_worker_id(worker_id)?;
     }
     let manifest = verify_e2e_run_bundle(
         &args.bundle,
@@ -736,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn run_arguments_require_a_clean_overlay_diff() -> Result<()> {
+    fn run_arguments_require_a_clean_source_diff() -> Result<()> {
         let mut args = run_args("b".repeat(64));
         args.source_diff_sha256 = "c".repeat(64);
         let Err(error) = validate_run_args(&args) else {
@@ -745,7 +745,7 @@ mod tests {
         ensure!(
             error
                 .to_string()
-                .contains("clean-overlay evidence requires an empty source diff"),
+                .contains("clean-tree evidence requires an empty source diff"),
             "unexpected dirty-source error: {error}"
         );
         Ok(())

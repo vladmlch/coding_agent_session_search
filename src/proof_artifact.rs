@@ -397,7 +397,7 @@ fn e2e_completion_path(root: &Path) -> PathBuf {
 pub enum E2eRunBundleError {
     #[error("invalid E2E run id `{0}`; expected 8-128 ASCII alphanumeric, `_`, or `-` bytes")]
     InvalidRunId(String),
-    #[error("invalid RCH worker id `{0}`; expected 1-64 ASCII alphanumeric, `_`, or `-` bytes")]
+    #[error("invalid E2E worker id `{0}`; expected 1-64 ASCII alphanumeric, `_`, or `-` bytes")]
     InvalidWorkerId(String),
     #[error("invalid {field} digest `{value}`; expected {expected} lowercase hexadecimal bytes")]
     InvalidDigest {
@@ -468,8 +468,8 @@ pub fn validate_e2e_run_id(run_id: &str) -> Result<(), E2eRunBundleError> {
     Ok(())
 }
 
-/// Validate the explicit RCH worker id used by both compilation and SSH handoff.
-pub fn validate_rch_worker_id(worker_id: &str) -> Result<(), E2eRunBundleError> {
+/// Validate the explicit worker id recorded in the sealed run manifest.
+pub fn validate_e2e_worker_id(worker_id: &str) -> Result<(), E2eRunBundleError> {
     if worker_id.is_empty()
         || worker_id.len() > 64
         || !worker_id
@@ -1049,7 +1049,7 @@ fn validate_manifest_shape(manifest: &E2eRunBundleManifest) -> Result<(), E2eRun
         )));
     }
     validate_e2e_run_id(&manifest.run_id)?;
-    validate_rch_worker_id(&manifest.worker_id)?;
+    validate_e2e_worker_id(&manifest.worker_id)?;
     validate_e2e_source_identity(
         &manifest.source_sha,
         &manifest.source_diff_sha256,
@@ -1125,7 +1125,7 @@ pub fn finalize_e2e_run_bundle(
     metadata: E2eRunBundleMetadata,
 ) -> Result<E2eRunBundleManifest, E2eRunBundleError> {
     validate_e2e_run_id(&metadata.run_id)?;
-    validate_rch_worker_id(&metadata.worker_id)?;
+    validate_e2e_worker_id(&metadata.worker_id)?;
     validate_e2e_source_identity(
         &metadata.source_sha,
         &metadata.source_diff_sha256,
@@ -1721,14 +1721,14 @@ mod tests {
             validate_e2e_run_id(valid)?;
         }
         for invalid in ["", "../worker", "worker id", "-worker", "worker-"] {
-            if validate_rch_worker_id(invalid).is_ok() {
+            if validate_e2e_worker_id(invalid).is_ok() {
                 return Err(bundle_test_failure(format_args!(
                     "accepted invalid worker id {invalid:?}"
                 )));
             }
         }
-        validate_rch_worker_id("vmi1149989")?;
-        validate_rch_worker_id("a")?;
+        validate_e2e_worker_id("vmi1149989")?;
+        validate_e2e_worker_id("a")?;
         validate_e2e_source_identity(&"a".repeat(40), &"b".repeat(64), &"c".repeat(64))?;
         if validate_e2e_source_identity(&"A".repeat(40), &"b".repeat(64), &"c".repeat(64)).is_ok() {
             return Err("accepted uppercase source digest".into());

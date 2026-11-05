@@ -252,7 +252,7 @@
           "tests/e2e_analytics_models.rs"
         ],
         "optional_diagnostics": [
-          "local model install via --from-file (never CI-required)"
+          "`cass models verify` checksum pass on installed files"
         ],
         "fixture_provenance": "missing/mismatched model dirs; no network exists anywhere",
         "log_expectation": "deterministic contract test result line; local installs are opt-in only",
