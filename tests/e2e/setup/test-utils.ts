@@ -80,7 +80,6 @@ export interface TestFixtures {
   toolCallsExportPath: string;
   largeExportPath: string;
   unicodeExportPath: string;
-  noCdnExportPath: string;
   previewUrl: string;
   password: string;
 }
@@ -167,7 +166,6 @@ export const test = base.extend<TestFixtures>({
             toolCalls: process.env.TEST_EXPORT_TEST_TOOL_CALLS,
             large: process.env.TEST_EXPORT_TEST_LARGE,
             unicode: process.env.TEST_EXPORT_TEST_UNICODE,
-            noCdn: process.env.TEST_EXPORT_TEST_NO_CDN,
           },
         },
         page: {
@@ -210,11 +208,6 @@ export const test = base.extend<TestFixtures>({
 
   unicodeExportPath: async ({}, use) => {
     const exportPath = process.env.TEST_EXPORT_TEST_UNICODE || "";
-    await use(exportPath);
-  },
-
-  noCdnExportPath: async ({}, use) => {
-    const exportPath = process.env.TEST_EXPORT_TEST_NO_CDN || "";
     await use(exportPath);
   },
 

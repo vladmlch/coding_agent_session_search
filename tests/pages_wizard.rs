@@ -6,7 +6,7 @@
 mod util;
 
 use coding_agent_search::pages::summary::ExclusionSet;
-use coding_agent_search::pages::wizard::{DeployTarget, WizardState};
+use coding_agent_search::pages::wizard::WizardState;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use util::e2e_log::PhaseTracker;
@@ -37,13 +37,8 @@ fn test_wizard_state_default() {
     assert!(state.description.contains("Encrypted archive"));
     assert!(!state.hide_metadata);
 
-    // Default deployment
-    assert!(matches!(state.target, DeployTarget::Local));
+    // Local output (hosted deployment was removed — everything is local)
     assert_eq!(state.output_dir, PathBuf::from("cass-export"));
-    assert!(state.repo_name.is_none());
-    assert!(state.cloudflare_branch.is_none());
-    assert!(state.cloudflare_account_id.is_none());
-    assert!(state.cloudflare_api_token.is_none());
 
     // Default exclusions
     assert!(state.exclusions.excluded_conversations.is_empty());
@@ -80,10 +75,8 @@ fn test_wizard_state_with_custom_config() {
         title: "My Archive".to_string(),
         description: "My custom archive".to_string(),
         hide_metadata: true,
-        // Deployment
-        target: DeployTarget::GitHubPages,
+        // Local output
         output_dir: PathBuf::from("/tmp/export"),
-        repo_name: Some("my-archive".to_string()),
         ..WizardState::default()
     };
 
@@ -98,7 +91,6 @@ fn test_wizard_state_with_custom_config() {
     assert_eq!(state.password.as_deref(), Some("test-password-123"));
     assert_eq!(state.password_entropy_bits, 48.0);
     assert_eq!(state.title, "My Archive");
-    assert!(matches!(state.target, DeployTarget::GitHubPages));
 }
 
 #[test]
@@ -121,34 +113,6 @@ fn test_wizard_state_no_encryption_mode() {
     assert!(!state.generate_recovery);
     assert!(!state.generate_qr);
     assert!(state.password.is_none());
-}
-
-// =============================================================================
-// DeployTarget Tests
-// =============================================================================
-
-#[test]
-fn test_deploy_target_display() {
-    let _tracker = PhaseTracker::new("pages_wizard", "deploy_target_display");
-
-    assert_eq!(DeployTarget::Local.to_string(), "Local export only");
-    assert_eq!(DeployTarget::GitHubPages.to_string(), "GitHub Pages");
-    assert_eq!(
-        DeployTarget::CloudflarePages.to_string(),
-        "Cloudflare Pages"
-    );
-}
-
-#[test]
-fn test_deploy_target_equality() {
-    let _tracker = PhaseTracker::new("pages_wizard", "deploy_target_equality");
-
-    assert_eq!(DeployTarget::Local, DeployTarget::Local);
-    assert_eq!(DeployTarget::GitHubPages, DeployTarget::GitHubPages);
-    assert_eq!(DeployTarget::CloudflarePages, DeployTarget::CloudflarePages);
-
-    assert_ne!(DeployTarget::Local, DeployTarget::GitHubPages);
-    assert_ne!(DeployTarget::GitHubPages, DeployTarget::CloudflarePages);
 }
 
 // =============================================================================
@@ -646,7 +610,6 @@ fn test_pages_config_to_wizard_state_with_real_db() {
     assert!(state.no_encryption);
     assert!(state.unencrypted_confirmed);
     assert_eq!(state.db_path, db_path);
-    assert!(matches!(state.target, DeployTarget::Local));
 }
 
 #[test]
@@ -776,21 +739,27 @@ fn test_config_validation_scenarios() {
             .any(|e| e.contains("i_understand_risks"))
     );
 
-    // Invalid: github without repo
-    let invalid_github = r#"{
-        "encryption": {"password": "test"},
-        "deployment": {"target": "github"}
-    }"#;
-    let config: PagesConfig = serde_json::from_str(invalid_github).unwrap();
-    let result = config.validate();
-    assert!(!result.valid, "Should fail without repo for github target");
-
-    // Valid: github with repo
-    let valid_github = r#"{
-        "encryption": {"password": "test"},
-        "deployment": {"target": "github", "repo": "my-archive"}
-    }"#;
-    let config: PagesConfig = serde_json::from_str(valid_github).unwrap();
-    let result = config.validate();
-    assert!(result.valid, "Should be valid with repo for github target");
+    // Hosted targets are gone: github/cloudflare are rejected as unsupported.
+    for target in ["github", "cloudflare"] {
+        let hosted = format!(
+            r#"{{
+                "encryption": {{"password": "test"}},
+                "deployment": {{"target": "{target}"}}
+            }}"#
+        );
+        let config: PagesConfig = serde_json::from_str(&hosted).unwrap();
+        let result = config.validate();
+        assert!(
+            !result.valid,
+            "{target} target must be rejected as unsupported"
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("unsupported_deployment_target")),
+            "{target} must report unsupported_deployment_target, got {:?}",
+            result.errors
+        );
+    }
 }

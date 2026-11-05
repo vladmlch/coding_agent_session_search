@@ -2601,18 +2601,31 @@ fn models_install_help_shows_options() {
 
 #[test]
 fn pages_help_shows_options() {
-    let mut cmd = simple_cmd();
-    cmd.args(["pages", "--help"]);
-    cmd.assert()
+    let output = simple_cmd()
+        .args(["pages", "--help"])
+        .assert()
         .success()
         .stdout(contains("searchable archive"))
         .stdout(contains("--export-only"))
         .stdout(contains("--verify"))
         .stdout(contains("--no-encryption"))
         .stdout(contains("--target"))
-        .stdout(contains("--project"))
-        .stdout(contains("--account-id"))
-        .stdout(contains("--api-token"));
+        .get_output()
+        .clone();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Hosted publishing flags are gone — they must not surface in help.
+    for removed in [
+        "--project",
+        "--repo",
+        "--branch",
+        "--account-id",
+        "--api-token",
+    ] {
+        assert!(
+            !stdout.contains(removed),
+            "pages --help must not list hosted flag {removed}\n{stdout}"
+        );
+    }
 }
 
 #[test]
@@ -5397,13 +5410,65 @@ const REMOVED_COMMAND_CASES: &[RemovedCommandCase] = &[
         pending: false,
         probe_args: None,
     },
-    // Task 14 — hosted pages deploy targets.
+    // Task 14 — hosted pages deploy targets and hosted deploy flags.
+    // `--target` survives for `local`; the hosted values and the
+    // credential/project flags are removed.
     RemovedCommandCase {
         args: &["pages", "--target", "github"],
-        display: "--target` on `cass pages",
+        display: "--target github` on `cass pages",
         task: 14,
-        pending: true,
-        probe_args: Some(&["pages", "--target", "github", "--help"]),
+        pending: false,
+        probe_args: None,
+    },
+    RemovedCommandCase {
+        args: &["pages", "--target", "cloudflare"],
+        display: "--target cloudflare` on `cass pages",
+        task: 14,
+        pending: false,
+        probe_args: None,
+    },
+    RemovedCommandCase {
+        args: &["pages", "--project", "my-archive"],
+        display: "--project` on `cass pages",
+        task: 14,
+        pending: false,
+        probe_args: None,
+    },
+    RemovedCommandCase {
+        args: &["pages", "--repo", "my-archive"],
+        display: "--repo` on `cass pages",
+        task: 14,
+        pending: false,
+        probe_args: None,
+    },
+    RemovedCommandCase {
+        args: &["pages", "--branch", "main"],
+        display: "--branch` on `cass pages",
+        task: 14,
+        pending: false,
+        probe_args: None,
+    },
+    RemovedCommandCase {
+        args: &["pages", "--account-id", "abc123"],
+        display: "--account-id` on `cass pages",
+        task: 14,
+        pending: false,
+        probe_args: None,
+    },
+    RemovedCommandCase {
+        args: &["pages", "--api-token", "tok"],
+        display: "--api-token` on `cass pages",
+        task: 14,
+        pending: false,
+        probe_args: None,
+    },
+    // Task 14 — there is no CDN mode left, so `--no-cdns` is retired.
+    RemovedCommandCase {
+        args: &["export-html", "x", "--no-cdns"],
+        display: "--no-cdns` on `cass export-html",
+        task: 14,
+        pending: false,
+        probe_args: None,
     },
 ];
 
@@ -5558,7 +5623,7 @@ fn removed_commands_error_without_redirection() {
     // task skip the whole rejection surface.
     assert_eq!(
         REMOVED_COMMAND_CASES.len(),
-        19,
+        26,
         "the negative table lists every removal promised by tasks 7–14"
     );
 }

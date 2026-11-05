@@ -101,7 +101,7 @@ fn agent_listed(readme: &str, agent_name: &str) -> bool {
 #[test]
 fn test_readme_conversation_count_accurate() {
     let summary = create_test_summary(1234, vec![("Claude", 500), ("GPT-4", 734)]);
-    let config = DocConfig::new().with_url("https://example.com/archive");
+    let config = DocConfig::new();
 
     let generator = DocumentationGenerator::new(config, summary);
     let readme_doc = generator.generate_readme();
@@ -176,20 +176,22 @@ fn test_readme_date_range_accurate() {
     );
 }
 
-/// Verify deployment URL appears in README when configured.
+/// Verify the README points at the loopback preview instead of a hosted URL.
 #[test]
-fn test_readme_url_included() {
+fn test_readme_local_preview_included() {
     let summary = create_test_summary(10, vec![("Agent", 10)]);
-    let config = DocConfig::new().with_url("https://my-archive.example.com");
+    let config = DocConfig::new();
 
     let generator = DocumentationGenerator::new(config, summary);
     let readme_doc = generator.generate_readme();
 
     assert!(
-        readme_doc
-            .content
-            .contains("https://my-archive.example.com"),
-        "README should include configured URL"
+        readme_doc.content.contains("cass pages --preview"),
+        "README should point at the local preview command"
+    );
+    assert!(
+        !readme_doc.content.contains("github.io") && !readme_doc.content.contains("pages.dev"),
+        "README must not reference hosted deployment URLs"
     );
 }
 
@@ -217,7 +219,7 @@ fn test_readme_argon_params_included() {
 #[test]
 fn test_readme_has_required_sections() {
     let summary = create_test_summary(100, vec![("Claude", 100)]);
-    let config = DocConfig::new().with_url("https://example.com");
+    let config = DocConfig::new();
 
     let generator = DocumentationGenerator::new(config, summary);
     let readme_doc = generator.generate_readme();

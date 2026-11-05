@@ -964,9 +964,6 @@ const Crypto = {
                 }
                 sealedHeader.remove();
             }
-            if (typeof Prism !== 'undefined' && typeof Prism.highlightAllUnder === 'function') {
-                Prism.highlightAllUnder(conversation);
-            }
 
             // Hide modal
             this.modal.hidden = true;
@@ -1355,11 +1352,13 @@ mod tests {
         // After decryption, both ToolCalls and ToolPopovers should be reinitialized
         assert_inline_js_contains!(bundle, "ToolCalls.init()");
         assert_inline_js_contains!(bundle, "ToolPopovers.init()");
-        assert_inline_js_contains!(
-            bundle,
-            "typeof Prism !== 'undefined' && typeof Prism.highlightAllUnder === 'function'"
+        // No external highlighter ships with the export; the decryption path
+        // must not reference Prism at all.
+        let lowered = bundle.inline_js.to_ascii_lowercase();
+        assert!(
+            !lowered.contains("prism"),
+            "Prism reference left in inline JS"
         );
-        assert_inline_js_contains!(bundle, "Prism.highlightAllUnder(conversation);");
         assert_inline_js_contains!(bundle, "__cassAttachCodeCopyButtons();");
         assert_inline_js_contains!(bundle, "const __cassAttachCodeCopyButtons");
         assert_inline_js_contains!(bundle, "pre.querySelector('.copy-code-btn')");

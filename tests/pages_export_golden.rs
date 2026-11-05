@@ -140,8 +140,7 @@ fn export_html(
         .arg(output_dir)
         .arg("--filename")
         .arg(filename)
-        .arg("--json")
-        .arg("--no-cdns");
+        .arg("--json");
 
     if encrypted {
         let phrase = fixture_phrase();

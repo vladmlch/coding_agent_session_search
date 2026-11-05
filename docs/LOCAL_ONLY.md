@@ -469,3 +469,48 @@ Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
 binary (same procedure as Task 9/12). `repomix-output.xml.zip`,
 `rs_files_over_1000_lines.txt` and `scripts/count_large_rs_files.sh` remain
 untracked leftovers, not staged.
+
+## Task 14 — Pages/HTML local archives + loopback preview only (2026-11-05)
+
+Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
+
+| Date (UTC) | Command | Result |
+| ---------- | ------- | ------ |
+| 2026-11-05 | `cargo check --locked --lib` | ok |
+| 2026-11-05 | `cargo fmt --all -- --check` | ok (after `cargo fmt` reformatted the touched regions) |
+| 2026-11-05 | `cargo clippy --all-targets --locked -- -D warnings` | ok |
+| 2026-11-05 | `cargo test --locked --test pages_bundle --test pages_preview_integration --test pages_wizard --test e2e_pages --test html_export_integration --test metamorphic_html_export --test spec_export_html_envelopes` | ok: 76+29+2+65+68+81+5 passed |
+| 2026-11-05 | `cargo test --locked --test cli_dispatch_coverage` | ok: 106 passed — eight Task-14 rows flipped `pending:false` (`pages --target github|cloudflare`, `--project`, `--repo`, `--branch`, `--account-id`, `--api-token`, `export-html --no-cdns`); table length assertion updated 19 → 26; `pages_help_shows_options` now asserts hosted flags absent from `--help` |
+| 2026-11-05 | `cargo test --locked --test pages_master_e2e --test pages_pipeline_e2e` | ok: 69+65 passed |
+| 2026-11-05 | `cargo test --locked --test docs --test export_index_first --test pages_export_golden` | ok: 20+22+2 passed |
+| 2026-11-05 | `UPDATE_GOLDENS=1 cargo test --locked --test golden_robot_json` then plain | ok: 52 passed — capabilities/introspect goldens regenerated; diff reviewed: `export-html --no-cdns` flag block removed, `pages --target` enum reduced to `local` with retexted description, `--project`/`--branch`/`--account-id`/`--api-token` blocks removed |
+| 2026-11-05 | `UPDATE_GOLDENS=1 cargo test --locked --test pages_export_golden` | ok: 2 passed — `basic_export.html.golden`/`encrypted_export.html.golden` regenerated; every diff reviewed: `<html>` drops `class="no-prism no-tailwind"`, CDN-fallback CSS blocks removed, `Prism.highlightAllUnder` call removed from the decryption hook |
+| 2026-11-05 | `cargo test --locked --lib -- pages:: html_export:: removed_ pages_deploy config_input` | 878 passed, 2 failed — `removed_invocation_tests::removed_flags_reject_by_presence_or_value` fixed in-diff (message now names the removed value `` `--target github` ``); `pages::tests::sqlite_wal_segment_paths_mirror_lossy_non_utf8_producer_basename` fails at `std::fs::write` creating a non-UTF8 basename (`os error 92`) — same documented macOS environmental class as Tasks 9/11 baselines, untouched by this diff |
+| 2026-11-05 | `cargo test --locked --lib -- removed_invocation_tests` | ok: 9 passed |
+| 2026-11-05 | `cargo test --locked --lib -- pages::docs:: pages::preview::` | ok: 31 passed — includes `test_preview_listener_binds_loopback_only` asserting the listener is loopback |
+| 2026-11-05 | `cargo test --locked --test html_export_e2e` | 29 passed, 3 pre-existing failures — `export_redaction_{parity_for_live_and_archived_sources,policy_applies_before_encryption,raw_fidelity_requires_explicit_sensitive_option}` shell out to `cass sources reingest`, removed by Task 9 (`bb8bd8ad`); test file untouched by this diff and fails identically without it |
+| 2026-11-05 | `rg 'TcpListener::bind|UdpSocket::bind'` | only `src/pages/preview.rs:391` binds TCP outside tests, on `127.0.0.1` (plus the loopback-bind unit test); all other listeners are Unix sockets (daemon, viewer bridge, test helpers) |
+| 2026-11-05 | browser lane `scripts/browser_e2e_lane.sh` | not run — Playwright deps not provisioned on this machine; the lane now exits 2 with manual install guidance instead of auto-running `npm ci`/`playwright install`, invokes `npx --no-install playwright`, and builds via `run_cargo` |
+
+Notes:
+
+- `tests/fixtures/cli_contract/introspect.json` regenerated from the built
+  binary (same procedure as Tasks 9/12/13); diff reviewed — exactly the
+  removed `no-cdns` flag, the `local`-only target enum/description, and the
+  removed hosted flags. `tests/fixtures/cli_contract/capabilities.json` is a
+  static 0.4.1 contract fixture, not generated — untouched.
+- `PagesDeployTarget` now has a single `Local` variant so hosted values can
+  never appear in `--help`; `github`/`cloudflare` are rejected by
+  `REMOVED_FLAGS` on raw args before clap parses.
+- `src/pages_assets/index.html` footer GitHub link replaced with plain text;
+  generated README says "This directory" and points to `cass pages --preview`
+  / `index.html`.
+- Config `deployment.{repo,branch,account_id,api_token}` fields survive only
+  as diagnosed legacy keys (non-`local` target → `unsupported_deployment_target`;
+  `env:` credentials are never resolved — CLOUDFLARE_* is never read).
+- `tests/html_export_e2e.rs` reingest fallout (3 tests) reported for the
+  owning task's backlog; not weakened or rewritten here.
+- Untracked leftovers `repomix-output.xml.zip`, `rs_files_over_1000_lines.txt`,
+  `scripts/count_large_rs_files.sh` remain untracked, not staged. Test-run
+  byproducts `tests/fixtures/search_demo_data/agent_search.db.*` also stay
+  untracked.

@@ -1420,10 +1420,6 @@ pub enum Commands {
         )]
         show_timestamps: bool,
 
-        /// Disable CDN references (fully offline, larger file)
-        #[arg(long)]
-        no_cdns: bool,
-
         /// Include skill content in export (default: stripped for privacy).
         /// Skills injected by Claude Code/Codex contain proprietary SKILL.md
         /// content that should not appear in shared/published exports.
@@ -1562,25 +1558,10 @@ pub enum Commands {
         #[arg(long, value_enum)]
         share_profile: Option<crate::pages::profiles::ShareProfile>,
 
-        /// Deployment target: local, github, cloudflare
+        /// Deployment target: local (hosted targets removed — cass is
+        /// fully local-only; `github`/`cloudflare` are rejected before parse)
         #[arg(long, value_enum)]
         target: Option<PagesDeployTarget>,
-
-        /// Cloudflare project name (also used for GitHub repo name)
-        #[arg(long, alias = "repo")]
-        project: Option<String>,
-
-        /// Cloudflare production branch (default: main)
-        #[arg(long)]
-        branch: Option<String>,
-
-        /// Cloudflare account ID (or CLOUDFLARE_ACCOUNT_ID env)
-        #[arg(long)]
-        account_id: Option<String>,
-
-        /// Cloudflare API token (or CLOUDFLARE_API_TOKEN env)
-        #[arg(long)]
-        api_token: Option<String>,
 
         /// Dry run (don't write files)
         #[arg(long)]
@@ -2573,32 +2554,19 @@ pub enum PagesSubcommand {
     Key(crate::pages::key_cli::PagesKeyArgs),
 }
 
-/// Deployment target for pages export.
+/// Deployment target for pages export. `local` is the only value that
+/// exists: hosted values (`github`, `cloudflare`) are rejected by
+/// `REMOVED_FLAGS` on the raw args before clap parses, so no variant is
+/// kept for them — they cannot appear in `--help` either.
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum PagesDeployTarget {
-    /// Local export only
+    /// Local export only (the only target that exists)
     Local,
-    /// GitHub Pages deployment
-    #[value(name = "github")]
-    GitHub,
-    /// Cloudflare Pages deployment
-    #[value(name = "cloudflare")]
-    Cloudflare,
 }
 
 impl PagesDeployTarget {
-    fn to_wizard_target(self) -> crate::pages::wizard::DeployTarget {
-        match self {
-            PagesDeployTarget::GitHub => crate::pages::wizard::DeployTarget::GitHubPages,
-            PagesDeployTarget::Cloudflare => crate::pages::wizard::DeployTarget::CloudflarePages,
-            PagesDeployTarget::Local => crate::pages::wizard::DeployTarget::Local,
-        }
-    }
-
     fn as_config_value(self) -> &'static str {
         match self {
-            PagesDeployTarget::GitHub => "github",
-            PagesDeployTarget::Cloudflare => "cloudflare",
             PagesDeployTarget::Local => "local",
         }
     }
@@ -6034,6 +6002,53 @@ const REMOVED_FLAGS: &[RemovedFlag] = &[
             "select a local embedder (`--embedder minilm`, `multilingual-minilm` or `hash`); legacy CASS_EXTERNAL_* settings are ignored",
         ),
     },
+    // Task 14: hosted Pages targets are gone. `--target` survives for its
+    // sole remaining value `local`; the hosted values are rejected.
+    RemovedFlag {
+        path: &["pages"],
+        flag: "target",
+        values: Some(&["github", "cloudflare"]),
+        hint: Some("`cass pages --target local` (the default) writes a local archive"),
+    },
+    // Task 14: hosted deployment flags were removed outright.
+    RemovedFlag {
+        path: &["pages"],
+        flag: "project",
+        values: None,
+        hint: Some("hosted publishing is gone; exports stay in deployment.output_dir"),
+    },
+    RemovedFlag {
+        path: &["pages"],
+        flag: "repo",
+        values: None,
+        hint: Some("hosted publishing is gone; exports stay in deployment.output_dir"),
+    },
+    RemovedFlag {
+        path: &["pages"],
+        flag: "branch",
+        values: None,
+        hint: Some("hosted publishing is gone; exports stay in deployment.output_dir"),
+    },
+    RemovedFlag {
+        path: &["pages"],
+        flag: "account-id",
+        values: None,
+        hint: Some("Cloudflare credentials are gone; exports stay in deployment.output_dir"),
+    },
+    RemovedFlag {
+        path: &["pages"],
+        flag: "api-token",
+        values: None,
+        hint: Some("Cloudflare credentials are gone; exports stay in deployment.output_dir"),
+    },
+    // Task 14: exports are always self-contained; there is no CDN mode to
+    // disable, so `--no-cdns` is retired rather than kept as a no-op.
+    RemovedFlag {
+        path: &["export-html"],
+        flag: "no-cdns",
+        values: None,
+        hint: Some("exports are always fully self-contained (no CDN references)"),
+    },
 ];
 
 /// Whether `name` is a removed *top-level* command: a one-word path in
@@ -6888,7 +6903,7 @@ mod removed_invocation_tests {
         .expect("pages --target github rejected");
         assert_eq!(
             error.message,
-            "`--target` on `cass pages` was removed: cass runs fully local-only"
+            "`--target github` on `cass pages` was removed: cass runs fully local-only"
         );
         assert_eq!(
             error.hint.as_deref(),
@@ -8175,10 +8190,6 @@ async fn execute_cli(
                     path_mode,
                     share_profile,
                     target,
-                    project,
-                    branch,
-                    account_id,
-                    api_token,
                     dry_run,
                     scan_secrets,
                     fail_on_secrets,
@@ -8223,45 +8234,14 @@ async fn execute_cli(
                             retryable: false,
                         })?;
 
+                        // Only `local` reaches this point: the removed-flag
+                        // table rejects `--target github|cloudflare` before
+                        // clap parses, and the hosted flags are gone entirely.
                         if let Some(target) = target {
                             pages_config.deployment.target = target.as_config_value().to_string();
                         }
-                        if let Some(project) = project.as_ref() {
-                            pages_config.deployment.repo = Some(project.to_string());
-                        }
-                        if let Some(branch) = branch.as_ref() {
-                            pages_config.deployment.branch = Some(branch.to_string());
-                        }
-                        if let Some(account_id) = account_id.as_ref() {
-                            pages_config.deployment.account_id = Some(account_id.to_string());
-                        }
-                        if let Some(api_token) = api_token.as_ref() {
-                            pages_config.deployment.api_token = Some(api_token.to_string());
-                        }
                         if let Some(profile) = share_profile {
                             pages_config.bundle.share_profile = Some(profile);
-                        }
-
-                        let cli_cf_creds_provided = account_id.is_some() || api_token.is_some();
-                        if target.is_none() && cli_cf_creds_provided {
-                            pages_config.deployment.target = "cloudflare".to_string();
-                        }
-
-                        let target_name = pages_config.deployment.target.to_lowercase();
-                        if target.is_some() && cli_cf_creds_provided && target_name != "cloudflare"
-                        {
-                            return Err(CliError {
-                                code: 2,
-                                kind: CliErrorKind::Pages.kind_str(),
-                                message: format!(
-                                    "Cloudflare credentials provided via CLI but deployment.target is '{target_name}'"
-                                ),
-                                hint: Some(
-                                    "Set deployment.target to \"cloudflare\" or remove Cloudflare credentials."
-                                        .to_string(),
-                                ),
-                                retryable: false,
-                            });
                         }
 
                         // Resolve environment variables
@@ -8705,49 +8685,9 @@ async fn execute_cli(
                             );
                         }
                     } else {
-                        let cf_creds_provided = account_id.is_some() || api_token.is_some();
-                        let target_is_cloudflare =
-                            matches!(target, Some(PagesDeployTarget::Cloudflare));
-                        let target_is_non_cloudflare = matches!(
-                            target,
-                            Some(PagesDeployTarget::GitHub | PagesDeployTarget::Local)
-                        );
-
-                        if target_is_non_cloudflare && cf_creds_provided {
-                            let target_label = match target {
-                                Some(PagesDeployTarget::GitHub) => "github",
-                                Some(PagesDeployTarget::Local) => "local",
-                                _ => "unknown",
-                            };
-                            return Err(CliError {
-                                code: 2,
-                                kind: CliErrorKind::Pages.kind_str(),
-                                message: format!(
-                                    "Cloudflare credentials provided but --target is {target_label}"
-                                ),
-                                hint: Some(
-                                    "Use --target cloudflare or remove --account-id/--api-token."
-                                        .to_string(),
-                                ),
-                                retryable: false,
-                            });
-                        }
-
-                        if (target_is_cloudflare || (target.is_none() && cf_creds_provided))
-                            && (account_id.is_some() ^ api_token.is_some())
-                        {
-                            return Err(CliError {
-                                code: 2,
-                                kind: CliErrorKind::Pages.kind_str(),
-                                message: "Both --account-id and --api-token are required together"
-                                    .to_string(),
-                                hint: Some(
-                                    "Provide both flags (or use CLOUDFLARE_* env vars) when deploying to Cloudflare."
-                                        .to_string(),
-                                ),
-                                retryable: false,
-                            });
-                        }
+                        // `--target` may only be `local` here (hosted values are
+                        // rejected by the removed-flag table); it needs no wiring.
+                        let _ = target;
 
                         // Wizard mode: pass flags
                         let mut wizard = crate::pages::wizard::PagesWizard::new();
@@ -8759,25 +8699,6 @@ async fn execute_cli(
                         }
                         if let Some(profile) = share_profile {
                             wizard.set_share_profile(profile);
-                        }
-                        if let Some(target) = target {
-                            wizard.set_deploy_target(target.to_wizard_target());
-                        } else if cf_creds_provided {
-                            wizard.set_deploy_target(
-                                crate::pages::wizard::DeployTarget::CloudflarePages,
-                            );
-                        }
-                        if let Some(project) = project {
-                            wizard.set_repo_name(project);
-                        }
-                        if let Some(branch) = branch {
-                            wizard.set_cloudflare_branch(branch);
-                        }
-                        if let Some(account_id) = account_id {
-                            wizard.set_cloudflare_account_id(account_id);
-                        }
-                        if let Some(api_token) = api_token {
-                            wizard.set_cloudflare_api_token(api_token);
                         }
                         wizard.run().map_err(|e| CliError {
                             code: 9,
@@ -9280,7 +9201,6 @@ async fn execute_cli(
                     password_stdin,
                     include_tools,
                     show_timestamps,
-                    no_cdns,
                     include_skills,
                     include_secrets,
                     theme,
@@ -9301,7 +9221,6 @@ async fn execute_cli(
                         password_stdin,
                         include_tools,
                         show_timestamps,
-                        !no_cdns,
                         include_skills,
                         include_secrets,
                         &theme,
@@ -19601,7 +19520,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "  cass context <path> [--json]     Find related sessions for a given source path.".to_string(),
             "  cass export <path> [--format markdown] [--output FILE]  Export a conversation to markdown / other formats.".to_string(),
             "  cass export-html <path> [--output-dir DIR] [--json]  Self-contained HTML export (optional encryption).".to_string(),
-            "  cass pages [--export-only DIR] [--verify PATH] [--agents A1,A2]  Encrypted searchable archive for static hosting.".to_string(),
+            "  cass pages [--export-only DIR] [--verify PATH] [--agents A1,A2]  Encrypted searchable archive for local preview/sharing.".to_string(),
             "  cass sources [list|add|remove|doctor|mappings|agents ...] [--json]  Manage local sources + persisted agent-harness exclusions.".to_string(),
             "  cass analytics [status|tokens|tools|models|rebuild|validate] [--json]  Token / tool / model analytics.".to_string(),
             "  cass import [...]                Import conversation data from external sources.".to_string(),
@@ -89945,57 +89864,10 @@ fn run_config_based_export(
         error.context("Completed config-driven Pages bundle failed full verification")
     })?;
 
-    // Optional deployment
-    let deploy_result = match wizard_state.target {
-        crate::pages::wizard::DeployTarget::Local => None,
-        crate::pages::wizard::DeployTarget::GitHubPages => {
-            let repo = wizard_state
-                .repo_name
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("GitHub deployment requires deployment.repo"))?;
-            let deployer = crate::pages::deploy_github::GitHubDeployer::new(repo.clone());
-            let deployed = crate::pages::verify::with_verified_bundle_for_deployment(
-                &bundle_result.site_dir,
-                false,
-                |verified_site_dir| deployer.deploy(verified_site_dir, |_phase, _msg| {}),
-            )?;
-            Some(serde_json::to_value(deployed)?)
-        }
-        crate::pages::wizard::DeployTarget::CloudflarePages => {
-            let project_name = wizard_state
-                .repo_name
-                .clone()
-                .unwrap_or_else(|| "cass-archive".to_string());
-            let branch = wizard_state
-                .cloudflare_branch
-                .clone()
-                .unwrap_or_else(|| "main".to_string());
-            let account_id = wizard_state
-                .cloudflare_account_id
-                .clone()
-                .or_else(|| dotenvy::var("CLOUDFLARE_ACCOUNT_ID").ok());
-            let api_token = wizard_state
-                .cloudflare_api_token
-                .clone()
-                .or_else(|| dotenvy::var("CLOUDFLARE_API_TOKEN").ok());
-            let deployer = crate::pages::deploy_cloudflare::CloudflareDeployer::new(
-                crate::pages::deploy_cloudflare::CloudflareConfig {
-                    project_name: project_name.clone(),
-                    custom_domain: None,
-                    create_if_missing: true,
-                    branch,
-                    account_id,
-                    api_token,
-                },
-            );
-            let deployed = crate::pages::verify::with_verified_bundle_for_deployment(
-                &bundle_result.site_dir,
-                false,
-                |verified_site_dir| deployer.deploy(verified_site_dir, |_phase, _msg| {}),
-            )?;
-            Some(serde_json::to_value(deployed)?)
-        }
-    };
+    // No deployment: exports stay local archives. Hosted publishing was
+    // removed; the field stays in the robot payload as `null` so consumers
+    // see an explicit "nothing was published" rather than a missing key.
+    let deploy_result = serde_json::Value::Null;
 
     // Output results
     let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
@@ -90056,10 +89928,10 @@ fn run_config_based_export(
                 .get(..8)
                 .unwrap_or(&bundle_result.fingerprint)
         );
-
-        if let Some(deploy) = deploy_result {
-            println!("  Deployment: {}", deploy);
-        }
+        println!(
+            "  Preview: cass pages --preview {}",
+            bundle_result.site_dir.display()
+        );
     }
 
     Ok(())
@@ -103766,7 +103638,6 @@ fn run_export_html(
     password_stdin: bool,
     include_tools: bool,
     show_timestamps: bool,
-    enable_cdns: bool,
     include_skills: bool,
     include_secrets: bool,
     theme: &str,
@@ -104244,7 +104115,6 @@ fn run_export_html(
                     "encrypted": encrypt,
                     "include_tools": include_tools,
                     "show_timestamps": show_timestamps,
-                    "cdns_enabled": enable_cdns,
                     "default_theme": theme
                 }
             },
@@ -104280,7 +104150,6 @@ fn run_export_html(
     // --- Build export options ---
     let export_options = HtmlExportOptions {
         title: session_title.clone(),
-        include_cdn: enable_cdns,
         syntax_highlighting: true,
         include_search: true,
         include_theme_toggle: true,
@@ -105155,7 +105024,6 @@ mod export_timestamp_tests {
             true,
             false,
             false,
-            false,
             "system",
             false,
             false,
@@ -105236,7 +105104,6 @@ mod export_timestamp_tests {
             false,
             true,
             true,
-            false,
             false,
             false,
             "system",
@@ -105366,7 +105233,6 @@ mod export_timestamp_tests {
             false,
             true,
             true,
-            false,
             false,
             false,
             "system",
@@ -106738,7 +106604,6 @@ mod indexed_conversation_fallback_tests {
             false,
             false,
             true,
-            true,
             false,
             false,
             "system",
@@ -106820,7 +106685,6 @@ mod indexed_conversation_fallback_tests {
             false,
             false,
             true,
-            true,
             false,
             false,
             "system",
@@ -106901,7 +106765,6 @@ mod indexed_conversation_fallback_tests {
             false,
             false,
             false,
-            true,
             true,
             false,
             false,
@@ -107424,7 +107287,6 @@ This should stay behind the indexed export.
             false,
             false,
             true,
-            true,
             false,
             false,
             "system",
@@ -107505,7 +107367,6 @@ This should stay behind the indexed html export.
             false,
             false,
             false,
-            true,
             true,
             false,
             false,
@@ -107884,7 +107745,6 @@ This should stay behind the indexed html export.
             false,
             false,
             true,
-            true,
             false,
             false,
             "system",
@@ -108025,7 +107885,6 @@ This should stay behind the indexed html export.
                 false,
                 false,
                 false,
-                true,
                 true,
                 false,
                 false,
@@ -108204,7 +108063,6 @@ This should stay behind the indexed html export.
                 false,
                 include_tools,
                 true,
-                true,
                 false,
                 false,
                 "system",
@@ -108228,7 +108086,6 @@ This should stay behind the indexed html export.
             Some("direct-with-tools.html"),
             false,
             false,
-            true,
             true,
             true,
             false,

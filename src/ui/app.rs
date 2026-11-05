@@ -22251,7 +22251,6 @@ fn export_session_task(
 
     let options = HtmlExportOptions {
         title: Some(title.to_string()),
-        include_cdn: true,
         syntax_highlighting: true,
         include_search: true,
         include_theme_toggle: true,

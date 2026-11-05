@@ -2485,7 +2485,6 @@ fn export_html_shape_matches_golden() {
         .arg("export-html")
         .arg(&session_path)
         .arg("--json")
-        .arg("--no-cdns")
         .arg("--output-dir")
         .arg(&output_dir)
         .arg("--filename")

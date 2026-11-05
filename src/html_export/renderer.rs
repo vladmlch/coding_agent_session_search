@@ -7,7 +7,7 @@
 //!
 //! - **Role-based styling**: User, assistant, tool, and system messages
 //! - **Agent-specific theming**: Visual differentiation for supported agents
-//! - **Code blocks**: Syntax highlighting with Prism.js language classes
+//! - **Code blocks**: Semantic `language-*` classes for readable code markup
 //! - **Tool calls**: Collapsible details with formatted JSON
 //! - **Long message collapse**: Optional folding for lengthy content
 //! - **XSS prevention**: All user content is properly escaped
@@ -40,7 +40,7 @@ pub struct RenderOptions {
     /// Show tool call details
     pub show_tool_calls: bool,
 
-    /// Enable syntax highlighting markers (for Prism.js)
+    /// Emit `language-*` class markers on code blocks
     pub syntax_highlighting: bool,
 
     /// Wrap long lines in code blocks

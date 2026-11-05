@@ -1,7 +1,7 @@
 //! Documentation Generation for pages export.
 //!
-//! Automatically generates comprehensive, deployment-specific documentation
-//! that is included with each published site.
+//! Automatically generates comprehensive documentation that is included with
+//! each exported archive site (opened locally or via `cass pages --preview`).
 //!
 //! # Overview
 //!
@@ -47,10 +47,8 @@ pub struct GeneratedDoc {
 /// Configuration for documentation generation.
 #[derive(Debug, Clone, Default)]
 pub struct DocConfig {
-    /// Whether the published payload requires decryption before it can be read.
+    /// Whether the archived payload requires decryption before it can be read.
     pub archive_mode: ArchiveMode,
-    /// Target URL where the archive will be hosted.
-    pub target_url: Option<String>,
     /// Repository URL for CASS source.
     pub cass_repo_url: String,
     /// Argon2 memory parameter in KB.
@@ -67,7 +65,7 @@ pub enum ArchiveMode {
     /// The payload is protected by the configured encryption key slots.
     #[default]
     Encrypted,
-    /// The SQLite payload is intentionally published as plaintext.
+    /// The SQLite payload is intentionally stored as plaintext.
     Unencrypted,
 }
 
@@ -76,19 +74,12 @@ impl DocConfig {
     pub fn new() -> Self {
         Self {
             archive_mode: ArchiveMode::Encrypted,
-            target_url: None,
             cass_repo_url: "https://github.com/Dicklesworthstone/coding_agent_session_search"
                 .to_string(),
             argon_memory_kb: 65536,
             argon_iterations: 3,
             argon_parallelism: 4,
         }
-    }
-
-    /// Set the target URL.
-    pub fn with_url(mut self, url: impl Into<String>) -> Self {
-        self.target_url = Some(url.into());
-        self
     }
 
     /// Describe the security mode of the payload these documents accompany.
@@ -129,13 +120,6 @@ impl DocumentationGenerator {
         ]
     }
 
-    fn target_url_display(&self) -> &str {
-        self.config
-            .target_url
-            .as_deref()
-            .unwrap_or("[deployment URL]")
-    }
-
     /// Generate README.md for repository root.
     pub fn generate_readme(&self) -> GeneratedDoc {
         let agent_list = self
@@ -145,8 +129,6 @@ impl DocumentationGenerator {
             .map(|a| format!("- {} ({} conversations)", a.name, a.conversation_count))
             .collect::<Vec<_>>()
             .join("\n");
-
-        let url_display = self.target_url_display();
 
         let start_date = format_optional_doc_date(self.summary.earliest_timestamp, "Unknown");
         let end_date = format_optional_doc_date(self.summary.latest_timestamp, "Unknown");
@@ -166,7 +148,6 @@ impl DocumentationGenerator {
             ArchiveMode::Unencrypted => UNENCRYPTED_README_TEMPLATE,
         };
         let content = template
-            .replace("{url}", url_display)
             .replace(
                 "{conversation_count}",
                 &self.summary.total_conversations.to_string(),
@@ -292,8 +273,6 @@ impl DocumentationGenerator {
 
     /// Generate about.txt for non-technical users.
     pub fn generate_about_txt(&self) -> GeneratedDoc {
-        let url_display = self.target_url_display();
-
         let conversation_count = self.summary.total_conversations.to_string();
         let date = Utc::now().format(DOC_DATE_FORMAT);
 
@@ -302,7 +281,6 @@ impl DocumentationGenerator {
             ArchiveMode::Unencrypted => UNENCRYPTED_ABOUT_TXT_TEMPLATE,
         };
         let content = template
-            .replace("{url}", url_display)
             .replace("{conversation_count}", &conversation_count)
             .replace("{date}", &date.to_string())
             .replace("{version}", CASS_VERSION);
@@ -321,12 +299,13 @@ impl DocumentationGenerator {
 
 const README_TEMPLATE: &str = r#"# Encrypted Coding Session Archive
 
-This repository contains an encrypted archive of coding session histories,
+This directory contains an encrypted archive of coding session histories,
 created with [CASS](https://github.com/Dicklesworthstone/coding_agent_session_search).
 
 ## Quick Access
 
-Open the web viewer: [{url}]({url})
+Serve this directory with `cass pages --preview <dir>` (loopback only) and
+open the printed `http://127.0.0.1` address, or open `index.html` directly.
 
 ## What This Contains
 
@@ -350,8 +329,8 @@ This archive is protected with:
 - **Key Derivation**: Argon2id with {argon_params}
 - **Key Slots**: {slot_count} independent decryption key(s)
 
-The encrypted archive can be safely hosted publicly. Only someone with a valid
-password or QR code can decrypt the contents.
+The encrypted archive can be safely shared or stored anywhere. Only someone
+with a valid password or QR code can decrypt the contents.
 
 For detailed security information, see [SECURITY.md](SECURITY.md).
 
@@ -377,9 +356,9 @@ This document describes the security properties of this encrypted archive.
 
 ### What This Protects Against
 
-- **Casual access**: Random visitors cannot read content
-- **Server compromise**: GitHub/hosting provider cannot read your data
-- **Network interception**: Content is encrypted before transmission
+- **Casual access**: Anyone who obtains the files cannot read content without a key
+- **File theft**: Copying the archive does not expose your data
+- **Network interception**: Content stays encrypted wherever it travels
 - **Brute force (with strong password)**: Argon2id makes guessing expensive
 
 ### What This Does NOT Protect Against
@@ -440,7 +419,7 @@ This archive was created with CASS, an open-source tool. You can:
 1. **Use a strong password**: 16+ characters, or 5+ random words
 2. **Store recovery key safely**: It is the only backup
 3. **Rotate passwords periodically**: Generate new archive with new key
-4. **Limit distribution**: Share URL only with intended recipients
+4. **Limit distribution**: Share the archive only with intended recipients
 
 ## Contact
 
@@ -677,7 +656,7 @@ const RECOVERY_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     <h2>Technical Reality</h2>
     <div class="danger">
         <p><strong>Important:</strong> The encryption used (AES-256-GCM with Argon2id) is designed to be unbreakable without the correct password. There is no backdoor, no master key, and no way to recover data without a valid key.</p>
-        <p>This is a feature, not a bug - it ensures your data remains private even if the hosting service is compromised.</p>
+        <p>This is a feature, not a bug - it ensures your data remains private even if these files are copied or shared.</p>
     </div>
 
     <a href="./" class="back-link">Back to Archive</a>
@@ -731,7 +710,8 @@ encrypted and can only be viewed with the correct password.
 
 HOW TO ACCESS
 -------------
-1. Open the web viewer at: {url}
+1. Serve this directory with `cass pages --preview <dir>` and open the
+   printed http://127.0.0.1 address, or open index.html directly
 2. Enter the password when prompted
 3. Browse and search your conversations
 
@@ -740,7 +720,7 @@ PRIVACY
 - All decryption happens in your web browser
 - Your password is never sent to any server
 - The encrypted data cannot be read without the password
-- Even the hosting service cannot see your conversations
+- Even someone who copies the files cannot see your conversations
 
 FORGOT YOUR PASSWORD?
 ---------------------
@@ -759,10 +739,11 @@ Version: CASS v{version}
 
 const UNENCRYPTED_README_TEMPLATE: &str = r#"# Unencrypted Coding Session Archive
 
-> **Warning:** This archive is not encrypted. Anyone who can access the hosted
-> files can read and download every included conversation without a password.
+> **Warning:** This archive is not encrypted. Anyone who can access these
+> files can read and copy every included conversation without a password.
 
-Open the web viewer: [{url}]({url})
+Serve this directory with `cass pages --preview <dir>` (loopback only) and
+open the printed `http://127.0.0.1` address, or open `index.html` directly.
 
 ## What This Contains
 
@@ -773,8 +754,8 @@ Date range: {start_date} to {end_date}
 
 ## Access
 
-No password, recovery key, or decryption step is required. Host this archive
-only where public plaintext access is intentional.
+No password, recovery key, or decryption step is required. Share this archive
+only where plaintext access is intentional.
 
 For the security implications, see [SECURITY.md](SECURITY.md).
 
@@ -786,13 +767,13 @@ const UNENCRYPTED_SECURITY_TEMPLATE: &str = r#"# Security Model: Unencrypted Arc
 
 ## Warning
 
-This archive is **not encrypted**. Its SQLite payload is published as plaintext,
-so the hosting provider and anyone who can fetch the site can read all included
-conversation content. There is no password or recovery-key access control.
+This archive is **not encrypted**. Its SQLite payload is stored as plaintext,
+so anyone who obtains these files can read all included conversation content.
+There is no password or recovery-key access control.
 
-Use transport security and hosting access controls where available, but do not
-treat either as payload encryption. Remove the published files if this exposure
-was not intended, then create a new encrypted export.
+Do not treat filesystem or transport security as payload encryption. Delete
+these files if this exposure was not intended, then create a new encrypted
+export.
 
 For security issues with CASS, see {repo_url}/security.
 
@@ -811,7 +792,7 @@ const UNENCRYPTED_HELP_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
     <h1>Unencrypted Archive Help</h1>
     <p><strong>Warning:</strong> this archive is not encrypted. No password is required, and anyone with access to these files can read the included conversations.</p>
     <p>Use the search box to find conversations, select a result to open it, and use the browser's navigation controls to return to the archive.</p>
-    <p>Host these files only where plaintext access is intentional.</p>
+    <p>Share these files only where plaintext access is intentional.</p>
     <a href="./">Back to Archive</a>
 </body>
 </html>
@@ -826,7 +807,7 @@ const UNENCRYPTED_RECOVERY_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 </head>
 <body>
     <h1>No Recovery Key Is Needed</h1>
-    <p>This archive is not encrypted, so it has no archive password or recovery key. Anyone who can access the hosted files can read the included conversations.</p>
+    <p>This archive is not encrypted, so it has no archive password or recovery key. Anyone who can access these files can read the included conversations.</p>
     <a href="./">Back to Archive</a>
 </body>
 </html>
@@ -835,13 +816,14 @@ const UNENCRYPTED_RECOVERY_HTML_TEMPLATE: &str = r#"<!DOCTYPE html>
 const UNENCRYPTED_ABOUT_TXT_TEMPLATE: &str = r#"UNENCRYPTED CODING SESSION ARCHIVE
 ==================================
 
-WARNING: This archive is not encrypted. Anyone who can access the hosted files
-can read and download all included conversation content without a password.
+WARNING: This archive is not encrypted. Anyone who can access these files
+can read and copy all included conversation content without a password.
 
 This archive contains {conversation_count} conversations.
-Open the web viewer at: {url}
+Serve this directory with `cass pages --preview <dir>` and open the printed
+http://127.0.0.1 address, or open index.html directly.
 
-Host these files only where plaintext access is intentional.
+Share these files only where plaintext access is intentional.
 
 ---
 Created: {date}
@@ -921,7 +903,7 @@ mod tests {
 
     #[test]
     fn test_generate_readme() {
-        let config = DocConfig::new().with_url("https://example.github.io/archive");
+        let config = DocConfig::new();
         let summary = create_test_summary();
         let generator = DocumentationGenerator::new(config, summary);
 
@@ -933,7 +915,7 @@ mod tests {
         assert_doc_contains!(doc, "42 conversations");
         assert_doc_contains!(doc, "claude-code");
         assert_doc_contains!(doc, "aider");
-        assert_doc_contains!(doc, "https://example.github.io/archive");
+        assert_doc_contains!(doc, "cass pages --preview");
         assert_doc_contains!(doc, "2 independent decryption key(s)");
     }
 
@@ -1011,7 +993,7 @@ mod tests {
 
     #[test]
     fn test_generate_about_txt() {
-        let config = DocConfig::new().with_url("https://example.com/archive");
+        let config = DocConfig::new();
         let summary = create_test_summary();
         let generator = DocumentationGenerator::new(config, summary);
 
@@ -1021,7 +1003,7 @@ mod tests {
         assert_eq!(doc.location, DocLocation::WebRoot);
         assert_doc_contains!(doc, "ENCRYPTED CODING SESSION ARCHIVE");
         assert_doc_contains!(doc, "42 conversations");
-        assert_doc_contains!(doc, "https://example.com/archive");
+        assert_doc_contains!(doc, "cass pages --preview");
     }
 
     #[test]
@@ -1057,11 +1039,9 @@ mod tests {
     #[test]
     fn test_doc_config_builder() {
         let config = DocConfig::new()
-            .with_url("https://example.com")
             .with_argon_params(65536, 3, 4)
             .with_archive_mode(ArchiveMode::Unencrypted);
 
-        assert_eq!(config.target_url, Some("https://example.com".to_string()));
         assert_eq!(config.argon_memory_kb, 65536);
         assert_eq!(config.argon_iterations, 3);
         assert_eq!(config.argon_parallelism, 4);
@@ -1070,9 +1050,7 @@ mod tests {
 
     #[test]
     fn unencrypted_docs_never_claim_encrypted_or_password_gated_access() {
-        let config = DocConfig::new()
-            .with_url("https://example.com/public-archive")
-            .with_archive_mode(ArchiveMode::Unencrypted);
+        let config = DocConfig::new().with_archive_mode(ArchiveMode::Unencrypted);
         let generator = DocumentationGenerator::new(config, create_test_summary());
 
         for doc in generator.generate_all() {
@@ -1112,30 +1090,34 @@ mod tests {
     }
 
     #[test]
-    fn test_readme_without_url() {
-        let config = DocConfig::new(); // No URL set
+    fn test_readme_points_at_local_preview() {
+        let config = DocConfig::new();
         let summary = create_test_summary();
         let generator = DocumentationGenerator::new(config, summary);
 
         let doc = generator.generate_readme();
 
-        assert_doc_contains!(doc, "[deployment URL]");
+        assert_doc_contains!(doc, "cass pages --preview");
+        assert_doc_contains!(doc, "http://127.0.0.1");
+        // The only URL left in the README is the CASS source-code link.
+        assert!(!doc.content.contains("github.io"));
+        assert!(!doc.content.contains("pages.dev"));
     }
 
     #[test]
-    fn test_about_without_url() {
+    fn test_about_points_at_local_preview() {
         let config = DocConfig::new();
         let summary = create_test_summary();
         let generator = DocumentationGenerator::new(config, summary);
 
         let doc = generator.generate_about_txt();
 
-        assert_doc_contains!(doc, "[deployment URL]");
+        assert_doc_contains!(doc, "cass pages --preview");
     }
 
     #[test]
     fn test_no_placeholders_remain() {
-        let config = DocConfig::new().with_url("https://test.com");
+        let config = DocConfig::new();
         let summary = create_test_summary();
         let generator = DocumentationGenerator::new(config, summary);
 
@@ -1144,7 +1126,7 @@ mod tests {
         for doc in docs {
             // Check that common placeholders are filled
             assert!(
-                !doc.content.contains("{url}") || doc.filename == "help.html",
+                !doc.content.contains("{url}"),
                 "Unfilled {{url}} in {}",
                 doc.filename
             );

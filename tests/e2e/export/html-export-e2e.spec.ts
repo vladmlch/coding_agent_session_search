@@ -329,12 +329,12 @@ test.describe("HTML Export - Encrypted Mode", () => {
   });
 });
 
-test.describe("HTML Export - CDN Fallback", () => {
-  test("works without CDN resources", async ({ page, noCdnExportPath }, testInfo) => {
-    test.skip(!noCdnExportPath, "No-CDN export path not configured");
+test.describe("HTML Export - Self-Contained", () => {
+  test("issues no external requests", async ({ page, exportPath }, testInfo) => {
+    test.skip(!exportPath, "Export path not configured");
 
-    await test.step("Navigate to no-CDN export", async () => {
-      await gotoFile(page, noCdnExportPath);
+    await test.step("Navigate to self-contained export", async () => {
+      await gotoFile(page, exportPath);
       await waitForPageReady(page);
     });
 

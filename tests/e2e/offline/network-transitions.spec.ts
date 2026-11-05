@@ -19,12 +19,12 @@ test.describe("Online to Offline Transitions", () => {
     console.log("[phase-start] Network transition test setup");
   });
 
-  test("page survives going offline after load", async ({ page, noCdnExportPath, browserName }) => {
+  test("page survives going offline after load", async ({ page, exportPath, browserName }) => {
     test.skip(browserName === "webkit", "WebKit offline mode not reliable with file:// URLs");
-    test.skip(!noCdnExportPath, "No-CDN export path not available");
+    test.skip(!exportPath, "Export path not available");
 
     // Load page while online
-    await gotoFile(page, noCdnExportPath);
+    await gotoFile(page, exportPath);
     await waitForPageReady(page);
 
     console.log("[phase-start] Online phase - verifying content");
@@ -60,11 +60,11 @@ test.describe("Online to Offline Transitions", () => {
     console.log("[phase-end] Network transition test complete");
   });
 
-  test("search works offline", async ({ page, noCdnExportPath, browserName }) => {
+  test("search works offline", async ({ page, exportPath, browserName }) => {
     test.skip(browserName === "webkit", "WebKit offline mode not reliable");
-    test.skip(!noCdnExportPath, "No-CDN export path not available");
+    test.skip(!exportPath, "Export path not available");
 
-    await gotoFile(page, noCdnExportPath);
+    await gotoFile(page, exportPath);
     await waitForPageReady(page);
 
     // Go offline before searching
@@ -86,11 +86,11 @@ test.describe("Online to Offline Transitions", () => {
     await page.context().setOffline(false);
   });
 
-  test("collapsible sections work offline", async ({ page, noCdnExportPath, browserName }) => {
+  test("collapsible sections work offline", async ({ page, exportPath, browserName }) => {
     test.skip(browserName === "webkit", "WebKit offline mode not reliable");
-    test.skip(!noCdnExportPath, "No-CDN export path not available");
+    test.skip(!exportPath, "Export path not available");
 
-    await gotoFile(page, noCdnExportPath);
+    await gotoFile(page, exportPath);
     await waitForPageReady(page);
 
     await page.context().setOffline(true);
@@ -114,17 +114,17 @@ test.describe("Online to Offline Transitions", () => {
 
   test("copy functionality works offline", async ({
     page,
-    noCdnExportPath,
+    exportPath,
     browserName,
     context,
   }) => {
     test.skip(browserName === "webkit", "WebKit offline mode not reliable");
-    test.skip(!noCdnExportPath, "No-CDN export path not available");
+    test.skip(!exportPath, "Export path not available");
 
     const clipboardGranted = await grantClipboardPermissionsIfSupported(context, browserName);
     test.skip(!clipboardGranted, "Clipboard permission grant is Chromium-only in Playwright");
 
-    await gotoFile(page, noCdnExportPath);
+    await gotoFile(page, exportPath);
     await waitForPageReady(page);
 
     await page.context().setOffline(true);
@@ -156,14 +156,14 @@ test.describe("Online to Offline Transitions", () => {
 });
 
 test.describe("Offline to Online Transitions", () => {
-  test("page recovers when going online", async ({ page, noCdnExportPath, browserName }) => {
+  test("page recovers when going online", async ({ page, exportPath, browserName }) => {
     test.skip(browserName === "webkit", "WebKit offline mode not reliable");
-    test.skip(!noCdnExportPath, "No-CDN export path not available");
+    test.skip(!exportPath, "Export path not available");
 
     // Start offline
     await page.context().setOffline(true);
 
-    await gotoFile(page, noCdnExportPath);
+    await gotoFile(page, exportPath);
     await waitForPageReady(page);
 
     console.log("[phase-start] Starting offline");
@@ -182,11 +182,11 @@ test.describe("Offline to Online Transitions", () => {
     console.log("[phase-end] Offline to online transition complete");
   });
 
-  test("multiple online/offline cycles", async ({ page, noCdnExportPath, browserName }) => {
+  test("multiple online/offline cycles", async ({ page, exportPath, browserName }) => {
     test.skip(browserName === "webkit", "WebKit offline mode not reliable");
-    test.skip(!noCdnExportPath, "No-CDN export path not available");
+    test.skip(!exportPath, "Export path not available");
 
-    await gotoFile(page, noCdnExportPath);
+    await gotoFile(page, exportPath);
     await waitForPageReady(page);
 
     const initialCount = await countMessages(page);
@@ -209,9 +209,9 @@ test.describe("Offline to Online Transitions", () => {
 });
 
 test.describe("Partial Connectivity", () => {
-  test("page handles slow network gracefully", async ({ page, noCdnExportPath, browserName }) => {
+  test("page handles slow network gracefully", async ({ page, exportPath, browserName }) => {
     test.skip(browserName !== "chromium", "CDP network throttling is Chromium-only");
-    test.skip(!noCdnExportPath, "No-CDN export path not available");
+    test.skip(!exportPath, "Export path not available");
 
     // Simulate slow network
     const client = await page.context().newCDPSession(page);
@@ -225,7 +225,7 @@ test.describe("Partial Connectivity", () => {
     console.log("[phase-start] Loading with slow network");
     const startTime = Date.now();
 
-    await gotoFile(page, noCdnExportPath);
+    await gotoFile(page, exportPath);
     await waitForPageReady(page);
 
     const loadTime = Date.now() - startTime;

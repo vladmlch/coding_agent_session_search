@@ -46,7 +46,6 @@ async function globalSetup() {
     "test-tool-calls",
     "test-large",
     "test-unicode",
-    "test-no-cdn",
   ];
   const allExportsExist = requiredExports.every((name) => {
     const exportPath = latestExports[name];
@@ -138,11 +137,6 @@ async function globalSetup() {
       name: "test-unicode",
       fixture: "../edge_cases/unicode_heavy.jsonl",
       args: [],
-    },
-    {
-      name: "test-no-cdn",
-      fixture: "claude_code_auth_fix.jsonl",
-      args: ["--no-cdns"],
     },
   ];
 

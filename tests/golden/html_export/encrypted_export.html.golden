@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark" class="no-prism no-tailwind">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1652,24 +1652,6 @@ pre:hover .copy-code-btn { opacity: 1; }
     display: none !important;
 }
 
-
-/* CDN fallback hooks — activated when CDNs fail to load or are disabled */
-.no-tailwind .toolbar,
-.no-tailwind .header,
-.no-tailwind .conversation {
-    backdrop-filter: none !important;
-}
-
-/* Ensure ALL code blocks are legible without Prism syntax highlighting.
-   Covers both language-tagged and untagged code blocks. */
-.no-prism pre code {
-    color: #c0caf5;
-}
-
-.no-prism pre code .token {
-    color: inherit;
-}
-
     </style>
     <style media="print">
 @media print {
@@ -2455,9 +2437,6 @@ const Crypto = {
                     }
                 }
                 sealedHeader.remove();
-            }
-            if (typeof Prism !== 'undefined' && typeof Prism.highlightAllUnder === 'function') {
-                Prism.highlightAllUnder(conversation);
             }
 
             // Hide modal

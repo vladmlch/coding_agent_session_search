@@ -2902,16 +2902,6 @@
           ]
         },
         {
-          "name": "no-cdns",
-          "description": "Disable CDN references (fully offline, larger file)",
-          "arg_type": "flag",
-          "required": false,
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
           "name": "include-skills",
           "description": "Include skill content in export (default: stripped for privacy). Skills injected by Claude Code/Codex contain proprietary SKILL.md content that should not appear in shared/published exports",
           "arg_type": "flag",
@@ -3242,43 +3232,13 @@
         },
         {
           "name": "target",
-          "description": "Deployment target: local, github, cloudflare",
+          "description": "Deployment target: local (hosted targets removed — cass is fully local-only; `github`/`cloudflare` are rejected before parse)",
           "arg_type": "option",
           "value_type": "enum",
           "required": false,
           "enum_values": [
-            "local",
-            "github",
-            "cloudflare"
+            "local"
           ]
-        },
-        {
-          "name": "project",
-          "description": "Cloudflare project name (also used for GitHub repo name)",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false
-        },
-        {
-          "name": "branch",
-          "description": "Cloudflare production branch (default: main)",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false
-        },
-        {
-          "name": "account-id",
-          "description": "Cloudflare account ID (or CLOUDFLARE_ACCOUNT_ID env)",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false
-        },
-        {
-          "name": "api-token",
-          "description": "Cloudflare API token (or CLOUDFLARE_API_TOKEN env)",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false
         },
         {
           "name": "dry-run",

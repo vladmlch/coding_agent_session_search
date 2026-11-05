@@ -3,7 +3,7 @@ use console::{Term, style};
 use dialoguer::{Confirm, Input, MultiSelect, Password, Select, theme::ColorfulTheme};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
@@ -14,8 +14,6 @@ use crate::pages::confirmation::{
     ConfirmationConfig, ConfirmationFlow, ConfirmationStep, PasswordStrengthAction, StepValidation,
     UNENCRYPTED_ACK_PHRASE, unencrypted_warning_lines, validate_unencrypted_ack,
 };
-use crate::pages::deploy_cloudflare::{CloudflareConfig, CloudflareDeployer};
-use crate::pages::deploy_github::GitHubDeployer;
 use crate::pages::docs::{ArchiveMode, DocConfig, DocumentationGenerator};
 use crate::pages::encrypt::{EncryptionConfig, EncryptionEngine};
 use crate::pages::export::{ExportEngine, ExportFilter, PathMode};
@@ -25,29 +23,11 @@ use crate::pages::secret_scan::{
     SecretScanConfig, SecretScanFilters, print_human_report, scan_staged_export_database,
     wizard_secret_scan,
 };
-use crate::pages::size::{BundleVerifier, SizeEstimate, SizeLimitResult};
+use crate::pages::size::SizeEstimate;
 use crate::pages::summary::{
     ExclusionSet, PrePublishSummary, SummaryFilters, SummaryGenerator, format_size,
 };
 use crate::storage::sqlite::FrankenStorage;
-
-/// Deployment target for the export
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeployTarget {
-    Local,
-    GitHubPages,
-    CloudflarePages,
-}
-
-impl std::fmt::Display for DeployTarget {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DeployTarget::Local => write!(f, "Local export only"),
-            DeployTarget::GitHubPages => write!(f, "GitHub Pages"),
-            DeployTarget::CloudflarePages => write!(f, "Cloudflare Pages"),
-        }
-    }
-}
 
 /// Wizard state tracking all configuration
 #[derive(Clone)]
@@ -71,10 +51,8 @@ pub struct WizardState {
     /// default for the encryption mode (see `effective_share_profile`).
     pub share_profile: Option<ShareProfile>,
 
-    // Deployment
-    pub target: DeployTarget,
+    // Local output
     pub output_dir: PathBuf,
-    pub repo_name: Option<String>,
 
     // Database path
     pub db_path: PathBuf,
@@ -94,11 +72,6 @@ pub struct WizardState {
     // Unencrypted export mode (DANGEROUS)
     pub no_encryption: bool,
     pub unencrypted_confirmed: bool,
-
-    // Cloudflare Pages deployment
-    pub cloudflare_branch: Option<String>,
-    pub cloudflare_account_id: Option<String>,
-    pub cloudflare_api_token: Option<String>,
 
     // Final output location (set after export)
     pub final_site_dir: Option<PathBuf>,
@@ -121,9 +94,7 @@ impl std::fmt::Debug for WizardState {
             .field("description", &self.description)
             .field("hide_metadata", &self.hide_metadata)
             .field("share_profile", &self.share_profile)
-            .field("target", &self.target)
             .field("output_dir", &self.output_dir)
-            .field("repo_name", &self.repo_name)
             .field("db_path", &self.db_path)
             .field("exclusions", &self.exclusions)
             .field("last_summary", &self.last_summary)
@@ -133,12 +104,6 @@ impl std::fmt::Debug for WizardState {
             .field("password_entropy_bits", &self.password_entropy_bits)
             .field("no_encryption", &self.no_encryption)
             .field("unencrypted_confirmed", &self.unencrypted_confirmed)
-            .field("cloudflare_branch", &self.cloudflare_branch)
-            .field("cloudflare_account_id", &self.cloudflare_account_id)
-            .field(
-                "cloudflare_api_token",
-                &self.cloudflare_api_token.as_ref().map(|_| "[REDACTED]"),
-            )
             .field("final_site_dir", &self.final_site_dir)
             .finish()
     }
@@ -160,9 +125,7 @@ impl Default for WizardState {
             description: "Encrypted archive of AI coding agent conversations".to_string(),
             hide_metadata: false,
             share_profile: None,
-            target: DeployTarget::Local,
             output_dir: PathBuf::from("cass-export"),
-            repo_name: None,
             db_path,
             exclusions: ExclusionSet::new(),
             last_summary: None,
@@ -172,9 +135,6 @@ impl Default for WizardState {
             password_entropy_bits: 0.0,
             no_encryption: false,
             unencrypted_confirmed: false,
-            cloudflare_branch: None,
-            cloudflare_account_id: None,
-            cloudflare_api_token: None,
             final_site_dir: None,
         }
     }
@@ -252,25 +212,6 @@ fn summary_security_lines(no_encryption: bool, planned_key_slots: usize) -> [Str
     }
 }
 
-fn require_verified_manual_deployment(term: &mut Term, site_dir: &Path) -> Result<()> {
-    match crate::pages::verify::ensure_valid_bundle(site_dir, false) {
-        Ok(_) => Ok(()),
-        Err(error) => {
-            writeln!(term)?;
-            writeln!(
-                term,
-                "  {} Manual deployment is blocked because the bundle no longer passes full verification.",
-                style("✗").red()
-            )?;
-            writeln!(term, "  Rebuild the export before attempting to deploy it.")?;
-            Err(error).context(format!(
-                "Refusing to recommend manual deployment of invalid Pages bundle at {}",
-                site_dir.display()
-            ))
-        }
-    }
-}
-
 pub struct PagesWizard {
     state: WizardState,
     no_encryption_mode: bool,
@@ -301,34 +242,9 @@ impl PagesWizard {
         self.state.no_encryption = no_encryption;
     }
 
-    /// Set the deployment target.
-    pub fn set_deploy_target(&mut self, target: DeployTarget) {
-        self.state.target = target;
-    }
-
     /// Choose the share profile up front (skips the wizard's prompt).
     pub fn set_share_profile(&mut self, profile: ShareProfile) {
         self.state.share_profile = Some(profile);
-    }
-
-    /// Set the repository/project name for deployment.
-    pub fn set_repo_name(&mut self, name: String) {
-        self.state.repo_name = Some(name);
-    }
-
-    /// Set the Cloudflare Pages branch.
-    pub fn set_cloudflare_branch(&mut self, branch: String) {
-        self.state.cloudflare_branch = Some(branch);
-    }
-
-    /// Set the Cloudflare account ID.
-    pub fn set_cloudflare_account_id(&mut self, account_id: String) {
-        self.state.cloudflare_account_id = Some(account_id);
-    }
-
-    /// Set the Cloudflare API token.
-    pub fn set_cloudflare_api_token(&mut self, api_token: String) {
-        self.state.cloudflare_api_token = Some(api_token);
     }
 
     pub fn run(&mut self) -> Result<()> {
@@ -360,8 +276,8 @@ impl PagesWizard {
         // Step 4: Site Configuration
         self.step_site_config(&mut term, &theme)?;
 
-        // Step 5: Deployment Target
-        self.step_deployment_target(&mut term, &theme)?;
+        // Step 5: Output Location
+        self.step_output_location(&mut term, &theme)?;
 
         // Step 6: Pre-Publish Summary
         if !self.step_summary(&mut term, &theme)? {
@@ -378,8 +294,8 @@ impl PagesWizard {
         // Step 8: Export Progress
         self.step_export(&mut term)?;
 
-        // Step 9: Deploy (if not local)
-        self.step_deploy(&mut term)?;
+        // Step 9: Finish (local preview hint)
+        self.step_finish(&mut term)?;
 
         Ok(())
     }
@@ -808,34 +724,9 @@ impl PagesWizard {
         Ok(())
     }
 
-    fn step_deployment_target(&mut self, term: &mut Term, theme: &ColorfulTheme) -> Result<()> {
-        writeln!(term, "\n{}", style("Step 5 of 9: Deployment Target").bold())?;
+    fn step_output_location(&mut self, term: &mut Term, theme: &ColorfulTheme) -> Result<()> {
+        writeln!(term, "\n{}", style("Step 5 of 9: Output Location").bold())?;
         writeln!(term, "{}", style("─".repeat(40)).dim())?;
-
-        let targets = vec![
-            "Local export only (generate files)",
-            "GitHub Pages (requires gh CLI)",
-            "Cloudflare Pages (requires wrangler CLI)",
-        ];
-
-        let target_selection = Select::with_theme(theme)
-            .with_prompt("Where would you like to deploy?")
-            .default(0)
-            .items(&targets)
-            .interact()?;
-
-        self.state.target = match target_selection {
-            1 => DeployTarget::GitHubPages,
-            2 => DeployTarget::CloudflarePages,
-            _ => DeployTarget::Local,
-        };
-
-        writeln!(
-            term,
-            "  {} Target: {}",
-            style("✓").green(),
-            self.state.target
-        )?;
 
         // Output directory
         self.state.output_dir = PathBuf::from(
@@ -851,18 +742,6 @@ impl PagesWizard {
             style("✓").green(),
             self.state.output_dir.display()
         )?;
-
-        // Repository name for remote deployment
-        if self.state.target != DeployTarget::Local {
-            let default_repo = format!("cass-archive-{}", chrono::Utc::now().format("%Y%m%d"));
-            let repo_name = Input::<String>::with_theme(theme)
-                .with_prompt("Repository/project name")
-                .default(default_repo)
-                .interact_text()?;
-            self.state.repo_name = Some(repo_name.clone());
-
-            writeln!(term, "  {} Repo: {}", style("✓").green(), repo_name)?;
-        }
 
         Ok(())
     }
@@ -1040,7 +919,15 @@ impl PagesWizard {
         writeln!(term, "\n{}", style("⚙️  CONFIGURATION").bold().cyan())?;
         writeln!(term, "{}", style("─".repeat(40)).dim())?;
         writeln!(term, "  Title: {}", self.state.title)?;
-        writeln!(term, "  Target: {}", self.state.target)?;
+        writeln!(
+            term,
+            "  Encryption: {}",
+            if self.state.no_encryption {
+                "Disabled (plaintext)"
+            } else {
+                "Enabled"
+            }
+        )?;
         writeln!(term, "  Output: {}", self.state.output_dir.display())?;
         writeln!(
             term,
@@ -1212,19 +1099,6 @@ impl PagesWizard {
         writeln!(term, "{}", style("─".repeat(40)).dim())?;
 
         // Build confirmation configuration
-        let target_domain = if self.state.target != DeployTarget::Local {
-            self.state
-                .repo_name
-                .as_ref()
-                .map(|name| match self.state.target {
-                    DeployTarget::GitHubPages => format!("{}.github.io", name),
-                    DeployTarget::CloudflarePages => format!("{}.pages.dev", name),
-                    DeployTarget::Local => String::new(),
-                })
-        } else {
-            None
-        };
-
         let summary = if let Some(summary) = self.state.last_summary.clone() {
             summary
         } else {
@@ -1242,8 +1116,6 @@ impl PagesWizard {
             has_secrets: false,
             has_critical_secrets: false,
             secret_count: 0,
-            target_domain,
-            is_remote_publish: self.state.target != DeployTarget::Local,
             password_entropy_bits: self.state.password_entropy_bits,
             has_recovery_key: self.state.generate_recovery,
             recovery_key_phrase: None, // Will be set after generation
@@ -1263,12 +1135,6 @@ impl PagesWizard {
                 }
                 ConfirmationStep::ContentReview => {
                     if !self.confirm_content_review(term, theme, &flow)? {
-                        return Ok(false);
-                    }
-                    flow.complete_current_step();
-                }
-                ConfirmationStep::PublicPublishingWarning => {
-                    if !self.confirm_public_warning(term, theme, &flow)? {
                         return Ok(false);
                     }
                     flow.complete_current_step();
@@ -1420,69 +1286,6 @@ impl PagesWizard {
         Ok(confirmed)
     }
 
-    /// Confirm public publishing warning.
-    fn confirm_public_warning(
-        &self,
-        term: &mut Term,
-        theme: &ColorfulTheme,
-        flow: &ConfirmationFlow,
-    ) -> Result<bool> {
-        let domain = flow
-            .config()
-            .target_domain
-            .as_deref()
-            .unwrap_or("your-site");
-
-        writeln!(
-            term,
-            "\n  {}",
-            style("🌐 PUBLIC PUBLISHING WARNING").yellow().bold()
-        )?;
-        writeln!(term)?;
-        writeln!(term, "  You are about to publish to:")?;
-        writeln!(term, "    {}", style(format!("https://{}/", domain)).cyan())?;
-        writeln!(term)?;
-        writeln!(
-            term,
-            "  {} This URL will be publicly accessible on the internet",
-            style("⚠").yellow()
-        )?;
-        writeln!(
-            term,
-            "  {} Anyone with the URL can download the encrypted archive",
-            style("⚠").yellow()
-        )?;
-        writeln!(
-            term,
-            "  {} The security depends entirely on your password strength",
-            style("⚠").yellow()
-        )?;
-        writeln!(term)?;
-
-        loop {
-            let input: String = Input::with_theme(theme)
-                .with_prompt(format!(
-                    "Type \"publish to {}\" to confirm (or \"abort\" to cancel)",
-                    domain
-                ))
-                .interact_text()?;
-
-            if input.trim().to_lowercase() == "abort" {
-                return Ok(false);
-            }
-
-            match flow.validate_public_warning(&input) {
-                StepValidation::Passed => {
-                    writeln!(term, "  {} Public URL confirmed", style("✓").green())?;
-                    return Ok(true);
-                }
-                StepValidation::Failed(msg) => {
-                    writeln!(term, "  {} {}", style("✗").red(), msg)?;
-                }
-            }
-        }
-    }
-
     /// Handle password strength warning.
     fn confirm_password_strength(
         &self,
@@ -1608,18 +1411,12 @@ impl PagesWizard {
         }
         writeln!(term)?;
 
-        // Show target info
-        if self.state.target != DeployTarget::Local {
-            if let Some(domain) = &flow.config().target_domain {
-                writeln!(term, "  Target: https://{}/", domain)?;
-            }
-        } else {
-            writeln!(
-                term,
-                "  Target: {} (local)",
-                self.state.output_dir.display()
-            )?;
-        }
+        // Show output location
+        writeln!(
+            term,
+            "  Output: {} (local)",
+            self.state.output_dir.display()
+        )?;
 
         if let Some(summary) = &self.state.last_summary {
             writeln!(
@@ -1692,34 +1489,6 @@ impl PagesWizard {
         for line in estimate.format_display().lines() {
             writeln!(term, "  {}", line)?;
         }
-        writeln!(term)?;
-
-        // Check limits
-        match estimate.check_limits() {
-            SizeLimitResult::Ok => {
-                writeln!(term, "  {} Size within limits", style("✓").green())?;
-            }
-            SizeLimitResult::Warning(warning) => {
-                writeln!(term, "  {} {}", style("⚠").yellow(), warning)?;
-                writeln!(term)?;
-
-                let theme = ColorfulTheme::default();
-                if !Confirm::with_theme(&theme)
-                    .with_prompt("Continue with export?")
-                    .default(true)
-                    .interact()?
-                {
-                    bail!("Export cancelled due to size warning");
-                }
-            }
-            SizeLimitResult::ExceedsLimit(error) => {
-                writeln!(term)?;
-                writeln!(term, "  {} {}", style("✗").red(), error)?;
-                writeln!(term)?;
-                bail!("Export blocked: {}", error);
-            }
-        }
-
         writeln!(term)?;
 
         // Stage export/encryption artifacts in a temp directory so the final
@@ -1798,7 +1567,7 @@ impl PagesWizard {
             let theme = ColorfulTheme::default();
             let acknowledgment: String = Input::with_theme(&theme)
                 .with_prompt(
-                    "Type exactly \"I understand the risks\" to encrypt/publish this staged artifact",
+                    "Type exactly \"I understand the risks\" to encrypt this staged artifact",
                 )
                 .interact_text()?;
             if acknowledgment.trim() != "I understand the risks" {
@@ -1895,25 +1664,7 @@ impl PagesWizard {
         let generated_docs = if let Some(ref summary) = self.state.last_summary {
             let (documentation_summary, archive_mode) =
                 documentation_summary(summary, encryption_config.as_ref());
-            // Determine target URL based on deployment target
-            // Note: GitHub Pages URL requires the username which isn't known until deployment,
-            // so we omit the URL for that target. The actual URL will be shown after deployment.
-            let target_url = match self.state.target {
-                DeployTarget::GitHubPages => None, // Username unknown at this stage
-                DeployTarget::CloudflarePages => self
-                    .state
-                    .repo_name
-                    .as_ref()
-                    .map(|name| format!("https://{}.pages.dev", name)),
-                DeployTarget::Local => None,
-            };
-
-            let mut doc_config = if let Some(url) = target_url {
-                DocConfig::new().with_url(url)
-            } else {
-                DocConfig::new()
-            }
-            .with_archive_mode(archive_mode);
+            let mut doc_config = DocConfig::new().with_archive_mode(archive_mode);
             if let Some(config) = encryption_config.as_ref() {
                 doc_config = doc_config.with_argon_params(
                     config.kdf_defaults.memory_kb,
@@ -1959,20 +1710,10 @@ impl PagesWizard {
                 .unwrap_or(&bundle_result.fingerprint)
         ));
 
-        // Phase 4: Post-export verification
-        let warnings = BundleVerifier::verify(&bundle_result.site_dir)?;
-        if !warnings.is_empty() {
-            writeln!(term)?;
-            writeln!(term, "  {} Size warnings:", style("⚠").yellow())?;
-            for warning in &warnings {
-                writeln!(term, "    {}", warning)?;
-            }
-        }
-
         writeln!(term)?;
         writeln!(
             term,
-            "  {} Site directory (deploy this): {}",
+            "  {} Site directory (preview or open locally): {}",
             style("✓").green(),
             style(bundle_result.site_dir.display()).cyan()
         )?;
@@ -2022,7 +1763,7 @@ impl PagesWizard {
         Ok(())
     }
 
-    fn deploy_site_dir(&self) -> PathBuf {
+    fn site_dir(&self) -> PathBuf {
         self.state
             .final_site_dir
             .as_ref()
@@ -2030,281 +1771,43 @@ impl PagesWizard {
             .unwrap_or_else(|| self.state.output_dir.join("site"))
     }
 
-    fn deploy_project_name(&self) -> String {
-        self.state
-            .repo_name
-            .clone()
-            .unwrap_or_else(|| "cass-archive".to_string())
-    }
-
-    fn step_deploy(&self, term: &mut Term) -> Result<()> {
-        writeln!(term, "\n{}", style("Step 9 of 9: Deployment").bold())?;
+    fn step_finish(&self, term: &mut Term) -> Result<()> {
+        writeln!(term, "\n{}", style("Step 9 of 9: Done").bold())?;
         writeln!(term, "{}", style("─".repeat(40)).dim())?;
 
-        match self.state.target {
-            DeployTarget::Local => {
-                let site_dir = self.deploy_site_dir();
-                writeln!(term)?;
-                writeln!(term, "{}", style("✓ Export complete!").green().bold())?;
-                writeln!(term)?;
-                writeln!(
-                    term,
-                    "Your archive bundle has been exported to: {}",
-                    style(self.state.output_dir.display()).cyan()
-                )?;
-                writeln!(term)?;
-                writeln!(
-                    term,
-                    "Deployable site directory: {}",
-                    style(site_dir.display()).cyan()
-                )?;
-                writeln!(term)?;
-                writeln!(term, "To preview locally, run:")?;
-                writeln!(
-                    term,
-                    "  {}",
-                    style(format!(
-                        "cass pages --preview {} --no-open",
-                        site_dir.display()
-                    ))
-                    .dim()
-                )?;
-                writeln!(term)?;
-                writeln!(
-                    term,
-                    "Then open {} in your browser.",
-                    style("http://localhost:8080").cyan()
-                )?;
-            }
-            DeployTarget::GitHubPages => {
-                writeln!(term, "  {} GitHub Pages deployment...", style("→").cyan())?;
-                let site_dir = self.deploy_site_dir();
-
-                // Determine repository name
-                let repo_name = self.deploy_project_name();
-
-                // Configure the deployer
-                let deployer = GitHubDeployer::new(repo_name.clone());
-
-                // Check prerequisites first
-                match deployer.check_prerequisites() {
-                    Ok(prereqs) if prereqs.is_ready() => {
-                        // Deploy with progress output
-                        match crate::pages::verify::with_verified_bundle_for_deployment(
-                            &site_dir,
-                            false,
-                            |verified_site_dir| {
-                                deployer.deploy(verified_site_dir, |_phase, msg| {
-                                    let _ = writeln!(term, "    {} {}", style("•").dim(), msg);
-                                })
-                            },
-                        ) {
-                            Ok(result) => {
-                                writeln!(term)?;
-                                writeln!(
-                                    term,
-                                    "  {} Deployed to GitHub Pages!",
-                                    style("✓").green().bold()
-                                )?;
-                                writeln!(term)?;
-                                writeln!(term, "  Repository: {}", style(&result.repo_url).cyan())?;
-                                writeln!(
-                                    term,
-                                    "  Your archive is available at: {}",
-                                    style(&result.pages_url).cyan().bold()
-                                )?;
-                            }
-                            Err(e) => {
-                                writeln!(term)?;
-                                writeln!(term, "  {} Deployment failed: {}", style("✗").red(), e)?;
-                                if let Err(verification_error) =
-                                    require_verified_manual_deployment(term, &site_dir)
-                                {
-                                    return Err(e).context(format!(
-                                        "GitHub Pages deployment failed and manual deployment is blocked: {verification_error:#}"
-                                    ));
-                                }
-                                writeln!(term)?;
-                                writeln!(
-                                    term,
-                                    "To deploy manually, push the {} directory to a gh-pages branch.",
-                                    site_dir.display()
-                                )?;
-                                return Err(e).context(
-                                    "GitHub Pages bundle verification or deployment failed",
-                                );
-                            }
-                        }
-                    }
-                    Ok(prereqs) => {
-                        let missing = prereqs.missing();
-                        writeln!(term)?;
-                        writeln!(term, "  {} Prerequisites not met:", style("⚠").yellow())?;
-                        for item in &missing {
-                            writeln!(term, "    {} {}", style("•").dim(), item)?;
-                        }
-                        writeln!(term)?;
-                        writeln!(
-                            term,
-                            "Please install/configure the missing tools and try again."
-                        )?;
-                        require_verified_manual_deployment(term, &site_dir)?;
-                        writeln!(
-                            term,
-                            "To deploy manually after fixing prerequisites, push the {} directory to a gh-pages branch.",
-                            site_dir.display()
-                        )?;
-                    }
-                    Err(e) => {
-                        writeln!(term)?;
-                        writeln!(
-                            term,
-                            "  {} Could not check prerequisites: {}",
-                            style("⚠").yellow(),
-                            e
-                        )?;
-                        require_verified_manual_deployment(term, &site_dir)?;
-                        writeln!(term)?;
-                        writeln!(
-                            term,
-                            "To deploy manually, push the {} directory to a gh-pages branch.",
-                            site_dir.display()
-                        )?;
-                    }
-                }
-            }
-            DeployTarget::CloudflarePages => {
-                writeln!(
-                    term,
-                    "  {} Cloudflare Pages deployment...",
-                    style("→").cyan()
-                )?;
-                let site_dir = self.deploy_site_dir();
-
-                // Determine project name from repo_name or use default
-                let project_name = self.deploy_project_name();
-
-                // Configure the deployer
-                let deployer = CloudflareDeployer::new(CloudflareConfig {
-                    project_name: project_name.clone(),
-                    custom_domain: None,
-                    create_if_missing: true,
-                    branch: "main".to_string(),
-                    account_id: dotenvy::var("CLOUDFLARE_ACCOUNT_ID").ok(),
-                    api_token: dotenvy::var("CLOUDFLARE_API_TOKEN").ok(),
-                });
-
-                // Check prerequisites first
-                match deployer.check_prerequisites() {
-                    Ok(prereqs) if prereqs.is_ready() => {
-                        // Deploy with progress output
-                        match crate::pages::verify::with_verified_bundle_for_deployment(
-                            &site_dir,
-                            false,
-                            |verified_site_dir| {
-                                deployer.deploy(verified_site_dir, |_phase, msg| {
-                                    let _ = writeln!(term, "    {} {}", style("•").dim(), msg);
-                                })
-                            },
-                        ) {
-                            Ok(result) => {
-                                writeln!(term)?;
-                                writeln!(
-                                    term,
-                                    "  {} Deployed to Cloudflare Pages!",
-                                    style("✓").green().bold()
-                                )?;
-                                writeln!(term)?;
-                                writeln!(
-                                    term,
-                                    "  Your archive is available at: {}",
-                                    style(&result.pages_url).cyan().bold()
-                                )?;
-                                if let Some(ref domain) = result.custom_domain {
-                                    writeln!(term, "  Custom domain: {}", style(domain).cyan())?;
-                                }
-                            }
-                            Err(e) => {
-                                writeln!(term)?;
-                                writeln!(term, "  {} Deployment failed: {}", style("✗").red(), e)?;
-                                if let Err(verification_error) =
-                                    require_verified_manual_deployment(term, &site_dir)
-                                {
-                                    return Err(e).context(format!(
-                                        "Cloudflare Pages deployment failed and manual deployment is blocked: {verification_error:#}"
-                                    ));
-                                }
-                                writeln!(term)?;
-                                writeln!(
-                                    term,
-                                    "To deploy manually, use wrangler to deploy the {} directory:",
-                                    site_dir.display()
-                                )?;
-                                writeln!(
-                                    term,
-                                    "  {}",
-                                    style(format!(
-                                        "wrangler pages deploy {} --project-name {}",
-                                        site_dir.display(),
-                                        project_name
-                                    ))
-                                    .dim()
-                                )?;
-                                return Err(e).context(
-                                    "Cloudflare Pages bundle verification or deployment failed",
-                                );
-                            }
-                        }
-                    }
-                    Ok(prereqs) => {
-                        let missing = prereqs.missing();
-                        writeln!(term)?;
-                        writeln!(term, "  {} Prerequisites not met:", style("⚠").yellow())?;
-                        for item in &missing {
-                            writeln!(term, "    {} {}", style("•").dim(), item)?;
-                        }
-                        require_verified_manual_deployment(term, &site_dir)?;
-                        writeln!(term)?;
-                        writeln!(term, "To deploy manually after meeting prerequisites:")?;
-                        writeln!(
-                            term,
-                            "  {}",
-                            style(format!(
-                                "wrangler pages deploy {} --project-name {}",
-                                site_dir.display(),
-                                project_name
-                            ))
-                            .dim()
-                        )?;
-                    }
-                    Err(e) => {
-                        writeln!(term)?;
-                        writeln!(
-                            term,
-                            "  {} Could not check prerequisites: {}",
-                            style("⚠").yellow(),
-                            e
-                        )?;
-                        require_verified_manual_deployment(term, &site_dir)?;
-                        writeln!(term)?;
-                        writeln!(
-                            term,
-                            "To deploy manually, use wrangler to deploy the {} directory:",
-                            site_dir.display()
-                        )?;
-                        writeln!(
-                            term,
-                            "  {}",
-                            style(format!(
-                                "wrangler pages deploy {} --project-name {}",
-                                site_dir.display(),
-                                project_name
-                            ))
-                            .dim()
-                        )?;
-                    }
-                }
-            }
+        {
+            let site_dir = self.site_dir();
+            writeln!(term)?;
+            writeln!(term, "{}", style("✓ Export complete!").green().bold())?;
+            writeln!(term)?;
+            writeln!(
+                term,
+                "Your archive bundle has been exported to: {}",
+                style(self.state.output_dir.display()).cyan()
+            )?;
+            writeln!(term)?;
+            writeln!(
+                term,
+                "Deployable site directory: {}",
+                style(site_dir.display()).cyan()
+            )?;
+            writeln!(term)?;
+            writeln!(term, "To preview locally, run:")?;
+            writeln!(
+                term,
+                "  {}",
+                style(format!(
+                    "cass pages --preview {} --no-open",
+                    site_dir.display()
+                ))
+                .dim()
+            )?;
+            writeln!(term)?;
+            writeln!(
+                term,
+                "Then open {} in your browser.",
+                style("http://localhost:8080").cyan()
+            )?;
         }
 
         writeln!(term)?;
@@ -2329,36 +1832,6 @@ fn unencrypted_bundle_config(db_size: u64) -> serde_json::Value {
 mod tests {
     use super::*;
 
-    // =========================
-    // DeployTarget Tests
-    // =========================
-
-    #[test]
-    fn deploy_target_display() {
-        assert_eq!(DeployTarget::Local.to_string(), "Local export only");
-        assert_eq!(DeployTarget::GitHubPages.to_string(), "GitHub Pages");
-        assert_eq!(
-            DeployTarget::CloudflarePages.to_string(),
-            "Cloudflare Pages"
-        );
-    }
-
-    #[test]
-    fn deploy_target_equality() {
-        assert_eq!(DeployTarget::Local, DeployTarget::Local);
-        assert_eq!(DeployTarget::GitHubPages, DeployTarget::GitHubPages);
-        assert_eq!(DeployTarget::CloudflarePages, DeployTarget::CloudflarePages);
-        assert_ne!(DeployTarget::Local, DeployTarget::GitHubPages);
-        assert_ne!(DeployTarget::GitHubPages, DeployTarget::CloudflarePages);
-    }
-
-    #[test]
-    fn deploy_target_clone() {
-        let target = DeployTarget::CloudflarePages;
-        let cloned = target;
-        assert_eq!(target, cloned);
-    }
-
     #[test]
     fn unencrypted_bundle_config_shape() {
         let config = unencrypted_bundle_config(1234);
@@ -2379,7 +1852,7 @@ mod tests {
     }
 
     #[test]
-    fn manual_deployment_fallback_rechecks_mutated_bundle() -> Result<()> {
+    fn bundle_verification_rechecks_mutated_bundle() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let archive_dir = temp.path().join("archive");
         let payload_dir = archive_dir.join("payload");
@@ -2393,18 +1866,16 @@ mod tests {
 
         let output_dir = temp.path().join("bundle");
         let bundle = BundleBuilder::new().build(&archive_dir, &output_dir, |_, _| {})?;
-        let mut term = Term::buffered_stderr();
-        require_verified_manual_deployment(&mut term, &bundle.site_dir)?;
+        crate::pages::verify::ensure_valid_bundle(&bundle.site_dir, false)?;
 
         std::fs::write(
             bundle.site_dir.join("recovery-secret.txt"),
             b"post-build private material",
         )?;
-        let error = require_verified_manual_deployment(&mut term, &bundle.site_dir)
-            .expect_err("mutated bundle must block manual-deployment guidance");
+        let error = crate::pages::verify::ensure_valid_bundle(&bundle.site_dir, false)
+            .expect_err("mutated bundle must fail re-verification");
         let message = format!("{error:#}");
 
-        assert!(message.contains("Refusing to recommend manual deployment"));
         assert!(message.contains("no_secrets_in_site"));
         Ok(())
     }
@@ -2531,10 +2002,8 @@ mod tests {
         );
         assert!(!state.hide_metadata);
 
-        // Deployment defaults
-        assert_eq!(state.target, DeployTarget::Local);
+        // Local output defaults
         assert_eq!(state.output_dir, PathBuf::from("cass-export"));
-        assert!(state.repo_name.is_none());
 
         // Exclusions default
         assert_eq!(state.exclusions.exclusion_counts(), (0, 0, 0));
@@ -2645,27 +2114,6 @@ mod tests {
     }
 
     // =========================
-    // Deploy Target Selection Mapping Tests
-    // =========================
-
-    #[test]
-    fn deploy_target_selection_mapping() {
-        // Test the target selection mapping from step_deployment_target
-        fn map_target_selection(selection: usize) -> DeployTarget {
-            match selection {
-                1 => DeployTarget::GitHubPages,
-                2 => DeployTarget::CloudflarePages,
-                _ => DeployTarget::Local,
-            }
-        }
-
-        assert_eq!(map_target_selection(0), DeployTarget::Local);
-        assert_eq!(map_target_selection(1), DeployTarget::GitHubPages);
-        assert_eq!(map_target_selection(2), DeployTarget::CloudflarePages);
-        assert_eq!(map_target_selection(3), DeployTarget::Local);
-    }
-
-    // =========================
     // State Modification Tests
     // =========================
 
@@ -2722,17 +2170,14 @@ mod tests {
         let state = WizardState {
             password: Some("test_password".to_string()),
             recovery_secret: Some(vec![1, 2, 3, 4]),
-            cloudflare_api_token: Some("cf-secret-token".to_string()),
             ..Default::default()
         };
 
         let debug = format!("{state:?}");
         assert!(debug.contains("password"));
         assert!(debug.contains("recovery_secret"));
-        assert!(debug.contains("cloudflare_api_token"));
         assert!(debug.contains("[REDACTED]"));
         assert!(!debug.contains("test_password"));
-        assert!(!debug.contains("cf-secret-token"));
         assert!(!debug.contains("[1, 2, 3, 4]"));
     }
 
@@ -2778,12 +2223,10 @@ mod tests {
     fn wizard_state_output_configuration() {
         let state = WizardState {
             output_dir: PathBuf::from("/custom/output"),
-            repo_name: Some("my-archive".to_string()),
             ..Default::default()
         };
 
         assert_eq!(state.output_dir, PathBuf::from("/custom/output"));
-        assert_eq!(state.repo_name, Some("my-archive".to_string()));
     }
 
     // =========================

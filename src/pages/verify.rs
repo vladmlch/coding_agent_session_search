@@ -26,7 +26,8 @@ use super::redact::RedactionEngine;
 use crate::franken_sync::compat::RowExt;
 use std::fmt;
 
-/// Maximum chunk file size (GitHub Pages hard limit)
+/// Maximum chunk file size (archive sanity cap — a single chunk a browser
+/// must fetch, decompress, and hold in memory as plaintext)
 const MAX_CHUNK_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
 
 /// Maximum chunk_size config value (32 MiB)

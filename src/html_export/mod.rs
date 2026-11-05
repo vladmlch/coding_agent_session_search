@@ -2,8 +2,7 @@
 //!
 //! This module generates standalone HTML files from coding agent session transcripts.
 //! The exported files are:
-//! - **Self-contained**: All critical CSS/JS inlined for offline operation
-//! - **Progressive enhancement**: CDN resources enhance but don't break offline view
+//! - **Self-contained**: All CSS/JS inlined; the file works fully offline
 //! - **Encrypted (optional)**: Web Crypto compatible encryption for sensitive content
 //! - **Accessible**: Semantic HTML with proper ARIA attributes
 //!
@@ -13,7 +12,7 @@
 //! html_export/
 //! ├── mod.rs           # Module facade (this file)
 //! ├── template.rs      # Core HTML template generation
-//! ├── styles.rs        # CSS (critical inline + Tailwind CDN fallback)
+//! ├── styles.rs        # CSS (critical inline + print)
 //! ├── scripts.rs       # JS (decryption, search, theme toggle)
 //! ├── renderer.rs      # Conversation -> HTML rendering
 //! ├── filename.rs      # Smart filename generation

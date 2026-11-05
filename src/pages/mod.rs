@@ -14,8 +14,6 @@ pub mod attachments;
 pub mod bundle;
 pub mod config_input;
 pub mod confirmation;
-pub mod deploy_cloudflare;
-pub mod deploy_github;
 pub mod docs;
 pub mod encrypt;
 pub mod errors;

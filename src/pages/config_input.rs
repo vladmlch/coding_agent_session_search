@@ -29,11 +29,7 @@
 //!   },
 //!   "deployment": {
 //!     "target": "local",
-//!     "output_dir": "./dist",
-//!     "repo": "my-archive",
-//!     "branch": "gh-pages",
-//!     "account_id": "env:CLOUDFLARE_ACCOUNT_ID",
-//!     "api_token": "env:CLOUDFLARE_API_TOKEN"
+//!     "output_dir": "./dist"
 //!   }
 //! }
 //! ```
@@ -45,7 +41,7 @@ use thiserror::Error;
 
 use super::export::PathMode;
 use super::profiles::ShareProfile;
-use super::wizard::{DeployTarget, WizardState};
+use super::wizard::WizardState;
 use crate::ui::time_parser::parse_time_input;
 
 /// Errors that can occur when loading or validating pages configuration.
@@ -260,9 +256,14 @@ impl Default for BundleConfig {
 }
 
 /// Deployment configuration.
+///
+/// Only `target = "local"` (the default) is supported: cass runs fully
+/// local-only. The hosted-publishing keys below are still deserialized so a
+/// legacy config gets an explicit diagnostic instead of being silently
+/// ignored.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeploymentConfig {
-    /// Deployment target: local (default), github, cloudflare.
+    /// Deployment target: local only (github/cloudflare are rejected).
     #[serde(default = "default_target")]
     pub target: String,
 
@@ -270,19 +271,19 @@ pub struct DeploymentConfig {
     #[serde(default = "default_output_dir")]
     pub output_dir: String,
 
-    /// Repository/project name for GitHub or Cloudflare Pages deployment.
+    /// REMOVED: repository/project name for hosted publishing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
 
-    /// Branch for GitHub Pages deployment (default: gh-pages).
+    /// REMOVED: hosted-publishing branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
 
-    /// Cloudflare account ID (for API-token auth).
+    /// REMOVED: hosted-publishing account ID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
 
-    /// Cloudflare API token (for API-token auth).
+    /// REMOVED: hosted-publishing API token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_token: Option<String>,
 }
@@ -329,12 +330,6 @@ fn option_has_non_empty_value(value: &Option<String>) -> bool {
     value
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty())
-}
-
-fn option_has_empty_value(value: &Option<String>) -> bool {
-    value
-        .as_deref()
-        .is_some_and(|value| value.trim().is_empty())
 }
 
 impl PagesConfig {
@@ -428,17 +423,9 @@ impl PagesConfig {
             self.deployment.output_dir = resolve_env_var(env_var)?;
         }
 
-        if let Some(ref account_id) = self.deployment.account_id
-            && let Some(env_var) = account_id.strip_prefix("env:")
-        {
-            self.deployment.account_id = Some(resolve_env_var(env_var)?);
-        }
-
-        if let Some(ref api_token) = self.deployment.api_token
-            && let Some(env_var) = api_token.strip_prefix("env:")
-        {
-            self.deployment.api_token = Some(resolve_env_var(env_var)?);
-        }
+        // deployment.account_id/api_token are intentionally not resolved:
+        // hosted publishing was removed, so their values are only diagnosed
+        // (validation warns they are ignored) and never dereferenced.
 
         Ok(())
     }
@@ -499,45 +486,31 @@ impl PagesConfig {
             errors.push("deployment.output_dir must not be empty.".to_string());
         }
         match target.as_str() {
-            "local" | "github" | "cloudflare" => {}
+            "local" => {}
+            "github" | "cloudflare" => {
+                errors.push(format!(
+                    "unsupported_deployment_target: deployment.target '{}' is no longer supported; \
+                     cass runs fully local-only. Remove the deployment block or set \"local\".",
+                    self.deployment.target
+                ));
+            }
             _ => {
                 errors.push(format!(
-                    "Invalid deployment.target: '{}'. Must be one of: local, github, cloudflare",
+                    "Invalid deployment.target: '{}'. Only \"local\" is supported (cass runs fully local-only).",
                     self.deployment.target
                 ));
             }
         }
 
-        // Validate GitHub deployment config
-        if target == "github" && !option_has_non_empty_value(&self.deployment.repo) {
-            errors.push(
-                "deployment.repo is required and must not be empty when target is 'github'. \
-                 Specify the repository name for GitHub Pages deployment."
-                    .to_string(),
-            );
-        }
-
-        if target == "cloudflare" {
-            if option_has_empty_value(&self.deployment.account_id) {
-                errors.push("deployment.account_id must not be empty when set.".to_string());
-            }
-            if option_has_empty_value(&self.deployment.api_token) {
-                errors.push("deployment.api_token must not be empty when set.".to_string());
-            }
-
-            let account_id_set = option_has_non_empty_value(&self.deployment.account_id);
-            let api_token_set = option_has_non_empty_value(&self.deployment.api_token);
-            if account_id_set ^ api_token_set {
-                errors.push(
-                    "deployment.account_id and deployment.api_token must both be set for Cloudflare API-token auth (use env:VAR syntax if needed)."
-                        .to_string(),
-                );
-            }
-        } else if option_has_non_empty_value(&self.deployment.account_id)
+        // Legacy hosted-publishing keys are diagnosed, never dereferenced.
+        if option_has_non_empty_value(&self.deployment.repo)
+            || option_has_non_empty_value(&self.deployment.branch)
+            || option_has_non_empty_value(&self.deployment.account_id)
             || option_has_non_empty_value(&self.deployment.api_token)
         {
             warnings.push(
-                "deployment.account_id/api_token are set but deployment.target is not cloudflare; these values will be ignored."
+                "deployment.repo/branch/account_id/api_token are ignored: hosted publishing was \
+                 removed; cass exports local archives only."
                     .to_string(),
             );
         }
@@ -607,13 +580,6 @@ impl PagesConfig {
             );
         }
 
-        if target == "github" && self.deployment.branch.is_some() {
-            warnings.push(
-                "deployment.branch is set for GitHub Pages, but cass always deploys to gh-pages. The value will be ignored."
-                    .to_string(),
-            );
-        }
-
         let valid = errors.is_empty();
         let resolved = if valid {
             Some(self.to_resolved())
@@ -665,12 +631,13 @@ impl PagesConfig {
 
     /// Convert to WizardState for execution.
     pub fn to_wizard_state(&self, db_path: PathBuf) -> Result<WizardState, ConfigError> {
-        // Parse deploy target
-        let target = match self.normalized_target().as_str() {
-            "github" => DeployTarget::GitHubPages,
-            "cloudflare" => DeployTarget::CloudflarePages,
-            _ => DeployTarget::Local,
-        };
+        if self.normalized_target().as_str() != "local" {
+            return Err(ConfigError::Validation(format!(
+                "unsupported_deployment_target: deployment.target '{}' is no longer supported; \
+                 cass runs fully local-only.",
+                self.deployment.target
+            )));
+        }
 
         // Convert workspaces
         let workspaces = if self.filters.workspaces.is_empty() {
@@ -691,9 +658,7 @@ impl PagesConfig {
             description: self.bundle.description.clone(),
             hide_metadata: self.bundle.hide_metadata,
             share_profile: self.bundle.share_profile,
-            target,
             output_dir: PathBuf::from(&self.deployment.output_dir),
-            repo_name: self.deployment.repo.clone(),
             db_path,
             exclusions: Default::default(),
             last_summary: None,
@@ -703,9 +668,6 @@ impl PagesConfig {
             password_entropy_bits: 0.0,
             no_encryption: self.encryption.no_encryption,
             unencrypted_confirmed: self.encryption.i_understand_risks,
-            cloudflare_branch: self.deployment.branch.clone(),
-            cloudflare_account_id: self.deployment.account_id.clone(),
-            cloudflare_api_token: self.deployment.api_token.clone(),
             final_site_dir: None,
         })
     }
@@ -758,11 +720,7 @@ pub fn example_config() -> &'static str {
   },
   "deployment": {
     "target": "local",
-    "output_dir": "./cass-export",
-    "repo": null,
-    "branch": null,
-    "account_id": null,
-    "api_token": null
+    "output_dir": "./cass-export"
   }
 }"#
 }
@@ -884,19 +842,25 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_github_without_repo() {
+    fn test_validate_github_target_is_unsupported() {
         let mut config = config_with_password();
         config.deployment.target = "github".to_string();
         let result = config.validate();
         assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("repo")));
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|e| e.contains("unsupported_deployment_target"))
+        );
+        // The config itself is diagnosed, not rewritten.
+        assert_eq!(config.deployment.target, "github");
     }
 
     #[test]
-    fn test_validate_github_with_blank_repo() {
+    fn test_validate_cloudflare_target_is_unsupported() {
         let mut config = config_with_password();
-        config.deployment.target = "github".to_string();
-        config.deployment.repo = Some("   ".to_string());
+        config.deployment.target = "cloudflare".to_string();
 
         let result = config.validate();
         assert!(!result.valid);
@@ -904,7 +868,25 @@ mod tests {
             result
                 .errors
                 .iter()
-                .any(|e| e.contains("repo") && e.contains("empty"))
+                .any(|e| e.contains("unsupported_deployment_target"))
+        );
+    }
+
+    #[test]
+    fn test_validate_legacy_hosting_keys_warn_but_do_not_fail() {
+        let mut config = config_with_password();
+        config.deployment.repo = Some("my-archive".to_string());
+        config.deployment.branch = Some("gh-pages".to_string());
+        config.deployment.account_id = Some("acc".to_string());
+        config.deployment.api_token = Some("token".to_string());
+
+        let result = config.validate();
+        assert!(result.valid, "{:?}", result.errors);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.contains("ignored") && w.contains("hosted publishing"))
         );
     }
 
@@ -982,26 +964,23 @@ mod tests {
     }
 
     #[test]
-    fn test_env_var_resolution_deployment_credentials() {
-        // SAFETY: This test runs in isolation and the env vars are cleaned up after use
-        unsafe {
-            std::env::set_var("TEST_CF_ACCOUNT_ID", "acc123");
-            std::env::set_var("TEST_CF_API_TOKEN", "token456");
-        }
-
+    fn test_env_var_resolution_ignores_removed_hosting_credentials() {
+        // Hosted-publishing credentials are diagnosed, never dereferenced:
+        // `env:`-prefixed values must stay literal so a missing variable
+        // cannot break an otherwise local export.
         let mut config = PagesConfig::default();
-        config.deployment.account_id = Some("env:TEST_CF_ACCOUNT_ID".to_string());
-        config.deployment.api_token = Some("env:TEST_CF_API_TOKEN".to_string());
+        config.deployment.account_id = Some("env:TEST_CF_ACCOUNT_ID_MISSING".to_string());
+        config.deployment.api_token = Some("env:TEST_CF_API_TOKEN_MISSING".to_string());
         config.resolve_env_vars().unwrap();
 
-        assert_eq!(config.deployment.account_id, Some("acc123".to_string()));
-        assert_eq!(config.deployment.api_token, Some("token456".to_string()));
-
-        // SAFETY: Cleanup of test env vars
-        unsafe {
-            std::env::remove_var("TEST_CF_ACCOUNT_ID");
-            std::env::remove_var("TEST_CF_API_TOKEN");
-        }
+        assert_eq!(
+            config.deployment.account_id,
+            Some("env:TEST_CF_ACCOUNT_ID_MISSING".to_string())
+        );
+        assert_eq!(
+            config.deployment.api_token,
+            Some("env:TEST_CF_API_TOKEN_MISSING".to_string())
+        );
     }
 
     #[test]
@@ -1042,24 +1021,7 @@ mod tests {
             result
                 .errors
                 .iter()
-                .any(|e| e.contains("account_id") && e.contains("api_token"))
-        );
-    }
-
-    #[test]
-    fn test_validate_cloudflare_rejects_blank_credentials() {
-        let mut config = config_with_password();
-        config.deployment.target = "cloudflare".to_string();
-        config.deployment.account_id = Some("   ".to_string());
-        config.deployment.api_token = Some("token456".to_string());
-
-        let result = config.validate();
-        assert!(!result.valid);
-        assert!(
-            result
-                .errors
-                .iter()
-                .any(|e| e.contains("account_id") && e.contains("empty"))
+                .any(|e| e.contains("unsupported_deployment_target"))
         );
     }
 
@@ -1132,26 +1094,24 @@ mod tests {
     #[test]
     fn test_validate_target_trims_whitespace() {
         let mut config = config_with_password();
-        config.deployment.target = " GitHub ".to_string();
-        config.deployment.repo = Some("example-repo".to_string());
+        config.deployment.target = " Local ".to_string();
 
         let result = config.validate();
         assert!(result.valid, "{:?}", result.errors);
 
         let resolved = result.resolved.expect("resolved config should exist");
-        assert_eq!(resolved.deployment.target, "github");
+        assert_eq!(resolved.deployment.target, "local");
     }
 
     #[test]
-    fn test_to_wizard_state_target_trims_whitespace() {
+    fn test_to_wizard_state_rejects_hosted_target() {
         let mut config = config_with_password();
         config.deployment.target = " cloudflare ".to_string();
 
-        let state = config
+        let err = config
             .to_wizard_state(PathBuf::from("/tmp/test.db"))
-            .expect("wizard state should parse");
-
-        assert!(matches!(state.target, DeployTarget::CloudflarePages));
+            .expect_err("hosted target must be refused");
+        assert!(err.to_string().contains("unsupported_deployment_target"));
     }
 
     #[test]

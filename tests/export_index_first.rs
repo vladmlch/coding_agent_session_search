@@ -101,7 +101,6 @@ fn run_export_html(
         .arg(output_dir)
         .arg("--filename")
         .arg(filename)
-        .arg("--no-cdns")
         .arg("--json")
         .arg("--db")
         .arg(archive)

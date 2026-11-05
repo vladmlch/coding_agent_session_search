@@ -373,7 +373,6 @@ impl ExportModalState {
     pub fn to_export_options(&self) -> ExportOptions {
         ExportOptions {
             title: Some(self.title_preview.clone()),
-            include_cdn: true,
             syntax_highlighting: true,
             include_search: true,
             include_theme_toggle: true,

@@ -4,8 +4,7 @@
 //! self-contained HTML files from session data. The template follows these principles:
 //!
 //! - **No external template engine**: Uses Rust `format!` macros for simplicity
-//! - **Critical CSS inlined**: Ensures offline functionality
-//! - **CDN as enhancement**: Tailwind, Prism.js loaded with defer
+//! - **Fully self-contained**: All CSS and JS is inlined; no CDN or network fetch
 //! - **Progressive enhancement**: Basic layout works without JS
 //! - **Semantic HTML**: Proper use of article, section, header elements
 
@@ -34,10 +33,8 @@ pub struct ExportOptions {
     /// Document title (defaults to session ID or timestamp)
     pub title: Option<String>,
 
-    /// Include CDN resources for enhanced styling
-    pub include_cdn: bool,
-
-    /// Include syntax highlighting (Prism.js)
+    /// Emit semantic `language-*` classes on code blocks
+    /// (markup only — no highlighter script ships with the export)
     pub syntax_highlighting: bool,
 
     /// Include search functionality
@@ -70,80 +67,6 @@ const SCREEN_ONLY_CSS: &str = r#"
     display: none !important;
 }
 "#;
-
-const CDN_FALLBACK_CSS: &str = r#"
-/* CDN fallback hooks — activated when CDNs fail to load or are disabled */
-.no-tailwind .toolbar,
-.no-tailwind .header,
-.no-tailwind .conversation {
-    backdrop-filter: none !important;
-}
-
-/* Ensure ALL code blocks are legible without Prism syntax highlighting.
-   Covers both language-tagged and untagged code blocks. */
-.no-prism pre code {
-    color: #c0caf5;
-}
-
-.no-prism pre code .token {
-    color: inherit;
-}
-"#;
-
-// Note: Tailwind v3+/v4 requires compilation - no pre-built CSS file exists.
-// Our inline critical CSS provides complete Stripe-level styling without external dependencies.
-// This ensures offline-capable, self-contained HTML exports with perfect styling.
-const PRISM_THEME_URL: &str =
-    "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css";
-const PRISM_THEME_SRI: &str =
-    "sha384-wFjoQjtV1y5jVHbt0p35Ui8aV8GVpEZkyF99OXWqP/eNJDU93D3Ugxkoyh6Y2I4A";
-/// The Prism scripts and their SRI, in execution order (all `defer`, so they
-/// run in document order and a component never runs before what it extends).
-/// Each is a file shipped in the prismjs 1.29.0 npm package, so its bytes and
-/// hash never change. Never reference a name the package lacks, such as
-/// `prism.min.js`: jsDelivr minifies those on request, its output changed after
-/// the hash was pinned, and browsers then blocked the core on the stale SRI, so
-/// every export lost highlighting and raised one "Prism is not defined" page
-/// error per component (found by the browser lane, bead bnueb). core, markup,
-/// css and clike rebuild what `prism.js` bundles; javascript precedes typescript.
-const PRISM_SCRIPTS: [(&str, &str); 9] = [
-    (
-        "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js",
-        "sha384-MXybTpajaBV0AkcBaCPT4KIvo0FzoCiWXgcihYsw4FUkEz0Pv3JGV6tk2G8vJtDc",
-    ),
-    (
-        "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-markup.min.js",
-        "sha384-HkMr0bZB9kBW4iVtXn6nd35kO/L/dQtkkUBkL9swzTEDMdIe5ExJChVDSnC79aNA",
-    ),
-    (
-        "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-css.min.js",
-        "sha384-0mV13Neu0xhJFylI+HV43C+XiR13bGSeL7D0/7e6hK7sJgvyvK6HVjeQwmvXTstY",
-    ),
-    (
-        "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-clike.min.js",
-        "sha384-7LHwxHIDSHTBleLmgDWZbC/IMJsfYfFVOihKhvsrxYW4j47YQcRwZja4ToFE3bA8",
-    ),
-    (
-        "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-javascript.min.js",
-        "sha384-D44bgYYKvaiDh4cOGlj1dbSDpSctn2FSUj118HZGmZEShZcO2v//Q5vvhNy206pp",
-    ),
-    (
-        "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-typescript.min.js",
-        "sha384-PeOqKNW/piETaCg8rqKFy+Pm6KEk7e36/5YZE5XO/OaFdO+/Aw3O8qZ9qDPKVUgx",
-    ),
-    (
-        "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-rust.min.js",
-        "sha384-JyDgFjMbyrE/TGiEUSXW3CLjQOySrsoiUNAlXTFdIsr/XUfaB7E+eYlR+tGQ9bCO",
-    ),
-    (
-        "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-python.min.js",
-        "sha384-WJdEkJKrbsqw0evQ4GB6mlsKe5cGTxBOw4KAEIa52ZLB7DDpliGkwdme/HMa5n1m",
-    ),
-    (
-        "https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-bash.min.js",
-        "sha384-9WmlN8ABpoFSSHvBGGjhvB3E/D8UkNB9HpLJjBQFC2VSQsM1odiQDv4NbEo+7l15",
-    ),
-];
 
 const PRINT_EXTRA_CSS: &str = r#"
 .print-only {
@@ -222,7 +145,6 @@ impl Default for ExportOptions {
     fn default() -> Self {
         Self {
             title: None,
-            include_cdn: true,
             syntax_highlighting: true,
             include_search: true,
             include_theme_toggle: true,
@@ -403,38 +325,7 @@ impl HtmlTemplate {
     /// Generate the complete HTML document.
     pub fn render(&self, options: &ExportOptions) -> String {
         let _started = Instant::now();
-        let critical_css = format!(
-            "{}\n{}\n{}",
-            self.critical_css, SCREEN_ONLY_CSS, CDN_FALLBACK_CSS
-        );
-        let cdn_scripts = if options.include_cdn {
-            let mut tags = Vec::new();
-            tags.push(
-                r#"<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin="anonymous">"#
-                    .to_string(),
-            );
-            if options.syntax_highlighting {
-                tags.push(format!(
-                    r#"<link rel="stylesheet" href="{url}" integrity="{sri}" crossorigin="anonymous" media="print" onload="this.media='all'" onerror="document.documentElement.classList.add('no-prism')">"#,
-                    url = PRISM_THEME_URL,
-                    sri = PRISM_THEME_SRI
-                ));
-                for (url, sri) in PRISM_SCRIPTS {
-                    tags.push(format!(
-                        r#"<script src="{url}" integrity="{sri}" crossorigin="anonymous" defer onerror="document.documentElement.classList.add('no-prism')"></script>"#
-                    ));
-                }
-            }
-
-            format!(
-                r#"
-    <!-- CDN enhancement (optional) - degrades gracefully if offline -->
-    {}"#,
-                tags.join("\n    ")
-            )
-        } else {
-            String::new()
-        };
+        let critical_css = format!("{}\n{}", self.critical_css, SCREEN_ONLY_CSS);
 
         let print_styles = if options.print_styles {
             format!(
@@ -479,7 +370,6 @@ impl HtmlTemplate {
         trace!(
             component = "template",
             operation = "render_inputs",
-            include_cdn = options.include_cdn,
             syntax_highlighting = options.syntax_highlighting,
             include_search = options.include_search,
             include_theme_toggle = options.include_theme_toggle,
@@ -488,14 +378,6 @@ impl HtmlTemplate {
             "Preparing HTML render"
         );
 
-        // When CDNs are disabled, add no-prism class so fallback CSS activates.
-        // Without this, code blocks are illegible (dark text on dark background)
-        // because the Prism onerror handlers never fire to add the class.
-        let html_classes = if !options.include_cdn {
-            r#" class="no-prism no-tailwind""#
-        } else {
-            ""
-        };
         let default_theme = if options.default_theme.trim().eq_ignore_ascii_case("light") {
             "light"
         } else {
@@ -504,7 +386,7 @@ impl HtmlTemplate {
 
         format!(
             r#"<!DOCTYPE html>
-<html lang="en" data-theme="{default_theme}"{html_classes}>
+<html lang="en" data-theme="{default_theme}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -514,7 +396,7 @@ impl HtmlTemplate {
     <!-- Critical inline styles for offline operation -->
     <style>
 {critical_css}
-    </style>{cdn_scripts}{print_styles}
+    </style>{print_styles}
 </head>
 <body>
     <div class="scroll-progress" id="scroll-progress"></div>
@@ -545,7 +427,6 @@ impl HtmlTemplate {
             title = html_escape(self.public_title()),
             default_theme = default_theme,
             critical_css = critical_css,
-            cdn_scripts = cdn_scripts,
             print_styles = print_styles,
             header = header,
             toolbar = toolbar,
@@ -690,7 +571,6 @@ impl HtmlExporter {
             group_count = groups.len(),
             total_tool_calls = groups.iter().map(|g| g.tool_count()).sum::<usize>(),
             encrypt = self.options.encrypt,
-            include_cdn = self.options.include_cdn,
             include_search = self.options.include_search,
             include_theme_toggle = self.options.include_theme_toggle,
             print_styles = self.options.print_styles,
@@ -874,16 +754,17 @@ mod tests {
     #[test]
     fn test_export_options_default() {
         let opts = ExportOptions::default();
-        assert!(opts.include_cdn);
         assert!(opts.syntax_highlighting);
         assert!(!opts.encrypt);
         assert_eq!(opts.default_theme, "dark");
     }
 
     #[test]
-    fn test_cdn_resources_include_integrity() {
+    fn test_render_is_always_self_contained() {
+        // There is no CDN mode: every render must be free of external
+        // resource references so the file works fully offline.
         let template = HtmlTemplate {
-            title: "CDN Test".to_string(),
+            title: "Self Contained".to_string(),
             critical_css: String::new(),
             print_css: String::new(),
             inline_js: String::new(),
@@ -891,47 +772,22 @@ mod tests {
             encrypted: false,
             metadata: TemplateMetadata::default(),
         };
-        let opts = ExportOptions::default();
-        let html = template.render(&opts);
+        let html = template.render(&ExportOptions::default());
 
-        // Note: Tailwind CDN removed - Tailwind v3+/v4 requires compilation.
-        // Our inline critical CSS provides complete styling.
-        assert!(!html.contains("tailwindcss"));
-        let mut previous = 0;
-        for (url, sri) in PRISM_SCRIPTS {
-            let tag = format!(r#"<script src="{url}" integrity="{sri}""#);
-            let position = html
-                .find(&tag)
-                .unwrap_or_else(|| panic!("missing SRI-pinned script {url}"));
-            // Deferred scripts run in document order: a component must follow
-            // the core and the components it extends.
-            assert!(position >= previous, "{url} is out of load order");
-            previous = position;
+        for needle in [
+            "cdn.jsdelivr.net",
+            "http://",
+            "https://",
+            "integrity=",
+            "preconnect",
+            "src=\"//",
+            "href=\"//",
+        ] {
+            assert!(
+                !html.contains(needle),
+                "external reference {needle:?} in export"
+            );
         }
-        // jsDelivr generates `prism.min.js` on request (the package has no such
-        // file), so its bytes drift and a pinned SRI goes stale.
-        assert!(!html.contains("prismjs@1.29.0/prism.min.js"));
-        assert!(html.contains("document.documentElement.classList.add('no-prism')"));
-    }
-
-    #[test]
-    fn test_no_cdn_removes_external_tags() {
-        let template = HtmlTemplate {
-            title: "No CDN".to_string(),
-            critical_css: String::new(),
-            print_css: String::new(),
-            inline_js: String::new(),
-            content: "<p>ok</p>".to_string(),
-            encrypted: false,
-            metadata: TemplateMetadata::default(),
-        };
-        let opts = ExportOptions {
-            include_cdn: false,
-            ..ExportOptions::default()
-        };
-        let html = template.render(&opts);
-
-        assert!(!html.contains("cdn.jsdelivr.net"));
     }
 
     #[test]

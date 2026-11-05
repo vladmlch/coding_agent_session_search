@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # Browser E2E lane (bead browser-e2e-lane-bnueb): run the Playwright HTML-export and Pages specs
-# against a freshly built cass and write a receipt. GitHub Actions is off, so this script is the
-# lane. Run it locally; it builds cass and the Pages perf bundle with plain cargo
-# (AGENTS.md "E2E Browser Tests"), and cite the receipt it writes.
+# against a freshly built cass and write a receipt. The lane is fully local: it never installs
+# packages or browsers itself. Build goes through scripts/lib/run_cargo.sh; Playwright is invoked
+# via `npx --no-install`, so missing dependencies fail fast with manual setup guidance (exit 2).
 #
 # Usage: scripts/browser_e2e_lane.sh [--project NAME] [--skip-build] [SPEC ...]
 #   --project NAME  Playwright project (default chromium; repeatable)
 #   --skip-build    reuse the release binaries already in $CARGO_TARGET_DIR/release
 #   SPEC            spec paths relative to tests/ (default: the lane's spec set below)
-# Env: CARGO_TARGET_DIR (default <repo>/target), LANE_RECEIPT (default tests/e2e-lane-receipt.json),
-#      LANE_REPO (default: the checkout holding this script)
+# Env: CARGO_TARGET_DIR (default from scripts/lib/run_cargo.sh), LANE_RECEIPT
+#      (default tests/e2e-lane-receipt.json), LANE_REPO (default: the checkout holding this script)
+#
+# Manual prerequisites (run once, outside this lane):
+#   cd tests && npm ci --no-audit --no-fund      # installs the pinned @playwright/test
+#   cd tests && npx playwright install chromium  # installs the browser build(s) you need
 #
 # Exit status is Playwright's. The receipt counts skipped tests separately: a spec whose tests
 # all skipped did not run, and is not a pass.
@@ -23,7 +27,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --project) projects+=("$2"); shift 2 ;;
         --skip-build) build=0; shift ;;
-        -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
         *) specs+=("$1"); shift ;;
     esac
 done
@@ -35,20 +39,26 @@ done
     e2e/offline/cdn-fallback.spec.ts
 )
 
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$repo/target}"
+# shellcheck source=lib/run_cargo.sh
+source "$repo/scripts/lib/run_cargo.sh"
+
 receipt="${LANE_RECEIPT:-$repo/tests/e2e-lane-receipt.json}"
 exe=""
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) exe=".exe" ;; esac
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 
 if [ "$build" = 1 ]; then
-    (cd "$repo" && cargo build --locked --release --bin cass --bin cass-pages-perf-bundle)
+    (cd "$repo" && run_cargo build --locked --release --bin cass --bin cass-pages-perf-bundle)
 fi
 cass="$CARGO_TARGET_DIR/release/cass$exe"
 [ -x "$cass" ] || { echo "browser lane: no cass binary at $cass" >&2; exit 2; }
 
 cd "$repo/tests"
-[ -d node_modules/@playwright/test ] || npm ci --no-audit --no-fund
+if [ ! -d node_modules/@playwright/test ]; then
+    echo "browser lane: tests/node_modules/@playwright/test is missing." >&2
+    echo "  install once with: cd tests && npm ci --no-audit --no-fund" >&2
+    exit 2
+fi
 project_args=()
 browsers=()
 for project in "${projects[@]}"; do
@@ -59,12 +69,33 @@ for project in "${projects[@]}"; do
         *) browsers+=(chromium) ;;
     esac
 done
-# The pinned Playwright's browser builds (a no-op when they are already installed).
-npx playwright install "${browsers[@]}"
+# Verify the pinned Playwright package resolves without touching the network.
+if ! npx --no-install playwright --version >/dev/null 2>&1; then
+    echo "browser lane: playwright is not installed under tests/." >&2
+    echo "  install once with: cd tests && npm ci --no-audit --no-fund" >&2
+    exit 2
+fi
+# Verify each requested browser build is already installed; the lane never
+# downloads browsers (local-only).
+missing_browsers=()
+for browser in "${browsers[@]}"; do
+    if ! node --input-type=module -e "
+import { ${browser} } from 'playwright-core';
+try { const b = await ${browser}.launch(); await b.close(); }
+catch { process.exit(1); }
+" >/dev/null 2>&1; then
+        missing_browsers+=("$browser")
+    fi
+done
+if [ ${#missing_browsers[@]} -gt 0 ]; then
+    echo "browser lane: missing Playwright browser build(s): ${missing_browsers[*]}." >&2
+    echo "  install once with: cd tests && npx playwright install ${missing_browsers[*]}" >&2
+    exit 2
+fi
 
 # Fresh exports and Pages bundle from this binary (tests/e2e/setup/global-setup.ts).
 set +e
-E2E_SKIP_REGENERATE=0 npx playwright test "${project_args[@]}" "${specs[@]}"
+E2E_SKIP_REGENERATE=0 npx --no-install playwright test "${project_args[@]}" "${specs[@]}"
 status=$?
 set -e
 
@@ -82,7 +113,7 @@ LANE_STATUS="$status" LANE_HOST="$(hostname)" LANE_OS="$(uname -srm)" \
 LANE_COMMIT="$(git -C "$repo" rev-parse HEAD)" \
 LANE_DIRTY="$(git -C "$repo" status --porcelain --untracked-files=no | wc -l | tr -d ' ')" \
 LANE_CASS_SHA="$(sha256 "$cass")" LANE_CASS_VERSION="$("$cass" --version 2>/dev/null | head -1)" \
-LANE_PLAYWRIGHT="$(npx playwright --version 2>/dev/null | head -1)" LANE_BROWSERS="$browser_versions" \
+LANE_PLAYWRIGHT="$(npx --no-install playwright --version 2>/dev/null | head -1)" LANE_BROWSERS="$browser_versions" \
 LANE_PROJECTS="${projects[*]}" LANE_RECEIPT_PATH="$receipt" node --input-type=module -e '
 import { readFileSync, writeFileSync } from "fs";
 const report = JSON.parse(readFileSync("e2e-results.json", "utf8"));

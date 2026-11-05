@@ -1,25 +1,14 @@
-//! Bundle size estimation and limits enforcement.
+//! Bundle size estimation for local archives.
 //!
-//! Provides pre-export size estimation to warn users before they spend time
-//! exporting/encrypting data that would exceed GitHub Pages limits.
+//! Provides pre-export size estimation so users can see the expected bundle
+//! footprint before exporting/encrypting. There are no hosting limits to
+//! enforce: archives stay local, so this module only estimates.
 
 use crate::franken_sync::Row;
 use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-
-/// Maximum site size for GitHub Pages (1 GB)
-pub const MAX_SITE_SIZE_BYTES: u64 = 1024 * 1024 * 1024;
-
-/// Warning threshold for total site size (900 MB - approaching limit)
-pub const SITE_SIZE_WARNING_BYTES: u64 = 900 * 1024 * 1024;
-
-/// Maximum file size for GitHub (100 MiB)
-pub const MAX_FILE_SIZE_BYTES: u64 = 100 * 1024 * 1024;
-
-/// Warning threshold for file size (50 MiB)
-pub const FILE_SIZE_WARNING_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Default chunk size for encrypted payload (8 MiB)
 pub const DEFAULT_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
@@ -183,27 +172,6 @@ impl SizeEstimate {
         })
     }
 
-    /// Check if the estimate exceeds hard limits
-    pub fn check_limits(&self) -> SizeLimitResult {
-        if self.total_site_bytes > MAX_SITE_SIZE_BYTES {
-            return SizeLimitResult::ExceedsLimit(SizeError::TotalExceedsLimit {
-                actual: self.total_site_bytes,
-                limit: MAX_SITE_SIZE_BYTES,
-            });
-        }
-
-        if self.total_site_bytes > SITE_SIZE_WARNING_BYTES {
-            return SizeLimitResult::Warning(SizeWarning::ApproachingLimit {
-                actual: self.total_site_bytes,
-                limit: MAX_SITE_SIZE_BYTES,
-                percentage: (self.total_site_bytes as f64 / MAX_SITE_SIZE_BYTES as f64 * 100.0)
-                    as u8,
-            });
-        }
-
-        SizeLimitResult::Ok
-    }
-
     /// Format the estimate for display
     pub fn format_display(&self) -> String {
         format!(
@@ -223,174 +191,6 @@ impl SizeEstimate {
             self.message_count,
         )
     }
-}
-
-/// Result of checking size limits
-#[derive(Debug, Clone)]
-pub enum SizeLimitResult {
-    /// Size is within limits
-    Ok,
-    /// Size is approaching limits (warning)
-    Warning(SizeWarning),
-    /// Size exceeds limits (error)
-    ExceedsLimit(SizeError),
-}
-
-impl SizeLimitResult {
-    /// Returns true if export should proceed
-    pub fn is_ok(&self) -> bool {
-        matches!(self, SizeLimitResult::Ok)
-    }
-
-    /// Returns true if there's a warning but export can proceed
-    pub fn is_warning(&self) -> bool {
-        matches!(self, SizeLimitResult::Warning(_))
-    }
-
-    /// Returns true if export should be blocked
-    pub fn is_error(&self) -> bool {
-        matches!(self, SizeLimitResult::ExceedsLimit(_))
-    }
-}
-
-/// Size-related errors
-#[derive(Debug, Clone, thiserror::Error)]
-pub enum SizeError {
-    /// Total site size exceeds GitHub Pages limit
-    #[error(
-        "Total size ({}) exceeds GitHub Pages limit ({})\n\n\
-         Suggestions:\n\
-         • Use --since \"90 days ago\" for recent conversations only\n\
-         • Use --agents <name> to limit to specific agents\n\
-         • Use --workspaces <path> to limit projects",
-        format_bytes(*actual),
-        format_bytes(*limit)
-    )]
-    TotalExceedsLimit { actual: u64, limit: u64 },
-    /// Individual file exceeds limit
-    #[error("File {path} ({}) exceeds limit ({})", format_bytes(*actual), format_bytes(*limit))]
-    FileExceedsLimit {
-        path: String,
-        actual: u64,
-        limit: u64,
-    },
-}
-
-/// Size-related warnings
-#[derive(Debug, Clone)]
-pub enum SizeWarning {
-    /// Total size is approaching limit
-    ApproachingLimit {
-        actual: u64,
-        limit: u64,
-        percentage: u8,
-    },
-    /// Individual file is large
-    LargeFile { path: String, size: u64 },
-}
-
-impl std::fmt::Display for SizeWarning {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SizeWarning::ApproachingLimit {
-                actual,
-                limit,
-                percentage,
-            } => {
-                write!(
-                    f,
-                    "Estimated size {} is {}% of GitHub Pages limit ({})",
-                    format_bytes(*actual),
-                    percentage,
-                    format_bytes(*limit)
-                )
-            }
-            SizeWarning::LargeFile { path, size } => {
-                write!(f, "Large file: {} ({})", path, format_bytes(*size))
-            }
-        }
-    }
-}
-
-/// Post-export bundle verification
-pub struct BundleVerifier;
-
-impl BundleVerifier {
-    /// Verify a bundle directory meets all size constraints
-    pub fn verify<P: AsRef<Path>>(site_dir: P) -> Result<Vec<SizeWarning>> {
-        let site_dir = site_dir.as_ref();
-        let mut warnings = Vec::new();
-        let mut total_size = 0u64;
-
-        visit_files(site_dir, &mut |path, size| {
-            total_size += size;
-
-            if size > MAX_FILE_SIZE_BYTES {
-                bail!(
-                    "File {} ({}) exceeds maximum file size ({}). Chunking may have failed.",
-                    path.display(),
-                    format_bytes(size),
-                    format_bytes(MAX_FILE_SIZE_BYTES)
-                );
-            }
-
-            if size > FILE_SIZE_WARNING_BYTES {
-                let rel_path = path
-                    .strip_prefix(site_dir)
-                    .unwrap_or(path)
-                    .to_string_lossy()
-                    .to_string();
-                warnings.push(SizeWarning::LargeFile {
-                    path: rel_path,
-                    size,
-                });
-            }
-
-            Ok(())
-        })?;
-
-        if total_size > MAX_SITE_SIZE_BYTES {
-            bail!(
-                "Total bundle size ({}) exceeds GitHub Pages limit ({})",
-                format_bytes(total_size),
-                format_bytes(MAX_SITE_SIZE_BYTES)
-            );
-        }
-
-        if total_size > SITE_SIZE_WARNING_BYTES {
-            warnings.push(SizeWarning::ApproachingLimit {
-                actual: total_size,
-                limit: MAX_SITE_SIZE_BYTES,
-                percentage: (total_size as f64 / MAX_SITE_SIZE_BYTES as f64 * 100.0) as u8,
-            });
-        }
-
-        Ok(warnings)
-    }
-}
-
-/// Visit all files in a directory recursively
-fn visit_files<F>(dir: &Path, f: &mut F) -> Result<()>
-where
-    F: FnMut(&Path, u64) -> Result<()>,
-{
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let metadata = std::fs::symlink_metadata(&path)?;
-        let file_type = metadata.file_type();
-
-        if file_type.is_symlink() {
-            continue;
-        }
-
-        if file_type.is_dir() {
-            visit_files(&path, f)?;
-        } else if file_type.is_file() {
-            f(&path, metadata.len())?;
-        }
-    }
-    Ok(())
 }
 
 /// Format bytes as human-readable string
@@ -437,47 +237,6 @@ mod tests {
         assert_eq!(estimate.plaintext_bytes, 0);
         assert_eq!(estimate.chunk_count, 1); // At least 1 chunk
         assert_eq!(estimate.static_assets_bytes, STATIC_ASSETS_SIZE);
-    }
-
-    #[test]
-    fn test_size_limit_ok() {
-        let estimate = SizeEstimate::from_plaintext_size(
-            100 * 1024 * 1024, // 100 MB - should be fine
-            100,
-            5000,
-        )
-        .unwrap();
-
-        let result = estimate.check_limits();
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_size_limit_warning() {
-        // Need ~900 MB compressed to trigger warning
-        // 900 MB / 0.45 compression = 2000 MB plaintext
-        let estimate = SizeEstimate::from_plaintext_size(
-            2000 * 1024 * 1024, // 2 GB plaintext -> ~900 MB compressed
-            1000,
-            50000,
-        )
-        .unwrap();
-
-        let result = estimate.check_limits();
-        assert!(result.is_warning() || result.is_error());
-    }
-
-    #[test]
-    fn test_size_limit_exceeded() {
-        let estimate = SizeEstimate::from_plaintext_size(
-            3000 * 1024 * 1024, // 3 GB plaintext -> ~1.35 GB compressed
-            5000,
-            250000,
-        )
-        .unwrap();
-
-        let result = estimate.check_limits();
-        assert!(result.is_error());
     }
 
     #[test]
@@ -593,63 +352,6 @@ mod tests {
     }
 
     #[test]
-    fn test_size_error_display() {
-        let err = SizeError::TotalExceedsLimit {
-            actual: 2 * 1024 * 1024 * 1024,
-            limit: 1024 * 1024 * 1024,
-        };
-
-        let msg = err.to_string();
-        assert!(msg.contains("2.0 GB"));
-        assert!(msg.contains("1.0 GB"));
-        assert!(msg.contains("Suggestions"));
-    }
-
-    #[test]
-    fn test_size_error_display_and_source_are_preserved() {
-        let cases = vec![
-            (
-                SizeError::TotalExceedsLimit {
-                    actual: 2 * 1024 * 1024 * 1024,
-                    limit: 1024 * 1024 * 1024,
-                },
-                "Total size (2.0 GB) exceeds GitHub Pages limit (1.0 GB)\n\n\
-                 Suggestions:\n\
-                 • Use --since \"90 days ago\" for recent conversations only\n\
-                 • Use --agents <name> to limit to specific agents\n\
-                 • Use --workspaces <path> to limit projects",
-            ),
-            (
-                SizeError::FileExceedsLimit {
-                    path: "site/archive.bin".to_string(),
-                    actual: 150 * 1024 * 1024,
-                    limit: 100 * 1024 * 1024,
-                },
-                "File site/archive.bin (150.0 MB) exceeds limit (100.0 MB)",
-            ),
-        ];
-
-        for (error, expected_display) in cases {
-            assert_eq!(error.to_string(), expected_display);
-            assert!(std::error::Error::source(&error).is_none());
-        }
-    }
-
-    #[test]
-    fn test_bundle_verifier() {
-        use tempfile::TempDir;
-
-        let temp = TempDir::new().unwrap();
-
-        // Create some small files
-        std::fs::write(temp.path().join("small.txt"), vec![0u8; 1000]).unwrap();
-        std::fs::write(temp.path().join("medium.txt"), vec![0u8; 10000]).unwrap();
-
-        let warnings = BundleVerifier::verify(temp.path()).unwrap();
-        assert!(warnings.is_empty()); // No warnings for small files
-    }
-
-    #[test]
     fn test_chunk_count_ceiling_division() {
         // Test that chunk count uses proper ceiling division
         // COMPRESSION_RATIO = 0.45, DEFAULT_CHUNK_SIZE = 8 MB
@@ -692,44 +394,5 @@ mod tests {
         let estimate = SizeEstimate::from_plaintext_size(u64::MAX, 1, 1).unwrap();
         assert_eq!(estimate.chunk_count, u32::MAX);
         assert!(estimate.total_site_bytes >= estimate.compressed_bytes);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_visit_files_skips_symlink_paths() {
-        use std::collections::HashSet;
-        use std::os::unix::fs::symlink;
-        use tempfile::TempDir;
-
-        let src = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-
-        std::fs::write(src.path().join("root.txt"), "root").unwrap();
-        std::fs::write(outside.path().join("secret.txt"), "secret").unwrap();
-        std::fs::create_dir_all(outside.path().join("nested")).unwrap();
-        std::fs::write(outside.path().join("nested/hidden.txt"), "hidden").unwrap();
-
-        symlink(
-            outside.path().join("secret.txt"),
-            src.path().join("linked-file.txt"),
-        )
-        .unwrap();
-        symlink(outside.path().join("nested"), src.path().join("linked-dir")).unwrap();
-
-        let mut visited = HashSet::new();
-        visit_files(src.path(), &mut |path, _size| {
-            visited.insert(
-                path.strip_prefix(src.path())
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string(),
-            );
-            Ok(())
-        })
-        .unwrap();
-
-        assert!(visited.contains("root.txt"));
-        assert!(!visited.contains("linked-file.txt"));
-        assert!(!visited.iter().any(|p| p.starts_with("linked-dir/")));
     }
 }

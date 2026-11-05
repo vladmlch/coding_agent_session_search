@@ -1,6 +1,7 @@
 //! Local preview server for Pages exports.
 //!
-//! Provides a local HTTP server to preview exported archives before deployment.
+//! Provides a loopback-only (127.0.0.1) HTTP server to preview exported
+//! archives locally — the export itself never leaves the machine.
 //! Features:
 //! - Static file serving with correct MIME types
 //! - COOP/COEP headers for full WebCrypto functionality
@@ -380,6 +381,18 @@ fn handle_connection(mut stream: std::net::TcpStream, site_dir: &std::path::Path
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
+/// Loopback bind address for the preview server. The preview is strictly
+/// local: it never listens on a LAN or wildcard interface, so the exported
+/// archive cannot be reached from other machines.
+fn preview_bind_addr(port: u16) -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], port))
+}
+
+/// Bind the preview listener on the loopback address for `port`.
+fn bind_preview_listener(port: u16) -> std::io::Result<std::net::TcpListener> {
+    std::net::TcpListener::bind(preview_bind_addr(port))
+}
+
 /// Start the preview server.
 ///
 /// This function will block until the server is shut down (via Ctrl+C).
@@ -400,9 +413,8 @@ pub async fn start_preview_server(config: PreviewConfig) -> Result<(), PreviewEr
             .map_err(|_| PreviewError::SiteDirectoryNotFound(config.site_dir.clone()))?,
     );
 
-    // Bind to the address (synchronous — preview is a simple dev server)
-    let addr = SocketAddr::from(([127, 0, 0, 1], config.port));
-    let listener = std::net::TcpListener::bind(addr).map_err(|e| PreviewError::BindFailed {
+    // Bind loopback only (synchronous — preview is a simple dev server).
+    let listener = bind_preview_listener(config.port).map_err(|e| PreviewError::BindFailed {
         port: config.port,
         source: e,
     })?;
@@ -615,6 +627,40 @@ mod tests {
         let server = PreviewError::ServerError("worker stopped".to_string());
         assert_eq!(server.to_string(), "Server error: worker stopped");
         assert!(std::error::Error::source(&server).is_none());
+    }
+
+    #[test]
+    fn test_preview_bind_addr_is_loopback() {
+        for port in [0u16, 8080, 49152] {
+            let addr = preview_bind_addr(port);
+            assert!(
+                addr.ip().is_loopback(),
+                "preview bind address {addr} must be loopback"
+            );
+            assert_eq!(addr.ip().to_string(), "127.0.0.1");
+            assert_eq!(addr.port(), port);
+        }
+    }
+
+    #[test]
+    fn test_preview_listener_binds_loopback_only() {
+        // Bind on an ephemeral port, then prove the socket address is
+        // loopback and that a loopback client can reach it.
+        let listener = bind_preview_listener(0).expect("bind preview listener");
+        let local = listener.local_addr().expect("local addr");
+        assert!(local.ip().is_loopback(), "listener bound to {local}");
+        assert_eq!(local.ip().to_string(), "127.0.0.1");
+
+        let mut client =
+            std::net::TcpStream::connect(local).expect("loopback connect should succeed");
+        let (mut accepted, _peer) = listener.accept().expect("accept loopback client");
+        use std::io::Write as _;
+        client.write_all(b"ping").expect("write");
+        drop(client);
+        let mut buf = [0u8; 4];
+        use std::io::Read as _;
+        accepted.read_exact(&mut buf).expect("read");
+        assert_eq!(&buf, b"ping");
     }
 
     #[test]

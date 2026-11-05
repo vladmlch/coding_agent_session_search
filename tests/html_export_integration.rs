@@ -884,7 +884,7 @@ fn test_cli_export_tools_and_timestamps_can_be_turned_off() {
 }
 
 #[test]
-fn test_cli_export_no_cdn() {
+fn test_cli_export_is_fully_offline() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let tmp = TempDir::new().unwrap();
     let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
@@ -898,7 +898,6 @@ fn test_cli_export_no_cdn() {
             "--output-dir",
             tmp.path().to_str().unwrap(),
             "--robot",
-            "--no-cdns",
         ])
         .output()
         .unwrap();
@@ -910,11 +909,48 @@ fn test_cli_export_no_cdn() {
     let output_path = json["exported"]["output_path"].as_str().unwrap();
     let html = fs::read_to_string(output_path).unwrap();
 
-    // Should still be valid HTML without CDN
+    // The export is always self-contained: valid HTML, inline styles, and no
+    // external resource references anywhere.
     assert!(html.contains("<!DOCTYPE html>"));
     assert!(html.contains("</html>"));
-    // Critical styles should still be inlined
     assert!(html.contains("<style>"));
+    for needle in [
+        "cdn.jsdelivr.net",
+        "https://",
+        "integrity=",
+        "preconnect",
+        "Prism",
+    ] {
+        assert!(
+            !html.contains(needle),
+            "external reference {needle:?} in export"
+        );
+    }
+}
+
+#[test]
+fn test_cli_export_rejects_no_cdns_flag() {
+    let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
+    let tmp = TempDir::new().unwrap();
+    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
+
+    let output = base_cmd()
+        .args([
+            "--db",
+            db.to_str().unwrap(),
+            "export-html",
+            &identity,
+            "--no-cdns",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("local-only") || stderr.contains("removed"),
+        "--no-cdns must hit the removed-flag diagnostic, got: {stderr}"
+    );
 }
 
 // =============================================================================

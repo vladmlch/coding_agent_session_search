@@ -1,16 +1,15 @@
 //! Safety confirmation flow for pages export.
 //!
 //! Implements a multi-step confirmation flow that ensures users explicitly
-//! acknowledge the implications of publishing encrypted content to a public site.
+//! acknowledge the implications of exporting encrypted content for sharing.
 //!
 //! # Confirmation Steps
 //!
 //! 1. **SecretScanAcknowledgment** - If secrets detected, user must type "I understand the risks"
 //! 2. **ContentReview** - User confirms they have reviewed the content summary
-//! 3. **PublicPublishingWarning** - User types the target domain to confirm
-//! 4. **PasswordStrengthWarning** - If password entropy < 60 bits, user chooses action
-//! 5. **RecoveryKeyBackup** - User types the last word of the recovery key
-//! 6. **FinalConfirmation** - User presses Enter twice
+//! 3. **PasswordStrengthWarning** - If password entropy < 60 bits, user chooses action
+//! 4. **RecoveryKeyBackup** - User types the last word of the recovery key
+//! 5. **FinalConfirmation** - User presses Enter twice
 
 use crate::pages::summary::{PrePublishSummary, ScanReportSummary};
 use std::collections::HashSet;
@@ -28,8 +27,6 @@ pub enum ConfirmationStep {
     SecretScanAcknowledgment,
     /// Confirm review of content summary.
     ContentReview,
-    /// Acknowledge public publishing implications.
-    PublicPublishingWarning,
     /// Acknowledge weak password (only shown if entropy < threshold).
     PasswordStrengthWarning,
     /// Confirm recovery key backup.
@@ -44,7 +41,6 @@ impl ConfirmationStep {
         match self {
             ConfirmationStep::SecretScanAcknowledgment => "Secret Scan Acknowledgment",
             ConfirmationStep::ContentReview => "Content Review",
-            ConfirmationStep::PublicPublishingWarning => "Public Publishing Warning",
             ConfirmationStep::PasswordStrengthWarning => "Password Strength Warning",
             ConfirmationStep::RecoveryKeyBackup => "Recovery Key Backup",
             ConfirmationStep::FinalConfirmation => "Final Confirmation",
@@ -96,10 +92,6 @@ pub struct ConfirmationConfig {
     pub has_critical_secrets: bool,
     /// Number of secret findings.
     pub secret_count: usize,
-    /// Target domain for publishing (e.g., "username.github.io").
-    pub target_domain: Option<String>,
-    /// Whether publishing to a remote target (GitHub/Cloudflare Pages).
-    pub is_remote_publish: bool,
     /// Password entropy in bits.
     pub password_entropy_bits: f64,
     /// Whether recovery key was generated.
@@ -116,8 +108,6 @@ impl Default for ConfirmationConfig {
             has_secrets: false,
             has_critical_secrets: false,
             secret_count: 0,
-            target_domain: None,
-            is_remote_publish: false,
             password_entropy_bits: 0.0,
             has_recovery_key: false,
             recovery_key_phrase: None,
@@ -195,7 +185,6 @@ impl ConfirmationFlow {
     pub fn should_skip_current(&self) -> bool {
         match self.current_step {
             ConfirmationStep::SecretScanAcknowledgment => !self.config.has_secrets,
-            ConfirmationStep::PublicPublishingWarning => !self.config.is_remote_publish,
             ConfirmationStep::PasswordStrengthWarning => {
                 self.config.password_entropy_bits >= MIN_STRONG_PASSWORD_BITS
             }
@@ -223,22 +212,6 @@ impl ConfirmationFlow {
             StepValidation::Failed("Return to summary".to_string())
         } else {
             StepValidation::Failed("Press Y to confirm or R to return to summary".to_string())
-        }
-    }
-
-    /// Validate input for the public publishing warning step.
-    pub fn validate_public_warning(&self, input: &str) -> StepValidation {
-        let Some(domain) = &self.config.target_domain else {
-            return StepValidation::Passed;
-        };
-
-        let expected = format!("publish to {}", domain);
-        let normalized = input.trim().to_lowercase();
-
-        if normalized == expected.to_lowercase() {
-            StepValidation::Passed
-        } else {
-            StepValidation::Failed(format!("Please type exactly: \"publish to {}\"", domain))
         }
     }
 
@@ -303,17 +276,6 @@ impl ConfirmationFlow {
         let next = match self.current_step {
             ConfirmationStep::SecretScanAcknowledgment => ConfirmationStep::ContentReview,
             ConfirmationStep::ContentReview => {
-                if self.config.is_remote_publish {
-                    ConfirmationStep::PublicPublishingWarning
-                } else if self.config.password_entropy_bits < MIN_STRONG_PASSWORD_BITS {
-                    ConfirmationStep::PasswordStrengthWarning
-                } else if self.config.has_recovery_key {
-                    ConfirmationStep::RecoveryKeyBackup
-                } else {
-                    ConfirmationStep::FinalConfirmation
-                }
-            }
-            ConfirmationStep::PublicPublishingWarning => {
                 if self.config.password_entropy_bits < MIN_STRONG_PASSWORD_BITS {
                     ConfirmationStep::PasswordStrengthWarning
                 } else if self.config.has_recovery_key {
@@ -372,17 +334,6 @@ impl ConfirmationFlow {
             .contains(&ConfirmationStep::ContentReview)
         {
             steps.push((ConfirmationStep::ContentReview, "Content reviewed"));
-        }
-
-        if self.config.is_remote_publish
-            && self
-                .completed_steps
-                .contains(&ConfirmationStep::PublicPublishingWarning)
-        {
-            steps.push((
-                ConfirmationStep::PublicPublishingWarning,
-                "Public URL confirmed",
-            ));
         }
 
         if self.config.password_entropy_bits < MIN_STRONG_PASSWORD_BITS
@@ -474,9 +425,6 @@ pub fn count_required_steps(config: &ConfirmationConfig) -> usize {
     if config.has_secrets {
         count += 1;
     }
-    if config.is_remote_publish {
-        count += 1;
-    }
     if config.password_entropy_bits < MIN_STRONG_PASSWORD_BITS {
         count += 1;
     }
@@ -555,12 +503,11 @@ pub fn unencrypted_warning_lines() -> Vec<&'static str> {
         "You are about to export WITHOUT ENCRYPTION.",
         "",
         "This means:",
-        "  • All conversation content will be publicly readable",
-        "  • Anyone with the URL can view your data",
-        "  • Search engines may index your content",
-        "  • There is NO way to restrict access later",
+        "  • All conversation content will be readable by anyone who gets the files",
+        "  • Anyone you share the archive with can view your data",
+        "  • There is NO way to restrict access once the files leave your hands",
         "",
-        "This is IRREVERSIBLE once deployed.",
+        "This is IRREVERSIBLE once the archive is shared.",
     ]
 }
 
@@ -573,8 +520,6 @@ mod tests {
             has_secrets: false,
             has_critical_secrets: false,
             secret_count: 0,
-            target_domain: None,
-            is_remote_publish: false,
             password_entropy_bits: 80.0,
             has_recovery_key: false,
             recovery_key_phrase: None,
@@ -635,26 +580,6 @@ mod tests {
     }
 
     #[test]
-    fn test_public_warning_validation() {
-        let flow = basic_flow_with(|config| {
-            config.is_remote_publish = true;
-            config.target_domain = Some("user.github.io".to_string());
-        });
-
-        // Wrong phrase
-        assert!(matches!(
-            flow.validate_public_warning("publish"),
-            StepValidation::Failed(_)
-        ));
-
-        // Correct phrase
-        assert_eq!(
-            flow.validate_public_warning("publish to user.github.io"),
-            StepValidation::Passed
-        );
-    }
-
-    #[test]
     fn test_recovery_key_validation() {
         let flow = basic_flow_with(|config| {
             config.has_recovery_key = true;
@@ -689,8 +614,6 @@ mod tests {
     fn test_step_advancement() {
         let mut config = make_basic_config();
         config.has_secrets = true;
-        config.is_remote_publish = true;
-        config.target_domain = Some("test.github.io".to_string());
         config.has_recovery_key = true;
         config.recovery_key_phrase = Some("word1-word2-word3".to_string());
 
@@ -704,12 +627,6 @@ mod tests {
 
         flow.complete_current_step();
         assert_eq!(flow.current_step(), ConfirmationStep::ContentReview);
-
-        flow.complete_current_step();
-        assert_eq!(
-            flow.current_step(),
-            ConfirmationStep::PublicPublishingWarning
-        );
 
         flow.complete_current_step();
         // Skips PasswordStrengthWarning (entropy >= 60)
@@ -757,10 +674,9 @@ mod tests {
 
         let mut config = make_basic_config();
         config.has_secrets = true;
-        config.is_remote_publish = true;
         config.password_entropy_bits = 30.0;
         config.has_recovery_key = true;
-        assert_eq!(count_required_steps(&config), 6); // All steps
+        assert_eq!(count_required_steps(&config), 5); // All steps
     }
 
     #[test]
@@ -800,8 +716,6 @@ mod tests {
     fn test_completed_steps_summary() {
         let mut config = make_basic_config();
         config.has_secrets = true;
-        config.is_remote_publish = true;
-        config.target_domain = Some("test.github.io".to_string());
 
         let mut flow = ConfirmationFlow::new(config);
 

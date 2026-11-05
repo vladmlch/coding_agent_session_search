@@ -1181,13 +1181,6 @@ fn test_pages_wizard_pty_respects_db_override_and_writes_bundle_root() {
         "",
         "accepting the default share profile",
     );
-    wait_for_prompt(&captured, "Where would you like to deploy?");
-    send_line_and_wait(
-        &mut *writer,
-        &captured,
-        "",
-        "keeping local deployment target",
-    );
     wait_for_prompt(&captured, "Output directory");
     send_line_and_wait(
         &mut *writer,
@@ -1252,7 +1245,7 @@ fn test_pages_wizard_pty_respects_db_override_and_writes_bundle_root() {
 
     assert!(
         site_dir.join("index.html").exists(),
-        "wizard should place deployable site under the requested output root"
+        "wizard should place the local site under the requested output root"
     );
     assert!(
         wizard_output
@@ -1266,8 +1259,8 @@ fn test_pages_wizard_pty_respects_db_override_and_writes_bundle_root() {
         "wizard output root must not leak intermediate payload staging"
     );
     assert!(
-        captured_output.contains("Deployable site directory"),
-        "wizard should report the real deployable site directory\noutput:\n{}",
+        captured_output.contains("Site directory"),
+        "wizard should report the real local site directory\noutput:\n{}",
         captured_output
     );
     assert!(
