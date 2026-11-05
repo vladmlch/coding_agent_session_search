@@ -505,6 +505,9 @@
             },
             "shard_count": {
               "type": "null"
+            },
+            "legacy_external_embedding_space": {
+              "type": "boolean"
             }
           }
         },
@@ -540,6 +543,9 @@
             },
             "shard_count": {
               "type": "null"
+            },
+            "legacy_external_embedding_space": {
+              "type": "boolean"
             }
           }
         },

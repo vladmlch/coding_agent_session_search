@@ -4764,6 +4764,14 @@
                                       }
                                     }
                                   }
+                                },
+                                "legacy_external_embedding_space": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
+                                    }
+                                  }
                                 }
                               }
                             }
@@ -4879,6 +4887,14 @@
                                       "items": {
                                         "type": "string"
                                       }
+                                    }
+                                  }
+                                },
+                                "legacy_external_embedding_space": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
                                     }
                                   }
                                 }
@@ -45644,6 +45660,14 @@
                                       }
                                     }
                                   }
+                                },
+                                "legacy_external_embedding_space": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
+                                    }
+                                  }
                                 }
                               }
                             }
@@ -45759,6 +45783,14 @@
                                       "items": {
                                         "type": "string"
                                       }
+                                    }
+                                  }
+                                },
+                                "legacy_external_embedding_space": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
                                     }
                                   }
                                 }
@@ -52216,6 +52248,14 @@
                                               }
                                             }
                                           }
+                                        },
+                                        "legacy_external_embedding_space": {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "type": "string"
+                                            }
+                                          }
                                         }
                                       }
                                     }
@@ -52331,6 +52371,14 @@
                                               "items": {
                                                 "type": "string"
                                               }
+                                            }
+                                          }
+                                        },
+                                        "legacy_external_embedding_space": {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "type": "string"
                                             }
                                           }
                                         }
@@ -58808,6 +58856,14 @@
                                                       }
                                                     }
                                                   }
+                                                },
+                                                "legacy_external_embedding_space": {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "type": {
+                                                      "type": "string"
+                                                    }
+                                                  }
                                                 }
                                               }
                                             }
@@ -58923,6 +58979,14 @@
                                                       "items": {
                                                         "type": "string"
                                                       }
+                                                    }
+                                                  }
+                                                },
+                                                "legacy_external_embedding_space": {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "type": {
+                                                      "type": "string"
                                                     }
                                                   }
                                                 }
@@ -61882,6 +61946,14 @@
                                       }
                                     }
                                   }
+                                },
+                                "legacy_external_embedding_space": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
+                                    }
+                                  }
                                 }
                               }
                             }
@@ -61997,6 +62069,14 @@
                                       "items": {
                                         "type": "string"
                                       }
+                                    }
+                                  }
+                                },
+                                "legacy_external_embedding_space": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
                                     }
                                   }
                                 }
@@ -66206,6 +66286,14 @@
                                       }
                                     }
                                   }
+                                },
+                                "legacy_external_embedding_space": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
+                                    }
+                                  }
                                 }
                               }
                             }
@@ -66321,6 +66409,14 @@
                                       "items": {
                                         "type": "string"
                                       }
+                                    }
+                                  }
+                                },
+                                "legacy_external_embedding_space": {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string"
                                     }
                                   }
                                 }
@@ -70520,6 +70616,14 @@
                                               }
                                             }
                                           }
+                                        },
+                                        "legacy_external_embedding_space": {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "type": "string"
+                                            }
+                                          }
                                         }
                                       }
                                     }
@@ -70635,6 +70739,14 @@
                                               "items": {
                                                 "type": "string"
                                               }
+                                            }
+                                          }
+                                        },
+                                        "legacy_external_embedding_space": {
+                                          "type": "object",
+                                          "properties": {
+                                            "type": {
+                                              "type": "string"
                                             }
                                           }
                                         }

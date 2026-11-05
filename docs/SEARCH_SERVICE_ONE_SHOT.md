@@ -29,9 +29,8 @@ cass serve --data-dir /absolute/path/to/cass-data \
 
 Nonlexical modes require explicit `--semantic-embedder`, `--data-dir`, and
 `--db`. Local neural choices require installed models and compatible vectors.
-An explicit external embedder retains its separate endpoint-consent policy;
-selecting semantic mode does not grant that consent. Hash vectors are never
-silently substituted for a requested neural provider.
+Every semantic provider is local to the worker; no queries leave the process.
+Hash vectors are never silently substituted for a requested neural provider.
 
 Semantic-only failures remain errors. Hybrid may fall back to lexical results,
 with `realized_mode` and `semantic_fallback_reason` describing what ran.

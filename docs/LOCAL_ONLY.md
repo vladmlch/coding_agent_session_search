@@ -29,6 +29,41 @@ Ledger for D1: every path deleted by the local-only port, grouped by task.
 **On merge conflict with upstream, keep the deletion.** Newest task first;
 each task appends its own group.
 
+### Task 13 — external HTTP embedding provider (2026-11-05)
+
+Whole paths removed (all pre-authorized in the task brief's «Удаляемые пути»):
+
+- `docs/EXTERNAL_EMBEDDINGS.md` — operator doc for the removed endpoint
+- `src/search/external_embedder.rs`, `src/search/external_embedder/retry.rs`, `src/search/external_embedder/wire.rs` — HTTP client, retry policy and request/response wire format
+- `src/search/external_embedder/tests.rs`, `src/search/external_embedder/tests/admission.rs`, `src/search/external_embedder/tests/retries.rs` — provider-specific test module
+- `src/search/model_manager/external.rs`, `src/search/model_manager/external/tests.rs`, `src/search/model_manager/external/tests/admission_races.rs` — external availability and admission machinery
+- `tests/cli_search_service_external.rs`, `tests/external_backfill_runtime.rs`, `tests/external_backfill_runtime/cli.rs` — integration/runtime suites for the HTTP provider
+
+Removed in place (no further whole-file deletions):
+
+- `Cargo.toml`/`Cargo.lock` — `reqwest` and `rustls` (plus transitive-only deps) dropped; cass no longer links an HTTP client or TLS stack
+- `src/search/embedder_registry.rs` — `external` is no longer a selectable provider; unrecognized/legacy values fall back to local policy
+- `src/search/semantic_manifest.rs` — `is_external_identity` moved here; legacy external identities detected for provenance
+- `src/search/asset_state.rs` + status/doctor/health/state/triage serializers — tiers now emit `legacy_external_embedding_space`, and the shared introspect schema declares it
+- `src/indexer/semantic/engine.rs` + callers — `crate::search::external_embedder::CancelCheck` replaced by a local semantic `CancelCheck`; `check_external_cancelled` → `check_cancelled`, `external_cancelled` → general field
+- `src/search_service.rs`, `src/search_service/semantic.rs` — `--semantic-embedder external` still parses (help marks it REMOVED) and refuses startup with a removed-command envelope; the `external` status branch deleted
+- `src/search_service/mcp.rs` — `EXTERNAL_INSTRUCTIONS` deleted; instructions state `cass_semantic_search` sends no queries to external services; tool metadata is `readOnlyHint: true`, `openWorldHint: false`
+- `src/lib.rs` — value-aware `REMOVED_FLAGS` entry rejects `--embedder external` with local alternatives; ten `CASS_EXTERNAL_EMBEDDING*` env vars reported `deprecated-ignored`; `CASS_SEMANTIC_EMBEDDER=external` ignored in favour of canonical local selection; external backfill validation and model-revision branches deleted
+- `src/schedule.rs` — legacy `external` quality policy treated as unknown → local MiniLM probe; fast scheduled backfill uses `hash`
+- `src/indexer/mod.rs`, `src/indexer/semantic.rs`, `src/indexer/semantic/delegate*.rs`, `src/indexer/semantic/engine/replay_cache.rs`, `src/indexer/semantic/unchanged*` — external admission/cancellation plumbing removed or renamed; cancellation tests rewritten against the local `hash` embedder (no HTTP fixture)
+- `tests/golden/robot/*`, `tests/fixtures/cli_contract/introspect.json` — regenerated: `--embedder` description lists only local providers; semantic tier payloads and their introspect schemas carry `legacy_external_embedding_space`
+
+Kept per the brief: `EmbedderChoice::External` remains a clap value whose
+help text says REMOVED, so `serve --semantic-embedder external` emits the
+targeted local-only refusal instead of a generic invalid-value error.
+Unrelated `external` vocabulary (`external_id`, external archive sources,
+`external_upstream_source` taxonomy, external deadline supervision) is
+untouched. Legacy external artifacts stay on disk: manifests remain
+readable, tier status reports them via `legacy_external_embedding_space`,
+and they are never admitted for serving. `EXTERNAL_EMBEDDER` and
+`EXTERNAL_VECTOR_SPACE_REVISION` were compile-time constants, not env vars,
+so they do not appear in the deprecated-env table.
+
 ### Task 12 — model downloads/update-check/consent machinery (2026-11-04)
 
 Whole paths removed (all pre-authorized in the task brief's «Удаляемые пути»):
@@ -403,3 +438,34 @@ Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
 binary (same procedure as Task 9). `models status --json` emits only local
 lifecycle states and `cass models install --from-file` next steps; semantic
 and hybrid search fail open to lexical when the model is absent.
+
+## Task 13 — external HTTP embedding provider removed (2026-11-05)
+
+Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
+
+| Date (UTC) | Command | Result |
+| ---------- | ------- | ------ |
+| 2026-11-04 | `cargo check --all-targets` | ok |
+| 2026-11-04 | `cargo clippy --all-targets -- -D warnings` | ok |
+| 2026-11-04 | `cargo test --test cli_dispatch_coverage` | ok: 106 passed — expected removed-row count updated 17 → 19 (`models backfill --embedder external` added in both `--embedder external` and `--embedder=external` spellings; the flag itself stays live for local providers) |
+| 2026-11-04 | `cargo test --test cli_search_semantic_flags` | ok: 14 passed |
+| 2026-11-04 | `cargo test --test legacy_settings_tolerance` | ok: 61 passed — `CASS_EXTERNAL_EMBEDDING_URL` etc. tolerated and reported deprecated-ignored |
+| 2026-11-04 | `cargo test --test search_service_once_semantic` | ok: 5 passed |
+| 2026-11-04 | `cargo test --test lifecycle_matrix` | ok: 104 passed |
+| 2026-11-04 | `cargo test --test semantic_integration` | ok: 85 passed, 2 ignored |
+| 2026-11-04 | `cargo test --lib` | 611 passed; 15 pre-existing environmental failures (`Index version mismatch … expected v1, found v2` in native HNSW incremental tests — identical on HEAD, unrelated to this diff) |
+| 2026-11-05 | `cargo test --test e2e_semantic_search` | ok: 71 passed |
+| 2026-11-05 | `cargo test --test e2e_models_build_hnsw_gate` | ok: 61 passed |
+| 2026-11-05 | `cargo test --test golden_robot_json` (UPDATE_GOLDENS=1, then plain) | ok: 52 passed — regenerated; every diff reviewed (embedder description drops `external`; tier payloads + introspect schemas gain `legacy_external_embedding_space`) |
+| 2026-11-05 | `cargo test --test golden_error_envelope` | ok: 4 passed |
+| 2026-11-05 | `cargo test --test spec_exit_codes_documented` | ok: 5 passed |
+| 2026-11-05 | `cargo test --test metamorphic_introspect_schema` | ok: 1 passed — initially flagged the new runtime field as missing from the shared tier introspect schema; fixed by declaring `legacy_external_embedding_space` in the fast/quality tier schema block in `src/lib.rs` |
+| 2026-11-05 | `cargo test --test tui_flows` | ok: 6 passed |
+| 2026-11-05 | `cargo test --test cli_robot` | 325/326 — same pre-existing environmental failure as Tasks 2/8/12 (`html_export_aliases_route_to_export_html_command` requires a populated default data dir; identical on HEAD) |
+| 2026-11-05 | `cargo fmt --all -- --check` | ok |
+| 2026-11-05 | `cargo clippy --all-targets --locked -- -D warnings` | ok |
+
+`tests/fixtures/cli_contract/introspect.json` regenerated from the built
+binary (same procedure as Task 9/12). `repomix-output.xml.zip`,
+`rs_files_over_1000_lines.txt` and `scripts/count_large_rs_files.sh` remain
+untracked leftovers, not staged.

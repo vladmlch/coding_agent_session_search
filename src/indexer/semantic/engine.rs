@@ -83,17 +83,21 @@ const SEMANTIC_PREP_MEMO_ALGORITHM: &str = "semantic_prepare_window";
 const SEMANTIC_PREP_MEMO_VERSION: &str = "canonicalize_for_embedding:v2:stable-content-hash";
 pub const HASH_VECTOR_SPACE_REVISION: &str = "hash-fnv1a-modular-v1:passages-v2";
 
+/// A caller-owned cancellation check for backfill jobs. It must be cheap and
+/// must not block. Backfill polls it at durable batch boundaries; an
+/// interrupted batch is never committed.
+pub type CancelCheck = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Return the exact vector-space revision that is safe for a current embedder.
 /// ID and dimension alone are insufficient because inference-engine changes
-/// can preserve both while changing vector values.
+/// can preserve both while changing vector values. Identities produced by the
+/// removed external HTTP embedder intentionally have no current revision:
+/// legacy external spaces are reported, never loaded or served.
 pub fn expected_vector_space_revision(embedder_id: &str) -> Option<&'static str> {
     match embedder_id {
         "minilm-384" => Some(MINILM_VECTOR_SPACE_REVISION),
         "multilingual-minilm-384" => Some(MULTILINGUAL_MINILM_VECTOR_SPACE_REVISION),
         "fnv1a-384" => Some(HASH_VECTOR_SPACE_REVISION),
-        id if crate::search::external_embedder::is_external_identity(id) => {
-            Some(crate::search::external_embedder::EXTERNAL_VECTOR_SPACE_REVISION)
-        }
         _ => None,
     }
 }
@@ -1129,18 +1133,18 @@ fn total_semantic_conversations(storage: &FrankenStorage) -> Result<u64> {
     total_semantic_conversations_with_cancel(storage, None)
 }
 
-fn check_semantic_scan_cancelled(
-    cancelled: Option<&crate::search::external_embedder::CancelCheck>,
-) -> Result<()> {
+fn check_semantic_scan_cancelled(cancelled: Option<&CancelCheck>) -> Result<()> {
     if cancelled.is_some_and(|check| check()) {
-        bail!("external_cancelled: canonical scan interrupted; resume the last durable checkpoint");
+        bail!(
+            "semantic_backfill_cancelled: canonical scan interrupted; resume the last durable checkpoint"
+        );
     }
     Ok(())
 }
 
 fn total_semantic_conversations_with_cancel(
     storage: &FrankenStorage,
-    cancelled: Option<&crate::search::external_embedder::CancelCheck>,
+    cancelled: Option<&CancelCheck>,
 ) -> Result<u64> {
     // `conversation_tail_state.last_message_idx` is the maintained, schema-v18
     // hot cache for every normal non-empty conversation. Merge that compact
@@ -2473,37 +2477,30 @@ pub struct SemanticIndexer {
     // Only the concrete CASS factory admits the hash and English native
     // MiniLM producers. Multilingual retains uncached batches until qualified.
     exact_reuse: bool,
-    external_cancelled: Option<crate::search::external_embedder::CancelCheck>,
+    cancelled: Option<CancelCheck>,
     replay_cache: replay_cache::CanonicalReplayCache,
 }
 
 impl SemanticIndexer {
     pub fn new(embedder_type: &str, data_dir: Option<&Path>) -> Result<Self> {
-        Self::new_with_cancel(embedder_type, data_dir, std::sync::Arc::new(|| false))
+        Self::construct(embedder_type, data_dir, None)
     }
 
-    /// A job owner can share its cancellation flag with endpoint requests.
-    /// Defaults/local choices do not consult external configuration at all.
+    /// A job owner can share its cancellation flag with the backfill loops.
+    /// Only local providers exist; no external configuration is consulted.
     pub fn new_with_cancel(
         embedder_type: &str,
         data_dir: Option<&Path>,
-        cancelled: crate::search::external_embedder::CancelCheck,
+        cancelled: CancelCheck,
     ) -> Result<Self> {
-        use crate::search::external_embedder::{EXTERNAL_EMBEDDER, ExternalEmbedder};
+        Self::construct(embedder_type, data_dir, Some(cancelled))
+    }
 
-        if embedder_type.trim().eq_ignore_ascii_case(EXTERNAL_EMBEDDER) {
-            let embedder =
-                ExternalEmbedder::from_env_with_cancel(std::sync::Arc::clone(&cancelled))
-                    .context("external embedding preflight failed; archive text was not sent")?;
-            return Ok(Self {
-                embedder: Box::new(embedder),
-                batch_size: resolved_default_batch_size(),
-                // Endpoint probes do not qualify the local exact-reuse contract.
-                exact_reuse: false,
-                external_cancelled: Some(cancelled),
-                replay_cache: replay_cache::CanonicalReplayCache::default(),
-            });
-        }
+    fn construct(
+        embedder_type: &str,
+        data_dir: Option<&Path>,
+        cancelled: Option<CancelCheck>,
+    ) -> Result<Self> {
         let exact_reuse = embedder_type == "hash"
             || FastEmbedder::canonical_name(embedder_type) == Some("minilm");
         let embedder: Box<dyn Embedder> = match embedder_type {
@@ -2524,39 +2521,15 @@ impl SemanticIndexer {
             embedder,
             batch_size: resolved_default_batch_size(),
             exact_reuse,
-            external_cancelled: None,
+            cancelled,
             replay_cache: replay_cache::CanonicalReplayCache::default(),
         })
     }
 
-    /// Construct a consented provider without global environment mutation.
-    /// Preflight completes before the indexer can read or persist archive rows.
-    pub fn with_external_config(
-        config: crate::search::external_embedder::ExternalEmbeddingConfig,
-        cancelled: crate::search::external_embedder::CancelCheck,
-    ) -> Result<Self> {
-        let embedder = crate::search::external_embedder::ExternalEmbedder::connect(
-            config,
-            std::sync::Arc::clone(&cancelled),
-        )
-        .context("external embedding preflight failed; archive text was not sent")?;
-        Ok(Self {
-            embedder: Box::new(embedder),
-            batch_size: resolved_default_batch_size(),
-            exact_reuse: false,
-            external_cancelled: Some(cancelled),
-            replay_cache: replay_cache::CanonicalReplayCache::default(),
-        })
-    }
-
-    pub(super) fn check_external_cancelled(&self) -> Result<()> {
-        if self
-            .external_cancelled
-            .as_ref()
-            .is_some_and(|cancelled| cancelled())
-        {
+    pub(super) fn check_cancelled(&self) -> Result<()> {
+        if self.cancelled.as_ref().is_some_and(|cancelled| cancelled()) {
             bail!(
-                "external_cancelled: incomplete batch was not committed; resume the last durable checkpoint"
+                "semantic_backfill_cancelled: incomplete batch was not committed; resume the last durable checkpoint"
             );
         }
         Ok(())
@@ -2634,7 +2607,7 @@ impl SemanticIndexer {
     where
         F: FnMut(usize, usize),
     {
-        self.check_external_cancelled()?;
+        self.check_cancelled()?;
         if messages.is_empty() {
             on_progress(0, 0);
             return Ok(Vec::new());
@@ -2676,7 +2649,7 @@ impl SemanticIndexer {
         // multiple GB. Resolved once per call (not per batch).
         let embed_char_budget = resolved_semantic_embed_batch_char_budget();
         for (window_index, window_slice) in messages.chunks(window).enumerate() {
-            self.check_external_cancelled()?;
+            self.check_cancelled()?;
             let prepared_window = match prep_memo.as_mut() {
                 Some(cache) => {
                     let stats_before = cache.stats().clone();
@@ -2792,7 +2765,7 @@ impl SemanticIndexer {
             );
         }
 
-        self.check_external_cancelled()?;
+        self.check_cancelled()?;
         pb.finish_with_message("Embedding complete");
         Ok(embeddings)
     }
@@ -3518,7 +3491,7 @@ impl SemanticIndexer {
                 },
             );
         }
-        self.check_external_cancelled()?;
+        self.check_cancelled()?;
         let staged_index = self.write_backfill_staging_index(
             embeddings,
             &staging_path,
@@ -3939,7 +3912,7 @@ impl SemanticIndexer {
         candidate: (&Path, SemanticCheckpointCaps),
         sink: &SemanticProgressSink,
     ) -> Result<SemanticBackfillBatchOutcome> {
-        self.check_external_cancelled()?;
+        self.check_cancelled()?;
         let (candidate_path, caps) = candidate;
         let snapshot_dir = tempfile::Builder::new()
             .prefix(".backfill-reuse-")
@@ -3984,7 +3957,7 @@ impl SemanticIndexer {
         }
         let mut existing_ids = HashSet::new();
         for record in 0..snapshot.record_count() {
-            self.check_external_cancelled()?;
+            self.check_cancelled()?;
             if !snapshot.is_deleted(record) {
                 let id = snapshot.doc_id_at(record).map_err(|err| {
                     anyhow::anyhow!("read semantic backfill candidate identity: {err}")
@@ -3997,7 +3970,7 @@ impl SemanticIndexer {
         drop(snapshot);
 
         let total_conversations =
-            total_semantic_conversations_with_cancel(storage, self.external_cancelled.as_ref())?;
+            total_semantic_conversations_with_cancel(storage, self.cancelled.as_ref())?;
         sink.emit(
             SemanticProgressEvent::SelectionStart,
             SemanticProgressFields {
@@ -4044,7 +4017,7 @@ impl SemanticIndexer {
             self.embedder_id(),
             &plan.db_fingerprint,
         );
-        self.check_external_cancelled()?;
+        self.check_cancelled()?;
         let staged_index = self.reconcile_in_private_directory(
             embeddings,
             &staging_path,
@@ -4177,7 +4150,7 @@ impl SemanticIndexer {
         caps: SemanticCheckpointCaps,
         sink: &SemanticProgressSink,
     ) -> Result<SemanticBackfillBatchOutcome> {
-        self.check_external_cancelled()?;
+        self.check_cancelled()?;
         let archive_before = BackfillFilePair::archive(storage);
         let candidate = self.reusable_backfill_candidate(data_dir, manifest, &plan);
         let cache_path = data_dir.join(VECTOR_INDEX_DIR).join(format!(
@@ -4322,26 +4295,25 @@ impl SemanticIndexer {
 
         let total_conversations = match cached_total_conversations {
             Some((total, _)) => total,
-            None => match total_semantic_conversations_with_cancel(
-                storage,
-                self.external_cancelled.as_ref(),
-            ) {
-                Ok(total) => total,
-                Err(err) => {
-                    if sink.is_active() {
-                        sink.emit(
-                            SemanticProgressEvent::Error,
-                            SemanticProgressFields {
-                                error: Some(format!("selection count: {err}")),
-                                last_conversation_id: Some(after_conversation_id),
-                                last_message_id: prior_last_message_id,
-                                ..Default::default()
-                            },
-                        );
+            None => {
+                match total_semantic_conversations_with_cancel(storage, self.cancelled.as_ref()) {
+                    Ok(total) => total,
+                    Err(err) => {
+                        if sink.is_active() {
+                            sink.emit(
+                                SemanticProgressEvent::Error,
+                                SemanticProgressFields {
+                                    error: Some(format!("selection count: {err}")),
+                                    last_conversation_id: Some(after_conversation_id),
+                                    last_message_id: prior_last_message_id,
+                                    ..Default::default()
+                                },
+                            );
+                        }
+                        return Err(err);
                     }
-                    return Err(err);
                 }
-            },
+            }
         };
 
         if sink.is_active() {

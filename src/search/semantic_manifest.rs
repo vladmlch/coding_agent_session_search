@@ -105,6 +105,31 @@ pub const MANIFEST_FILENAME: &str = "semantic_manifest.json";
 /// Filename for the prototype per-shard semantic artifact manifest.
 pub const SHARD_MANIFEST_FILENAME: &str = "semantic_shards.json";
 
+/// Display marker for vector spaces published by the removed external HTTP
+/// embedding provider. Their artifacts are left untouched on disk and are
+/// reported, never loaded or served.
+pub const LEGACY_EXTERNAL_EMBEDDING_SPACE: &str = "legacy_external_embedding_space";
+
+/// Whether `embedder_id` is a canonical identity produced by the removed
+/// external HTTP embedder (`external-v1-<dimension>-<64 lowercase hex>`).
+/// Only recognize canonical identities, never arbitrary path-like strings.
+pub fn is_external_identity(id: &str) -> bool {
+    const MAX_DIMENSION: usize = 16_384;
+    let Some((dimension, digest)) = id
+        .strip_prefix("external-v1-")
+        .and_then(|rest| rest.split_once('-'))
+    else {
+        return false;
+    };
+    dimension
+        .parse::<usize>()
+        .is_ok_and(|d| (1..=MAX_DIMENSION).contains(&d) && d.to_string() == dimension)
+        && digest.len() == 64
+        && digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 pub(crate) fn semantic_shard_artifact_path_is_safe(recorded_path: &str) -> bool {
     let trimmed = recorded_path.trim();
     if trimmed.is_empty() || trimmed != recorded_path {

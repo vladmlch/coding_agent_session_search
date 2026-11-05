@@ -85,7 +85,7 @@ impl Drop for Child {
 }
 
 /// Leave stdin open until exit. A transcript request incorrectly entering the
-/// frame loop must fail the external deadline instead of succeeding on EOF.
+/// frame loop must fail the request deadline instead of succeeding on EOF.
 /// File-backed capture avoids pipe deadlock; bound output before materializing.
 fn execute(
     root: &Path,
@@ -115,7 +115,6 @@ fn execute(
         .env("XDG_CONFIG_HOME", root.join("no-config"))
         .env("CASS_AUTO_REFRESH", "0")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-        .env("CASS_EXTERNAL_EMBEDDINGS", "0")
         .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("RUST_MIN_STACK", "134217728")
         .env("RUST_LOG", "error")

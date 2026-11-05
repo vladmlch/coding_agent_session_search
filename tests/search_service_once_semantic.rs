@@ -147,7 +147,7 @@ fn snapshot(root: &Path) -> Result<BTreeMap<PathBuf, Option<Vec<u8>>>> {
 }
 
 /// Keep stdin open through process exit. A one-shot accidentally entering the
-/// frame loop must fail the external deadline, not pass because stdin hit EOF.
+/// frame loop must fail the request deadline, not pass because stdin hit EOF.
 /// The optional frame enables a real stdio oracle using the same fresh assets.
 fn execute(
     root: &Path,
@@ -184,7 +184,6 @@ fn execute(
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("CASS_AUTO_REFRESH", "0")
         .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-        .env("CASS_EXTERNAL_EMBEDDINGS", "0")
         .env("CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "1")
         .env("RUST_LOG", "error")
         .stdin(Stdio::piped())
@@ -200,7 +199,7 @@ fn execute(
     let status = child
         .0
         .wait_timeout(Duration::from_secs(30))?
-        .context("one-shot search blocked on stdin or exceeded its external deadline")?;
+        .context("one-shot search blocked on stdin or exceeded its request deadline")?;
     drop(input);
     for path in [&out_path, &err_path] {
         ensure!(

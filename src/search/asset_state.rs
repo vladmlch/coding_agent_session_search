@@ -630,6 +630,10 @@ pub(crate) struct SemanticTierAssetState {
     pub size_bytes: Option<u64>,
     pub index_path: Option<PathBuf>,
     pub shard_count: Option<u32>,
+    /// True when the recorded artifact belongs to the removed external HTTP
+    /// embedding provider (an `external-v1-*` identity). The artifact is
+    /// reported for provenance only — it is never loaded or served.
+    pub legacy_external_space: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -1274,6 +1278,9 @@ fn semantic_tier_asset_state(
         size_bytes: Some(artifact.size_bytes),
         index_path: None,
         shard_count: Some(1),
+        legacy_external_space: crate::search::semantic_manifest::is_external_identity(
+            &artifact.embedder_id,
+        ),
     }
 }
 
@@ -1367,6 +1374,9 @@ fn promote_complete_shard_generation_state(
         size_bytes: Some(size_bytes),
         index_path: Some(first_index_path),
         shard_count: u32::try_from(records.len()).ok(),
+        legacy_external_space: crate::search::semantic_manifest::is_external_identity(
+            &first.embedder_id,
+        ),
     };
 }
 

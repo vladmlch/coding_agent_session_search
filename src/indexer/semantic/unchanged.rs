@@ -32,7 +32,7 @@ pub(super) fn try_retain_completed(
     plan: &SemanticBackfillStoragePlan,
     sink: &SemanticProgressSink,
 ) -> Result<Option<SemanticBackfillBatchOutcome>> {
-    engine.check_external_cancelled()?;
+    engine.check_cancelled()?;
     // Keep the existing constant-time cache-hit path; do not turn every
     // scheduled no-op into a full canonical scan.
     if engine
@@ -63,7 +63,7 @@ fn prove_unchanged<F>(
 where
     F: FnOnce() -> Result<()>,
 {
-    engine.check_external_cancelled()?;
+    engine.check_cancelled()?;
     if manifest.checkpoint.is_some() || plan.max_conversations == 0 {
         return Ok(None);
     }
@@ -129,7 +129,7 @@ where
     let mut remaining = HashSet::new();
     remaining.try_reserve(index.record_count())?;
     for record in 0..index.record_count() {
-        engine.check_external_cancelled()?;
+        engine.check_cancelled()?;
         if !remaining.insert(index.doc_id_at(record)?) {
             return Ok(None);
         }
@@ -149,20 +149,20 @@ where
     );
     let (comparison, coverage) =
         scan::compare_with_coverage(storage, &mut remaining, sink, artifact.doc_count, || {
-            engine.check_external_cancelled()
+            engine.check_cancelled()
         })?;
     tracing::debug!(
         visited = comparison.visited,
         matches = comparison.matches,
         "compared canonical replay with retained semantic identities"
     );
-    engine.check_external_cancelled()?;
+    engine.check_cancelled()?;
     // Replay already observed every nonempty canonical parent. Reuse that
     // exact coverage instead of running another archive-wide query/probe pass.
     // Partial or mismatching replay supplies no coverage. Keep all final file
     // and cancellation fences before accepting this receipt or a cache miss.
     checkpoint()?;
-    engine.check_external_cancelled()?;
+    engine.check_cancelled()?;
     // Detect mutation across the entire proof, including WAL-only commits,
     // restored mtimes, replaced pathnames, and a pinned old SQL snapshot.
     ensure!(
@@ -180,7 +180,7 @@ where
         return Ok(None);
     }
     // A cancelled proof cannot renew its skip receipt or report completion.
-    engine.check_external_cancelled()?;
+    engine.check_cancelled()?;
     if let Err(error) = cache::refresh(
         data_dir,
         &archive_before,

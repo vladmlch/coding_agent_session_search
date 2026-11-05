@@ -4,8 +4,8 @@
 //! archive reads and local model loaders never start writers or downloads. File
 //! witnesses detect ordinary publication/replacement and same-size writes; they
 //! are change detectors, not an immutable corpus-generation certificate.
-//! Explicit external selection uses the same strict admission and consent as
-//! one-shot search. Its HTTP provider is retained, not a local inference model.
+//! Only local providers exist: the external HTTP embedder was removed by the
+//! local-only conversion and this service sends no queries out of the process.
 
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata};
@@ -14,7 +14,6 @@ use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, ensure};
 use coding_agent_search::search::embedder::Embedder;
-use coding_agent_search::search::external_embedder::ExternalEmbeddingConfig;
 use coding_agent_search::search::fastembed_embedder::FastEmbedder;
 use coding_agent_search::search::hash_embedder::HashEmbedder;
 use coding_agent_search::search::model_manager::{
@@ -87,7 +86,10 @@ pub(super) enum EmbedderChoice {
     Minilm,
     MultilingualMinilm,
     Hash,
-    /// Send queries to a consented endpoint; requires CASS_EXTERNAL_EMBEDDINGS=1.
+    /// Removed local-only spelling: startup refuses it with a removed notice.
+    #[value(
+        help = "REMOVED: the external HTTP embedder is gone; startup fails with a local-only notice"
+    )]
     External,
 }
 
@@ -104,14 +106,10 @@ impl EmbedderChoice {
     fn id(self) -> Result<String> {
         match self {
             Self::Hash => Ok(HashEmbedder::default().id().to_owned()),
-            Self::External => ExternalEmbeddingConfig::from_env()?
-                .map(|config| config.identity())
-                .ok_or_else(|| {
-                    Refusal::Unavailable(
-                        "external_disabled: set CASS_EXTERNAL_EMBEDDINGS=1 to consent to sending queries outside the process".into(),
-                    )
-                    .into()
-                }),
+            Self::External => Err(Refusal::Unavailable(
+                "the external HTTP embedding provider was removed by the local-only conversion; select a local embedder (minilm, multilingual-minilm, hash)".into(),
+            )
+            .into()),
             _ => FastEmbedder::config_for(self.name())
                 .map(|config| config.embedder_id)
                 .context("unknown configured semantic embedder"),
@@ -321,13 +319,6 @@ impl Semantic {
         self.config.is_some()
     }
 
-    /// Startup selection only, not a consent/configuration probe or HTTP call.
-    pub(super) fn external_selected(&self) -> bool {
-        self.config
-            .as_ref()
-            .is_some_and(|config| matches!(config.embedder, EmbedderChoice::External))
-    }
-
     pub(super) fn model_loaded(&self) -> bool {
         self.client.is_some()
             && self
@@ -354,11 +345,7 @@ impl Semantic {
             "enabled": self.enabled(), "loaded": self.client.is_some(),
             "embedder": self.config.as_ref().map(|config| config.embedder),
             "embedder_id": self.active_identity,
-            "neural": self.config.as_ref().and_then(|config| match config.embedder {
-                EmbedderChoice::External => None,
-                local => Some(local.local_model()),
-            }),
-            "external_provider_selected": self.external_selected(),
+            "neural": self.config.as_ref().map(|config| config.embedder.local_model()),
             "local_model_loaded": self.model_loaded(),
             "context_epoch": self.client.as_ref().map(|_| self.successful_loads),
             "load_attempts": self.load_attempts, "successful_loads": self.successful_loads,
@@ -421,9 +408,8 @@ impl Semantic {
             .as_ref()
             .context("semantic service is disabled")?;
         self.load_attempts = self.load_attempts.saturating_add(1);
-        // Resolve the external identity only on a semantic request. Startup,
-        // status and ordinary lexical search must not consult endpoint consent
-        // or credentials, much less construct a client or send public probes.
+        // Resolve the provider identity only on a semantic request. Startup,
+        // status and ordinary lexical search must not touch model assets.
         let expected_id = config.embedder.id()?;
         let guard = AssetGuard::capture(&config.data_dir, db, &expected_id)?;
         let setup = match config.embedder {
@@ -773,13 +759,13 @@ impl Session {
 mod admission_tests;
 
 #[cfg(test)]
-mod external_selection_tests {
+mod embedder_selection_tests {
     use super::super::{ServiceCli, ServiceCommand};
     use super::*;
     use clap::Parser;
 
     #[test]
-    fn external_service_selection_is_explicit_and_requires_archive_coordinates() {
+    fn semantic_service_selection_is_explicit_and_requires_archive_coordinates() {
         let base = ["cass", "serve", "--stdio", "--data-dir", "missing-data"];
         let cli = ServiceCli::try_parse_from(base).unwrap();
         let ServiceCommand::Serve {
@@ -788,20 +774,20 @@ mod external_selection_tests {
         assert!(semantic_embedder.is_none());
 
         assert!(
-            ServiceCli::try_parse_from(base.into_iter().chain(["--semantic-embedder", "external"]))
+            ServiceCli::try_parse_from(base.into_iter().chain(["--semantic-embedder", "hash"]))
                 .is_err()
         );
         let cli = ServiceCli::try_parse_from(base.into_iter().chain([
             "--db",
             "missing-data/agent_search.db",
             "--semantic-embedder",
-            "external",
+            "hash",
         ]))
         .unwrap();
         let ServiceCommand::Serve {
             semantic_embedder, ..
         } = cli.command;
-        assert!(matches!(semantic_embedder, Some(EmbedderChoice::External)));
+        assert!(matches!(semantic_embedder, Some(EmbedderChoice::Hash)));
         assert!(
             ServiceCli::try_parse_from([
                 "cass",
@@ -812,32 +798,26 @@ mod external_selection_tests {
                 "--db",
                 "missing.db",
                 "--semantic-embedder",
-                "external",
+                "hash",
             ])
             .is_err()
         );
     }
 
     #[test]
-    fn external_status_and_unload_are_passive_and_do_not_claim_a_local_model() {
-        let root = tempfile::tempdir().unwrap();
-        let missing = root.path().join("never-created");
-        let mut semantic = Semantic::new(missing.clone(), EmbedderChoice::External);
-        for _ in 0..2 {
-            let status = semantic.status();
-            assert_eq!(status["enabled"], true);
-            assert_eq!(status["embedder"], "external");
-            assert_eq!(status["external_provider_selected"], true);
-            assert_eq!(status["loaded"], false);
-            assert_eq!(status["local_model_loaded"], false);
-            assert!(status["neural"].is_null());
-            assert!(status["embedder_id"].is_null());
-            assert_eq!(status["load_attempts"], 0);
-            assert!(!semantic.model_loaded());
-            semantic.unload();
-        }
-        assert!(!missing.exists());
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    fn removed_external_spelling_fails_with_a_local_only_notice() {
+        // The removed spelling still parses so clap accepts it; resolution
+        // refuses it before any provider or endpoint work could occur.
+        assert_eq!(EmbedderChoice::External.name(), "external");
+        let error = EmbedderChoice::External.id().unwrap_err();
+        assert!(
+            error.to_string().contains("removed"),
+            "unexpected notice: {error}"
+        );
+        assert!(
+            error.to_string().contains("local embedder"),
+            "unexpected notice: {error}"
+        );
     }
 
     #[test]
@@ -850,8 +830,8 @@ mod external_selection_tests {
             assert_ne!(choice.name(), "external");
             assert!(!choice.id().unwrap().starts_with("external-"));
             let semantic = Semantic::new(PathBuf::from("unused"), choice);
-            assert_eq!(semantic.status()["external_provider_selected"], false);
             assert_eq!(semantic.status()["neural"], choice.local_model());
+            assert_eq!(semantic.status()["local_model_loaded"], false);
             assert!(!semantic.model_loaded());
         }
     }

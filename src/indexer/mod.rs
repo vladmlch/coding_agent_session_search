@@ -10483,7 +10483,8 @@ fn storage_semantic_identity_tier(tier: SemanticTierKind) -> SemanticIdentityTie
 fn semantic_model_revision_for_embedder_id(embedder_id: &str) -> String {
     if embedder_id == "fnv1a-384" {
         "hash".to_string()
-    } else if crate::search::external_embedder::is_external_identity(embedder_id) {
+    } else if crate::search::semantic_manifest::is_external_identity(embedder_id) {
+        // Legacy external spaces keep their own identity as provenance.
         embedder_id.to_owned()
     } else {
         crate::search::fastembed_embedder::FastEmbedder::canonical_name(embedder_id)

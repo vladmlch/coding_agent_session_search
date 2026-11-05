@@ -659,6 +659,7 @@ schemas: (auto-generated from contract)
         - current_db_matches: ?
         - doc_count: ?
         - embedder_id: ?
+        - legacy_external_embedding_space: boolean
         - model_revision: ?
         - present: boolean
         - ready: boolean
@@ -680,6 +681,7 @@ schemas: (auto-generated from contract)
         - current_db_matches: ?
         - doc_count: ?
         - embedder_id: ?
+        - legacy_external_embedding_space: boolean
         - model_revision: ?
         - present: boolean
         - ready: boolean
@@ -2397,6 +2399,7 @@ schemas: (auto-generated from contract)
         - current_db_matches: ?
         - doc_count: ?
         - embedder_id: ?
+        - legacy_external_embedding_space: boolean
         - model_revision: ?
         - present: boolean
         - ready: boolean
@@ -2418,6 +2421,7 @@ schemas: (auto-generated from contract)
         - current_db_matches: ?
         - doc_count: ?
         - embedder_id: ?
+        - legacy_external_embedding_space: boolean
         - model_revision: ?
         - present: boolean
         - ready: boolean
@@ -3441,6 +3445,7 @@ schemas: (auto-generated from contract)
         - current_db_matches: ?
         - doc_count: ?
         - embedder_id: ?
+        - legacy_external_embedding_space: boolean
         - model_revision: ?
         - present: boolean
         - ready: boolean
@@ -3462,6 +3467,7 @@ schemas: (auto-generated from contract)
         - current_db_matches: ?
         - doc_count: ?
         - embedder_id: ?
+        - legacy_external_embedding_space: boolean
         - model_revision: ?
         - present: boolean
         - ready: boolean
@@ -3813,6 +3819,7 @@ schemas: (auto-generated from contract)
         - current_db_matches: ?
         - doc_count: ?
         - embedder_id: ?
+        - legacy_external_embedding_space: boolean
         - model_revision: ?
         - present: boolean
         - ready: boolean
@@ -3834,6 +3841,7 @@ schemas: (auto-generated from contract)
         - current_db_matches: ?
         - doc_count: ?
         - embedder_id: ?
+        - legacy_external_embedding_space: boolean
         - model_revision: ?
         - present: boolean
         - ready: boolean

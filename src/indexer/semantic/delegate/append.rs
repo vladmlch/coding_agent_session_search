@@ -182,7 +182,7 @@ pub(super) fn run(
     data_dir: &Path,
 ) -> Result<usize> {
     run_with_limit(indexer, messages, data_dir, configured_max_bytes()?, || {
-        indexer.inner.check_external_cancelled()
+        indexer.inner.check_cancelled()
     })
 }
 

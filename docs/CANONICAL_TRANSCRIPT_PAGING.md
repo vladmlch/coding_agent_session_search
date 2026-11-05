@@ -88,7 +88,7 @@ Add `--mcp` at service startup, perform the existing MCP handshake, then call
 `cass_transcript` with the same selection, limit, and optional cursor fields.
 There is no `op` or `id` inside MCP tool arguments. Tool discovery is passive and
 the tool is absent without startup `--db`. Its annotation remains read-only and
-local even when a separately configured semantic tool uses an external provider.
+local; every advertised semantic tool also uses a local provider only.
 Both MCP result representations carry the same content and continuation data.
 
 The implementation includes native reader, protocol, MCP, and real-binary

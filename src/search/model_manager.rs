@@ -9,8 +9,6 @@
 //! It does **not** download models. Missing files are surfaced as availability
 //! states so the UI can guide the user. Downloads are handled by [`model_download`].
 
-mod external;
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -610,12 +608,6 @@ pub(crate) fn probe_semantic_availability_for_embedder(
     data_dir: &Path,
     embedder_name: &str,
 ) -> SemanticAvailability {
-    if embedder_name
-        .trim()
-        .eq_ignore_ascii_case(crate::search::external_embedder::EXTERNAL_EMBEDDER)
-    {
-        return external::probe(data_dir);
-    }
     if let Some(availability) = selected_generation_owner_requirement(data_dir) {
         return availability;
     }
@@ -833,14 +825,6 @@ fn load_semantic_context_inner(
     defer_embedder_load: bool,
     strict_read_only: bool,
 ) -> SemanticSetup {
-    if embedder_name
-        .trim()
-        .eq_ignore_ascii_case(crate::search::external_embedder::EXTERNAL_EMBEDDER)
-    {
-        // The local deferred/daemon fallback is not an external provider. This
-        // path admits the external artifact first, then runs its own preflight.
-        return external::load(data_dir, db_path, strict_read_only);
-    }
     if let Some(availability) = selected_generation_owner_requirement(data_dir) {
         return SemanticSetup {
             availability,

@@ -33,7 +33,6 @@ pub(crate) mod drill_down;
 pub mod e2e_scenarios;
 pub mod embedder;
 pub mod embedder_registry;
-pub mod external_embedder;
 pub mod fastembed_embedder;
 pub mod fastembed_reranker;
 pub mod hash_embedder;

@@ -684,7 +684,7 @@
         },
         {
           "name": "embedder",
-          "description": "Embedder for semantic indexing (hash, minilm, multilingual-minilm, external); defaults to semantic policy",
+          "description": "Embedder for semantic indexing (hash, minilm, multilingual-minilm); defaults to semantic policy",
           "arg_type": "option",
           "value_type": "string",
           "required": false
@@ -6309,6 +6309,9 @@
                     "integer",
                     "null"
                   ]
+                },
+                "legacy_external_embedding_space": {
+                  "type": "boolean"
                 }
               }
             },
@@ -6368,6 +6371,9 @@
                     "integer",
                     "null"
                   ]
+                },
+                "legacy_external_embedding_space": {
+                  "type": "boolean"
                 }
               }
             },
@@ -25477,6 +25483,9 @@
                     "integer",
                     "null"
                   ]
+                },
+                "legacy_external_embedding_space": {
+                  "type": "boolean"
                 }
               }
             },
@@ -25536,6 +25545,9 @@
                     "integer",
                     "null"
                   ]
+                },
+                "legacy_external_embedding_space": {
+                  "type": "boolean"
                 }
               }
             },
@@ -28690,6 +28702,9 @@
                         "integer",
                         "null"
                       ]
+                    },
+                    "legacy_external_embedding_space": {
+                      "type": "boolean"
                     }
                   }
                 },
@@ -28749,6 +28764,9 @@
                         "integer",
                         "null"
                       ]
+                    },
+                    "legacy_external_embedding_space": {
+                      "type": "boolean"
                     }
                   }
                 },
@@ -31561,6 +31579,9 @@
                             "integer",
                             "null"
                           ]
+                        },
+                        "legacy_external_embedding_space": {
+                          "type": "boolean"
                         }
                       }
                     },
@@ -31620,6 +31641,9 @@
                             "integer",
                             "null"
                           ]
+                        },
+                        "legacy_external_embedding_space": {
+                          "type": "boolean"
                         }
                       }
                     },
@@ -33004,6 +33028,9 @@
                     "integer",
                     "null"
                   ]
+                },
+                "legacy_external_embedding_space": {
+                  "type": "boolean"
                 }
               }
             },
@@ -33063,6 +33090,9 @@
                     "integer",
                     "null"
                   ]
+                },
+                "legacy_external_embedding_space": {
+                  "type": "boolean"
                 }
               }
             },
@@ -35030,6 +35060,9 @@
                     "integer",
                     "null"
                   ]
+                },
+                "legacy_external_embedding_space": {
+                  "type": "boolean"
                 }
               }
             },
@@ -35089,6 +35122,9 @@
                     "integer",
                     "null"
                   ]
+                },
+                "legacy_external_embedding_space": {
+                  "type": "boolean"
                 }
               }
             },
@@ -37072,6 +37108,9 @@
                         "integer",
                         "null"
                       ]
+                    },
+                    "legacy_external_embedding_space": {
+                      "type": "boolean"
                     }
                   }
                 },
@@ -37131,6 +37170,9 @@
                         "integer",
                         "null"
                       ]
+                    },
+                    "legacy_external_embedding_space": {
+                      "type": "boolean"
                     }
                   }
                 },

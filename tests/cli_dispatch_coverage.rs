@@ -5379,6 +5379,24 @@ const REMOVED_COMMAND_CASES: &[RemovedCommandCase] = &[
         pending: false,
         probe_args: Some(&["models", "verify", "--repair", "--help"]),
     },
+    // Task 13 — external HTTP embedding provider value. `--embedder` itself
+    // stays live for local providers; only `external` is rejected, on every
+    // command that takes the flag. Both spellings must name the removed
+    // value, not claim the surviving flag is gone.
+    RemovedCommandCase {
+        args: &["models", "backfill", "--embedder", "external"],
+        display: "--embedder external",
+        task: 13,
+        pending: false,
+        probe_args: None,
+    },
+    RemovedCommandCase {
+        args: &["models", "backfill", "--embedder=external"],
+        display: "--embedder external",
+        task: 13,
+        pending: false,
+        probe_args: None,
+    },
     // Task 14 — hosted pages deploy targets.
     RemovedCommandCase {
         args: &["pages", "--target", "github"],
@@ -5540,7 +5558,7 @@ fn removed_commands_error_without_redirection() {
     // task skip the whole rejection surface.
     assert_eq!(
         REMOVED_COMMAND_CASES.len(),
-        17,
+        19,
         "the negative table lists every removal promised by tasks 7–14"
     );
 }

@@ -115,7 +115,7 @@ impl SemanticIndexer {
         F: FnMut(usize),
     {
         rebuild::run(self, embedded_messages, data_dir, on_progress, || {
-            self.inner.check_external_cancelled()
+            self.inner.check_cancelled()
         })
     }
 
@@ -130,7 +130,7 @@ impl SemanticIndexer {
         P: FnMut(usize),
     {
         rebuild::run_with_producer(self, data_dir, produce, on_progress, || {
-            self.inner.check_external_cancelled()
+            self.inner.check_cancelled()
         })
     }
 
@@ -162,7 +162,7 @@ impl SemanticIndexer {
                     super::replay::visit_packet_embedding_inputs_from_storage_with_progress(
                         storage,
                         |input| {
-                            self.inner.check_external_cancelled()?;
+                            self.inner.check_cancelled()?;
                             outcome.input_passages = outcome.input_passages.saturating_add(1);
                             if crate::search::canonicalize::is_hard_message_noise(
                                 crate::indexer::semantic_role_name(input.role),
@@ -219,7 +219,7 @@ impl SemanticIndexer {
                             emit,
                             &on_progress,
                         )?);
-                self.inner.check_external_cancelled()?;
+                self.inner.check_cancelled()?;
                 (on_progress.borrow_mut())(
                     SemanticStorageBuildPhase::VectorPublish,
                     0,
@@ -254,13 +254,13 @@ impl SemanticIndexer {
             plan.max_records_per_shard > 0,
             "semantic shard build requires max_records_per_shard > 0"
         );
-        self.inner.check_external_cancelled()?;
+        self.inner.check_cancelled()?;
         // Unique shard filenames do not serialize the shared sidecar's
         // read/modify/write or its interaction with recovery. Hold the same
         // lease as other vector writers through the final manifest save.
         // Acquisition never sweeps unrelated scratch or assumes readiness.
         let _artifacts = super::artifacts::BackfillArtifacts::for_shard_publication(data_dir)?;
-        self.inner.check_external_cancelled()?;
+        self.inner.check_cancelled()?;
         self.inner
             .build_and_save_index_shards(embedded_messages, data_dir, plan)
     }
@@ -297,7 +297,7 @@ impl SemanticIndexer {
             tier,
             db_fingerprint,
             current_doc_ids,
-            || self.inner.check_external_cancelled(),
+            || self.inner.check_cancelled(),
         )
     }
 
@@ -381,7 +381,7 @@ impl SemanticIndexer {
         ef_construction: Option<usize>,
     ) -> Result<PathBuf> {
         hnsw::run(self, vector_index, data_dir, m, ef_construction, || {
-            self.inner.check_external_cancelled()
+            self.inner.check_cancelled()
         })
     }
 
@@ -410,7 +410,7 @@ where
     if pending.is_empty() {
         return Ok(0);
     }
-    indexer.inner.check_external_cancelled()?;
+    indexer.inner.check_cancelled()?;
     (on_progress.borrow_mut())(SemanticStorageBuildPhase::Embedding, 0, pending.len());
     let embedded = indexer.embed_messages_with_progress(pending, |current, total| {
         (on_progress.borrow_mut())(SemanticStorageBuildPhase::Embedding, current, total);
@@ -419,7 +419,7 @@ where
     pending.clear();
     let count = embedded.len();
     for message in embedded {
-        indexer.inner.check_external_cancelled()?;
+        indexer.inner.check_cancelled()?;
         emit(message)?;
     }
     Ok(count)

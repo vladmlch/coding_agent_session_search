@@ -8,7 +8,7 @@ fn indexer() -> SemanticIndexer {
         embedder: Box::new(HashEmbedder::default()),
         batch_size: 2,
         exact_reuse: false,
-        external_cancelled: None,
+        cancelled: None,
         replay_cache: replay_cache::CanonicalReplayCache::default(),
     }
 }

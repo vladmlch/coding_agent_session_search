@@ -160,7 +160,7 @@ fn project_conversation(
             }
             Ok(())
         },
-        || indexer.check_external_cancelled(),
+        || indexer.check_cancelled(),
     )?;
     Ok((
         ConversationIdentity {
@@ -276,7 +276,7 @@ impl CanonicalReplayCache {
         caps: SemanticCheckpointCaps,
         sink: &SemanticProgressSink,
     ) -> Result<(ReconcileSelection, ReplayProof)> {
-        indexer.check_external_cancelled()?;
+        indexer.check_cancelled()?;
         let key = ReplayKey::capture(indexer, storage, plan)?;
         let budget = self
             .max_bytes
@@ -301,7 +301,7 @@ impl CanonicalReplayCache {
         if cached.is_none()
             && let (Some(path), Some(key)) = (cache_path.as_ref(), key.as_ref())
         {
-            match persist::load(path, key, budget, || indexer.check_external_cancelled()) {
+            match persist::load(path, key, budget, || indexer.check_cancelled()) {
                 Ok(inventory) => {
                     disk_hit = inventory.is_some();
                     cached = inventory;
@@ -312,14 +312,14 @@ impl CanonicalReplayCache {
             }
             // A cancellation reported by the optional cache reader must not
             // turn into an expensive uncached replay.
-            indexer.check_external_cancelled()?;
+            indexer.check_cancelled()?;
         }
         let cache_hit = cached.is_some();
         let proof = ReplayProof(key.as_ref().map(|key| key.archive.clone()));
         let mut selected = ReconcileSelection::default();
         let inventory = if let Some(cached) = cached {
             for conversation in &cached.conversations {
-                indexer.check_external_cancelled()?;
+                indexer.check_cancelled()?;
                 selected.visit(
                     indexer,
                     storage,
@@ -340,7 +340,7 @@ impl CanonicalReplayCache {
             });
             let mut after_id = None;
             loop {
-                indexer.check_external_cancelled()?;
+                indexer.check_cancelled()?;
                 // All signed SQLite rowids are valid canonical parents. A
                 // sentinel of zero would discard nonpositive IDs; arithmetic
                 // at either end of the rowid range can overflow.
@@ -362,7 +362,7 @@ impl CanonicalReplayCache {
                     break;
                 }
                 for id in ids {
-                    indexer.check_external_cancelled()?;
+                    indexer.check_cancelled()?;
                     anyhow::ensure!(
                         after_id.is_none_or(|previous| id > previous),
                         "canonical semantic replay cursor did not advance"
@@ -401,7 +401,7 @@ impl CanonicalReplayCache {
             }
             building
         };
-        indexer.check_external_cancelled()?;
+        indexer.check_cancelled()?;
         proof.verify(storage)?;
         let retained_bytes = inventory.as_ref().map_or(0, |cache| cache.retained_bytes);
         if let Some(inventory) = inventory
@@ -413,12 +413,12 @@ impl CanonicalReplayCache {
             if !cache_hit && let Some(path) = cache_path.as_ref() {
                 let saved = (|| -> Result<()> {
                     fs::create_dir_all(data_dir.join(VECTOR_INDEX_DIR))?;
-                    persist::save(path, &inventory, || indexer.check_external_cancelled())
+                    persist::save(path, &inventory, || indexer.check_cancelled())
                 })();
                 if let Err(error) = saved {
                     tracing::debug!(%error, "semantic replay inventory was not persisted; memory reuse remains available");
                 }
-                indexer.check_external_cancelled()?;
+                indexer.check_cancelled()?;
             }
             if let Ok(mut slot) = self.slot.lock() {
                 *slot = Some(inventory);

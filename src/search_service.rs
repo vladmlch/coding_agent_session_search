@@ -248,6 +248,22 @@ pub fn run(args: Vec<String>) -> coding_agent_search::CliResult<()> {
         .transpose()
         .map_err(cli_io_error)?;
     if let (Some(embedder), Some(data_dir)) = (semantic_embedder, semantic_data_dir) {
+        // The removed external provider spelling still parses so it can be
+        // refused with a local-only notice instead of a generic clap error.
+        if matches!(embedder, semantic::EmbedderChoice::External) {
+            return Err(coding_agent_search::CliError {
+                code: 2,
+                kind: coding_agent_search::model::cli_error_kind::ErrorKind::RemovedCommand
+                    .kind_str(),
+                message: "`--semantic-embedder external` was removed: cass runs fully local-only"
+                    .into(),
+                hint: Some(
+                    "local equivalent: `--semantic-embedder minilm`, `multilingual-minilm` or `hash`"
+                        .into(),
+                ),
+                retryable: false,
+            });
+        }
         let data_dir = if data_dir.is_absolute() {
             data_dir
         } else {

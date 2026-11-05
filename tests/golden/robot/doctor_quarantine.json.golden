@@ -776,7 +776,8 @@
       "model_revision": null,
       "completed_at": null,
       "size_bytes": null,
-      "shard_count": null
+      "shard_count": null,
+      "legacy_external_embedding_space": false
     },
     "quality_tier": {
       "present": false,
@@ -788,7 +789,8 @@
       "model_revision": null,
       "completed_at": null,
       "size_bytes": null,
-      "shard_count": null
+      "shard_count": null,
+      "legacy_external_embedding_space": false
     },
     "backlog": {
       "total_conversations": 0,

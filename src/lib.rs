@@ -109,23 +109,6 @@ const CONTRACT_VERSION: &str = "1";
 const DEFAULT_STALE_THRESHOLD_SECS: u64 = 1800;
 const DEFAULT_PACK_FRESHNESS_WINDOW_SECONDS: i64 = 30 * 24 * 60 * 60;
 
-/// Install rustls's `ring` crypto provider as the process default.
-///
-/// reqwest 0.13 is built with `rustls-no-provider`, so rustls has no crypto
-/// provider until one is installed; without it the first TLS handshake
-/// panics. cass keeps `ring` (already linked) rather than letting reqwest's
-/// default `rustls` feature pull aws-lc-sys and its cmake build into every
-/// release target. Safe to call from every HTTP client construction site:
-/// `install_default` only fails when a provider is already installed, and
-/// that provider is equally usable.
-pub(crate) fn ensure_rustls_crypto_provider() {
-    if rustls::crypto::CryptoProvider::get_default().is_some() {
-        return;
-    }
-    // A lost install race is fine: the provider that won is equally usable.
-    let _installed = rustls::crypto::ring::default_provider().install_default();
-}
-
 #[cfg(test)]
 fn read_watch_once_paths_env() -> Option<Vec<std::path::PathBuf>> {
     dotenvy::var("CASS_TEST_WATCH_PATHS")
@@ -458,7 +441,7 @@ pub enum Commands {
         #[arg(long, default_value_t = false)]
         build_hnsw: bool,
 
-        /// Embedder for semantic indexing (hash, minilm, multilingual-minilm, external); defaults to semantic policy
+        /// Embedder for semantic indexing (hash, minilm, multilingual-minilm); defaults to semantic policy
         #[arg(long)]
         embedder: Option<String>,
 
@@ -2110,7 +2093,7 @@ pub enum ModelsCommand {
         /// Semantic tier to backfill: fast or quality
         #[arg(long, default_value = "fast")]
         tier: String,
-        /// Embedder implementation: hash, minilm, multilingual-minilm, or opt-in external
+        /// Embedder implementation: hash, minilm, or multilingual-minilm (local providers only)
         #[arg(long)]
         embedder: Option<String>,
         /// Maximum canonical conversations to process in this batch
@@ -6040,6 +6023,17 @@ const REMOVED_FLAGS: &[RemovedFlag] = &[
             "repair-by-download was removed; reinstall with `cass models install --from-file DIR`",
         ),
     },
+    // Task 13: the external HTTP embedding provider is gone. The flag itself
+    // survives for local providers; only the `external` value is removed,
+    // under every command that accepts `--embedder`.
+    RemovedFlag {
+        path: &[],
+        flag: "embedder",
+        values: Some(&["external"]),
+        hint: Some(
+            "select a local embedder (`--embedder minilm`, `multilingual-minilm` or `hash`); legacy CASS_EXTERNAL_* settings are ignored",
+        ),
+    },
 ];
 
 /// Whether `name` is a removed *top-level* command: a one-word path in
@@ -6219,7 +6213,7 @@ fn removed_invocation_error(
                 continue;
             }
             let Some(removed_values) = entry.values else {
-                return Some(removed_flag_error(entry));
+                return Some(removed_flag_error(entry, None));
             };
             let value = inline_value.map(str::to_string).or_else(|| {
                 raw_args
@@ -6227,12 +6221,12 @@ fn removed_invocation_error(
                     .filter(|next| !next.starts_with('-'))
                     .cloned()
             });
-            if value.is_some_and(|value| {
+            if let Some(value) = value.filter(|value| {
                 removed_values
                     .iter()
-                    .any(|removed| removed.eq_ignore_ascii_case(&value))
+                    .any(|removed| removed.eq_ignore_ascii_case(value))
             }) {
-                return Some(removed_flag_error(entry));
+                return Some(removed_flag_error(entry, Some(value.as_str())));
             }
         }
     }
@@ -6241,20 +6235,23 @@ fn removed_invocation_error(
 }
 
 /// The structured error for a removed flag: same envelope contract as a
-/// removed command (exit 2, kind `removed-command`).
-fn removed_flag_error(entry: &RemovedFlag) -> CliError {
+/// removed command (exit 2, kind `removed-command`). `matched_value` names a
+/// removed value when only that selection was dropped (`--embedder external`),
+/// so the message does not claim the whole surviving flag is gone.
+fn removed_flag_error(entry: &RemovedFlag, matched_value: Option<&str>) -> CliError {
     let on = if entry.path.is_empty() {
         String::new()
     } else {
         format!(" on `cass {}`", entry.path.join(" "))
     };
+    let flag = match matched_value {
+        Some(value) => format!("--{} {}", entry.flag, value),
+        None => format!("--{}", entry.flag),
+    };
     CliError {
         code: 2,
         kind: CliErrorKind::RemovedCommand.kind_str(),
-        message: format!(
-            "`--{}`{on} was removed: cass runs fully local-only",
-            entry.flag
-        ),
+        message: format!("`{flag}`{on} was removed: cass runs fully local-only"),
         hint: entry
             .hint
             .map(|equivalent| format!("local equivalent: {equivalent}")),
@@ -15682,6 +15679,7 @@ fn state_meta_json_inner(
                     .and_then(format_timestamp_millis_rfc3339),
                 "size_bytes": semantic.fast_tier.size_bytes,
                 "shard_count": semantic.fast_tier.shard_count,
+                "legacy_external_embedding_space": semantic.fast_tier.legacy_external_space,
             },
             "quality_tier": {
                 "present": semantic.quality_tier.present,
@@ -15697,6 +15695,7 @@ fn state_meta_json_inner(
                     .and_then(format_timestamp_millis_rfc3339),
                 "size_bytes": semantic.quality_tier.size_bytes,
                 "shard_count": semantic.quality_tier.shard_count,
+                "legacy_external_embedding_space": semantic.quality_tier.legacy_external_space,
             },
             "backlog": {
                 "total_conversations": semantic.backlog.total_conversations,
@@ -19717,6 +19716,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "  CASS_SEMANTIC_EMBEDDER=hash|minilm|multilingual-minilm  force semantic embedder backend (default auto)".to_string(),
             "  CASS_SEMANTIC_PROGRESS_JSONL=<path>      append semantic backfill phase transition events as JSONL to <path>".to_string(),
             "  CASS_SSH_CONFIG=<path>                   deprecated-ignored: remote sync was removed; no SSH config is consulted".to_string(),
+            "  CASS_EXTERNAL_EMBEDDING*               deprecated-ignored: the external HTTP embedder was removed; no endpoint is contacted".to_string(),
             "  CASS_TANTIVY_REBUILD_BATCH_FETCH_CONVERSATIONS=<N>  conversations per SQL message-fetch chunk during lexical rebuild".to_string(),
             "  CASS_TANTIVY_REBUILD_COMMIT_EVERY_CONVERSATIONS=<N>  steady-state durable-commit interval in conversations (default 10000)".to_string(),
             "  CASS_TANTIVY_REBUILD_COMMIT_EVERY_MESSAGES=<N>       steady-state durable-commit interval in messages (default 800000)".to_string(),
@@ -23949,9 +23949,10 @@ fn configure_bounded_search_semantics(
         .and_then(|value| {
             if value.trim().eq_ignore_ascii_case("hash") {
                 Some("hash")
-            } else if crate::search::embedder_registry::selects_external(Some(&value)) {
-                Some("external")
             } else {
+                // A leftover `external` (or any other unrecognized) value is
+                // ignored: canonical_name returns None and auto selection
+                // applies. Legacy settings must never reach a provider.
                 crate::search::fastembed_embedder::FastEmbedder::canonical_name(&value)
             }
         });
@@ -24759,9 +24760,8 @@ fn run_cli_search(
             .and_then(|value| {
                 if value.trim().eq_ignore_ascii_case("hash") {
                     Some("hash")
-                } else if crate::search::embedder_registry::selects_external(Some(&value)) {
-                    Some("external")
                 } else {
+                    // Legacy/unrecognized values (e.g. external) are ignored.
                     crate::search::fastembed_embedder::FastEmbedder::canonical_name(&value)
                 }
             })
@@ -51453,7 +51453,7 @@ fn run_doctor_emit_capabilities(structured_format: Option<RobotFormat>) -> CliRe
         "env_vars": [
             {"name": "CASS_IGNORE_SOURCES_CONFIG", "purpose": "test isolation"},
             {"name": "CASS_LEXICAL_PUBLISH_BACKUP_RETENTION", "purpose": "lexical backup retention limit"},
-            {"name": "CASS_SEMANTIC_EMBEDDER", "purpose": "force hash embedder even when ML model is installed"},
+            {"name": "CASS_SEMANTIC_EMBEDDER", "purpose": "force local semantic embedder: hash, minilm or multilingual-minilm"},
             {"name": "CASS_TEST_DOCTOR_CANDIDATE_PROMOTION_FAILPOINT", "purpose": "test failpoint"},
             {"name": "CASS_TEST_DOCTOR_RENAME_FAILURE", "purpose": "test failpoint"}
             // Pass-11 fix: removed the previously-advertised
@@ -51475,7 +51475,17 @@ fn run_doctor_emit_capabilities(structured_format: Option<RobotFormat>) -> CliRe
             {"name": "CODING_AGENT_SEARCH_NO_UPDATE_PROMPT", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; the prompt no longer exists, so the value is ignored."},
             {"name": "CASS_UPDATE_API_BASE_URL", "status": "deprecated-ignored", "note": "Update checks were removed by the local-only conversion; cass never contacts a release API, so the value is ignored."},
             {"name": "CASS_SSH_CONFIG", "status": "deprecated-ignored", "note": "Remote synchronization was removed by the local-only conversion; no SSH config is consulted, so the value is ignored."},
-            {"name": "CASS_SEMANTIC_DOWNLOAD_POLICY", "status": "deprecated-ignored", "note": "Model downloads were removed by the local-only conversion; models install only via `cass models install --from-file <DIR>`, so the value is ignored."}
+            {"name": "CASS_SEMANTIC_DOWNLOAD_POLICY", "status": "deprecated-ignored", "note": "Model downloads were removed by the local-only conversion; models install only via `cass models install --from-file <DIR>`, so the value is ignored."},
+            {"name": "CASS_EXTERNAL_EMBEDDINGS", "status": "deprecated-ignored", "note": "The external HTTP embedding provider was removed by the local-only conversion; its consent flag is ignored and no endpoint is contacted. Local providers: `--embedder minilm|multilingual-minilm|hash`."},
+            {"name": "CASS_EXTERNAL_EMBEDDING_URL", "status": "deprecated-ignored", "note": "The external HTTP embedding provider was removed by the local-only conversion; the endpoint URL is never dereferenced."},
+            {"name": "CASS_EXTERNAL_EMBEDDING_MODEL", "status": "deprecated-ignored", "note": "The external HTTP embedding provider was removed by the local-only conversion; the remote model name is ignored. Local models install via `cass models install --from-file <DIR>`."},
+            {"name": "CASS_EXTERNAL_EMBEDDING_DIMENSION", "status": "deprecated-ignored", "note": "The external HTTP embedding provider was removed by the local-only conversion; the remote dimension is ignored."},
+            {"name": "CASS_EXTERNAL_EMBEDDING_REVISION", "status": "deprecated-ignored", "note": "The external HTTP embedding provider was removed by the local-only conversion; the remote revision is ignored."},
+            {"name": "CASS_EXTERNAL_EMBEDDING_TIMEOUT_MS", "status": "deprecated-ignored", "note": "The external HTTP embedding provider was removed by the local-only conversion; there are no embedding HTTP requests to time out."},
+            {"name": "CASS_EXTERNAL_EMBEDDING_BATCH_SIZE", "status": "deprecated-ignored", "note": "The external HTTP embedding provider was removed by the local-only conversion; the value is ignored. Tune local batches with `--batch-conversations`."},
+            {"name": "CASS_EXTERNAL_EMBEDDING_MAX_REQUEST_BYTES", "status": "deprecated-ignored", "note": "The external HTTP embedding provider was removed by the local-only conversion; no embedding request is ever built or sent."},
+            {"name": "CASS_EXTERNAL_EMBEDDING_API_KEY", "status": "deprecated-ignored", "note": "The external HTTP embedding provider was removed by the local-only conversion; the credential is ignored and never sent anywhere."},
+            {"name": "CASS_EXTERNAL_EMBEDDING_MAX_RETRIES", "status": "deprecated-ignored", "note": "The external HTTP embedding provider was removed by the local-only conversion; there are no embedding requests to retry."}
         ],
         "subcommands_added_by_world_class_doctor": [
             {"flag": "--ls", "added_in_pass": 2, "kind": "read-only"},
@@ -90562,7 +90572,8 @@ fn response_schema_semantic_state() -> serde_json::Value {
                     "model_revision": { "type": ["string", "null"] },
                     "completed_at": { "type": ["string", "null"] },
                     "size_bytes": { "type": ["integer", "null"] },
-                    "shard_count": { "type": ["integer", "null"] }
+                    "shard_count": { "type": ["integer", "null"] },
+                    "legacy_external_embedding_space": { "type": "boolean" }
                 }
             },
             "quality_tier": {
@@ -90577,7 +90588,8 @@ fn response_schema_semantic_state() -> serde_json::Value {
                     "model_revision": { "type": ["string", "null"] },
                     "completed_at": { "type": ["string", "null"] },
                     "size_bytes": { "type": ["integer", "null"] },
-                    "shard_count": { "type": ["integer", "null"] }
+                    "shard_count": { "type": ["integer", "null"] },
+                    "legacy_external_embedding_space": { "type": "boolean" }
                 }
             },
             "backlog": {
@@ -112253,9 +112265,8 @@ fn resolve_semantic_index_embedder(raw: Option<&str>) -> String {
     {
         return "hash".to_string();
     }
-    if crate::search::embedder_registry::selects_external(Some(&policy.quality_tier_embedder)) {
-        return "external".to_string();
-    }
+    // A leftover legacy `external` policy value is unrecognized here and
+    // falls through to the local default like any other unknown name.
     let Some(policy_embedder) = crate::search::fastembed_embedder::FastEmbedder::canonical_name(
         &policy.quality_tier_embedder,
     ) else {
@@ -112309,7 +112320,7 @@ fn run_models_backfill(
         hint: None,
         retryable: true,
     })?;
-    // The HTTP provider polls the same signal streams before/after each request.
+    // The provider polls the same signal streams between durable batches.
     // There is no detached listener or inference worker retaining the archive lock.
     let shutdown = std::sync::Arc::new(std::sync::Mutex::new(shutdown));
     let exit_code = || {
@@ -112317,7 +112328,7 @@ fn run_models_backfill(
             .lock()
             .map_or(Some(130), |mut signals| signals.poll_exit_code())
     };
-    let cancelled: crate::search::external_embedder::CancelCheck = {
+    let cancelled: crate::indexer::semantic::CancelCheck = {
         let shutdown = std::sync::Arc::clone(&shutdown);
         std::sync::Arc::new(move || {
             shutdown
@@ -112389,8 +112400,12 @@ fn run_models_backfill(
                     Some(code) => CliError {
                         code,
                         kind: CliErrorKind::SemanticBackfill.kind_str(),
-                        message: "Semantic backfill cancelled; unfinished HTTP batch was not checkpointed".into(),
-                        hint: Some("Rerun the command to resume from the last durable checkpoint".into()),
+                        message:
+                            "Semantic backfill cancelled; unfinished batch was not checkpointed"
+                                .into(),
+                        hint: Some(
+                            "Rerun the command to resume from the last durable checkpoint".into(),
+                        ),
                         retryable: true,
                     },
                     None => error,
@@ -112478,7 +112493,7 @@ fn run_models_backfill(
 struct RetainedBackfillModel {
     indexer: Option<crate::indexer::semantic::SemanticIndexer>,
     initializations: u32,
-    cancelled: Option<crate::search::external_embedder::CancelCheck>,
+    cancelled: Option<crate::indexer::semantic::CancelCheck>,
 }
 
 fn run_models_backfill_batch(
@@ -112530,19 +112545,9 @@ fn run_models_backfill_batch(
             TierKind::Fast => "hash".to_string(),
             TierKind::Quality => resolve_semantic_index_embedder(None),
         });
-    let external = crate::search::embedder_registry::selects_external(Some(&embedder_type));
-    if external && tier != TierKind::Quality {
-        return Err(CliError {
-            code: 2,
-            kind: CliErrorKind::Usage.kind_str(),
-            message: "External embeddings require --tier quality; the fast tier remains local"
-                .into(),
-            hint: Some("Use --tier quality --embedder external".into()),
-            retryable: false,
-        });
-    }
-    let embedder_valid = external
-        || embedder_type == "hash"
+    // `--embedder external` never reaches this point: the removed-flag table
+    // rejects that value before dispatch. Any other unknown name fails here.
+    let embedder_valid = embedder_type == "hash"
         || crate::search::fastembed_embedder::FastEmbedder::canonical_name(&embedder_type)
             .is_some();
     if !embedder_valid {
@@ -112551,7 +112556,7 @@ fn run_models_backfill_batch(
             kind: CliErrorKind::Model.kind_str(),
             message: format!("Unknown embedder '{}'.", embedder_type),
             hint: Some(
-                "Use --embedder hash, --embedder minilm (alias fastembed), --embedder multilingual-minilm, or --tier quality --embedder external"
+                "Use --embedder hash, --embedder minilm (alias fastembed), or --embedder multilingual-minilm"
                     .into(),
             ),
             retryable: false,
@@ -112657,26 +112662,25 @@ fn run_models_backfill_batch(
     let indexer = match retained_indexer {
         Some(indexer) => indexer,
         vacant => vacant.insert({
-            let indexer =
-                SemanticIndexer::new_with_cancel(
-                    &embedder_type,
-                    Some(&data_dir),
-                    cancelled.clone().unwrap_or_else(|| std::sync::Arc::new(|| false)),
-                ).map_err(|e| CliError {
-                    code: 20,
-                    kind: CliErrorKind::Model.kind_str(),
-                    message: format!(
-                        "Failed to initialize semantic embedder '{embedder_type}': {e}"
-                    ),
-                    hint: Some(if external {
-                        "Check CASS_EXTERNAL_EMBEDDINGS consent and CASS_EXTERNAL_EMBEDDING_* configuration; no local provider is substituted".into()
-                    } else if embedder_type == "fastembed" {
-                        "Run 'cass models install --from-file <DIR>' or retry with --embedder hash".into()
-                    } else {
-                        "Use --embedder hash or install the selected embedder model".into()
-                    }),
-                    retryable: embedder_type != "hash",
-                })?;
+            let indexer = SemanticIndexer::new_with_cancel(
+                &embedder_type,
+                Some(&data_dir),
+                cancelled
+                    .clone()
+                    .unwrap_or_else(|| std::sync::Arc::new(|| false)),
+            )
+            .map_err(|e| CliError {
+                code: 20,
+                kind: CliErrorKind::Model.kind_str(),
+                message: format!("Failed to initialize semantic embedder '{embedder_type}': {e}"),
+                hint: Some(if embedder_type == "fastembed" {
+                    "Run 'cass models install --from-file <DIR>' or retry with --embedder hash"
+                        .into()
+                } else {
+                    "Use --embedder hash or install the selected embedder model".into()
+                }),
+                retryable: embedder_type != "hash",
+            })?;
             // GH #471: count real constructions, so a regression that reloads
             // the model per batch reports it instead of a presence flag.
             *model_initializations = model_initializations.saturating_add(1);
@@ -112699,11 +112703,9 @@ fn run_models_backfill_batch(
         hint: Some("Run 'cass health --json' to inspect the archive database".into()),
         retryable: true,
     })?;
-    // A corrupt external ledger is not permission to discard durable progress.
+    // A corrupt ledger is not permission to discard durable progress.
     let mut manifest = if let Some(manifest) = scheduled_manifest {
         Ok(manifest)
-    } else if external {
-        SemanticManifest::load(&data_dir).map(Option::unwrap_or_default)
     } else {
         SemanticManifest::load_or_default(&data_dir)
     }
@@ -112718,11 +112720,7 @@ fn run_models_backfill_batch(
         crate::search::fastembed_embedder::FastEmbedder::canonical_name(&embedder_type)
             .and_then(ModelManifest::for_embedder)
             .unwrap_or_else(ModelManifest::minilm_v2);
-    let model_revision = if external {
-        // Bound to this retained provider's endpoint/model/dimension/revision,
-        // never the local MiniLM manifest or a later environment reread.
-        indexer.embedder_id().to_owned()
-    } else if embedder_type == "hash" {
+    let model_revision = if embedder_type == "hash" {
         "hash".to_string()
     } else {
         model_manifest.revision.clone()
