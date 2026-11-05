@@ -315,8 +315,8 @@ fn export_privacy_session(root: &Path) -> Result<std::path::PathBuf, Box<dyn std
         config.join("sources.toml"),
         "[[sources]]\nname = \"fixture\"\ntype = \"ssh\"\nhost = \"fixture.invalid\"\npaths = [\"~/.codex/sessions\"]\nsync_schedule = \"manual\"\n",
     )?;
-    // Reingest supplies an empty default-local-root map and reads only this
-    // mirror. It neither discovers the operator's homes nor opens SSH.
+    // `cass index --full` reads this existing mirror read-only; the callers
+    // pin HOME to the scratch root so no real operator homes are discovered.
     let mirror = root
         .join("data/remotes/fixture/mirror")
         .join(coding_agent_search::sources::provenance::path_to_safe_dirname("~/.codex/sessions"));
@@ -397,19 +397,30 @@ fn export_redaction_parity_for_live_and_archived_sources() -> Result<(), Box<dyn
     // must be ingested before even --dry-run/--explain can resolve it.
     // First ingest with index-time `full` redaction: the search step below
     // proves a redacted archive cannot leak through hit snippets either.
+    // `cass index --full` scans the configured fixture source's existing
+    // mirror (the local-only replacement for `sources reingest`).
     let indexed = export_privacy_command(root.path())
-        .args([
-            "sources", "reingest", "--source", "fixture", "--full", "--json",
-        ])
+        .args(["index", "--full"])
+        .env("HOME", root.path())
         .output()?;
     assert!(
         indexed.status.success(),
         "{}",
         String::from_utf8_lossy(&indexed.stderr)
     );
-    let indexed_receipt: Value = serde_json::from_slice(&indexed.stdout)?;
-    assert_eq!(indexed_receipt["indexing"]["conversations"], 1);
     let db_path = root.path().join("data/agent_search.db");
+    {
+        let storage =
+            SqliteStorage::open_readonly(&db_path).expect("open archive read-only for count");
+        assert_eq!(
+            storage
+                .list_conversations(1000, 0)
+                .expect("list archived conversations")
+                .len(),
+            1
+        );
+        storage.close().expect("close archive");
+    }
     let identity = archived_identity(&db_path, "rollout-export-privacy");
     let query = export_privacy_command(root.path())
         .args([
@@ -434,7 +445,7 @@ fn export_redaction_parity_for_live_and_archived_sources() -> Result<(), Box<dyn
     // verbatim. Unscoped resolution is local-first, so "live" exports render
     // this unredacted copy and the export-time policy is the only redactor;
     // `--source fixture` exports the redacted remote row. Both must produce
-    // identical safe output. (Index dedup means a second reingest could not
+    // identical safe output. (Index dedup means a second index could not
     // rewrite the redacted copy, which is why the live row is seeded.)
     {
         let storage = FrankenStorage::open(&db_path).expect("open archive for live seed");
@@ -772,10 +783,9 @@ fn export_redaction_raw_fidelity_requires_explicit_sensitive_option()
     // archive holds the raw content — --include-secrets then surfaces what
     // the archive retains, and default exports still redact it.
     let indexed = export_privacy_command(root.path())
-        .args([
-            "sources", "reingest", "--source", "fixture", "--full", "--json",
-        ])
+        .args(["index", "--full"])
         .env("CASS_INDEX_REDACTION", "off")
+        .env("HOME", root.path())
         .output()?;
     assert!(
         indexed.status.success(),
@@ -832,10 +842,9 @@ fn export_redaction_policy_applies_before_encryption() -> Result<(), Box<dyn std
     // Index-first: ingest the session verbatim so the archive holds the raw
     // content; the export-time policy is the only redactor under test.
     let indexed = export_privacy_command(root.path())
-        .args([
-            "sources", "reingest", "--source", "fixture", "--full", "--json",
-        ])
+        .args(["index", "--full"])
         .env("CASS_INDEX_REDACTION", "off")
+        .env("HOME", root.path())
         .output()?;
     assert!(
         indexed.status.success(),

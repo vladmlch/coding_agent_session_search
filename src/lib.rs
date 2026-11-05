@@ -105,7 +105,7 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-const CONTRACT_VERSION: &str = "1";
+const CONTRACT_VERSION: &str = "2";
 const DEFAULT_STALE_THRESHOLD_SECS: u64 = 1800;
 const DEFAULT_PACK_FRESHNESS_WINDOW_SECONDS: i64 = 30 * 24 * 60 * 60;
 

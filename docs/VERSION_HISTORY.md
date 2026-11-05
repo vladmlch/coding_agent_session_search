@@ -34,10 +34,17 @@ Encrypted archives use a versioned config.json format.
 
 | cass Version | DB Schema | Encryption Format | Notes |
 |--------------|-----------|-------------------|-------|
-| 0.1.x | 5-8 | 1-2 | Current stable |
+| 0.11.x | 8 | 1-2 | Local-only; robot contract v2 |
+| 0.1.x | 5-8 | 1-2 | Prior stable |
 | 0.0.x | 1-4 | - | Pre-encryption, requires rebuild |
 
 ## Breaking Changes
+
+### 0.11.0 - Local-only conversion; robot contract v2
+- cass is fully local-only: removed `sources sync|setup|discover|reingest|artifact-manifest|schedule`, SSH/SFTP sync (`ssh2`), vendored `openssl`, direct `url`, and update checks/prompts; `semver` moved to dev-dependencies; `asupersync` `tls-native-roots` feature dropped.
+- `contract_version` bumped `"1" → "2"`: robot `--json`/`--robot` envelopes and `cass-trace` headers now report `"2"`. Automation that pins contract v1 must update.
+- Historical `type = "ssh"` sources.toml entries remain readable as inert archive records; existing `<data-dir>/remotes/<name>/mirror/` directories keep indexing read-only via `cass index` (`--full` or `--watch-once`).
+- Archive retention policy: missing former remote sources never prune indexed rows; use `cass mirror prune` for explicit raw-mirror retention.
 
 ### 0.1.50 - Source Provenance
 - Added `sources` table for tracking import sources

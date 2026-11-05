@@ -4,7 +4,7 @@
   "functional": true,
   "archive_accessed": false,
   "version": "[VERSION]",
-  "contract_version": "1",
+  "contract_version": "2",
   "latency_ms": "[LATENCY_MS]",
   "checks": [
     {

@@ -1,7 +1,7 @@
 {
   "crate_version": "0.4.1",
   "api_version": 1,
-  "contract_version": "1",
+  "contract_version": "2",
   "features": [
     "json_output",
     "jsonl_output",

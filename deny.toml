@@ -287,19 +287,14 @@ license-files = []
 [advisories]
 # Use the latest advisory-db revision (no version pin).
 # Informational warnings escalate to errors by default; ignore the
-# 4 specific unmaintained-crate advisories that block transitively
-# through syntect/reqwest dep chains. These are evaluated each round
-# of the gauntlet — revisit when a viable replacement lands.
+# Unmaintained-crate advisories that block transitively. These are evaluated
+# each round of the gauntlet — revisit when a viable replacement lands.
+# (bincode, rustls-pemfile, yaml-rust/syntect exceptions were dropped when the
+# local-only conversion removed those crates from the graph entirely.)
 yanked = "deny"
 ignore = [
-    # bincode v1 unmaintained — widely used; pending team-level migration call
-    "RUSTSEC-2025-0141",
     # paste unmaintained — no functional successor offers drop-in compat
     "RUSTSEC-2024-0436",
-    # rustls-pemfile unmaintained — migration to rustls-pki-types pending
-    "RUSTSEC-2025-0134",
-    # yaml-rust unmaintained — via syntect; cannot upgrade syntect without breaking
-    "RUSTSEC-2024-0320",
 ]
 
 [bans]

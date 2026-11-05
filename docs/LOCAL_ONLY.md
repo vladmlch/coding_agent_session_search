@@ -29,6 +29,53 @@ Ledger for D1: every path deleted by the local-only port, grouped by task.
 **On merge conflict with upstream, keep the deletion.** Newest task first;
 each task appends its own group.
 
+### Task 15 — remaining remote deps, contract v2, D12 env sweep (2026-11-05)
+
+No whole-file deletions this task. Removed in place:
+
+- `Cargo.toml` — direct `ssh2` (SFTP fallback), vendored `openssl` (Unix-only
+  target section), and `url` dropped; `semver` moved to
+  `[dev-dependencies]` (only `spec_version_semver_format` and
+  `spec_diag_version_coherence` consume it); `asupersync` feature
+  `tls-native-roots` dropped (no remote TLS callers remain).
+- `Cargo.lock` — removal-only diff: `ssh2`, `libssh2-sys`, `openssl`,
+  `openssl-sys`, `openssl-src`, `openssl-macros`, `openssl-probe`,
+  `foreign-types`, `schannel`, `rustls`, `rustls-pki-types`,
+  `rustls-webpki`, `rustls-native-certs`, `asn1-rs*`, `der-parser`,
+  `oid-registry`, `rusticata-macros`, `x509-parser`, `num-bigint`,
+  `num-integer`, `libz-sys` leave the graph; `url` stays only as a
+  `franken-agent-detection` transitive.
+- `build.rs` — asupersync `expected_features` contract updated to
+  `["test-internals"]` (exact-match gate).
+- `src/lib.rs` — `CONTRACT_VERSION` `"1" → "2"` (D8); the
+  `CODING_AGENT_SEARCH_NO_UPDATE_PROMPT` `deprecated_env_vars` entry removed
+  inside the mechanical D12 commit.
+- `tests/html_export_e2e.rs` — three `export_redaction_*` tests moved from
+  removed `cass sources reingest --source fixture --full --json` to
+  `cass index --full` pinned to the scratch `HOME`; `index --full` reads the
+  fixture's existing `data/remotes/fixture/mirror` read-only, the documented
+  local equivalent.
+- `tests/cli_robot.rs`, `tests/golden/robot/*.golden`,
+  `tests/fixtures/cli_contract/{api_version,capabilities,introspect}.json` —
+  `contract_version` assertions/values updated `"1" → "2"`.
+- `AGENTS.md` — dependency table rows for `reqwest` and `ssh2` removed.
+- `deny.toml`/`audit.toml` — stale advisory ignores for crates no longer in
+  the graph (`bincode`, `rustls-pemfile`, `yaml-rust`/`syntect`, `lru`
+  0.12.5) removed; `paste` exception retained (still transitive).
+- `docs/VERSION_HISTORY.md` — 0.11.0 breaking-change entry + matrix row.
+
+Deferred-orphan evaluation (D-deferred): `src/dependency_pin_correlation.rs`
+and the `SwarmEvidence*` API in `src/pages/redact.rs` are exported pure-logic
+diagnostic surfaces with zero in-tree consumers; retained as public library
+API (file deletion is out of scope without explicit authorization).
+`with_verified_bundle_for_deployment` is consumed by in-module tests.
+`explainability.rs` `run cass models install` card text is live local-command
+guidance, not stale. Exit-143 emissions in `src/lib.rs` are the
+`SignalKind::terminate() → 143` mapping and `130|143` cancellation
+classification — structurally sound, not scanner-invisible bypasses. The
+ssh2/SFTP clause in `docs/UNIT_TEST_HARNESS_REQUIREMENTS.md` is retained
+historical spec text for a completed rollout bead.
+
 ### Task 13 — external HTTP embedding provider (2026-11-05)
 
 Whole paths removed (all pre-authorized in the task brief's «Удаляемые пути»):
@@ -514,3 +561,41 @@ Notes:
   `scripts/count_large_rs_files.sh` remain untracked, not staged. Test-run
   byproducts `tests/fixtures/search_demo_data/agent_search.db.*` also stay
   untracked.
+
+## Task 15 — remaining remote deps, contract v2, D12 env sweep (2026-11-05)
+
+Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
+
+| Date (UTC) | Command | Result |
+| ---------- | ------- | ------ |
+| 2026-11-05 | `rg -l 'NO_UPDATE_PROMPT' .` | only `docs/LOCAL_ONLY.md` historical journal refs (2) remain after the mechanical sweep |
+| 2026-11-05 | `cargo fmt --all -- --check` | ok |
+| 2026-11-05 | `cargo check --tests --locked` (D12 commit) | ok — 156-file env-var sweep compiles |
+| 2026-11-05 | `cargo check` (lockfile regen) | ok — removal-only lock diff: ssh2, libssh2-sys, openssl*, rustls*, libz-sys and exclusive transitives leave the graph |
+| 2026-11-05 | `cargo tree -i {ssh2,libssh2-sys,openssl,openssl-sys,rustls,webpki-roots,rustls-native-certs}` | all absent from the resolved graph |
+| 2026-11-05 | `python3 scripts/check_dependency_features.py` | ok — 11/11 explicit dependency feature contracts match |
+| 2026-11-05 | `cargo check --tests` | ok (semver dev-dep move, html_export_e2e repair, contract v2) |
+| 2026-11-05 | `cargo clippy --all-targets --locked -- -D warnings` | ok |
+| 2026-11-05 | `cargo test --locked --test html_export_e2e export_redaction` | ok: 5/5 — the three tests red since Task 14 (`parity_for_live_and_archived_sources`, `policy_applies_before_encryption`, `raw_fidelity_requires_explicit_sensitive_option`) pass on `cass index --full` against the fixture mirror |
+| 2026-11-05 | `cargo test --locked --test cli_robot` | 325/326 — only pre-existing environmental `html_export_aliases_route_to_export_html_command` (ambient default data dir; identical class as Tasks 7/14 baselines, unrelated to this diff) |
+| 2026-11-05 | `cargo test --locked --test docs_dependency_pins_match_cargo --test spec_version_semver_format --test spec_diag_version_coherence` | ok: 3+3+2 — pins test green after repairing the stale FAD git-rev doc rows (pre-existing drift: docs said `6b337ba…`, manifest pins `4544aa0c…`) |
+
+Notes:
+
+- Two commits: `0892a7f8` (mechanical D12 env sweep, 156 files, −371/+23)
+  and the semantic Task 15 commit carrying deps, build.rs contract, D8
+  version/contract bump, html_export_e2e repair, policy exceptions, and
+  docs/ledger updates.
+- `cass index --full` is the documented local reingest equivalent: it reads
+  existing `<data-dir>/remotes/<name>/mirror/` directories read-only. The
+  export-privacy tests pin `HOME` to the scratch root so `--full` ingests
+  only the fixture mirror plus zero discovered local roots.
+- Orphan evaluation conclusions recorded in the Task 15 ledger above;
+  `src/dependency_pin_correlation.rs` and the `SwarmEvidence*` API stay as
+  exported diagnostic surface (no file deletion without authorization).
+- `audit.toml`/`deny.toml` shrank to the `paste` exception — removing
+  ignores strengthens the advisory gate.
+- Untracked leftovers (`repomix-output.xml.zip`,
+  `rs_files_over_1000_lines.txt`, `scripts/count_large_rs_files.sh`,
+  `tests/fixtures/search_demo_data/agent_search.db.*`) remain untracked,
+  not staged, matching Task 14 precedent.

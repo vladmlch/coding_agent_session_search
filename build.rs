@@ -243,7 +243,9 @@ const CONTRACTS: &[DependencyContract] = &[
         expected_git: "",
         expected_rev: "",
         expected_version: "0.5.0",
-        expected_features: &["test-internals", "tls-native-roots"],
+        // tls-native-roots was removed with the local-only conversion: the
+        // runtime no longer needs a root-certificate bundle for remote calls.
+        expected_features: &["test-internals"],
         expected_default_features: None,
         repo_rel: "../asupersync",
         manifest_rel: "Cargo.toml",

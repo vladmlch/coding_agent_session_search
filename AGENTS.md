@@ -140,14 +140,12 @@ The `.env` file exists and **MUST NEVER be overwritten**.
 | `half` + `wide` + `memmap2` | f16 quantized vectors, portable SIMD, memory-mapped I/O |
 | `ftui` + `ftui-extras` | FrankenTUI terminal interface |
 | `toon` | Terminal rendering library |
-| `reqwest` | HTTP client (rustls-tls, blocking + async) |
 | `rayon` | Data parallelism for CPU-bound work |
 | `colored` + `indicatif` + `console` | Colorful, informative console output |
 | `notify` | Filesystem watching |
 | `walkdir` + `glob` | Directory traversal and pattern matching |
 | `blake3` + `sha2` | Cryptographic hashing |
 | `aes-gcm` + `ring` + `pbkdf2` + `argon2` | Encryption (ChatGPT conversations, HTML export) |
-| `ssh2` | SFTP fallback for multi-machine sync |
 | `dialoguer` | Interactive terminal prompts (setup wizard) |
 | `ftui-extras` (`syntax` feature) | Syntax highlighting |
 | `thiserror` | Ergonomic error type derivation |
@@ -173,7 +171,7 @@ b-tree, bd-obwsy; 0.4.9 and the shipped v0.10.0's 0.4.6 are affected),
 ROLLBACK returning reserved AUTOINCREMENT rowids (bd-gwoit), reading a WAL
 a stock writer truncated to zero bytes as empty (bd-yxqs9, GH#519), and
 explicit-rowid writes to a table holding the largest rowid (9308c4bb6).
-FAD `=0.3.10` (git rev `6b337ba434b72c65c6c5a748b7ec47885f840ac0` for GH#520 remote-mirror source identity and Continue connector) asks for fsqlite `^0.4.1`, so it accepts the family, and exposes early SQLite bridge shutdown
+FAD `=0.3.10` (git rev `4544aa0cbf47fc5eb953addc40d18976063d19c5` for GH#520 remote-mirror source identity and Continue connector) asks for fsqlite `^0.4.1`, so it accepts the family, and exposes early SQLite bridge shutdown
 for Windows process teardown (GH#519).
 The lockfile resolves the 20 SQLite packages used by CASS at 0.4.12.
 CASS runtime qualification of 0.4.12 passed (gi7k7, 2026-10-19): a real
@@ -204,7 +202,7 @@ The strict family guard requires uniform 0.4.12 registry versions.
 | Dependency | Pinned source |
 |------------|-----------------|
 | `frankensqlite` (`fsqlite`) / `fsqlite-types` and the whole SQLite family | crates.io `=0.4.12` (tag v0.4.12 = `26aa19afcbd5afdb01658a10bb33417ad0b513be`); `build.rs` refuses a mixed family. Carries 0.4.12's bd-obwsy (the 0.4.10 advisory), bd-gwoit, bd-yxqs9 and largest-rowid explicit-write (9308c4bb6) fixes, plus 0.4.1's GH#462 reserved-page WAL repair, 0.4.2's derived WAL-index recovery for read-only opens (GH#477), 0.4.4's durable pending-freelist repairs, 0.4.6's page-referenced-twice (bd-b5vmw) and lost-index-entry (bd-11sz4) fixes, 0.4.7's large multi-row INSERT index fix (bd-2eebi), serialized-DDL race fix (bd-4iaoi), GH#503 shadow-autoindex repair open, bounded published-page plane (5s1la) and first-`sqlite_master` full-file read fix (k2k20), and 0.4.9's prompt stale-WAL-index refusal (48c6cf6b2) and stock-empty-WAL-index first-write fix (4b48c95d8, cass GH#509). CASS runtime qualification of 0.4.12 passed (gi7k7). 0.4.6 included upstream's likely fix (fd8c16a94) for a long-lived connection left refusing every BEGIN (2l1b0.75, frankensqlite GH#429), not yet verified on the owner-archive scenario; the legacy OMP analytics phase keeps its own fresh writer regardless |
-| `franken-agent-detection` | `=0.3.10` at git rev `6b337ba434b72c65c6c5a748b7ec47885f840ac0` (GH#520 remote-mirror source identity, Continue `continue` and Kiro CLI `kiro` connectors, early SQLite connector runtime shutdown and full OpenCode read-error chains, GH#519), features `pi-durable` and `pi-sqlite` (the `pi_durable` connector for Pi's durable-harness stores, FAD#28; `pi_agent_rust` SQLite sessions; Pi compaction/branch provenance, FAD#27) and `codex-zstd` (reads Codex rollouts compressed to `rollout-*.jsonl.zst` by Codex's `local_thread_store_compression`, with the id of their plain form, GH#513; indexes native Codebuff transcripts, whose timestamps are a locale time of day, with each instant taken from the message ID, and keeps indexing a store's other chats when one transcript does not parse, FAD#28) |
+| `franken-agent-detection` | `=0.3.10` at git rev `4544aa0cbf47fc5eb953addc40d18976063d19c5` (GH#520 remote-mirror source identity, Continue `continue` and Kiro CLI `kiro` connectors, early SQLite connector runtime shutdown and full OpenCode read-error chains, GH#519), features `pi-durable` and `pi-sqlite` (the `pi_durable` connector for Pi's durable-harness stores, FAD#28; `pi_agent_rust` SQLite sessions; Pi compaction/branch provenance, FAD#27) and `codex-zstd` (reads Codex rollouts compressed to `rollout-*.jsonl.zst` by Codex's `local_thread_store_compression`, with the id of their plain form, GH#513; indexes native Codebuff transcripts, whose timestamps are a locale time of day, with each instant taken from the message ID, and keeps indexing a store's other chats when one transcript does not parse, FAD#28) |
 | `asupersync` | crates.io `=0.5.0` (the line fsqlite 0.4.x requires) |
 | `frankensearch` | crates.io `=0.7.1` (tag `crates-v0.7.1`), resolving `frankensearch-index 0.4.2` (hotfix, tag `frankensearch-index-v0.4.2`: files are installed with `std::fs::rename`, so on Windows an open reader no longer blocks an install, bead if17v; and the dumped HNSW sidecars are flushed through write handles, so an HNSW build works on Windows, bead ujxiq), `frankensearch-quill 0.4.1` (hotfix, tag `frankensearch-quill-v0.4.1`: opening a writer verifies each segment once instead of four times; bead hfosx), `frankensearch-rerank 0.5.0`, `frankenhnsw 0.3.5` and the `frankentorch-*` family; features `hash`, `cass-compat`, `quill`, `ann`, `native`. Quill 0.4.0 is the first main-branch release after the 0.3.4 hotfix and carries all three of its fixes: the GH#499 live-doc numeric scoring, the standard CASS Boolean grammar (NOT > AND > OR, parentheses; frankensearch#56) and the union seek_danger fix (a disjunction under a conjunction lost matches on concat-merged segments). It also verifies snapshot segments concurrently on open (GH#501; up to 8 threads, the same bytes are still hashed), builds snippets only for returned hits, and skips a read-only reopen when nothing was published. The CASS schema hash is unchanged (`v9-quill`), so the upgrade does not rebuild the lexical index |
 | `frankentui` (`ftui`, `ftui-runtime`, `ftui-tty`, `ftui-extras`) | crates.io `=0.5.0` (2026-08-21; previously git `5f78cfa0` / 0.3.1 — the 0.5 API compiled with zero call-site changes) |

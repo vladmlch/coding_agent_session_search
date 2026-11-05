@@ -2,5 +2,5 @@
   "crate_version": "[VERSION]",
   "build_commit": "[BUILD_COMMIT]",
   "api_version": 1,
-  "contract_version": "1"
+  "contract_version": "2"
 }

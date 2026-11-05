@@ -407,7 +407,7 @@ fn api_version_reports_contract() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(stdout.trim()).expect("valid api-version json");
     assert_eq!(json["api_version"], 1);
-    assert_eq!(json["contract_version"], "1");
+    assert_eq!(json["contract_version"], "2");
     assert!(
         json["crate_version"].is_string(),
         "crate_version should be a string, got: {:?}",
@@ -425,7 +425,7 @@ fn capabilities_are_self_describing_for_agents() {
 
     assert_eq!(json["version"], json["crate_version"]);
     assert_eq!(json["api_version"], 1);
-    assert_eq!(json["contract_version"], "1");
+    assert_eq!(json["contract_version"], "2");
 
     let features = json["features"].as_array().expect("features array");
     assert!(
@@ -1087,7 +1087,7 @@ fn leading_json_before_capabilities_attaches_to_capabilities() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(stdout.trim()).expect("valid capabilities json");
 
-    assert_eq!(json["contract_version"], "1");
+    assert_eq!(json["contract_version"], "2");
     assert!(json["commands"].as_array().is_some_and(|commands| {
         commands
             .iter()
@@ -1743,7 +1743,7 @@ fn capabilities_format_json_alias_outputs_capabilities_json() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(stdout.trim()).expect("valid capabilities JSON");
 
-    assert_eq!(json["contract_version"], "1");
+    assert_eq!(json["contract_version"], "2");
     assert!(json["mistake_recoveries"].as_array().is_some());
 }
 
@@ -1755,7 +1755,7 @@ fn capabilities_output_json_alias_outputs_capabilities_json() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(stdout.trim()).expect("valid capabilities JSON");
 
-    assert_eq!(json["contract_version"], "1");
+    assert_eq!(json["contract_version"], "2");
     assert!(json["mistake_recoveries"].as_array().is_some());
 }
 
@@ -1828,7 +1828,7 @@ fn introspect_includes_contract_and_globals() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(stdout.trim()).expect("valid introspect json");
     assert_eq!(json["api_version"], 1);
-    assert_eq!(json["contract_version"], "1");
+    assert_eq!(json["contract_version"], "2");
     let globals = json["global_flags"].as_array().expect("global_flags array");
     // Bead 7k7pl: pin that the well-known shared flags are present.
     // `introspect` promises a stable contract for automation; a
@@ -2723,7 +2723,7 @@ fn search_error_writes_trace() {
         (json["schema_version"].as_str(), exit_code),
         (Some("cass-trace-v1"), code as i64)
     );
-    assert_eq!(json["fields"]["contract_version"], "1");
+    assert_eq!(json["fields"]["contract_version"], "2");
 }
 
 // ============================================================
@@ -3037,7 +3037,7 @@ fn search_writes_trace_on_success() {
         (Some("cass-trace-v1"), Some(0)),
         "Successful search should have exit_code 0"
     );
-    assert_eq!(json["fields"]["contract_version"], "1");
+    assert_eq!(json["fields"]["contract_version"], "2");
 }
 
 #[test]
@@ -7510,8 +7510,8 @@ fn introspect_matches_golden_contract_structure() {
         // Check stable contract fields
         assert_eq!(actual["api_version"], 1, "api_version should remain v1");
         assert_eq!(
-            actual["contract_version"], "1",
-            "contract_version should remain v1"
+            actual["contract_version"], "2",
+            "contract_version should be v2 after the local-only break"
         );
 
         // Check that global_flags exposes the shared automation-critical flags.
@@ -7712,8 +7712,8 @@ fn trace_includes_contract_fields_on_success() {
         "exit_code should be 0 for success"
     );
     assert_eq!(
-        json["fields"]["contract_version"], "1",
-        "contract_version should be 1"
+        json["fields"]["contract_version"], "2",
+        "contract_version should be 2"
     );
     // Trace uses start_ts and end_ts for timestamps
     assert!(
@@ -7757,7 +7757,7 @@ fn trace_includes_error_on_failure() {
             json["schema_version"].as_str(),
             json["fields"]["contract_version"].as_str()
         ),
-        (Some("cass-trace-v1"), Some("1"))
+        (Some("cass-trace-v1"), Some("2"))
     );
 }
 
