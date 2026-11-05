@@ -790,6 +790,9 @@ Returns in <50ms on a healthy archive (the archive probe is the same strict, mut
 | 22 | I/O during model handling | Maybe |
 | 24 | I/O during model verify/install | Maybe |
 | 70 | `cass index` stalled and aborted (kind `index-stalled` envelope on stderr) | Yes — inspect `cass status --json`, rerun `cass index` |
+| 124 | `cass serve` request deadline (supervisor watchdog) | Yes — rerun; raise `--request-timeout-ms` only when the work legitimately needs longer |
+| 125 | `cass serve` supervisor failure (deadline watchdog, resident-memory monitor, or bridge teardown) | Maybe — rerun; report a recurrence |
+| 126 | `cass serve` sampled resident-memory limit (not a kernel allocation limit) | Yes — rerun with a larger `--max-resident-mib` or a smaller request |
 | 130 | Interrupted (SIGINT) | Yes — rerun; indexing and search resume from their checkpoints |
 | 143 | Interrupted (SIGTERM) | Yes — rerun; indexing and semantic backfill resume from their checkpoints |
 

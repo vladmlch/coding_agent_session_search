@@ -19705,7 +19705,7 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "exit-codes:".to_string(),
             " 0 ok | 1 health-failed | 2 usage | 3 missing index/db | 4 io|refused-unsafe | 5 data-corrupt | 6 input-required | 7 lock/busy | 8 unused | 9 unknown".to_string(),
             " 10 config|timeout | 11 config | 12 source | 13 mapping|not_found | 14 io|mapping | 15 semantic-unavailable|embedder-unavailable".to_string(),
-            " 20-21 model | 22 io | 23 unused | 24 io | 70 index-stalled (cass index abort) | 130 interrupted (SIGINT) | 143 interrupted (SIGTERM)".to_string(),
+            " 20-21 model | 22 io | 23 unused | 24 io | 70 index-stalled (cass index abort) | 124 serve-deadline | 125 serve-supervisor-failure | 126 serve-memory-limit | 130 interrupted (SIGINT) | 143 interrupted (SIGTERM)".to_string(),
             " NOTE: codes >= 10 cover domain-specific failures (sources/models/semantic/analytics).".to_string(),
             "       Use `err.kind` from the JSON envelope as the canonical identifier — kinds are".to_string(),
             "       kebab-case (e.g. missing-index, missing-db, semantic-unavailable, embedder-unavailable,".to_string(),
@@ -88651,6 +88651,24 @@ fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
             "index stalled and aborted",
             "yes",
             "Read the kind index-stalled envelope on stderr and cass status --json, then rerun cass index; the lock is reaped on the next start.",
+        ),
+        exit_code_capability(
+            "124",
+            "search-service request deadline",
+            "yes",
+            "Rerun the cass serve request; raise --request-timeout-ms only when the work legitimately needs longer.",
+        ),
+        exit_code_capability(
+            "125",
+            "search-service supervisor failure",
+            "maybe",
+            "The deadline watchdog, resident-memory monitor or bridge teardown failed; rerun the command and report a recurrence.",
+        ),
+        exit_code_capability(
+            "126",
+            "search-service resident-memory limit",
+            "yes",
+            "Rerun with a larger --max-resident-mib or a smaller request; the sampler is not a kernel allocation limit.",
         ),
         exit_code_capability(
             "130",

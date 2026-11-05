@@ -3858,6 +3858,24 @@
       "agent_action": "Read the kind index-stalled envelope on stderr and cass status --json, then rerun cass index; the lock is reaped on the next start."
     },
     {
+      "code": "124",
+      "meaning": "search-service request deadline",
+      "retryable": "yes",
+      "agent_action": "Rerun the cass serve request; raise --request-timeout-ms only when the work legitimately needs longer."
+    },
+    {
+      "code": "125",
+      "meaning": "search-service supervisor failure",
+      "retryable": "maybe",
+      "agent_action": "The deadline watchdog, resident-memory monitor or bridge teardown failed; rerun the command and report a recurrence."
+    },
+    {
+      "code": "126",
+      "meaning": "search-service resident-memory limit",
+      "retryable": "yes",
+      "agent_action": "Rerun with a larger --max-resident-mib or a smaller request; the sampler is not a kernel allocation limit."
+    },
+    {
       "code": "130",
       "meaning": "interrupted (SIGINT)",
       "retryable": "yes",

@@ -19,6 +19,8 @@ pub(super) const MIB: u64 = 1024 * 1024;
 pub(super) const DEFAULT_MAX_RESIDENT_MIB: u64 = 4096;
 pub(super) const MAX_RESIDENT_MIB: u64 = 1024 * 1024;
 pub(super) const SAMPLE_INTERVAL_MS: u64 = 100;
+// The supervisor call sites spell these as literals (`terminate(126)`,
+// `terminate(125)`): the emitted-exit-code scan only sees literal arguments.
 pub(super) const MEMORY_EXIT_CODE: i32 = 126;
 pub(super) const MONITOR_FAILURE_EXIT_CODE: i32 = 125;
 
@@ -117,7 +119,9 @@ impl Guard {
         })?;
         let bytes = resident_bytes()?;
         if bytes > limit_bytes {
-            terminate(MEMORY_EXIT_CODE);
+            // Literal codes are load-bearing: spec_exit_codes_documented only
+            // sees `terminate(<digits>)`, not the *_EXIT_CODE constants.
+            terminate(126);
         }
         let observation = Arc::new(Observation {
             limit_bytes,
@@ -136,18 +140,18 @@ impl Guard {
                     match receiver.recv_timeout(Duration::from_millis(SAMPLE_INTERVAL_MS)) {
                         Ok(()) => return,
                         Err(RecvTimeoutError::Disconnected) => {
-                            terminate(MONITOR_FAILURE_EXIT_CODE);
+                            terminate(125);
                         }
                         Err(RecvTimeoutError::Timeout) => {}
                     }
                     let bytes = resident_bytes().unwrap_or_else(|_| {
-                        terminate(MONITOR_FAILURE_EXIT_CODE);
+                        terminate(125);
                     });
                     observed.observe(bytes);
                     if bytes > limit_bytes {
                         // Never log, flush or wait for the thread running the query.
                         // The kernel also releases any reader-pool lease on exit.
-                        terminate(MEMORY_EXIT_CODE);
+                        terminate(126);
                     }
                 }
             })?;
@@ -171,7 +175,7 @@ impl Drop for Guard {
             .take()
             .is_some_and(|monitor| monitor.join().is_ok());
         if !signalled || !joined {
-            terminate(MONITOR_FAILURE_EXIT_CODE);
+            terminate(125);
         }
     }
 }

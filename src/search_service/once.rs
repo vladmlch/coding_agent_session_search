@@ -267,7 +267,9 @@ pub(super) fn publish(
         Err(CliError::already_reported(
             match kind {
                 "invalid_request" => 2,
-                "bridge_shutdown_failed" => super::deadline::WATCHDOG_FAILURE_EXIT_CODE,
+                // Literal per-arm codes mirror the documented supervisor
+                // contract; the *_EXIT_CODE constants are runtime-equal.
+                "bridge_shutdown_failed" => 125,
                 _ => 1,
             },
             kind,
@@ -1005,10 +1007,8 @@ mod tests {
             &mut err,
         )
         .unwrap_err();
-        assert_eq!(
-            failure.code,
-            super::super::deadline::WATCHDOG_FAILURE_EXIT_CODE
-        );
+        // 125 is the documented supervisor-failure exit code.
+        assert_eq!(failure.code, 125);
         assert!(failure.was_already_reported());
         assert!(out.is_empty());
         assert_eq!(

@@ -845,3 +845,27 @@ SHA-256 before/after the whole sandboxed run — byte-identical:
 | `~/Library/LaunchAgents/*cass*` | ABSENT before → ABSENT after |
 | `*external*`/`*vector*` dirs | none exist |
 | scratch `sources.toml` | ABSENT (run created none) |
+
+### Addendum — supervisor exit codes 124/125/126 surfaced (2026-11-05)
+
+Final whole-branch review found the `cass serve` supervisor exits emitted
+but undocumented and scanner-invisible: every site used
+`terminate(CONST)`/`code: CONST`/`process::exit(CONST)` shapes that
+`spec_exit_codes_documented` could not see (SOURCES omitted the
+search_service modules; the extractor skips non-literal `code:` and had no
+`terminate` pattern at all). Mirroring the Task-12/15 precedent, every
+emission now spells a per-arm literal — `terminate(124)` request deadline,
+`terminate(125)`/`code: 125`/`process::exit(125)` supervisor failure
+(deadline watchdog, resident-memory monitor, or bridge teardown),
+`terminate(126)` sampled resident-memory limit — semantics identical. The
+`*_EXIT_CODE` constants keep their status-JSON/test uses;
+`deadline::WATCHDOG_FAILURE_EXIT_CODE` lost its last non-test use and was
+removed (its sole test now pins the documented literal 125).
+The spec scan covers `src/search_service.rs` plus `deadline`/`memory`/`once`
+and gained a `terminate(<digits>)` extractor. 124/125/126 are documented in
+`cass capabilities --json` exit_codes, the robot-docs exit-codes line, and
+the README/AGENTS tables (previously only `docs/SEARCH_SERVICE_ONE_SHOT.md`).
+Goldens regenerated: capabilities (+3 exit_codes entries), robot-docs
+exit-codes line. Also dropped the dangling "Skip install script tests"
+comment under the empty `.config/nextest.toml` `# Test Filtering` header —
+install tests were deleted in Task 4.

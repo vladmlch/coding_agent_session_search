@@ -288,7 +288,10 @@ pub fn run(args: Vec<String>) -> coding_agent_search::CliResult<()> {
     // teardown. The probe never opens the index, archive or pool directory.
     let memory_guard =
         memory::Guard::start(max_resident_mib).map_err(|error| coding_agent_search::CliError {
-            code: memory::MONITOR_FAILURE_EXIT_CODE,
+            // The literal `code:` field is load-bearing:
+            // spec_exit_codes_documented only sees `code: <digits>` directly
+            // above `kind:`, not the *_EXIT_CODE constants.
+            code: 125,
             kind: "memory-monitor-unavailable",
             message: error.to_string(),
             hint: Some(
@@ -334,8 +337,10 @@ pub fn run(args: Vec<String>) -> coding_agent_search::CliResult<()> {
     };
     // EOF and transport errors must also release native readers under a guard.
     // Ordinary Rust scope unwinding alone would leave destructor work unbounded.
+    // Literal exit arguments are load-bearing: the emitted-code scan only
+    // sees `process::exit(<digits>)`, not the *_EXIT_CODE constants.
     let _teardown = deadline::Deadline::start(session.request_timeout)
-        .unwrap_or_else(|_| std::process::exit(deadline::WATCHDOG_FAILURE_EXIT_CODE));
+        .unwrap_or_else(|_| std::process::exit(125));
     drop(session);
     // Cached bridge runtimes own scheduler threads even after the readers are
     // gone. Tear them down before either supervisor stops; main's later
@@ -346,7 +351,7 @@ pub fn run(args: Vec<String>) -> coding_agent_search::CliResult<()> {
     result.map_err(cli_io_error)?;
     if !bridges_shutdown {
         return Err(coding_agent_search::CliError {
-            code: deadline::WATCHDOG_FAILURE_EXIT_CODE,
+            code: 125,
             kind: "bridge_shutdown_failed",
             message: "search service bridge teardown did not complete".into(),
             hint: None,

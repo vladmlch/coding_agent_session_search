@@ -10,11 +10,18 @@
 //!   because this guard only scanned `CliError` literals and compared them
 //!   with a hand-mirrored list that had drifted from `capabilities`.
 //!
-//! Emitted set: every `CliError { code: N, kind: .. }` and every
-//! `process::exit(N)` in the scanned sources. Documented set: the real
-//! binary's `cass capabilities --json` `exit_codes`, which agents read.
+//! Emitted set: every `CliError { code: N, kind: .. }`, every
+//! `process::exit(N)` and every supervisor `terminate(N)` in the scanned
+//! sources. Documented set: the real binary's `cass capabilities --json`
+//! `exit_codes`, which agents read.
 //! Both directions are asserted: an undocumented emitted code, and a
 //! documented code nothing emits, are both failures.
+//!
+//! 2026-11-05 final review found the search-service supervisor exits (124
+//! deadline, 125 supervisor failure, 126 resident-memory limit) emitted only
+//! through `terminate(CONST)`/`code: CONST`/`process::exit(CONST)` shapes —
+//! invisible to both extractors and undocumented. The sites now spell literal
+//! arguments and this scan covers the search_service modules.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -87,6 +94,26 @@ const SOURCES: &[(&str, &str)] = &[
         "src/indexer/checkpoint_deadline.rs",
         include_str!("../src/indexer/checkpoint_deadline.rs"),
     ),
+    // The read-only search service and its supervisors: `terminate(124)` for
+    // the request deadline, `terminate(125)` for watchdog/monitor failure,
+    // `terminate(126)` for the sampled resident-memory limit, plus the
+    // CliError/`process::exit(125)` teardown paths in the session driver.
+    (
+        "src/search_service.rs",
+        include_str!("../src/search_service.rs"),
+    ),
+    (
+        "src/search_service/deadline.rs",
+        include_str!("../src/search_service/deadline.rs"),
+    ),
+    (
+        "src/search_service/memory.rs",
+        include_str!("../src/search_service/memory.rs"),
+    ),
+    (
+        "src/search_service/once.rs",
+        include_str!("../src/search_service/once.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed
@@ -138,12 +165,32 @@ fn emitted_process_exit_codes(src: &str) -> BTreeSet<i32> {
         .collect()
 }
 
+/// Every literal `terminate(N)`: the search-service supervisors' no-cleanup
+/// worker exit (`_exit`/`TerminateProcess`), which deliberately is NOT
+/// `process::exit` — the deadline watchdog and resident-memory monitor use it
+/// for 124/125/126. File-scoped like the other extractors: inside the scanned
+/// sources `terminate` names only that supervisor call (test-time
+/// `terminate(code)` fixtures pass a variable and are skipped).
+fn emitted_terminate_codes(src: &str) -> BTreeSet<i32> {
+    src.match_indices("terminate(")
+        .filter_map(|(start, needle)| {
+            let rest = &src[start + needle.len()..];
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            if digits.is_empty() || !rest[digits.len()..].starts_with(')') {
+                return None;
+            }
+            digits.parse::<i32>().ok()
+        })
+        .collect()
+}
+
 fn emitted_exit_codes() -> BTreeSet<i32> {
     SOURCES
         .iter()
         .flat_map(|(_, src)| {
             let mut codes = emitted_cli_error_codes(src);
             codes.extend(emitted_process_exit_codes(src));
+            codes.extend(emitted_terminate_codes(src));
             codes
         })
         .collect()
@@ -249,6 +296,27 @@ fn process_exit_extractor_reads_only_literal_codes() -> TestResult {
     ensure(
         found == BTreeSet::from([70, 130]),
         format!("expected the two literal process exits only, found {found:?}"),
+    )
+}
+
+#[test]
+fn terminate_extractor_reads_only_literal_supervisor_codes() -> TestResult {
+    let sample = "terminate(124);\nterminate(code);\nsuper::terminate(125)\nfn terminate(code: i32)\nterminate(126);";
+    let found = emitted_terminate_codes(sample);
+    ensure(
+        found == BTreeSet::from([124, 125, 126]),
+        format!("expected the three literal supervisor exits only, found {found:?}"),
+    )?;
+    // The scanned search-service sources really do emit the documented
+    // supervisor set — a drifted extractor would silently pass parity tests.
+    let supervised: BTreeSet<i32> = SOURCES
+        .iter()
+        .filter(|(name, _)| name.contains("search_service"))
+        .flat_map(|(_, src)| emitted_terminate_codes(src))
+        .collect();
+    ensure(
+        supervised == BTreeSet::from([124, 125, 126]),
+        format!("expected supervisor terminate codes 124/125/126, found {supervised:?}"),
     )
 }
 

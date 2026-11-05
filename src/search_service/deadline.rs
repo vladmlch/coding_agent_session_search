@@ -17,8 +17,10 @@ use std::time::{Duration, Instant};
 
 pub(super) const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 pub(super) const MAX_TIMEOUT_MS: u64 = 300_000;
+// The supervisor call sites spell these as literals (`terminate(124)`,
+// `terminate(125)`): the emitted-exit-code scan only sees literal arguments.
+// 125 is the watchdog/supervisor-failure code documented in capabilities.
 pub(super) const TIMEOUT_EXIT_CODE: i32 = 124;
-pub(super) const WATCHDOG_FAILURE_EXIT_CODE: i32 = 125;
 
 pub(super) fn parse_timeout_ms(value: &str) -> Result<u64, String> {
     value
@@ -61,10 +63,13 @@ impl Deadline {
                         // the request can be blocked while holding those locks.
                         // Bypass runtime/atexit cleanup too: it can block on
                         // exactly those locks or on a stalled engine owner.
-                        terminate(TIMEOUT_EXIT_CODE);
+                        // The literal exit codes are load-bearing:
+                        // spec_exit_codes_documented only sees
+                        // `terminate(<digits>)`, not the *_EXIT_CODE constants.
+                        terminate(124);
                     }
                     Err(RecvTimeoutError::Disconnected) => {
-                        terminate(WATCHDOG_FAILURE_EXIT_CODE);
+                        terminate(125);
                     }
                 }
             })?;
@@ -96,7 +101,7 @@ impl Drop for Deadline {
             .is_some_and(|watchdog| watchdog.join().is_ok());
         if !signalled || !joined {
             // A failed supervisor must not leave later native work unprotected.
-            terminate(WATCHDOG_FAILURE_EXIT_CODE);
+            terminate(125);
         }
     }
 }

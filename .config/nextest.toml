@@ -87,7 +87,6 @@ store-failure-output = true
 # =============================================================================
 # Test Filtering
 # =============================================================================
-# Skip install script tests by default (they need network access)
 
 # =============================================================================
 # Override Settings for Specific Tests

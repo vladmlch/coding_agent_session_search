@@ -917,6 +917,9 @@ Errors are structured, actionable, and include recovery hints. A real sample fro
 | 22 | I/O during model handling | Retry |
 | 24 | I/O during model verify/install | Retry |
 | 70 | `cass index` stalled and aborted (kind `index-stalled` envelope on stderr) | Inspect `cass status --json`, then rerun `cass index` |
+| 124 | `cass serve` request deadline (supervisor watchdog) | Rerun the request; raise `--request-timeout-ms` only when the work legitimately needs longer |
+| 125 | `cass serve` supervisor failure (deadline watchdog, resident-memory monitor, or bridge teardown) | Rerun the command; report a recurrence |
+| 126 | `cass serve` sampled resident-memory limit (not a kernel allocation limit) | Rerun with a larger `--max-resident-mib` or a smaller request |
 | 130 | Interrupted (SIGINT) | Rerun the command; indexing and search resume from their checkpoints |
 | 143 | Interrupted (SIGTERM) | Rerun the command; indexing and semantic backfill resume from their checkpoints |
 
