@@ -1213,6 +1213,39 @@ class ManifestNamedPathTests(unittest.TestCase):
                     "src/cli/commands/capabilities_introspect/"):
                 self.assertEqual(e["stage"], "2e", e["target"])
 
+    def test_stage1a_response_schema_tests_split_in_two(self):
+        # plan §8 stage 1a: response_schema_tests divides into two
+        # sibling part files under src/robot_schema/ — the manifest must
+        # carry the partition as slices, not one dissolved file.
+        parts = [e for e in self.files
+                 if (e.get("slice") or {}).get("mod") == "response_schema_tests"]
+        self.assertEqual(
+            [e["target"] for e in parts],
+            ["src/robot_schema/response_schema_tests_part_1.rs",
+             "src/robot_schema/response_schema_tests_part_2.rs"])
+        for e in parts:
+            self.assertEqual(e["stage"], "1a", e["target"])
+            self.assertEqual(e["slice"]["parts"], 2, e["target"])
+        self.assertEqual([e["slice"]["part"] for e in parts], [1, 2])
+        # contiguous inner coverage: part 1 owns the mod `use` head and
+        # the fixture helper; part 2 resumes at the next item and owns
+        # the readiness helper — no overlap, no skipped item.
+        self.assertEqual(parts[0]["slice"]["first"],
+                         {"kind": "use", "name": "super::*"})
+        self.assertEqual(
+            parts[0]["slice"]["last"]["name"],
+            "doctor_storage_pressure_classifies_precious_and_reclaimable_bytes")
+        self.assertEqual(
+            parts[1]["slice"]["first"]["name"],
+            "doctor_storage_pressure_accounts_for_symlinked_archive_root")
+        self.assertEqual(
+            parts[1]["slice"]["last"]["name"],
+            "doctor_v2_schema_examples_are_redacted_contract_examples")
+        # the whole-mod single file is gone — nothing else may claim it
+        self.assertFalse(
+            any(e.get("mod") == "response_schema_tests"
+                for e in self.files))
+
     def test_no_run_rs_or_execute_cli_rs_targets(self):
         for e in self.files:
             self.assertNotIn(e["target"],

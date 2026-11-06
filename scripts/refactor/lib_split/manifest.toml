@@ -34,6 +34,10 @@ parts = 2
 mod = "indexed_conversation_fallback_tests"
 parts = 2
 
+[[mod_split]]
+mod = "response_schema_tests"
+parts = 2
+
 [[mod_reloc]]
 decl = "doctor_backup_restore_tests"
 stage = "3d"
@@ -1440,9 +1444,14 @@ first = { kind = "fn", name = "build_response_schemas" }
 last = { kind = "fn", name = "build_response_schemas" }
 
 [[file]]
-target = "src/robot_schema/response_schema_tests.rs"
+target = "src/robot_schema/response_schema_tests_part_1.rs"
 stage = "1a"
-mod = "response_schema_tests"
+slice = { mod = "response_schema_tests", first = { kind = "use", name = "super::*" }, last = { kind = "fn", name = "doctor_storage_pressure_classifies_precious_and_reclaimable_bytes" }, part = 1, parts = 2 }
+
+[[file]]
+target = "src/robot_schema/response_schema_tests_part_2.rs"
+stage = "1a"
+slice = { mod = "response_schema_tests", first = { kind = "fn", name = "doctor_storage_pressure_accounts_for_symlinked_archive_root" }, last = { kind = "fn", name = "doctor_v2_schema_examples_are_redacted_contract_examples" }, part = 2, parts = 2 }
 
 [[file]]
 target = "src/cli/commands/view/role_to_export_string.rs"
