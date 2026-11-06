@@ -3,22 +3,20 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::franken_sync::compat::{
+        ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
+        open_with_flags as open_franken_with_flags,
+    };
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn run_stats(
     data_dir_override: &Option<PathBuf>,
@@ -343,7 +341,6 @@ pub(crate) fn run_stats(
     Ok(())
 }
 
-
 /// Stable component identifiers for the `cass storage` breakdown. The
 /// order here is the order they appear in the JSON `components` array and
 /// the human table (golden-frozen). Each variant maps a user-meaningful
@@ -360,7 +357,6 @@ pub(crate) enum StorageComponent {
     Backups,
     Other,
 }
-
 
 impl StorageComponent {
     /// Stable robot key (kebab-case-free snake to match other cass JSON).
@@ -422,7 +418,6 @@ impl StorageComponent {
     }
 }
 
-
 /// Classify a top-level data-dir entry name into a storage component.
 /// Anything unrecognized rolls into `Other` so the per-component bytes
 /// always sum to the total accounted footprint.
@@ -439,7 +434,6 @@ pub(crate) fn classify_storage_entry(name: &str) -> StorageComponent {
         _ => StorageComponent::Other,
     }
 }
-
 
 /// `cass storage` (#292.4): read-only on-disk footprint breakdown by
 /// component. Sums per-component bytes from the data dir so operators can
@@ -618,7 +612,6 @@ pub(crate) fn run_storage(
 
     Ok(())
 }
-
 
 /// `cass dedup` (#302 ask #2 / bead uhhxy): collapse PRE-EXISTING duplicate
 /// conversation rows where the watcher and full-rebuild ingest paths created
@@ -870,7 +863,6 @@ pub(crate) fn run_dedup(
     Ok(())
 }
 
-
 /// Remote mirror containers whose configured path names a known provider
 /// store, with the archive agent slugs that own it: the ownership rule the
 /// indexer applies to remote roots (mx520).
@@ -894,7 +886,6 @@ pub(crate) fn misattributed_mirror_containers(
         })
         .collect()
 }
-
 
 /// Count files (not bytes) recursively under a directory for the storage
 /// breakdown. Mirrors `fs_dir_size`'s traversal but counts leaf files.

@@ -89255,24 +89255,6 @@ pub(crate) use crate::cli::commands::search::toon_encode_options_from_env::*;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::search::truncate_content_tests::*;
 // -- generated lib-split bridges --
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::quarantine_mirror_import::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::forget::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::forget::forget_selector_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::forget::command::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::run_mirror_prune::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::analytics::run_analytics::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::analytics::franken_query_retry_callback_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::analytics::fresh_franken_count_retry::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::analytics::analytics_filter_validation_tests::*;
@@ -89281,17 +89263,35 @@ pub(crate) use crate::cli::commands::analytics::analytics_filter_validation_test
 pub(crate) use crate::cli::commands::analytics::analytics_query_cli_error_tests::*;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::analytics::analyticsvalidationsummary::*;
+#[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::import_chatgpt_export::*;
+pub(crate) use crate::cli::commands::analytics::franken_query_retry_callback_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::analytics::fresh_franken_count_retry::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::analytics::run_analytics::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::chatgpt_import_file_stem_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::chatgpt_import_source_name::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::chatgpt_import_scan_root_tests::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::stats_diag_storage::run_stats::*;
+pub(crate) use crate::cli::commands::chatgpt_import_source_name::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::forget::command::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::forget::forget_selector_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::forget::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::import_chatgpt_export::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::quarantine_mirror_import::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::run_mirror_prune::*;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::stats_diag_storage::run_diag::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::stats_diag_storage::run_stats::*;

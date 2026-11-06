@@ -5,20 +5,17 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// `sources.toml` source name under which `cass import chatgpt` registers its
 /// output directory so the indexer scans it without relying on connector
 /// auto-detection (GH #378).
 pub(crate) const CHATGPT_IMPORT_SOURCE_NAME: &str = "chatgpt-import";
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImportScanRootRegistration {
@@ -30,7 +27,6 @@ pub(crate) enum ImportScanRootRegistration {
     AlreadyRegistered,
 }
 
-
 impl ImportScanRootRegistration {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
@@ -40,7 +36,6 @@ impl ImportScanRootRegistration {
         }
     }
 }
-
 
 /// Register `path` as a local explicit scan root under the named source in
 /// `sources.toml` (GH #378). Loads the current config, mutates only the named
@@ -56,7 +51,6 @@ pub(crate) fn register_import_scan_root(
     }
     Ok(state)
 }
-
 
 /// Pure half of [`register_import_scan_root`]: mutates `config` in memory and
 /// reports what changed, so callers decide whether a save is needed.

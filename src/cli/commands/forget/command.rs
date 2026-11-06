@@ -5,16 +5,14 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use chrono::Utc;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Default)]
 pub(crate) struct ForgetCommandOptions {
@@ -31,7 +29,6 @@ pub(crate) struct ForgetCommandOptions {
     pub(crate) apply: bool,
 }
 
-
 impl ForgetCommandOptions {
     pub(crate) fn exclusion_selector(&self) -> crate::storage::sqlite::ForgetExclusionSelector<'_> {
         crate::storage::sqlite::ForgetExclusionSelector {
@@ -43,7 +40,6 @@ impl ForgetCommandOptions {
         }
     }
 }
-
 
 /// Prune an explicitly selected subset of archived conversations. Preview
 /// opens strictly read-only; apply holds maintenance ownership through both
@@ -436,7 +432,6 @@ pub(crate) fn run_forget_command(
     }
     Ok(())
 }
-
 
 pub(crate) fn run_forget_exclusion_action(
     storage: crate::storage::sqlite::FrankenStorage,

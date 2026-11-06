@@ -2,79 +2,71 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
-
-    
-
-    #[test]
-    pub(crate) fn forget_requires_an_explicit_selector_even_with_apply() {
-        for args in [vec!["cass", "forget"], vec!["cass", "forget", "--apply"]] {
-            assert!(Cli::try_parse_from(args).is_err());
-        }
-        assert!(forget_filter(None, None, None, 0).is_err());
+#[test]
+pub(crate) fn forget_requires_an_explicit_selector_even_with_apply() {
+    for args in [vec!["cass", "forget"], vec!["cass", "forget", "--apply"]] {
+        assert!(Cli::try_parse_from(args).is_err());
     }
+    assert!(forget_filter(None, None, None, 0).is_err());
+}
 
-
-    #[test]
-    pub(crate) fn forget_accepts_each_selector_and_intersections() {
-        for selectors in [
-            vec!["--source-glob", "**/rollout-*.jsonl"],
-            vec!["--workspace-glob", "/work/scratch/**"],
-            vec!["--older-than", "90d"],
-            vec![
-                "--source-glob",
-                "**/rollout-*.jsonl",
-                "--workspace-glob",
-                "/work/scratch/**",
-                "--older-than",
-                "90d",
-            ],
-        ] {
-            let mut args = vec!["cass", "forget"];
-            args.extend(selectors);
-            args.push("--json");
-            let cli = Cli::try_parse_from(args).expect("valid forget selectors");
-            assert!(matches!(
-                cli.command,
-                Some(Commands::Forget { apply: false, .. })
-            ));
-        }
-        let filter = forget_filter(
-            Some(" **/*.jsonl "),
-            Some("/work/*"),
-            Some("2d"),
-            200_000_000,
-        )
-        .expect("valid selection");
-        assert_eq!(filter.source_glob, Some("**/*.jsonl"));
-        assert_eq!(filter.workspace_glob, Some("/work/*"));
-        assert_eq!(filter.before_ms, Some(27_200_000));
+#[test]
+pub(crate) fn forget_accepts_each_selector_and_intersections() {
+    for selectors in [
+        vec!["--source-glob", "**/rollout-*.jsonl"],
+        vec!["--workspace-glob", "/work/scratch/**"],
+        vec!["--older-than", "90d"],
+        vec![
+            "--source-glob",
+            "**/rollout-*.jsonl",
+            "--workspace-glob",
+            "/work/scratch/**",
+            "--older-than",
+            "90d",
+        ],
+    ] {
+        let mut args = vec!["cass", "forget"];
+        args.extend(selectors);
+        args.push("--json");
+        let cli = Cli::try_parse_from(args).expect("valid forget selectors");
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Forget { apply: false, .. })
+        ));
     }
+    let filter = forget_filter(
+        Some(" **/*.jsonl "),
+        Some("/work/*"),
+        Some("2d"),
+        200_000_000,
+    )
+    .expect("valid selection");
+    assert_eq!(filter.source_glob, Some("**/*.jsonl"));
+    assert_eq!(filter.workspace_glob, Some("/work/*"));
+    assert_eq!(filter.before_ms, Some(27_200_000));
+}
 
-
-    #[test]
-    pub(crate) fn forget_rejects_invalid_selectors_before_storage() {
-        for pattern in ["", "   ", "["] {
-            assert!(forget_filter(Some(pattern), None, None, 0).is_err());
-            assert!(forget_filter(None, Some(pattern), None, 0).is_err());
-        }
-        for duration in [
-            "",
-            "yesterday",
-            "-1d",
-            "1.5d",
-            "90fortnights",
-            "9223372036854775807d",
-        ] {
-            assert!(forget_filter(None, None, Some(duration), 0).is_err());
-        }
-        assert!(forget_filter(None, None, Some("1s"), i64::MIN).is_err());
-        assert_eq!(
-            forget_filter(None, None, Some("0s"), 42)
-                .expect("explicit zero age")
-                .before_ms,
-            Some(42)
-        );
+#[test]
+pub(crate) fn forget_rejects_invalid_selectors_before_storage() {
+    for pattern in ["", "   ", "["] {
+        assert!(forget_filter(Some(pattern), None, None, 0).is_err());
+        assert!(forget_filter(None, Some(pattern), None, 0).is_err());
     }
-
+    for duration in [
+        "",
+        "yesterday",
+        "-1d",
+        "1.5d",
+        "90fortnights",
+        "9223372036854775807d",
+    ] {
+        assert!(forget_filter(None, None, Some(duration), 0).is_err());
+    }
+    assert!(forget_filter(None, None, Some("1s"), i64::MIN).is_err());
+    assert_eq!(
+        forget_filter(None, None, Some("0s"), 42)
+            .expect("explicit zero age")
+            .before_ms,
+        Some(42)
+    );
+}

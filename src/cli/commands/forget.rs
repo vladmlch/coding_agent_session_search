@@ -2,8 +2,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 /// Resolve the entire selection before opening the archive. Invalid input
 /// must never turn a selective forget into a broader deletion or trigger a
 /// storage migration. Resolve relative age exactly once for this invocation.
@@ -56,6 +54,6 @@ pub(crate) fn forget_filter<'a>(
 }
 
 // -- lib-split module declarations --
+pub(crate) mod command;
 #[cfg(test)]
 pub(crate) mod forget_selector_tests;
-pub(crate) mod command;

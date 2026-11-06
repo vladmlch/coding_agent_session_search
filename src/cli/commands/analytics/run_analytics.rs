@@ -3,21 +3,20 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::franken_sync::compat::{
+        ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
+        open_with_flags as open_franken_with_flags,
+    };
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
 
 // ---------------------------------------------------------------------------
 // Analytics command dispatch (br-z9fse.3.1)
@@ -35,7 +34,11 @@ use __lib_split_root_uses::*;
 /// The data for each analytics subcommand is produced by dedicated helpers
 /// below; this dispatcher only normalizes envelopes, shared filters, and
 /// structured output across the analytics surface.
-pub(crate) fn run_analytics(cmd: AnalyticsCommand, db_path: Option<PathBuf>, cli: &Cli) -> CliResult<()> {
+pub(crate) fn run_analytics(
+    cmd: AnalyticsCommand,
+    db_path: Option<PathBuf>,
+    cli: &Cli,
+) -> CliResult<()> {
     use std::time::Instant;
 
     let start = Instant::now();
@@ -150,7 +153,6 @@ pub(crate) fn run_analytics(cmd: AnalyticsCommand, db_path: Option<PathBuf>, cli
     Ok(())
 }
 
-
 /// Collect active filter descriptions for `_meta.filters_applied`.
 pub(crate) fn analytics_build_filters(common: &AnalyticsCommon) -> Vec<String> {
     let mut f = Vec::new();
@@ -185,7 +187,6 @@ pub(crate) fn analytics_build_filters(common: &AnalyticsCommon) -> Vec<String> {
     f
 }
 
-
 pub(crate) fn analytics_filter_flag_names(common: &AnalyticsCommon) -> Vec<&'static str> {
     let mut flags = Vec::new();
     if common.since.is_some() {
@@ -208,7 +209,6 @@ pub(crate) fn analytics_filter_flag_names(common: &AnalyticsCommon) -> Vec<&'sta
     }
     flags
 }
-
 
 pub(crate) fn resolve_analytics_workspace_ids(
     conn: &crate::franken_sync::Connection,
@@ -256,7 +256,6 @@ pub(crate) fn resolve_analytics_workspace_ids(
     }
 }
 
-
 pub(crate) fn analytics_query_filter(
     conn: &crate::franken_sync::Connection,
     common: &AnalyticsCommon,
@@ -265,7 +264,6 @@ pub(crate) fn analytics_query_filter(
     filter.workspace_ids = resolve_analytics_workspace_ids(conn, &common.workspace)?;
     Ok(filter)
 }
-
 
 /// Open a read-only frankensqlite connection for analytics queries.
 pub(crate) fn open_franken_analytics_db(
@@ -279,14 +277,15 @@ pub(crate) fn open_franken_analytics_db(
     )
 }
 
-
-pub(crate) fn analytics_db_path(data_dir: &Option<PathBuf>, db_path_override: Option<&PathBuf>) -> PathBuf {
+pub(crate) fn analytics_db_path(
+    data_dir: &Option<PathBuf>,
+    db_path_override: Option<&PathBuf>,
+) -> PathBuf {
     let data_dir = data_dir.clone().unwrap_or_else(default_data_dir);
     db_path_override
         .cloned()
         .unwrap_or_else(|| data_dir.join("agent_search.db"))
 }
-
 
 pub(crate) fn open_franken_cli_read_db(
     path: PathBuf,
@@ -349,7 +348,6 @@ pub(crate) fn open_franken_cli_read_db(
     Ok(conn)
 }
 
-
 pub(crate) fn open_franken_cli_read_db_with_hard_timeout(
     path: PathBuf,
     reason: &str,
@@ -379,7 +377,6 @@ pub(crate) fn open_franken_cli_read_db_with_hard_timeout(
 
     receive_franken_cli_read_db_open_result_with_hard_timeout(rx, display_path, reason, timeout)
 }
-
 
 /// Open a read-only handle whose raw engine state never leaves its dedicated
 /// owner thread. This is the only handle the CLI hard-timeout lane may send
@@ -434,7 +431,6 @@ pub(crate) fn open_franken_cli_owner_read_db(
     Ok(conn)
 }
 
-
 pub(crate) fn sqlite_header_preflight_error(
     path: &Path,
     display_path: &str,
@@ -478,7 +474,6 @@ pub(crate) fn sqlite_header_preflight_error(
     })
 }
 
-
 pub(crate) fn receive_franken_cli_read_db_open_result_with_hard_timeout(
     rx: std::sync::mpsc::Receiver<CliResult<crate::storage::sqlite::FrankenOwnerConnection>>,
     display_path: String,
@@ -510,7 +505,6 @@ pub(crate) fn receive_franken_cli_read_db_open_result_with_hard_timeout(
     }
 }
 
-
 pub(crate) fn close_franken_cli_owner_read_db(
     mut conn: crate::storage::sqlite::FrankenOwnerConnection,
     path: &Path,
@@ -526,7 +520,6 @@ pub(crate) fn close_franken_cli_owner_read_db(
     }
     Ok(())
 }
-
 
 pub(crate) fn close_franken_cli_read_db(
     mut conn: crate::franken_sync::Connection,
@@ -545,7 +538,6 @@ pub(crate) fn close_franken_cli_read_db(
     Ok(())
 }
 
-
 pub(crate) fn close_franken_cli_read_db_without_checkpoint(
     mut conn: crate::franken_sync::Connection,
     path: &Path,
@@ -563,7 +555,6 @@ pub(crate) fn close_franken_cli_read_db_without_checkpoint(
     Ok(())
 }
 
-
 pub(crate) fn fts_messages_integrity_cli_error(surface: &str, err: anyhow::Error) -> CliError {
     CliError {
         code: 5,
@@ -574,7 +565,6 @@ pub(crate) fn fts_messages_integrity_cli_error(surface: &str, err: anyhow::Error
     }
 }
 
-
 pub(crate) fn validate_fts_messages_integrity_for_cli(
     conn: &crate::franken_sync::Connection,
     surface: &str,
@@ -582,7 +572,6 @@ pub(crate) fn validate_fts_messages_integrity_for_cli(
     crate::storage::sqlite::validate_fts_messages_integrity_for_connection(conn)
         .map_err(|err| fts_messages_integrity_cli_error(surface, err))
 }
-
 
 pub(crate) fn franken_query_row_map_retry<T, F>(
     conn: &crate::franken_sync::Connection,
@@ -623,7 +612,6 @@ where
         }
     }
 }
-
 
 pub(crate) fn franken_query_map_collect_retry<T, F>(
     conn: &crate::franken_sync::Connection,

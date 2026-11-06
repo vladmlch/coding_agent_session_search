@@ -3,14 +3,15 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
+    pub(crate) use anyhow::Result;
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
-
-
-pub(crate) fn run_mirror_prune(command: MirrorCommand, output_format: Option<RobotFormat>) -> CliResult<()> {
+pub(crate) fn run_mirror_prune(
+    command: MirrorCommand,
+    output_format: Option<RobotFormat>,
+) -> CliResult<()> {
     let MirrorCommand::Prune {
         data_dir: data_dir_override,
         older_than,
@@ -164,7 +165,6 @@ pub(crate) fn run_mirror_prune(command: MirrorCommand, output_format: Option<Rob
     Ok(())
 }
 
-
 pub(crate) fn parse_duration_millis(raw: &str) -> std::result::Result<i64, CliError> {
     let value = raw.trim();
     if value.is_empty() {
@@ -202,7 +202,6 @@ pub(crate) fn parse_duration_millis(raw: &str) -> std::result::Result<i64, CliEr
         )
     })
 }
-
 
 pub(crate) fn parse_size_bytes(raw: &str) -> std::result::Result<u64, CliError> {
     let value = raw.trim();

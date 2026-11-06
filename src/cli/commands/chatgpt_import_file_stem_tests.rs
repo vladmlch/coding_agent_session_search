@@ -2,40 +2,33 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
-
-    #[allow(unused_imports)]
+#[allow(unused_imports)]
 use crate::chatgpt_import_file_stem;
 
+#[test]
+pub(crate) fn plain_ids_are_used_verbatim() {
+    let conv = serde_json::json!({ "id": "7f3a-conv_01.v2", "title": "x" });
+    assert_eq!(chatgpt_import_file_stem(&conv), "7f3a-conv_01.v2");
+    let alt = serde_json::json!({ "conversation_id": "abc123" });
+    assert_eq!(chatgpt_import_file_stem(&alt), "abc123");
+}
 
-    #[test]
-    pub(crate) fn plain_ids_are_used_verbatim() {
-        let conv = serde_json::json!({ "id": "7f3a-conv_01.v2", "title": "x" });
-        assert_eq!(chatgpt_import_file_stem(&conv), "7f3a-conv_01.v2");
-        let alt = serde_json::json!({ "conversation_id": "abc123" });
-        assert_eq!(chatgpt_import_file_stem(&alt), "abc123");
+#[test]
+pub(crate) fn unsafe_or_missing_ids_fall_back_to_a_content_digest() {
+    for bad in ["../escape", "a/b", "", "  ", ".", "..", "with space"] {
+        let conv = serde_json::json!({ "id": bad, "title": "t" });
+        let stem = chatgpt_import_file_stem(&conv);
+        assert!(stem.starts_with("conv-"), "{bad:?} -> {stem}");
+        assert!(!stem.contains('/') && !stem.contains(".."), "{stem}");
     }
+    let missing = serde_json::json!({ "title": "no id" });
+    assert!(chatgpt_import_file_stem(&missing).starts_with("conv-"));
+}
 
-
-    #[test]
-    pub(crate) fn unsafe_or_missing_ids_fall_back_to_a_content_digest() {
-        for bad in ["../escape", "a/b", "", "  ", ".", "..", "with space"] {
-            let conv = serde_json::json!({ "id": bad, "title": "t" });
-            let stem = chatgpt_import_file_stem(&conv);
-            assert!(stem.starts_with("conv-"), "{bad:?} -> {stem}");
-            assert!(!stem.contains('/') && !stem.contains(".."), "{stem}");
-        }
-        let missing = serde_json::json!({ "title": "no id" });
-        assert!(chatgpt_import_file_stem(&missing).starts_with("conv-"));
-    }
-
-
-    #[test]
-    pub(crate) fn digest_fallback_is_content_keyed_not_positional() {
-        let a = serde_json::json!({ "title": "first" });
-        let b = serde_json::json!({ "title": "second" });
-        assert_ne!(chatgpt_import_file_stem(&a), chatgpt_import_file_stem(&b));
-        assert_eq!(chatgpt_import_file_stem(&a), chatgpt_import_file_stem(&a));
-    }
-
+#[test]
+pub(crate) fn digest_fallback_is_content_keyed_not_positional() {
+    let a = serde_json::json!({ "title": "first" });
+    let b = serde_json::json!({ "title": "second" });
+    assert_ne!(chatgpt_import_file_stem(&a), chatgpt_import_file_stem(&b));
+    assert_eq!(chatgpt_import_file_stem(&a), chatgpt_import_file_stem(&a));
+}

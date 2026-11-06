@@ -3,16 +3,14 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use chrono::Utc;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn fresh_franken_count_retry(
     path: &Path,
@@ -65,7 +63,6 @@ pub(crate) fn fresh_franken_count_retry(
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // analytics status — delegates to crate::analytics::query
 // ---------------------------------------------------------------------------
@@ -79,7 +76,6 @@ pub(crate) fn analytics_query_cli_error(e: analytics::AnalyticsError) -> CliErro
         retryable: false,
     }
 }
-
 
 /// Run `cass analytics status` — analytics health/quality endpoint.
 pub(crate) fn run_analytics_status(
@@ -104,7 +100,6 @@ pub(crate) fn run_analytics_status(
         .map_err(analytics_query_cli_error)
 }
 
-
 pub(crate) fn incident_usage_error(message: impl Into<String>) -> CliError {
     CliError {
         code: 2,
@@ -116,7 +111,6 @@ pub(crate) fn incident_usage_error(message: impl Into<String>) -> CliError {
         retryable: false,
     }
 }
-
 
 pub(crate) fn incident_scan_cli_error(error: anyhow::Error) -> CliError {
     CliError {
@@ -130,7 +124,6 @@ pub(crate) fn incident_scan_cli_error(error: anyhow::Error) -> CliError {
         retryable: false,
     }
 }
-
 
 /// Run `cass analytics incidents` — bounded, read-only incident mining over
 /// canonical archive conversations and messages.
@@ -213,7 +206,6 @@ pub(crate) fn run_analytics_incidents(
     })
 }
 
-
 // ---------------------------------------------------------------------------
 // analytics tokens — delegates to crate::analytics::query
 // ---------------------------------------------------------------------------
@@ -231,7 +223,6 @@ pub(crate) fn run_analytics_tokens(
         .map(|r| r.to_cli_json())
         .map_err(analytics_query_cli_error)
 }
-
 
 // ---------------------------------------------------------------------------
 // analytics rebuild (br-z9fse.3.4)
@@ -285,7 +276,6 @@ pub(crate) fn analytics_rebuild_since_ms(common: &AnalyticsCommon) -> CliResult<
     }
 }
 
-
 pub(crate) fn validate_analytics_rebuild_window(
     track: AnalyticsTrack,
     since_ms: Option<i64>,
@@ -302,7 +292,6 @@ pub(crate) fn validate_analytics_rebuild_window(
     Ok(())
 }
 
-
 /// Human-readable UTC day label for the rebuild cutoff (day-aligned, matching
 /// what the storage layer actually rescans).
 pub(crate) fn format_rebuild_cutoff(since_ms: i64) -> String {
@@ -313,7 +302,6 @@ pub(crate) fn format_rebuild_cutoff(since_ms: i64) -> String {
         .map(|dt| dt.format("%Y-%m-%d UTC").to_string())
         .unwrap_or_else(|| format!("{day_start_ms} ms"))
 }
-
 
 /// Serialize analytics mutations with indexing and other maintenance for this data directory.
 pub(crate) fn acquire_analytics_maintenance_lock(
@@ -341,7 +329,6 @@ pub(crate) fn acquire_analytics_maintenance_lock(
         }
     })
 }
-
 
 /// Rebuild Track A (optionally windowed) and/or the full Track B ledger rollups.
 pub(crate) fn run_analytics_rebuild(
@@ -602,7 +589,6 @@ pub(crate) fn run_analytics_rebuild(
     );
     Ok(serde_json::Value::Object(payload))
 }
-
 
 // ---------------------------------------------------------------------------
 // analytics tools (br-z9fse.3.9)

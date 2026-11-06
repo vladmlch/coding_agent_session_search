@@ -5,15 +5,13 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use chrono::Utc;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use anyhow::Result;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) async fn handle_import(cmd: ImportCommand, cli: &Cli) -> CliResult<()> {
     match cmd {
@@ -28,13 +26,11 @@ pub(crate) async fn handle_import(cmd: ImportCommand, cli: &Cli) -> CliResult<()
     }
 }
 
-
 pub(crate) fn run_mirror_command(cmd: MirrorCommand, cli: &Cli) -> CliResult<()> {
     let MirrorCommand::Prune { json, .. } = &cmd;
     let structured_format = resolve_subcommand_structured_format(cli, *json);
     run_mirror_prune(cmd, structured_format)
 }
-
 
 /// `cass quarantine` (#292 ask #3): inspect and manage the
 /// conversation-ingest quarantine without hand-editing
@@ -74,7 +70,6 @@ pub(crate) fn run_quarantine_command(cmd: QuarantineCommand, cli: &Cli) -> CliRe
     }
 }
 
-
 pub(crate) fn quarantine_apply_cli_error(operation: &str, err: anyhow::Error) -> CliError {
     let rendered = format!("{err:#}");
     if error_chain_indicates_active_cass_index(&rendered) {
@@ -100,7 +95,6 @@ pub(crate) fn quarantine_apply_cli_error(operation: &str, err: anyhow::Error) ->
         retryable: false,
     }
 }
-
 
 /// `cass quarantine retry`: a bounded, resumable retry of retry-eligible
 /// quarantined conversations (#292 ask #3). Dry-run emits the exact plan;
@@ -203,7 +197,6 @@ pub(crate) fn run_quarantine_retry_command(
     Ok(())
 }
 
-
 /// Build the deterministic `cass quarantine list` rows: the structured state
 /// merged with the poison ledgers. Each entry reports its conversation_id,
 /// schema version, attempt count, last reason, the wall-clock timestamps, and
@@ -299,7 +292,6 @@ pub(crate) fn quarantine_list_entries(
     Ok(entries.into_values().collect())
 }
 
-
 pub(crate) fn run_quarantine_list(
     data_dir_override: Option<PathBuf>,
     output_format: Option<RobotFormat>,
@@ -392,7 +384,6 @@ pub(crate) fn run_quarantine_list(
     }
     Ok(())
 }
-
 
 pub(crate) fn run_quarantine_clear(
     data_dir_override: Option<PathBuf>,

@@ -3,16 +3,14 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 // ---------------------------------------------------------------------------
 // analytics validate (br-z9fse.3.5)
@@ -27,7 +25,6 @@ pub(crate) struct AnalyticsValidationSummary {
     pub(crate) buckets_total: usize,
 }
 
-
 pub(crate) fn analytics_validation_summary(
     report: &analytics::ValidationReport,
 ) -> AnalyticsValidationSummary {
@@ -39,7 +36,6 @@ pub(crate) fn analytics_validation_summary(
         buckets_total: report._meta.sampling.buckets_total,
     }
 }
-
 
 pub(crate) fn annotate_deferred_analytics_failures(
     report: &mut analytics::ValidationReport,
@@ -67,7 +63,6 @@ pub(crate) fn annotate_deferred_analytics_failures(
     }
 }
 
-
 pub(crate) fn emit_analytics_validate_summary(label: &str, summary: &AnalyticsValidationSummary) {
     use colored::Colorize;
 
@@ -91,7 +86,6 @@ pub(crate) fn emit_analytics_validate_summary(label: &str, summary: &AnalyticsVa
     }
 }
 
-
 pub(crate) fn analytics_perf_json(
     perf_ts: &analytics::validate::PerfMeasurement,
     perf_bd: &analytics::validate::PerfMeasurement,
@@ -114,7 +108,6 @@ pub(crate) fn analytics_perf_json(
     })
 }
 
-
 pub(crate) fn reject_analytics_validate_filters(common: &AnalyticsCommon) -> CliResult<()> {
     let unsupported = analytics_filter_flag_names(common);
     if unsupported.is_empty() {
@@ -129,7 +122,6 @@ pub(crate) fn reject_analytics_validate_filters(common: &AnalyticsCommon) -> Cli
         Some("Remove query-only filters and rerun analytics validate.".into()),
     ))
 }
-
 
 /// Run `cass analytics validate` — rollup invariant checks and drift detection.
 pub(crate) fn run_analytics_validate(
@@ -417,7 +409,6 @@ pub(crate) fn run_analytics_validate(
     }
     Ok(payload)
 }
-
 
 // ---------------------------------------------------------------------------
 // analytics models (br-z9fse.3.6)
