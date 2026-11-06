@@ -80408,3 +80408,8 @@ c.close()
         );
     }
 }
+
+// -- lib-split module declarations --
+#[cfg(test)]
+pub(crate) mod stall_diagnostics_tests;
+pub(crate) mod stall_watchdog;

@@ -26,7 +26,7 @@ fn golden_path() -> PathBuf {
 /// the scan-parity contract for the lib.rs split: when an error producer
 /// moves out of `src/lib.rs`, its new file is appended here so coverage
 /// never shrinks. Entries are repo-relative.
-const SCAN_SOURCES: &[&str] = &["src/lib.rs"];
+const SCAN_SOURCES: &[&str] = &["src/lib.rs", "src/indexer/stall_watchdog.rs"];
 
 fn scanned_source() -> String {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

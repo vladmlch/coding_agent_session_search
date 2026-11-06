@@ -8,7 +8,7 @@
 
 [scanner.golden_error_envelope]
 test = "tests/golden_error_envelope.rs"
-sources = ["src/lib.rs"]
+sources = ["src/lib.rs", "src/indexer/stall_watchdog.rs"]
 patterns = ["kind_str", "CliErrorKind::"]
 note = "error-kind scan: CliErrorKind literals, kind_str mapping, golden envelope"
 
@@ -21,6 +21,7 @@ sources = [
   "src/doctor_runs.rs",
   "src/viewer_bridge/deadline.rs",
   "src/indexer/checkpoint_deadline.rs",
+  "src/indexer/stall_watchdog.rs",
   "src/search_service.rs",
   "src/search_service/deadline.rs",
   "src/search_service/memory.rs",
