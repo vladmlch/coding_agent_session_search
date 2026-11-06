@@ -34,12 +34,50 @@ REPO = HERE.parents[2]
 #   mention  — any other textual occurrence (docs, panic messages,
 #              fixture payloads, comments). Informational only.
 CONSUMER_RX = re.compile(
-    r'include_str!\s*\(\s*"(?:\.\./)*src/lib\.rs"'
+    r'include_str!\s*\(\s*"(?:\.\./)*(?:src/)?lib\.rs"'
     r'|include!\s*\(\s*"[^"]*lib\.rs"'
     r'|read_(?:to_string|text)\([^)]*src/lib\.rs'
     r'|"src/lib\.rs",\s*include_str!'
+    r'|\.join\(\s*"src/lib\.rs"'
+    r'|format!\s*\([^)]*src/lib\.rs'
+    r'|join\([^)]*"src/lib\.rs"'
 )
 MENTION_RX = re.compile(r"src/lib\.rs|lib\.rs\"\)")
+
+# Statement-level patterns for scan_source: every literal form a
+# consumer can use to address src/lib.rs (not just direct reads).
+_STATEMENT_PATTERNS = [
+    (re.compile(r'include_str!\s*\(\s*"(?P<arg>(?:\.\./)*[^"]*lib\.rs)"'),
+     "include_str!"),
+    (re.compile(r'include!\s*\(\s*"(?P<arg>[^"]*lib\.rs)"'), "include!"),
+    (re.compile(r'\.join\(\s*"(?P<arg>src/lib\.rs)"'), "join"),
+    (re.compile(r'"(?P<arg>src/lib\.rs)"\s*,\s*include_str!'), "scan-table"),
+    (re.compile(r'format!\s*\([^)]*"(?P<arg>[^"]*src/lib\.rs)[^"]*"'), "format!"),
+    (re.compile(r'read_(?:to_string|text)\s*\([^)]*"(?P<arg>[^"]*src/lib\.rs)[^"]*"'),
+     "read-call"),
+]
+
+
+def scan_source(text: str) -> list:
+    """Statement-level hits: every expression addressing src/lib.rs.
+
+    Returns [(line_no, kind, arg)] for each consumer statement —
+    include_str!/include!, join("src/lib.rs"), format! producing the
+    path, and read_* calls on a literal path.
+    """
+    hits = []
+    for m in re.finditer(r"[^\n;]*;", text, re.S):
+        stmt = m.group(0)
+        line = text.count("\n", 0, m.start()) + 1
+        for rx, kind in _STATEMENT_PATTERNS:
+            sm = rx.search(stmt)
+            if sm:
+                arg = sm.group("arg")
+                if arg == "lib.rs" or arg.endswith("src/lib.rs") or \
+                        arg.endswith("/lib.rs"):
+                    hits.append((line, kind, arg))
+                break
+    return hits
 
 SKIP_DIRS = {".git", "target", ".scratch", "node_modules", ".venv"}
 
@@ -68,7 +106,14 @@ def scan(repo: Path = REPO):
     mentions = []
     for p in iter_files(repo):
         rel = str(p.relative_to(repo))
-        for i, line in enumerate(p.read_text().splitlines(), 1):
+        text = p.read_text()
+        hit_lines = set()
+        for line, kind, arg in scan_source(text):
+            consumers.append((rel, line, f"{kind}({arg})"))
+            hit_lines.add(line)
+        for i, line in enumerate(text.splitlines(), 1):
+            if i in hit_lines:
+                continue
             if CONSUMER_RX.search(line):
                 consumers.append((rel, i, line.strip()[:160]))
             elif MENTION_RX.search(line):

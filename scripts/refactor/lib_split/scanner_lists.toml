@@ -1,11 +1,15 @@
-# Source-scanner parity lists for the lib.rs split (stage 0).
+# Source-scanner parity lists for the lib.rs split (stage 0 fix round).
 # Each [scanner.<name>] records the test file and the production sources
-# it reads. Stage moves extend `sources`; removing a path without an
-# equivalent replacement is a parity violation (scan_parity.py diff).
+# it reads as text, plus `patterns` — literals whose occurrence COUNT
+# across the union of `sources` must stay constant when items move.
+# Stage moves extend `sources`; removing a path without an equivalent
+# replacement, or a needle count changing without a declared retarget,
+# is a parity violation (scan_parity.py diff / diff_counts).
 
 [scanner.golden_error_envelope]
 test = "tests/golden_error_envelope.rs"
 sources = ["src/lib.rs"]
+patterns = ["kind_str", "CliErrorKind::"]
 note = "error-kind scan: CliErrorKind literals, kind_str mapping, golden envelope"
 
 [scanner.spec_exit_codes_documented]
@@ -24,39 +28,59 @@ sources = [
   "README.md",
   "AGENTS.md",
 ]
+patterns = ["ExitCode"]
 note = "exit-code literals must be documented; reads sources + docs"
 
 [scanner.spec_aliases_resolve]
 test = "tests/spec_aliases_resolve.rs"
 sources = ["src/lib.rs"]
+patterns = ["SUBCOMMAND_ALIASES"]
 note = "SUBCOMMAND_ALIASES const inside normalize_args body"
 
 [scanner.doctor_mutate_auditor]
 test = "tests/doctor_mutate_auditor.rs"
 sources = ["src/lib.rs"]
+patterns = [
+  "run_doctor_explain",
+  "run_doctor_emit_capabilities",
+  "run_doctor_watch",
+  "doctor-capabilities",
+]
 note = "doctor pass markers (pass-2/3 dispatch, pass-6 watch, pass-8 explain/capabilities)"
 
 [scanner.local_only_audit]
 test = "tests/local_only_audit.rs"
 sources = ["src/lib.rs"]
+patterns = ["REMOVED_COMMANDS", "REMOVED_FLAGS", "was removed"]
 note = "REMOVED_COMMANDS/REMOVED_FLAGS tables + removed-command diagnostic"
 
 [scanner.doctor_chokepoint]
 test = "src/doctor_chokepoint.rs"
 sources = ["src/lib.rs"]
+patterns = ["DoctorFsMutationKind"]
 note = "in-source chokepoint audit reads lib.rs (doctor_mutate_auditor companion)"
+
+[scanner.doctor_insource]
+test = "src/doctor.rs"
+sources = ["src/lib.rs"]
+patterns = [
+  "pub(crate) fn run_doctor_impl(",
+  "doctor::DoctorCommandRequest::from_cli_flags",
+]
+note = "legacy_cli_dispatch test in src/doctor.rs reads lib.rs + doctor.rs markers"
 
 [scanner.agent_detection_completeness]
 test = "tests/agent_detection_completeness.rs"
 sources = ["src/lib.rs"]
-note = "read_to_string(src/lib.rs) — discovered by stale_refs, not in preflight table"
+patterns = ["diagnostics_connector_paths", "detect_installed_agents"]
+note = "read_to_string(root.join(src/lib.rs)) — join()-form consumer"
 
 [scanner.source_file_size_budget]
 test = "tests/source_file_size_budget.rs"
 sources = ["src/lib.rs"]
-note = "line-count budget check (reads lib.rs for measurement, not content)"
+patterns = []
+note = "line-count budget check — measures lib.rs, no literal needles (count-unsupported)"
 
-# Not a scanner: tests/cli_dispatch_coverage.rs mentions src/lib.rs only
-# in a doc comment (line ~5240); it drives the binary, it never reads the
-# file as text. tests/viewer_bridge_extensions.rs uses "src/lib.rs" only
-# inside JSON fixture payloads — also excluded.
+# Not scanners: tests/cli_dispatch_coverage.rs mentions src/lib.rs only
+# in a doc comment; tests/viewer_bridge_extensions.rs uses "src/lib.rs"
+# only inside JSON fixture payloads — both excluded.
