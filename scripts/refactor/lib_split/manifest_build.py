@@ -61,7 +61,7 @@ REGIONS: list[tuple[tuple[str, str] | None, str, str, str]] = [
     (("struct", "Cli"), "4", "src/cli", "args: Cli, Commands, command enums"),
     (("struct", "CliError"), "4", "src/cli", "error: CliError, CliResult, WrapConfig"),
     (("fn", "root_structured_triage_rewrite"), "4", "src/cli/argv", "argv recovery/normalize/parse"),
-    (("fn", "run"), "4", "src/cli", "entry + execute_cli dispatch"),
+    (("struct", "ParsedCli"), "4", "src/cli", "entry.rs surface + dispatch"),
     (("fn", "handle_import"), "2b", "src/cli/commands", "import/quarantine/mirror/forget/analytics"),
     (("const", "STATE_DB_OPEN_TIMEOUT"), "4", "src/cli/state", "db-open helpers, index error mapping"),
     (("fn", "cli_error_json_payload"), "4", "src/cli/output", "cli error envelope output"),
@@ -89,7 +89,8 @@ REGIONS: list[tuple[tuple[str, str] | None, str, str, str]] = [
     (("mod_inline", "cli_read_db_tests"), "2c", "src/cli/commands/status_health", "cli_read_db tests (split)"),
     (("struct", "DoctorBoundedArchiveDbProbe"), "3d", "src/doctor", "doctor probes"),
     (("fn", "run_doctor_impl"), "3d", "src/doctor", "doctor run"),
-    (("mod_inline", "path_spelling_tests"), "2d", "src/cli/commands", "sessions/context/capabilities/introspect"),
+    (("mod_inline", "path_spelling_tests"), "2d", "src/cli/commands", "sessions/context/ingest-reuse"),
+    (("struct", "CapabilitiesResponse"), "2e", "src/cli/commands/capabilities_introspect", "capabilities/introspect/api_version + command-schema"),
     (("fn", "response_schema_index_state"), "1a", "src/robot_schema", "response schemas"),
     (("fn", "role_to_export_string"), "2d", "src/cli/commands/view", "view + followup identity"),
     (("struct", "IndexShutdownSignals"), "1b", "src/indexer", "indexer stall watchdog"),
@@ -105,10 +106,15 @@ REGIONS: list[tuple[tuple[str, str] | None, str, str, str]] = [
 ]
 
 # Named plan targets: file whose packed run starts at this item name.
+# A NAMED_FILES member forces a packer flush *before* itself, so the
+# named item always starts its own file (plan §3 owner paths bind
+# exactly, not as best-effort prefixes).
 NAMED_FILES = {
     "Cli": "src/cli/args.rs",
     "diagnostics_connector_paths": "src/cli/commands/status_health/diagnostics.rs",
     "normalize_args": "src/cli/argv/normalize.rs",
+    "ParsedCli": "src/cli/entry.rs",
+    "execute_cli": "src/cli/dispatch.rs",
     "run_doctor_impl": "src/doctor/run.rs",
     "IndexShutdownSignals": "src/indexer/stall_watchdog.rs",
     "AgentFormat": "src/export/messages.rs",
@@ -512,7 +518,13 @@ def build() -> None:
                 i = span_end
             if run_first is None:
                 run_first, run_lines = first_i, ln
-            elif run_lines + ln > BUDGET - EMIT_OVERHEAD and not inside_protected(i - 1) and not inside_protected(i):
+            elif (run_lines + ln > BUDGET - EMIT_OVERHEAD
+                  or (items[first_i].name in NAMED_FILES
+                      and items[first_i].kind != "impl")) \
+                    and not inside_protected(i - 1) and not inside_protected(i):
+                # Budget overflow OR a plan-named owner arriving mid-run:
+                # named targets always start their own file. (impls share
+                # their type's name — excluded, they ride `also`.)
                 flush()
                 run_first, run_lines = first_i, ln
             else:
@@ -535,7 +547,9 @@ def build() -> None:
             if a <= lo and b >= hi and gname in GROUP_FILE_NAMES:
                 named = GROUP_FILE_NAMES[gname]
                 break
-        path = named or NAMED_FILES.get(e["first"].name)
+        path = named or (
+            NAMED_FILES.get(e["first"].name)
+            if e["first"].kind != "impl" else None)
         if path is None:
             base = slug(e["first"].name)
             path = f"{e['dir']}/{base}.rs"
@@ -760,6 +774,10 @@ def build() -> None:
         'source = "src/lib.rs"',
         f"source_lines = {len(starts)}",
         'generated_against = "ac28de473dc87ac60d4f5e6d7794a9c4504bfbe4"',
+        "# Stages that exist in the plan but are manual structural work,",
+        "# not move-only applies (plan §8): run_doctor_impl decomposition",
+        "# (5) and final lib.rs shim/cleanup (6).",
+        'manual_stages = [ "5", "6" ]',
         "",
     ]
     for gname, members in GROUPS:

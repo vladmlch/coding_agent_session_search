@@ -5,6 +5,10 @@
 source = "src/lib.rs"
 source_lines = 114949
 generated_against = "ac28de473dc87ac60d4f5e6d7794a9c4504bfbe4"
+# Stages that exist in the plan but are manual structural work,
+# not move-only applies (plan §8): run_doctor_impl decomposition
+# (5) and final lib.rs shim/cleanup (6).
+manual_stages = [ "5", "6" ]
 
 [[group]]
 name = "cleanup-order"
@@ -87,8 +91,8 @@ test = "legacy_cli_dispatch_routes_through_typed_doctor_module"
 test_file = "src/doctor.rs"
 stage = "4"
 find = "concat!(include_str!(\"lib.rs\"), include_str!(\"doctor/run.rs\"))"
-with = "concat!(include_str!(\"cli/execute_cli.rs\"), include_str!(\"doctor/run.rs\"))"
-to = [ "src/cli/execute_cli.rs", "src/doctor/run.rs" ]
+with = "concat!(include_str!(\"cli/dispatch.rs\"), include_str!(\"doctor/run.rs\"))"
+to = [ "src/cli/dispatch.rs", "src/doctor/run.rs" ]
 markers = [ "pub(crate) fn run_doctor_impl(", "doctor::DoctorCommandRequest::from_cli_flags" ]
 
 [[retarget]]
@@ -605,16 +609,16 @@ mod = "removed_invocation_tests"
 target = "src/cli/argv/heuristic_parse_recovery.rs"
 stage = "4"
 first = { kind = "fn", name = "heuristic_parse_recovery" }
-last = { kind = "fn", name = "parse_cli" }
+last = { kind = "fn", name = "heuristic_parse_recovery" }
 
 [[file]]
-target = "src/cli/run.rs"
+target = "src/cli/entry.rs"
 stage = "4"
-first = { kind = "fn", name = "run" }
+first = { kind = "struct", name = "ParsedCli" }
 last = { kind = "fn", name = "try_run_with_parsed_fast" }
 
 [[file]]
-target = "src/cli/execute_cli.rs"
+target = "src/cli/dispatch.rs"
 stage = "4"
 first = { kind = "fn", name = "execute_cli" }
 last = { kind = "fn", name = "execute_cli" }
@@ -1316,14 +1320,14 @@ stage = "2d"
 mod = "source_ingest_reuse_capability_tests"
 
 [[file]]
-target = "src/cli/commands/capabilitiesresponse.rs"
-stage = "2d"
+target = "src/cli/commands/capabilities_introspect/capabilitiesresponse.rs"
+stage = "2e"
 first = { kind = "struct", name = "CapabilitiesResponse" }
 last = { kind = "fn", name = "run_config_based_export" }
 
 [[file]]
-target = "src/cli/commands/run_api_version.rs"
-stage = "2d"
+target = "src/cli/commands/capabilities_introspect/run_api_version.rs"
+stage = "2e"
 first = { kind = "fn", name = "run_api_version" }
 last = { kind = "fn", name = "should_skip_arg" }
 
