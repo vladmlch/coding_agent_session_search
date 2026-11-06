@@ -253,6 +253,32 @@ strip = false
 - For many simple changes: use parallel subagents
 - For subtle/complex changes: do them methodically yourself
 
+**Scoped exception — lib.rs modularization tooling.** The approved
+`src/lib.rs` split program authorizes the tooling under
+`scripts/refactor/lib_split/` (item lexer, manifest builder, test
+inventory, scan parity, stale refs, splitter). That tooling may emit
+files only per the checked-in `scripts/refactor/lib_split/manifest.toml`;
+every other no-script rule still applies to all other code.
+
+### lib.rs modularization (split program rules)
+
+- **Size budget:** no file produced from `src/lib.rs` may exceed 2000
+  lines (working target ~1800). Enforced by
+  `tests/source_file_size_budget.rs` over `src/cli/`, `src/doctor/`,
+  `src/robot_schema/`, `src/indexer/stall_watchdog.rs` and
+  `src/export/messages.rs`. `src/lib.rs` is the only temporary exception
+  and must be removed from the exception list when the shim lands.
+- **Temporary glob imports:** during the staged move, new files seeded by
+  the splitter carry `use super::*;` + `use crate::*;` plus a copy of the
+  former root `use` block, and moved non-public items are mechanically
+  promoted to `pub(crate)` (including fields). This is transitional glue
+  to keep every stage compiling; tightening visibility and pruning
+  imports is deferred cleanup, not optional polish to fix mid-move.
+- **No squashing:** commits in the split program stay one-stage-per-move
+  — never squash or rewrite them. `git bisect --first-parent` must be
+  able to bisect the split history, so stage commits land on the branch
+  directly and stay ordered.
+
 ### No File Proliferation
 
 If you want to change something or add a feature, **revise existing code files in place**.
