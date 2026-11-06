@@ -6713,6 +6713,7 @@ fn commit_lexical_rebuild_progress(
     t_index: &mut TantivyIndex,
     persist_finalized_checkpoint: bool,
     mut perf_profile: Option<&mut LexicalRebuildPerfProfile>,
+    region_docs: usize,
 ) -> Result<()> {
     let pending_progress_started = perf_profile.as_ref().map(|_| Instant::now());
     persist_pending_lexical_rebuild_progress(
@@ -6723,6 +6724,7 @@ fn commit_lexical_rebuild_progress(
         processed_conversations,
         indexed_docs,
         runtime,
+        region_docs,
     )?;
     if let (Some(profile), Some(started)) = (perf_profile.as_mut(), pending_progress_started) {
         profile.pending_progress_duration += started.elapsed();
@@ -6890,6 +6892,12 @@ struct PendingLexicalCommit {
     processed_conversations: usize,
     indexed_docs: usize,
     base_meta_fingerprint: Option<String>,
+    /// The share of `indexed_docs` that is search-region documents. Only the
+    /// terminal publication commits region documents; streaming commits carry
+    /// zero. Recorded with the pending commit so a landed terminal commit
+    /// becomes a checkpoint that knows its region share.
+    #[serde(default)]
+    region_docs: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -7122,6 +7130,7 @@ impl LexicalRebuildState {
             processed_conversations,
             indexed_docs,
             base_meta_fingerprint,
+            region_docs: 0,
         });
         self.completed = false;
         self.updated_at_ms = FrankenStorage::now_millis();
@@ -7134,9 +7143,10 @@ impl LexicalRebuildState {
             self.committed_conversation_id = pending.next_conversation_id;
             self.processed_conversations = pending.processed_conversations;
             self.indexed_docs = pending.indexed_docs;
-            // Pending counts track canonical message documents only; the
-            // region share is stamped separately at completion.
-            self.indexed_region_docs = 0;
+            // The region share travels with the commit that wrote it: zero for
+            // streaming commits, the converged region documents for the
+            // terminal commit. Completion restamps the same value.
+            self.indexed_region_docs = pending.region_docs;
         }
         self.committed_meta_fingerprint = committed_meta_fingerprint;
         self.completed = false;
@@ -10248,6 +10258,7 @@ fn persist_pending_lexical_rebuild_progress_with_base_meta_fingerprint(
     indexed_docs: usize,
     runtime: &LexicalRebuildPipelineRuntimeSnapshot,
     base_meta_fingerprint: Option<String>,
+    region_docs: usize,
 ) -> Result<()> {
     let checkpoint_runtime = runtime.checkpoint_snapshot();
     let current_processed_conversations = state.reported_processed_conversations();
@@ -10274,6 +10285,7 @@ fn persist_pending_lexical_rebuild_progress_with_base_meta_fingerprint(
             && pending.processed_conversations == processed_conversations
             && pending.indexed_docs == indexed_docs
             && pending.base_meta_fingerprint == base_meta_fingerprint
+            && pending.region_docs == region_docs
             && state.runtime == checkpoint_runtime
     });
     if already_recorded {
@@ -10286,6 +10298,9 @@ fn persist_pending_lexical_rebuild_progress_with_base_meta_fingerprint(
         indexed_docs,
         base_meta_fingerprint,
     );
+    if let Some(pending) = state.pending.as_mut() {
+        pending.region_docs = region_docs;
+    }
     state.set_runtime(&checkpoint_runtime);
     persist_lexical_rebuild_state(index_path, state)
 }
@@ -10307,6 +10322,7 @@ fn persist_pending_lexical_rebuild_progress(
     processed_conversations: usize,
     indexed_docs: usize,
     runtime: &LexicalRebuildPipelineRuntimeSnapshot,
+    region_docs: usize,
 ) -> Result<()> {
     persist_pending_lexical_rebuild_progress_with_base_meta_fingerprint(
         index_path,
@@ -10316,6 +10332,7 @@ fn persist_pending_lexical_rebuild_progress(
         indexed_docs,
         runtime,
         index_meta_fingerprint(content_path)?,
+        region_docs,
     )
 }
 
@@ -10363,6 +10380,7 @@ fn maybe_persist_staged_lexical_rebuild_progress(
         indexed_docs,
         runtime,
         base_meta_fingerprint,
+        0,
     )?;
     bump_index_run_lock_progress_if_present(progress_bump);
     if let (Some(profile), Some(started)) = (perf_profile.as_mut(), heartbeat_progress_started) {
@@ -25205,6 +25223,26 @@ fn rename_lexical_publish_path(
     fs::rename(src, dst)
 }
 
+#[cfg(test)]
+thread_local! {
+    static LEXICAL_TERMINAL_FAILPOINT: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Test-only interruption probe for the terminal finalize. An armed stage makes
+/// the next terminal step on this thread fail at that point; the rebuild then
+/// returns without any cleanup on the terminal path, so the files stay as they
+/// were at that point. Each probe fires once. A thread-local keeps parallel
+/// tests from arming each other's rebuilds.
+#[cfg(test)]
+fn lexical_terminal_failpoint(stage: &'static str) -> Result<()> {
+    if LEXICAL_TERMINAL_FAILPOINT.with(std::cell::Cell::get) == Some(stage) {
+        LEXICAL_TERMINAL_FAILPOINT.with(|armed| armed.set(None));
+        anyhow::bail!("injected interruption at lexical terminal stage `{stage}`");
+    }
+    Ok(())
+}
+
 /// GH #441 test hook (tests/cli_index.rs): skip the post-run segment
 /// maintenance (`optimize_if_idle` after an incremental run, `force_merge`
 /// after a full rebuild) so a test can build a deliberately fragmented
@@ -28269,6 +28307,7 @@ fn rebuild_tantivy_from_db_once(
                         &mut t_index,
                         true,
                         perf_profile.as_mut(),
+                        0,
                     )?;
                     conversations_since_commit = 0;
                     messages_since_commit = 0;
@@ -28349,6 +28388,7 @@ fn rebuild_tantivy_from_db_once(
                         processed_conversations,
                         indexed_docs,
                         &latest_pipeline_runtime,
+                        0,
                     )?;
                     if let (Some(profile), Some(started)) =
                         (perf_profile.as_mut(), heartbeat_progress_started)
@@ -28691,6 +28731,11 @@ fn rebuild_tantivy_from_db_once(
     // certify docs this generation never wrote. The marks stamp needs a
     // writable handle; the rebuild's page reader stays strictly
     // read-only by design.
+    // A resumed terminal re-converges every marked session. The region share an
+    // interrupted run already recorded is inside `indexed_docs`, and the
+    // re-upserts report it again, so that share is taken out before this pass
+    // counts its own region documents.
+    indexed_docs = indexed_docs.saturating_sub(rebuild_state.indexed_region_docs);
     let (region_docs, marks_storage) = {
         let marks_storage = FrankenStorage::open_writer(db_path).with_context(|| {
             format!(
@@ -28703,7 +28748,28 @@ fn rebuild_tantivy_from_db_once(
         indexed_docs += docs;
         (docs, marks_storage)
     };
+    // The terminal commit follows the streaming protocol: the exact counts it
+    // lands are recorded as a pending commit BEFORE the candidate commit can
+    // become durable. Without this record, a kill after the commit left a
+    // candidate ahead of its checkpoint, and the resume check quarantined a
+    // fully indexed generation whose cursor already reached the end.
+    publication.run("checkpoint_terminal_pending", || {
+        persist_pending_lexical_rebuild_progress(
+            &index_path,
+            &build_path,
+            &mut rebuild_state,
+            last_processed_conversation_id,
+            processed_conversations,
+            indexed_docs,
+            &latest_pipeline_runtime,
+            region_docs,
+        )
+    })?;
+    #[cfg(test)]
+    lexical_terminal_failpoint("terminal_pending_recorded")?;
     publication.run("commit_candidate", || t_index.commit())?;
+    #[cfg(test)]
+    lexical_terminal_failpoint("candidate_committed")?;
     // Two-phase region-doc publication: only NOW — after the candidate
     // commit sealed the staged documents — do the marks rows move to
     // `published`. A failed commit or crash above leaves them pending so
@@ -28753,14 +28819,16 @@ fn rebuild_tantivy_from_db_once(
     if let Some(p) = &progress {
         p.tick_activity();
     }
-    // The terminal commit persists the pending checkpoint before commit, then
-    // lets completion fold commit-finalization into the final completed-state
-    // write. If the process dies after commit but before completion, restart
-    // reconciliation still lands the pending commit. It runs unconditionally:
-    // the merge above changed the manifest, and the fingerprint the completed
-    // checkpoint carries must describe the generation that is actually
-    // published — a stale fingerprint reads as "index changed underneath the
-    // checkpoint" and forces the next run into another full rebuild.
+    // The pending record written before the candidate commit covers every
+    // kill point from that commit through this one, so restart reconciliation
+    // lands the commit or reverts it. This final commit records and commits the
+    // post-stamp, post-merge manifest, and it runs unconditionally: the merge
+    // above changed the manifest, and the fingerprint the completed checkpoint
+    // carries must describe the generation that is actually published — a stale
+    // fingerprint reads as "index changed underneath the checkpoint" and forces
+    // the next run into another full rebuild.
+    #[cfg(test)]
+    lexical_terminal_failpoint("before_terminal_checkpoint")?;
     publication.run("checkpoint_after_fold", || {
         commit_lexical_rebuild_progress(
             &index_path,
@@ -28773,6 +28841,7 @@ fn rebuild_tantivy_from_db_once(
             &mut t_index,
             false,
             perf_profile.as_mut(),
+            region_docs,
         )
     })?;
 
@@ -64875,6 +64944,197 @@ c.close()
         );
     }
 
+    /// One conversation with two messages. Region documents exist for it once
+    /// it is persisted, so the terminal publication has a region share to
+    /// converge, record and resume.
+    fn terminal_resume_conversation(dir: &Path) -> NormalizedConversation {
+        NormalizedConversation {
+            agent_slug: "claude_code".into(),
+            external_id: Some("terminal-resume".into()),
+            title: Some("Terminal resume".into()),
+            workspace: Some(dir.join("workspace")),
+            source_path: dir.join("terminal-resume.jsonl"),
+            started_at: Some(1_700_000_000_000),
+            ended_at: Some(1_700_000_000_050),
+            metadata: serde_json::json!({"model": "fixture-model"}),
+            messages: vec![
+                NormalizedMessage {
+                    idx: 0,
+                    role: "user".into(),
+                    author: None,
+                    created_at: Some(1_700_000_000_000),
+                    content: "terminal question".into(),
+                    extra: serde_json::json!({"uuid": "u-0"}),
+                    snippets: Vec::new(),
+                    invocations: Vec::new(),
+                },
+                NormalizedMessage {
+                    idx: 1,
+                    role: "assistant".into(),
+                    author: None,
+                    created_at: Some(1_700_000_000_050),
+                    content: "terminal answer".into(),
+                    extra: serde_json::json!({"uuid": "a-1"}),
+                    snippets: Vec::new(),
+                    invocations: Vec::new(),
+                },
+            ],
+        }
+    }
+
+    /// Migrated archive holding one persisted conversation. Commits are forced
+    /// after every conversation, so the last streaming checkpoint's cursor
+    /// already equals the total before the terminal finalize begins.
+    fn terminal_resume_archive(data_dir: &Path) -> PathBuf {
+        let db_path = data_dir.join("db.sqlite");
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        storage.run_migrations().unwrap();
+        let conversation = terminal_resume_conversation(data_dir);
+        persist::persist_conversations_batched(
+            &storage,
+            None,
+            std::slice::from_ref(&conversation),
+            LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            false,
+        )
+        .unwrap();
+        drop(storage);
+        db_path
+    }
+
+    /// Quarantine directories are reserved beside the versioned index
+    /// directory (`<data>/index/`), where the staged candidate also lives.
+    fn quarantine_entries(index_path: &Path) -> Vec<String> {
+        std::fs::read_dir(index_path.parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".lexical-rebuild-quarantine-"))
+            .collect()
+    }
+
+    /// A kill anywhere after the last batch committed must leave a checkpoint
+    /// that the next run finalizes in place: the interrupted candidate is the
+    /// one published, nothing is quarantined, and no conversation is re-indexed.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn rebuild_resumes_terminal_finalize_without_reindexing_after_interruption() {
+        use std::os::unix::fs::MetadataExt;
+        for stage in [
+            "terminal_pending_recorded",
+            "candidate_committed",
+            "before_terminal_checkpoint",
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let data_dir = tmp.path().join("data");
+            std::fs::create_dir_all(&data_dir).unwrap();
+            let db_path = terminal_resume_archive(&data_dir);
+            let _commit_every = set_env("CASS_TANTIVY_REBUILD_COMMIT_EVERY_CONVERSATIONS", "1");
+            let index_path = index_dir(&data_dir).unwrap();
+            let scratch = staged_lexical_rebuild_scratch_path(&index_path);
+
+            LEXICAL_TERMINAL_FAILPOINT.with(|armed| armed.set(Some(stage)));
+            let interrupted = rebuild_tantivy_from_db(&db_path, &data_dir, 1, None);
+            assert!(
+                interrupted.is_err(),
+                "{stage}: the probe must interrupt the terminal finalize"
+            );
+            let interrupted_state = load_lexical_rebuild_state(&index_path)
+                .unwrap()
+                .expect("interrupted run leaves a checkpoint");
+            assert!(!interrupted_state.completed, "{stage}");
+            assert_eq!(
+                interrupted_state.processed_conversations, 1,
+                "{stage}: the cursor already reached the end of the archive"
+            );
+            let candidate_ino = std::fs::metadata(&scratch).unwrap().ino();
+
+            let resumed = rebuild_tantivy_from_db(&db_path, &data_dir, 1, None)
+                .unwrap_or_else(|error| panic!("{stage}: resume failed: {error:#}"));
+
+            assert_eq!(
+                std::fs::metadata(&index_path).unwrap().ino(),
+                candidate_ino,
+                "{stage}: the interrupted candidate must be published, not rebuilt"
+            );
+            assert_eq!(
+                quarantine_entries(&index_path),
+                Vec::<String>::new(),
+                "{stage}: a fully indexed candidate must not be quarantined"
+            );
+            let final_state = load_lexical_rebuild_state(&index_path).unwrap().unwrap();
+            assert!(final_state.completed, "{stage}");
+            assert!(
+                resumed.indexed_region_docs > 0,
+                "{stage}: the fixture must carry region documents"
+            );
+            assert_eq!(
+                final_state.indexed_region_docs, resumed.indexed_region_docs,
+                "{stage}: the resumed terminal keeps the region share it recorded"
+            );
+            assert_eq!(
+                crate::search::tantivy::validated_searchable_index_summary(&index_path)
+                    .unwrap()
+                    .docs,
+                resumed.indexed_docs,
+                "{stage}: the published generation holds exactly the certified documents"
+            );
+        }
+    }
+
+    /// A checkpoint that claims fewer documents than the candidate it names is
+    /// not finalized. The resume quarantines the candidate and rebuilds it.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn rebuild_restarts_when_terminal_checkpoint_disagrees_with_candidate() {
+        use std::os::unix::fs::MetadataExt;
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let db_path = terminal_resume_archive(&data_dir);
+        let _commit_every = set_env("CASS_TANTIVY_REBUILD_COMMIT_EVERY_CONVERSATIONS", "1");
+        let index_path = index_dir(&data_dir).unwrap();
+        let scratch = staged_lexical_rebuild_scratch_path(&index_path);
+
+        LEXICAL_TERMINAL_FAILPOINT.with(|armed| armed.set(Some("candidate_committed")));
+        assert!(rebuild_tantivy_from_db(&db_path, &data_dir, 1, None).is_err());
+        let candidate_ino = std::fs::metadata(&scratch).unwrap().ino();
+
+        // Forge the disagreement: no pending commit to reconcile, and a count
+        // one document short of what the candidate holds.
+        let mut forged = load_lexical_rebuild_state(&index_path).unwrap().unwrap();
+        forged.pending = None;
+        forged.indexed_docs -= 1;
+        persist_lexical_rebuild_state(&index_path, &forged).unwrap();
+
+        let resumed = rebuild_tantivy_from_db(&db_path, &data_dir, 1, None)
+            .expect("a mismatched checkpoint restarts and completes");
+        assert_eq!(
+            quarantine_entries(&index_path).len(),
+            1,
+            "the mismatched candidate is retained as evidence"
+        );
+        assert_ne!(
+            std::fs::metadata(&index_path).unwrap().ino(),
+            candidate_ino,
+            "the published generation is a fresh build, not the forged candidate"
+        );
+        assert!(
+            load_lexical_rebuild_state(&index_path)
+                .unwrap()
+                .unwrap()
+                .completed
+        );
+        assert_eq!(
+            crate::search::tantivy::validated_searchable_index_summary(&index_path)
+                .unwrap()
+                .docs,
+            resumed.indexed_docs
+        );
+    }
+
     #[test]
     #[serial]
     // Asserts the staged-shard rebuild strategy, which builds N independent
@@ -76259,6 +76519,7 @@ c.close()
             processed_conversations: 2,
             indexed_docs: 4,
             base_meta_fingerprint: None,
+            region_docs: 0,
         });
 
         upgrade_lexical_rebuild_state_resume_cursor_if_needed(&storage, &index_path, &mut state)
@@ -76617,6 +76878,7 @@ c.close()
             6,
             12,
             &refreshed_runtime,
+            0,
         )
         .unwrap();
 
@@ -76704,6 +76966,7 @@ c.close()
             6,
             12,
             &live_runtime,
+            0,
         )
         .unwrap();
 
@@ -76772,6 +77035,7 @@ c.close()
             5,
             10,
             &stale_stage_runtime,
+            0,
         )
         .unwrap();
 
@@ -76858,6 +77122,7 @@ c.close()
             10,
             &runtime,
             cached_base_meta_fingerprint.clone(),
+            0,
         )
         .unwrap();
 
@@ -76953,6 +77218,7 @@ c.close()
             &mut index,
             false,
             None,
+            0,
         )
         .unwrap();
 

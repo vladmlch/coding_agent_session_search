@@ -1232,6 +1232,7 @@ fn gh523_killed_staged_rebuild_resumes_from_its_last_commit_not_its_heartbeat() 
         3,
         6,
         &runtime,
+        0,
     )
     .unwrap();
     assert_eq!(
@@ -1260,8 +1261,17 @@ fn gh523_killed_staged_rebuild_resumes_from_its_last_commit_not_its_heartbeat() 
 
     // A commit that did land after its pending record is still promoted.
     let mut landed = state;
-    persist_pending_lexical_rebuild_progress(&live, &scratch, &mut landed, Some(3), 3, 6, &runtime)
-        .unwrap();
+    persist_pending_lexical_rebuild_progress(
+        &live,
+        &scratch,
+        &mut landed,
+        Some(3),
+        3,
+        6,
+        &runtime,
+        0,
+    )
+    .unwrap();
     let rest = conversation("rest", 2, 4);
     candidate
         .add_messages_with_conversation_id(&rest, &rest.messages, Some(3))
