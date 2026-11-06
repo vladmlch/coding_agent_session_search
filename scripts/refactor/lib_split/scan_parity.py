@@ -42,13 +42,100 @@ def scanners(spec: dict) -> dict:
     return raw
 
 
-def _needles(test_src: str) -> list[str]:
-    out = []
-    for m in re.finditer(r'contains\(\s*"([^"]{4,})"', test_src):
-        out.append(m.group(1))
-    for m in re.finditer(r'needle[s]?\s*[:=].{0,40}"([^"]{4,})"', test_src):
-        out.append(m.group(1))
+# A "read var" must be initialized from a file read whose statement
+# names a Rust source path — reads of temp fixtures, DB files and
+# /proc do not create source-scan variables.
+_READ_VAR = re.compile(
+    r"\blet\s+(\w+)\s*=[^;]*?"
+    r"(?:read_to_string|include_str!|fs::read|fs::read_to_string)"
+    r"[^;]*?\.rs")
+# `for v in [a, b]` — loop var over source vars (sqlite's dual-source
+# absence scan).
+_FOR_READ_VAR = re.compile(
+    r"\bfor\s+(\w+)\s+in\s+\[([^\]]+)\]")
+# `X.contains("lit")` / `X.matches("lit")` — X may carry field/slice
+# suffixes (`repair_err.message.`, `src[ls..le].`); a bare call receiver
+# like `logs().contains(` does not match, which is correct.
+_CONTAINS = re.compile(
+    r'(!)?\s*(\w+)(?:\.\w+|\[[^\]]*\])*\s*\.\s*'
+    r'(?:contains|matches)\s*\(\s*"([^"]{4,})"')
+_DECL_NEEDLE = re.compile(r'needle[s]?\s*[:=][^"\n]{0,40}"([^"]{4,})"')
+
+
+def _source_vars(test_src: str) -> set:
+    """Variables initialized (possibly transitively) from a file read —
+    `lib_source = include_str!`, `src = read_to_string`, `view = &src[..]`.
+    A `contains` on anything else asserts over runtime data, not source.
+    """
+    direct = set(_READ_VAR.findall(test_src))
+    out = set(direct)
+    # Only shallow content views propagate: `&v[..]`, `v.trim()`,
+    # `v.clone()`, `&v`, `v[..]` — expressions where v2 still IS the
+    # file text. Arbitrary `f(v, …)` results are not source views.
+    props = re.findall(
+        r"\blet\s+(\w+)\s*=\s*&?\s*(\w+)\s*"
+        r"(?:\[[^\]]*\]|\.(?:trim|clone|to_string|to_owned|as_str)\(\)\s*)*;",
+        test_src)
+    fors = _FOR_READ_VAR.findall(test_src)
+    for _ in range(4):
+        grew = False
+        for name, base in props:
+            if name not in out and base in out:
+                out.add(name)
+                grew = True
+        for name, elems in fors:
+            if name not in out and any(
+                    re.search(rf"\b{re.escape(v)}\b", elems) for v in out):
+                out.add(name)
+                grew = True
+        if not grew:
+            break
     return out
+
+
+def _needles(test_src: str) -> tuple[list[str], list[str]]:
+    """(positive, absent) needle literals against the scanned sources.
+
+    Positive: `srcvar.contains("…")` / `srcvar.matches("…")` where srcvar
+    holds file contents — the literal must exist in the sources.
+    Absent: `!srcvar.contains("…")` — the literal must NOT exist (the
+    `fn run_doctor(` ban in src/doctor.rs's dispatch test).
+    """
+    srcs = _source_vars(test_src)
+    pos, neg = [], []
+    for m in _CONTAINS.finditer(test_src):
+        bang, recv, lit = m.group(1), m.group(2), m.group(3)
+        if recv not in srcs:
+            continue  # runtime-data assert, not a source scan
+        (neg if bang else pos).append(lit)
+    for m in _DECL_NEEDLE.finditer(test_src):
+        pos.append(m.group(1))
+    return pos, neg
+
+
+def _corpus(entry: dict, repo: Path, exclude: str | None = None) -> str:
+    """Union of a scanner's file sources plus every .rs under its
+    directory scans (`dirs`). `exclude` drops one source — the needle
+    check must not let the scanning test file itself prove (or break)
+    coverage: a needle living only in the test is a dead scan, and a
+    `!contains` ban would self-match its own literal."""
+    out = []
+    for rel in entry["sources"]:
+        if rel == exclude:
+            continue
+        p = repo / rel
+        if p.is_file():
+            out.append(p.read_text(errors="replace"))
+    for rel in entry.get("dirs", []):
+        d = repo / rel
+        if d.is_dir():
+            for p in sorted(d.rglob("*.rs")):
+                if p.is_file():
+                    rel_p = str(p.relative_to(repo)).replace("\\", "/")
+                    if rel_p == exclude:
+                        continue
+                    out.append(p.read_text(errors="replace"))
+    return "".join(out)
 
 
 def check(spec: dict, repo: Path = REPO, verbose=True) -> list[str]:
@@ -64,8 +151,15 @@ def check(spec: dict, repo: Path = REPO, verbose=True) -> list[str]:
                 problems.append(f"{name}: missing source {rel}")
             elif p.stat().st_size == 0:
                 problems.append(f"{name}: empty source {rel}")
+        for rel in entry.get("dirs", []):
+            d = repo / rel
+            if not d.is_dir():
+                problems.append(f"{name}: missing dir-scan root {rel}")
+            elif not any(d.rglob("*.rs")):
+                problems.append(f"{name}: dir-scan root {rel} has no .rs")
         if verbose:
-            print(f"{name}: {len(entry['sources'])} sources ok")
+            print(f"{name}: {len(entry['sources'])} sources, "
+                  f"{len(entry.get('dirs', []))} dirs ok")
     return problems
 
 
@@ -77,22 +171,32 @@ def needles(spec: dict, repo: Path = REPO) -> list[str]:
         if not tpath.is_file():
             problems.append(f"{name}: missing test file {test_rel}")
             continue
-        corpus = ""
-        for rel in entry["sources"]:
-            p = repo / rel
-            corpus += p.read_text() if p.is_file() else ""
-        for needle in _needles(tpath.read_text()):
-            if needle not in corpus and needle not in tpath.read_text():
+        corpus = _corpus(entry, repo, exclude=test_rel)
+        pos, neg = _needles(tpath.read_text())
+        for needle in pos:
+            # A needle must live in the scanned sources themselves —
+            # surviving only inside the test file is a dead scan.
+            if needle not in corpus:
                 problems.append(f"{name}: needle not in sources: {needle!r}")
+        for needle in neg:
+            # `!srcvar.contains(…)` is an absence scan — the needle
+            # must stay out of the scanned sources.
+            if needle in corpus:
+                problems.append(
+                    f"{name}: banned needle present in sources: {needle!r}")
     return problems
 
 
-def counts(spec: dict, texts: dict[str, str]) -> dict:
-    """Per-scanner needle counts over the union of its source texts.
+def counts(spec: dict, texts: dict[str, str],
+             repo: Path | None = None) -> dict:
+    """Per-scanner PER-PATTERN needle counts over the union of its
+    source texts — a lost match for one pattern cannot be hidden by a
+    gained match for another.
 
     `texts` maps repo-relative source path -> content. Returns
-    {scanner_name: total_count} or {name: "unsupported:<why>"} for
-    scanners without declared patterns.
+    {scanner_name: {pattern: count}} or {name: "unsupported:<why>"} for
+    scanners without declared patterns. When `repo` is given, `dirs`
+    directory scans are expanded and read from disk.
     """
     out = {}
     for name, entry in scanners(spec).items():
@@ -100,13 +204,19 @@ def counts(spec: dict, texts: dict[str, str]) -> dict:
         if not pats:
             out[name] = "unsupported:no-patterns"
             continue
-        total = 0
-        for rel in entry["sources"]:
-            body = texts.get(rel, "")
-            for pat in pats:
-                lit = pat["literal"] if isinstance(pat, dict) else pat
-                total += body.count(lit)
-        out[name] = total
+        per = {}
+        body = "".join(texts.get(rel, "") for rel in entry["sources"])
+        if repo is not None and entry.get("dirs"):
+            for rel in entry["dirs"]:
+                d = Path(repo) / rel
+                if d.is_dir():
+                    for p in sorted(d.rglob("*.rs")):
+                        if p.is_file():
+                            body += p.read_text(errors="replace")
+        for pat in pats:
+            lit = pat["literal"] if isinstance(pat, dict) else pat
+            per[lit] = body.count(lit)
+        out[name] = per
     return out
 
 
@@ -117,7 +227,7 @@ def counts_for_sources(spec: dict, repo: Path) -> dict:
             p = Path(repo) / rel
             if p.is_file():
                 texts[rel] = p.read_text(errors="replace")
-    return counts(spec, texts)
+    return counts(spec, texts, repo=repo)
 
 
 def diff_counts(before: dict, after: dict) -> list[str]:
@@ -131,17 +241,39 @@ def diff_counts(before: dict, after: dict) -> list[str]:
             if old != new:
                 problems.append(f"{name}: support status changed {old!r} -> {new!r}")
             continue
-        if new < old:
-            problems.append(f"{name}: needle count dropped {old} -> {new}")
-        elif new > old:
-            problems.append(f"{name}: needle count grew {old} -> {new}")
+        # per-pattern comparison — drops and gains flagged independently
+        for pat, oc in old.items():
+            nc = new.get(pat)
+            if nc is None:
+                problems.append(f"{name}: pattern removed {pat!r}")
+            elif nc < oc:
+                problems.append(
+                    f"{name}: needle count dropped for {pat!r} {oc} -> {nc}")
+            elif nc > oc:
+                problems.append(
+                    f"{name}: needle count grew for {pat!r} {oc} -> {nc}")
+        for pat in sorted(set(new) - set(old)):
+            problems.append(f"{name}: new pattern {pat!r} (unapproved)")
     for name in sorted(set(after) - set(before)):
         problems.append(f"{name}: new scanner (unapproved)")
     return problems
 
 
-def snapshot(spec: dict) -> dict:
-    return {name: entry["sources"] for name, entry in scanners(spec).items()}
+def snapshot(spec: dict, repo: Path | None = None) -> dict:
+    """Sources each scanner reads; `dirs` expand to their .rs file set
+    when `repo` is provided (so stage moves surface as path renames)."""
+    out = {}
+    for name, entry in scanners(spec).items():
+        srcs = list(entry["sources"])
+        if repo is not None:
+            for rel in entry.get("dirs", []):
+                d = Path(repo) / rel
+                if d.is_dir():
+                    srcs += sorted(
+                        str(p.relative_to(repo)).replace("\\", "/")
+                        for p in d.rglob("*.rs"))
+        out[name] = srcs
+    return out
 
 
 def diff(before: dict, after: dict) -> list[str]:
@@ -169,7 +301,7 @@ def main(argv):
         print(json.dumps(c, indent=1, sort_keys=True))
         return 0
     if cmd == "snapshot":
-        print(json.dumps(snapshot(spec), indent=1, sort_keys=True))
+        print(json.dumps(snapshot(spec, repo=REPO), indent=1, sort_keys=True))
         return 0
     if cmd == "diff":
         before = json.loads(Path(argv[2]).read_text())

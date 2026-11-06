@@ -69,13 +69,19 @@ def scan_source(text: str) -> list:
     for m in re.finditer(r"[^\n;]*;", text, re.S):
         stmt = m.group(0)
         line = text.count("\n", 0, m.start()) + 1
+        # fs::write(...join("src/lib.rs")...) builds a temp fixture —
+        # a writer, not a reader. Writers are reported separately and
+        # never require retargets (evidence: e2e-run-bundle/proof_artifact
+        # write fake lib.rs bytes under a TempDir).
+        is_write = re.search(
+            r"\b(?:std::)?fs::write\s*\(|\.write_all\s*\(", stmt) is not None
         for rx, kind in _STATEMENT_PATTERNS:
             sm = rx.search(stmt)
             if sm:
                 arg = sm.group("arg")
                 if arg == "lib.rs" or arg.endswith("src/lib.rs") or \
                         arg.endswith("/lib.rs"):
-                    hits.append((line, kind, arg))
+                    hits.append((line, "write" if is_write else kind, arg))
                 break
     return hits
 
@@ -83,8 +89,13 @@ SKIP_DIRS = {".git", "target", ".scratch", "node_modules", ".venv"}
 
 # Scanner tests listed in scanner_lists.toml legitimately read src/lib.rs;
 # the splitter's own docs/scripts may name it too.
+# src/indexer/mod.rs:41927 assigns `file_path: Some(dir.path().join(
+# "src/lib.rs"))` — snippet metadata for a TempDir fixture (evidence:
+# `dir` is a tempfile::TempDir; the test maps snippets to fixture paths).
+# Data, not a source read — allowed at that line only.
 BUILTIN_ALLOW = [
     "scripts/refactor/lib_split/*",
+    "src/indexer/mod.rs:4192*",
 ]
 
 
@@ -115,14 +126,28 @@ def scan(repo: Path = REPO):
             if i in hit_lines:
                 continue
             if CONSUMER_RX.search(line):
-                consumers.append((rel, i, line.strip()[:160]))
+                if re.search(r"\b(?:std::)?fs::write\s*\(|\.write_all\s*\(",
+                             line):
+                    consumers.append(
+                        (rel, i, f"write({line.strip()[:140]})"))
+                else:
+                    consumers.append((rel, i, line.strip()[:160]))
             elif MENTION_RX.search(line):
                 mentions.append((rel, i, line.strip()[:160]))
     return consumers, mentions
 
 
-def allowed(rel: str, allow_globs: list[str]) -> bool:
-    return any(fnmatch.fnmatch(rel, g) for g in allow_globs)
+def allowed(rel: str, line: int, allow_globs: list[str]) -> bool:
+    """`path` globs allow a whole file; `path:line-glob` entries allow
+    one line region only (fixture-data exemptions)."""
+    for g in allow_globs:
+        if ":" in g:
+            p, lg = g.rsplit(":", 1)
+            if fnmatch.fnmatch(rel, p) and fnmatch.fnmatch(str(line), lg):
+                return True
+        elif fnmatch.fnmatch(rel, g):
+            return True
+    return False
 
 
 def main(argv):
@@ -147,19 +172,42 @@ def main(argv):
             i += 1
     consumers, mentions = scan(repo)
     # consumers outside scanner test files are stale refs to fix
+    tomllib = __import__("tomllib")
     listed = {e["test"] for e in
-              __import__("tomllib").loads(
+              tomllib.loads(
                   (HERE / "scanner_lists.toml").read_text()
               )["scanner"].values()}
+    # [[retarget]] entries already sanction in-lib.rs include sites:
+    # a hit inside src/lib.rs whose (kind, arg) matches a declared
+    # retarget find is scheduled for rewrite at its stage, not stale.
+    man = tomllib.loads((HERE / "manifest.toml").read_text())
+    rt_finds = set()
+    for rt in man.get("retarget", []):
+        m = re.match(
+            r'\s*(include_str!|include!)\s*\(\s*"([^"]+)"\s*\)',
+            rt.get("find", ""))
+        if m:
+            rt_finds.add((m.group(1), m.group(2)))
+
+    def retargeted(rel: str, desc: str) -> bool:
+        if rel != "src/lib.rs" or "(" not in desc:
+            return False
+        kind, _, rest = desc.partition("(")
+        arg = rest.rstrip(")")
+        return (kind, arg) in rt_finds
+
+    writers = [h for h in consumers if h[2].startswith("write(")]
     bad = [
         h for h in consumers
-        if h[0] not in listed and not allowed(h[0], allow)
+        if not h[2].startswith("write(")
+        and not retargeted(h[0], h[2])
+        and h[0] not in listed and not allowed(h[0], h[1], allow)
     ]
     for rel, ln, text in bad:
         print(f"STALE-CONSUMER {rel}:{ln}: {text}")
     print(
-        f"stale_refs: {len(consumers)} consumers ({len(bad)} unlisted), "
-        f"{len(mentions)} text mentions"
+        f"stale_refs: {len(consumers)} consumers ({len(bad)} unlisted, "
+        f"{len(writers)} fixture writers), {len(mentions)} text mentions"
     )
     return 1 if bad else 0
 

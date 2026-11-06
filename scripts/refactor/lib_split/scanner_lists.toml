@@ -39,20 +39,27 @@ note = "SUBCOMMAND_ALIASES const inside normalize_args body"
 
 [scanner.doctor_mutate_auditor]
 test = "tests/doctor_mutate_auditor.rs"
-sources = ["src/lib.rs"]
+sources = [
+  "src/lib.rs",
+  "src/doctor_chokepoint.rs",
+  "src/doctor_runs.rs",
+  "src/doctor_undo.rs",
+  "src/doctor_robot_docs.rs",
+]
 patterns = [
   "run_doctor_explain",
   "run_doctor_emit_capabilities",
   "run_doctor_watch",
   "doctor-capabilities",
 ]
-note = "doctor pass markers (pass-2/3 dispatch, pass-6 watch, pass-8 explain/capabilities)"
+note = "doctor pass markers (pass-2/3 dispatch, pass-6 watch, pass-8 explain/capabilities); reads lib.rs plus the doctor_* companion sources by name"
 
 [scanner.local_only_audit]
 test = "tests/local_only_audit.rs"
-sources = ["src/lib.rs"]
+sources = ["src/lib.rs", "tests/cli_dispatch_coverage.rs"]
+dirs = ["src"]
 patterns = ["REMOVED_COMMANDS", "REMOVED_FLAGS", "was removed"]
-note = "REMOVED_COMMANDS/REMOVED_FLAGS tables + removed-command diagnostic"
+note = "REMOVED_COMMANDS/REMOVED_FLAGS tables + removed-command diagnostic; recursive .rs scan of src/** plus cli_dispatch_coverage pending flag"
 
 [scanner.doctor_chokepoint]
 test = "src/doctor_chokepoint.rs"
@@ -62,7 +69,7 @@ note = "in-source chokepoint audit reads lib.rs (doctor_mutate_auditor companion
 
 [scanner.doctor_insource]
 test = "src/doctor.rs"
-sources = ["src/lib.rs"]
+sources = ["src/lib.rs", "src/doctor.rs"]
 patterns = [
   "pub(crate) fn run_doctor_impl(",
   "doctor::DoctorCommandRequest::from_cli_flags",
@@ -80,6 +87,17 @@ test = "tests/source_file_size_budget.rs"
 sources = ["src/lib.rs"]
 patterns = []
 note = "line-count budget check — measures lib.rs, no literal needles (count-unsupported)"
+
+[scanner.storage_sqlite_unsafe_absence]
+test = "src/storage/sqlite.rs"
+sources = ["src/lib.rs", "src/storage/sqlite.rs"]
+absence = true
+patterns = ["unsafe impl Send for", "unsafe impl Sync for", "SendFrankenConnection"]
+note = "storage_source_forbids_manual_raw_connection_auto_trait_overrides: include_str!s sqlite.rs + ../lib.rs; ABSENCE scan — every pattern count must stay 0"
+
+# Fixture WRITERS are not consumers (verified: they fs::write temp
+# src/lib.rs fixtures, never read production source):
+#   src/bin/e2e-run-bundle.rs, src/proof_artifact.rs, src/indexer/mod.rs
 
 # Not scanners: tests/cli_dispatch_coverage.rs mentions src/lib.rs only
 # in a doc comment; tests/viewer_bridge_extensions.rs uses "src/lib.rs"
