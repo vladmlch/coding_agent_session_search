@@ -3,21 +3,19 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use chrono::Utc;
-pub(crate) use crate::indexer::IndexOptions;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::indexer::IndexOptions;
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Poll cancel-safe Asupersync signal streams from the existing CLI progress
 /// loop. The first signal lets the index worker drain its current batch; a
@@ -29,7 +27,6 @@ pub(crate) struct IndexShutdownSignals {
     pub(crate) received_at: Option<Instant>,
     pub(crate) repeated: bool,
 }
-
 
 impl IndexShutdownSignals {
     pub(crate) fn new(enabled: bool) -> std::io::Result<Self> {
@@ -149,7 +146,6 @@ impl IndexShutdownSignals {
     }
 }
 
-
 /// Run an incremental index pass before a TUI or Search invocation when the
 /// user passes `--refresh` (alias `--catch-up`). Mirrors `cass index` with
 /// `full=false`, `force_rebuild=false`, `watch=false`, `semantic=false` so it
@@ -164,7 +160,10 @@ impl IndexShutdownSignals {
 /// the existing index. A watchdog-confirmed no-progress stall is different:
 /// the worker cannot be detached without retaining `index-run.lock`, so the
 /// process exits 70 after the configured bound and releases every live lock.
-pub(crate) fn refresh_index_inline(db_override: Option<PathBuf>, data_dir_override: Option<PathBuf>) {
+pub(crate) fn refresh_index_inline(
+    db_override: Option<PathBuf>,
+    data_dir_override: Option<PathBuf>,
+) {
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
 
@@ -273,7 +272,6 @@ pub(crate) fn refresh_index_inline(db_override: Option<PathBuf>, data_dir_overri
         }
     }
 }
-
 
 /// Collect optional on-disk forensic context on a separate thread. Even a
 /// metadata lookup can block in the kernel on the filesystem being diagnosed
@@ -407,8 +405,10 @@ pub(crate) fn collect_stall_diagnostics(data_dir: &Path) -> serde_json::Value {
     serde_json::Value::Object(out)
 }
 
-
-pub(crate) fn read_bounded_stall_diagnostic(path: &Path, max_bytes: u64) -> std::io::Result<String> {
+pub(crate) fn read_bounded_stall_diagnostic(
+    path: &Path,
+    max_bytes: u64,
+) -> std::io::Result<String> {
     use std::io::Read;
 
     // A pre-read metadata length is not a bound: the file can grow or be
@@ -423,7 +423,6 @@ pub(crate) fn read_bounded_stall_diagnostic(path: &Path, max_bytes: u64) -> std:
     }
     Ok(contents)
 }
-
 
 /// At most one filesystem probe belongs to a watchdog, even if an earlier
 /// probe is kernel-blocked and indexing later resumes. Its receiver is only
@@ -444,7 +443,6 @@ pub(crate) enum IndexStallFilesystemProbe {
     },
     Failed(String),
 }
-
 
 impl IndexStallFilesystemProbe {
     pub(crate) fn reset_after_progress(&mut self) {
@@ -538,7 +536,6 @@ impl IndexStallFilesystemProbe {
     }
 }
 
-
 pub(crate) const INDEX_STALL_HINT: &str = concat!(
     "Indexer made no forward progress for the configured stall window. ",
     "For raw-mirror stalls, diagnostics.raw_mirror_io names the in-flight filesystem operation, path and elapsed_ms. ",
@@ -561,7 +558,6 @@ pub(crate) const INDEX_STALL_HINT: &str = concat!(
     "(for example replaying a multi-GiB WAL, #382); it gets the same bounded grace."
 );
 
-
 /// gh373/oeu5a: phase-2 hint for a stall observed while `persist_in_progress`
 /// is set — the giant-conversation persist window, NOT a finalize-WAL
 /// checkpoint. The generic hint's finalize-WAL guidance sent operators to
@@ -583,7 +579,6 @@ pub(crate) const INDEX_STALL_HINT_PERSIST: &str = concat!(
     "disable detection/abort."
 );
 
-
 pub(crate) fn index_stall_threshold(progress_interval: Duration) -> Option<Duration> {
     let stall_threshold_secs = dotenvy::var("CASS_INDEX_STALL_DETECT_SECS")
         .ok()
@@ -596,7 +591,6 @@ pub(crate) fn index_stall_threshold(progress_interval: Duration) -> Option<Durat
         Some(Duration::from_secs(stall_threshold_secs).max(min))
     }
 }
-
 
 /// #437: does `CASS_INDEX_STALL_ABORT_ALL_PHASES` request promoting the stall
 /// watchdog's report-only warnings to hard aborts in every phase? Pure parse
@@ -611,7 +605,6 @@ pub(crate) fn stall_abort_all_phases_flag(raw: Option<&str>) -> bool {
     })
 }
 
-
 /// #437: opt-in env that extends the existing stall-abort containment
 /// (`CASS_INDEX_STALL_ABORT_SECS`) to EVERY phase the stall detector reports
 /// on — including the scribe/accumulate and semantic lanes that are
@@ -623,7 +616,6 @@ pub(crate) fn index_stall_abort_all_phases_enabled() -> bool {
             .as_deref(),
     )
 }
-
 
 pub(crate) fn index_stall_abort_threshold(
     progress_interval: Duration,
@@ -642,7 +634,6 @@ pub(crate) fn index_stall_abort_threshold(
         .unwrap_or(report_threshold);
     Some(Duration::from_secs(abort_threshold_secs).max(min_after_report))
 }
-
 
 /// Bounded-but-generous abort grace for the post-publish *finalize* window
 /// (#319/#321).
@@ -666,7 +657,9 @@ pub(crate) fn index_stall_abort_threshold(
 /// fires. `CASS_INDEX_FINALIZE_ABORT_SECS=0` makes the finalize window
 /// report-only (never abort). The floor is the ordinary abort threshold, so
 /// this can only ever *lengthen* the finalize grace, never shorten it.
-pub(crate) fn index_finalize_abort_threshold(abort_threshold: Option<Duration>) -> Option<Duration> {
+pub(crate) fn index_finalize_abort_threshold(
+    abort_threshold: Option<Duration>,
+) -> Option<Duration> {
     let abort_threshold = abort_threshold?;
     let finalize_secs = dotenvy::var("CASS_INDEX_FINALIZE_ABORT_SECS")
         .ok()
@@ -677,7 +670,6 @@ pub(crate) fn index_finalize_abort_threshold(abort_threshold: Option<Duration>) 
     }
     Some(Duration::from_secs(finalize_secs).max(abort_threshold))
 }
-
 
 /// fr7wp / gh#413: cumulative block-IO bytes for this process (Linux
 /// `/proc/self/io` `read_bytes + write_bytes`; `None` elsewhere or when
@@ -711,7 +703,6 @@ pub(crate) fn process_block_io_bytes() -> Option<u64> {
         None
     }
 }
-
 
 /// #382: the macOS counterpart of `/proc/self/io` — `proc_pid_rusage`'s
 /// `ri_diskio_bytesread + ri_diskio_byteswritten`. The 2026-08-31 retest of
@@ -750,7 +741,6 @@ pub(crate) fn macos_process_disk_io_bytes() -> Option<u64> {
     )
 }
 
-
 /// Default watchdog block-IO sampler: the real `/proc` probe in production,
 /// pinned to `None` under `cfg(test)` so the timing-sensitive watchdog unit
 /// tests stay deterministic (the host process's own block IO must not grant
@@ -768,14 +758,12 @@ pub(crate) fn default_watchdog_io_probe() -> fn() -> Option<u64> {
     }
 }
 
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum IndexStallAbortPolicy {
     #[cfg(test)]
     ReportOnly,
     AbortLexicalPhases,
 }
-
 
 pub(crate) struct IndexStallWatchdog {
     pub(crate) data_dir: PathBuf,
@@ -824,7 +812,6 @@ pub(crate) struct IndexStallWatchdog {
     /// slow canonical open/scan as live and grants the bounded grace.
     pub(crate) last_io_advance: std::time::Instant,
 }
-
 
 impl IndexStallWatchdog {
     #[cfg(test)]
@@ -1257,7 +1244,6 @@ impl IndexStallWatchdog {
     }
 }
 
-
 pub(crate) fn index_stall_warning_lines(payload: &serde_json::Value) -> (String, String) {
     let phase = payload
         .get("phase")
@@ -1275,7 +1261,6 @@ pub(crate) fn index_stall_warning_lines(payload: &serde_json::Value) -> (String,
         .unwrap_or_else(|err| format!(r#"{{"event":"stall_detected","serialize_error":"{err}"}}"#));
     (summary, diagnostics)
 }
-
 
 /// The robot error envelope for a stall abort (WS-F.2, #439): the same shape
 /// `cli_error_json_payload` gives every other failure (`success`, `error`,
@@ -1322,7 +1307,6 @@ pub(crate) fn index_stall_abort_envelope(payload: &serde_json::Value) -> Option<
     }))
 }
 
-
 pub(crate) fn abort_after_index_stall_if_requested(payload: &serde_json::Value, data_dir: &Path) {
     if let Some(envelope) = index_stall_abort_envelope(payload) {
         eprintln!(
@@ -1340,7 +1324,6 @@ pub(crate) fn abort_after_index_stall_if_requested(payload: &serde_json::Value, 
         exit_without_this_threads_tls_destructors(70);
     }
 }
-
 
 /// Exit with `code` without running the calling thread's thread-local
 /// destructors. On Windows, `std::process::exit` terminates every other thread

@@ -80410,6 +80410,6 @@ c.close()
 }
 
 // -- lib-split module declarations --
-pub(crate) mod stall_watchdog;
 #[cfg(test)]
 pub(crate) mod stall_diagnostics_tests;
+pub(crate) mod stall_watchdog;

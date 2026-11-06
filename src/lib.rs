@@ -105726,8 +105726,8 @@ pub(crate) use crate::robot_schema::response_schema_tests_part_1::*;
 #[allow(unused_imports)]
 pub(crate) use crate::robot_schema::response_schema_tests_part_2::*;
 // -- generated lib-split bridges --
-#[allow(unused_imports)]
-pub(crate) use crate::indexer::stall_watchdog::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::indexer::stall_diagnostics_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::indexer::stall_watchdog::*;
