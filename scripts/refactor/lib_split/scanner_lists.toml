@@ -8,7 +8,20 @@
 
 [scanner.golden_error_envelope]
 test = "tests/golden_error_envelope.rs"
-sources = ["src/lib.rs", "src/indexer/stall_watchdog.rs"]
+sources = [
+  "src/lib.rs",
+  "src/indexer/stall_watchdog.rs",
+  "src/cli/commands/search/agent_filter_tests.rs",
+  "src/cli/commands/search/effective_db_path_source.rs",
+  "src/cli/commands/search/execute_search_operation.rs",
+  "src/cli/commands/search/fieldbudgets.rs",
+  "src/cli/commands/search/resolve_search_defaults.rs",
+  "src/cli/commands/search/run_cli_search.rs",
+  "src/cli/commands/search/search_lexical_self_heal_tests.rs",
+  "src/cli/commands/search/searchlexicalselfhealdiagnosis.rs",
+  "src/cli/commands/search/toon_encode_options_from_env.rs",
+  "src/cli/commands/pack/pack_budget_ms.rs",
+]
 patterns = ["kind_str", "CliErrorKind::"]
 note = "error-kind scan: CliErrorKind literals, kind_str mapping, golden envelope"
 
