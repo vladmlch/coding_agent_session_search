@@ -558,16 +558,16 @@ last = { kind = "fn", name = "with_frankensqlite_connection" }
 target = "src/cli/args.rs"
 stage = "4"
 first = { kind = "struct", name = "Cli" }
-last = { kind = "enum", name = "ImportCommand" }
+last = { kind = "enum", name = "Commands" }
 
 [[file]]
-target = "src/cli/sourcescommand.rs"
+target = "src/cli/args_sub.rs"
 stage = "4"
-first = { kind = "enum", name = "SourcesCommand" }
+first = { kind = "enum", name = "ScheduleCommand" }
 last = { kind = "impl", name = "Aggregations" }
 
 [[file]]
-target = "src/cli/clierror.rs"
+target = "src/cli/error.rs"
 stage = "4"
 first = { kind = "struct", name = "CliError" }
 last = { kind = "impl", name = "WrapConfig" }
@@ -624,47 +624,60 @@ first = { kind = "fn", name = "execute_cli" }
 last = { kind = "fn", name = "execute_cli" }
 
 [[file]]
-target = "src/cli/commands/handle_import.rs"
+target = "src/cli/commands/quarantine_mirror_import.rs"
 stage = "2b"
 first = { kind = "fn", name = "handle_import" }
-last = { kind = "fn", name = "forget_filter" }
+last = { kind = "fn", name = "run_quarantine_clear" }
 
 [[file]]
-target = "src/cli/commands/forget_selector_tests.rs"
+target = "src/cli/commands/forget.rs"
 stage = "2b"
-mod = "forget_selector_tests"
+first = { kind = "fn", name = "forget_filter" }
+last = { kind = "fn", name = "run_forget_exclusion_action" }
 
 [[file]]
-target = "src/cli/commands/forgetcommandoptions.rs"
+target = "src/cli/commands/run_mirror_prune.rs"
 stage = "2b"
-first = { kind = "struct", name = "ForgetCommandOptions" }
+first = { kind = "fn", name = "run_mirror_prune" }
+last = { kind = "fn", name = "parse_size_bytes" }
+
+[[file]]
+target = "src/cli/commands/analytics/run_analytics.rs"
+stage = "2b"
+first = { kind = "fn", name = "run_analytics" }
 last = { kind = "fn", name = "franken_query_map_collect_retry" }
 
 [[file]]
-target = "src/cli/commands/franken_query_retry_callback_tests.rs"
+target = "src/cli/commands/analytics/franken_query_retry_callback_tests.rs"
 stage = "2b"
 mod = "franken_query_retry_callback_tests"
 
 [[file]]
-target = "src/cli/commands/fresh_franken_count_retry.rs"
+target = "src/cli/commands/analytics/fresh_franken_count_retry.rs"
 stage = "2b"
 first = { kind = "fn", name = "fresh_franken_count_retry" }
 last = { kind = "fn", name = "run_analytics_tools" }
 
 [[file]]
-target = "src/cli/commands/analytics_filter_validation_tests.rs"
+target = "src/cli/commands/analytics/analytics_filter_validation_tests.rs"
 stage = "2b"
 mod = "analytics_filter_validation_tests"
 
 [[file]]
-target = "src/cli/commands/analytics_query_cli_error_tests.rs"
+target = "src/cli/commands/analytics/analytics_query_cli_error_tests.rs"
 stage = "2b"
 mod = "analytics_query_cli_error_tests"
 
 [[file]]
-target = "src/cli/commands/analyticsvalidationsummary.rs"
+target = "src/cli/commands/analytics/analyticsvalidationsummary.rs"
 stage = "2b"
 first = { kind = "struct", name = "AnalyticsValidationSummary" }
+last = { kind = "fn", name = "run_analytics_models" }
+
+[[file]]
+target = "src/cli/commands/import_chatgpt_export.rs"
+stage = "2b"
+first = { kind = "fn", name = "import_chatgpt_export" }
 last = { kind = "fn", name = "chatgpt_import_file_stem" }
 
 [[file]]
@@ -863,13 +876,13 @@ first = { kind = "fn", name = "run_cli_search" }
 last = { kind = "fn", name = "run_cli_search" }
 
 [[file]]
-target = "src/cli/commands/search/pack_budget_ms.rs"
+target = "src/cli/commands/pack/pack_budget_ms.rs"
 stage = "2a"
 first = { kind = "fn", name = "pack_budget_ms" }
 last = { kind = "fn", name = "merge_json_value" }
 
 [[file]]
-target = "src/cli/commands/search/pack_field_mask_tests.rs"
+target = "src/cli/commands/pack/pack_field_mask_tests.rs"
 stage = "2a"
 mod = "pack_field_mask_tests"
 
@@ -924,9 +937,15 @@ first = { kind = "fn", name = "effective_db_path_source" }
 last = { kind = "fn", name = "append_source_filter_condition_with_columns" }
 
 [[file]]
-target = "src/cli/commands/run_stats.rs"
+target = "src/cli/commands/stats_diag_storage/run_stats.rs"
 stage = "2b"
 first = { kind = "fn", name = "run_stats" }
+last = { kind = "fn", name = "storage_file_count" }
+
+[[file]]
+target = "src/cli/commands/stats_diag_storage/run_diag.rs"
+stage = "2b"
+first = { kind = "fn", name = "run_diag" }
 last = { kind = "fn", name = "run_diag" }
 
 [[file]]
@@ -1309,7 +1328,7 @@ stage = "2d"
 mod = "path_spelling_tests"
 
 [[file]]
-target = "src/cli/commands/run_sessions.rs"
+target = "src/cli/commands/sessions_context.rs"
 stage = "2d"
 first = { kind = "fn", name = "run_sessions" }
 last = { kind = "impl", name = "SourceIngestReuseCapability" }
@@ -1384,40 +1403,35 @@ first = { kind = "fn", name = "run_lexical_reconcile_cli" }
 last = { kind = "fn", name = "emit_indexing_exclusion_notice" }
 
 [[file]]
-target = "src/cli/default_db_path.rs"
+target = "src/cli/paths.rs"
 stage = "2f"
 first = { kind = "fn", name = "default_db_path" }
-last = { kind = "fn", name = "default_data_dir_with_source" }
-
-[[file]]
-target = "src/cli/resolve_data_dir_tests.rs"
-stage = "2f"
-mod = "resolve_data_dir_tests"
-
-[[file]]
-target = "src/cli/read_session_paths.rs"
-stage = "2f"
-first = { kind = "fn", name = "read_session_paths" }
 last = { kind = "fn", name = "resolve_resume_target" }
 
 [[file]]
-target = "src/cli/commands/run_resume.rs"
+target = "src/cli/commands/resume.rs"
 stage = "2f"
 first = { kind = "fn", name = "run_resume" }
+last = { kind = "fn", name = "run_resume" }
+
+[[file]]
+target = "src/cli/commands/export/indexed_export_cli_error.rs"
+stage = "2f"
+first = { kind = "fn", name = "indexed_export_cli_error" }
 last = { kind = "fn", name = "sync_export_parent_directory", ordinal = 1 }
 
 [[file]]
-target = "src/cli/commands/export_html_password_tests.rs"
+target = "src/cli/commands/export/export_html_password_tests.rs"
 stage = "2f"
 mod = "export_html_password_tests"
 
 [[file]]
-target = "src/cli/commands/clipboard_helper_tests.rs"
+target = "src/cli/commands/export/clipboard_helper_tests.rs"
 stage = "2f"
 mod = "clipboard_helper_tests"
 
 [[file]]
-target = "src/cli/commands/run_export_html.rs"
+target = "src/cli/commands/export_html.rs"
 stage = "2f"
 first = { kind = "fn", name = "run_export_html" }
 last = { kind = "fn", name = "extract_tool_correlation_id" }
@@ -1459,9 +1473,21 @@ stage = "1c"
 mod = "message_grouping_tests"
 
 [[file]]
-target = "src/cli/commands/format_as_markdown.rs"
+target = "src/cli/commands/export/format_as_markdown.rs"
 stage = "2f"
 first = { kind = "fn", name = "format_as_markdown" }
+last = { kind = "fn", name = "html_escape" }
+
+[[file]]
+target = "src/cli/commands/expand.rs"
+stage = "2f"
+first = { kind = "fn", name = "run_expand" }
+last = { kind = "fn", name = "smart_truncate" }
+
+[[file]]
+target = "src/cli/commands/timeline.rs"
+stage = "2f"
+first = { kind = "fn", name = "run_timeline" }
 last = { kind = "fn", name = "run_timeline" }
 
 [[file]]
@@ -1490,6 +1516,12 @@ mod = "semantic_identity_backfill_checkpoint_tests"
 target = "src/cli/commands/models/run_models_remove.rs"
 stage = "2g"
 first = { kind = "fn", name = "run_models_remove" }
+last = { kind = "fn", name = "run_agents_include" }
+
+[[file]]
+target = "src/cli/commands/mappings.rs"
+stage = "2g"
+first = { kind = "fn", name = "run_mappings_command" }
 last = { kind = "fn", name = "run_mappings_test" }
 
 [[file]]
@@ -1498,9 +1530,15 @@ stage = "2g"
 mod = "timeline_datetime_parse_tests"
 
 [[file]]
-target = "src/cli/commands/resolved_daemon_config.rs"
+target = "src/cli/commands/daemon.rs"
 stage = "2g"
 first = { kind = "fn", name = "resolved_daemon_config" }
+last = { kind = "fn", name = "run_daemon" }
+
+[[file]]
+target = "src/cli/commands/schedule.rs"
+stage = "2g"
+first = { kind = "fn", name = "schedule_error_to_cli" }
 last = { kind = "fn", name = "run_schedule_command" }
 
 [[file]]

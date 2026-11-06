@@ -59,17 +59,24 @@ REGIONS: list[tuple[tuple[str, str] | None, str, str, str]] = [
     (("use", "*"), "stay", "src", "root use block (seed for new files)"),
     (("const", "CONTRACT_VERSION"), "4", "src/cli", "shared consts + watch-once + db helper"),
     (("struct", "Cli"), "4", "src/cli", "args: Cli, Commands, command enums"),
+    (("enum", "ScheduleCommand"), "4", "src/cli/args_sub", "args_sub: sub-command enums"),
     (("struct", "CliError"), "4", "src/cli", "error: CliError, CliResult, WrapConfig"),
     (("fn", "root_structured_triage_rewrite"), "4", "src/cli/argv", "argv recovery/normalize/parse"),
     (("struct", "ParsedCli"), "4", "src/cli", "entry.rs surface + dispatch"),
-    (("fn", "handle_import"), "2b", "src/cli/commands", "import/quarantine/mirror/forget/analytics"),
+    (("fn", "handle_import"), "2b", "src/cli/commands", "quarantine/mirror/import"),
+    (("fn", "forget_filter"), "2b", "src/cli/commands", "forget"),
+    (("fn", "run_mirror_prune"), "2b", "src/cli/commands", "mirror prune + shared parsers"),
+    (("fn", "run_analytics"), "2b", "src/cli/commands/analytics", "analytics commands"),
+    (("fn", "import_chatgpt_export"), "2b", "src/cli/commands", "ChatGPT import"),
     (("const", "STATE_DB_OPEN_TIMEOUT"), "4", "src/cli/state", "db-open helpers, index error mapping"),
     (("fn", "cli_error_json_payload"), "4", "src/cli/output", "cli error envelope output"),
     (("fn", "state_meta_json"), "4", "src/cli/state", "state_meta/readiness/state probes"),
     (("fn", "warn_tui_terminal_profile"), "4", "src/cli/output", "output/color/progress"),
     (("const", "DEFAULT_DEP_LOG_SUPPRESSION"), "4", "src/cli/output", "tracing + robot docs output"),
-    (("struct", "TimeFilter"), "2a", "src/cli/commands/search", "search/pack command"),
-    (("fn", "run_stats"), "2b", "src/cli/commands", "stats/diag/storage/dedup"),
+    (("struct", "TimeFilter"), "2a", "src/cli/commands/search", "search command"),
+    (("fn", "pack_budget_ms"), "2a", "src/cli/commands/pack", "pack command"),
+    (("fn", "output_display_results"), "2a", "src/cli/commands/search", "search tail"),
+    (("fn", "run_stats"), "2b", "src/cli/commands/stats_diag_storage", "stats/diag/storage/dedup"),
     (("enum", "DoctorAssetClass"), "3a", "src/doctor", "doctor policy/report/taxonomy"),
     (("fn", "doctor_storage_probe_path"), "3a", "src/doctor", "storage pressure"),
     (("fn", "doctor_config_exclusion_targets"), "3a", "src/doctor", "config exclusion"),
@@ -90,16 +97,21 @@ REGIONS: list[tuple[tuple[str, str] | None, str, str, str]] = [
     (("struct", "DoctorBoundedArchiveDbProbe"), "3d", "src/doctor", "doctor probes"),
     (("fn", "run_doctor_impl"), "3d", "src/doctor", "doctor run"),
     (("mod_inline", "path_spelling_tests"), "2d", "src/cli/commands", "sessions/context/ingest-reuse"),
+    (("fn", "run_sessions"), "2d", "src/cli/commands", "sessions_context owner"),
     (("struct", "CapabilitiesResponse"), "2e", "src/cli/commands/capabilities_introspect", "capabilities/introspect/api_version + command-schema"),
     (("fn", "response_schema_index_state"), "1a", "src/robot_schema", "response schemas"),
     (("fn", "role_to_export_string"), "2d", "src/cli/commands/view", "view + followup identity"),
     (("struct", "IndexShutdownSignals"), "1b", "src/indexer", "indexer stall watchdog"),
     (("fn", "run_lexical_reconcile_cli"), "2f", "src/cli/commands/index", "index commands"),
-    (("fn", "default_db_path"), "2f", "src/cli", "cli paths + session paths"),
-    (("fn", "run_resume"), "2f", "src/cli/commands", "export/resume/expand/timeline"),
+    (("fn", "default_db_path"), "2f", "src/cli", "paths.rs: cli paths + session paths"),
+    (("fn", "run_resume"), "2f", "src/cli/commands", "resume.rs owner"),
+    (("fn", "indexed_export_cli_error"), "2f", "src/cli/commands/export", "export shared helpers + run_export"),
+    (("fn", "run_export_html"), "2f", "src/cli/commands", "export_html.rs owner"),
     (("enum", "AgentFormat"), "1c", "src/export", "export classification/grouping"),
     (("mod_inline", "export_timestamp_tests"), "2f", "src/cli/commands/export", "export cmd test mods"),
-    (("fn", "format_as_markdown"), "2f", "src/cli/commands", "export format + expand/timeline"),
+    (("fn", "format_as_markdown"), "2f", "src/cli/commands/export", "export format fns"),
+    (("fn", "run_expand"), "2f", "src/cli/commands", "expand.rs owner"),
+    (("fn", "run_timeline"), "2f", "src/cli/commands", "timeline.rs owner"),
     (("fn", "run_sources_command"), "2g", "src/cli/commands/sources", "sources"),
     (("fn", "run_models_command"), "2g", "src/cli/commands/models", "models/mappings/agents"),
     (("mod_inline", "timeline_datetime_parse_tests"), "2g", "src/cli/commands", "daemon/schedule tail"),
@@ -111,14 +123,37 @@ REGIONS: list[tuple[tuple[str, str] | None, str, str, str]] = [
 # exactly, not as best-effort prefixes).
 NAMED_FILES = {
     "Cli": "src/cli/args.rs",
+    "ScheduleCommand": "src/cli/args_sub.rs",
+    "CliError": "src/cli/error.rs",
+    "default_db_path": "src/cli/paths.rs",
     "diagnostics_connector_paths": "src/cli/commands/status_health/diagnostics.rs",
     "normalize_args": "src/cli/argv/normalize.rs",
     "ParsedCli": "src/cli/entry.rs",
     "execute_cli": "src/cli/dispatch.rs",
+    "handle_import": "src/cli/commands/quarantine_mirror_import.rs",
+    "forget_filter": "src/cli/commands/forget.rs",
+    "run_diag": "src/cli/commands/stats_diag_storage/run_diag.rs",
+    "run_sessions": "src/cli/commands/sessions_context.rs",
+    "run_resume": "src/cli/commands/resume.rs",
+    "run_export_html": "src/cli/commands/export_html.rs",
+    "run_expand": "src/cli/commands/expand.rs",
+    "run_timeline": "src/cli/commands/timeline.rs",
+    "run_mappings_command": "src/cli/commands/mappings.rs",
+    "resolved_daemon_config": "src/cli/commands/daemon.rs",
+    "schedule_error_to_cli": "src/cli/commands/schedule.rs",
     "run_doctor_impl": "src/doctor/run.rs",
     "IndexShutdownSignals": "src/indexer/stall_watchdog.rs",
     "AgentFormat": "src/export/messages.rs",
     "DoctorFsMutationKind": "src/doctor/fs_safety/mutation_kind.rs",
+}
+
+# Test mods that stay inside their named owner's file span (plan §3 groups
+# helpers/tests with their owner). The packer treats these as ordinary
+# range members instead of emitting standalone mod entries; each must end
+# up inside the mapped target's first..last span or the build fails.
+INLINE_MODS = {
+    "forget_selector_tests": "src/cli/commands/forget.rs",
+    "resolve_data_dir_tests": "src/cli/paths.rs",
 }
 
 # Ordered text-marker groups: never split members across files.
@@ -469,7 +504,8 @@ def build() -> None:
                 # nesting it in a file changes `crate::X` to `crate::f::X`.
                 raise SystemExit(
                     f"non-test inline mod {it.name} — needs an explicit owner")
-            if it.kind == "mod_inline" and ri.mod_has_test_cfg(it):
+            if (it.kind == "mod_inline" and ri.mod_has_test_cfg(it)
+                    and it.name not in INLINE_MODS):
                 flush()
                 tdir, tstage = MOD_TARGET_OVERRIDES.get(it.name, (dir_, stage))
                 parts = MOD_SPLITS.get(it.name, 1)
@@ -686,6 +722,17 @@ def build() -> None:
     missing = [i for i, c in enumerate(covered) if not c]
     if missing:
         raise SystemExit(f"uncovered items: {[(items[i].kind, items[i].name) for i in missing[:10]]}")
+
+    # Inline-mod containment: each INLINE_MODS member must land inside the
+    # expected file's span (it is emitted verbatim inside the owner file).
+    for mod_name, want in INLINE_MODS.items():
+        midx = resolve(items, "mod_inline", mod_name)
+        hit = [
+            e["target"] for e in entries if not e.get("mod")
+            and items.index(e["first"]) <= midx <= items.index(e["last"])]
+        if hit != [want]:
+            raise SystemExit(
+                f"inline mod {mod_name}: want inside {want}, got {hit}")
 
     # Group containment check.
     for gname, members in GROUPS:
