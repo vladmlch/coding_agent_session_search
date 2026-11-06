@@ -192,6 +192,61 @@ class TestInventoryTests(unittest.TestCase):
         d2 = ti.diff(before, after, origins=origins)
         self.assertEqual(d2.problems(), [])
 
+    def test_cfg_test_alone_is_not_a_test_fn(self):
+        # round2 ruling: #[cfg(test)] gates compilation, it is not a test
+        # attribute — a helper carrying only it must not be inventoried.
+        src = "#[cfg(test)]\nfn helper() { assert!(true); }\n"
+        self.assertEqual(ti.collect(src), {})
+        # and the real attrs still classify
+        for attr in ("#[test]", "#[tokio::test]",
+                     '#[tokio::test(flavor = "multi_thread")]',
+                     "#[test_case(1)]", "#[proptest]"):
+            inv = ti.collect(f"{attr}\nfn t() {{}}\n")
+            self.assertEqual(len(inv), 1, f"{attr} must inventory as a test")
+
+    def test_should_panic_test_still_inventoried(self):
+        src = "#[test]\n#[should_panic]\nfn t() {}\n"
+        inv = ti.collect(src)
+        self.assertEqual(len(inv), 1)
+
+    def test_normalize_keeps_nested_field_visibility(self):
+        # controller reproducer: blanket (?m)^ pub(crate) strip hid a
+        # nested visibility change inside the body.
+        orig = b'fn t() { struct S { x: u8, } let _ = S { x: 1 }; }'
+        moved = b'fn t() { struct S { pub(crate) x: u8, } let _ = S { x: 1 }; }'
+        self.assertNotEqual(ti.normalize_body(orig, 0),
+                            ti.normalize_body(moved, 0))
+
+    def test_normalize_keeps_head_promotion_position_scoped(self):
+        # the sanctioned transform is head-only: pub(crate) at the item
+        # head (byte offset head_off) cancels; mid-body does not.
+        orig = b'fn t() { let _x = 1; }'
+        moved = b'pub(crate) fn t() { let _x = 1; }'
+        self.assertEqual(ti.normalize_body(orig, 0),
+                         ti.normalize_body(moved, 0))
+        # attrs before the head: promotion lands after them
+        orig2 = b'#[test]\nfn t() { let _x = 1; }'
+        moved2 = b'#[test]\npub(crate) fn t() { let _x = 1; }'
+        head = moved2.index(b'pub(crate)')  # head offset inside body
+        self.assertEqual(ti.normalize_body(orig2, 0),
+                         ti.normalize_body(moved2, head))
+
+    def test_normalize_keeps_string_literal_super(self):
+        # controller reproducer: _SUPER_RX ran over raw bytes including
+        # string literals, hiding a `"super::"` -> `"crate::"` data change.
+        orig = b'fn t() { let s = "super::x"; let _ = s; }'
+        moved = b'fn t() { let s = "crate::x"; let _ = s; }'
+        self.assertNotEqual(ti.normalize_body(orig, 0),
+                            ti.normalize_body(moved, 0))
+
+    def test_normalize_allows_code_position_super_rewrite(self):
+        # the sanctioned dissolved-mod transform is code-position
+        # super:: -> crate:: — that must still cancel.
+        orig = b'fn t() { super::h(); }'
+        moved = b'fn t() { crate::h(); }'
+        self.assertEqual(ti.normalize_body(orig, 0),
+                         ti.normalize_body(moved, 0))
+
 
 class CfgSemanticsTests(unittest.TestCase):
     def test_cfg_not_test_is_production(self):
@@ -539,6 +594,113 @@ class SplitFixtureTests(unittest.TestCase):
         self.assertIn(b"use crate::cli::commands::x_tests_part_3::*;", hdr)
         self.assertNotIn(b"super::", hdr)
 
+    def test_seed_header_drops_unreferenced_root_uses(self):
+        # round-2: a generated import the body never references is a
+        # provable unused import — eliminate it before -D warnings.
+        hdr = split.seed_header(
+            "src/cli/x.rs",
+            [b'use model::Session;\n',
+             b'use indexer::IndexOptions;\n'],
+            local_names={"model", "indexer"},
+            body=b'let s: Session = f();\n',
+            crate_exports={"Session", "IndexOptions"},
+            super_exports=set())
+        self.assertIn(b"pub(crate) use crate::model::Session;", hdr)
+        self.assertNotIn(b"IndexOptions;", hdr,
+                         "unreferenced root use must be dropped")
+
+    def test_seed_header_drops_wrapper_when_no_use_needed(self):
+        hdr = split.seed_header(
+            "src/cli/x.rs",
+            [b'use model::Session;\n'],
+            body=b'fn f() -> u32 { 1 }\n',
+            crate_exports=set(), super_exports=set())
+        self.assertNotIn(b"__lib_split_root_uses", hdr)
+        self.assertNotIn(b"use crate::*;", hdr,
+                         "crate glob with no referenced root name must go")
+
+    def test_seed_header_keeps_needed_globs(self):
+        # bare `run_helper` is exported by a sibling file (re-exported at
+        # crate root by the bridge) — the crate glob must stay.
+        hdr = split.seed_header(
+            "src/cli/x.rs", [],
+            body=b'fn g() { run_helper(); }\n',
+            crate_exports={"run_helper"},
+            super_exports={"parent_helper"})
+        self.assertIn(b"use crate::*;", hdr)
+        self.assertNotIn(b"use super::*;", hdr,
+                         "unreferenced super glob must go")
+
+    def test_seed_header_drops_unreferenced_sibling_glob(self):
+        hdr = split.seed_header(
+            "src/cli/commands/x_tests_part_2.rs", [],
+            test_mod=True,
+            siblings=["x_tests_part_1", "x_tests_part_3"],
+            body=b'#[test]\nfn t() { shared_setup(); }\n',
+            sibling_exports={"x_tests_part_1": {"shared_setup"},
+                             "x_tests_part_3": {"unused_helper"}})
+        self.assertIn(b"use crate::cli::commands::x_tests_part_1::*;", hdr)
+        self.assertNotIn(b"x_tests_part_3", hdr)
+
+    def test_seed_header_comment_mention_does_not_keep_import(self):
+        # a name inside a comment is not a use — strings/comments must
+        # not keep a generated import alive.
+        hdr = split.seed_header(
+            "src/cli/x.rs",
+            [b'use model::Session;\n'],
+            body=b'// mentions Session here\nfn f() {}\n',
+            crate_exports=set(), super_exports=set())
+        self.assertNotIn(b"__lib_split_root_uses", hdr)
+
+    def test_leaf_names_variants(self):
+        self.assertEqual(
+            split._leaf_names(b'use a::b::{C, D as E};\n'), {"C", "E"})
+        self.assertEqual(split._leaf_names(b'use a::b::C;\n'), {"C"})
+        self.assertEqual(split._leaf_names(b'use a::b as B;\n'), {"B"})
+        self.assertEqual(split._leaf_names(b'use a::b::*;\n'), {"b"})
+
+    def test_broadcast_use_filtered_per_part(self):
+        # round-2: broadcast inner `use`s unused in a part produced
+        # unused-import warnings on scratch --all-targets. Non-owner
+        # parts drop provably-dead uses; trait-leaf/glob uses stay.
+        src = ("mod m {\n"
+               "    use foo::Alpha;\n"
+               "    use bar::Context;\n"
+               "    use baz::*;\n"
+               "    fn setup() { let _ = Alpha; }\n"
+               "    #[test]\n    fn t1() { setup(); }\n"
+               "    #[test]\n    fn t2() {}\n"
+               "}\n")
+        man = self._manifest([
+            {"target": "src/x/m_p1.rs", "stage": "1", "slice": {
+                "mod": "m", "first": {"kind": "fn", "name": "setup"},
+                "last": {"kind": "fn", "name": "t1"},
+                "part": 1, "parts": 2}},
+            {"target": "src/x/m_p2.rs", "stage": "1", "slice": {
+                "mod": "m", "first": {"kind": "fn", "name": "t2"},
+                "last": {"kind": "fn", "name": "t2"},
+                "part": 2, "parts": 2}},
+        ])
+        res = split.emit(man, src)
+        p1 = next(f for f in res.files if f.target.endswith("m_p1.rs"))
+        p2 = next(f for f in res.files if f.target.endswith("m_p2.rs"))
+        t1, t2 = b"".join(p1.parts), b"".join(p2.parts)
+        self.assertIn(b"use foo::Alpha;", t1)   # owner preserves all
+        self.assertIn(b"use bar::Context;", t1)
+        self.assertNotIn(b"use foo::Alpha;", t2)  # unreferenced → gone
+        self.assertIn(b"use bar::Context;", t2)   # trait leaf → kept
+        self.assertIn(b"use baz::*;", t2)         # glob → kept
+        self.assertIn(b"#[allow(unused_imports)]", t2)
+
+    def test_use_needed_trait_and_glob_guards(self):
+        code = b"fn t() {}\n"
+        self.assertTrue(split._use_needed(b"use a::RowExt;\n", code))
+        self.assertTrue(split._use_needed(b"use a::Context;\n", code))
+        self.assertTrue(split._use_needed(b"use a::*;\n", code))
+        self.assertFalse(split._use_needed(b"use a::TempDir;\n", code))
+        self.assertTrue(split._use_needed(
+            b"use a::TempDir;\n", b"let t = TempDir::new();\n"))
+
     def test_impl_member_promotion_nonascii_offsets(self):
         # UTF-8 bytes before the fn must not shift insert offsets — this
         # defect produced `&mut sepub(crate) lf` on stall_watchdog.
@@ -780,15 +942,122 @@ class ScannerParityTests(unittest.TestCase):
         problems = sp.diff_counts(before, after)
         self.assertTrue(problems, "count gain must be flagged")
 
+    def test_per_pattern_parity_flags_swap(self):
+        # round2: summed parity let losing pattern A while gaining
+        # pattern B cancel to a false pass.
+        spec = {"scanner": [{"name": "s",
+                             "sources": ["src/lib.rs"],
+                             "patterns": ["alpha", "beta"]}]}
+        before = sp.counts(spec, {"src/lib.rs": "alpha alpha beta"})
+        after = sp.counts(spec, {"src/lib.rs": "alpha beta beta"})
+        problems = sp.diff_counts(before, after)
+        self.assertTrue(problems,
+                        "alpha lost + beta gained must not cancel")
+
+    def test_needle_only_in_test_file_fails(self):
+        # round2: the `or needle in test_file` fallback excused a needle
+        # that exists only in the scanner's own test source.
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            troot = Path(td)
+            (troot / "tests").mkdir()
+            (troot / "src").mkdir()
+            (troot / "tests" / "t.rs").write_text(
+                '#[test] fn t() {\n'
+                '    let s = std::fs::read_to_string("src/lib.rs").unwrap();\n'
+                '    assert!(s.contains("ghost_needle"));\n'
+                '}')
+            (troot / "src" / "lib.rs").write_text("fn real() {}\n")
+            spec = {"scanner": [{"name": "s",
+                                 "test": "tests/t.rs",
+                                 "sources": ["src/lib.rs"]}]}
+            problems = sp.needles(spec, repo=troot)
+            self.assertTrue(any("ghost_needle" in p for p in problems),
+                            "needle surviving only in the test file must fail")
+
     def test_real_counts_stable_after_dry_run(self):
-        # every scanner with declared patterns must count > 0 in its sources
+        # every scanner with declared patterns must count > 0 per pattern
+        # in its sources (absence-scanners excepted)
         spec = sp.load()
         baseline = sp.counts_for_sources(spec, REPO)
-        bad = {k: v for k, v in baseline.items()
-               if isinstance(v, int) and v <= 0}
+        bad = {}
+        for name, v in baseline.items():
+            if isinstance(v, dict):
+                entry = sp.scanners(spec)[name]
+                if entry.get("absence"):
+                    if any(c != 0 for c in v.values()):
+                        bad[name] = v
+                elif any(c <= 0 for c in v.values()):
+                    bad[name] = v
         self.assertEqual(bad, {})
         # every source-reading consumer must be a listed scanner
         self.assertGreaterEqual(len(baseline), 9)
+
+    def test_needles_only_source_var_contains(self):
+        # round-2: `x.contains("…")` is a source needle only when x
+        # holds file contents — runtime/log/fixture asserts must not
+        # be extracted (they produced false parity failures).
+        import scan_parity as sp
+        src = (
+            'let lib_source = include_str!("lib.rs");\n'
+            'assert!(lib_source.contains("real_marker"));\n'
+            'assert!(repair_err.message.contains("cannot be empty"));\n'
+            'assert!(logs().contains("watch mode"));\n'
+            'assert!(!lib_source.contains("banned_marker"));\n')
+        pos, neg = sp._needles(src)
+        self.assertEqual(pos, ["real_marker"])
+        self.assertEqual(neg, ["banned_marker"])
+
+    def test_needles_source_var_only_rs_reads(self):
+        # reads of non-.rs files (DB fixtures, /proc) are not source
+        # scans even when named like one.
+        import scan_parity as sp
+        src = (
+            'let bytes = std::fs::read(&db_path).unwrap();\n'
+            'let status = std::fs::read_to_string("/proc/self/status")?;\n'
+            'let lib = std::fs::read_to_string("src/lib.rs").unwrap();\n'
+            'assert!(bytes.contains(b"marker_x".as_slice()));\n'
+            'assert!(lib.contains("lib_marker"));\n')
+        pos, _neg = sp._needles(src)
+        self.assertEqual(pos, ["lib_marker"])
+
+    def test_needles_decl_gap_does_not_swallow_code(self):
+        # greedy gap in `needle = "…"` could skip a quote and capture a
+        # multi-line code blob — must capture the nearest literal.
+        import scan_parity as sp
+        src = ('let needle = "Command::new";\n'
+               'let mut off = 0;\n')
+        pos, _ = sp._needles(src)
+        self.assertEqual(pos, ["Command::new"])
+
+    def test_needles_shallow_propagation_only(self):
+        # `let v2 = &src[..]` keeps the source; `let x = f(src)` is a
+        # derived value, not a source view.
+        import scan_parity as sp
+        src = (
+            'let src = std::fs::read_to_string("src/lib.rs").unwrap();\n'
+            'let view = &src[..];\n'
+            'let n = count_items(&src);\n'
+            'assert!(view.contains("view_marker"));\n')
+        pos, _ = sp._needles(src)
+        self.assertEqual(pos, ["view_marker"])
+
+    def test_scanner_lists_cover_secondary_consumers(self):
+        # round2 I7: the genuine src/storage/sqlite.rs reader and the
+        # auditor companion files must be in the source unions.
+        spec = sp.load()
+        names = sp.scanners(spec)
+        all_sources = set()
+        for e in names.values():
+            all_sources.update(e.get("sources", []))
+        self.assertIn("src/storage/sqlite.rs", all_sources)
+        aud = names["doctor_mutate_auditor"]["sources"]
+        for f in ("src/doctor_chokepoint.rs", "src/doctor_runs.rs",
+                  "src/doctor_undo.rs", "src/doctor_robot_docs.rs"):
+            self.assertIn(f, aud, f"missing auditor source {f}")
+        loa = names["local_only_audit"]
+        self.assertIn("tests/cli_dispatch_coverage.rs", loa["sources"])
+        self.assertIn("src", loa.get("dirs", []))
 
 
 class StaleRefTests(unittest.TestCase):
@@ -808,6 +1077,161 @@ class StaleRefTests(unittest.TestCase):
         hits = sr.scan_source(
             'let p = format!("{manifest}/src/lib.rs");\n')
         self.assertTrue(hits)
+
+    def test_fixture_write_is_not_a_consumer(self):
+        # round2: fs::write(...join("src/lib.rs")...) creates a temp
+        # fixture — a writer, not a reader. Writers must not count as
+        # consumers needing retargets.
+        import stale_refs as sr
+        hits = sr.scan_source(
+            'fs::write(root.path().join("src/lib.rs"), b"fn x() {}")?;\n')
+        self.assertTrue(hits, "writer hit must still be reported")
+        self.assertEqual(hits[0][1], "write",
+                         "fs::write context must classify as writer")
+        consumers, _mentions = sr.scan(REPO)
+        writer_files = {c[0] for c in consumers if c[2].startswith("write(")}
+        self.assertIn("src/bin/e2e-run-bundle.rs", writer_files)
+        self.assertIn("src/proof_artifact.rs", writer_files)
+
+    def test_genuine_sqlite_consumer_listed(self):
+        # src/storage/sqlite.rs include_str!s ../lib.rs — a real reader.
+        import stale_refs as sr
+        consumers, _m = sr.scan(REPO)
+        sqlite = [c for c in consumers if c[0] == "src/storage/sqlite.rs"]
+        self.assertTrue(sqlite, "sqlite.rs consumer must be detected")
+        self.assertNotEqual(sqlite[0][1], "write")
+
+
+class SplitStageContractTests(unittest.TestCase):
+    """Round-2 stage semantics: manual/unknown/empty/repeat stages."""
+
+    def _fixture_manifest(self):
+        return {"file": [
+            {"target": "src/lib.rs", "stage": "stay",
+             "first": {"kind": "use", "name": "std::path::Path"},
+             "last": {"kind": "use", "name": "std::path::Path"}},
+            {"target": "src/out.rs", "stage": "2a",
+             "first": {"kind": "const", "name": "TOP"},
+             "last": {"kind": "const", "name": "TOP"}},
+            {"target": "src/lib.rs", "stage": "stay",
+             "first": {"kind": "fn", "name": "helper"},
+             "last": {"kind": "fn", "name": "last"}},
+        ]}
+
+    def test_manual_stage_is_nonzero_diagnostic(self):
+        man = self._fixture_manifest()
+        man["meta"] = {"manual_stages": ["5", "6"]}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text(FIXTURE)
+            with self.assertRaises(split.SplitError) as ctx:
+                split.apply(man, root, ["5"])
+            self.assertIn("manual", str(ctx.exception).lower())
+
+    def test_unknown_stage_is_nonzero_diagnostic(self):
+        man = self._fixture_manifest()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text(FIXTURE)
+            with self.assertRaises(split.SplitError) as ctx:
+                split.apply(man, root, ["9x"])
+            self.assertIn("unknown stage", str(ctx.exception).lower())
+
+    def test_empty_move_stage_reports_truthfully(self):
+        # a supported stage with no manifest entries in this fixture is
+        # a deliberate no-op, reported — not a crash, not silent success.
+        man = self._fixture_manifest()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text(FIXTURE)
+            summary = split.apply(man, root, ["2b"])
+            self.assertEqual(summary["files"], [])
+            self.assertTrue(any("no manifest entries" in n
+                                for n in summary["notes"]),
+                            summary["notes"])
+
+    def test_repeated_stage_reports_already_applied(self):
+        man = self._fixture_manifest()
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text(FIXTURE)
+            first = split.apply(man, root, ["2a"])
+            self.assertTrue(first["files"], "first apply must emit")
+            second = split.apply(man, root, ["2a"])
+            self.assertEqual(second["files"], [])
+            self.assertTrue(any("already consumed" in n
+                                for n in second["notes"]),
+                            second["notes"])
+
+
+class ManifestNamedPathTests(unittest.TestCase):
+    """Plan §3 named-owner contract on the generated manifest."""
+
+    def setUp(self):
+        self.man = tomllib.loads(MANIFEST.read_text())
+        self.files = self.man["file"]
+
+    def _entry(self, target):
+        return next((e for e in self.files if e["target"] == target), None)
+
+    def test_cli_entry_rs_binds_entry_surface(self):
+        e = self._entry("src/cli/entry.rs")
+        self.assertIsNotNone(e, "src/cli/entry.rs missing")
+        self.assertEqual(e["stage"], "4")
+        self.assertEqual(e["first"], {"kind": "struct", "name": "ParsedCli"})
+        self.assertEqual(e["last"], {"kind": "fn",
+                                     "name": "try_run_with_parsed_fast"})
+
+    def test_cli_dispatch_rs_binds_execute_cli(self):
+        e = self._entry("src/cli/dispatch.rs")
+        self.assertIsNotNone(e, "src/cli/dispatch.rs missing")
+        self.assertEqual(e["stage"], "4")
+        self.assertEqual(e["first"], {"kind": "fn", "name": "execute_cli"})
+        self.assertEqual(e["last"], {"kind": "fn", "name": "execute_cli"})
+
+    def test_stage2e_owns_capabilities_introspect_dir(self):
+        e2 = [e for e in self.files if e["stage"] == "2e"]
+        self.assertTrue(e2, "stage 2e must be populated")
+        for e in e2:
+            self.assertTrue(
+                e["target"].startswith(
+                    "src/cli/commands/capabilities_introspect/"),
+                f"2e entry outside capabilities_introspect: {e['target']}")
+        spans = [(e["first"]["name"], e["last"]["name"])
+                 for e in e2 if "first" in e]
+        self.assertIn(("CapabilitiesResponse", ), [s[0:1] for s in spans],
+                      "2e must start at CapabilitiesResponse")
+        self.assertIn("should_skip_arg", [s[1] for s in spans],
+                      "2e must end at should_skip_arg")
+        # nothing else may claim the capabilities/introspect dir
+        for e in self.files:
+            if e["target"].startswith(
+                    "src/cli/commands/capabilities_introspect/"):
+                self.assertEqual(e["stage"], "2e", e["target"])
+
+    def test_no_run_rs_or_execute_cli_rs_targets(self):
+        for e in self.files:
+            self.assertNotIn(e["target"],
+                             ("src/cli/run.rs", "src/cli/execute_cli.rs"),
+                             f"mechanical path still present: {e['target']}")
+
+    def test_retargets_follow_named_paths(self):
+        for rt in self.man.get("retarget", []):
+            for p in rt.get("to", []):
+                self.assertNotIn(p, ("src/cli/run.rs",
+                                     "src/cli/execute_cli.rs"),
+                                 f"retarget to dead path {p}")
+
+    def test_manual_stages_declared(self):
+        manual = self.man["meta"].get("manual_stages", [])
+        self.assertEqual(sorted(manual), ["5", "6"])
+        for e in self.files:
+            self.assertNotIn(e["stage"], ("5", "6"),
+                             f"manual stage holds move entry {e['target']}")
 
 
 class BudgetSpecTests(unittest.TestCase):
