@@ -756,6 +756,6 @@ mod tests {
 }
 
 // -- lib-split module declarations --
-pub mod messages;
 #[cfg(test)]
 pub(crate) mod message_grouping_tests;
+pub mod messages;

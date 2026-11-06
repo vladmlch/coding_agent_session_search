@@ -3,12 +3,10 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use tracing::{info, warn};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 // ============================================================================
 // Message Grouping Algorithm for Consolidated HTML Export
@@ -32,7 +30,6 @@ pub enum AgentFormat {
     Generic,
 }
 
-
 /// Message classification for grouping decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageClassification {
@@ -49,7 +46,6 @@ pub enum MessageClassification {
     /// Empty or skip-worthy message
     Empty,
 }
-
 
 /// Detect the agent format from a set of messages.
 ///
@@ -101,7 +97,6 @@ pub fn detect_agent_format(messages: &[html_export::Message]) -> AgentFormat {
     );
     AgentFormat::Generic
 }
-
 
 /// Classify a message for grouping purposes.
 ///
@@ -164,7 +159,6 @@ pub fn classify_message(msg: &html_export::Message, _format: AgentFormat) -> Mes
     }
 }
 
-
 /// Extract provider correlation ID from a message for tool call/result matching.
 pub fn extract_correlation_id(msg: &html_export::Message, format: AgentFormat) -> Option<String> {
     use tracing::trace;
@@ -188,7 +182,6 @@ pub fn extract_correlation_id(msg: &html_export::Message, format: AgentFormat) -
     None
 }
 
-
 /// Flush the current group into the groups vector if it exists.
 pub(crate) fn flush_group(
     groups: &mut Vec<html_export::MessageGroup>,
@@ -203,7 +196,6 @@ pub(crate) fn flush_group(
         groups.push(group);
     }
 }
-
 
 pub(crate) fn tool_result_content(msg: &html_export::Message) -> String {
     let Some(output) = msg
@@ -224,8 +216,9 @@ pub(crate) fn tool_result_content(msg: &html_export::Message) -> String {
     }
 }
 
-
-pub(crate) fn standalone_tool_result_group(msg: &html_export::Message) -> html_export::MessageGroup {
+pub(crate) fn standalone_tool_result_group(
+    msg: &html_export::Message,
+) -> html_export::MessageGroup {
     let mut primary = msg.clone();
     primary.content = tool_result_content(msg);
 
@@ -242,7 +235,6 @@ pub(crate) fn standalone_tool_result_group(msg: &html_export::Message) -> html_e
     primary.tool_call = None;
     html_export::MessageGroup::tool_only(primary)
 }
-
 
 /// Groups flat messages into MessageGroups with tool correlation.
 ///
