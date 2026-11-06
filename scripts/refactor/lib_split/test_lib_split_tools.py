@@ -1101,6 +1101,17 @@ class StaleRefTests(unittest.TestCase):
         self.assertTrue(sqlite, "sqlite.rs consumer must be detected")
         self.assertNotEqual(sqlite[0][1], "write")
 
+    def test_indexer_fixture_allow_is_exact_line(self):
+        # Controller ruling: the TempDir snippet-metadata fixture at
+        # src/indexer/mod.rs:41996 is the only admitted reference; the
+        # former 41920-41929 range and every adjacent line stay findings.
+        import stale_refs as sr
+        rel = "src/indexer/mod.rs"
+        self.assertTrue(sr.allowed(rel, 41996, sr.BUILTIN_ALLOW))
+        for line in (41927, 41995, 41997):
+            self.assertFalse(sr.allowed(rel, line, sr.BUILTIN_ALLOW),
+                             f"line {line} must not be exempt")
+
 
 class SplitStageContractTests(unittest.TestCase):
     """Round-2 stage semantics: manual/unknown/empty/repeat stages."""
@@ -1212,6 +1223,39 @@ class ManifestNamedPathTests(unittest.TestCase):
             if e["target"].startswith(
                     "src/cli/commands/capabilities_introspect/"):
                 self.assertEqual(e["stage"], "2e", e["target"])
+
+    def test_stage1a_response_schema_tests_split_in_two(self):
+        # plan §8 stage 1a: response_schema_tests divides into two
+        # sibling part files under src/robot_schema/ — the manifest must
+        # carry the partition as slices, not one dissolved file.
+        parts = [e for e in self.files
+                 if (e.get("slice") or {}).get("mod") == "response_schema_tests"]
+        self.assertEqual(
+            [e["target"] for e in parts],
+            ["src/robot_schema/response_schema_tests_part_1.rs",
+             "src/robot_schema/response_schema_tests_part_2.rs"])
+        for e in parts:
+            self.assertEqual(e["stage"], "1a", e["target"])
+            self.assertEqual(e["slice"]["parts"], 2, e["target"])
+        self.assertEqual([e["slice"]["part"] for e in parts], [1, 2])
+        # contiguous inner coverage: part 1 owns the mod `use` head and
+        # the fixture helper; part 2 resumes at the next item and owns
+        # the readiness helper — no overlap, no skipped item.
+        self.assertEqual(parts[0]["slice"]["first"],
+                         {"kind": "use", "name": "super::*"})
+        self.assertEqual(
+            parts[0]["slice"]["last"]["name"],
+            "doctor_storage_pressure_classifies_precious_and_reclaimable_bytes")
+        self.assertEqual(
+            parts[1]["slice"]["first"]["name"],
+            "doctor_storage_pressure_accounts_for_symlinked_archive_root")
+        self.assertEqual(
+            parts[1]["slice"]["last"]["name"],
+            "doctor_v2_schema_examples_are_redacted_contract_examples")
+        # the whole-mod single file is gone — nothing else may claim it
+        self.assertFalse(
+            any(e.get("mod") == "response_schema_tests"
+                for e in self.files))
 
     def test_no_run_rs_or_execute_cli_rs_targets(self):
         for e in self.files:

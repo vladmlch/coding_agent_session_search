@@ -222,6 +222,7 @@ MOD_SPLITS = {
     "doctor_asset_taxonomy_tests": 7,
     "cli_read_db_tests": 2,
     "indexed_conversation_fallback_tests": 2,
+    "response_schema_tests": 2,
 }
 
 # cfg test mods whose (dir, stage) differ from their enclosing region.
