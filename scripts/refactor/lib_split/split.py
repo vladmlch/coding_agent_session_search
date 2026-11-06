@@ -228,20 +228,119 @@ def _apply_find(text: bytes, rt: dict) -> tuple[bytes, bool]:
     return text[:s] + rt["with"].encode() + text[e:], True
 
 
+def _leaf_names(use_text: bytes) -> set:
+    """Names a `use` item imports into scope (last path segments).
+
+    `use a::b::{C, D as E}` -> {C, E}; `use a::b::C` -> {C};
+    `use a::b as B` -> {B}; `use a::b::*` -> {b} (the module name is
+    the only conservative leaf a glob guarantees)."""
+    txt = use_text.decode("utf-8", "replace")
+    m = re.search(r"\buse\s+([^;]+);", txt, re.S)
+    if not m:
+        return set()
+    path = " ".join(m.group(1).split())
+    out = set()
+    if "{" in path:
+        inner = path[path.index("{") + 1:path.rindex("}")]
+        for part in inner.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if " as " in part:
+                part = part.split(" as ")[-1].strip()
+            out.add(part.rsplit("::", 1)[-1])
+        return out
+    if " as " in path:
+        return {path.split(" as ")[-1].strip()}
+    segs = [s for s in path.split("::") if s]
+    leaf = segs[-1] if segs else ""
+    if leaf == "*" and len(segs) >= 2:
+        leaf = segs[-2]  # `use a::b::*` exposes `b::` paths
+    return {leaf} if leaf and leaf != "*" else set()
+
+
+def _code_text(body: bytes) -> bytes:
+    """Body restricted to CODE-classified bytes (strings/comments
+    blanked) — name matching must not keep an import alive through a
+    string literal or comment."""
+    cls = ri.classify(body)
+    view = ri.structure_view(body, cls)
+    return view.encode("latin-1")
+
+
+def _names_referenced(names: set, code_text: bytes) -> set:
+    out = set()
+    for n in names:
+        if re.search(rb"\b" + re.escape(n.encode()) + rb"\b", code_text):
+            out.add(n)
+    return out
+
+
+# Method-providing traits are needed invisibly: `x.context(…)` never
+# names `Context`, `row.get_typed()` never names `RowExt`. A broadcast
+# `use` carrying a possibly-trait leaf is never dropped, only annotated.
+_TRAIT_LEAF_NAMES = frozenset({
+    "Context", "Iterator", "IntoIterator", "FromIterator", "Extend",
+    "Future", "IntoFuture", "Stream", "Sink", "Read", "Write", "Seek",
+    "BufRead", "AsyncRead", "AsyncWrite", "AsyncBufRead", "AsyncSeek",
+    "TryFrom", "TryInto", "FromStr", "Display", "Debug", "Serialize",
+    "Deserialize", "DeserializeOwned", "Error", "Any", "Hash", "Hasher",
+    "Eq", "Ord", "PartialEq", "PartialOrd", "Clone", "Copy", "Default",
+    "Drop", "Send", "Sync", "Sized", "Unpin", "Deref", "DerefMut",
+    "AsRef", "AsMut", "Borrow", "BorrowMut", "ToOwned", "Index",
+    "IndexMut", "From", "Into", "ToString", "Fn", "FnMut", "FnOnce",
+})
+
+
+def _use_needed(txt: bytes, code: bytes) -> bool:
+    leafs = _leaf_names(txt)
+    if not leafs:
+        return True
+    if b"::*" in txt:
+        return True  # glob members unenumerable — always keep
+    if any(n in _TRAIT_LEAF_NAMES or n.endswith("Ext") for n in leafs):
+        return True
+    return bool(_names_referenced(leafs, code))
+
+
 def seed_header(target: str, root_uses: list[bytes], test_mod: bool = False,
-                local_names: set = frozenset(), siblings: list = ()) -> bytes:
+                local_names: set = frozenset(), siblings: list = (),
+                body: bytes = b"", sibling_exports: dict = None,
+                super_exports: set = None, crate_exports: set = None) -> bytes:
     depth = target.count("/") - 1
+    code = _code_text(body) if body else None
     lines = [GENERATED]
+    # Glob seeds below are emitted only when the body provably references
+    # a name the glob provides (ruling: eliminate unnecessary generated
+    # imports before any -D-warnings proof). A glob kept without a
+    # referenced member would itself fire `unused_imports`.
     if depth >= 1 and not test_mod:
-        lines.append(b"#[allow(unused_imports)]\nuse super::*;\n")
-    lines.append(b"#[allow(unused_imports)]\nuse crate::*;\n")
+        if (code is None or super_exports is None
+                or _names_referenced(super_exports, code)):
+            lines.append(b"#[allow(unused_imports)]\nuse super::*;\n")
+    if (code is None or crate_exports is None
+            or _names_referenced(crate_exports, code)):
+        lines.append(b"#[allow(unused_imports)]\nuse crate::*;\n")
     parent_mod = "crate::" + module_path_of(target).rsplit("::", 1)[0]
+    exports = sibling_exports or {}
     for s in siblings:
         # slice siblings: helpers defined in one part of a dissolved mod
-        # are used by the others (they shared one mod scope originally)
+        # are used by the others (they shared one mod scope originally).
+        # A glob for a sibling whose names are never referenced here is
+        # a provably-unused generated import — drop it (round-2 ruling:
+        # eliminate unnecessary generated imports before -D warnings).
+        if code is not None and exports.get(s):
+            if not _names_referenced(exports[s], code):
+                continue
         lines.append(f"#[allow(unused_imports)]\nuse {parent_mod}::{s}::*;\n"
                      .encode())
-    if root_uses:
+    needed_uses = root_uses
+    if code is not None:
+        needed_uses = [
+            u for u in root_uses
+            if _names_referenced(_leaf_names(u), code)
+        ]
+    if needed_uses:
         # Root uses are wrapped in a private mod and glob-imported so that
         # explicit `use` items carried in moved code shadow them by the
         # normal glob-shadowing rule instead of colliding (E0252). Paths
@@ -250,7 +349,7 @@ def seed_header(target: str, root_uses: list[bytes], test_mod: bool = False,
         # local first segments are rewritten to `crate::…` — extern
         # crate names (not in local_names) stay untouched.
         lines.append(b"#[allow(unused_imports)]\nmod __lib_split_root_uses {\n")
-        for u in root_uses:
+        for u in needed_uses:
             u = _absolutize_use(u, local_names)
             # pub(crate), not pub: the seed gives the file internal scope
             # only — `pub use` would attempt a public re-export of items
@@ -365,6 +464,72 @@ def emit(manifest: dict, src: str, stage: str | None = None) -> EmitResult:
         if it.kind == "use" and it.start < gen_cutoff
     ]
     local_names = {it.name for it in items}
+
+    # --- export-name pre-pass for generated-import filtering -----------
+    # Each emitted target's importable names (its items' names plus leaf
+    # names re-exported by `use` items), plus the crate-root name set a
+    # `use crate::*` actually reaches: stays in lib.rs, root mod decls,
+    # and every emitted name — the generated `pub(crate) use …::*`
+    # bridges in the remainder re-export them all at crate scope.
+    def _names_of(pool) -> set:
+        out = set()
+        for it in pool:
+            if it.name and it.kind != "impl":
+                out.add(it.name)
+            if it.kind == "use":
+                out |= _leaf_names(span_text(raw, it))
+        return out
+
+    exports_by_target: dict[str, set] = {}
+    stay_names: set = set()
+    for e in manifest["file"]:
+        t = e["target"]
+        modname_e = e.get("mod") or (e.get("slice") or {}).get("mod")
+        if modname_e:
+            m = resolve_or_none(items, {"kind": "mod_inline",
+                                        "name": modname_e})
+            if m is None or not m.inner:
+                continue
+            if "slice" in e:
+                sl = e["slice"]
+                ia = m.inner.index(resolve(m.inner, sl["first"]))
+                ib = m.inner.index(resolve(m.inner, sl["last"]))
+                nm = _names_of(m.inner[ia:ib + 1])
+            else:
+                nm = _names_of(m.inner)
+            exports_by_target.setdefault(t, set()).update(nm)
+            continue
+        it_a = resolve_or_none(items, e["first"])
+        it_b = resolve_or_none(items, e["last"])
+        if it_a is None or it_b is None:
+            continue  # anchors consumed by an earlier apply stage
+        nm = _names_of(items[items.index(it_a):items.index(it_b) + 1])
+        if e["stage"] == "stay":
+            stay_names.update(nm)
+        else:
+            exports_by_target.setdefault(t, set()).update(nm)
+    crate_exports = set(stay_names)
+    crate_exports.update(it.name for it in items
+                         if it.kind == "mod_decl" and it.name)
+    for s in exports_by_target.values():
+        crate_exports |= s
+
+    def _super_exports(target: str) -> set:
+        """Names `use super::*` brings in for `target`: the parent
+        module file's own exports plus its child module names — sibling
+        files (`src/cli/y.rs` → `y`) and subdirectories
+        (`src/cli/sub/z.rs` → `sub`) alike."""
+        d = target.rsplit("/", 1)[0]
+        parent = f"{d}.rs"
+        out = set(exports_by_target.get(parent, set()))
+        for e in manifest["file"]:
+            t = e["target"]
+            if t == target or not t.startswith(d + "/"):
+                continue
+            child = t[len(d) + 1:].split("/", 1)[0]
+            out.add(Path(child).stem)
+        return out
+
     files: list[EmittedFile] = []
     moved: list[Moved] = []
     stays: list = []
@@ -373,11 +538,23 @@ def emit(manifest: dict, src: str, stage: str | None = None) -> EmitResult:
     retargets_applied: list = []
     origins: dict = {}
 
+    stem_exports = {
+        Path(t).stem: names
+        for t, names in exports_by_target.items()
+    }
+
+    def _insert_seed(f, siblings=()):
+        body = b"".join(f.parts)
+        f.parts.insert(0, seed_header(
+            f.target, root_uses, test_mod=f.test_mod,
+            local_names=local_names, siblings=siblings, body=body,
+            super_exports=_super_exports(f.target),
+            crate_exports=crate_exports,
+            sibling_exports=stem_exports))
+
     def emit_range(entry, a, b, target):
         f = EmittedFile(target=target, stage=entry["stage"],
                         module_path=module_path_of(target))
-        f.parts.append(seed_header(target, root_uses,
-                                   local_names=local_names))
         for it in items[a:b + 1]:
             if id(it) in claimed:
                 continue
@@ -397,6 +574,7 @@ def emit(manifest: dict, src: str, stage: str | None = None) -> EmitResult:
                                target, None, transforms + ["also"]))
             f.items.append(it)
             f.parts.append(lead_of[id(it)] + txt + b"\n")
+        _insert_seed(f)
         files.append(f)
         origins[f.module_path] = ""
         return f
@@ -438,9 +616,6 @@ def emit(manifest: dict, src: str, stage: str | None = None) -> EmitResult:
             f = EmittedFile(target=target, stage=estage,
                             module_path=module_path_of(target), test_mod=True,
                             decl_attrs=[a.text for a in mod.attrs])
-            f.parts.append(seed_header(target, root_uses, test_mod=True,
-                                       local_names=local_names,
-                                       siblings=siblings))
             body_open = _mod_body_open(raw, cls, mod)
             inner_gap_of: dict = {}
             prev_end = None
@@ -452,13 +627,14 @@ def emit(manifest: dict, src: str, stage: str | None = None) -> EmitResult:
             tail_gap = raw[inner[-1].end:mod.end - 1] if inner else b""
             if part == 1:
                 f.parts.append(lead_of[id(mod)] + head_gap)
+            use_parts = []
             for x in inner:
                 if x.kind != "use":
                     continue
                 txt = _super_to_crate(span_text(raw, x))
                 if txt.strip() == b"use crate::*;":
                     continue
-                f.parts.append(txt + b"\n")
+                use_parts.append(txt + b"\n")
                 if part == 1:
                     moved.append(Moved(x, txt, span_text(raw, x),
                                        inner_gap_of.get(id(x), b""),
@@ -478,6 +654,22 @@ def emit(manifest: dict, src: str, stage: str | None = None) -> EmitResult:
                 f.parts.append(inner_gap_of.get(id(x), b"") + txt + b"\n")
             if part == parts:
                 f.parts.append(tail_gap)
+            # Broadcast uses: part 1 owns them for inventory and must
+            # emit every one; later parts keep only provably-needed ones
+            # (glob/trait-leaf uses are kept — method-providing traits
+            # are needed without appearing in the text). Every kept use
+            # is annotated as a transitional seed with @generated
+            # provenance rather than relying on a blanket lint level.
+            if part == 1:
+                kept_uses = use_parts
+            else:
+                code = _code_text(b"".join(f.parts))
+                kept_uses = [t for t in use_parts if _use_needed(t, code)]
+            ins = 1 if part == 1 else 0
+            f.parts[ins:ins] = [
+                b"#[allow(unused_imports)]\n" + t for t in kept_uses
+            ]
+            _insert_seed(f, siblings=siblings)
             files.append(f)
             origins[f.module_path] = modname
             continue
@@ -542,9 +734,9 @@ def emit(manifest: dict, src: str, stage: str | None = None) -> EmitResult:
 
 
 def _generated_block(files: list[EmittedFile], stage,
-                     remainder: bytes = b"") -> bytes:
+                     remainder: bytes = b"") -> tuple[bytes, bytes]:
     if not files:
-        return b""
+        return b"", remainder
     lines = [GEN_MARKER.decode() + "\n"]
     new_roots = sorted({
         f.target.split("/")[1] for f in files
@@ -593,8 +785,26 @@ def apply(manifest: dict, root: Path, stages: list[str]) -> dict:
     root = Path(root)
     src_path = root / "src" / "lib.rs"
     src = src_path.read_text()
-    summary = {"stages": [], "files": [], "relocs": [], "retargets": []}
+    manual = set(manifest.get("meta", {}).get("manual_stages", []))
+    declared_stages = {e["stage"] for e in manifest["file"]} | \
+        {r["stage"] for r in manifest.get("mod_reloc", [])} | \
+        {rt["stage"] for rt in manifest.get("retarget", [])}
+    summary = {"stages": [], "files": [], "relocs": [], "retargets": [],
+               "notes": []}
     for st in stages:
+        if st in manual:
+            raise SplitError(
+                f"stage {st} is a plan-manual stage (structural "
+                f"refactoring/shim, plan §8) — no move-only apply exists; "
+                f"run it by hand")
+        if st not in STAGE_ORDER and st not in declared_stages:
+            raise SplitError(
+                f"unknown stage {st!r} — manifest stages: "
+                f"{', '.join(STAGE_ORDER)}")
+        declared = any(e["stage"] == st for e in manifest["file"]) or \
+            any(r["stage"] == st for r in manifest.get("mod_reloc", [])) or \
+            any(rt["stage"] == st for rt in manifest.get("retarget", []))
+        n_retargets_before = len(summary["retargets"])
         res = emit(manifest, src, stage=st)
         problems = check(res, src.encode(), manifest, stage=st, root=root)
         if problems:
@@ -617,6 +827,14 @@ def apply(manifest: dict, root: Path, stages: list[str]) -> dict:
         src_path.write_bytes(res.remainder)
         src = res.remainder.decode("utf-8")
         summary["stages"].append(st)
+        if not res.files and not res.relocs and \
+                len(summary["retargets"]) == n_retargets_before:
+            summary["notes"].append(
+                f"stage {st}: " +
+                ("no manifest entries (empty move stage) — nothing to do"
+                 if not declared else
+                 "all declared anchors already consumed (previously "
+                 "applied) — nothing to do"))
     return summary
 
 
@@ -737,6 +955,10 @@ def _apply_external_retarget(root: Path, rt: dict, summary) -> None:
     fn, hits = _retarget_hits(text, rt)
     if fn is None:
         raise SplitError(f"retarget {rt['test']}: fn not found in {tf}")
+    if len(hits) == 0:
+        if rt["with"].encode() in text:
+            return  # already applied by an earlier run — idempotent skip
+        raise SplitError(f"retarget {rt['test']}: 0 find hits (want 1)")
     if len(hits) != 1:
         raise SplitError(f"retarget {rt['test']}: {len(hits)} find hits (want 1)")
     s, e = hits[0]
@@ -944,10 +1166,17 @@ def check(res: EmitResult, raw: bytes, manifest: dict,
             if not tf.exists():
                 problems.append(f"retarget {rt['test']}: {rt['test_file']} missing")
                 continue
-            fn, hits = _retarget_hits(tf.read_bytes(), rt)
+            text = tf.read_bytes()
+            fn, hits = _retarget_hits(text, rt)
             if fn is None:
                 problems.append(
                     f"retarget {rt['test']}: fn not found in {rt['test_file']}")
+            elif len(hits) == 0:
+                # already applied by an earlier run is a valid no-op;
+                # absent `with` is a real gate failure.
+                if rt["with"].encode() not in text:
+                    problems.append(
+                        f"retarget {rt['test']}: 0 find hits (want 1)")
             elif len(hits) != 1:
                 problems.append(
                     f"retarget {rt['test']}: {len(hits)} find hits (want 1)")
@@ -1002,6 +1231,8 @@ def main(argv):
         summary = apply(manifest, args.root, stages)
         print(f"applied {stages}: {len(summary['files'])} files, "
               f"{len(summary['relocs'])} relocs, {len(summary['retargets'])} retargets")
+        for note in summary["notes"]:
+            print(f"  NOTE: {note}")
         return 0
 
     if not args.dry_run:
