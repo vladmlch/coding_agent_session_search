@@ -33,8 +33,7 @@ fn scanned_source() -> String {
     SCAN_SOURCES
         .iter()
         .map(|rel| {
-            std::fs::read_to_string(root.join(rel))
-                .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+            std::fs::read_to_string(root.join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
         })
         .collect::<Vec<_>>()
         .join("\n")
