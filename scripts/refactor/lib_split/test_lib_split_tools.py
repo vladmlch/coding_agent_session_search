@@ -1219,6 +1219,171 @@ class ManifestNamedPathTests(unittest.TestCase):
                              ("src/cli/run.rs", "src/cli/execute_cli.rs"),
                              f"mechanical path still present: {e['target']}")
 
+    # --- round 3A: all §3 CLI named owners bind -------------------------
+
+    def _span(self, e):
+        return (e["first"]["name"], e["last"]["name"])
+
+    def test_cli_args_sub_rs_binds_subcommand_enums(self):
+        e = self._entry("src/cli/args_sub.rs")
+        self.assertIsNotNone(e, "src/cli/args_sub.rs missing")
+        self.assertEqual(e["stage"], "4")
+        self.assertEqual(e["first"]["name"], "ScheduleCommand")
+        self.assertEqual(e["last"]["name"], "Aggregations")
+
+    def test_cli_args_rs_ends_at_commands(self):
+        e = self._entry("src/cli/args.rs")
+        self.assertIsNotNone(e, "src/cli/args.rs missing")
+        self.assertEqual(e["first"]["name"], "Cli")
+        self.assertEqual(e["last"]["name"], "Commands")
+
+    def test_cli_error_rs_binds_error_surface(self):
+        e = self._entry("src/cli/error.rs")
+        self.assertIsNotNone(e, "src/cli/error.rs missing")
+        self.assertEqual(e["stage"], "4")
+        self.assertEqual(self._span(e), ("CliError", "WrapConfig"))
+
+    def test_cli_paths_rs_binds_all_path_helpers(self):
+        e = self._entry("src/cli/paths.rs")
+        self.assertIsNotNone(e, "src/cli/paths.rs missing")
+        self.assertEqual(self._span(e),
+                         ("default_db_path", "resolve_resume_target"))
+
+    def test_quarantine_mirror_import_rs_binds_command_family(self):
+        e = self._entry("src/cli/commands/quarantine_mirror_import.rs")
+        self.assertIsNotNone(e, "quarantine_mirror_import.rs missing")
+        self.assertEqual(e["stage"], "2b")
+        self.assertEqual(self._span(e),
+                         ("handle_import", "run_quarantine_clear"))
+
+    def test_forget_rs_binds_forget_items(self):
+        e = self._entry("src/cli/commands/forget.rs")
+        self.assertIsNotNone(e, "forget.rs missing")
+        self.assertEqual(e["stage"], "2b")
+        self.assertEqual(self._span(e),
+                         ("forget_filter", "run_forget_exclusion_action"))
+
+    def test_analytics_dir_covers_analytics_span(self):
+        es = [e for e in self.files
+              if e["target"].startswith("src/cli/commands/analytics/")]
+        self.assertTrue(es, "no files under commands/analytics/")
+        for e in es:
+            self.assertEqual(e["stage"], "2b", e["target"])
+        names = {n for e in es if "first" in e
+                 for n in (e["first"]["name"], e["last"]["name"])}
+        self.assertIn("run_analytics", names)
+        self.assertIn("run_analytics_models", names)
+
+    def test_stats_diag_storage_dir_covers_stats_and_diag(self):
+        es = [e for e in self.files
+              if e["target"].startswith("src/cli/commands/stats_diag_storage/")]
+        self.assertTrue(es, "no files under commands/stats_diag_storage/")
+        for e in es:
+            self.assertEqual(e["stage"], "2b", e["target"])
+        firsts = {e["first"]["name"] for e in es if "first" in e}
+        self.assertEqual(firsts, {"run_stats", "run_diag"})
+
+    def test_sessions_context_rs_binds_sessions_context(self):
+        e = self._entry("src/cli/commands/sessions_context.rs")
+        self.assertIsNotNone(e, "sessions_context.rs missing")
+        self.assertEqual(e["stage"], "2d")
+        self.assertEqual(e["first"]["name"], "run_sessions")
+
+    def test_resume_rs_binds_run_resume(self):
+        e = self._entry("src/cli/commands/resume.rs")
+        self.assertIsNotNone(e, "resume.rs missing")
+        self.assertEqual(e["stage"], "2f")
+        self.assertEqual(e["first"]["name"], "run_resume")
+
+    def test_export_html_rs_binds_run_export_html(self):
+        e = self._entry("src/cli/commands/export_html.rs")
+        self.assertIsNotNone(e, "export_html.rs missing")
+        self.assertEqual(e["stage"], "2f")
+        self.assertEqual(e["first"]["name"], "run_export_html")
+
+    def test_export_dir_holds_run_export_and_formatters(self):
+        es = [e for e in self.files
+              if e["target"].startswith("src/cli/commands/export/")]
+        self.assertTrue(es, "no files under commands/export/")
+        spans = {(e.get("first", {}).get("name"), e.get("last", {}).get("name"))
+                 for e in es}
+        # run_export + clipboard/output helpers live inside this span
+        # (run_export is between indexed_export_cli_error and
+        # sync_export_parent_directory in source order).
+        self.assertIn(("indexed_export_cli_error",
+                       "sync_export_parent_directory"), spans)
+        self.assertIn(("format_as_markdown", "html_escape"), spans)
+
+    def test_expand_rs_and_timeline_rs_bind(self):
+        for path, first in (("src/cli/commands/expand.rs", "run_expand"),
+                            ("src/cli/commands/timeline.rs", "run_timeline")):
+            e = self._entry(path)
+            self.assertIsNotNone(e, f"{path} missing")
+            self.assertEqual(e["first"]["name"], first, path)
+
+    def test_mappings_rs_binds_mappings_commands(self):
+        e = self._entry("src/cli/commands/mappings.rs")
+        self.assertIsNotNone(e, "mappings.rs missing")
+        self.assertEqual(e["stage"], "2g")
+        self.assertEqual(self._span(e),
+                         ("run_mappings_command", "run_mappings_test"))
+
+    def test_daemon_rs_and_schedule_rs_bind(self):
+        d = self._entry("src/cli/commands/daemon.rs")
+        s = self._entry("src/cli/commands/schedule.rs")
+        self.assertIsNotNone(d, "daemon.rs missing")
+        self.assertIsNotNone(s, "schedule.rs missing")
+        self.assertEqual(d["first"]["name"], "resolved_daemon_config")
+        self.assertEqual(d["last"]["name"], "run_daemon")
+        self.assertEqual(s["first"]["name"], "schedule_error_to_cli")
+        self.assertEqual(s["last"]["name"], "run_schedule_command")
+        for e in (d, s):
+            self.assertEqual(e["stage"], "2g", e["target"])
+
+    def test_pack_dir_covers_pack_span(self):
+        es = [e for e in self.files
+              if e["target"].startswith("src/cli/commands/pack/")]
+        self.assertTrue(es, "no files under commands/pack/")
+        for e in es:
+            self.assertEqual(e["stage"], "2a", e["target"])
+        names = {e["first"]["name"] for e in es if "first" in e}
+        self.assertIn("pack_budget_ms", names)
+
+    def test_named_owners_leave_no_mechanical_slugs(self):
+        dead = {
+            "src/cli/clierror.rs", "src/cli/sourcescommand.rs",
+            "src/cli/default_db_path.rs", "src/cli/read_session_paths.rs",
+            "src/cli/commands/handle_import.rs",
+            "src/cli/commands/run_sessions.rs",
+            "src/cli/commands/run_resume.rs",
+            "src/cli/commands/run_export_html.rs",
+            "src/cli/commands/format_as_markdown.rs",
+            "src/cli/commands/resolved_daemon_config.rs",
+            "src/cli/commands/run_stats.rs",
+            "src/cli/commands/analyticsvalidationsummary.rs",
+        }
+        for e in self.files:
+            self.assertNotIn(e["target"], dead,
+                             f"mechanical slug still bound: {e['target']}")
+
+    def test_inline_test_mods_live_inside_named_owners(self):
+        # resolve_data_dir_tests groups with paths.rs; forget_selector_tests
+        # with forget.rs — neither gets its own file nor a mod entry.
+        for e in self.files:
+            self.assertNotEqual(e.get("mod"), "resolve_data_dir_tests")
+            self.assertNotEqual(e.get("mod"), "forget_selector_tests")
+            self.assertNotIn(e["target"],
+                             ("src/cli/resolve_data_dir_tests.rs",
+                              "src/cli/commands/forget_selector_tests.rs"))
+
+    def test_retarget_to_paths_exist_as_targets(self):
+        targets = {e["target"] for e in self.files}
+        for rt in self.man.get("retarget", []):
+            for p in rt.get("to", []):
+                self.assertTrue(
+                    p == "src/lib.rs" or p in targets,
+                    f"retarget {rt['test']}: `to` path {p} not a target")
+
     def test_retargets_follow_named_paths(self):
         for rt in self.man.get("retarget", []):
             for p in rt.get("to", []):
