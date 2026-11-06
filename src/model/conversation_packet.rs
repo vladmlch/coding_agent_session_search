@@ -694,7 +694,11 @@ fn packet_hashes(payload: &ConversationPacketPayload) -> ConversationPacketHashe
     update_identity_hash(&mut semantic, &payload.identity);
     update_provenance_hash(&mut semantic, &payload.provenance);
     update_timestamps_hash(&mut semantic, &payload.timestamps);
-    update_json(&mut semantic, "metadata_json", &payload.metadata_json);
+    update_json(
+        &mut semantic,
+        "metadata_json",
+        &semantic_metadata(&payload.metadata_json),
+    );
     update_messages_hash(&mut semantic, &payload.messages);
 
     let mut messages = blake3::Hasher::new();
@@ -705,6 +709,28 @@ fn packet_hashes(payload: &ConversationPacketPayload) -> ConversationPacketHashe
         semantic_hash: semantic.finalize().to_hex().to_string(),
         message_hash: messages.finalize().to_hex().to_string(),
     }
+}
+
+/// Conversation metadata as the semantic hash sees it: everything except
+/// `cass.raw_mirror`. That block is an archive pointer written by the
+/// indexer (manifest id and path, capture time, source mtime, chunking), not
+/// parsed conversation content. Its value depends on the raw-mirror store at
+/// parse time: a retention prune or a refused capture under the byte cap
+/// re-ids, re-dates or drops it while the transcript is byte-identical. The
+/// source bytes it points at are already covered by the hashed messages.
+fn semantic_metadata(metadata: &Value) -> Cow<'_, Value> {
+    let has_raw_mirror = metadata
+        .get("cass")
+        .and_then(Value::as_object)
+        .is_some_and(|cass| cass.contains_key("raw_mirror"));
+    if !has_raw_mirror {
+        return Cow::Borrowed(metadata);
+    }
+    let mut stripped = metadata.clone();
+    if let Some(cass) = stripped.get_mut("cass").and_then(Value::as_object_mut) {
+        cass.remove("raw_mirror");
+    }
+    Cow::Owned(stripped)
 }
 
 fn update_identity_hash(hasher: &mut blake3::Hasher, identity: &ConversationPacketIdentity) {
@@ -954,6 +980,46 @@ mod tests {
 
         assert_ne!(original.hashes.semantic_hash, changed.hashes.semantic_hash);
         assert_ne!(original.hashes.message_hash, changed.hashes.message_hash);
+    }
+
+    #[test]
+    fn semantic_hash_ignores_raw_mirror_bookkeeping_only() {
+        let packet = |conversation: &NormalizedConversation| {
+            ConversationPacket::from_normalized_conversation(
+                conversation,
+                ConversationPacketProvenance::local(),
+            )
+        };
+        let mut base = raw_conversation();
+        base.metadata = json!({"model": "m", "cass": {"origin": {"source_id": "local"}}});
+        let mut captured = base.clone();
+        captured.metadata["cass"]["raw_mirror"] =
+            json!({"manifest_id": "a", "captured_at_ms": 1, "source_mtime_ms": 2});
+        let mut recaptured = base.clone();
+        recaptured.metadata["cass"]["raw_mirror"] =
+            json!({"manifest_id": "b", "captured_at_ms": 99, "chunk_count": 4});
+
+        // Absent, captured and re-captured pointers hash identically.
+        let base_hash = packet(&base).hashes.semantic_hash;
+        assert_eq!(packet(&captured).hashes.semantic_hash, base_hash);
+        assert_eq!(packet(&recaptured).hashes.semantic_hash, base_hash);
+        // The packet itself still carries the pointer unchanged.
+        assert_eq!(
+            packet(&captured).payload.metadata_json["cass"]["raw_mirror"]["manifest_id"],
+            json!("a")
+        );
+
+        // Every other metadata change still moves the hash, including a
+        // sibling under `cass` and a top-level `raw_mirror` key.
+        let mut origin_changed = captured.clone();
+        origin_changed.metadata["cass"]["origin"]["source_id"] = json!("other");
+        assert_ne!(packet(&origin_changed).hashes.semantic_hash, base_hash);
+        let mut top_level = base.clone();
+        top_level.metadata["raw_mirror"] = json!({"manifest_id": "a"});
+        assert_ne!(packet(&top_level).hashes.semantic_hash, base_hash);
+        let mut model_changed = captured;
+        model_changed.metadata["model"] = json!("other");
+        assert_ne!(packet(&model_changed).hashes.semantic_hash, base_hash);
     }
 
     #[test]
