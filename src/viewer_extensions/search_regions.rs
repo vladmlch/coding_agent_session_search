@@ -1451,6 +1451,56 @@ pub fn stage_region_docs(
     ))
 }
 
+/// True when the session's region documents are already committed in the
+/// live snapshot: its marks row is `published` at the current
+/// `region_version`, carries no queued stale deletes, and binds the same
+/// `source_revision` as its facts generation. An incremental lane skips
+/// re-staging such a session — re-upserting an identity already live forces
+/// Quill to publish a segment per session for no change. Anything else
+/// (pending, meta-pending, a republished revision, a queued delete, or no
+/// marks row) must stage. Rebuild lanes that write a fresh index never call
+/// this; they re-materialize every marked session.
+pub fn region_docs_published_current(db: &impl FactsDb, conversation_id: i64) -> Result<bool> {
+    let mark = db
+        .facts_query_map(
+            "SELECT region_version, source_revision, docs_state, pending_doc_deletes \
+             FROM viewer_search_region_marks WHERE conversation_id = ?1",
+            &[ParamValue::from(conversation_id)],
+            |row| {
+                Ok((
+                    row.get_typed::<i64>(0)?,
+                    row.get_typed::<i64>(1)?,
+                    row.get_typed::<String>(2)?,
+                    row.get_typed::<String>(3)?,
+                ))
+            },
+        )?
+        .into_iter()
+        .next();
+    let Some((region_version, source_revision, docs_state, pending_json)) = mark else {
+        return Ok(false);
+    };
+    if region_version != REGION_VERSION || docs_state != DOCS_PUBLISHED {
+        return Ok(false);
+    }
+    let no_pending_deletes = serde_json::from_str::<Vec<String>>(&pending_json)
+        .map(|ids| ids.is_empty())
+        .unwrap_or(false);
+    if !no_pending_deletes {
+        return Ok(false);
+    }
+    let facts_revision = db
+        .facts_query_map(
+            "SELECT source_revision FROM viewer_session_facts \
+             WHERE conversation_id = ?1 LIMIT 1",
+            &[ParamValue::from(conversation_id)],
+            |row| row.get_typed::<i64>(0),
+        )?
+        .into_iter()
+        .next();
+    Ok(facts_revision == Some(source_revision))
+}
+
 /// Stamp staged sessions `published` — callable ONLY after the index
 /// commit that seals their documents. Each stamp replays the stage-time
 /// marks snapshot as a compare-and-swap: `region_version`,

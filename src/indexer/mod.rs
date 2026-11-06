@@ -38016,6 +38016,25 @@ pub mod persist {
             .collect()
     }
 
+    /// Stage one persisted session's region documents on the lexical lane's
+    /// writer. Only `IncrementalInline` writes into the live snapshot, so only
+    /// it may skip a session whose region documents are already published.
+    /// The rebuild lanes (`InlineRebuildFromScan`, `DeferredAuthoritativeDbRebuild`)
+    /// populate a fresh snapshot that holds no region documents, so every
+    /// persisted session must re-materialize there.
+    fn stage_persisted_region_docs(
+        index: &mut TantivyIndex,
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+        conversation_id: i64,
+        lexical_strategy: LexicalPopulationStrategy,
+    ) -> Result<usize> {
+        if lexical_strategy == LexicalPopulationStrategy::IncrementalInline {
+            index.stage_search_region_docs_unless_published(db, conversation_id)
+        } else {
+            index.stage_search_region_docs(db, conversation_id)
+        }
+    }
+
     fn publish_changed_packet_messages(
         index: &mut TantivyIndex,
         packet: &ConversationPacket,
@@ -39369,7 +39388,12 @@ pub mod persist {
         if !defer_lexical_updates && let Some(index) = t_index.as_deref_mut() {
             index.converge_pending_search_region_docs(storage.raw(), 4096)?;
             for (_, outcome) in &ordered {
-                index.stage_search_region_docs(storage.raw(), outcome.conversation_id)?;
+                stage_persisted_region_docs(
+                    index,
+                    storage.raw(),
+                    outcome.conversation_id,
+                    lexical_strategy,
+                )?;
             }
         }
         for (_, outcome) in ordered {
@@ -39470,13 +39494,14 @@ pub mod persist {
                                 // Staging only queues the marks stamp;
                                 // `published` lands after this writer's
                                 // commit.
-                                t_index
-                                    .as_deref_mut()
-                                    .expect("incremental inline updates require Tantivy writer")
-                                    .stage_search_region_docs(
-                                        storage.raw(),
-                                        outcome.conversation_id,
-                                    )?;
+                                stage_persisted_region_docs(
+                                    t_index.as_deref_mut().expect(
+                                        "incremental inline updates require Tantivy writer",
+                                    ),
+                                    storage.raw(),
+                                    outcome.conversation_id,
+                                    lexical_strategy,
+                                )?;
                             }
                         }
                     }
@@ -40860,7 +40885,12 @@ pub mod persist {
             if let Some(index) = t_index.as_deref_mut() {
                 index.converge_pending_search_region_docs(storage.raw(), 4096)?;
                 for outcome in &outcomes {
-                    index.stage_search_region_docs(storage.raw(), outcome.conversation_id)?;
+                    stage_persisted_region_docs(
+                        index,
+                        storage.raw(),
+                        outcome.conversation_id,
+                        lexical_strategy,
+                    )?;
                 }
             }
             // ibuuh.32 / 5b9p0: route the serial-batched lexical sink
@@ -41614,6 +41644,310 @@ pub mod persist {
             let fs = FrankenStorage::open(path).expect("open frankensqlite db");
             fs.run_migrations().expect("run migrations");
             fs
+        }
+
+        /// Reproducer for the unchanged-session re-ingest cost: the same source
+        /// bytes persisted twice must keep the first run's `complete` receipt
+        /// (no republish, `attempts` unchanged).
+        #[test]
+        fn unchanged_session_reingest_keeps_generation_receipt() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let db_path = dir.path().join("reingest.db");
+            let storage = create_franken_db(&db_path);
+            let conv = NormalizedConversation {
+                agent_slug: "claude_code".into(),
+                external_id: Some("unchanged-reingest".into()),
+                title: Some("Unchanged re-ingest".into()),
+                workspace: Some(dir.path().join("workspace")),
+                source_path: dir.path().join("unchanged.jsonl"),
+                started_at: Some(1_700_000_000_000),
+                ended_at: Some(1_700_000_000_050),
+                metadata: serde_json::json!({
+                    "model": "fixture-model",
+                    "tags": ["alpha", "beta"],
+                    "nested": {"b": 2, "a": 1}
+                }),
+                messages: vec![
+                    NormalizedMessage {
+                        idx: 0,
+                        role: "user".into(),
+                        author: None,
+                        created_at: Some(1_700_000_000_000),
+                        content: "first question".into(),
+                        extra: serde_json::json!({"uuid": "u-0"}),
+                        snippets: Vec::new(),
+                        invocations: Vec::new(),
+                    },
+                    NormalizedMessage {
+                        idx: 1,
+                        role: "assistant".into(),
+                        author: None,
+                        created_at: Some(1_700_000_000_050),
+                        content: "first answer".into(),
+                        extra: serde_json::json!({"uuid": "a-1"}),
+                        snippets: Vec::new(),
+                        invocations: Vec::new(),
+                    },
+                ],
+            };
+            let batch = std::slice::from_ref(&conv);
+            persist_conversations_batched(
+                &storage,
+                None,
+                batch,
+                LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+                false,
+            )
+            .unwrap();
+            let first = crate::viewer_extensions::facts::ingest_receipt_for(storage.raw(), 1)
+                .unwrap()
+                .expect("first ingest writes a receipt");
+            assert_eq!(first.state, "complete", "{first:?}");
+
+            persist_conversations_batched(
+                &storage,
+                None,
+                batch,
+                LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+                false,
+            )
+            .unwrap();
+            let second = crate::viewer_extensions::facts::ingest_receipt_for(storage.raw(), 1)
+                .unwrap()
+                .expect("second ingest keeps a receipt");
+            assert_eq!(
+                second.attempts, first.attempts,
+                "unchanged re-ingest must skip the generation: first={first:?} second={second:?}"
+            );
+        }
+
+        /// Two-message session whose second answer is `answer`; everything else
+        /// is fixed, so persisting the same value again is an unchanged re-ingest.
+        fn region_reingest_session(dir: &std::path::Path, answer: &str) -> NormalizedConversation {
+            NormalizedConversation {
+                agent_slug: "claude_code".into(),
+                external_id: Some("region-reingest".into()),
+                title: Some("Region re-ingest".into()),
+                workspace: Some(dir.join("workspace")),
+                source_path: dir.join("region-reingest.jsonl"),
+                started_at: Some(1_700_000_000_000),
+                ended_at: Some(1_700_000_000_050),
+                metadata: serde_json::json!({"model": "fixture-model"}),
+                messages: vec![
+                    NormalizedMessage {
+                        idx: 0,
+                        role: "user".into(),
+                        author: None,
+                        created_at: Some(1_700_000_000_000),
+                        content: "first question".into(),
+                        extra: serde_json::json!({"uuid": "u-0"}),
+                        snippets: Vec::new(),
+                        invocations: Vec::new(),
+                    },
+                    NormalizedMessage {
+                        idx: 1,
+                        role: "assistant".into(),
+                        author: None,
+                        created_at: Some(1_700_000_000_050),
+                        content: answer.into(),
+                        extra: serde_json::json!({"uuid": "a-1"}),
+                        snippets: Vec::new(),
+                        invocations: Vec::new(),
+                    },
+                ],
+            }
+        }
+
+        /// One pass of the incremental lexical lane over `conv`: persist, then the
+        /// writer's post-commit stamp pass that marks region documents published.
+        fn incremental_lane_pass(
+            storage: &FrankenStorage,
+            index: &mut TantivyIndex,
+            conv: &NormalizedConversation,
+        ) {
+            persist_conversations_batched(
+                storage,
+                Some(&mut *index),
+                std::slice::from_ref(conv),
+                LexicalPopulationStrategy::IncrementalInline,
+                false,
+            )
+            .unwrap();
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+        }
+
+        fn published_receipt(
+            storage: &FrankenStorage,
+        ) -> crate::viewer_extensions::facts::IngestReceipt {
+            crate::viewer_extensions::facts::ingest_receipt_for(storage.raw(), 1)
+                .unwrap()
+                .expect("ingest receipt for conversation 1")
+        }
+
+        /// Unchanged session on the incremental lane: the generation skips
+        /// (`SkippedUnchanged`, receipt untouched) and the region documents are
+        /// neither re-upserted nor re-stamped.
+        #[test]
+        fn unchanged_session_skips_generation_and_region_upsert() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("unchanged.db"));
+            let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
+            let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+            let conv = region_reingest_session(dir.path(), "first answer");
+
+            incremental_lane_pass(&storage, &mut index, &conv);
+            let first = published_receipt(&storage);
+            assert_eq!(first.state, "complete", "{first:?}");
+            let (_, _, _, docs_state) =
+                crate::viewer_extensions::search_regions::region_mark(storage.raw(), 1)
+                    .unwrap()
+                    .expect("region marks row after the first pass");
+            assert_eq!(
+                docs_state,
+                crate::viewer_extensions::search_regions::DOCS_PUBLISHED
+            );
+
+            incremental_lane_pass(&storage, &mut index, &conv);
+            let outcome = crate::viewer_extensions::projection::publish_ingest_generation(
+                storage.raw(),
+                &map_to_internal(&conv),
+                1,
+            )
+            .unwrap();
+            assert_eq!(
+                outcome,
+                crate::viewer_extensions::projection::GenerationPublishOutcome::SkippedUnchanged
+            );
+            assert_eq!(published_receipt(&storage).attempts, first.attempts);
+
+            assert_eq!(
+                index
+                    .stage_search_region_docs_unless_published(storage.raw(), 1)
+                    .unwrap(),
+                0,
+                "a published, current session upserts no region documents"
+            );
+            assert_eq!(index.pending_region_doc_stamp_count(), 0);
+        }
+
+        /// Changed session: the generation republishes at the new revision and
+        /// the region documents restage and re-stamp `published` at that revision.
+        #[test]
+        fn changed_session_republishes_and_restages_region_docs() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("changed.db"));
+            let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
+            let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+
+            incremental_lane_pass(
+                &storage,
+                &mut index,
+                &region_reingest_session(dir.path(), "first answer"),
+            );
+            let first = published_receipt(&storage);
+
+            incremental_lane_pass(
+                &storage,
+                &mut index,
+                &region_reingest_session(dir.path(), "second answer"),
+            );
+            let after = published_receipt(&storage);
+            assert_eq!(after.state, "complete", "{after:?}");
+            assert_ne!(after.source_revision, first.source_revision);
+            assert!(
+                after.attempts > first.attempts,
+                "a changed session republishes: first={first:?} after={after:?}"
+            );
+            let (_, mark_revision, _, docs_state) =
+                crate::viewer_extensions::search_regions::region_mark(storage.raw(), 1)
+                    .unwrap()
+                    .expect("region marks row after the changed pass");
+            assert_eq!(
+                docs_state,
+                crate::viewer_extensions::search_regions::DOCS_PUBLISHED
+            );
+            assert_eq!(mark_revision, after.source_revision);
+        }
+
+        /// The rebuild lanes populate a fresh snapshot without region documents,
+        /// so they must restage every marked session even though its marks are
+        /// `published`; the incremental helper must still skip it.
+        #[test]
+        fn rebuild_lanes_restage_published_sessions() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("rebuild.db"));
+            let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
+            let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+            let conv = region_reingest_session(dir.path(), "first answer");
+            incremental_lane_pass(&storage, &mut index, &conv);
+
+            stage_persisted_region_docs(
+                &mut index,
+                storage.raw(),
+                1,
+                LexicalPopulationStrategy::IncrementalInline,
+            )
+            .unwrap();
+            assert_eq!(index.pending_region_doc_stamp_count(), 0);
+
+            stage_persisted_region_docs(
+                &mut index,
+                storage.raw(),
+                1,
+                LexicalPopulationStrategy::InlineRebuildFromScan,
+            )
+            .unwrap();
+            assert_eq!(index.pending_region_doc_stamp_count(), 1);
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+            assert_eq!(index.pending_region_doc_stamp_count(), 0);
+
+            assert_eq!(
+                index
+                    .converge_pending_search_region_docs(storage.raw(), 4096)
+                    .unwrap(),
+                0,
+                "published marks are not pending"
+            );
+            let (sessions, _) = index
+                .converge_all_search_region_docs(storage.raw(), i64::MAX)
+                .unwrap();
+            assert_eq!(sessions, 1);
+            assert_eq!(index.pending_region_doc_stamp_count(), 1);
+        }
+
+        /// Both lanes must agree on the generation revision: a session the
+        /// ingest lane just published (snippets included) is skipped by the
+        /// backfill lane instead of being republished at a different revision.
+        #[test]
+        fn backfill_lane_agrees_with_ingest_revision() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("lanes.db"));
+            let mut conv = region_reingest_session(dir.path(), "first answer");
+            conv.messages[1].snippets = vec![crate::connectors::NormalizedSnippet {
+                file_path: Some(dir.path().join("src/lib.rs")),
+                start_line: Some(1),
+                end_line: Some(2),
+                language: Some("rust".into()),
+                snippet_text: Some("fn main() {}".into()),
+            }];
+            persist_conversations_batched(
+                &storage,
+                None,
+                std::slice::from_ref(&conv),
+                LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+                false,
+            )
+            .unwrap();
+
+            let stats = crate::viewer_extensions::backfill::backfill_viewer_extensions(
+                storage.raw(),
+                &crate::viewer_extensions::backfill::BackfillOptions::default(),
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(stats.facts_published, 0, "{stats:?}");
+            assert_eq!(stats.structure_published, 0, "{stats:?}");
+            assert_eq!(stats.facts_skipped_unchanged, 1, "{stats:?}");
         }
 
         #[test]

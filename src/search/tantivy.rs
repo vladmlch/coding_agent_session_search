@@ -2428,6 +2428,35 @@ impl TantivyIndex {
         Ok(docs)
     }
 
+    /// Incremental-lane staging: like [`Self::stage_search_region_docs`], but
+    /// a session whose region documents are already committed in the live
+    /// snapshot ([`region_docs_published_current`]) is skipped outright — no
+    /// upsert, no queued stamp. Only lanes that write into the live index
+    /// may use this; a lane that builds a fresh index must stage every
+    /// session so the new snapshot carries the region documents.
+    ///
+    /// [`region_docs_published_current`]: crate::viewer_extensions::search_regions::region_docs_published_current
+    pub fn stage_search_region_docs_unless_published(
+        &mut self,
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+        conversation_id: i64,
+    ) -> Result<usize> {
+        if crate::viewer_extensions::search_regions::region_docs_published_current(
+            db,
+            conversation_id,
+        )? {
+            return Ok(0);
+        }
+        self.stage_search_region_docs(db, conversation_id)
+    }
+
+    /// Test-only view of the queued region-doc stamps for the current
+    /// uncommitted generation.
+    #[cfg(test)]
+    pub(crate) fn pending_region_doc_stamp_count(&self) -> usize {
+        self.pending_region_doc_stamps.len()
+    }
+
     /// Rescind a queued region-doc publication stamp for `conversation_id`
     /// in the current uncommitted generation. Used when the lexical lane
     /// skips a session's canonical staging after its region docs were
