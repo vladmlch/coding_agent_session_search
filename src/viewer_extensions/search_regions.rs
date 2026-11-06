@@ -977,33 +977,39 @@ pub fn replace_meta_regions(db: &impl FactsDb, conversation_id: i64) -> Result<(
         .and_then(|raw| raw.as_deref().map(str::to_owned))
         .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
         .unwrap_or_default();
-    if !old_meta.iter().all(|slot| keep.contains(slot)) {
-        let identity = db
-            .facts_query_map(
-                "SELECT source_id, source_path FROM conversations WHERE id = ?1 LIMIT 1",
-                &[ParamValue::from(conversation_id)],
-                |row| {
-                    Ok((
-                        row.get_typed::<Option<String>>(0)?,
-                        row.get_typed::<Option<String>>(1)?,
-                    ))
+    let identity = db
+        .facts_query_map(
+            "SELECT source_id, source_path FROM conversations WHERE id = ?1 LIMIT 1",
+            &[ParamValue::from(conversation_id)],
+            |row| {
+                Ok((
+                    row.get_typed::<Option<String>>(0)?,
+                    row.get_typed::<Option<String>>(1)?,
+                ))
+            },
+        )?
+        .into_iter()
+        .next();
+    if let Some((source_id, source_path)) = identity
+        && let Some(source_path) = source_path.filter(|path| !path.is_empty())
+    {
+        let doc_identity = |slot: i64| {
+            frankensearch::quill::cass::cass_document_identity(
+                source_id.as_deref().unwrap_or("local"),
+                frankensearch::quill::cass::CassConversationKey {
+                    source_path: &source_path,
+                    id: Some(conversation_id),
                 },
-            )?
-            .into_iter()
-            .next();
-        if let Some((source_id, source_path)) = identity
-            && let Some(source_path) = source_path.filter(|path| !path.is_empty())
-        {
-            for slot in old_meta.iter().filter(|slot| !keep.contains(slot)) {
-                pending.push(frankensearch::quill::cass::cass_document_identity(
-                    source_id.as_deref().unwrap_or("local"),
-                    frankensearch::quill::cass::CassConversationKey {
-                        source_path: &source_path,
-                        id: Some(conversation_id),
-                    },
-                    *slot as u64,
-                ));
-            }
+                slot as u64,
+            )
+        };
+        // A queued delete for a slot the new meta inventory reclaims would
+        // remove a live document after the commit counted it, as
+        // `stale_doc_ids_json` already prevents on full republication.
+        let keep_ids: Vec<String> = keep.iter().map(|slot| doc_identity(*slot)).collect();
+        pending.retain(|id| !keep_ids.contains(id));
+        for slot in old_meta.iter().filter(|slot| !keep.contains(slot)) {
+            pending.push(doc_identity(*slot));
         }
     }
     db.facts_execute(
@@ -1760,6 +1766,74 @@ mod tests {
         let storage =
             FrankenStorage::open(&temp.path().join("canonical.db")).expect("canonical schema");
         assert_eq!(live_region_doc_bound(storage.raw())?, 0);
+        Ok(())
+    }
+
+    fn fixture_doc_identity(conversation_id: i64, slot: i64) -> String {
+        let source_path = format!("/fixture/{conversation_id}.jsonl");
+        frankensearch::quill::cass::cass_document_identity(
+            "local",
+            frankensearch::quill::cass::CassConversationKey {
+                source_path: &source_path,
+                id: Some(conversation_id),
+            },
+            slot as u64,
+        )
+    }
+
+    fn pending_deletes(db: &impl FactsDb, conversation_id: i64) -> Result<Vec<String>> {
+        let raw: String = db
+            .facts_query_map(
+                "SELECT pending_doc_deletes FROM viewer_search_region_marks \
+                 WHERE conversation_id = ?1",
+                &[ParamValue::from(conversation_id)],
+                |row| row.get_typed::<String>(0),
+            )?
+            .into_iter()
+            .next()
+            .expect("marks row");
+        Ok(serde_json::from_str(&raw)?)
+    }
+
+    /// A slot freed by an earlier republish and queued for deletion can be
+    /// reclaimed by the new meta inventory before the index lane runs. The
+    /// queued delete then targets a live document: the post-commit stamp
+    /// pass removes it after the commit already counted it, and a fresh
+    /// reader serves fewer documents than the rebuild published (GH #457).
+    #[test]
+    fn replace_meta_regions_drops_pending_deletes_its_new_slots_reclaim() -> Result<()> {
+        let (_temp, storage) = fixture();
+        let db = storage.raw();
+        let agent = agent_id(&storage);
+        insert_conversation(db, 1, agent);
+        let reclaimed = fixture_doc_identity(1, base(0));
+        let still_stale = fixture_doc_identity(1, base(5));
+        insert_marks(
+            db,
+            1,
+            &serde_json::to_string(&[reclaimed.as_str(), still_stale.as_str()])?,
+        );
+        // One tag yields exactly one meta region at ordinal 0: slot base(0).
+        db.facts_execute(
+            "INSERT INTO viewer_tags (conversation_id, tag) VALUES (1, 'release')",
+            &[],
+        )?;
+
+        replace_meta_regions(db, 1)?;
+
+        let docs = region_docs(db, 1)?;
+        assert_eq!(docs.len(), 1, "the tag must materialize one meta doc");
+        assert_eq!(docs[0].msg_idx, base(0) as u64);
+        let pending = pending_deletes(db, 1)?;
+        assert!(
+            !pending.contains(&reclaimed),
+            "a slot the new meta inventory owns must leave the delete queue: {pending:?}"
+        );
+        assert_eq!(
+            pending,
+            vec![still_stale],
+            "unrelated stale ids stay queued"
+        );
         Ok(())
     }
 }
