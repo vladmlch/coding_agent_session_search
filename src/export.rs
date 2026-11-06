@@ -754,3 +754,8 @@ mod tests {
         assert!(output.contains("````\nContains ``` backticks"));
     }
 }
+
+// -- lib-split module declarations --
+#[cfg(test)]
+pub(crate) mod message_grouping_tests;
+pub mod messages;
