@@ -28,15 +28,16 @@ class LexError(Exception):
     """The source contains syntax this lexer refuses to guess at."""
 
 
-def classify(src: str) -> list[int]:
+def classify(src) -> list[int]:
     """Per-byte classification of Rust source.
 
     Covers: `//` and nested `/* */` comments, `"…"` strings with escapes,
     `r"…"`/`r#"…"#` raw strings with arbitrary hash counts, `'c'`/`'\\n'`/
     `'\\u{…}'` char literals (lifetimes stay CODE). Raises LexError on any
-    unterminated construct or NUL byte.
+    unterminated construct or NUL byte. Accepts `str` (encoded utf-8) or
+    `bytes` — the returned list always indexes raw bytes.
     """
-    b = src.encode("utf-8")
+    b = src if isinstance(src, bytes) else src.encode("utf-8")
     n = len(b)
     cls = [CODE] * n
     i = 0
@@ -146,15 +147,16 @@ def classify(src: str) -> list[int]:
     return cls
 
 
-def structure_view(src: str, cls: list[int], keep_strings: bool = False) -> str:
+def structure_view(src, cls: list[int], keep_strings: bool = False) -> str:
     """Source with comments (and optionally string/char contents) blanked.
 
     Newlines are preserved so line numbers stay exact. The result is
     decoded latin-1 so one character maps to one byte — every index in the
-    returned view is a byte offset into src.encode('utf-8'), which keeps
-    item spans aligned with the classifier on non-ASCII content.
+    returned view is a byte offset into the source bytes. Accepts `str`
+    (encoded utf-8 internally) or `bytes` — pass bytes when `cls` was
+    classified over pre-encoded data so indices stay aligned.
     """
-    raw = src.encode("utf-8")
+    raw = src if isinstance(src, bytes) else src.encode("utf-8")
     out = bytearray(raw)
     for i, c in enumerate(cls):
         if c == COMMENT or (not keep_strings and c in (STRING, CHAR)):
@@ -719,7 +721,7 @@ def cfg_chain(item: Item, parents: list[Item]) -> list[str]:
 
 def is_test_cfg(cfg: str) -> bool:
     """Does this cfg expression force `test` compilation?"""
-    return "test" in cfg
+    return not cfg_can_hold(cfg, test=False)
 
 
 def item_is_test_item(item: Item) -> bool:
@@ -728,8 +730,347 @@ def item_is_test_item(item: Item) -> bool:
 
 
 def mod_has_test_cfg(item: Item) -> bool:
-    """Any cfg attr on this item mentions `test` (test-only module)."""
-    return any("cfg" in a.text and "test" in a.text for a in item.attrs)
+    """Any cfg attr on this item requires `test` compilation."""
+    return test_only(item)
+
+
+def cfg_exprs(item: Item) -> list[str]:
+    """Normalized expressions of every `#[cfg(…)]` gate on `item`.
+
+    `cfg_attr` is not a gate — the item compiles regardless — so it is
+    deliberately excluded.
+    """
+    out: list[str] = []
+    for a in item.attrs:
+        m = re.match(r"#\s*\[\s*cfg\s*\((.*)\)\s*\]\s*$", a.text, re.S)
+        if m:
+            out.append(re.sub(r"\s+", " ", m.group(1)).strip())
+    return out
+
+
+_CFG_TOK = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[()!,=]|\"[^\"]*\"")
+
+
+def _eval_cfg(tokens: list[str], env: dict[str, bool]) -> bool:
+    pos = 0
+
+    def parse_or() -> bool:
+        nonlocal pos
+        return parse_term()
+
+    def parse_term() -> bool:
+        nonlocal pos
+        tok = tokens[pos]
+        if tok == "(":
+            pos += 1
+            v = parse_or()
+            if pos >= len(tokens) or tokens[pos] != ")":
+                raise LexError(f"unbalanced cfg parens: {tokens}")
+            pos += 1
+            return v
+        if tok == "!":
+            pos += 1
+            return not parse_term()
+        if pos + 1 < len(tokens) and tokens[pos + 1] == "(" and tok in ("all", "any", "not"):
+            pos += 2
+            vals = []
+            while pos < len(tokens) and tokens[pos] != ")":
+                vals.append(parse_or())
+                if pos < len(tokens) and tokens[pos] == ",":
+                    pos += 1
+            if pos >= len(tokens):
+                raise LexError("unterminated cfg call")
+            pos += 1
+            if tok == "all":
+                return all(vals)
+            if tok == "any":
+                return any(vals)
+            return not (len(vals) == 1 and vals[0])
+        # predicate: ident or ident = "value"
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", tok or ""):
+            name = tok
+            pos += 1
+            if pos + 1 < len(tokens) and tokens[pos] == "=":
+                pos += 2  # consume ="value" — predicate name still drives truth
+            return env.get(name, True)
+        raise LexError(f"unparseable cfg token {tok!r}")
+
+    val = parse_or()
+    if pos != len(tokens):
+        raise LexError(f"trailing cfg tokens: {tokens[pos:]}")
+    return val
+
+
+def cfg_can_hold(expr: str, test: bool) -> bool:
+    """Can `expr` evaluate true under `test=test` for some assignment of
+    all other predicates? Unknown atoms are enumerated (cfg exprs in this
+    codebase are small); anything unparseable is a hard error."""
+    expr = expr.strip()
+    if not expr:
+        return True
+    tokens = _CFG_TOK.findall(expr)
+    atoms = sorted({t for t in tokens if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", t)
+                    and t not in ("all", "any", "not", "test")})
+    if len(atoms) > 12:
+        raise LexError(f"cfg expression too complex to verify: {expr}")
+    from itertools import product
+    for combo in product((False, True), repeat=len(atoms)):
+        env = dict(zip(atoms, combo))
+        env["test"] = test
+        if _eval_cfg(tokens, env):
+            return True
+    return False
+
+
+def test_only(item: Item) -> bool:
+    """Item can never compile with `--cfg test` unset (test-only)."""
+    return any(not cfg_can_hold(e, test=False) for e in cfg_exprs(item))
+
+
+def field_insert_offsets(item_text: str, item: Item) -> list[int]:
+    """Byte offsets (relative to `item.start`) where `pub(crate) ` must be
+    inserted to promote every private field of a struct/union.
+
+    Handles braced (`struct S { a: i32 }`) and tuple (`struct S(i32)`)
+    field lists, skips already-visible fields, and ignores items that are
+    not structs/unions (enum variants carry no visibility).
+    """
+    if item.kind not in ("struct", "union"):
+        return []
+    raw = item_text.encode("utf-8")
+    cls = classify(item_text)
+    view = structure_view(item_text, cls)
+    n = len(view)
+    # locate the field-list opener: first '{' or '(' at depth 0 after the
+    # head, skipping generic `<…>` (e.g. `struct S<F: Fn()>`).
+    head = item.head_start - item.start
+    # the field list opens only after the `struct`/`union` keyword itself —
+    # a `pub(crate)` qualifier before it has parens that must not be read
+    # as a tuple-field group.
+    kw = re.search(rf"\b{item.kind}\b", view[head:])
+    scan_from = head + kw.end() if kw else head
+    open_i = None
+    angle = 0
+    for j in range(scan_from, n):
+        c = view[j]
+        if c == "<" and angle == 0 and j > head and view[j - 1] in _ANGLE_PREV:
+            angle += 1
+            continue
+        if c == "<" and angle > 0:
+            angle += 1
+            continue
+        if c == ">" and angle > 0 and view[j - 1] != "-":
+            angle -= 1
+            continue
+        if angle > 0:
+            continue
+        if c == ";":
+            return []  # unit struct
+        if c in "{(":
+            open_i = j
+            break
+    if open_i is None:
+        return []
+    depth = 0
+    close_i = None
+    for j in range(open_i, n):
+        if view[j] in "{(":
+            depth += 1
+        elif view[j] in "})":
+            depth -= 1
+            if depth == 0:
+                close_i = j
+                break
+    if close_i is None:
+        raise LexError(f"unbalanced field list in {item.name}")
+    braced = view[open_i] == "{"
+    # split the interior at depth-1 commas
+    segs: list[tuple[int, int]] = []
+    seg_start = open_i + 1
+    depth = 0
+    for j in range(open_i + 1, close_i):
+        c = view[j]
+        if c in "{(<[":
+            depth += 1
+        elif c in "})>]" and not (c == ">" and view[j - 1] == "-"):
+            # '->' in fn-pointer/closure field types is not a generic close
+            depth -= 1
+        elif c == "," and depth == 0:
+            segs.append((seg_start, j))
+            seg_start = j + 1
+    segs.append((seg_start, close_i))
+    offsets: list[int] = []
+    for s, e in segs:
+        i = _skip_ws(view, s, e)
+        # skip field attrs #[…]
+        while i < e and view[i] == "#":
+            end = _match_attr(view, i, e)
+            if end is None:
+                break
+            i = _skip_ws(view, end, e)
+        if i >= e:
+            continue
+        # already visible?
+        word, wend = _read_ident(view, i)
+        if word == "pub":
+            continue
+        if braced:
+            if not word:
+                continue
+            offsets.append(i)  # before field name
+        else:
+            offsets.append(i)  # before tuple field type
+    return offsets
+
+
+def ownership(
+    raw: bytes, cls: list[int], items: list[Item]
+) -> tuple[list[tuple[int, int]], tuple[int, int]]:
+    """Assign every byte between items an owner.
+
+    The gap before items[i] belongs to items[i] (it travels with that
+    item); the tail after the last item belongs to the file remainder.
+    Returns (leads, tail) where leads[i] = (start, end) — possibly an
+    empty span. Raises LexError when a gap contains anything but
+    whitespace, comments, `#![…]` inner attrs or stray `;`.
+    """
+    leads: list[tuple[int, int]] = []
+    prev_end = 0
+    n = len(raw)
+    for it in items:
+        gap = (prev_end, it.start)
+        validate_gap_bytes(raw, cls, gap)
+        leads.append(gap)
+        prev_end = it.end
+    tail = (prev_end, n)
+    validate_gap_bytes(raw, cls, tail)
+    return leads, tail
+
+
+def validate_gap_bytes(raw: bytes, cls: list[int], span: tuple[int, int]) -> None:
+    """Gap bytes must be whitespace/comment/`#![…]`/stray `;` only."""
+    s, e = span
+    i = s
+    while i < e:
+        if cls[i] == COMMENT or raw[i] in b" \t\n\r":
+            i += 1
+            continue
+        if raw[i : i + 2] == b"#!":
+            view = raw[i:e].decode("latin-1")
+            end = _match_attr(view, 0, len(view))
+            if end is None:
+                raise LexError(f"malformed inner attribute at byte {i}")
+            i += end
+            continue
+        if raw[i : i + 1] == b";":
+            i += 1
+            continue
+        raise LexError(
+            f"unowned non-whitespace byte {raw[i:i+1]!r} at offset {i}"
+        )
+
+
+def code_regions(cls: list[int]) -> list[tuple[int, int]]:
+    """Maximal [s, e) spans classified as CODE."""
+    out: list[tuple[int, int]] = []
+    i = 0
+    n = len(cls)
+    while i < n:
+        if cls[i] == CODE:
+            s = i
+            while i < n and cls[i] == CODE:
+                i += 1
+            out.append((s, i))
+        else:
+            i += 1
+    return out
+
+
+def find_in_code(
+    raw: bytes, cls: list[int], needle: bytes
+) -> list[tuple[int, int]]:
+    """All (start, end) hits of `needle` fully inside CODE-classified
+    bytes — hits inside strings/comments/char literals do not count."""
+    hits: list[tuple[int, int]] = []
+    ln = len(needle)
+    for s, e in code_regions(cls):
+        i = raw.find(needle, s, e)
+        while i != -1 and i + ln <= e:
+            hits.append((i, i + ln))
+            i = raw.find(needle, i + 1, e)
+    return hits
+
+
+def find_in_syntax(
+    raw: bytes, cls: list[int], needle: bytes
+) -> list[tuple[int, int]]:
+    """All (start, end) hits of `needle` with no COMMENT-classified byte.
+
+    Unlike find_in_code, string/char literals count as matchable syntax:
+    retarget patterns such as `include_str!("lib.rs")` legitimately span
+    code tokens and a string literal. Comment bytes are blanked in the
+    match view so hits can never originate inside comments.
+    """
+    view = structure_view(raw, cls, keep_strings=True)
+    n = needle.decode("latin-1")
+    hits: list[tuple[int, int]] = []
+    i = view.find(n)
+    while i != -1:
+        hits.append((i, i + len(n)))
+        i = view.find(n, i + 1)
+    return hits
+
+
+def syntax_regions(cls: list[int]) -> list[tuple[int, int]]:
+    """Maximal [s, e) spans containing no COMMENT-classified byte."""
+    out: list[tuple[int, int]] = []
+    i = 0
+    n = len(cls)
+    while i < n:
+        if cls[i] != COMMENT:
+            s = i
+            while i < n and cls[i] != COMMENT:
+                i += 1
+            out.append((s, i))
+        else:
+            i += 1
+    return out
+
+
+def rewrite_syntax(raw: bytes, cls: list[int], pat: "re.Pattern[bytes]",
+                   repl: bytes) -> bytes:
+    """Regex-replace `pat`→`repl` inside non-comment spans only.
+
+    Like rewrite_code but string/char literals are matchable syntax:
+    `include!("search/x.rs")` spans code+string and the path must be
+    editable. Matches can never consume comment bytes because every
+    region ends where a comment begins."""
+    out = bytearray()
+    prev = 0
+    for s, e in syntax_regions(cls):
+        out += raw[prev:s]
+        out += pat.sub(repl, raw[s:e])
+        prev = e
+    out += raw[prev:]
+    return bytes(out)
+
+
+def rewrite_code(raw: bytes, cls: list[int], pat: "re.Pattern[bytes]",
+                 repl: bytes) -> bytes:
+    """Regex-replace `pat`→`repl` inside CODE-classified spans only.
+
+    Matches spanning a code/comment boundary are rejected (a pattern that
+    would need bytes inside a string or comment to match is a bug in the
+    rewrite rule, not a rewrite)."""
+    out = bytearray()
+    prev = 0
+    for s, e in code_regions(cls):
+        seg = raw[s:e]
+        out += raw[prev:s]
+        out += pat.sub(repl, seg)
+        prev = e
+    out += raw[prev:]
+    return bytes(out)
 
 
 def summarize(src: str) -> dict:
