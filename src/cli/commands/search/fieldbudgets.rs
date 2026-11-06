@@ -3,15 +3,13 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use crate::robot_budget_envelope::BudgetSnapshot;
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use crate::robot_budget_envelope::BudgetSnapshot;
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Apply content truncation to a filtered hit JSON object
 #[derive(Clone, Copy)]
@@ -21,7 +19,6 @@ pub(crate) struct FieldBudgets {
     pub(crate) title: Option<usize>,
     pub(crate) fallback: Option<usize>,
 }
-
 
 impl FieldBudgets {
     #[inline]
@@ -33,8 +30,10 @@ impl FieldBudgets {
     }
 }
 
-
-pub(crate) fn apply_content_truncation(hit: serde_json::Value, budgets: FieldBudgets) -> serde_json::Value {
+pub(crate) fn apply_content_truncation(
+    hit: serde_json::Value,
+    budgets: FieldBudgets,
+) -> serde_json::Value {
     let serde_json::Value::Object(mut obj) = hit else {
         return hit;
     };
@@ -56,7 +55,6 @@ pub(crate) fn apply_content_truncation(hit: serde_json::Value, budgets: FieldBud
 
     serde_json::Value::Object(obj)
 }
-
 
 /// Clamp hits to an approximate token budget (4 chars ≈ 1 token). Returns (hits, `est_tokens`, clamped?)
 pub(crate) fn clamp_hits_to_budget(
@@ -99,7 +97,6 @@ pub(crate) fn clamp_hits_to_budget(
     (kept, est, clamped)
 }
 
-
 pub(crate) fn robot_format_from_env() -> Option<RobotFormat> {
     dotenvy::var("CASS_OUTPUT_FORMAT")
         .ok()
@@ -122,7 +119,6 @@ pub(crate) fn robot_format_from_env() -> Option<RobotFormat> {
         })
 }
 
-
 #[derive(Debug, Clone)]
 pub(crate) struct SearchModeMeta {
     pub(crate) requested: crate::search::query::SearchMode,
@@ -142,7 +138,6 @@ pub(crate) struct SearchModeMeta {
     pub(crate) wildcard_fallback_skipped: Option<&'static str>,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SemanticBudgetAction {
     Execute,
@@ -150,13 +145,11 @@ pub(crate) enum SemanticBudgetAction {
     HybridLexicalFallback,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SemanticBudgetCheckpoint {
     BeforeSetup,
     BeforeSearch,
 }
-
 
 impl SemanticBudgetCheckpoint {
     pub(crate) fn as_str(self) -> &'static str {
@@ -166,7 +159,6 @@ impl SemanticBudgetCheckpoint {
         }
     }
 }
-
 
 pub(crate) fn semantic_budget_diagnostic_suffix(
     snapshot: BudgetSnapshot,
@@ -182,8 +174,9 @@ pub(crate) fn semantic_budget_diagnostic_suffix(
     )
 }
 
-
-pub(crate) fn semantic_budget_fallback_reason(checkpoint: SemanticBudgetCheckpoint) -> &'static str {
+pub(crate) fn semantic_budget_fallback_reason(
+    checkpoint: SemanticBudgetCheckpoint,
+) -> &'static str {
     match checkpoint {
         SemanticBudgetCheckpoint::BeforeSetup => {
             "semantic refinement skipped because the robot search budget is nearly exhausted"
@@ -193,7 +186,6 @@ pub(crate) fn semantic_budget_fallback_reason(checkpoint: SemanticBudgetCheckpoi
         }
     }
 }
-
 
 pub(crate) fn strict_semantic_budget_error(
     mode_meta: &SearchModeMeta,
@@ -238,7 +230,6 @@ pub(crate) fn strict_semantic_budget_error(
     }
 }
 
-
 pub(crate) fn semantic_budget_action(
     mode_meta: &SearchModeMeta,
     snapshot: Option<BudgetSnapshot>,
@@ -266,7 +257,6 @@ pub(crate) fn semantic_budget_action(
     }
     SemanticBudgetAction::Execute
 }
-
 
 impl SearchModeMeta {
     pub(crate) fn new(requested: crate::search::query::SearchMode, defaulted: bool) -> Self {
@@ -334,7 +324,6 @@ impl SearchModeMeta {
     }
 }
 
-
 pub(crate) fn search_mode_label(mode: crate::search::query::SearchMode) -> &'static str {
     match mode {
         crate::search::query::SearchMode::Lexical => "lexical",
@@ -342,7 +331,6 @@ pub(crate) fn search_mode_label(mode: crate::search::query::SearchMode) -> &'sta
         crate::search::query::SearchMode::Hybrid => "hybrid",
     }
 }
-
 
 pub(crate) fn ann_fallback_human_warning(
     reason: crate::search::vector_index::SemanticAnnUnavailableReason,

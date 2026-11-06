@@ -3,17 +3,15 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use chrono::Utc;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pack_budget_ms(timeout_ms: Option<u64>) -> u64 {
@@ -26,7 +24,6 @@ pub(crate) fn pack_budget_ms(timeout_ms: Option<u64>) -> u64 {
     })
 }
 
-
 /// Deterministic slowdowns for bounded-pack E2E coverage. Production callers
 /// never set these test-only environment variables.
 pub(crate) fn maybe_test_pack_worker_delay(variable: &str) {
@@ -38,21 +35,17 @@ pub(crate) fn maybe_test_pack_worker_delay(variable: &str) {
     }
 }
 
-
 pub(crate) fn maybe_test_pack_delay() {
     maybe_test_pack_worker_delay("CASS_TEST_PACK_SLOW_MS");
 }
-
 
 pub(crate) fn maybe_test_pack_plan_delay() {
     maybe_test_pack_worker_delay("CASS_TEST_PACK_PLAN_SLOW_MS");
 }
 
-
 pub(crate) fn maybe_test_pack_render_delay() {
     maybe_test_pack_worker_delay("CASS_TEST_PACK_RENDER_SLOW_MS");
 }
-
 
 pub(crate) fn pack_budget_block(
     budget: &crate::robot_budget_envelope::RobotBudget,
@@ -71,7 +64,6 @@ pub(crate) fn pack_budget_block(
     }
     block
 }
-
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pack_retry_command(
@@ -190,7 +182,6 @@ pub(crate) fn pack_retry_command(
     let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
     cass_dataset_command(data_dir, db_path, &arg_refs)
 }
-
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_cli_pack(
@@ -841,7 +832,6 @@ pub(crate) fn run_cli_pack(
     write_cli_pack_output(&rendered)
 }
 
-
 pub(crate) fn render_cli_pack_with_output_budget(
     mut plan: crate::search::pack_planner::PlannedAnswerPack,
     mut request: crate::search::pack_planner::PackRenderRequest,
@@ -921,7 +911,6 @@ pub(crate) fn render_cli_pack_with_output_budget(
     }
 }
 
-
 pub(crate) fn write_cli_pack_output(output: &str) -> CliResult<()> {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -935,7 +924,6 @@ pub(crate) fn write_cli_pack_output(output: &str) -> CliResult<()> {
             retryable: false,
         })
 }
-
 
 pub(crate) fn resolve_pack_render_format(
     robot_format: Option<RobotFormat>,
@@ -978,8 +966,9 @@ pub(crate) fn resolve_pack_render_format(
     }
 }
 
-
-pub(crate) fn pack_invalid_limit_error(err: crate::search::pack_planner::PackPlannerLimitError) -> CliError {
+pub(crate) fn pack_invalid_limit_error(
+    err: crate::search::pack_planner::PackPlannerLimitError,
+) -> CliError {
     CliError {
         code: 2,
         kind: CliErrorKind::PackInvalidLimit.kind_str(),
@@ -995,7 +984,6 @@ pub(crate) fn pack_invalid_limit_error(err: crate::search::pack_planner::PackPla
     }
 }
 
-
 pub(crate) fn parse_pack_freshness_policy(
     value: &str,
 ) -> CliResult<crate::search::pack_planner::PackFreshnessPolicy> {
@@ -1010,7 +998,6 @@ pub(crate) fn parse_pack_freshness_policy(
     }
 }
 
-
 pub(crate) fn pack_query_term_count(query: &str) -> usize {
     query
         .split_whitespace()
@@ -1018,11 +1005,9 @@ pub(crate) fn pack_query_term_count(query: &str) -> usize {
         .count()
 }
 
-
 pub(crate) fn pack_query_phrase_count(query: &str) -> usize {
     query.matches('"').count() / 2
 }
-
 
 pub(crate) fn filter_pack_fields(
     value: serde_json::Value,
@@ -1066,7 +1051,6 @@ pub(crate) fn filter_pack_fields(
     Ok(serde_json::Value::Object(filtered))
 }
 
-
 pub(crate) fn validate_pack_fields(fields: Option<&Vec<String>>) -> CliResult<()> {
     if let Some(fields) = fields {
         let _ = expand_pack_field_mask(fields)?;
@@ -1074,14 +1058,12 @@ pub(crate) fn validate_pack_fields(fields: Option<&Vec<String>>) -> CliResult<()
     Ok(())
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PackFieldMask {
     pub(crate) fields: BTreeSet<String>,
     pub(crate) ignored_fields: Vec<String>,
     pub(crate) requested_fields: Vec<String>,
 }
-
 
 pub(crate) fn expand_pack_field_mask(fields: &[String]) -> CliResult<Option<PackFieldMask>> {
     let mut set = BTreeSet::new();
@@ -1156,7 +1138,6 @@ pub(crate) fn expand_pack_field_mask(fields: &[String]) -> CliResult<Option<Pack
     }
 }
 
-
 pub(crate) const PACK_TOP_LEVEL_FIELDS: &[&str] = &[
     "schema_version",
     "_meta",
@@ -1172,7 +1153,6 @@ pub(crate) const PACK_TOP_LEVEL_FIELDS: &[&str] = &[
     "warnings",
 ];
 
-
 pub(crate) fn pack_invalid_field_error(field: &str) -> CliError {
     CliError {
         code: 2,
@@ -1186,15 +1166,16 @@ pub(crate) fn pack_invalid_field_error(field: &str) -> CliError {
     }
 }
 
-
 pub(crate) fn pack_field_root(field: &str) -> Option<&str> {
     let raw_root = field.split('.').next()?;
     let root = raw_root.strip_suffix("[]").unwrap_or(raw_root);
     (!root.is_empty()).then_some(root)
 }
 
-
-pub(crate) fn append_pack_field_mask_warnings(value: &mut serde_json::Value, ignored_fields: &[String]) {
+pub(crate) fn append_pack_field_mask_warnings(
+    value: &mut serde_json::Value,
+    ignored_fields: &[String],
+) {
     if ignored_fields.is_empty() {
         return;
     }
@@ -1211,7 +1192,6 @@ pub(crate) fn append_pack_field_mask_warnings(value: &mut serde_json::Value, ign
     }
 }
 
-
 pub(crate) fn pack_warning_array_mut<'a>(
     value: &'a mut serde_json::Value,
     object_path: &str,
@@ -1227,7 +1207,6 @@ pub(crate) fn pack_warning_array_mut<'a>(
         .as_array_mut()
 }
 
-
 pub(crate) fn merge_projected_pack_field(
     target: &mut serde_json::Map<String, serde_json::Value>,
     source: &serde_json::Value,
@@ -1240,17 +1219,17 @@ pub(crate) fn merge_projected_pack_field(
     true
 }
 
-
 pub(crate) fn pack_field_projects(source: &serde_json::Value, field: &str) -> bool {
     projected_pack_field(source, field).is_some()
 }
 
-
-pub(crate) fn projected_pack_field(source: &serde_json::Value, field: &str) -> Option<serde_json::Value> {
+pub(crate) fn projected_pack_field(
+    source: &serde_json::Value,
+    field: &str,
+) -> Option<serde_json::Value> {
     let segments = field.split('.').collect::<Vec<_>>();
     project_pack_json_path(source, &segments)
 }
-
 
 pub(crate) fn project_pack_json_path(
     source: &serde_json::Value,
@@ -1293,13 +1272,11 @@ pub(crate) fn project_pack_json_path(
     Some(pack_singleton_json_object(segment, projected_child))
 }
 
-
 pub(crate) fn pack_singleton_json_object(key: &str, value: serde_json::Value) -> serde_json::Value {
     let mut object = serde_json::Map::new();
     object.insert(key.to_string(), value);
     serde_json::Value::Object(object)
 }
-
 
 pub(crate) fn merge_json_object(
     target: &mut serde_json::Map<String, serde_json::Value>,
@@ -1317,7 +1294,6 @@ pub(crate) fn merge_json_object(
         }
     }
 }
-
 
 pub(crate) fn merge_json_value(target: &mut serde_json::Value, incoming: serde_json::Value) {
     match (target, incoming) {

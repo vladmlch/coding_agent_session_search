@@ -3,18 +3,16 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SearchLexicalSelfHealDiagnosis {
@@ -22,7 +20,6 @@ pub(crate) struct SearchLexicalSelfHealDiagnosis {
     pub(crate) checkpoint_refresh_allowed: bool,
     pub(crate) existing_index_search_allowed: bool,
 }
-
 
 impl SearchLexicalSelfHealDiagnosis {
     pub(crate) fn rebuild(reason: impl Into<String>) -> Self {
@@ -54,7 +51,6 @@ impl SearchLexicalSelfHealDiagnosis {
     }
 }
 
-
 /// gh353: the repair step a deferred fingerprint-mismatch repair hands to
 /// the operator. Above the incremental auto-repair size policy, plain
 /// `cass index` defers the repair too — recommending it sent users in a
@@ -68,7 +64,6 @@ pub(crate) fn deferred_repair_next_step(db_size_bytes: u64) -> &'static str {
     }
 }
 
-
 pub(crate) fn search_lexical_self_heal_diagnosis(
     index_path: &Path,
     db_path: &Path,
@@ -76,7 +71,6 @@ pub(crate) fn search_lexical_self_heal_diagnosis(
     search_lexical_self_heal_diagnosis_admitting(index_path, db_path)
         .map(|(diagnosis, _)| diagnosis)
 }
-
 
 /// [`search_lexical_self_heal_diagnosis`], keeping the reader its contract
 /// check opened. Every Quill open hashes every live segment, so a default
@@ -114,7 +108,6 @@ pub(crate) fn search_lexical_self_heal_diagnosis_admitting(
     let diagnosis = search_lexical_checkpoint_diagnosis(index_path, db_path)?;
     Ok((diagnosis, Some(opened)))
 }
-
 
 /// The part of [`search_lexical_self_heal_diagnosis`] after the index
 /// contract check: the rebuild checkpoint against the active database. It
@@ -237,8 +230,10 @@ pub(crate) fn search_lexical_checkpoint_diagnosis(
     Ok(None)
 }
 
-
-pub(crate) fn search_active_rebuild_wait_duration(timeout_ms: Option<u64>, started_at: Instant) -> Duration {
+pub(crate) fn search_active_rebuild_wait_duration(
+    timeout_ms: Option<u64>,
+    started_at: Instant,
+) -> Duration {
     let configured_ms = dotenvy::var("CASS_SEARCH_ACTIVE_REBUILD_WAIT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -255,7 +250,6 @@ pub(crate) fn search_active_rebuild_wait_duration(timeout_ms: Option<u64>, start
         })
         .unwrap_or(configured)
 }
-
 
 pub(crate) fn wait_for_searchable_index_after_active_rebuild(
     data_dir: &Path,
@@ -278,7 +272,6 @@ pub(crate) fn wait_for_searchable_index_after_active_rebuild(
     }
 }
 
-
 pub(crate) fn search_lock_busy_error(data_dir: &Path) -> CliError {
     CliError {
         code: 7,
@@ -292,7 +285,6 @@ pub(crate) fn search_lock_busy_error(data_dir: &Path) -> CliError {
     }
 }
 
-
 pub(crate) fn search_lock_busy_error_with_progress(data_dir: &Path, index_path: &Path) -> CliError {
     let mut error = search_lock_busy_error(data_dir);
     if let Some(progress) = lexical_rebuild_progress_note(index_path) {
@@ -301,11 +293,9 @@ pub(crate) fn search_lock_busy_error_with_progress(data_dir: &Path, index_path: 
     error
 }
 
-
 pub(crate) fn lexical_repair_error_is_active_index_run(rendered: &str) -> bool {
     rendered.contains("already holds")
 }
-
 
 /// #287: bounded degraded refusal for robot search callers. `kind` carries the
 /// stable machine-readable reason code (`checkpoint_incomplete` or
@@ -327,7 +317,6 @@ pub(crate) fn search_robot_degraded_error(
         retryable: true,
     }
 }
-
 
 /// Start the lexical repair that search will not run inline as a detached
 /// `cass index --background` child, and say what happened in words an agent can
@@ -363,7 +352,6 @@ pub(crate) fn start_background_lexical_repair_for_search(
         &background_refresh::log_path(data_dir),
     ))
 }
-
 
 /// Words for the caller of a search whose lexical repair was handed to (or
 /// could not be handed to) a background `cass index`.
@@ -415,7 +403,6 @@ pub(crate) fn describe_background_lexical_repair(
     }
 }
 
-
 /// Progress of the lexical rebuild recorded under `index_path`, for messages
 /// that tell a caller how far an active rebuild has come.
 pub(crate) fn lexical_rebuild_progress_note(index_path: &Path) -> Option<String> {
@@ -433,7 +420,6 @@ pub(crate) fn lexical_rebuild_progress_note(index_path: &Path) -> Option<String>
         checkpoint.total_conversations
     ))
 }
-
 
 pub(crate) fn search_lexical_repair_failed_error(reason: &str, err: anyhow::Error) -> CliError {
     let rendered = format!("{err:#}");
@@ -459,7 +445,6 @@ pub(crate) fn search_lexical_repair_failed_error(reason: &str, err: anyhow::Erro
         retryable: true,
     }
 }
-
 
 /// Validate the lexical assets needed by `search --no-maintenance` without
 /// waiting for, joining, spawning, or performing any maintenance. A readable
@@ -546,7 +531,6 @@ pub(crate) fn search_lexical_read_only_diagnosis(
     Ok(None)
 }
 
-
 pub(crate) fn inspect_lexical_assets_for_search_read_only(
     data_dir: &Path,
     db_path: &Path,
@@ -630,7 +614,6 @@ pub(crate) fn inspect_lexical_assets_for_search_read_only(
     })
 }
 
-
 /// Run a search-triggered lexical repair under the same forward-progress
 /// watchdog as an explicit `cass index`. The historical direct call ran on the
 /// search thread, so a wedged `lexical_refresh` could heartbeat its lock for
@@ -674,7 +657,6 @@ pub(crate) fn repair_lexical_index_for_search_with_stall_watchdog(
     })?
 }
 
-
 // A lock race does not make the generation observed before the race safe.
 // Reuse only a freshly diagnosed readable generation, including intentionally
 // stale-but-readable ones. An incomplete rebuild can coexist with an independently
@@ -691,7 +673,6 @@ pub(crate) fn search_existing_lexical_generation_is_usable(
         .as_ref()
         .is_none_or(|diagnosis| diagnosis.permits_existing_index_during_active_rebuild()))
 }
-
 
 pub(crate) fn admit_search_lexical_repair(db_path: &Path, reason: &str) -> CliResult<()> {
     crate::search::inline_repair::admit(
@@ -713,7 +694,6 @@ pub(crate) fn admit_search_lexical_repair(db_path: &Path, reason: &str) -> CliRe
         retryable: true,
     })
 }
-
 
 pub(crate) fn verify_search_lexical_repair_publication(
     index_path: &Path,
@@ -757,7 +737,6 @@ pub(crate) fn verify_search_lexical_repair_publication(
     )
 }
 
-
 #[cfg(test)]
 pub(crate) fn ensure_lexical_assets_for_search(
     data_dir: &Path,
@@ -781,7 +760,6 @@ pub(crate) fn ensure_lexical_assets_for_search(
     )
     .map(|(self_heal, _)| self_heal)
 }
-
 
 /// The search's lexical self-heal verdict, plus the reader its contract check
 /// opened whenever the search will use that same generation, so the search

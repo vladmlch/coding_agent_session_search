@@ -3,14 +3,12 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Time filter helper for search commands
 #[derive(Debug, Clone, Default)]
@@ -23,7 +21,6 @@ pub struct TimeFilter {
     /// The flag that set `until`.
     pub until_from: Option<String>,
 }
-
 
 /// Semantic search options from CLI flags (bd-3bbv)
 ///
@@ -47,13 +44,11 @@ pub struct SemanticSearchOptions {
     pub tier_mode: crate::search::query::SemanticTierMode,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SemanticDaemonPolicy {
     pub(crate) use_existing: bool,
     pub(crate) auto_spawn: bool,
 }
-
 
 pub(crate) const fn semantic_daemon_policy(daemon: bool, no_daemon: bool) -> SemanticDaemonPolicy {
     SemanticDaemonPolicy {
@@ -61,7 +56,6 @@ pub(crate) const fn semantic_daemon_policy(daemon: bool, no_daemon: bool) -> Sem
         auto_spawn: daemon && !no_daemon,
     }
 }
-
 
 #[cfg(any(unix, test))]
 pub(crate) fn compose_verified_daemon_embedder_or_local(
@@ -120,10 +114,10 @@ pub(crate) fn compose_verified_daemon_embedder_or_local(
     }
 }
 
-
 #[cfg(test)]
 #[test]
-pub(crate) fn issue_347_semantic_daemon_policy_discovers_existing_by_default_and_respects_overrides() {
+pub(crate) fn issue_347_semantic_daemon_policy_discovers_existing_by_default_and_respects_overrides()
+ {
     assert_eq!(
         semantic_daemon_policy(false, false),
         SemanticDaemonPolicy {
@@ -146,7 +140,6 @@ pub(crate) fn issue_347_semantic_daemon_policy_discovers_existing_by_default_and
         }
     );
 }
-
 
 #[cfg(test)]
 #[test]
@@ -197,7 +190,6 @@ pub(crate) fn unverifiable_daemon_composition_preserves_the_verified_local_embed
         "an unverifiable daemon must not change the query embedding space"
     );
 }
-
 
 impl TimeFilter {
     /// Resolve the search/pack time window.
@@ -287,14 +279,12 @@ impl TimeFilter {
     }
 }
 
-
 /// Which end of a time window a user-supplied value bounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TimeBound {
     Since,
     Until,
 }
-
 
 pub(crate) fn parse_search_time_bound(flag: &str, raw: &str, bound: TimeBound) -> CliResult<i64> {
     parse_time_bound(raw, bound).ok_or_else(|| {
@@ -309,7 +299,6 @@ pub(crate) fn parse_search_time_bound(flag: &str, raw: &str, bound: TimeBound) -
         )
     })
 }
-
 
 /// Parse a `--since`/`--until` value. A value that names a whole local day
 /// (a date without a time, `today`, `yesterday`) starts at local midnight as
@@ -334,7 +323,6 @@ pub(crate) fn parse_time_bound(raw: &str, bound: TimeBound) -> Option<i64> {
     Some(next_start - 1)
 }
 
-
 pub(crate) fn names_whole_local_day(raw: &str) -> bool {
     use chrono::NaiveDate;
     let value = raw.trim().to_ascii_lowercase();
@@ -343,7 +331,6 @@ pub(crate) fn names_whole_local_day(raw: &str) -> bool {
             .iter()
             .any(|format| NaiveDate::parse_from_str(&value, format).is_ok())
 }
-
 
 pub(crate) fn parse_datetime_str(s: &str) -> Option<i64> {
     use chrono::{Local, NaiveDate, NaiveDateTime, TimeZone};

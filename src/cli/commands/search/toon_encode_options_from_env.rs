@@ -3,15 +3,13 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn toon_encode_options_from_env() -> toon::EncodeOptions {
     let indent = match dotenvy::var("TOON_INDENT") {
@@ -46,8 +44,10 @@ pub(crate) fn toon_encode_options_from_env() -> toon::EncodeOptions {
     }
 }
 
-
-pub(crate) fn encode_structured_value(payload: serde_json::Value, format: RobotFormat) -> CliResult<String> {
+pub(crate) fn encode_structured_value(
+    payload: serde_json::Value,
+    format: RobotFormat,
+) -> CliResult<String> {
     match format {
         RobotFormat::Json => serde_json::to_string_pretty(&payload),
         RobotFormat::Jsonl | RobotFormat::Compact | RobotFormat::Sessions => {
@@ -66,8 +66,10 @@ pub(crate) fn encode_structured_value(payload: serde_json::Value, format: RobotF
     })
 }
 
-
-pub(crate) fn output_structured_value(payload: serde_json::Value, format: RobotFormat) -> CliResult<()> {
+pub(crate) fn output_structured_value(
+    payload: serde_json::Value,
+    format: RobotFormat,
+) -> CliResult<()> {
     let output_error = |action: &str, error: &dyn std::fmt::Display| CliError {
         code: 9,
         kind: CliErrorKind::EncodeJson.kind_str(),
@@ -101,7 +103,6 @@ pub(crate) fn output_structured_value(payload: serde_json::Value, format: RobotF
     Ok(())
 }
 
-
 pub(crate) fn encode_search_cursor(offset: usize, limit: usize) -> Option<String> {
     if limit == 0 {
         return None;
@@ -113,7 +114,6 @@ pub(crate) fn encode_search_cursor(offset: usize, limit: usize) -> Option<String
     .to_string();
     Some(BASE64_STANDARD.encode(payload))
 }
-
 
 pub(crate) struct SearchCursorManifestInput<'a> {
     pub(crate) requested_limit: usize,
@@ -138,8 +138,9 @@ pub(crate) struct SearchCursorManifestInput<'a> {
     pub(crate) index_freshness: Option<&'a serde_json::Value>,
 }
 
-
-pub(crate) fn search_cursor_manifest_json(input: SearchCursorManifestInput<'_>) -> serde_json::Value {
+pub(crate) fn search_cursor_manifest_json(
+    input: SearchCursorManifestInput<'_>,
+) -> serde_json::Value {
     let index_rebuilding = input
         .index_freshness
         .and_then(|freshness| freshness.get("rebuilding"))
@@ -249,7 +250,6 @@ pub(crate) fn search_cursor_manifest_json(input: SearchCursorManifestInput<'_>) 
     })
 }
 
-
 /// Map the realized [`SearchMode`] to the trust [`RealizedMode`] vocabulary.
 pub(crate) fn trust_realized_mode(
     mode: crate::search::query::SearchMode,
@@ -262,7 +262,6 @@ pub(crate) fn trust_realized_mode(
         SearchMode::Hybrid => RealizedMode::Hybrid,
     }
 }
-
 
 /// Map a hit's origin to the trust source-kind with a cheap fs/archive probe
 /// (q4pau). A remote hit is backed by a reachable mirror copy. A local hit whose
@@ -285,7 +284,6 @@ pub(crate) fn trust_source_kind_for_hit(
         SourceTrustKind::ArchiveOnly
     }
 }
-
 
 /// Build the metadata-only trust verdict JSON for one search hit (beads
 /// 5u82n.3 + q4pau). Advisory only — it never affects result ordering.
@@ -342,7 +340,6 @@ pub(crate) fn trust_value_for_hit(
     serde_json::to_value(assess_trust(&signals)).unwrap_or(serde_json::Value::Null)
 }
 
-
 /// GH#414: resolution of a `--sessions-from` filter against the index.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SessionsFilterStats {
@@ -354,7 +351,6 @@ pub(crate) struct SessionsFilterStats {
     pub(crate) matched: Option<usize>,
 }
 
-
 impl SessionsFilterStats {
     /// True only when the filter PROVABLY selected no indexed session — the
     /// case where an empty result says nothing about the query.
@@ -362,7 +358,6 @@ impl SessionsFilterStats {
         self.matched == Some(0) && self.requested > 0
     }
 }
-
 
 /// `_meta.effective` (2l1b0.68): what this search actually ran, so a caller
 /// can check the interpretation instead of trusting it. It names the
@@ -428,7 +423,6 @@ pub(crate) fn search_effective_interpretation(
     }
     effective
 }
-
 
 /// Resolve user-facing agent names to the slugs stored in the archive.
 /// Validate against the connector registry, not this machine's installed agents,

@@ -3,15 +3,13 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Resolve the effective `(timeout_ms, limit, mode)` for a `cass search` /
 /// `cass pack` invocation by layering the configurable defaults (#303) under
@@ -72,7 +70,6 @@ pub(crate) fn resolve_search_defaults(
     Ok((timeout, limit, mode))
 }
 
-
 /// Canonical lowercase name for a [`crate::search::query::SearchMode`].
 pub(crate) fn search_mode_canonical_str(mode: crate::search::query::SearchMode) -> &'static str {
     use crate::search::query::SearchMode;
@@ -82,7 +79,6 @@ pub(crate) fn search_mode_canonical_str(mode: crate::search::query::SearchMode) 
         SearchMode::Hybrid => "hybrid",
     }
 }
-
 
 /// Inverse of [`search_mode_canonical_str`]; input is already validated by
 /// `search_defaults::resolve_mode`, so an unknown value is a no-op `None`.
@@ -95,7 +91,6 @@ pub(crate) fn search_mode_from_canonical_str(s: &str) -> Option<crate::search::q
         _ => None,
     }
 }
-
 
 pub(crate) fn search_budget_ms(timeout_ms: Option<u64>) -> u64 {
     timeout_ms.unwrap_or_else(|| {
@@ -111,7 +106,6 @@ pub(crate) fn search_budget_ms(timeout_ms: Option<u64>) -> u64 {
     })
 }
 
-
 /// Deterministic slowdown injected inside a bounded read-only worker for E2E
 /// coverage. Production callers never set these test-only environment variables.
 pub(crate) fn maybe_test_search_worker_delay(variable: &str) {
@@ -122,7 +116,6 @@ pub(crate) fn maybe_test_search_worker_delay(variable: &str) {
         std::thread::sleep(Duration::from_millis(milliseconds));
     }
 }
-
 
 /// Execute read-only work on a detached worker and return at the hard deadline.
 /// Callers must not use this for repairs, writes, downloads, or persistent
@@ -164,7 +157,6 @@ where
     }
 }
 
-
 /// Deterministic slowdown for bounded-search E2E coverage. Production callers
 /// never set this test-only environment variable.
 pub(crate) fn maybe_test_search_delay() {
@@ -175,7 +167,6 @@ pub(crate) fn maybe_test_search_delay() {
         std::thread::sleep(Duration::from_millis(milliseconds));
     }
 }
-
 
 pub(crate) fn search_budget_retry_command(
     query: &str,
@@ -235,7 +226,6 @@ pub(crate) fn search_budget_retry_command(
     command.extend(["--".to_string(), shell_quote_arg(query)]);
     Some(command.join(" "))
 }
-
 
 pub(crate) fn output_search_budget_partial(
     query: &str,
@@ -308,13 +298,11 @@ pub(crate) fn output_search_budget_partial(
     Ok(())
 }
 
-
 pub(crate) struct CliSearchSetup {
     pub(crate) self_heal: SearchLexicalSelfHeal,
     pub(crate) client: std::sync::Arc<crate::search::query::SearchClient>,
     pub(crate) rebuild_active: bool,
 }
-
 
 pub(crate) fn empty_search_result() -> crate::search::query::SearchResult {
     crate::search::query::SearchResult {
@@ -327,7 +315,6 @@ pub(crate) fn empty_search_result() -> crate::search::query::SearchResult {
         total_count: None,
     }
 }
-
 
 /// Remedy for a lexical query the engine refused with a posting-cursor
 /// invariant failure, or `None` for every other failure. That refusal belongs

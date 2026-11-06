@@ -3,16 +3,14 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_search_operation(
@@ -218,7 +216,6 @@ pub(crate) fn execute_search_operation(
     Ok((result, mode_meta))
 }
 
-
 pub(crate) fn configure_bounded_search_semantics(
     client: std::sync::Arc<crate::search::query::SearchClient>,
     data_dir: PathBuf,
@@ -402,7 +399,6 @@ pub(crate) fn configure_bounded_search_semantics(
     Ok((mode_meta, daemon_embedder_id))
 }
 
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn open_cli_search_setup(
     data_dir: &Path,
@@ -529,7 +525,6 @@ pub(crate) fn open_cli_search_setup(
         rebuild_active,
     })
 }
-
 
 /// Force a dispatch-boundary budget transition for fresh-process integration tests.
 /// Production callers never set this test-only environment variable.

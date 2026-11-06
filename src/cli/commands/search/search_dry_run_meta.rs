@@ -2,8 +2,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 pub(crate) fn search_dry_run_meta(robot_meta: bool, elapsed_ms: u128) -> serde_json::Value {
     let mut meta = serde_json::json!({
         "dry_run": true,

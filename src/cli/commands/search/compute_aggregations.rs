@@ -3,12 +3,10 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Compute aggregations from search hits
 pub(crate) fn compute_aggregations(
@@ -74,9 +72,7 @@ pub(crate) fn compute_aggregations(
     aggregations
 }
 
-
 pub(crate) const VALID_AGGREGATE_FIELDS: &str = "agent, workspace, date, match_type";
-
 
 /// Parse aggregate field strings into enum values.
 pub(crate) fn parse_aggregate_fields(fields: &[String]) -> CliResult<Vec<AggregateField>> {

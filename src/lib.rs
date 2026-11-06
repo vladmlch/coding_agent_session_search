@@ -94211,67 +94211,67 @@ pub(crate) use crate::export::messages::*;
 // -- generated lib-split bridges --
 pub mod cli;
 #[allow(unused_imports)]
-pub use crate::cli::commands::search::timefilter::{TimeFilter};
-#[allow(unused_imports)]
-pub use crate::cli::commands::search::timefilter::{SemanticSearchOptions};
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::timefilter::*;
+pub(crate) use crate::cli::commands::pack::pack_budget_ms::*;
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::search_time_filter_tests::*;
+pub(crate) use crate::cli::commands::pack::pack_field_mask_tests::*;
+#[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::compute_aggregations::*;
+pub(crate) use crate::cli::commands::search::agent_filter_tests::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::search::aggregate_field_validation_tests::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::search::ann_fallback_human_warning_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::search::compute_aggregations::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::search::effective_db_path_source::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::search::execute_search_operation::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::search::field_mask_resolution_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::search::fieldbudgets::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::search::lexical_engine_invariant_hint_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::search::output_display_results::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::search::resolve_search_defaults::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::search::run_cli_search::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::search::safe_robot_score_value::*;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::search::search_dry_run_meta::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::search::search_dry_run_meta_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::sparse_threshold_for_visible_limit::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::search::search_lexical_self_heal_gate_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::searchlexicalselfhealdiagnosis::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::search::search_lexical_self_heal_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::resolve_search_defaults::*;
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::lexical_engine_invariant_hint_tests::*;
+pub(crate) use crate::cli::commands::search::search_time_filter_tests::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::execute_search_operation::*;
+pub(crate) use crate::cli::commands::search::searchlexicalselfhealdiagnosis::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::run_cli_search::*;
+pub(crate) use crate::cli::commands::search::sparse_threshold_for_visible_limit::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::pack::pack_budget_ms::*;
-#[cfg(test)]
+pub use crate::cli::commands::search::timefilter::SemanticSearchOptions;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::pack::pack_field_mask_tests::*;
+pub use crate::cli::commands::search::timefilter::TimeFilter;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::output_display_results::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::field_mask_resolution_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::safe_robot_score_value::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::truncate_content_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::fieldbudgets::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::ann_fallback_human_warning_tests::*;
+pub(crate) use crate::cli::commands::search::timefilter::*;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::search::toon_encode_options_from_env::*;
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::agent_filter_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::search::effective_db_path_source::*;
+pub(crate) use crate::cli::commands::search::truncate_content_tests::*;

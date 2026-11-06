@@ -5,22 +5,20 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::franken_sync::compat::{
+        ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
+        open_with_flags as open_franken_with_flags,
+    };
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Which input chose the canonical database path, for `_meta.effective`.
 pub(crate) fn effective_db_path_source(
@@ -40,7 +38,6 @@ pub(crate) fn effective_db_path_source(
         default_data_dir_with_source().1
     }
 }
-
 
 /// Output search results in robot-friendly format
 #[allow(clippy::too_many_arguments, unused_variables)]
@@ -1351,7 +1348,6 @@ pub(crate) fn output_robot_results(
     Ok(())
 }
 
-
 #[cfg(test)]
 pub(crate) fn source_filter_where_clause(
     source_filter: Option<&crate::sources::provenance::SourceFilter>,
@@ -1363,7 +1359,6 @@ pub(crate) fn source_filter_where_clause(
         "c.origin_host",
     )
 }
-
 
 pub(crate) fn source_filter_where_clause_with_columns(
     source_filter: Option<&crate::sources::provenance::SourceFilter>,
@@ -1400,7 +1395,6 @@ pub(crate) fn source_filter_where_clause_with_columns(
     }
 }
 
-
 /// `stats --by-source` rows (source, conversations, messages), most
 /// conversations first, from each selected conversation's normalized source.
 /// Message counts come from one streaming pass over the messages index:
@@ -1433,7 +1427,6 @@ pub(crate) fn stats_source_rows(
     Ok(rows)
 }
 
-
 pub(crate) fn stats_message_count_sql(source_join: &str, source_where: &str) -> String {
     if source_join.is_empty() && source_where.is_empty() {
         "SELECT COUNT(*) FROM messages".to_string()
@@ -1443,7 +1436,6 @@ pub(crate) fn stats_message_count_sql(source_join: &str, source_where: &str) -> 
         )
     }
 }
-
 
 pub(crate) fn stats_workspace_count_sql(source_join: &str, source_where: &str) -> String {
     if source_where.is_empty() {
@@ -1457,13 +1449,11 @@ pub(crate) fn stats_workspace_count_sql(source_join: &str, source_where: &str) -
     }
 }
 
-
 pub(crate) fn stats_agent_count_sql(source_join: &str, source_where: &str) -> String {
     format!(
         "SELECT c.agent_id, COUNT(*) FROM conversations c{source_join}{source_where} GROUP BY c.agent_id"
     )
 }
-
 
 pub(crate) fn sort_stats_counts<K: Ord>(rows: &mut [(K, i64)]) {
     // Keep aggregate ordering out of SQL: fsqlite 0.3.18's pager-backed
@@ -1476,8 +1466,10 @@ pub(crate) fn sort_stats_counts<K: Ord>(rows: &mut [(K, i64)]) {
     });
 }
 
-
-pub(crate) fn stats_query_error(operation: &str, err: crate::franken_sync::FrankenError) -> CliError {
+pub(crate) fn stats_query_error(
+    operation: &str,
+    err: crate::franken_sync::FrankenError,
+) -> CliError {
     CliError {
         code: 5,
         kind: CliErrorKind::Storage.kind_str(),
@@ -1487,7 +1479,6 @@ pub(crate) fn stats_query_error(operation: &str, err: crate::franken_sync::Frank
     }
 }
 
-
 #[derive(Default)]
 pub(crate) struct UnfilteredConversationStats {
     pub(crate) count: i64,
@@ -1496,7 +1487,6 @@ pub(crate) struct UnfilteredConversationStats {
     pub(crate) oldest: Option<i64>,
     pub(crate) newest: Option<i64>,
 }
-
 
 pub(crate) fn unfiltered_conversation_stats(
     conn: &crate::franken_sync::Connection,
@@ -1554,7 +1544,6 @@ pub(crate) fn unfiltered_conversation_stats(
     }
 }
 
-
 pub(crate) fn append_source_filter_condition(
     sql: &mut String,
     params: &mut Vec<crate::franken_sync::compat::ParamValue>,
@@ -1569,7 +1558,6 @@ pub(crate) fn append_source_filter_condition(
         "c.origin_host",
     );
 }
-
 
 pub(crate) fn append_source_filter_condition_with_columns(
     sql: &mut String,

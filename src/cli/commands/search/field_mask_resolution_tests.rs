@@ -2,87 +2,77 @@
 #[allow(unused_imports)]
 use crate::*;
 
+#[test]
+pub(crate) fn snippet_projection_does_not_materialize_content_field() {
+    let fields = Some(vec!["snippet".to_string()]);
+    let mask = resolve_field_mask(&fields, None, None, 10, Some(RobotFormat::Json), None);
 
+    assert!(mask.wants_snippet());
+    assert!(!mask.needs_content());
+    assert!(mask.allows_cache());
+}
 
+#[test]
+pub(crate) fn content_projection_materializes_content_field() {
+    let fields = Some(vec!["content".to_string()]);
+    let mask = resolve_field_mask(&fields, None, None, 10, Some(RobotFormat::Json), None);
 
-    
+    assert!(!mask.wants_snippet());
+    assert!(mask.needs_content());
+    assert!(mask.allows_cache());
+}
 
-    #[test]
-    pub(crate) fn snippet_projection_does_not_materialize_content_field() {
-        let fields = Some(vec!["snippet".to_string()]);
-        let mask = resolve_field_mask(&fields, None, None, 10, Some(RobotFormat::Json), None);
+#[test]
+pub(crate) fn small_token_budget_uses_preview_content_before_search_hydration() {
+    let mask = resolve_field_mask(&None, None, Some(1024), 20, Some(RobotFormat::Json), None);
 
-        assert!(mask.wants_snippet());
-        assert!(!mask.needs_content());
-        assert!(mask.allows_cache());
-    }
+    assert!(mask.needs_content());
+    assert!(mask.wants_snippet());
+    assert_eq!(mask.preview_content_limit(), Some(71));
+    assert!(
+        !mask.allows_cache(),
+        "preview-limited hits should not be cached as full-content results"
+    );
+}
 
+#[test]
+pub(crate) fn large_token_budget_keeps_full_content_hydration() {
+    let mask = resolve_field_mask(
+        &None,
+        None,
+        Some(100_000),
+        20,
+        Some(RobotFormat::Json),
+        None,
+    );
 
-    #[test]
-    pub(crate) fn content_projection_materializes_content_field() {
-        let fields = Some(vec!["content".to_string()]);
-        let mask = resolve_field_mask(&fields, None, None, 10, Some(RobotFormat::Json), None);
+    assert!(mask.needs_content());
+    assert!(mask.wants_snippet());
+    assert_eq!(mask.preview_content_limit(), None);
+    assert!(mask.allows_cache());
+}
 
-        assert!(!mask.wants_snippet());
-        assert!(mask.needs_content());
-        assert!(mask.allows_cache());
-    }
+#[test]
+pub(crate) fn no_limit_token_budget_uses_preview_limit_and_bounded_fetch() {
+    let visible_limit = token_budget_field_mask_visible_limit(Some(1024), 0);
+    let mask = resolve_field_mask(
+        &None,
+        None,
+        Some(1024),
+        visible_limit,
+        Some(RobotFormat::Json),
+        None,
+    );
 
-
-    #[test]
-    pub(crate) fn small_token_budget_uses_preview_content_before_search_hydration() {
-        let mask = resolve_field_mask(&None, None, Some(1024), 20, Some(RobotFormat::Json), None);
-
-        assert!(mask.needs_content());
-        assert!(mask.wants_snippet());
-        assert_eq!(mask.preview_content_limit(), Some(71));
-        assert!(
-            !mask.allows_cache(),
-            "preview-limited hits should not be cached as full-content results"
-        );
-    }
-
-
-    #[test]
-    pub(crate) fn large_token_budget_keeps_full_content_hydration() {
-        let mask = resolve_field_mask(
-            &None,
-            None,
-            Some(100_000),
-            20,
-            Some(RobotFormat::Json),
-            None,
-        );
-
-        assert!(mask.needs_content());
-        assert!(mask.wants_snippet());
-        assert_eq!(mask.preview_content_limit(), None);
-        assert!(mask.allows_cache());
-    }
-
-
-    #[test]
-    pub(crate) fn no_limit_token_budget_uses_preview_limit_and_bounded_fetch() {
-        let visible_limit = token_budget_field_mask_visible_limit(Some(1024), 0);
-        let mask = resolve_field_mask(
-            &None,
-            None,
-            Some(1024),
-            visible_limit,
-            Some(RobotFormat::Json),
-            None,
-        );
-
-        assert_eq!(visible_limit, TOKEN_BUDGET_DEFAULT_VISIBLE_HITS);
-        assert_eq!(mask.preview_content_limit(), Some(71));
-        assert_eq!(
-            token_budget_search_limit(Some(1024)),
-            Some(TOKEN_BUDGET_SEARCH_MIN_HITS)
-        );
-        assert_eq!(
-            token_budget_search_limit(Some(1_000_000)),
-            Some(TOKEN_BUDGET_SEARCH_MAX_HITS)
-        );
-        assert_eq!(token_budget_search_limit(None), None);
-    }
-
+    assert_eq!(visible_limit, TOKEN_BUDGET_DEFAULT_VISIBLE_HITS);
+    assert_eq!(mask.preview_content_limit(), Some(71));
+    assert_eq!(
+        token_budget_search_limit(Some(1024)),
+        Some(TOKEN_BUDGET_SEARCH_MIN_HITS)
+    );
+    assert_eq!(
+        token_budget_search_limit(Some(1_000_000)),
+        Some(TOKEN_BUDGET_SEARCH_MAX_HITS)
+    );
+    assert_eq!(token_budget_search_limit(None), None);
+}

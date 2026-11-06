@@ -2,8 +2,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 /// Output search results in human-readable display format
 pub(crate) fn output_display_results(
     hits: &[crate::search::query::SearchHit],
@@ -79,7 +77,6 @@ pub(crate) fn output_display_results(
     Ok(())
 }
 
-
 // Named presets retain the complete canonical follow-up anchor even when
 // message bodies are omitted. Custom field masks remain caller-controlled.
 pub(crate) const SEARCH_MINIMAL_FIELDS: &[&str] = &[
@@ -99,7 +96,6 @@ pub(crate) const SEARCH_SUMMARY_FIELDS: &[&str] = &[
     "source_id",
     "conversation_id",
 ];
-
 
 /// Expand field presets and return the resolved field list
 pub(crate) fn expand_field_presets(fields: &Option<Vec<String>>) -> Option<Vec<String>> {
@@ -126,7 +122,6 @@ pub(crate) fn expand_field_presets(fields: &Option<Vec<String>>) -> Option<Vec<S
             .collect()
     })
 }
-
 
 pub(crate) fn resolve_field_mask(
     fields: &Option<Vec<String>>,
@@ -179,7 +174,6 @@ pub(crate) fn resolve_field_mask(
         .with_preview_content_limit(preview_content_limit)
 }
 
-
 pub(crate) const SEARCH_PREVIEW_CONTENT_LIMIT_MAX: usize = 400;
 
 pub(crate) const TOKEN_BUDGET_DEFAULT_VISIBLE_HITS: usize = 20;
@@ -189,7 +183,6 @@ pub(crate) const TOKEN_BUDGET_SEARCH_MIN_HITS: usize = 20;
 pub(crate) const TOKEN_BUDGET_SEARCH_MAX_HITS: usize = 4096;
 
 pub(crate) const TOKEN_BUDGET_SEARCH_CHARS_PER_HIT: usize = 256;
-
 
 pub(crate) fn token_budget_field_mask_visible_limit(
     max_tokens: Option<usize>,
@@ -204,14 +197,12 @@ pub(crate) fn token_budget_field_mask_visible_limit(
     }
 }
 
-
 pub(crate) fn token_budget_search_limit(max_tokens: Option<usize>) -> Option<usize> {
     let tokens = max_tokens?;
     let budget_chars = tokens.saturating_mul(4);
     let hits = budget_chars / TOKEN_BUDGET_SEARCH_CHARS_PER_HIT;
     Some(hits.clamp(TOKEN_BUDGET_SEARCH_MIN_HITS, TOKEN_BUDGET_SEARCH_MAX_HITS))
 }
-
 
 pub(crate) fn preview_content_limit_for_search(
     max_content_length: Option<usize>,

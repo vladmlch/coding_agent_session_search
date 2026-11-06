@@ -2,34 +2,28 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
-
-    #[allow(unused_imports)]
-use crate::search_request_skips_lexical_self_heal;
 #[allow(unused_imports)]
 use crate::search::query::SearchMode;
+#[allow(unused_imports)]
+use crate::search_request_skips_lexical_self_heal;
 
+#[test]
+pub(crate) fn explicit_semantic_skips_lexical_self_heal() {
+    assert!(search_request_skips_lexical_self_heal(Some(
+        SearchMode::Semantic
+    )));
+}
 
-    #[test]
-    pub(crate) fn explicit_semantic_skips_lexical_self_heal() {
-        assert!(search_request_skips_lexical_self_heal(Some(
-            SearchMode::Semantic
-        )));
-    }
-
-
-    #[test]
-    pub(crate) fn lexical_hybrid_and_default_keep_lexical_self_heal() {
-        assert!(!search_request_skips_lexical_self_heal(Some(
-            SearchMode::Lexical
-        )));
-        assert!(!search_request_skips_lexical_self_heal(Some(
-            SearchMode::Hybrid
-        )));
-        assert!(
-            !search_request_skips_lexical_self_heal(None),
-            "the default request resolves to hybrid and must still repair lexical"
-        );
-    }
-
+#[test]
+pub(crate) fn lexical_hybrid_and_default_keep_lexical_self_heal() {
+    assert!(!search_request_skips_lexical_self_heal(Some(
+        SearchMode::Lexical
+    )));
+    assert!(!search_request_skips_lexical_self_heal(Some(
+        SearchMode::Hybrid
+    )));
+    assert!(
+        !search_request_skips_lexical_self_heal(None),
+        "the default request resolves to hybrid and must still repair lexical"
+    );
+}

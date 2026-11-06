@@ -3,18 +3,15 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use tracing::{info, warn};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Filter a search hit to only include the requested fields
 pub(crate) fn safe_robot_score_value(score: f32) -> serde_json::Value {
     serde_json::Value::from(if score.is_finite() { score as f64 } else { 0.0 })
 }
-
 
 pub(crate) fn normalized_robot_hit_source_id(hit: &crate::search::query::SearchHit) -> String {
     if let Some(source_id) = canonical_followup_source_id(Some(hit.source_id.as_str())) {
@@ -25,7 +22,6 @@ pub(crate) fn normalized_robot_hit_source_id(hit: &crate::search::query::SearchH
     }
     hit.source_id.trim().to_string()
 }
-
 
 pub(crate) fn normalized_robot_hit_origin_kind(hit: &crate::search::query::SearchHit) -> String {
     let trimmed = hit.origin_kind.trim();
@@ -38,15 +34,15 @@ pub(crate) fn normalized_robot_hit_origin_kind(hit: &crate::search::query::Searc
     String::new()
 }
 
-
-pub(crate) fn normalized_robot_hit_origin_host(hit: &crate::search::query::SearchHit) -> Option<String> {
+pub(crate) fn normalized_robot_hit_origin_host(
+    hit: &crate::search::query::SearchHit,
+) -> Option<String> {
     hit.origin_host
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
-
 
 pub(crate) fn normalized_robot_hit_for_output(
     hit: &crate::search::query::SearchHit,
@@ -60,7 +56,6 @@ pub(crate) fn normalized_robot_hit_for_output(
     }
     normalized
 }
-
 
 pub(crate) fn projected_hit_field_value(
     hit: &crate::search::query::SearchHit,
@@ -95,7 +90,6 @@ pub(crate) fn projected_hit_field_value(
         _ => None,
     }
 }
-
 
 pub(crate) fn filter_hit_fields(
     hit: &crate::search::query::SearchHit,
@@ -141,7 +135,6 @@ pub(crate) fn filter_hit_fields(
         }
     }
 }
-
 
 /// Truncate a string to `max_len` characters, UTF-8 safe, with ellipsis.
 /// Returns `Some(truncated)` if truncation was needed, `None` otherwise.

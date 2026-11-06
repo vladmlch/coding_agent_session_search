@@ -2,8 +2,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 pub(crate) fn sparse_threshold_for_visible_limit(
     sparse_threshold: usize,
     visible_limit: usize,
@@ -16,14 +14,12 @@ pub(crate) fn sparse_threshold_for_visible_limit(
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SearchLexicalSelfHeal {
     pub(crate) action: &'static str,
     pub(crate) reason: Option<String>,
     pub(crate) indexed_docs: Option<usize>,
 }
-
 
 impl SearchLexicalSelfHeal {
     pub(crate) fn skipped() -> Self {
@@ -34,7 +30,6 @@ impl SearchLexicalSelfHeal {
         }
     }
 }
-
 
 /// Whether a search request may bypass the pre-query lexical self-heal.
 ///

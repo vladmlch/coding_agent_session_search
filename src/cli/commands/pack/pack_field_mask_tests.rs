@@ -3,86 +3,32 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
-
-
-
-    
-
-    #[test]
-    pub(crate) fn pack_output_budget_measures_final_encoding_and_newline_at_the_boundary() {
-        use crate::search::pack_planner::{PackPlanRequest, PackRenderFormat, PackRenderRequest};
-        let correlation = crate::search::trust_correlation::CorrelationIndex::default();
-        for format in [
-            PackRenderFormat::Json,
-            PackRenderFormat::CompactJson,
-            PackRenderFormat::Jsonl,
-            PackRenderFormat::Toon,
-            PackRenderFormat::Markdown,
-        ] {
-            let plan =
-                crate::search::pack_planner::plan_answer_pack(PackPlanRequest::default()).unwrap();
-            let mut request = PackRenderRequest {
-                format,
-                query_text: "quote \" slash \\ control \u{1} Unicode 界😀".to_string(),
-                ..PackRenderRequest::default()
-            };
-            // Fixed elapsed metadata makes the exact boundary reproducible.
-            request.budget.timed_out = true;
-            let output = render_cli_pack_with_output_budget(
-                plan.clone(),
-                request.clone(),
-                None,
-                false,
-                Instant::now(),
-                &correlation,
-            )
-            .unwrap();
-            let tokens = output.chars().count().div_ceil(4);
-            let mut boundary = plan;
-            boundary.diagnostics.budget.max_output_tokens_with_overflow = tokens;
-            let exact = render_cli_pack_with_output_budget(
-                boundary.clone(),
-                request.clone(),
-                None,
-                false,
-                Instant::now(),
-                &correlation,
-            )
-            .unwrap();
-            assert_eq!(exact, output);
-            boundary.diagnostics.budget.max_output_tokens_with_overflow = tokens - 1;
-            let error = render_cli_pack_with_output_budget(
-                boundary,
-                request,
-                None,
-                false,
-                Instant::now(),
-                &correlation,
-            )
-            .unwrap_err();
-            assert_eq!(error.kind, "pack-budget-too-small");
-            assert_eq!(error.code, 2);
-            assert!(!error.retryable);
-        }
-    }
-
-
-    #[test]
-    pub(crate) fn pack_output_budget_measures_the_field_projection_not_hidden_metadata() {
-        use crate::search::pack_planner::{PackPlanRequest, PackRenderRequest};
+#[test]
+pub(crate) fn pack_output_budget_measures_final_encoding_and_newline_at_the_boundary() {
+    use crate::search::pack_planner::{PackPlanRequest, PackRenderFormat, PackRenderRequest};
+    let correlation = crate::search::trust_correlation::CorrelationIndex::default();
+    for format in [
+        PackRenderFormat::Json,
+        PackRenderFormat::CompactJson,
+        PackRenderFormat::Jsonl,
+        PackRenderFormat::Toon,
+        PackRenderFormat::Markdown,
+    ] {
         let plan =
             crate::search::pack_planner::plan_answer_pack(PackPlanRequest::default()).unwrap();
-        let request = PackRenderRequest {
-            request_id: Some("large hidden request metadata ".repeat(3_000)),
+        let mut request = PackRenderRequest {
+            format,
+            query_text: "quote \" slash \\ control \u{1} Unicode 界😀".to_string(),
             ..PackRenderRequest::default()
         };
-        let correlation = crate::search::trust_correlation::CorrelationIndex::default();
-        let error = render_cli_pack_with_output_budget(
+        // Fixed elapsed metadata makes the exact boundary reproducible.
+        request.budget.timed_out = true;
+        let output = render_cli_pack_with_output_budget(
             plan.clone(),
             request.clone(),
             None,
@@ -90,246 +36,282 @@ use __lib_split_root_uses::*;
             Instant::now(),
             &correlation,
         )
-        .unwrap_err();
-        assert_eq!(error.kind, "pack-budget-too-small");
-        let fields = vec!["limits".to_string()];
-        let output = render_cli_pack_with_output_budget(
-            plan,
-            request,
-            Some(&fields),
+        .unwrap();
+        let tokens = output.chars().count().div_ceil(4);
+        let mut boundary = plan;
+        boundary.diagnostics.budget.max_output_tokens_with_overflow = tokens;
+        let exact = render_cli_pack_with_output_budget(
+            boundary.clone(),
+            request.clone(),
+            None,
             false,
             Instant::now(),
             &correlation,
         )
         .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(value.as_object().unwrap().len(), 1);
-        assert!(value["limits"].is_object());
-        assert!(!output.contains("large hidden"));
+        assert_eq!(exact, output);
+        boundary.diagnostics.budget.max_output_tokens_with_overflow = tokens - 1;
+        let error = render_cli_pack_with_output_budget(
+            boundary,
+            request,
+            None,
+            false,
+            Instant::now(),
+            &correlation,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, "pack-budget-too-small");
+        assert_eq!(error.code, 2);
+        assert!(!error.retryable);
     }
+}
 
+#[test]
+pub(crate) fn pack_output_budget_measures_the_field_projection_not_hidden_metadata() {
+    use crate::search::pack_planner::{PackPlanRequest, PackRenderRequest};
+    let plan = crate::search::pack_planner::plan_answer_pack(PackPlanRequest::default()).unwrap();
+    let request = PackRenderRequest {
+        request_id: Some("large hidden request metadata ".repeat(3_000)),
+        ..PackRenderRequest::default()
+    };
+    let correlation = crate::search::trust_correlation::CorrelationIndex::default();
+    let error = render_cli_pack_with_output_budget(
+        plan.clone(),
+        request.clone(),
+        None,
+        false,
+        Instant::now(),
+        &correlation,
+    )
+    .unwrap_err();
+    assert_eq!(error.kind, "pack-budget-too-small");
+    let fields = vec!["limits".to_string()];
+    let output = render_cli_pack_with_output_budget(
+        plan,
+        request,
+        Some(&fields),
+        false,
+        Instant::now(),
+        &correlation,
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value.as_object().unwrap().len(), 1);
+    assert!(value["limits"].is_object());
+    assert!(!output.contains("large hidden"));
+}
 
-    pub(crate) fn sample_pack_value() -> serde_json::Value {
-        serde_json::json!({
-            "schema_version": "cass.pack.v1",
-            "query": {
-                "text": "checkout",
-                "normalized": "checkout",
-                "filters": {}
-            },
-            "_meta": {
-                "request_id": "req-1",
-                "generated_at_ms": 1,
-                "elapsed_ms": 2,
-                "partial": false,
-                "format": "json",
-                "warnings": []
-            },
-            "limits": {
-                "max_tokens": 12000,
-                "estimated_tokens": 10,
-                "field_mask": "standard"
-            },
-            "realized": {
-                "search_mode": "lexical",
-                "fallback_mode": null,
-                "semantic_joined": false
-            },
-            "health": {
-                "healthy": true,
-                "lexical_readiness": "ready",
-                "semantic_state": "unavailable"
-            },
-            "freshness": {
-                "policy": "prefer_recent",
-                "window_seconds": 86400,
-                "stale_evidence_count": 0
-            },
-            "pack": {
-                "title": "checkout",
-                "answer_outline": [{"rank": 1, "heading": "checkout", "evidence_ids": ["ev_1"]}],
-                "handoff": [{"rank": 1, "text": "handoff"}]
-            },
-            "evidence": [{
-                "id": "ev_1",
-                "excerpt": "retry guard was missing",
-                "citation": {"source_path": "/tmp/session.jsonl", "line_start": 4},
-                "selection": {"score": 1.0}
-            }],
-            "omitted": {
-                "count": 3,
-                "items": [{"reason": "duplicate_content"}]
-            },
-            "privacy": {
-                "redaction_applied": false,
-                "redaction_policy": "strict"
-            },
+pub(crate) fn sample_pack_value() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "cass.pack.v1",
+        "query": {
+            "text": "checkout",
+            "normalized": "checkout",
+            "filters": {}
+        },
+        "_meta": {
+            "request_id": "req-1",
+            "generated_at_ms": 1,
+            "elapsed_ms": 2,
+            "partial": false,
+            "format": "json",
             "warnings": []
-        })
-    }
+        },
+        "limits": {
+            "max_tokens": 12000,
+            "estimated_tokens": 10,
+            "field_mask": "standard"
+        },
+        "realized": {
+            "search_mode": "lexical",
+            "fallback_mode": null,
+            "semantic_joined": false
+        },
+        "health": {
+            "healthy": true,
+            "lexical_readiness": "ready",
+            "semantic_state": "unavailable"
+        },
+        "freshness": {
+            "policy": "prefer_recent",
+            "window_seconds": 86400,
+            "stale_evidence_count": 0
+        },
+        "pack": {
+            "title": "checkout",
+            "answer_outline": [{"rank": 1, "heading": "checkout", "evidence_ids": ["ev_1"]}],
+            "handoff": [{"rank": 1, "text": "handoff"}]
+        },
+        "evidence": [{
+            "id": "ev_1",
+            "excerpt": "retry guard was missing",
+            "citation": {"source_path": "/tmp/session.jsonl", "line_start": 4},
+            "selection": {"score": 1.0}
+        }],
+        "omitted": {
+            "count": 3,
+            "items": [{"reason": "duplicate_content"}]
+        },
+        "privacy": {
+            "redaction_applied": false,
+            "redaction_policy": "strict"
+        },
+        "warnings": []
+    })
+}
 
+pub(crate) fn fields(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| value.to_string()).collect()
+}
 
-    pub(crate) fn fields(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| value.to_string()).collect()
-    }
+#[test]
+pub(crate) fn pack_standard_and_full_masks_preserve_the_complete_public_envelope() {
+    for preset in ["standard", "full"] {
+        let input = sample_pack_value();
+        let filtered = filter_pack_fields(input.clone(), Some(&fields(&[preset]))).unwrap();
+        assert_eq!(filtered, input, "preset {preset}");
 
-
-    #[test]
-    pub(crate) fn pack_standard_and_full_masks_preserve_the_complete_public_envelope() {
-        for preset in ["standard", "full"] {
-            let input = sample_pack_value();
-            let filtered = filter_pack_fields(input.clone(), Some(&fields(&[preset]))).unwrap();
-            assert_eq!(filtered, input, "preset {preset}");
-
-            let filtered = filter_pack_fields(
-                sample_pack_value(),
-                Some(&fields(&[preset, "no_such_field"])),
-            )
-            .unwrap();
-            assert_eq!(filtered["evidence"], input["evidence"]);
-            assert_eq!(
-                filtered["_meta"]["warnings"],
-                serde_json::json!(["unknown_pack_field_mask_ignored:no_such_field"])
-            );
-        }
-    }
-
-
-    #[test]
-    pub(crate) fn pack_minimal_field_mask_projects_documented_dotted_fields() {
-        let fields = fields(&["minimal"]);
-        let filtered = filter_pack_fields(sample_pack_value(), Some(&fields)).unwrap();
-
-        assert_eq!(filtered["schema_version"], "cass.pack.v1");
-        assert_eq!(filtered["query"], serde_json::json!({ "text": "checkout" }));
-        assert_eq!(
-            filtered["realized"],
-            serde_json::json!({ "search_mode": "lexical" })
-        );
-        assert_eq!(
-            filtered["pack"],
-            serde_json::json!({
-                "answer_outline": [{"rank": 1, "heading": "checkout", "evidence_ids": ["ev_1"]}]
-            })
-        );
-        assert_eq!(
-            filtered["evidence"],
-            serde_json::json!([{
-                "citation": {"source_path": "/tmp/session.jsonl", "line_start": 4},
-                "excerpt": "retry guard was missing"
-            }])
-        );
-        assert_eq!(filtered["omitted"], serde_json::json!({ "count": 3 }));
-        assert_eq!(
-            filtered["privacy"],
-            serde_json::json!({ "redaction_applied": false })
-        );
-        assert!(filtered.get("_meta").is_none());
-        assert!(filtered["evidence"][0].get("selection").is_none());
-    }
-
-
-    #[test]
-    pub(crate) fn pack_explicit_dotted_mask_merges_array_item_fields() {
-        let fields = fields(&["query.text", "evidence[].citation", "evidence[].excerpt"]);
-        let filtered = filter_pack_fields(sample_pack_value(), Some(&fields)).unwrap();
-
-        assert_eq!(filtered["query"], serde_json::json!({ "text": "checkout" }));
-        assert_eq!(
-            filtered["evidence"],
-            serde_json::json!([{
-                "citation": {"source_path": "/tmp/session.jsonl", "line_start": 4},
-                "excerpt": "retry guard was missing"
-            }])
-        );
-    }
-
-
-    #[test]
-    pub(crate) fn pack_field_mask_projection_is_order_and_duplicate_invariant() {
-        let canonical = fields(&[
-            "query.text",
-            "realized.search_mode",
-            "pack.answer_outline",
-            "evidence[].citation",
-            "evidence[].excerpt",
-            "omitted.count",
-            "privacy.redaction_applied",
-        ]);
-        let permuted = fields(&[
-            "privacy.redaction_applied",
-            "evidence[].excerpt",
-            "query.text",
-            "omitted.count",
-            "pack.answer_outline",
-            "evidence[].citation",
-            "realized.search_mode",
-        ]);
-        let duplicated = fields(&[
-            "query.text",
-            "evidence[].citation",
-            "query.text",
-            "realized.search_mode",
-            "pack.answer_outline",
-            "evidence[].excerpt",
-            "omitted.count",
-            "privacy.redaction_applied",
-            "evidence[].citation",
-        ]);
-
-        let expected = filter_pack_fields(sample_pack_value(), Some(&canonical)).unwrap();
-
-        assert_eq!(
-            filter_pack_fields(sample_pack_value(), Some(&permuted)).unwrap(),
-            expected
-        );
-        assert_eq!(
-            filter_pack_fields(sample_pack_value(), Some(&duplicated)).unwrap(),
-            expected
-        );
-    }
-
-
-    #[test]
-    pub(crate) fn pack_mixed_valid_and_unknown_masks_warn_without_failing() {
-        let fields = fields(&["query.text", "no_such_field"]);
-        let filtered = filter_pack_fields(sample_pack_value(), Some(&fields)).unwrap();
-
-        assert_eq!(filtered["query"], serde_json::json!({ "text": "checkout" }));
+        let filtered = filter_pack_fields(
+            sample_pack_value(),
+            Some(&fields(&[preset, "no_such_field"])),
+        )
+        .unwrap();
+        assert_eq!(filtered["evidence"], input["evidence"]);
         assert_eq!(
             filtered["_meta"]["warnings"],
             serde_json::json!(["unknown_pack_field_mask_ignored:no_such_field"])
         );
     }
+}
 
+#[test]
+pub(crate) fn pack_minimal_field_mask_projects_documented_dotted_fields() {
+    let fields = fields(&["minimal"]);
+    let filtered = filter_pack_fields(sample_pack_value(), Some(&fields)).unwrap();
 
-    #[test]
-    pub(crate) fn pack_mixed_valid_and_unknown_dotted_masks_warn_without_failing() {
-        let fields = fields(&["query.text", "query.nope"]);
-        let filtered = filter_pack_fields(sample_pack_value(), Some(&fields)).unwrap();
+    assert_eq!(filtered["schema_version"], "cass.pack.v1");
+    assert_eq!(filtered["query"], serde_json::json!({ "text": "checkout" }));
+    assert_eq!(
+        filtered["realized"],
+        serde_json::json!({ "search_mode": "lexical" })
+    );
+    assert_eq!(
+        filtered["pack"],
+        serde_json::json!({
+            "answer_outline": [{"rank": 1, "heading": "checkout", "evidence_ids": ["ev_1"]}]
+        })
+    );
+    assert_eq!(
+        filtered["evidence"],
+        serde_json::json!([{
+            "citation": {"source_path": "/tmp/session.jsonl", "line_start": 4},
+            "excerpt": "retry guard was missing"
+        }])
+    );
+    assert_eq!(filtered["omitted"], serde_json::json!({ "count": 3 }));
+    assert_eq!(
+        filtered["privacy"],
+        serde_json::json!({ "redaction_applied": false })
+    );
+    assert!(filtered.get("_meta").is_none());
+    assert!(filtered["evidence"][0].get("selection").is_none());
+}
 
-        assert_eq!(filtered["query"], serde_json::json!({ "text": "checkout" }));
-        assert_eq!(
-            filtered["_meta"]["warnings"],
-            serde_json::json!(["unknown_pack_field_mask_ignored:query.nope"])
-        );
-    }
+#[test]
+pub(crate) fn pack_explicit_dotted_mask_merges_array_item_fields() {
+    let fields = fields(&["query.text", "evidence[].citation", "evidence[].excerpt"]);
+    let filtered = filter_pack_fields(sample_pack_value(), Some(&fields)).unwrap();
 
+    assert_eq!(filtered["query"], serde_json::json!({ "text": "checkout" }));
+    assert_eq!(
+        filtered["evidence"],
+        serde_json::json!([{
+            "citation": {"source_path": "/tmp/session.jsonl", "line_start": 4},
+            "excerpt": "retry guard was missing"
+        }])
+    );
+}
 
-    #[test]
-    pub(crate) fn pack_all_invalid_field_masks_still_fail() {
-        let fields = fields(&["no_such_field"]);
-        let err = filter_pack_fields(sample_pack_value(), Some(&fields)).unwrap_err();
+#[test]
+pub(crate) fn pack_field_mask_projection_is_order_and_duplicate_invariant() {
+    let canonical = fields(&[
+        "query.text",
+        "realized.search_mode",
+        "pack.answer_outline",
+        "evidence[].citation",
+        "evidence[].excerpt",
+        "omitted.count",
+        "privacy.redaction_applied",
+    ]);
+    let permuted = fields(&[
+        "privacy.redaction_applied",
+        "evidence[].excerpt",
+        "query.text",
+        "omitted.count",
+        "pack.answer_outline",
+        "evidence[].citation",
+        "realized.search_mode",
+    ]);
+    let duplicated = fields(&[
+        "query.text",
+        "evidence[].citation",
+        "query.text",
+        "realized.search_mode",
+        "pack.answer_outline",
+        "evidence[].excerpt",
+        "omitted.count",
+        "privacy.redaction_applied",
+        "evidence[].citation",
+    ]);
 
-        assert_eq!(err.kind, "pack-invalid-field");
-    }
+    let expected = filter_pack_fields(sample_pack_value(), Some(&canonical)).unwrap();
 
+    assert_eq!(
+        filter_pack_fields(sample_pack_value(), Some(&permuted)).unwrap(),
+        expected
+    );
+    assert_eq!(
+        filter_pack_fields(sample_pack_value(), Some(&duplicated)).unwrap(),
+        expected
+    );
+}
 
-    #[test]
-    pub(crate) fn pack_all_invalid_dotted_field_masks_still_fail() {
-        let fields = fields(&["query.nope"]);
-        let err = filter_pack_fields(sample_pack_value(), Some(&fields)).unwrap_err();
+#[test]
+pub(crate) fn pack_mixed_valid_and_unknown_masks_warn_without_failing() {
+    let fields = fields(&["query.text", "no_such_field"]);
+    let filtered = filter_pack_fields(sample_pack_value(), Some(&fields)).unwrap();
 
-        assert_eq!(err.kind, "pack-invalid-field");
-    }
+    assert_eq!(filtered["query"], serde_json::json!({ "text": "checkout" }));
+    assert_eq!(
+        filtered["_meta"]["warnings"],
+        serde_json::json!(["unknown_pack_field_mask_ignored:no_such_field"])
+    );
+}
 
+#[test]
+pub(crate) fn pack_mixed_valid_and_unknown_dotted_masks_warn_without_failing() {
+    let fields = fields(&["query.text", "query.nope"]);
+    let filtered = filter_pack_fields(sample_pack_value(), Some(&fields)).unwrap();
+
+    assert_eq!(filtered["query"], serde_json::json!({ "text": "checkout" }));
+    assert_eq!(
+        filtered["_meta"]["warnings"],
+        serde_json::json!(["unknown_pack_field_mask_ignored:query.nope"])
+    );
+}
+
+#[test]
+pub(crate) fn pack_all_invalid_field_masks_still_fail() {
+    let fields = fields(&["no_such_field"]);
+    let err = filter_pack_fields(sample_pack_value(), Some(&fields)).unwrap_err();
+
+    assert_eq!(err.kind, "pack-invalid-field");
+}
+
+#[test]
+pub(crate) fn pack_all_invalid_dotted_field_masks_still_fail() {
+    let fields = fields(&["query.nope"]);
+    let err = filter_pack_fields(sample_pack_value(), Some(&fields)).unwrap_err();
+
+    assert_eq!(err.kind, "pack-invalid-field");
+}
