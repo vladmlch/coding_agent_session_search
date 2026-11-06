@@ -39,6 +39,13 @@ const SCAN_SOURCES: &[&str] = &[
     "src/cli/commands/search/searchlexicalselfhealdiagnosis.rs",
     "src/cli/commands/search/toon_encode_options_from_env.rs",
     "src/cli/commands/pack/pack_budget_ms.rs",
+    "src/cli/commands/forget/command.rs",
+    "src/cli/commands/analytics/fresh_franken_count_retry.rs",
+    "src/cli/commands/analytics/analytics_query_cli_error_tests.rs",
+    "src/cli/commands/analytics/run_analytics.rs",
+    "src/cli/commands/analytics/analyticsvalidationsummary.rs",
+    "src/cli/commands/import_chatgpt_export.rs",
+    "src/cli/commands/stats_diag_storage/run_stats.rs",
 ];
 
 fn scanned_source() -> String {

@@ -21,6 +21,13 @@ sources = [
   "src/cli/commands/search/searchlexicalselfhealdiagnosis.rs",
   "src/cli/commands/search/toon_encode_options_from_env.rs",
   "src/cli/commands/pack/pack_budget_ms.rs",
+  "src/cli/commands/forget/command.rs",
+  "src/cli/commands/analytics/fresh_franken_count_retry.rs",
+  "src/cli/commands/analytics/analytics_query_cli_error_tests.rs",
+  "src/cli/commands/analytics/run_analytics.rs",
+  "src/cli/commands/analytics/analyticsvalidationsummary.rs",
+  "src/cli/commands/import_chatgpt_export.rs",
+  "src/cli/commands/stats_diag_storage/run_stats.rs",
 ]
 patterns = ["kind_str", "CliErrorKind::"]
 note = "error-kind scan: CliErrorKind literals, kind_str mapping, golden envelope"
@@ -70,7 +77,7 @@ note = "doctor pass markers (pass-2/3 dispatch, pass-6 watch, pass-8 explain/cap
 
 [scanner.local_only_audit]
 test = "tests/local_only_audit.rs"
-sources = ["src/lib.rs", "tests/cli_dispatch_coverage.rs"]
+sources = ["src/lib.rs", "tests/cli_dispatch_coverage.rs", "src/cli/commands/stats_diag_storage/run_stats.rs"]
 dirs = ["src"]
 patterns = ["REMOVED_COMMANDS", "REMOVED_FLAGS", "was removed"]
 note = "REMOVED_COMMANDS/REMOVED_FLAGS tables + removed-command diagnostic; recursive .rs scan of src/** plus cli_dispatch_coverage pending flag"
@@ -92,7 +99,7 @@ note = "legacy_cli_dispatch test in src/doctor.rs reads lib.rs + doctor.rs marke
 
 [scanner.agent_detection_completeness]
 test = "tests/agent_detection_completeness.rs"
-sources = ["src/lib.rs"]
+sources = ["src/lib.rs", "src/cli/commands/stats_diag_storage/run_diag.rs"]
 patterns = ["diagnostics_connector_paths", "detect_installed_agents"]
 note = "read_to_string(root.join(src/lib.rs)) — join()-form consumer"
 
