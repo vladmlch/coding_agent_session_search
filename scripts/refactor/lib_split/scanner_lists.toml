@@ -1,0 +1,62 @@
+# Source-scanner parity lists for the lib.rs split (stage 0).
+# Each [scanner.<name>] records the test file and the production sources
+# it reads. Stage moves extend `sources`; removing a path without an
+# equivalent replacement is a parity violation (scan_parity.py diff).
+
+[scanner.golden_error_envelope]
+test = "tests/golden_error_envelope.rs"
+sources = ["src/lib.rs"]
+note = "error-kind scan: CliErrorKind literals, kind_str mapping, golden envelope"
+
+[scanner.spec_exit_codes_documented]
+test = "tests/spec_exit_codes_documented.rs"
+sources = [
+  "src/lib.rs",
+  "src/doctor.rs",
+  "src/doctor_undo.rs",
+  "src/doctor_runs.rs",
+  "src/viewer_bridge/deadline.rs",
+  "src/indexer/checkpoint_deadline.rs",
+  "src/search_service.rs",
+  "src/search_service/deadline.rs",
+  "src/search_service/memory.rs",
+  "src/search_service/once.rs",
+  "README.md",
+  "AGENTS.md",
+]
+note = "exit-code literals must be documented; reads sources + docs"
+
+[scanner.spec_aliases_resolve]
+test = "tests/spec_aliases_resolve.rs"
+sources = ["src/lib.rs"]
+note = "SUBCOMMAND_ALIASES const inside normalize_args body"
+
+[scanner.doctor_mutate_auditor]
+test = "tests/doctor_mutate_auditor.rs"
+sources = ["src/lib.rs"]
+note = "doctor pass markers (pass-2/3 dispatch, pass-6 watch, pass-8 explain/capabilities)"
+
+[scanner.local_only_audit]
+test = "tests/local_only_audit.rs"
+sources = ["src/lib.rs"]
+note = "REMOVED_COMMANDS/REMOVED_FLAGS tables + removed-command diagnostic"
+
+[scanner.doctor_chokepoint]
+test = "src/doctor_chokepoint.rs"
+sources = ["src/lib.rs"]
+note = "in-source chokepoint audit reads lib.rs (doctor_mutate_auditor companion)"
+
+[scanner.agent_detection_completeness]
+test = "tests/agent_detection_completeness.rs"
+sources = ["src/lib.rs"]
+note = "read_to_string(src/lib.rs) — discovered by stale_refs, not in preflight table"
+
+[scanner.source_file_size_budget]
+test = "tests/source_file_size_budget.rs"
+sources = ["src/lib.rs"]
+note = "line-count budget check (reads lib.rs for measurement, not content)"
+
+# Not a scanner: tests/cli_dispatch_coverage.rs mentions src/lib.rs only
+# in a doc comment (line ~5240); it drives the binary, it never reads the
+# file as text. tests/viewer_bridge_extensions.rs uses "src/lib.rs" only
+# inside JSON fixture payloads — also excluded.
