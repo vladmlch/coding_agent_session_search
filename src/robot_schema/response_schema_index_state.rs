@@ -2,8 +2,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 pub(crate) fn response_schema_index_state() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -55,7 +53,6 @@ pub(crate) fn response_schema_index_state() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_ingest_quarantine() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -74,7 +71,6 @@ pub(crate) fn response_schema_ingest_quarantine() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_state_database() -> serde_json::Value {
     serde_json::json!({
@@ -98,7 +94,6 @@ pub(crate) fn response_schema_state_database() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_status_database() -> serde_json::Value {
     let mut schema = response_schema_state_database();
     let props = schema
@@ -108,7 +103,6 @@ pub(crate) fn response_schema_status_database() -> serde_json::Value {
     props.insert("path".to_string(), serde_json::json!({ "type": "string" }));
     schema
 }
-
 
 pub(crate) fn response_schema_health_db() -> serde_json::Value {
     serde_json::json!({
@@ -124,7 +118,6 @@ pub(crate) fn response_schema_health_db() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_recommended_commands() -> serde_json::Value {
     serde_json::json!({
@@ -159,7 +152,6 @@ pub(crate) fn response_schema_recommended_commands() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_pending_state() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -171,7 +163,6 @@ pub(crate) fn response_schema_pending_state() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_rebuild_state() -> serde_json::Value {
     serde_json::json!({
@@ -212,7 +203,6 @@ pub(crate) fn response_schema_rebuild_state() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_rebuild_progress() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -251,7 +241,6 @@ pub(crate) fn response_schema_rebuild_progress() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_semantic_state() -> serde_json::Value {
     serde_json::json!({
@@ -341,7 +330,6 @@ pub(crate) fn response_schema_semantic_state() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_doctor_derived_semantic_component() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -363,7 +351,6 @@ pub(crate) fn response_schema_doctor_derived_semantic_component() -> serde_json:
         }
     })
 }
-
 
 pub(crate) fn response_schema_doctor_derived_semantic_assets() -> serde_json::Value {
     serde_json::json!({
@@ -401,7 +388,6 @@ pub(crate) fn response_schema_doctor_derived_semantic_assets() -> serde_json::Va
         }
     })
 }
-
 
 pub(crate) fn response_schema_policy_registry() -> serde_json::Value {
     serde_json::json!({
@@ -442,7 +428,6 @@ pub(crate) fn response_schema_policy_registry() -> serde_json::Value {
         "required": ["schema_version", "controllers"]
     })
 }
-
 
 pub(crate) fn response_schema_topology_budget() -> serde_json::Value {
     serde_json::json!({
@@ -515,7 +500,6 @@ pub(crate) fn response_schema_topology_budget() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_state_meta() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -538,7 +522,6 @@ pub(crate) fn response_schema_state_meta() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_index_freshness() -> serde_json::Value {
     serde_json::json!({
@@ -579,7 +562,6 @@ pub(crate) fn response_schema_index_freshness() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_object(
     properties: impl IntoIterator<Item = (&'static str, serde_json::Value)>,
 ) -> serde_json::Value {
@@ -597,14 +579,12 @@ pub(crate) fn response_schema_object(
     )
 }
 
-
 pub(crate) fn response_schema_opaque_object() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
         "additionalProperties": true
     })
 }
-
 
 /// Schema for the `.14.1` storage-integrity block projected by every truth
 /// surface that speaks the canonical storage vocabulary: `cass doctor --check
@@ -655,7 +635,6 @@ pub(crate) fn response_schema_storage_integrity() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_opaque_object_array() -> serde_json::Value {
     serde_json::json!({
         "type": "array",
@@ -665,7 +644,6 @@ pub(crate) fn response_schema_opaque_object_array() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) const DOCTOR_V2_COMMON_BRANCH_FIELDS: &[&str] = &[
     "schema_version",
@@ -687,7 +665,6 @@ pub(crate) const DOCTOR_V2_COMMON_BRANCH_FIELDS: &[&str] = &[
     "redaction_status",
     "contract_provenance",
 ];
-
 
 pub(crate) const DOCTOR_V2_RESPONSE_SCHEMA_KEYS: &[&str] = &[
     "doctor-archive-normalize",
@@ -713,14 +690,12 @@ pub(crate) const DOCTOR_V2_RESPONSE_SCHEMA_KEYS: &[&str] = &[
     "doctor-support-bundle",
 ];
 
-
 pub(crate) fn response_schema_string_enum(values: &[&str]) -> serde_json::Value {
     serde_json::json!({
         "type": "string",
         "enum": values
     })
 }
-
 
 pub(crate) fn response_schema_doctor_v2_coverage_delta() -> serde_json::Value {
     serde_json::json!({
@@ -750,8 +725,8 @@ pub(crate) fn response_schema_doctor_v2_coverage_delta() -> serde_json::Value {
     })
 }
 
-
-pub(crate) fn response_schema_doctor_v2_common_properties() -> serde_json::Map<String, serde_json::Value> {
+pub(crate) fn response_schema_doctor_v2_common_properties()
+-> serde_json::Map<String, serde_json::Value> {
     use serde_json::json;
 
     [
@@ -924,7 +899,6 @@ pub(crate) fn response_schema_doctor_v2_common_properties() -> serde_json::Map<S
     .collect()
 }
 
-
 #[derive(Clone, Copy)]
 pub(crate) struct DoctorV2SurfaceSchemaSpec {
     pub(crate) description: &'static str,
@@ -939,8 +913,9 @@ pub(crate) struct DoctorV2SurfaceSchemaSpec {
     pub(crate) recommended_action: &'static str,
 }
 
-
-pub(crate) fn response_schema_doctor_v2_example(spec: DoctorV2SurfaceSchemaSpec) -> serde_json::Value {
+pub(crate) fn response_schema_doctor_v2_example(
+    spec: DoctorV2SurfaceSchemaSpec,
+) -> serde_json::Value {
     let (operation_kind, exit_code_kind, safe_to_retry, action_taken, action_not_taken) =
         match spec.outcome_kind {
             "applied" => (
@@ -1032,7 +1007,6 @@ pub(crate) fn response_schema_doctor_v2_example(spec: DoctorV2SurfaceSchemaSpec)
     })
 }
 
-
 pub(crate) fn response_schema_doctor_v2_surface(
     spec: DoctorV2SurfaceSchemaSpec,
     extra_properties: impl IntoIterator<Item = (&'static str, serde_json::Value)>,
@@ -1052,7 +1026,6 @@ pub(crate) fn response_schema_doctor_v2_surface(
         ]
     })
 }
-
 
 pub(crate) fn response_schema_doctor_v2_summary(surface: &'static str) -> serde_json::Value {
     response_schema_doctor_v2_surface(
@@ -1160,7 +1133,6 @@ pub(crate) fn response_schema_doctor_v2_summary(surface: &'static str) -> serde_
     )
 }
 
-
 pub(crate) fn response_schema_doctor_v2_contract_summary() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -1225,7 +1197,6 @@ pub(crate) fn response_schema_doctor_v2_contract_summary() -> serde_json::Value 
         }]
     })
 }
-
 
 pub(crate) fn response_schema_doctor_v2_error_envelope() -> serde_json::Value {
     serde_json::json!({
@@ -1292,7 +1263,6 @@ pub(crate) fn response_schema_doctor_v2_error_envelope() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_doctor_failure_context_artifacts() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -1314,7 +1284,6 @@ pub(crate) fn response_schema_doctor_failure_context_artifacts() -> serde_json::
         }
     })
 }
-
 
 pub(crate) fn response_schema_doctor_failure_context_repro() -> serde_json::Value {
     serde_json::json!({
@@ -1346,7 +1315,6 @@ pub(crate) fn response_schema_doctor_failure_context_repro() -> serde_json::Valu
         ]
     })
 }
-
 
 pub(crate) fn response_schema_doctor_failure_context() -> serde_json::Value {
     serde_json::json!({
@@ -1433,7 +1401,6 @@ pub(crate) fn response_schema_doctor_failure_context() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_doctor_coverage_snapshot() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -1447,7 +1414,6 @@ pub(crate) fn response_schema_doctor_coverage_snapshot() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_doctor_artifact() -> serde_json::Value {
     serde_json::json!({
@@ -1472,7 +1438,6 @@ pub(crate) fn response_schema_doctor_artifact() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_doctor_artifact_manifest() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -1492,7 +1457,6 @@ pub(crate) fn response_schema_doctor_artifact_manifest() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_doctor_safety_gate() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -1509,7 +1473,6 @@ pub(crate) fn response_schema_doctor_safety_gate() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_doctor_action() -> serde_json::Value {
     serde_json::json!({
@@ -1541,7 +1504,6 @@ pub(crate) fn response_schema_doctor_action() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_doctor_event_log_metadata() -> serde_json::Value {
     serde_json::json!({
@@ -1578,7 +1540,6 @@ pub(crate) fn response_schema_doctor_event_log_metadata() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_doctor_forensic_bundle_metadata() -> serde_json::Value {
     serde_json::json!({
@@ -1622,7 +1583,6 @@ pub(crate) fn response_schema_doctor_forensic_bundle_metadata() -> serde_json::V
     })
 }
 
-
 pub(crate) fn response_schema_doctor_plan() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -1648,7 +1608,6 @@ pub(crate) fn response_schema_doctor_plan() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_doctor_repair_plan_preview() -> serde_json::Value {
     serde_json::json!({
@@ -1684,7 +1643,6 @@ pub(crate) fn response_schema_doctor_repair_plan_preview() -> serde_json::Value 
         }
     })
 }
-
 
 pub(crate) fn response_schema_doctor_receipt() -> serde_json::Value {
     serde_json::json!({
@@ -1726,7 +1684,6 @@ pub(crate) fn response_schema_doctor_receipt() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_doctor_operation_outcome() -> serde_json::Value {
     serde_json::json!({

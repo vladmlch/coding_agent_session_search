@@ -5,12 +5,10 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Build response schemas for commands that support JSON output.
 ///

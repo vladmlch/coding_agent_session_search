@@ -4,8 +4,6 @@ use super::*;
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 pub(crate) fn response_schema_doctor_repair_failure_marker() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -30,7 +28,6 @@ pub(crate) fn response_schema_doctor_repair_failure_marker() -> serde_json::Valu
         "required": ["schema_version", "repair_class", "found", "parse_status", "path", "redacted_path", "operation_id", "plan_fingerprint", "failed_at_ms", "failed_at", "cass_version", "platform", "user_data_modified", "failed_checks", "corrupt_reason"]
     })
 }
-
 
 pub(crate) fn response_schema_doctor_operation_state() -> serde_json::Value {
     serde_json::json!({
@@ -115,7 +112,6 @@ pub(crate) fn response_schema_doctor_operation_state() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_doctor_locks() -> serde_json::Value {
     serde_json::json!({
         "type": "array",
@@ -149,7 +145,6 @@ pub(crate) fn response_schema_doctor_locks() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_doctor_timing_summary() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -166,7 +161,6 @@ pub(crate) fn response_schema_doctor_timing_summary() -> serde_json::Value {
         "required": ["schema_version", "elapsed_ms", "measured_operation_count", "slow_operation_count", "default_threshold_ms", "slowest_operation", "slowest_elapsed_ms", "notes"]
     })
 }
-
 
 pub(crate) fn response_schema_doctor_slow_operations() -> serde_json::Value {
     serde_json::json!({
@@ -188,7 +182,6 @@ pub(crate) fn response_schema_doctor_slow_operations() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_doctor_retry_recommendation() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -204,7 +197,6 @@ pub(crate) fn response_schema_doctor_retry_recommendation() -> serde_json::Value
         "required": ["schema_version", "policy", "safe_to_retry", "retry_after_ms", "command", "reason", "notes"]
     })
 }
-
 
 pub(crate) fn response_schema_doctor_cleanup_apply() -> serde_json::Value {
     serde_json::json!({
@@ -225,7 +217,6 @@ pub(crate) fn response_schema_doctor_cleanup_apply() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_doctor_source_inventory() -> serde_json::Value {
     serde_json::json!({
@@ -299,7 +290,6 @@ pub(crate) fn response_schema_doctor_source_inventory() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_doctor_config_exclusion_risk() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -319,7 +309,6 @@ pub(crate) fn response_schema_doctor_config_exclusion_risk() -> serde_json::Valu
         "required": ["schema_version", "path", "risk_kind", "evidence", "confidence", "recommended_action", "auto_fix_available"]
     })
 }
-
 
 pub(crate) fn response_schema_doctor_detail_output() -> serde_json::Value {
     serde_json::json!({
@@ -353,7 +342,6 @@ pub(crate) fn response_schema_doctor_detail_output() -> serde_json::Value {
         ]
     })
 }
-
 
 pub(crate) fn response_schema_doctor_raw_mirror_backfill() -> serde_json::Value {
     serde_json::json!({
@@ -442,7 +430,6 @@ pub(crate) fn response_schema_doctor_raw_mirror_backfill() -> serde_json::Value 
     })
 }
 
-
 pub(crate) fn response_schema_doctor_coverage_summary() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -476,7 +463,6 @@ pub(crate) fn response_schema_doctor_coverage_summary() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_doctor_coverage_risk() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -502,7 +488,6 @@ pub(crate) fn response_schema_doctor_coverage_risk() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_doctor_candidate_live_inventory() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -522,7 +507,6 @@ pub(crate) fn response_schema_doctor_candidate_live_inventory() -> serde_json::V
     })
 }
 
-
 pub(crate) fn response_schema_doctor_candidate_coverage_snapshot() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -538,7 +522,6 @@ pub(crate) fn response_schema_doctor_candidate_coverage_snapshot() -> serde_json
         }
     })
 }
-
 
 pub(crate) fn response_schema_doctor_coverage_comparison_gate() -> serde_json::Value {
     serde_json::json!({
@@ -581,7 +564,6 @@ pub(crate) fn response_schema_doctor_coverage_comparison_gate() -> serde_json::V
         }
     })
 }
-
 
 pub(crate) fn response_schema_doctor_candidate_staging() -> serde_json::Value {
     serde_json::json!({
@@ -681,7 +663,6 @@ pub(crate) fn response_schema_doctor_candidate_staging() -> serde_json::Value {
         ]
     })
 }
-
 
 pub(crate) fn response_schema_doctor_raw_mirror() -> serde_json::Value {
     serde_json::json!({
@@ -909,7 +890,6 @@ pub(crate) fn response_schema_doctor_raw_mirror() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_doctor_source_authority() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
@@ -1005,7 +985,6 @@ pub(crate) fn response_schema_doctor_source_authority() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_search_hit() -> serde_json::Value {
     response_schema_object([
         ("source_path", serde_json::json!({ "type": "string" })),
@@ -1073,7 +1052,6 @@ pub(crate) fn response_schema_search_hit() -> serde_json::Value {
     ])
 }
 
-
 pub(crate) fn response_schema_search_cache_stats() -> serde_json::Value {
     response_schema_object([
         ("hits", serde_json::json!({ "type": "integer" })),
@@ -1104,7 +1082,6 @@ pub(crate) fn response_schema_search_cache_stats() -> serde_json::Value {
     ])
 }
 
-
 pub(crate) fn response_schema_search_timing() -> serde_json::Value {
     response_schema_object([
         ("search_ms", serde_json::json!({ "type": "integer" })),
@@ -1112,7 +1089,6 @@ pub(crate) fn response_schema_search_timing() -> serde_json::Value {
         ("other_ms", serde_json::json!({ "type": "integer" })),
     ])
 }
-
 
 pub(crate) fn response_schema_query_plan() -> serde_json::Value {
     serde_json::json!({
@@ -1186,7 +1162,6 @@ pub(crate) fn response_schema_query_plan() -> serde_json::Value {
         ]
     })
 }
-
 
 pub(crate) fn response_schema_cursor_manifest() -> serde_json::Value {
     serde_json::json!({
@@ -1269,7 +1244,6 @@ pub(crate) fn response_schema_cursor_manifest() -> serde_json::Value {
     })
 }
 
-
 pub(crate) fn response_schema_explanation_cards() -> serde_json::Value {
     serde_json::json!({
         "type": "array",
@@ -1310,7 +1284,6 @@ pub(crate) fn response_schema_explanation_cards() -> serde_json::Value {
     })
 }
 
-
 /// JSON Schema for the uojcg.3.3 search-completeness verdict carried by the
 /// readiness surfaces (`health`/`status`/`triage`) and search `--robot-meta`.
 pub(crate) fn response_schema_search_completeness() -> serde_json::Value {
@@ -1329,7 +1302,6 @@ pub(crate) fn response_schema_search_completeness() -> serde_json::Value {
         "required": ["quarantine_status", "quarantined_conversations", "complete", "can_search", "coverage_suspect", "impact", "next_command"]
     })
 }
-
 
 /// JSON Schema for the uojcg.9.2/9.5 root-cause attribution emitted by
 /// status/triage/doctor `--json`.
@@ -1361,14 +1333,14 @@ pub(crate) fn response_schema_root_cause_attribution() -> serde_json::Value {
     })
 }
 
-
 /// Triage alone can leave a readiness component uninspected when its budget
 /// expires. Keep the other surfaces' observed-value contracts unchanged.
-pub(crate) fn response_schema_triage_inspection(mut schema: serde_json::Value) -> serde_json::Value {
+pub(crate) fn response_schema_triage_inspection(
+    mut schema: serde_json::Value,
+) -> serde_json::Value {
     schema["properties"]["inspected"] = serde_json::json!({ "type": "boolean" });
     schema
 }
-
 
 pub(crate) fn response_schema_triage_search_completeness() -> serde_json::Value {
     let mut schema = response_schema_triage_inspection(response_schema_search_completeness());
@@ -1381,7 +1353,6 @@ pub(crate) fn response_schema_triage_search_completeness() -> serde_json::Value 
     }
     schema
 }
-
 
 pub(crate) fn response_schema_triage_readiness() -> serde_json::Value {
     let mut index = response_schema_triage_inspection(response_schema_index_state());
@@ -1414,7 +1385,6 @@ pub(crate) fn response_schema_triage_readiness() -> serde_json::Value {
     ])
 }
 
-
 pub(crate) fn response_schema_budget_block() -> serde_json::Value {
     response_schema_object([
         ("elapsed_ms", serde_json::json!({ "type": "integer" })),
@@ -1433,7 +1403,6 @@ pub(crate) fn response_schema_budget_block() -> serde_json::Value {
         ),
     ])
 }
-
 
 pub(crate) fn response_schema_search_effective() -> serde_json::Value {
     serde_json::json!({
@@ -1487,7 +1456,6 @@ pub(crate) fn response_schema_search_effective() -> serde_json::Value {
         }
     })
 }
-
 
 pub(crate) fn response_schema_search_meta() -> serde_json::Value {
     response_schema_object([
@@ -1597,7 +1565,6 @@ pub(crate) fn response_schema_search_meta() -> serde_json::Value {
         ),
     ])
 }
-
 
 pub(crate) fn response_schema_search() -> serde_json::Value {
     response_schema_object([

@@ -2,8 +2,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 pub(crate) fn response_schema_pack() -> serde_json::Value {
     response_schema_object([
         ("schema_version", serde_json::json!({ "type": "string" })),
@@ -224,7 +222,6 @@ pub(crate) fn response_schema_pack() -> serde_json::Value {
         ),
     ])
 }
-
 
 pub(crate) fn response_schema_subsystem_coverage_matrix() -> serde_json::Value {
     serde_json::json!({
