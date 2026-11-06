@@ -20,7 +20,12 @@ const BUDGET: usize = 2000;
 const ROOTS: &[&str] = &["src/cli", "src/doctor", "src/robot_schema"];
 
 /// Individual files the plan creates outside the roots above.
-const FILES: &[&str] = &["src/indexer/stall_watchdog.rs", "src/export/messages.rs"];
+const FILES: &[&str] = &[
+    "src/indexer/stall_watchdog.rs",
+    "src/indexer/stall_diagnostics_tests.rs",
+    "src/export/messages.rs",
+    "src/export/message_grouping_tests.rs",
+];
 
 /// Temporary exemptions that must be empty when the program finishes.
 const TEMPORARY_EXCEPTIONS: &[&str] = &["src/lib.rs"];
