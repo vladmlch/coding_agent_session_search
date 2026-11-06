@@ -3,3 +3,14 @@
 // -- lib-split module declarations --
 pub(crate) mod pack;
 pub mod search;
+pub(crate) mod quarantine_mirror_import;
+pub(crate) mod forget;
+pub(crate) mod run_mirror_prune;
+pub(crate) mod analytics;
+pub(crate) mod import_chatgpt_export;
+#[cfg(test)]
+pub(crate) mod chatgpt_import_file_stem_tests;
+pub(crate) mod chatgpt_import_source_name;
+#[cfg(test)]
+pub(crate) mod chatgpt_import_scan_root_tests;
+pub(crate) mod stats_diag_storage;
