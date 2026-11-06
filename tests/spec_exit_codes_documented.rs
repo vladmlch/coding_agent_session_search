@@ -100,6 +100,12 @@ const SOURCES: &[(&str, &str)] = &[
         "src/indexer/checkpoint_deadline.rs",
         include_str!("../src/indexer/checkpoint_deadline.rs"),
     ),
+    // The stall watchdog's signal-driven exits moved here in lib-split 1b:
+    // literal `process::exit(130)`/`process::exit(143)` on interrupt/terminate.
+    (
+        "src/indexer/stall_watchdog.rs",
+        include_str!("../src/indexer/stall_watchdog.rs"),
+    ),
     // The read-only search service and its supervisors: `terminate(124)` for
     // the request deadline, `terminate(125)` for watchdog/monitor failure,
     // `terminate(126)` for the sampled resident-memory limit, plus the
