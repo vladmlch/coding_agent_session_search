@@ -775,6 +775,34 @@ fn insert_region(db: &impl FactsDb, conversation_id: i64, region: &RegionRow) ->
     .context("inserting persisted search region")
 }
 
+/// The `(source_id, source_path)` that [`region_docs`] mints a session's
+/// region documents under: the canonical conversation row, `source_id`
+/// defaulting to `local`. `None` when the row is missing or has no path —
+/// such a session owns no region documents.
+fn region_doc_identity_parts(
+    db: &impl FactsDb,
+    conversation_id: i64,
+) -> Result<Option<(String, String)>> {
+    let row = db
+        .facts_query_map(
+            "SELECT source_id, source_path FROM conversations WHERE id = ?1 LIMIT 1",
+            &[ParamValue::from(conversation_id)],
+            |row| {
+                Ok((
+                    row.get_typed::<Option<String>>(0)?,
+                    row.get_typed::<Option<String>>(1)?,
+                ))
+            },
+        )?
+        .into_iter()
+        .next();
+    Ok(row.and_then(|(source_id, source_path)| {
+        source_path
+            .filter(|path| !path.is_empty())
+            .map(|path| (source_id.unwrap_or_else(|| "local".to_owned()), path))
+    }))
+}
+
 fn stale_doc_ids_json(db: &impl FactsDb, conversation_id: i64, keep: &[String]) -> Result<String> {
     // Existing pending deletes ride forward minus ids the new set reclaims.
     let current: Vec<Option<String>> = db.facts_query_map(
@@ -849,19 +877,33 @@ pub fn publish_search_regions(
         ],
         |row| row.get_typed::<i64>(0),
     )?;
+    // Region documents are minted from the canonical conversation row
+    // (`region_docs`), so their queued identities must be too. A packet can
+    // name the session by another path than the row it merged into; ids
+    // built from it never match the live documents, so a reclaimed slot
+    // survives the keep filter below and the post-commit delete removes a
+    // live document.
+    let (doc_source_id, doc_source_path) = region_doc_identity_parts(db, conversation_id)?
+        .unwrap_or_else(|| {
+            (
+                packet.payload.provenance.source_id.clone(),
+                packet.payload.identity.source_path.clone(),
+            )
+        });
+    let doc_identity = |slot: i64| {
+        frankensearch::quill::cass::cass_document_identity(
+            &doc_source_id,
+            frankensearch::quill::cass::CassConversationKey {
+                source_path: &doc_source_path,
+                id: Some(conversation_id),
+            },
+            slot as u64,
+        )
+    };
     let keep_ids: Vec<String> = regions
         .iter()
         .filter(|r| r.quill_idx >= REGION_DOC_BASE as i64)
-        .map(|r| {
-            frankensearch::quill::cass::cass_document_identity(
-                &packet.payload.provenance.source_id,
-                frankensearch::quill::cass::CassConversationKey {
-                    source_path: &packet.payload.identity.source_path,
-                    id: Some(conversation_id),
-                },
-                r.quill_idx as u64,
-            )
-        })
+        .map(|r| doc_identity(r.quill_idx))
         .collect();
     let mut pending = stale_doc_ids_json(db, conversation_id, &keep_ids)?;
     {
@@ -870,16 +912,7 @@ pub fn publish_search_regions(
         let mut dropped: Vec<String> = previous_slots
             .into_iter()
             .filter(|slot| !new_slots.contains(slot))
-            .map(|slot| {
-                frankensearch::quill::cass::cass_document_identity(
-                    &packet.payload.provenance.source_id,
-                    frankensearch::quill::cass::CassConversationKey {
-                        source_path: &packet.payload.identity.source_path,
-                        id: Some(conversation_id),
-                    },
-                    slot as u64,
-                )
-            })
+            .map(doc_identity)
             .collect();
         let mut list: Vec<String> = serde_json::from_str(&pending).unwrap_or_default();
         list.append(&mut dropped);
@@ -977,25 +1010,10 @@ pub fn replace_meta_regions(db: &impl FactsDb, conversation_id: i64) -> Result<(
         .and_then(|raw| raw.as_deref().map(str::to_owned))
         .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
         .unwrap_or_default();
-    let identity = db
-        .facts_query_map(
-            "SELECT source_id, source_path FROM conversations WHERE id = ?1 LIMIT 1",
-            &[ParamValue::from(conversation_id)],
-            |row| {
-                Ok((
-                    row.get_typed::<Option<String>>(0)?,
-                    row.get_typed::<Option<String>>(1)?,
-                ))
-            },
-        )?
-        .into_iter()
-        .next();
-    if let Some((source_id, source_path)) = identity
-        && let Some(source_path) = source_path.filter(|path| !path.is_empty())
-    {
+    if let Some((source_id, source_path)) = region_doc_identity_parts(db, conversation_id)? {
         let doc_identity = |slot: i64| {
             frankensearch::quill::cass::cass_document_identity(
-                source_id.as_deref().unwrap_or("local"),
+                &source_id,
                 frankensearch::quill::cass::CassConversationKey {
                     source_path: &source_path,
                     id: Some(conversation_id),
@@ -1833,6 +1851,70 @@ mod tests {
             pending,
             vec![still_stale],
             "unrelated stale ids stay queued"
+        );
+        Ok(())
+    }
+
+    /// A packet can name a session by another path than the conversation
+    /// row it merged into (a Cursor composer re-emitted under a second
+    /// path). Region documents are minted from the row, so the delete queue
+    /// must be too: ids built from the packet path never match the live
+    /// documents, a reclaimed slot survives the keep filter, and the
+    /// post-commit delete removes a live document (GH #457).
+    #[test]
+    fn publish_search_regions_queues_row_identities_when_packet_path_differs() -> Result<()> {
+        let (_temp, storage) = fixture();
+        let db = storage.raw();
+        let agent = agent_id(&storage);
+        insert_conversation(db, 1, agent);
+        // An earlier republish freed slot base(0) and queued it; base(3) is
+        // still owned by the previous inventory and is about to be dropped.
+        let reclaimed = fixture_doc_identity(1, base(0));
+        let still_stale = fixture_doc_identity(1, base(7));
+        insert_marks(
+            db,
+            1,
+            &serde_json::to_string(&[reclaimed.as_str(), still_stale.as_str()])?,
+        );
+        insert_region(db, 1, 3, base(3), Some("old meta"));
+        // One tag and no messages: the new inventory is one meta region at
+        // ordinal 0, which reclaims slot base(0).
+        db.facts_execute(
+            "INSERT INTO viewer_tags (conversation_id, tag) VALUES (1, 'release')",
+            &[],
+        )?;
+        let conv = crate::model::types::Conversation {
+            id: None,
+            agent_slug: "codex".into(),
+            workspace: None,
+            external_id: Some("composer-1".into()),
+            title: None,
+            source_path: "/elsewhere/composer-1.json".into(),
+            started_at: None,
+            ended_at: None,
+            approx_tokens: None,
+            metadata_json: Value::Null,
+            source_id: "local".into(),
+            origin_host: None,
+            messages: Vec::new(),
+        };
+        let generation = super::super::projection::generation_for_canonical(db, &conv, 1)?;
+        assert_ne!(
+            generation.packet.payload.identity.source_path, "/fixture/1.jsonl",
+            "the fixture must exercise a packet path that differs from the row"
+        );
+
+        publish_search_regions(db, 1, &generation.packet, &generation.structure)?;
+
+        let docs = region_docs(db, 1)?;
+        assert_eq!(docs.len(), 1, "the tag must materialize one meta doc");
+        assert_eq!(docs[0].msg_idx, base(0) as u64);
+        let pending = pending_deletes(db, 1)?;
+        assert_eq!(
+            pending,
+            vec![still_stale, fixture_doc_identity(1, base(3))],
+            "the reclaimed live slot leaves the queue, and the dropped slot is \
+             queued under the row identity its live document carries"
         );
         Ok(())
     }
