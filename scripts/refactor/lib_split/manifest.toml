@@ -30,6 +30,148 @@ parts = 2
 mod = "indexed_conversation_fallback_tests"
 parts = 2
 
+[[mod_reloc]]
+decl = "doctor_backup_restore_tests"
+stage = "3d"
+new_parent = "src/doctor.rs"
+new_name = "backup_restore_tests"
+file_from = "src/doctor_backup_restore_tests.rs"
+file_to = "src/doctor/backup_restore_tests.rs"
+
+[[mod_reloc]]
+decl = "doctor_candidate_wal_tests"
+stage = "3d"
+new_parent = "src/doctor/candidate.rs"
+new_name = "wal_tests"
+file_from = "src/doctor_candidate_wal_tests.rs"
+file_to = "src/doctor/candidate/wal_tests.rs"
+
+[[retarget]]
+test = "doctor_cleanup_apply_cannot_bypass_fs_mutation_executor_for_pruning"
+test_file = "src/doctor/doctor_asset_taxonomy_tests_part_4.rs"
+stage = "3b"
+find = "include_str!(\"lib.rs\")"
+with = "concat!(include_str!(\"fs_safety/cleanup_apply.rs\"), include_str!(\"fs_safety/mutation_executor.rs\"))"
+to = [ "src/doctor/fs_safety/cleanup_apply.rs", "src/doctor/fs_safety/mutation_executor.rs" ]
+markers = [ "fn apply_diag_quarantine_cleanup", "fn execute_doctor_fs_mutation" ]
+
+[[retarget]]
+test = "run_doctor_stale_lock_removal_cannot_bypass_fs_mutation_executor"
+test_file = "src/doctor/doctor_asset_taxonomy_tests_part_4.rs"
+stage = "3b"
+find = "include_str!(\"lib.rs\")"
+with = "include_str!(\"../lib.rs\")"
+to = [ "src/lib.rs" ]
+markers = [ "fn run_doctor_impl" ]
+
+[[retarget]]
+test = "run_doctor_stale_lock_removal_cannot_bypass_fs_mutation_executor"
+test_file = "src/doctor/doctor_asset_taxonomy_tests_part_4.rs"
+stage = "3d"
+find = "include_str!(\"../lib.rs\")"
+with = "include_str!(\"run.rs\")"
+to = [ "src/doctor/run.rs" ]
+markers = [ "fn run_doctor_impl" ]
+
+[[retarget]]
+test = "legacy_cli_dispatch_routes_through_typed_doctor_module"
+test_file = "src/doctor.rs"
+stage = "3d"
+find = "include_str!(\"lib.rs\")"
+with = "concat!(include_str!(\"lib.rs\"), include_str!(\"doctor/run.rs\"))"
+to = [ "src/lib.rs", "src/doctor/run.rs" ]
+markers = [ "pub(crate) fn run_doctor_impl(", "doctor::DoctorCommandRequest::from_cli_flags" ]
+
+[[retarget]]
+test = "legacy_cli_dispatch_routes_through_typed_doctor_module"
+test_file = "src/doctor.rs"
+stage = "4"
+find = "concat!(include_str!(\"lib.rs\"), include_str!(\"doctor/run.rs\"))"
+with = "concat!(include_str!(\"cli/execute_cli.rs\"), include_str!(\"doctor/run.rs\"))"
+to = [ "src/cli/execute_cli.rs", "src/doctor/run.rs" ]
+markers = [ "pub(crate) fn run_doctor_impl(", "doctor::DoctorCommandRequest::from_cli_flags" ]
+
+[[retarget]]
+test = "pass7_fixture_fm_cli_robot_schema_version_missing_doctor_root"
+test_file = "src/doctor_chokepoint.rs"
+stage = "3d"
+find = "format!(\"{manifest}/src/lib.rs\")"
+with = "format!(\"{manifest}/src/doctor/run.rs\")"
+to = [ "src/doctor/run.rs" ]
+markers = [ "\"schema_version\": 2,", "\"doctor_contract_version\": 1," ]
+
+[[retarget]]
+test = "diagnostics_connector_paths_is_dynamic"
+test_file = "tests/agent_detection_completeness.rs"
+stage = "2c"
+find = "join(\"src/lib.rs\")"
+with = "join(\"src/cli/commands/status_health/diagnostics.rs\")"
+to = [ "src/cli/commands/status_health/diagnostics.rs" ]
+markers = [ "fn diagnostics_connector_paths(", "detect_installed_agents" ]
+
+[[retarget]]
+test = "alias_targets_from_source"
+test_file = "tests/spec_aliases_resolve.rs"
+stage = "4"
+find = "include_str!(\"../src/lib.rs\")"
+with = "include_str!(\"../src/cli/argv/normalize.rs\")"
+to = [ "src/cli/argv/normalize.rs" ]
+markers = [ "SUBCOMMAND_ALIASES" ]
+
+[[retarget]]
+test = "removed_command_matrix_is_fully_active"
+test_file = "tests/local_only_audit.rs"
+stage = "4"
+find = "read_text(&root.join(\"src/lib.rs\"))"
+with = "read_text(&root.join(\"src/cli/argv/normalize.rs\"))"
+to = [ "src/cli/argv/normalize.rs" ]
+markers = [ "REMOVED_COMMANDS", "REMOVED_FLAGS", "was removed" ]
+
+[[retarget]]
+test = "pass4_lib_dispatch_routes_through_doctor_chokepoint_apis"
+test_file = "tests/doctor_mutate_auditor.rs"
+stage = "3c"
+find = "fs::read_to_string(format!(\"{manifest}/src/lib.rs\"))"
+with = "Ok::<_, std::io::Error>(fs::read_to_string(format!(\"{manifest}/src/lib.rs\")).unwrap() + &fs::read_to_string(format!(\"{manifest}/src/doctor/doctor_archive_export_collect_assets.rs\")).unwrap())"
+to = [ "src/lib.rs", "src/doctor/doctor_archive_export_collect_assets.rs" ]
+markers = [ "crate::doctor_runs::list_runs", "crate::doctor_runs::find_latest_run", "crate::doctor_runs::RunId", "crate::doctor_undo::undo_run", "doctor_robot_docs_body", "RobotTopic::Doctor" ]
+
+[[retarget]]
+test = "pass4_lib_dispatch_routes_through_doctor_chokepoint_apis"
+test_file = "tests/doctor_mutate_auditor.rs"
+stage = "4"
+find = "format!(\"{manifest}/src/lib.rs\")"
+with = "format!(\"{manifest}/src/cli/output/extract_search_terms.rs\")"
+to = [ "src/cli/output/extract_search_terms.rs", "src/doctor/doctor_archive_export_collect_assets.rs" ]
+markers = [ "crate::doctor_runs::list_runs", "crate::doctor_runs::find_latest_run", "crate::doctor_runs::RunId", "crate::doctor_undo::undo_run", "doctor_robot_docs_body", "RobotTopic::Doctor" ]
+
+[[retarget]]
+test = "pass4_pass_3_subcommands_wired_in_clap"
+test_file = "tests/doctor_mutate_auditor.rs"
+stage = "4"
+find = "format!(\"{manifest}/src/lib.rs\")"
+with = "format!(\"{manifest}/src/cli/args.rs\")"
+to = [ "src/cli/args.rs" ]
+markers = [ "robot_triage:", "diff: Option<String>", "gc_before: Option<String>" ]
+
+[[retarget]]
+test = "pass8_explain_and_emit_capabilities_dispatch_present"
+test_file = "tests/doctor_mutate_auditor.rs"
+stage = "3c"
+find = "std::fs::read_to_string(format!(\"{manifest}/src/lib.rs\"))"
+with = "Ok::<_, std::io::Error>(fs::read_to_string(format!(\"{manifest}/src/doctor/doctor_archive_export_collect_assets.rs\")).unwrap() + &fs::read_to_string(format!(\"{manifest}/src/doctor/run_doctor_emit_capabilities.rs\")).unwrap())"
+to = [ "src/doctor/doctor_archive_export_collect_assets.rs", "src/doctor/run_doctor_emit_capabilities.rs" ]
+markers = [ "fn run_doctor_explain", "fn run_doctor_emit_capabilities", "doctor-capabilities", "kind\": \"explain\"" ]
+
+[[retarget]]
+test = "pass6_watch_helper_routes_through_doctor_runs_apis"
+test_file = "tests/doctor_mutate_auditor.rs"
+stage = "3c"
+find = "format!(\"{manifest}/src/lib.rs\")"
+with = "format!(\"{manifest}/src/doctor/doctor_archive_export_collect_assets.rs\")"
+to = [ "src/doctor/doctor_archive_export_collect_assets.rs" ]
+markers = [ "fn run_doctor_watch", "crate::doctor_runs::list_runs", "crate::doctor_runs::find_in_flight_band", "watch-tick" ]
+
 [[file]]
 target = "src/lib.rs"
 stage = "stay"
@@ -95,12 +237,6 @@ target = "src/lib.rs"
 stage = "stay"
 first = { kind = "mod_decl", name = "doctor" }
 last = { kind = "mod_decl", name = "doctor" }
-
-[[file]]
-target = "src/lib.rs"
-stage = "stay"
-first = { kind = "mod_decl", name = "doctor_candidate_wal_tests" }
-last = { kind = "mod_decl", name = "doctor_candidate_wal_tests" }
 
 [[file]]
 target = "src/lib.rs"
@@ -415,15 +551,15 @@ first = { kind = "const", name = "CONTRACT_VERSION" }
 last = { kind = "fn", name = "with_frankensqlite_connection" }
 
 [[file]]
-target = "src/cli/cli.rs"
+target = "src/cli/args.rs"
 stage = "4"
 first = { kind = "struct", name = "Cli" }
-last = { kind = "enum", name = "SourcesCommand" }
+last = { kind = "enum", name = "ImportCommand" }
 
 [[file]]
-target = "src/cli/modelscommand.rs"
+target = "src/cli/sourcescommand.rs"
 stage = "4"
-first = { kind = "enum", name = "ModelsCommand" }
+first = { kind = "enum", name = "SourcesCommand" }
 last = { kind = "impl", name = "Aggregations" }
 
 [[file]]
@@ -441,8 +577,7 @@ last = { kind = "fn", name = "recover_robot_docs_topic_shorthands" }
 [[file]]
 target = "src/cli/argv/robot_docs_shorthand_regression_tests.rs"
 stage = "4"
-first = { kind = "mod_inline", name = "robot_docs_shorthand_regression_tests" }
-last = { kind = "mod_inline", name = "robot_docs_shorthand_regression_tests" }
+mod = "robot_docs_shorthand_regression_tests"
 
 [[file]]
 target = "src/cli/argv/structured_output_request_span_at.rs"
@@ -451,7 +586,7 @@ first = { kind = "fn", name = "structured_output_request_span_at" }
 last = { kind = "fn", name = "rewrite_doctor_history_verb" }
 
 [[file]]
-target = "src/cli/argv/normalize_args.rs"
+target = "src/cli/argv/normalize.rs"
 stage = "4"
 first = { kind = "fn", name = "normalize_args" }
 last = { kind = "fn", name = "closest_top_level_command_in" }
@@ -459,14 +594,12 @@ last = { kind = "fn", name = "closest_top_level_command_in" }
 [[file]]
 target = "src/cli/argv/canonical_top_level_command_tests.rs"
 stage = "4"
-first = { kind = "mod_inline", name = "canonical_top_level_command_tests" }
-last = { kind = "mod_inline", name = "canonical_top_level_command_tests" }
+mod = "canonical_top_level_command_tests"
 
 [[file]]
 target = "src/cli/argv/removed_invocation_tests.rs"
 stage = "4"
-first = { kind = "mod_inline", name = "removed_invocation_tests" }
-last = { kind = "mod_inline", name = "removed_invocation_tests" }
+mod = "removed_invocation_tests"
 
 [[file]]
 target = "src/cli/argv/heuristic_parse_recovery.rs"
@@ -495,8 +628,7 @@ last = { kind = "fn", name = "forget_filter" }
 [[file]]
 target = "src/cli/commands/forget_selector_tests.rs"
 stage = "2b"
-first = { kind = "mod_inline", name = "forget_selector_tests" }
-last = { kind = "mod_inline", name = "forget_selector_tests" }
+mod = "forget_selector_tests"
 
 [[file]]
 target = "src/cli/commands/forgetcommandoptions.rs"
@@ -507,8 +639,7 @@ last = { kind = "fn", name = "franken_query_map_collect_retry" }
 [[file]]
 target = "src/cli/commands/franken_query_retry_callback_tests.rs"
 stage = "2b"
-first = { kind = "mod_inline", name = "franken_query_retry_callback_tests" }
-last = { kind = "mod_inline", name = "franken_query_retry_callback_tests" }
+mod = "franken_query_retry_callback_tests"
 
 [[file]]
 target = "src/cli/commands/fresh_franken_count_retry.rs"
@@ -519,14 +650,12 @@ last = { kind = "fn", name = "run_analytics_tools" }
 [[file]]
 target = "src/cli/commands/analytics_filter_validation_tests.rs"
 stage = "2b"
-first = { kind = "mod_inline", name = "analytics_filter_validation_tests" }
-last = { kind = "mod_inline", name = "analytics_filter_validation_tests" }
+mod = "analytics_filter_validation_tests"
 
 [[file]]
 target = "src/cli/commands/analytics_query_cli_error_tests.rs"
 stage = "2b"
-first = { kind = "mod_inline", name = "analytics_query_cli_error_tests" }
-last = { kind = "mod_inline", name = "analytics_query_cli_error_tests" }
+mod = "analytics_query_cli_error_tests"
 
 [[file]]
 target = "src/cli/commands/analyticsvalidationsummary.rs"
@@ -537,8 +666,7 @@ last = { kind = "fn", name = "chatgpt_import_file_stem" }
 [[file]]
 target = "src/cli/commands/chatgpt_import_file_stem_tests.rs"
 stage = "2b"
-first = { kind = "mod_inline", name = "chatgpt_import_file_stem_tests" }
-last = { kind = "mod_inline", name = "chatgpt_import_file_stem_tests" }
+mod = "chatgpt_import_file_stem_tests"
 
 [[file]]
 target = "src/cli/commands/chatgpt_import_source_name.rs"
@@ -549,8 +677,7 @@ last = { kind = "fn", name = "register_import_scan_root_in" }
 [[file]]
 target = "src/cli/commands/chatgpt_import_scan_root_tests.rs"
 stage = "2b"
-first = { kind = "mod_inline", name = "chatgpt_import_scan_root_tests" }
-last = { kind = "mod_inline", name = "chatgpt_import_scan_root_tests" }
+mod = "chatgpt_import_scan_root_tests"
 
 [[file]]
 target = "src/cli/state/state_db_open_timeout.rs"
@@ -561,8 +688,7 @@ last = { kind = "fn", name = "finalize_health_watermark_snapshot" }
 [[file]]
 target = "src/cli/state/health_watermark_probe_tests.rs"
 stage = "4"
-first = { kind = "mod_inline", name = "health_watermark_probe_tests" }
-last = { kind = "mod_inline", name = "health_watermark_probe_tests" }
+mod = "health_watermark_probe_tests"
 
 [[file]]
 target = "src/cli/state/probe_state_db_strict_worker.rs"
@@ -573,8 +699,7 @@ last = { kind = "fn", name = "index_unsupported_quill_writer_admission_cli_error
 [[file]]
 target = "src/cli/state/index_error_mapping_tests.rs"
 stage = "4"
-first = { kind = "mod_inline", name = "index_error_mapping_tests" }
-last = { kind = "mod_inline", name = "index_error_mapping_tests" }
+mod = "index_error_mapping_tests"
 
 [[file]]
 target = "src/cli/output/cli_error_json_payload.rs"
@@ -586,19 +711,18 @@ last = { kind = "fn", name = "cass_not_initialized_recommended_action" }
 target = "src/cli/state/state_meta_json.rs"
 stage = "4"
 first = { kind = "fn", name = "state_meta_json" }
-last = { kind = "fn", name = "readiness_command_recommendation" }
+last = { kind = "fn", name = "lexical_readiness_from_state" }
 
 [[file]]
-target = "src/cli/state/readiness_recommended_commands.rs"
+target = "src/cli/state/semantic_readiness_from_state.rs"
 stage = "4"
-first = { kind = "fn", name = "readiness_recommended_commands" }
+first = { kind = "fn", name = "semantic_readiness_from_state" }
 last = { kind = "fn", name = "readiness_recommended_commands" }
 
 [[file]]
 target = "src/cli/state/readiness_projection_tests.rs"
 stage = "4"
-first = { kind = "mod_inline", name = "readiness_projection_tests" }
-last = { kind = "mod_inline", name = "readiness_projection_tests" }
+mod = "readiness_projection_tests"
 
 [[file]]
 target = "src/cli/output/warn_tui_terminal_profile.rs"
@@ -609,8 +733,7 @@ last = { kind = "fn", name = "write_headless_asciicast_sentinel" }
 [[file]]
 target = "src/cli/output/headless_asciicast_sentinel_tests.rs"
 stage = "4"
-first = { kind = "mod_inline", name = "headless_asciicast_sentinel_tests" }
-last = { kind = "mod_inline", name = "headless_asciicast_sentinel_tests" }
+mod = "headless_asciicast_sentinel_tests"
 
 [[file]]
 target = "src/cli/output/configure_color.rs"
@@ -621,8 +744,7 @@ last = { kind = "fn", name = "resolve_progress" }
 [[file]]
 target = "src/cli/output/watch_once_resolution_tests.rs"
 stage = "4"
-first = { kind = "mod_inline", name = "watch_once_resolution_tests" }
-last = { kind = "mod_inline", name = "watch_once_resolution_tests" }
+mod = "watch_once_resolution_tests"
 
 [[file]]
 target = "src/cli/output/describe_command.rs"
@@ -639,8 +761,7 @@ last = { kind = "fn", name = "init_cli_tracing" }
 [[file]]
 target = "src/cli/output/log_hygiene_tests.rs"
 stage = "4"
-first = { kind = "mod_inline", name = "log_hygiene_tests" }
-last = { kind = "mod_inline", name = "log_hygiene_tests" }
+mod = "log_hygiene_tests"
 
 [[file]]
 target = "src/cli/output/emit_correction_notes.rs"
@@ -651,8 +772,7 @@ last = { kind = "fn", name = "marked_spans" }
 [[file]]
 target = "src/cli/output/highlight_matches_tests.rs"
 stage = "4"
-first = { kind = "mod_inline", name = "highlight_matches_tests" }
-last = { kind = "mod_inline", name = "highlight_matches_tests" }
+mod = "highlight_matches_tests"
 
 [[file]]
 target = "src/cli/output/extract_search_terms.rs"
@@ -669,8 +789,7 @@ last = { kind = "fn", name = "parse_datetime_str" }
 [[file]]
 target = "src/cli/commands/search/search_time_filter_tests.rs"
 stage = "2a"
-first = { kind = "mod_inline", name = "search_time_filter_tests" }
-last = { kind = "mod_inline", name = "search_time_filter_tests" }
+mod = "search_time_filter_tests"
 
 [[file]]
 target = "src/cli/commands/search/compute_aggregations.rs"
@@ -681,8 +800,7 @@ last = { kind = "fn", name = "parse_aggregate_fields" }
 [[file]]
 target = "src/cli/commands/search/aggregate_field_validation_tests.rs"
 stage = "2a"
-first = { kind = "mod_inline", name = "aggregate_field_validation_tests" }
-last = { kind = "mod_inline", name = "aggregate_field_validation_tests" }
+mod = "aggregate_field_validation_tests"
 
 [[file]]
 target = "src/cli/commands/search/search_dry_run_meta.rs"
@@ -693,8 +811,7 @@ last = { kind = "fn", name = "search_dry_run_meta" }
 [[file]]
 target = "src/cli/commands/search/search_dry_run_meta_tests.rs"
 stage = "2a"
-first = { kind = "mod_inline", name = "search_dry_run_meta_tests" }
-last = { kind = "mod_inline", name = "search_dry_run_meta_tests" }
+mod = "search_dry_run_meta_tests"
 
 [[file]]
 target = "src/cli/commands/search/sparse_threshold_for_visible_limit.rs"
@@ -705,8 +822,7 @@ last = { kind = "fn", name = "search_request_skips_lexical_self_heal" }
 [[file]]
 target = "src/cli/commands/search/search_lexical_self_heal_gate_tests.rs"
 stage = "2a"
-first = { kind = "mod_inline", name = "search_lexical_self_heal_gate_tests" }
-last = { kind = "mod_inline", name = "search_lexical_self_heal_gate_tests" }
+mod = "search_lexical_self_heal_gate_tests"
 
 [[file]]
 target = "src/cli/commands/search/searchlexicalselfhealdiagnosis.rs"
@@ -717,8 +833,7 @@ last = { kind = "fn", name = "ensure_lexical_assets_for_search_admitting" }
 [[file]]
 target = "src/cli/commands/search/search_lexical_self_heal_tests.rs"
 stage = "2a"
-first = { kind = "mod_inline", name = "search_lexical_self_heal_tests" }
-last = { kind = "mod_inline", name = "search_lexical_self_heal_tests" }
+mod = "search_lexical_self_heal_tests"
 
 [[file]]
 target = "src/cli/commands/search/resolve_search_defaults.rs"
@@ -729,8 +844,7 @@ last = { kind = "fn", name = "lexical_engine_invariant_hint" }
 [[file]]
 target = "src/cli/commands/search/lexical_engine_invariant_hint_tests.rs"
 stage = "2a"
-first = { kind = "mod_inline", name = "lexical_engine_invariant_hint_tests" }
-last = { kind = "mod_inline", name = "lexical_engine_invariant_hint_tests" }
+mod = "lexical_engine_invariant_hint_tests"
 
 [[file]]
 target = "src/cli/commands/search/execute_search_operation.rs"
@@ -742,19 +856,18 @@ last = { kind = "fn", name = "maybe_test_force_semantic_dispatch_budget_phase" }
 target = "src/cli/commands/search/run_cli_search.rs"
 stage = "2a"
 first = { kind = "fn", name = "run_cli_search" }
-last = { kind = "fn", name = "pack_budget_ms" }
+last = { kind = "fn", name = "run_cli_search" }
 
 [[file]]
-target = "src/cli/commands/search/maybe_test_pack_worker_delay.rs"
+target = "src/cli/commands/search/pack_budget_ms.rs"
 stage = "2a"
-first = { kind = "fn", name = "maybe_test_pack_worker_delay" }
+first = { kind = "fn", name = "pack_budget_ms" }
 last = { kind = "fn", name = "merge_json_value" }
 
 [[file]]
 target = "src/cli/commands/search/pack_field_mask_tests.rs"
 stage = "2a"
-first = { kind = "mod_inline", name = "pack_field_mask_tests" }
-last = { kind = "mod_inline", name = "pack_field_mask_tests" }
+mod = "pack_field_mask_tests"
 
 [[file]]
 target = "src/cli/commands/search/output_display_results.rs"
@@ -765,8 +878,7 @@ last = { kind = "fn", name = "preview_content_limit_for_search" }
 [[file]]
 target = "src/cli/commands/search/field_mask_resolution_tests.rs"
 stage = "2a"
-first = { kind = "mod_inline", name = "field_mask_resolution_tests" }
-last = { kind = "mod_inline", name = "field_mask_resolution_tests" }
+mod = "field_mask_resolution_tests"
 
 [[file]]
 target = "src/cli/commands/search/safe_robot_score_value.rs"
@@ -777,8 +889,7 @@ last = { kind = "fn", name = "truncate_content" }
 [[file]]
 target = "src/cli/commands/search/truncate_content_tests.rs"
 stage = "2a"
-first = { kind = "mod_inline", name = "truncate_content_tests" }
-last = { kind = "mod_inline", name = "truncate_content_tests" }
+mod = "truncate_content_tests"
 
 [[file]]
 target = "src/cli/commands/search/fieldbudgets.rs"
@@ -789,8 +900,7 @@ last = { kind = "fn", name = "ann_fallback_human_warning" }
 [[file]]
 target = "src/cli/commands/search/ann_fallback_human_warning_tests.rs"
 stage = "2a"
-first = { kind = "mod_inline", name = "ann_fallback_human_warning_tests" }
-last = { kind = "mod_inline", name = "ann_fallback_human_warning_tests" }
+mod = "ann_fallback_human_warning_tests"
 
 [[file]]
 target = "src/cli/commands/search/toon_encode_options_from_env.rs"
@@ -801,8 +911,7 @@ last = { kind = "fn", name = "normalize_agent_filters" }
 [[file]]
 target = "src/cli/commands/search/agent_filter_tests.rs"
 stage = "2a"
-first = { kind = "mod_inline", name = "agent_filter_tests" }
-last = { kind = "mod_inline", name = "agent_filter_tests" }
+mod = "agent_filter_tests"
 
 [[file]]
 target = "src/cli/commands/search/effective_db_path_source.rs"
@@ -820,24 +929,25 @@ last = { kind = "fn", name = "run_diag" }
 target = "src/doctor/doctorassetclass.rs"
 stage = "3a"
 first = { kind = "enum", name = "DoctorAssetClass" }
-last = { kind = "fn", name = "doctor_highest_data_loss_risk" }
+last = { kind = "fn", name = "build_doctor_root_cause_incidents" }
+also = [ { kind = "impl", name = "DoctorCheckReport" } ]
 
 [[file]]
-target = "src/doctor/doctor_top_level_operation_outcome.rs"
+target = "src/doctor/doctor_health_class_for_checks.rs"
 stage = "3a"
-first = { kind = "fn", name = "doctor_top_level_operation_outcome" }
-last = { kind = "fn", name = "doctor_operation_outcome_with_details" }
+first = { kind = "fn", name = "doctor_health_class_for_checks" }
+last = { kind = "const", name = "DOCTOR_REPAIR_EMERGENCY_ABORTS" }
 
 [[file]]
-target = "src/doctor/doctor_operation_outcome_kind_label.rs"
+target = "src/doctor/doctor_repair_mode_policy_table.rs"
 stage = "3a"
-first = { kind = "fn", name = "doctor_operation_outcome_kind_label" }
-last = { kind = "struct", name = "DoctorCoverageSummary" }
+first = { kind = "const", name = "DOCTOR_REPAIR_MODE_POLICY_TABLE" }
+last = { kind = "fn", name = "capture_doctor_forensic_bundle" }
 
 [[file]]
-target = "src/doctor/doctorcoveragecomparisongatereport.rs"
+target = "src/doctor/doctorsourceinventorydbrow.rs"
 stage = "3a"
-first = { kind = "struct", name = "DoctorCoverageComparisonGateReport" }
+first = { kind = "struct", name = "DoctorSourceInventoryDbRow" }
 last = { kind = "struct", name = "DoctorConfigPatternMatch" }
 
 [[file]]
@@ -855,8 +965,7 @@ last = { kind = "fn", name = "doctor_path_to_slash_string" }
 [[file]]
 target = "src/doctor/doctor_path_slash_string_tests.rs"
 stage = "3a"
-first = { kind = "mod_inline", name = "doctor_path_slash_string_tests" }
-last = { kind = "mod_inline", name = "doctor_path_slash_string_tests" }
+mod = "doctor_path_slash_string_tests"
 
 [[file]]
 target = "src/doctor/doctor_pattern_matches_relative_path.rs"
@@ -873,8 +982,7 @@ last = { kind = "fn", name = "doctor_build_derived_semantic_asset_report" }
 [[file]]
 target = "src/doctor/doctor_derived_semantic_asset_tests.rs"
 stage = "3a"
-first = { kind = "mod_inline", name = "doctor_derived_semantic_asset_tests" }
-last = { kind = "mod_inline", name = "doctor_derived_semantic_asset_tests" }
+mod = "doctor_derived_semantic_asset_tests"
 
 [[file]]
 target = "src/doctor/doctor_risk_level_for_reports.rs"
@@ -897,8 +1005,7 @@ last = { kind = "fn", name = "doctor_apply_raw_mirror_listing_bound" }
 [[file]]
 target = "src/doctor/raw_mirror/doctor_raw_mirror_listing_bound_tests.rs"
 stage = "3c"
-first = { kind = "mod_inline", name = "doctor_raw_mirror_listing_bound_tests" }
-last = { kind = "mod_inline", name = "doctor_raw_mirror_listing_bound_tests" }
+mod = "doctor_raw_mirror_listing_bound_tests"
 
 [[file]]
 target = "src/doctor/raw_mirror/doctorrawmirrorverificationmode.rs"
@@ -949,64 +1056,61 @@ first = { kind = "fn", name = "doctor_backup_kind_label" }
 last = { kind = "const", name = "DOCTOR_BACKUP_RESTORE_PLAN_PREFIX" }
 
 [[file]]
-target = "src/lib.rs"
-stage = "stay"
-first = { kind = "mod_decl", name = "doctor_backup_restore_tests" }
-last = { kind = "mod_decl", name = "doctor_backup_restore_tests" }
-
-[[file]]
 target = "src/doctor/doctorbackupmanifestrecord.rs"
 stage = "3c"
 first = { kind = "struct", name = "DoctorBackupManifestRecord" }
-last = { kind = "fn", name = "doctor_archive_export_plan_value" }
+last = { kind = "fn", name = "doctor_archive_export_push_asset" }
 
 [[file]]
-target = "src/doctor/doctor_archive_export_copy_assets.rs"
+target = "src/doctor/doctor_archive_export_collect_assets.rs"
 stage = "3c"
-first = { kind = "fn", name = "doctor_archive_export_copy_assets" }
-last = { kind = "fn", name = "parse_iso8601_to_unix_ms" }
+first = { kind = "fn", name = "doctor_archive_export_collect_assets" }
+last = { kind = "fn", name = "run_doctor_explain" }
 
 [[file]]
-target = "src/doctor/run_doctor_archive_export_impl.rs"
+target = "src/doctor/run_doctor_emit_capabilities.rs"
 stage = "3c"
-first = { kind = "fn", name = "run_doctor_archive_export_impl" }
+first = { kind = "fn", name = "run_doctor_emit_capabilities" }
 last = { kind = "fn", name = "doctor_support_bundle_redact_local_value" }
 
 [[file]]
 target = "src/doctor/doctor_support_bundle_redaction_tests.rs"
 stage = "3c"
-first = { kind = "mod_inline", name = "doctor_support_bundle_redaction_tests" }
-last = { kind = "mod_inline", name = "doctor_support_bundle_redaction_tests" }
+mod = "doctor_support_bundle_redaction_tests"
 
 [[file]]
 target = "src/doctor/doctor_support_bundle_relative_path_is_safe.rs"
 stage = "3c"
 first = { kind = "fn", name = "doctor_support_bundle_relative_path_is_safe" }
+last = { kind = "fn", name = "doctor_safe_baseline_id" }
+
+[[file]]
+target = "src/doctor/doctor_baseline_resolve_path.rs"
+stage = "3c"
+first = { kind = "fn", name = "doctor_baseline_resolve_path" }
 last = { kind = "fn", name = "doctor_baseline_resolve_path" }
 
 [[file]]
 target = "src/doctor/doctor_baseline_path_tests.rs"
 stage = "3c"
-first = { kind = "mod_inline", name = "doctor_baseline_path_tests" }
-last = { kind = "mod_inline", name = "doctor_baseline_path_tests" }
+mod = "doctor_baseline_path_tests"
 
 [[file]]
 target = "src/doctor/doctor_baseline_write_path_is_safe.rs"
 stage = "3c"
 first = { kind = "fn", name = "doctor_baseline_write_path_is_safe" }
-last = { kind = "fn", name = "doctor_candidate_promotion_record_derived_followup_artifact" }
+last = { kind = "fn", name = "doctor_candidate_promotion_write_marker" }
 
 [[file]]
-target = "src/doctor/promote_doctor_reconstruct_candidate_bundle.rs"
+target = "src/doctor/doctor_candidate_promotion_record_derived_followup_a.rs"
 stage = "3c"
-first = { kind = "fn", name = "promote_doctor_reconstruct_candidate_bundle" }
+first = { kind = "fn", name = "doctor_candidate_promotion_record_derived_followup_artifact" }
 last = { kind = "fn", name = "doctor_lock_probe_error_is_active" }
 
 [[file]]
 target = "src/doctor/doctor_lock_probe_error_tests.rs"
 stage = "3c"
-first = { kind = "mod_inline", name = "doctor_lock_probe_error_tests" }
-last = { kind = "mod_inline", name = "doctor_lock_probe_error_tests" }
+mod = "doctor_lock_probe_error_tests"
 
 [[file]]
 target = "src/doctor/doctor_acquire_mutation_lock.rs"
@@ -1023,97 +1127,98 @@ last = { kind = "fn", name = "doctor_heartbeat_interval_from" }
 [[file]]
 target = "src/doctor/doctor_heartbeat_tests.rs"
 stage = "3b"
-first = { kind = "mod_inline", name = "doctor_heartbeat_tests" }
-last = { kind = "mod_inline", name = "doctor_heartbeat_tests" }
+mod = "doctor_heartbeat_tests"
 
 [[file]]
 target = "src/doctor/cliheartbeat.rs"
 stage = "3b"
 first = { kind = "struct", name = "CliHeartbeat" }
-last = { kind = "fn", name = "doctor_event_log_checksum" }
+last = { kind = "fn", name = "doctor_action_from_cleanup_action" }
 
 [[file]]
-target = "src/doctor/doctor_event_identity_payload.rs"
+target = "src/doctor/doctor_sorted_cleanup_actions.rs"
 stage = "3b"
-first = { kind = "fn", name = "doctor_event_identity_payload" }
-last = { kind = "enum", name = "DoctorFsMutationKind" }
+first = { kind = "fn", name = "doctor_sorted_cleanup_actions" }
+last = { kind = "fn", name = "cleanup_apply_operation_outcome" }
 
 [[file]]
-target = "src/doctor/doctorfsmutationkind.rs"
+target = "src/doctor/finalize_cleanup_apply_contract.rs"
 stage = "3b"
-first = { kind = "impl", name = "DoctorFsMutationKind" }
-last = { kind = "fn", name = "cleanup_plan_has_mutating_actions" }
+first = { kind = "fn", name = "finalize_cleanup_apply_contract" }
+last = { kind = "struct", name = "DiagCleanupApplyAction" }
 
 [[file]]
-target = "src/doctor/apply_diag_quarantine_cleanup.rs"
+target = "src/doctor/fs_safety/cleanup_apply.rs"
 stage = "3b"
-first = { kind = "fn", name = "apply_diag_quarantine_cleanup" }
+first = { kind = "enum", name = "DoctorFsMutationKind" }
+last = { kind = "fn", name = "journal_fs_mutation_receipt_to_actions_log" }
+
+[[file]]
+target = "src/doctor/fs_safety/mutation_executor.rs"
+stage = "3b"
+first = { kind = "fn", name = "execute_doctor_fs_mutation" }
 last = { kind = "fn", name = "legacy_index_lock_path_is_safe" }
 
 [[file]]
-target = "src/doctor/doctor_copy_source_path_is_safe.rs"
+target = "src/doctor/fs_safety/doctor_copy_source_path_is_safe.rs"
 stage = "3b"
 first = { kind = "fn", name = "doctor_copy_source_path_is_safe" }
 last = { kind = "fn", name = "existing_path_has_symlink_below_root" }
 
 [[file]]
-target = "src/doctor/doctor_asset_taxonomy_tests.rs"
+target = "src/doctor/doctor_asset_taxonomy_tests_part_1.rs"
 stage = "3b"
 slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "use", name = "super::*" }, last = { kind = "fn", name = "doctor_operation_state_classifies_interrupted_artifacts_without_gc" }, part = 1, parts = 7 }
 
 [[file]]
 target = "src/doctor/doctor_asset_taxonomy_tests_part_2.rs"
 stage = "3b"
-slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "fn", name = "gh497_interrupted_capture_blocker_names_the_cleanup_command_that_clears_it" }, last = { kind = "fn", name = "doctor_fs_mutation_executor_reports_copy_parent_sync_failure_after_file_sync" }, part = 2, parts = 7 }
+slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "fn", name = "gh497_interrupted_capture_blocker_names_the_cleanup_command_that_clears_it" }, last = { kind = "fn", name = "doctor_fs_mutation_executor_snapshots_archive_to_staging_without_deleting_source" }, part = 2, parts = 7 }
 
 [[file]]
 target = "src/doctor/doctor_asset_taxonomy_tests_part_3.rs"
 stage = "3b"
-slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "fn", name = "doctor_fs_mutation_executor_snapshots_archive_to_staging_without_deleting_source" }, last = { kind = "fn", name = "doctor_fs_mutation_executor_refuses_to_quarantine_precious_archive_db" }, part = 3, parts = 7 }
+slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "fn", name = "doctor_fs_write_mutation_writes_verified_payload_to_staging_with_receipt" }, last = { kind = "fn", name = "doctor_fs_mutation_executor_refuses_quarantine_over_existing_target" }, part = 3, parts = 7 }
 
 [[file]]
 target = "src/doctor/doctor_asset_taxonomy_tests_part_4.rs"
 stage = "3b"
-slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "fn", name = "doctor_fs_mutation_executor_blocks_quarantine_without_verified_source_hash" }, last = { kind = "fn", name = "doctor_affirmative_corruption_preserves_verified_mirror_candidate_only_authority" }, part = 4, parts = 7 }
+slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "fn", name = "doctor_fs_mutation_executor_refuses_quarantine_asset_path_mismatch" }, last = { kind = "fn", name = "doctor_candidate_promotion_preserves_backup_and_replaces_single_file_archive" }, part = 4, parts = 7 }
 
 [[file]]
 target = "src/doctor/doctor_asset_taxonomy_tests_part_5.rs"
 stage = "3b"
-slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "fn", name = "doctor_candidate_promotion_preserves_backup_and_replaces_single_file_archive" }, last = { kind = "fn", name = "f3grf_coverage_counts_alias_captures_apart_from_unlinked_manifests" }, part = 5, parts = 7 }
+slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "fn", name = "doctor_candidate_promotion_refuses_stale_live_inventory_without_mutation" }, last = { kind = "fn", name = "doctor_coverage_summary_classifies_ledger_gaps_and_confidence_tiers" }, part = 5, parts = 7 }
 
 [[file]]
 target = "src/doctor/doctor_asset_taxonomy_tests_part_6.rs"
 stage = "3b"
-slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "fn", name = "doctor_coverage_summary_classifies_ledger_gaps_and_confidence_tiers" }, last = { kind = "fn", name = "raw_mirror_report_verifies_blobs_flags_manifest_drift_and_interrupted_captures" }, part = 6, parts = 7 }
+slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "fn", name = "gh506_capture_disabled_unmirrored_rows_are_disclosed_not_a_gap" }, last = { kind = "fn", name = "gh430_bounded_doctor_still_reports_amplification_without_claiming_blob_verification" }, part = 6, parts = 7 }
 
 [[file]]
 target = "src/doctor/doctor_asset_taxonomy_tests_part_7.rs"
 stage = "3b"
-slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "fn", name = "raw_mirror_report_warns_when_verified_blob_bytes_cross_threshold" }, last = { kind = "macro", name = "proptest::proptest" }, part = 7, parts = 7 }
+slice = { mod = "doctor_asset_taxonomy_tests", first = { kind = "fn", name = "gh430_bounded_doctor_caps_logical_verification_work_for_shared_chunks" }, last = { kind = "macro", name = "proptest::proptest" }, part = 7, parts = 7 }
 
 [[file]]
 target = "src/doctor/doctor_baseline_path_safety_tests.rs"
 stage = "3b"
-first = { kind = "mod_inline", name = "doctor_baseline_path_safety_tests" }
-last = { kind = "mod_inline", name = "doctor_baseline_path_safety_tests" }
+mod = "doctor_baseline_path_safety_tests"
 
 [[file]]
 target = "src/doctor/doctor_archive_export_path_safety_tests.rs"
 stage = "3b"
-first = { kind = "mod_inline", name = "doctor_archive_export_path_safety_tests" }
-last = { kind = "mod_inline", name = "doctor_archive_export_path_safety_tests" }
+mod = "doctor_archive_export_path_safety_tests"
 
 [[file]]
 target = "src/doctor/doctor_support_bundle_path_safety_tests.rs"
 stage = "3b"
-first = { kind = "mod_inline", name = "doctor_support_bundle_path_safety_tests" }
-last = { kind = "mod_inline", name = "doctor_support_bundle_path_safety_tests" }
+mod = "doctor_support_bundle_path_safety_tests"
 
 [[file]]
 target = "src/doctor/cleanup_target_safety_tests.rs"
 stage = "3b"
-first = { kind = "mod_inline", name = "cleanup_target_safety_tests" }
-last = { kind = "mod_inline", name = "cleanup_target_safety_tests" }
+mod = "cleanup_target_safety_tests"
 
 [[file]]
 target = "src/doctor/lexical_cleanup_disposition_label.rs"
@@ -1128,7 +1233,7 @@ first = { kind = "fn", name = "run_onboarding_interactive_wizard" }
 last = { kind = "fn", name = "print_guide_human" }
 
 [[file]]
-target = "src/cli/commands/status_health/diagnostics_connector_paths.rs"
+target = "src/cli/commands/status_health/diagnostics.rs"
 stage = "2c"
 first = { kind = "fn", name = "diagnostics_connector_paths" }
 last = { kind = "fn", name = "gather_projection_signals_from_state" }
@@ -1136,8 +1241,7 @@ last = { kind = "fn", name = "gather_projection_signals_from_state" }
 [[file]]
 target = "src/cli/commands/status_health/root_cause_signal_gather_tests.rs"
 stage = "2c"
-first = { kind = "mod_inline", name = "root_cause_signal_gather_tests" }
-last = { kind = "mod_inline", name = "root_cause_signal_gather_tests" }
+mod = "root_cause_signal_gather_tests"
 
 [[file]]
 target = "src/cli/commands/status_health/probe_daemon_runtime_for_diagnostics.rs"
@@ -1154,11 +1258,10 @@ last = { kind = "fn", name = "probe_doctor_fts_table" }
 [[file]]
 target = "src/cli/commands/status_health/doctor_fts_tests.rs"
 stage = "2c"
-first = { kind = "mod_inline", name = "doctor_fts_tests" }
-last = { kind = "mod_inline", name = "doctor_fts_tests" }
+mod = "doctor_fts_tests"
 
 [[file]]
-target = "src/cli/commands/status_health/cli_read_db_tests.rs"
+target = "src/cli/commands/status_health/cli_read_db_tests_part_1.rs"
 stage = "2c"
 slice = { mod = "cli_read_db_tests", first = { kind = "use", name = "super::*" }, last = { kind = "fn", name = "state_meta_json_prefers_pending_rebuild_progress_when_present" }, part = 1, parts = 2 }
 
@@ -1176,8 +1279,7 @@ last = { kind = "fn", name = "doctor_archive_bundle_bytes" }
 [[file]]
 target = "src/doctor/doctor_probe_timeout_tests.rs"
 stage = "3d"
-first = { kind = "mod_inline", name = "doctor_probe_timeout_tests" }
-last = { kind = "mod_inline", name = "doctor_probe_timeout_tests" }
+mod = "doctor_probe_timeout_tests"
 
 [[file]]
 target = "src/doctor/doctor_franken_deep_integrity_max_bytes.rs"
@@ -1186,7 +1288,7 @@ first = { kind = "const", name = "DOCTOR_FRANKEN_DEEP_INTEGRITY_MAX_BYTES" }
 last = { kind = "const", name = "DOCTOR_LEXICAL_COVERAGE_FLOOR_PERCENT" }
 
 [[file]]
-target = "src/doctor/run_doctor_impl.rs"
+target = "src/doctor/run.rs"
 stage = "3d"
 first = { kind = "fn", name = "run_doctor_impl" }
 last = { kind = "fn", name = "run_doctor_impl" }
@@ -1200,8 +1302,7 @@ last = { kind = "fn", name = "workspace_match_distance" }
 [[file]]
 target = "src/cli/commands/path_spelling_tests.rs"
 stage = "2d"
-first = { kind = "mod_inline", name = "path_spelling_tests" }
-last = { kind = "mod_inline", name = "path_spelling_tests" }
+mod = "path_spelling_tests"
 
 [[file]]
 target = "src/cli/commands/run_sessions.rs"
@@ -1212,31 +1313,36 @@ last = { kind = "impl", name = "SourceIngestReuseCapability" }
 [[file]]
 target = "src/cli/commands/source_ingest_reuse_capability_tests.rs"
 stage = "2d"
-first = { kind = "mod_inline", name = "source_ingest_reuse_capability_tests" }
-last = { kind = "mod_inline", name = "source_ingest_reuse_capability_tests" }
+mod = "source_ingest_reuse_capability_tests"
 
 [[file]]
 target = "src/cli/commands/capabilitiesresponse.rs"
 stage = "2d"
 first = { kind = "struct", name = "CapabilitiesResponse" }
-last = { kind = "fn", name = "command_tree_has_json_flag" }
+last = { kind = "fn", name = "run_config_based_export" }
 
 [[file]]
-target = "src/cli/commands/argument_schema_from_clap.rs"
+target = "src/cli/commands/run_api_version.rs"
 stage = "2d"
-first = { kind = "fn", name = "argument_schema_from_clap" }
+first = { kind = "fn", name = "run_api_version" }
 last = { kind = "fn", name = "should_skip_arg" }
 
 [[file]]
 target = "src/robot_schema/response_schema_index_state.rs"
 stage = "1a"
 first = { kind = "fn", name = "response_schema_index_state" }
-last = { kind = "fn", name = "response_schema_doctor_locks" }
+last = { kind = "fn", name = "response_schema_doctor_operation_outcome" }
 
 [[file]]
-target = "src/robot_schema/response_schema_doctor_timing_summary.rs"
+target = "src/robot_schema/response_schema_doctor_repair_failure_marker.rs"
 stage = "1a"
-first = { kind = "fn", name = "response_schema_doctor_timing_summary" }
+first = { kind = "fn", name = "response_schema_doctor_repair_failure_marker" }
+last = { kind = "fn", name = "response_schema_search" }
+
+[[file]]
+target = "src/robot_schema/response_schema_pack.rs"
+stage = "1a"
+first = { kind = "fn", name = "response_schema_pack" }
 last = { kind = "fn", name = "response_schema_subsystem_coverage_matrix" }
 
 [[file]]
@@ -1248,8 +1354,7 @@ last = { kind = "fn", name = "build_response_schemas" }
 [[file]]
 target = "src/robot_schema/response_schema_tests.rs"
 stage = "1a"
-first = { kind = "mod_inline", name = "response_schema_tests" }
-last = { kind = "mod_inline", name = "response_schema_tests" }
+mod = "response_schema_tests"
 
 [[file]]
 target = "src/cli/commands/view/role_to_export_string.rs"
@@ -1258,7 +1363,7 @@ first = { kind = "fn", name = "role_to_export_string" }
 last = { kind = "const", name = "INDEX_SHUTDOWN_GRACE" }
 
 [[file]]
-target = "src/indexer/indexshutdownsignals.rs"
+target = "src/indexer/stall_watchdog.rs"
 stage = "1b"
 first = { kind = "struct", name = "IndexShutdownSignals" }
 last = { kind = "fn", name = "exit_without_this_threads_tls_destructors" }
@@ -1266,8 +1371,7 @@ last = { kind = "fn", name = "exit_without_this_threads_tls_destructors" }
 [[file]]
 target = "src/indexer/stall_diagnostics_tests.rs"
 stage = "1b"
-first = { kind = "mod_inline", name = "stall_diagnostics_tests" }
-last = { kind = "mod_inline", name = "stall_diagnostics_tests" }
+mod = "stall_diagnostics_tests"
 
 [[file]]
 target = "src/cli/commands/index/run_lexical_reconcile_cli.rs"
@@ -1284,8 +1388,7 @@ last = { kind = "fn", name = "default_data_dir_with_source" }
 [[file]]
 target = "src/cli/resolve_data_dir_tests.rs"
 stage = "2f"
-first = { kind = "mod_inline", name = "resolve_data_dir_tests" }
-last = { kind = "mod_inline", name = "resolve_data_dir_tests" }
+mod = "resolve_data_dir_tests"
 
 [[file]]
 target = "src/cli/read_session_paths.rs"
@@ -1302,14 +1405,12 @@ last = { kind = "fn", name = "sync_export_parent_directory", ordinal = 1 }
 [[file]]
 target = "src/cli/commands/export_html_password_tests.rs"
 stage = "2f"
-first = { kind = "mod_inline", name = "export_html_password_tests" }
-last = { kind = "mod_inline", name = "export_html_password_tests" }
+mod = "export_html_password_tests"
 
 [[file]]
 target = "src/cli/commands/clipboard_helper_tests.rs"
 stage = "2f"
-first = { kind = "mod_inline", name = "clipboard_helper_tests" }
-last = { kind = "mod_inline", name = "clipboard_helper_tests" }
+mod = "clipboard_helper_tests"
 
 [[file]]
 target = "src/cli/commands/run_export_html.rs"
@@ -1318,44 +1419,40 @@ first = { kind = "fn", name = "run_export_html" }
 last = { kind = "fn", name = "extract_tool_correlation_id" }
 
 [[file]]
-target = "src/export/agentformat.rs"
+target = "src/export/messages.rs"
 stage = "1c"
 first = { kind = "enum", name = "AgentFormat" }
 last = { kind = "fn", name = "group_messages_for_export" }
 
 [[file]]
-target = "src/export/export_timestamp_tests.rs"
-stage = "1c"
-first = { kind = "mod_inline", name = "export_timestamp_tests" }
-last = { kind = "mod_inline", name = "export_timestamp_tests" }
+target = "src/cli/commands/export/export_timestamp_tests.rs"
+stage = "2f"
+mod = "export_timestamp_tests"
 
 [[file]]
-target = "src/export/legacy_source_filter_tests.rs"
-stage = "1c"
-first = { kind = "mod_inline", name = "legacy_source_filter_tests" }
-last = { kind = "mod_inline", name = "legacy_source_filter_tests" }
+target = "src/cli/commands/export/legacy_source_filter_tests.rs"
+stage = "2f"
+mod = "legacy_source_filter_tests"
 
 [[file]]
-target = "src/export/indexed_conversation_fallback_tests.rs"
-stage = "1c"
+target = "src/cli/commands/export/indexed_conversation_fallback_tests_part_1.rs"
+stage = "2f"
 slice = { mod = "indexed_conversation_fallback_tests", first = { kind = "use", name = "super::*" }, last = { kind = "fn", name = "run_export_ignores_invalid_local_jsonl_for_indexed_export" }, part = 1, parts = 2 }
 
 [[file]]
-target = "src/export/indexed_conversation_fallback_tests_part_2.rs"
-stage = "1c"
+target = "src/cli/commands/export/indexed_conversation_fallback_tests_part_2.rs"
+stage = "2f"
 slice = { mod = "indexed_conversation_fallback_tests", first = { kind = "fn", name = "run_export_keeps_index_for_local_markdown_files" }, last = { kind = "fn", name = "omp_html_export_preserves_indexed_pi_wire_semantics_across_paths" }, part = 2, parts = 2 }
 
 [[file]]
-target = "src/export/robot_output_score_tests.rs"
-stage = "1c"
-first = { kind = "mod_inline", name = "robot_output_score_tests" }
-last = { kind = "mod_inline", name = "robot_output_score_tests" }
+target = "src/cli/commands/export/robot_output_score_tests.rs"
+stage = "2f"
+mod = "robot_output_score_tests"
 
 [[file]]
 target = "src/export/message_grouping_tests.rs"
 stage = "1c"
-first = { kind = "mod_inline", name = "message_grouping_tests" }
-last = { kind = "mod_inline", name = "message_grouping_tests" }
+mod = "message_grouping_tests"
 
 [[file]]
 target = "src/cli/commands/format_as_markdown.rs"
@@ -1372,8 +1469,7 @@ last = { kind = "fn", name = "check_local_storage_path" }
 [[file]]
 target = "src/cli/commands/sources/source_doctor_local_storage_tests.rs"
 stage = "2g"
-first = { kind = "mod_inline", name = "source_doctor_local_storage_tests" }
-last = { kind = "mod_inline", name = "source_doctor_local_storage_tests" }
+mod = "source_doctor_local_storage_tests"
 
 [[file]]
 target = "src/cli/commands/models/run_models_command.rs"
@@ -1384,8 +1480,7 @@ last = { kind = "fn", name = "run_models_backfill_batch" }
 [[file]]
 target = "src/cli/commands/models/semantic_identity_backfill_checkpoint_tests.rs"
 stage = "2g"
-first = { kind = "mod_inline", name = "semantic_identity_backfill_checkpoint_tests" }
-last = { kind = "mod_inline", name = "semantic_identity_backfill_checkpoint_tests" }
+mod = "semantic_identity_backfill_checkpoint_tests"
 
 [[file]]
 target = "src/cli/commands/models/run_models_remove.rs"
@@ -1396,8 +1491,7 @@ last = { kind = "fn", name = "run_mappings_test" }
 [[file]]
 target = "src/cli/commands/timeline_datetime_parse_tests.rs"
 stage = "2g"
-first = { kind = "mod_inline", name = "timeline_datetime_parse_tests" }
-last = { kind = "mod_inline", name = "timeline_datetime_parse_tests" }
+mod = "timeline_datetime_parse_tests"
 
 [[file]]
 target = "src/cli/commands/resolved_daemon_config.rs"
@@ -1408,8 +1502,7 @@ last = { kind = "fn", name = "run_schedule_command" }
 [[file]]
 target = "src/cli/commands/daemon_cli_config_tests.rs"
 stage = "2g"
-first = { kind = "mod_inline", name = "daemon_cli_config_tests" }
-last = { kind = "mod_inline", name = "daemon_cli_config_tests" }
+mod = "daemon_cli_config_tests"
 
 [[file]]
 target = "src/cli/commands/run_on_large_stack.rs"
@@ -1420,17 +1513,14 @@ last = { kind = "fn", name = "run_on_large_stack" }
 [[file]]
 target = "src/cli/commands/subcommand_robot_output_tests.rs"
 stage = "2g"
-first = { kind = "mod_inline", name = "subcommand_robot_output_tests" }
-last = { kind = "mod_inline", name = "subcommand_robot_output_tests" }
+mod = "subcommand_robot_output_tests"
 
 [[file]]
 target = "src/cli/commands/cli_models_resolution_tests.rs"
 stage = "2g"
-first = { kind = "mod_inline", name = "cli_models_resolution_tests" }
-last = { kind = "mod_inline", name = "cli_models_resolution_tests" }
+mod = "cli_models_resolution_tests"
 
 [[file]]
 target = "src/cli/commands/state_db_integrity_probe_tests.rs"
 stage = "2g"
-first = { kind = "mod_inline", name = "state_db_integrity_probe_tests" }
-last = { kind = "mod_inline", name = "state_db_integrity_probe_tests" }
+mod = "state_db_integrity_probe_tests"
