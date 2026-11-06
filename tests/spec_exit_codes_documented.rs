@@ -78,6 +78,12 @@ fn documented_exit_codes() -> Result<BTreeSet<i32>, Box<dyn Error>> {
 /// Every source file that constructs `CliError { code: N, kind: .. }`.
 /// Embedded at compile time so the test has no filesystem dependency at run
 /// time and stays correct when the suite runs under local Cargo.
+///
+/// Scan-parity contract for the src/lib.rs split: while items move out of
+/// `src/lib.rs` into `src/cli/`, `src/doctor/`, `src/robot_schema/` etc.,
+/// each new file that produces a `CliError` is appended here (mirroring
+/// `scripts/refactor/lib_split/scanner_lists.toml`). Coverage may grow,
+/// never shrink.
 const SOURCES: &[(&str, &str)] = &[
     ("src/lib.rs", include_str!("../src/lib.rs")),
     ("src/doctor.rs", include_str!("../src/doctor.rs")),

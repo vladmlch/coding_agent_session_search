@@ -22,10 +22,22 @@ fn golden_path() -> PathBuf {
         .join("error_envelope_kinds.json.golden")
 }
 
-fn lib_rs_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("lib.rs")
+/// Sources scanned for `CliErrorKind::*.kind_str()` usages. This list is
+/// the scan-parity contract for the lib.rs split: when an error producer
+/// moves out of `src/lib.rs`, its new file is appended here so coverage
+/// never shrinks. Entries are repo-relative.
+const SCAN_SOURCES: &[&str] = &["src/lib.rs"];
+
+fn scanned_source() -> String {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    SCAN_SOURCES
+        .iter()
+        .map(|rel| {
+            std::fs::read_to_string(root.join(rel))
+                .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn error_kind_rs_path() -> PathBuf {
@@ -59,8 +71,7 @@ fn extract_kind_literals() -> BTreeMap<String, Vec<usize>> {
 }
 
 fn extract_kind_exit_codes() -> BTreeMap<String, Vec<i32>> {
-    let source = std::fs::read_to_string(lib_rs_path()).expect("read src/lib.rs");
-    extract_kind_exit_codes_from_source(&source)
+    extract_kind_exit_codes_from_source(&scanned_source())
 }
 
 fn extract_kind_exit_codes_from_source(source: &str) -> BTreeMap<String, Vec<i32>> {
