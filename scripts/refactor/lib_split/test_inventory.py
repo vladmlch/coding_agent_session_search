@@ -30,7 +30,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import rust_items as ri
 
-_TEST_ATTR = re.compile(r"(^|\W)(test|tokio::test|test_case|proptest)(\W|$)")
+# A test attribute is an attribute PATH whose last segment is one of the
+# real test markers. `#[cfg(test)]`, `#[cfg_attr(test, ...)]` and
+# `#[should_panic]` alone are NOT test markers: cfg gates compilation,
+# should_panic only modifies an already-present #[test].
+_TEST_NAMES = {"test", "test_case", "proptest"}
+_ATTR_HEAD = re.compile(r"([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)")
 _SUPER_RX = re.compile(rb"\bsuper::")
 _HEAD_PROMO = b"pub(crate) "
 
@@ -62,18 +67,42 @@ class Diff:
         return out
 
 
-def normalize_body(body: bytes) -> bytes:
-    """Exclude only the splitter's sanctioned in-test transforms."""
-    body = _SUPER_RX.sub(b"crate::", body)
-    # position-scoped head visibility: `#[test] pub(crate) fn` vs `#[test] fn`
-    body = re.sub(rb"(?m)^(\s*)pub\(crate\) ", rb"\1", body)
+def normalize_body(body: bytes, head_off: int = 0,
+                   cls: list | None = None) -> bytes:
+    """Exclude only the splitter's sanctioned in-test transforms.
+
+    `head_off` is the byte offset of the item head inside `body`
+    (item.head_start - item.start): only a `pub(crate) ` inserted
+    exactly at the head cancels — visibility added to nested
+    fields/locals remains a real diff. `cls` is the lexical
+    classification of `body`; `super::` -> `crate::` cancels only in
+    CODE positions — the same text inside a string literal is data and
+    still diffs.
+    """
+    if cls is None:
+        cls = ri.classify(body)
+    # code-position super:: -> crate:: (dissolved-mod transform)
+    body = ri.rewrite_code(body, cls, _SUPER_RX, b"crate::")
+    # head-scoped promotion: `pub(crate) ` at the head only, whichever
+    # anchor the parser used (head_start at the vis token, or at the
+    # item keyword with the vis bytes immediately before it).
+    n = len(_HEAD_PROMO)
+    if body[head_off:head_off + n] == _HEAD_PROMO:
+        body = body[:head_off] + body[head_off + n:]
+    elif head_off >= n and body[head_off - n:head_off] == _HEAD_PROMO:
+        body = body[:head_off - n] + body[head_off:]
     return body
 
 
 def _is_test_fn(item) -> bool:
     if item.kind != "fn":
         return False
-    return any(_TEST_ATTR.search(a.text) for a in item.attrs)
+    for a in item.attrs:
+        inner = a.text.strip().lstrip("#!").strip().lstrip("[").rstrip("]")
+        m = _ATTR_HEAD.match(inner.strip())
+        if m and m.group(1).rsplit("::", 1)[-1] in _TEST_NAMES:
+            return True
+    return False
 
 
 def _cfg_of(item, parent_cfgs):
@@ -93,7 +122,7 @@ def collect(src: str, module_prefix: str = "", file_cfgs: list | None = None):
     emitted file's items see it as their outermost context, matching the
     gate they had inside the original inline mod.
     """
-    items, _cls, _gaps = ri.parse_items(src)
+    items, cls, _gaps = ri.parse_items(src)
     raw = src.encode("utf-8")
     out = {}
     ordinals: dict = {}
@@ -108,7 +137,10 @@ def collect(src: str, module_prefix: str = "", file_cfgs: list | None = None):
         key = key_prefix if idx == 0 else f"{key_prefix}#{idx}"
         my_cfgs = _cfg_of(item, cfgs)
         if _is_test_fn(item):
-            body = normalize_body(raw[item.start:item.end])
+            body = normalize_body(
+                raw[item.start:item.end],
+                head_off=item.head_start - item.start,
+                cls=cls[item.start:item.end])
             out[key] = {
                 "path": "::".join(path + [item.name]),
                 "cfg": my_cfgs,
