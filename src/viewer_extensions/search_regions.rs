@@ -1183,17 +1183,26 @@ pub fn live_region_doc_bound(db: &impl FactsDb) -> Result<u64> {
     if !has_region_marks_table(db)? {
         return Ok(0);
     }
+    // Set-based form of the per-marks-row count. A correlated scalar
+    // `COUNT(*)` subquery is evaluated by frankensqlite's in-memory
+    // correlated fallback, which ignores the `(conversation_id, quill_idx)`
+    // index and never finished on a 6k-session / 762k-region archive. The
+    // JOIN + GROUP BY below yields exactly one row per marks row whose
+    // conversation exists (`marks.conversation_id` is the primary key, and
+    // `conversations.id` is INTEGER PRIMARY KEY, so the join cannot
+    // duplicate it), and the LEFT JOIN keeps marks with no live regions at
+    // a count of zero.
     let mut bound = 0_u64;
-    for (doc_rows, deletes_json) in db.facts_query_map(
-        "SELECT \
-           (SELECT COUNT(*) FROM viewer_search_regions r \
-            WHERE r.conversation_id = m.conversation_id \
-              AND r.quill_idx >= ?1 AND r.indexed_text IS NOT NULL), \
-           m.pending_doc_deletes \
+    for (deletes_json, doc_rows) in db.facts_query_map(
+        "SELECT m.pending_doc_deletes, COUNT(r.conversation_id) \
          FROM viewer_search_region_marks m \
-         WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.id = m.conversation_id)",
+         JOIN conversations c ON c.id = m.conversation_id \
+         LEFT JOIN viewer_search_regions r \
+           ON r.conversation_id = m.conversation_id \
+          AND r.quill_idx >= ?1 AND r.indexed_text IS NOT NULL \
+         GROUP BY m.conversation_id, m.pending_doc_deletes",
         &[ParamValue::from(REGION_DOC_BASE as i64)],
-        |row| Ok((row.get_typed::<i64>(0)?, row.get_typed::<String>(1)?)),
+        |row| Ok((row.get_typed::<String>(0)?, row.get_typed::<i64>(1)?)),
     )? {
         bound = bound.saturating_add(doc_rows.max(0) as u64);
         let deletes: Vec<Value> = serde_json::from_str(&deletes_json).unwrap_or_default();
@@ -1491,4 +1500,216 @@ pub fn hydrate_region_text(db: &impl FactsDb, region: &RegionRow) -> Result<Opti
         return Ok(rows.into_iter().next().flatten().map(|t| bounded(&t)));
     }
     Ok(region.indexed_text.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Equivalence and edge-case coverage for [`live_region_doc_bound`].
+    //! The pre-rewrite correlated-subquery statement survives here only as
+    //! the oracle the set-based query must match.
+
+    use super::*;
+    use crate::model::types::{Agent, AgentKind};
+    use crate::storage::sqlite::FrankenStorage;
+
+    /// The original per-marks-row correlated statement, verbatim.
+    const CORRELATED_ORACLE_SQL: &str = "SELECT \
+           (SELECT COUNT(*) FROM viewer_search_regions r \
+            WHERE r.conversation_id = m.conversation_id \
+              AND r.quill_idx >= ?1 AND r.indexed_text IS NOT NULL), \
+           m.pending_doc_deletes \
+         FROM viewer_search_region_marks m \
+         WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.id = m.conversation_id)";
+
+    /// Same accumulation as production: doc rows plus the length of the
+    /// `pending_doc_deletes` JSON array, unparseable JSON counting as zero.
+    fn oracle_bound(db: &impl FactsDb) -> Result<u64> {
+        let mut bound = 0_u64;
+        for (doc_rows, deletes_json) in db.facts_query_map(
+            CORRELATED_ORACLE_SQL,
+            &[ParamValue::from(REGION_DOC_BASE as i64)],
+            |row| Ok((row.get_typed::<i64>(0)?, row.get_typed::<String>(1)?)),
+        )? {
+            bound = bound.saturating_add(doc_rows.max(0) as u64);
+            let deletes: Vec<Value> = serde_json::from_str(&deletes_json).unwrap_or_default();
+            bound = bound.saturating_add(deletes.len() as u64);
+        }
+        Ok(bound)
+    }
+
+    fn fixture() -> (tempfile::TempDir, FrankenStorage) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage =
+            FrankenStorage::open(&temp.path().join("archive.db")).expect("canonical schema");
+        crate::viewer_extensions::schema::ensure_schema(storage.raw()).expect("extension schema");
+        // Orphan rows (a conversation deleted under live regions) cannot be
+        // written with cascading foreign keys enforced, so the fixture
+        // relaxes enforcement; the query itself must still exclude them.
+        storage
+            .raw()
+            .execute("PRAGMA foreign_keys = OFF")
+            .expect("relax foreign keys for orphan fixtures");
+        (temp, storage)
+    }
+
+    fn agent_id(storage: &FrankenStorage) -> i64 {
+        storage
+            .ensure_agent(&Agent {
+                id: None,
+                slug: "codex".into(),
+                name: "Codex".into(),
+                version: None,
+                kind: AgentKind::Cli,
+            })
+            .expect("agent")
+    }
+
+    fn insert_conversation(db: &impl FactsDb, id: i64, agent: i64) {
+        db.facts_execute(
+            "INSERT INTO conversations (id, agent_id, source_path) VALUES (?1, ?2, ?3)",
+            &[
+                ParamValue::from(id),
+                ParamValue::from(agent),
+                ParamValue::from(format!("/fixture/{id}.jsonl")),
+            ],
+        )
+        .expect("conversation");
+    }
+
+    fn insert_marks(db: &impl FactsDb, conversation_id: i64, pending_doc_deletes: &str) {
+        db.facts_execute(
+            "INSERT INTO viewer_search_region_marks \
+             (conversation_id, region_version, pending_doc_deletes) VALUES (?1, 1, ?2)",
+            &[
+                ParamValue::from(conversation_id),
+                ParamValue::from(pending_doc_deletes),
+            ],
+        )
+        .expect("marks");
+    }
+
+    fn insert_region(
+        db: &impl FactsDb,
+        conversation_id: i64,
+        ordinal: i64,
+        quill_idx: i64,
+        indexed_text: Option<&str>,
+    ) {
+        db.facts_execute(
+            "INSERT INTO viewer_search_regions \
+             (conversation_id, region_ordinal, region_key, scope, quill_idx, indexed_text) \
+             VALUES (?1, ?2, ?3, 'block', ?4, ?5)",
+            &[
+                ParamValue::from(conversation_id),
+                ParamValue::from(ordinal),
+                ParamValue::from(format!("region-{conversation_id}-{ordinal}")),
+                ParamValue::from(quill_idx),
+                ParamValue::from(indexed_text),
+            ],
+        )
+        .expect("region");
+    }
+
+    fn base(offset: i64) -> i64 {
+        REGION_DOC_BASE as i64 + offset
+    }
+
+    #[test]
+    fn live_region_doc_bound_matches_correlated_oracle_and_hand_count() -> Result<()> {
+        let (_temp, storage) = fixture();
+        let db = storage.raw();
+        let agent = agent_id(&storage);
+        // Conversation 5 is deliberately never inserted (it was deleted).
+        for id in [1, 2, 3, 4, 6, 7] {
+            insert_conversation(db, id, agent);
+        }
+
+        // conv 1: two deletes; 3 live doc regions (incl. one exactly at the
+        // base); a NULL-text synthetic row, and canonical rows below the
+        // base whose text must not count. Hand count: 3 + 2 = 5.
+        insert_marks(db, 1, r#"["a","b"]"#);
+        insert_region(db, 1, 0, base(0), Some("x"));
+        insert_region(db, 1, 1, base(1), Some("y"));
+        insert_region(db, 1, 2, base(2), None);
+        insert_region(db, 1, 3, 7, None);
+        insert_region(db, 1, 4, 8, Some("z"));
+        insert_region(db, 1, 5, base(3), Some("b"));
+
+        // conv 2: marks row without any region rows. Hand count: 0.
+        insert_marks(db, 2, "[]");
+
+        // conv 3: canonical-only regions (below the base). Hand count: 1
+        // (the single pending delete).
+        insert_marks(db, 3, r#"["x"]"#);
+        insert_region(db, 3, 0, 3, None);
+        insert_region(db, 3, 1, 4, Some("c"));
+
+        // conv 4: regions with no marks row are never counted. Hand count: 0.
+        insert_region(db, 4, 0, base(0), Some("w"));
+        insert_region(db, 4, 1, base(1), Some("v"));
+
+        // conv 5: marks and regions of a deleted conversation (orphans; the
+        // conversation-exists filter must drop the whole group). Hand count: 0.
+        insert_marks(db, 5, r#"["d1","d2","d3"]"#);
+        insert_region(db, 5, 0, base(0), Some("o"));
+
+        // conv 6: a non-array JSON deletes payload contributes zero deletes,
+        // but its live doc region still counts. Hand count: 1.
+        insert_marks(db, 6, r#"{"not":"an array"}"#);
+        insert_region(db, 6, 0, base(0), Some("p"));
+        insert_region(db, 6, 1, base(1), None);
+
+        // conv 7: unparseable deletes JSON contributes zero. Hand count: 0.
+        insert_marks(db, 7, "not json");
+
+        let oracle = oracle_bound(db)?;
+        let set_based = live_region_doc_bound(db)?;
+        assert_eq!(oracle, 7, "oracle drifted from the hand count");
+        assert_eq!(set_based, oracle, "set-based bound must equal the oracle");
+        assert_eq!(set_based, 7);
+        Ok(())
+    }
+
+    #[test]
+    fn live_region_doc_bound_empty_tables_are_zero() -> Result<()> {
+        let (_temp, storage) = fixture();
+        assert_eq!(live_region_doc_bound(storage.raw())?, 0);
+        assert_eq!(oracle_bound(storage.raw())?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn live_region_doc_bound_marks_without_regions_and_regions_without_marks() -> Result<()> {
+        let (_temp, storage) = fixture();
+        let db = storage.raw();
+        let agent = agent_id(&storage);
+        insert_conversation(db, 1, agent);
+        insert_conversation(db, 2, agent);
+
+        // Marks alone: only the deletes count.
+        insert_marks(db, 1, r#"["a","b"]"#);
+        assert_eq!(live_region_doc_bound(db)?, 2);
+        assert_eq!(oracle_bound(db)?, 2);
+
+        // Regions alone (no marks row for conversation 2): nothing counts.
+        insert_region(db, 2, 0, base(0), Some("q"));
+        assert_eq!(live_region_doc_bound(db)?, 2);
+        assert_eq!(oracle_bound(db)?, 2);
+
+        // Only the marks row's own conversation contributes live regions.
+        insert_marks(db, 2, "[]");
+        assert_eq!(live_region_doc_bound(db)?, 3);
+        assert_eq!(oracle_bound(db)?, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn live_region_doc_bound_without_marks_table_is_zero() -> Result<()> {
+        // Canonical-only archive: no extension profile, so no marks table.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage =
+            FrankenStorage::open(&temp.path().join("canonical.db")).expect("canonical schema");
+        assert_eq!(live_region_doc_bound(storage.raw())?, 0);
+        Ok(())
+    }
 }
