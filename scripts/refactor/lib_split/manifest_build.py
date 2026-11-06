@@ -64,7 +64,7 @@ REGIONS: list[tuple[tuple[str, str] | None, str, str, str]] = [
     (("fn", "root_structured_triage_rewrite"), "4", "src/cli/argv", "argv recovery/normalize/parse"),
     (("struct", "ParsedCli"), "4", "src/cli", "entry.rs surface + dispatch"),
     (("fn", "handle_import"), "2b", "src/cli/commands", "quarantine/mirror/import"),
-    (("fn", "forget_filter"), "2b", "src/cli/commands", "forget"),
+    (("fn", "forget_filter"), "2b", "src/cli/commands/forget", "forget.rs + children"),
     (("fn", "run_mirror_prune"), "2b", "src/cli/commands", "mirror prune + shared parsers"),
     (("fn", "run_analytics"), "2b", "src/cli/commands/analytics", "analytics commands"),
     (("fn", "import_chatgpt_export"), "2b", "src/cli/commands", "ChatGPT import"),
@@ -77,24 +77,43 @@ REGIONS: list[tuple[tuple[str, str] | None, str, str, str]] = [
     (("fn", "pack_budget_ms"), "2a", "src/cli/commands/pack", "pack command"),
     (("fn", "output_display_results"), "2a", "src/cli/commands/search", "search tail"),
     (("fn", "run_stats"), "2b", "src/cli/commands/stats_diag_storage", "stats/diag/storage/dedup"),
-    (("enum", "DoctorAssetClass"), "3a", "src/doctor", "doctor policy/report/taxonomy"),
-    (("fn", "doctor_storage_probe_path"), "3a", "src/doctor", "storage pressure"),
-    (("fn", "doctor_config_exclusion_targets"), "3a", "src/doctor", "config exclusion"),
-    (("fn", "doctor_fallback_mode_from_state"), "3a", "src/doctor", "derived semantic + risk"),
-    (("fn", "doctor_source_authority_policy"), "3c", "src/doctor", "source inventory"),
+    # doctor/ named owners (plan §3): each contiguous sub-span lands under
+    # its owner namespace; .rs owners keep their overflow children under
+    # owner/ dirs (foo.rs + foo/ style, hard-cap delegation only).
+    (("enum", "DoctorAssetClass"), "3a", "src/doctor/policy", "policy types + anomaly taxonomy"),
+    (("struct", "DoctorCheckReport"), "3a", "src/doctor/report", "report vocabulary types"),
+    (("struct", "DoctorDatabaseIntegrityProbe"), "3a", "src/doctor/report", "check/incident report builders"),
+    (("const", "DOCTOR_ASSET_ALL_OPERATIONS"), "3a", "src/doctor/policy", "asset policy tables + accessors"),
+    (("enum", "DoctorRepairMode"), "3a", "src/doctor/policy", "policy.rs: repair/outcome policy surface"),
+    (("fn", "print_doctor_human_line"), "3a", "src/doctor/report", "human/contract report emitters"),
+    (("fn", "doctor_now_ms"), "3a", "src/doctor/forensic", "forensic.rs owner"),
+    (("struct", "DoctorSourceInventoryDbRow"), "3a", "src/doctor/report", "inventory/coverage vocabulary types"),
+    (("enum", "DoctorOperationLockKind"), "3a", "src/doctor/repair_state", "op-state/lock vocabulary types"),
+    (("fn", "doctor_storage_probe_path"), "3a", "src/doctor/report", "storage pressure report"),
+    (("fn", "doctor_config_exclusion_targets"), "3a", "src/doctor/report", "config exclusion report"),
+    (("fn", "doctor_fallback_mode_from_state"), "3a", "src/doctor/report", "derived semantic report"),
+    (("fn", "doctor_risk_level_for_reports"), "3a", "src/doctor/report", "risk/action recommendations"),
+    (("fn", "doctor_source_authority_policy"), "3c", "src/doctor/sources", "sources.rs owner"),
+    (("const", "DOCTOR_RAW_MIRROR_ROOT_DIR"), "3c", "src/doctor/raw_mirror", "raw mirror constants"),
     (("fn", "doctor_bound_healthy_listing"), "3c", "src/doctor/raw_mirror", "raw mirror listing/manifest"),
     (("fn", "doctor_archive_coverage_snapshot"), "3c", "src/doctor/archive", "archive scan/normalize"),
     (("fn", "query_doctor_raw_mirror_backfill_candidates"), "3c", "src/doctor/raw_mirror", "raw mirror backfill"),
-    (("fn", "build_doctor_sole_copy_warnings"), "3c", "src/doctor", "coverage/runtime/source-authority"),
+    (("fn", "build_doctor_sole_copy_warnings"), "3c", "src/doctor/report", "coverage/summary/authority reports"),
     (("fn", "doctor_candidate_root"), "3d", "src/doctor/candidate", "candidate scan/reconstruct"),
-    (("fn", "doctor_backup_kind_label"), "3c", "src/doctor", "backup/restore/baseline/dispatchers"),
-    (("fn", "collect_doctor_interrupted_operation_states"), "3b", "src/doctor", "repair state/journal/probes"),
+    (("const", "DOCTOR_BACKUP_MANIFEST_KIND"), "3c", "src/doctor/backup_restore", "backup_restore.rs owner"),
+    (("enum", "DoctorArchiveExportWorkflow"), "3c", "src/doctor/archive", "archive export"),
+    (("fn", "run_doctor_ls"), "3c", "src/doctor", "doctor command dispatchers"),
+    (("enum", "DoctorSupportBundleCommandMode"), "3c", "src/doctor/support_bundle", "support_bundle.rs owner"),
+    (("enum", "DoctorBaselineCommandMode"), "3c", "src/doctor/baseline", "baseline.rs owner"),
+    (("fn", "doctor_candidate_promotion_id"), "3c", "src/doctor/candidate", "candidate promotion"),
+    (("fn", "doctor_mutation_lock_path"), "3c", "src/doctor/repair_state", "lock/interrupted helpers"),
+    (("fn", "collect_doctor_interrupted_operation_states"), "3b", "src/doctor/repair_state", "repair state/journal/probes"),
     (("enum", "DoctorFsMutationKind"), "3b", "src/doctor/fs_safety", "fs mutation kinds/types + ordered groups"),
     (("mod_inline", "doctor_asset_taxonomy_tests"), "3b", "src/doctor", "doctor test mods (split)"),
     (("fn", "run_onboarding_interactive_wizard"), "2c", "src/cli/commands", "onboarding/guide"),
     (("fn", "diagnostics_connector_paths"), "2c", "src/cli/commands/status_health", "diagnostics/status/triage/health"),
     (("mod_inline", "cli_read_db_tests"), "2c", "src/cli/commands/status_health", "cli_read_db tests (split)"),
-    (("struct", "DoctorBoundedArchiveDbProbe"), "3d", "src/doctor", "doctor probes"),
+    (("struct", "DoctorBoundedArchiveDbProbe"), "3d", "src/doctor/probes", "probes.rs owner"),
     (("fn", "run_doctor_impl"), "3d", "src/doctor", "doctor run"),
     (("mod_inline", "path_spelling_tests"), "2d", "src/cli/commands", "sessions/context/ingest-reuse"),
     (("fn", "run_sessions"), "2d", "src/cli/commands", "sessions_context owner"),
@@ -103,7 +122,7 @@ REGIONS: list[tuple[tuple[str, str] | None, str, str, str]] = [
     (("fn", "role_to_export_string"), "2d", "src/cli/commands/view", "view + followup identity"),
     (("struct", "IndexShutdownSignals"), "1b", "src/indexer", "indexer stall watchdog"),
     (("fn", "run_lexical_reconcile_cli"), "2f", "src/cli/commands/index", "index commands"),
-    (("fn", "default_db_path"), "2f", "src/cli", "paths.rs: cli paths + session paths"),
+    (("fn", "default_db_path"), "2f", "src/cli/paths", "paths.rs + children"),
     (("fn", "run_resume"), "2f", "src/cli/commands", "resume.rs owner"),
     (("fn", "indexed_export_cli_error"), "2f", "src/cli/commands/export", "export shared helpers + run_export"),
     (("fn", "run_export_html"), "2f", "src/cli/commands", "export_html.rs owner"),
@@ -145,15 +164,44 @@ NAMED_FILES = {
     "IndexShutdownSignals": "src/indexer/stall_watchdog.rs",
     "AgentFormat": "src/export/messages.rs",
     "DoctorFsMutationKind": "src/doctor/fs_safety/mutation_kind.rs",
-}
-
-# Test mods that stay inside their named owner's file span (plan §3 groups
-# helpers/tests with their owner). The packer treats these as ordinary
-# range members instead of emitting standalone mod entries; each must end
-# up inside the mapped target's first..last span or the build fails.
-INLINE_MODS = {
-    "forget_selector_tests": "src/cli/commands/forget.rs",
-    "resolve_data_dir_tests": "src/cli/paths.rs",
+    # Round-3B doctor named owners (plan §3) and named leaf files under
+    # owner namespaces. policy.rs owns the repair/outcome policy surface;
+    # the asset-policy and vocabulary-type spans are policy/ children
+    # (foo.rs + foo/ hard-cap delegation — the combined policy span is
+    # 1801 lines, over the 1750 working cap).
+    "DoctorAssetClass": "src/doctor/policy/types.rs",
+    "DOCTOR_ASSET_ALL_OPERATIONS": "src/doctor/policy/assets.rs",
+    "DoctorRepairMode": "src/doctor/policy.rs",
+    "DoctorCheckReport": "src/doctor/report/types.rs",
+    "DoctorDatabaseIntegrityProbe": "src/doctor/report/checks.rs",
+    "print_doctor_human_line": "src/doctor/report/human.rs",
+    "DoctorSourceInventoryDbRow": "src/doctor/report/inventory.rs",
+    "doctor_storage_probe_path": "src/doctor/report/storage.rs",
+    "doctor_config_exclusion_targets": "src/doctor/report/config.rs",
+    "doctor_fallback_mode_from_state": "src/doctor/report/derived_semantic.rs",
+    "doctor_risk_level_for_reports": "src/doctor/report/recommendations.rs",
+    "doctor_source_authority_policy": "src/doctor/sources.rs",
+    "doctor_now_ms": "src/doctor/forensic.rs",
+    "build_doctor_sole_copy_warnings": "src/doctor/report/coverage.rs",
+    # backup_restore.rs owns the record/verify/restore implementation;
+    # the small kind-vocabulary head and the reloc'd test decl sit in
+    # backup_restore/ children.
+    "DOCTOR_BACKUP_MANIFEST_KIND": "src/doctor/backup_restore/kinds.rs",
+    "DoctorBackupManifestRecord": "src/doctor/backup_restore.rs",
+    "DoctorArchiveExportWorkflow": "src/doctor/archive/export.rs",
+    "DoctorSupportBundleCommandMode": "src/doctor/support_bundle.rs",
+    "doctor_support_bundle_relative_path_is_safe":
+        "src/doctor/support_bundle/capture.rs",
+    "DoctorBaselineCommandMode": "src/doctor/baseline.rs",
+    "doctor_baseline_write_path_is_safe": "src/doctor/baseline/document.rs",
+    "doctor_candidate_promotion_id": "src/doctor/candidate/promotion.rs",
+    "DoctorOperationLockKind": "src/doctor/repair_state/types.rs",
+    "doctor_mutation_lock_path": "src/doctor/repair_state/locks.rs",
+    "DoctorBoundedArchiveDbProbe": "src/doctor/probes.rs",
+    "DOCTOR_FRANKEN_DEEP_INTEGRITY_MAX_BYTES": "src/doctor/probes/integrity.rs",
+    # Owner-namespace children interrupted by test-mod boundaries.
+    "ForgetCommandOptions": "src/cli/commands/forget/command.rs",
+    "read_session_paths": "src/cli/paths/session_paths.rs",
 }
 
 # Ordered text-marker groups: never split members across files.
@@ -310,7 +358,7 @@ RETARGETS = [
         # span both files); `with` substitutes only the lib.rs part.
         "to": [
             "src/cli/output/extract_search_terms.rs",
-            "src/doctor/doctor_archive_export_collect_assets.rs",
+            "src/doctor/run_doctor_ls.rs",
         ],
         "with": 'format!("{manifest}/src/cli/output/extract_search_terms.rs")',
         "reads_markers": ["doctor_robot_docs_body"],
@@ -504,8 +552,7 @@ def build() -> None:
                 # nesting it in a file changes `crate::X` to `crate::f::X`.
                 raise SystemExit(
                     f"non-test inline mod {it.name} — needs an explicit owner")
-            if (it.kind == "mod_inline" and ri.mod_has_test_cfg(it)
-                    and it.name not in INLINE_MODS):
+            if it.kind == "mod_inline" and ri.mod_has_test_cfg(it):
                 flush()
                 tdir, tstage = MOD_TARGET_OVERRIDES.get(it.name, (dir_, stage))
                 parts = MOD_SPLITS.get(it.name, 1)
@@ -722,17 +769,6 @@ def build() -> None:
     missing = [i for i, c in enumerate(covered) if not c]
     if missing:
         raise SystemExit(f"uncovered items: {[(items[i].kind, items[i].name) for i in missing[:10]]}")
-
-    # Inline-mod containment: each INLINE_MODS member must land inside the
-    # expected file's span (it is emitted verbatim inside the owner file).
-    for mod_name, want in INLINE_MODS.items():
-        midx = resolve(items, "mod_inline", mod_name)
-        hit = [
-            e["target"] for e in entries if not e.get("mod")
-            and items.index(e["first"]) <= midx <= items.index(e["last"])]
-        if hit != [want]:
-            raise SystemExit(
-                f"inline mod {mod_name}: want inside {want}, got {hit}")
 
     # Group containment check.
     for gname, members in GROUPS:

@@ -136,8 +136,8 @@ test = "pass4_lib_dispatch_routes_through_doctor_chokepoint_apis"
 test_file = "tests/doctor_mutate_auditor.rs"
 stage = "3c"
 find = "fs::read_to_string(format!(\"{manifest}/src/lib.rs\"))"
-with = "Ok::<_, std::io::Error>(fs::read_to_string(format!(\"{manifest}/src/lib.rs\")).unwrap() + &fs::read_to_string(format!(\"{manifest}/src/doctor/doctor_archive_export_collect_assets.rs\")).unwrap())"
-to = [ "src/lib.rs", "src/doctor/doctor_archive_export_collect_assets.rs" ]
+with = "Ok::<_, std::io::Error>(fs::read_to_string(format!(\"{manifest}/src/lib.rs\")).unwrap() + &fs::read_to_string(format!(\"{manifest}/src/doctor/run_doctor_ls.rs\")).unwrap())"
+to = [ "src/lib.rs", "src/doctor/run_doctor_ls.rs" ]
 markers = [ "crate::doctor_runs::list_runs", "crate::doctor_runs::find_latest_run", "crate::doctor_runs::RunId", "crate::doctor_undo::undo_run", "doctor_robot_docs_body", "RobotTopic::Doctor" ]
 
 [[retarget]]
@@ -146,7 +146,7 @@ test_file = "tests/doctor_mutate_auditor.rs"
 stage = "4"
 find = "format!(\"{manifest}/src/lib.rs\")"
 with = "format!(\"{manifest}/src/cli/output/extract_search_terms.rs\")"
-to = [ "src/cli/output/extract_search_terms.rs", "src/doctor/doctor_archive_export_collect_assets.rs" ]
+to = [ "src/cli/output/extract_search_terms.rs", "src/doctor/run_doctor_ls.rs" ]
 markers = [ "crate::doctor_runs::list_runs", "crate::doctor_runs::find_latest_run", "crate::doctor_runs::RunId", "crate::doctor_undo::undo_run", "doctor_robot_docs_body", "RobotTopic::Doctor" ]
 
 [[retarget]]
@@ -163,8 +163,8 @@ test = "pass8_explain_and_emit_capabilities_dispatch_present"
 test_file = "tests/doctor_mutate_auditor.rs"
 stage = "3c"
 find = "std::fs::read_to_string(format!(\"{manifest}/src/lib.rs\"))"
-with = "Ok::<_, std::io::Error>(fs::read_to_string(format!(\"{manifest}/src/doctor/doctor_archive_export_collect_assets.rs\")).unwrap() + &fs::read_to_string(format!(\"{manifest}/src/doctor/run_doctor_emit_capabilities.rs\")).unwrap())"
-to = [ "src/doctor/doctor_archive_export_collect_assets.rs", "src/doctor/run_doctor_emit_capabilities.rs" ]
+with = "std::fs::read_to_string(format!(\"{manifest}/src/doctor/run_doctor_ls.rs\"))"
+to = [ "src/doctor/run_doctor_ls.rs" ]
 markers = [ "fn run_doctor_explain", "fn run_doctor_emit_capabilities", "doctor-capabilities", "kind\": \"explain\"" ]
 
 [[retarget]]
@@ -172,8 +172,8 @@ test = "pass6_watch_helper_routes_through_doctor_runs_apis"
 test_file = "tests/doctor_mutate_auditor.rs"
 stage = "3c"
 find = "format!(\"{manifest}/src/lib.rs\")"
-with = "format!(\"{manifest}/src/doctor/doctor_archive_export_collect_assets.rs\")"
-to = [ "src/doctor/doctor_archive_export_collect_assets.rs" ]
+with = "format!(\"{manifest}/src/doctor/run_doctor_ls.rs\")"
+to = [ "src/doctor/run_doctor_ls.rs" ]
 markers = [ "fn run_doctor_watch", "crate::doctor_runs::list_runs", "crate::doctor_runs::find_in_flight_band", "watch-tick" ]
 
 [[file]]
@@ -633,6 +633,17 @@ last = { kind = "fn", name = "run_quarantine_clear" }
 target = "src/cli/commands/forget.rs"
 stage = "2b"
 first = { kind = "fn", name = "forget_filter" }
+last = { kind = "fn", name = "forget_filter" }
+
+[[file]]
+target = "src/cli/commands/forget/forget_selector_tests.rs"
+stage = "2b"
+mod = "forget_selector_tests"
+
+[[file]]
+target = "src/cli/commands/forget/command.rs"
+stage = "2b"
+first = { kind = "struct", name = "ForgetCommandOptions" }
 last = { kind = "fn", name = "run_forget_exclusion_action" }
 
 [[file]]
@@ -949,74 +960,110 @@ first = { kind = "fn", name = "run_diag" }
 last = { kind = "fn", name = "run_diag" }
 
 [[file]]
-target = "src/doctor/doctorassetclass.rs"
+target = "src/doctor/policy/types.rs"
 stage = "3a"
 first = { kind = "enum", name = "DoctorAssetClass" }
-last = { kind = "fn", name = "build_doctor_root_cause_incidents" }
+last = { kind = "struct", name = "DoctorAnomalyTaxonomyEntry" }
+
+[[file]]
+target = "src/doctor/report/types.rs"
+stage = "3a"
+first = { kind = "struct", name = "DoctorCheckReport" }
+last = { kind = "struct", name = "DoctorRootCauseIncident" }
 also = [ { kind = "impl", name = "DoctorCheckReport" } ]
 
 [[file]]
-target = "src/doctor/doctor_health_class_for_checks.rs"
+target = "src/doctor/report/checks.rs"
 stage = "3a"
-first = { kind = "fn", name = "doctor_health_class_for_checks" }
-last = { kind = "const", name = "DOCTOR_REPAIR_EMERGENCY_ABORTS" }
+first = { kind = "struct", name = "DoctorDatabaseIntegrityProbe" }
+last = { kind = "fn", name = "doctor_top_level_operation_outcome" }
 
 [[file]]
-target = "src/doctor/doctor_repair_mode_policy_table.rs"
+target = "src/doctor/policy/assets.rs"
 stage = "3a"
-first = { kind = "const", name = "DOCTOR_REPAIR_MODE_POLICY_TABLE" }
+first = { kind = "const", name = "DOCTOR_ASSET_ALL_OPERATIONS" }
+last = { kind = "fn", name = "doctor_asset_class_for_cleanup_disposition" }
+
+[[file]]
+target = "src/doctor/policy.rs"
+stage = "3a"
+first = { kind = "enum", name = "DoctorRepairMode" }
+last = { kind = "fn", name = "doctor_data_loss_risk_label" }
+
+[[file]]
+target = "src/doctor/report/human.rs"
+stage = "3a"
+first = { kind = "fn", name = "print_doctor_human_line" }
+last = { kind = "fn", name = "doctor_repair_contract_report" }
+
+[[file]]
+target = "src/doctor/forensic.rs"
+stage = "3a"
+first = { kind = "fn", name = "doctor_now_ms" }
 last = { kind = "fn", name = "capture_doctor_forensic_bundle" }
 
 [[file]]
-target = "src/doctor/doctorsourceinventorydbrow.rs"
+target = "src/doctor/report/inventory.rs"
 stage = "3a"
 first = { kind = "struct", name = "DoctorSourceInventoryDbRow" }
+last = { kind = "struct", name = "DoctorSourceAuthorityReport" }
+
+[[file]]
+target = "src/doctor/repair_state/types.rs"
+stage = "3a"
+first = { kind = "enum", name = "DoctorOperationLockKind" }
 last = { kind = "struct", name = "DoctorConfigPatternMatch" }
 
 [[file]]
-target = "src/doctor/doctor_storage_probe_path.rs"
+target = "src/doctor/report/storage.rs"
 stage = "3a"
 first = { kind = "fn", name = "doctor_storage_probe_path" }
 last = { kind = "fn", name = "build_doctor_full_rebuild_readiness" }
 
 [[file]]
-target = "src/doctor/doctor_config_exclusion_targets.rs"
+target = "src/doctor/report/config.rs"
 stage = "3a"
 first = { kind = "fn", name = "doctor_config_exclusion_targets" }
 last = { kind = "fn", name = "doctor_path_to_slash_string" }
 
 [[file]]
-target = "src/doctor/doctor_path_slash_string_tests.rs"
+target = "src/doctor/report/doctor_path_slash_string_tests.rs"
 stage = "3a"
 mod = "doctor_path_slash_string_tests"
 
 [[file]]
-target = "src/doctor/doctor_pattern_matches_relative_path.rs"
+target = "src/doctor/report/doctor_pattern_matches_relative_path.rs"
 stage = "3a"
 first = { kind = "fn", name = "doctor_pattern_matches_relative_path" }
 last = { kind = "fn", name = "collect_doctor_config_exclusion_risks" }
 
 [[file]]
-target = "src/doctor/doctor_fallback_mode_from_state.rs"
+target = "src/doctor/report/derived_semantic.rs"
 stage = "3a"
 first = { kind = "fn", name = "doctor_fallback_mode_from_state" }
 last = { kind = "fn", name = "doctor_build_derived_semantic_asset_report" }
 
 [[file]]
-target = "src/doctor/doctor_derived_semantic_asset_tests.rs"
+target = "src/doctor/report/doctor_derived_semantic_asset_tests.rs"
 stage = "3a"
 mod = "doctor_derived_semantic_asset_tests"
 
 [[file]]
-target = "src/doctor/doctor_risk_level_for_reports.rs"
+target = "src/doctor/report/recommendations.rs"
 stage = "3a"
 first = { kind = "fn", name = "doctor_risk_level_for_reports" }
 last = { kind = "const", name = "DOCTOR_SOURCE_AUTHORITY_POLICY_TABLE" }
 
 [[file]]
-target = "src/doctor/doctor_source_authority_policy.rs"
+target = "src/doctor/sources.rs"
 stage = "3c"
 first = { kind = "fn", name = "doctor_source_authority_policy" }
+last = { kind = "fn", name = "doctor_sources_config_check" }
+
+[[file]]
+target = "src/doctor/raw_mirror/doctor_raw_mirror_root_dir.rs"
+stage = "3c"
+first = { kind = "const", name = "DOCTOR_RAW_MIRROR_ROOT_DIR" }
 last = { kind = "const", name = "DOCTOR_RAW_MIRROR_DEFAULT_LISTED_HEALTHY_MANIFESTS" }
 
 [[file]]
@@ -1055,7 +1102,7 @@ first = { kind = "fn", name = "query_doctor_raw_mirror_backfill_candidates" }
 last = { kind = "fn", name = "doctor_coverage_confidence_tier" }
 
 [[file]]
-target = "src/doctor/build_doctor_sole_copy_warnings.rs"
+target = "src/doctor/report/coverage.rs"
 stage = "3c"
 first = { kind = "fn", name = "build_doctor_sole_copy_warnings" }
 last = { kind = "const", name = "DOCTOR_CANDIDATE_MANIFEST_KIND" }
@@ -1070,102 +1117,120 @@ last = { kind = "fn", name = "doctor_candidate_build_should_run" }
 target = "src/doctor/candidate/build_doctor_reconstruct_candidate.rs"
 stage = "3d"
 first = { kind = "fn", name = "build_doctor_reconstruct_candidate" }
-last = { kind = "const", name = "DOCTOR_LEAKED_PAGES_REPAIR_BACKUP_MANIFEST_KIND" }
+last = { kind = "fn", name = "doctor_candidate_promotion_root" }
 
 [[file]]
-target = "src/doctor/doctor_backup_kind_label.rs"
+target = "src/doctor/backup_restore/kinds.rs"
 stage = "3c"
-first = { kind = "fn", name = "doctor_backup_kind_label" }
+first = { kind = "const", name = "DOCTOR_BACKUP_MANIFEST_KIND" }
 last = { kind = "const", name = "DOCTOR_BACKUP_RESTORE_PLAN_PREFIX" }
 
 [[file]]
-target = "src/doctor/doctorbackupmanifestrecord.rs"
+target = "src/doctor/backup_restore.rs"
 stage = "3c"
 first = { kind = "struct", name = "DoctorBackupManifestRecord" }
-last = { kind = "fn", name = "doctor_archive_export_push_asset" }
+last = { kind = "fn", name = "validate_doctor_diagnostic_read_only_controls" }
 
 [[file]]
-target = "src/doctor/doctor_archive_export_collect_assets.rs"
+target = "src/doctor/archive/export.rs"
 stage = "3c"
-first = { kind = "fn", name = "doctor_archive_export_collect_assets" }
-last = { kind = "fn", name = "run_doctor_explain" }
+first = { kind = "enum", name = "DoctorArchiveExportWorkflow" }
+last = { kind = "fn", name = "doctor_archive_export_event_log" }
 
 [[file]]
-target = "src/doctor/run_doctor_emit_capabilities.rs"
+target = "src/doctor/run_doctor_ls.rs"
 stage = "3c"
-first = { kind = "fn", name = "run_doctor_emit_capabilities" }
+first = { kind = "fn", name = "run_doctor_ls" }
+last = { kind = "fn", name = "run_doctor_archive_export_impl" }
+
+[[file]]
+target = "src/doctor/support_bundle.rs"
+stage = "3c"
+first = { kind = "enum", name = "DoctorSupportBundleCommandMode" }
 last = { kind = "fn", name = "doctor_support_bundle_redact_local_value" }
 
 [[file]]
-target = "src/doctor/doctor_support_bundle_redaction_tests.rs"
+target = "src/doctor/support_bundle/doctor_support_bundle_redaction_tests.rs"
 stage = "3c"
 mod = "doctor_support_bundle_redaction_tests"
 
 [[file]]
-target = "src/doctor/doctor_support_bundle_relative_path_is_safe.rs"
+target = "src/doctor/support_bundle/capture.rs"
 stage = "3c"
 first = { kind = "fn", name = "doctor_support_bundle_relative_path_is_safe" }
-last = { kind = "fn", name = "doctor_safe_baseline_id" }
+last = { kind = "fn", name = "run_doctor_support_bundle_impl" }
 
 [[file]]
-target = "src/doctor/doctor_baseline_resolve_path.rs"
+target = "src/doctor/baseline.rs"
 stage = "3c"
-first = { kind = "fn", name = "doctor_baseline_resolve_path" }
+first = { kind = "enum", name = "DoctorBaselineCommandMode" }
 last = { kind = "fn", name = "doctor_baseline_resolve_path" }
 
 [[file]]
-target = "src/doctor/doctor_baseline_path_tests.rs"
+target = "src/doctor/baseline/doctor_baseline_path_tests.rs"
 stage = "3c"
 mod = "doctor_baseline_path_tests"
 
 [[file]]
-target = "src/doctor/doctor_baseline_write_path_is_safe.rs"
+target = "src/doctor/baseline/document.rs"
 stage = "3c"
 first = { kind = "fn", name = "doctor_baseline_write_path_is_safe" }
-last = { kind = "fn", name = "doctor_candidate_promotion_write_marker" }
+last = { kind = "fn", name = "doctor_baseline_perf_delta" }
 
 [[file]]
-target = "src/doctor/doctor_candidate_promotion_record_derived_followup_a.rs"
+target = "src/doctor/candidate/promotion.rs"
 stage = "3c"
-first = { kind = "fn", name = "doctor_candidate_promotion_record_derived_followup_artifact" }
+first = { kind = "fn", name = "doctor_candidate_promotion_id" }
+last = { kind = "fn", name = "doctor_candidate_promotion_record_derived_followup_artifact" }
+
+[[file]]
+target = "src/doctor/candidate/promote_doctor_reconstruct_candidate_bundle.rs"
+stage = "3c"
+first = { kind = "fn", name = "promote_doctor_reconstruct_candidate_bundle" }
+last = { kind = "fn", name = "promote_doctor_reconstruct_candidate_bundle" }
+
+[[file]]
+target = "src/doctor/repair_state/locks.rs"
+stage = "3c"
+first = { kind = "fn", name = "doctor_mutation_lock_path" }
 last = { kind = "fn", name = "doctor_lock_probe_error_is_active" }
 
 [[file]]
-target = "src/doctor/doctor_lock_probe_error_tests.rs"
+target = "src/doctor/repair_state/doctor_lock_probe_error_tests.rs"
 stage = "3c"
 mod = "doctor_lock_probe_error_tests"
 
 [[file]]
-target = "src/doctor/doctor_acquire_mutation_lock.rs"
+target = "src/doctor/repair_state/doctor_acquire_mutation_lock.rs"
 stage = "3c"
 first = { kind = "fn", name = "doctor_acquire_mutation_lock" }
 last = { kind = "fn", name = "doctor_lexical_publish_in_progress_backup_path" }
 
 [[file]]
-target = "src/doctor/collect_doctor_interrupted_operation_states.rs"
+target = "src/doctor/repair_state/collect_doctor_interrupted_operation_states.rs"
 stage = "3b"
 first = { kind = "fn", name = "collect_doctor_interrupted_operation_states" }
 last = { kind = "fn", name = "doctor_heartbeat_interval_from" }
 
 [[file]]
-target = "src/doctor/doctor_heartbeat_tests.rs"
+target = "src/doctor/repair_state/doctor_heartbeat_tests.rs"
 stage = "3b"
 mod = "doctor_heartbeat_tests"
 
 [[file]]
-target = "src/doctor/cliheartbeat.rs"
+target = "src/doctor/repair_state/cliheartbeat.rs"
 stage = "3b"
 first = { kind = "struct", name = "CliHeartbeat" }
 last = { kind = "fn", name = "doctor_action_from_cleanup_action" }
 
 [[file]]
-target = "src/doctor/doctor_sorted_cleanup_actions.rs"
+target = "src/doctor/repair_state/doctor_sorted_cleanup_actions.rs"
 stage = "3b"
 first = { kind = "fn", name = "doctor_sorted_cleanup_actions" }
 last = { kind = "fn", name = "cleanup_apply_operation_outcome" }
 
 [[file]]
-target = "src/doctor/finalize_cleanup_apply_contract.rs"
+target = "src/doctor/repair_state/finalize_cleanup_apply_contract.rs"
 stage = "3b"
 first = { kind = "fn", name = "finalize_cleanup_apply_contract" }
 last = { kind = "struct", name = "DiagCleanupApplyAction" }
@@ -1294,18 +1359,18 @@ stage = "2c"
 slice = { mod = "cli_read_db_tests", first = { kind = "fn", name = "state_meta_json_matches_active_rebuild_for_equivalent_db_path_spellings" }, last = { kind = "fn", name = "extract_pi_family_session_id_rejects_non_session_sessionid" }, part = 2, parts = 2 }
 
 [[file]]
-target = "src/doctor/doctorboundedarchivedbprobe.rs"
+target = "src/doctor/probes.rs"
 stage = "3d"
 first = { kind = "struct", name = "DoctorBoundedArchiveDbProbe" }
 last = { kind = "fn", name = "doctor_archive_bundle_bytes" }
 
 [[file]]
-target = "src/doctor/doctor_probe_timeout_tests.rs"
+target = "src/doctor/probes/doctor_probe_timeout_tests.rs"
 stage = "3d"
 mod = "doctor_probe_timeout_tests"
 
 [[file]]
-target = "src/doctor/doctor_franken_deep_integrity_max_bytes.rs"
+target = "src/doctor/probes/integrity.rs"
 stage = "3d"
 first = { kind = "const", name = "DOCTOR_FRANKEN_DEEP_INTEGRITY_MAX_BYTES" }
 last = { kind = "const", name = "DOCTOR_LEXICAL_COVERAGE_FLOOR_PERCENT" }
@@ -1406,6 +1471,17 @@ last = { kind = "fn", name = "emit_indexing_exclusion_notice" }
 target = "src/cli/paths.rs"
 stage = "2f"
 first = { kind = "fn", name = "default_db_path" }
+last = { kind = "fn", name = "default_data_dir_with_source" }
+
+[[file]]
+target = "src/cli/paths/resolve_data_dir_tests.rs"
+stage = "2f"
+mod = "resolve_data_dir_tests"
+
+[[file]]
+target = "src/cli/paths/session_paths.rs"
+stage = "2f"
+first = { kind = "fn", name = "read_session_paths" }
 last = { kind = "fn", name = "resolve_resume_target" }
 
 [[file]]

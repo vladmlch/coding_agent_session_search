@@ -1246,8 +1246,14 @@ class ManifestNamedPathTests(unittest.TestCase):
     def test_cli_paths_rs_binds_all_path_helpers(self):
         e = self._entry("src/cli/paths.rs")
         self.assertIsNotNone(e, "src/cli/paths.rs missing")
+        # paths.rs owns the data-dir helpers up to the interrupting test
+        # mod; the session-path tail lives under the same owner namespace.
         self.assertEqual(self._span(e),
-                         ("default_db_path", "resolve_resume_target"))
+                         ("default_db_path", "default_data_dir_with_source"))
+        tail = self._entry("src/cli/paths/session_paths.rs")
+        self.assertIsNotNone(tail, "paths/session_paths.rs missing")
+        self.assertEqual(self._span(tail),
+                         ("read_session_paths", "resolve_resume_target"))
 
     def test_quarantine_mirror_import_rs_binds_command_family(self):
         e = self._entry("src/cli/commands/quarantine_mirror_import.rs")
@@ -1260,8 +1266,14 @@ class ManifestNamedPathTests(unittest.TestCase):
         e = self._entry("src/cli/commands/forget.rs")
         self.assertIsNotNone(e, "forget.rs missing")
         self.assertEqual(e["stage"], "2b")
-        self.assertEqual(self._span(e),
-                         ("forget_filter", "run_forget_exclusion_action"))
+        # forget_selector_tests interrupts the span after forget_filter:
+        # the owner keeps the named item, the rest are same-namespace
+        # children (round-3B test-placement ruling).
+        self.assertEqual(self._span(e), ("forget_filter", "forget_filter"))
+        cmd = self._entry("src/cli/commands/forget/command.rs")
+        self.assertIsNotNone(cmd, "forget/command.rs missing")
+        self.assertEqual(self._span(cmd),
+                         ("ForgetCommandOptions", "run_forget_exclusion_action"))
 
     def test_analytics_dir_covers_analytics_span(self):
         es = [e for e in self.files
@@ -1361,20 +1373,159 @@ class ManifestNamedPathTests(unittest.TestCase):
             "src/cli/commands/resolved_daemon_config.rs",
             "src/cli/commands/run_stats.rs",
             "src/cli/commands/analyticsvalidationsummary.rs",
+            "src/doctor/doctorassetclass.rs",
+            "src/doctor/doctorrepairmode.rs",
+            "src/doctor/doctorsourceinventorydbrow.rs",
+            "src/doctor/doctor_source_authority_policy.rs",
+            "src/doctor/doctor_now_ms.rs",
+            "src/doctor/doctor_backup_kind_label.rs",
+            "src/doctor/doctorsupportbundlecommandmode.rs",
+            "src/doctor/doctorbaselinecommandmode.rs",
+            "src/doctor/doctorboundedarchivedbprobe.rs",
+            "src/doctor/collect_doctor_interrupted_operation_states.rs",
         }
         for e in self.files:
             self.assertNotIn(e["target"], dead,
                              f"mechanical slug still bound: {e['target']}")
 
-    def test_inline_test_mods_live_inside_named_owners(self):
-        # resolve_data_dir_tests groups with paths.rs; forget_selector_tests
-        # with forget.rs — neither gets its own file nor a mod entry.
+    def test_interrupting_test_mods_emit_separate_adjacent_files(self):
+        # Round-3B ruling: tests live in separate neighboring files under
+        # the owner namespace, never embedded inside a production owner.
+        wanted = {
+            "forget_selector_tests":
+                "src/cli/commands/forget/forget_selector_tests.rs",
+            "resolve_data_dir_tests":
+                "src/cli/paths/resolve_data_dir_tests.rs",
+        }
+        mods = {e["mod"]: e for e in self.files if "mod" in e}
+        for name, target in wanted.items():
+            self.assertIn(name, mods, f"{name} must be its own mod file")
+            self.assertEqual(mods[name]["target"], target,
+                             f"{name} must sit in the owner namespace")
+        # no production range may span across the mod's source position
+        # (the owner file must stop at the mod and resume in a sibling)
         for e in self.files:
-            self.assertNotEqual(e.get("mod"), "resolve_data_dir_tests")
-            self.assertNotEqual(e.get("mod"), "forget_selector_tests")
-            self.assertNotIn(e["target"],
-                             ("src/cli/resolve_data_dir_tests.rs",
-                              "src/cli/commands/forget_selector_tests.rs"))
+            if "first" not in e:
+                continue
+            self.assertNotEqual(
+                e["first"]["name"], "forget_selector_tests")
+            self.assertNotEqual(
+                e["first"]["name"], "resolve_data_dir_tests")
+
+    # --- round 3B: all §3 doctor named owners bind ----------------------
+
+    def test_doctor_policy_rs_binds_policy_surface(self):
+        e = self._entry("src/doctor/policy.rs")
+        self.assertIsNotNone(e, "src/doctor/policy.rs missing")
+        self.assertEqual(e["stage"], "3a")
+        self.assertEqual(e["first"]["name"], "DoctorRepairMode")
+        # policy.rs holds the repair/outcome policy surface through the
+        # vocabulary labels; asset policy rides policy/ children.
+        self.assertEqual(e["last"]["name"], "doctor_data_loss_risk_label")
+        children = [f["target"] for f in self.files
+                    if f["target"].startswith("src/doctor/policy/")]
+        self.assertTrue(children, "policy/ children must carry the "
+                                  "asset-policy/vocabulary overflow")
+        firsts = {f["first"]["name"] for f in self.files
+                  if f["target"].startswith("src/doctor/policy/")
+                  and "first" in f}
+        self.assertIn("DOCTOR_ASSET_ALL_OPERATIONS", firsts)
+
+    def test_doctor_report_dir_covers_report_spans(self):
+        es = [e for e in self.files
+              if e["target"].startswith("src/doctor/report/")]
+        self.assertTrue(es, "no files under doctor/report/")
+        firsts = {e["first"]["name"] for e in es if "first" in e}
+        # report vocabulary types + the check/incident report builders
+        self.assertIn("DoctorCheckReport", firsts)
+        checks = self._entry("src/doctor/report/checks.rs")
+        self.assertIsNotNone(checks, "report/checks.rs missing")
+        self.assertEqual(
+            self._span(checks),
+            ("DoctorDatabaseIntegrityProbe",
+             "doctor_top_level_operation_outcome"))
+
+    def test_doctor_repair_state_dir_covers_state_spans(self):
+        es = [e for e in self.files
+              if e["target"].startswith("src/doctor/repair_state/")]
+        self.assertTrue(es, "no files under doctor/repair_state/")
+        names = {n for e in es if "first" in e
+                 for n in (e["first"]["name"], e["last"]["name"])}
+        self.assertIn("collect_doctor_interrupted_operation_states", names)
+
+    def test_doctor_sources_rs_binds_source_inventory(self):
+        e = self._entry("src/doctor/sources.rs")
+        self.assertIsNotNone(e, "src/doctor/sources.rs missing")
+        self.assertEqual(e["first"]["name"], "doctor_source_authority_policy")
+        self.assertEqual(e["last"]["name"], "doctor_sources_config_check")
+
+    def test_doctor_forensic_rs_binds_forensic_span(self):
+        e = self._entry("src/doctor/forensic.rs")
+        self.assertIsNotNone(e, "src/doctor/forensic.rs missing")
+        self.assertEqual(e["first"]["name"], "doctor_now_ms")
+        self.assertEqual(e["last"]["name"],
+                         "capture_doctor_forensic_bundle")
+
+    def test_doctor_support_bundle_rs_binds_bundle_span(self):
+        e = self._entry("src/doctor/support_bundle.rs")
+        self.assertIsNotNone(e, "src/doctor/support_bundle.rs missing")
+        self.assertEqual(e["first"]["name"],
+                         "DoctorSupportBundleCommandMode")
+        # the redaction test mod interrupts mid-span; the capture/verify
+        # tail resumes under the same owner namespace.
+        self.assertEqual(e["last"]["name"],
+                         "doctor_support_bundle_redact_local_value")
+        tail = self._entry("src/doctor/support_bundle/capture.rs")
+        self.assertIsNotNone(tail, "support_bundle/capture.rs missing")
+        self.assertEqual(tail["last"]["name"],
+                         "run_doctor_support_bundle_impl")
+
+    def test_doctor_baseline_rs_binds_baseline_span(self):
+        e = self._entry("src/doctor/baseline.rs")
+        self.assertIsNotNone(e, "src/doctor/baseline.rs missing")
+        self.assertEqual(e["first"]["name"], "DoctorBaselineCommandMode")
+        self.assertEqual(e["last"]["name"],
+                         "doctor_baseline_resolve_path")
+        tail = self._entry("src/doctor/baseline/document.rs")
+        self.assertIsNotNone(tail, "baseline/document.rs missing")
+        self.assertEqual(tail["last"]["name"],
+                         "doctor_baseline_perf_delta")
+
+    def test_doctor_backup_restore_rs_binds_backup_span(self):
+        e = self._entry("src/doctor/backup_restore.rs")
+        self.assertIsNotNone(e, "src/doctor/backup_restore.rs missing")
+        # the owner file holds the record/verify/restore implementation;
+        # the kind-vocabulary consts sit in backup_restore/kinds.rs.
+        self.assertEqual(e["first"]["name"], "DoctorBackupManifestRecord")
+        self.assertEqual(e["last"]["name"],
+                         "validate_doctor_diagnostic_read_only_controls")
+
+    def test_doctor_probes_rs_binds_probe_span(self):
+        e = self._entry("src/doctor/probes.rs")
+        self.assertIsNotNone(e, "src/doctor/probes.rs missing")
+        self.assertEqual(e["stage"], "3d")
+        self.assertEqual(e["first"]["name"], "DoctorBoundedArchiveDbProbe")
+        self.assertEqual(e["last"]["name"],
+                         "doctor_archive_bundle_bytes")
+        tail = self._entry("src/doctor/probes/integrity.rs")
+        self.assertIsNotNone(tail, "probes/integrity.rs missing")
+        self.assertEqual(tail["last"]["name"],
+                         "DOCTOR_LEXICAL_COVERAGE_FLOOR_PERCENT")
+
+    def test_doctor_owner_test_mods_live_under_owner_dirs(self):
+        wanted = {
+            "doctor_support_bundle_redaction_tests":
+                "src/doctor/support_bundle/"
+                "doctor_support_bundle_redaction_tests.rs",
+            "doctor_baseline_path_tests":
+                "src/doctor/baseline/doctor_baseline_path_tests.rs",
+            "doctor_probe_timeout_tests":
+                "src/doctor/probes/doctor_probe_timeout_tests.rs",
+        }
+        mods = {e["mod"]: e for e in self.files if "mod" in e}
+        for name, target in wanted.items():
+            self.assertIn(name, mods, f"{name} must be its own mod file")
+            self.assertEqual(mods[name]["target"], target)
 
     def test_retarget_to_paths_exist_as_targets(self):
         targets = {e["target"] for e in self.files}
