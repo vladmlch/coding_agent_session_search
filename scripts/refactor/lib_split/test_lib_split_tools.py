@@ -1101,6 +1101,17 @@ class StaleRefTests(unittest.TestCase):
         self.assertTrue(sqlite, "sqlite.rs consumer must be detected")
         self.assertNotEqual(sqlite[0][1], "write")
 
+    def test_indexer_fixture_allow_is_exact_line(self):
+        # Controller ruling: the TempDir snippet-metadata fixture at
+        # src/indexer/mod.rs:41996 is the only admitted reference; the
+        # former 41920-41929 range and every adjacent line stay findings.
+        import stale_refs as sr
+        rel = "src/indexer/mod.rs"
+        self.assertTrue(sr.allowed(rel, 41996, sr.BUILTIN_ALLOW))
+        for line in (41927, 41995, 41997):
+            self.assertFalse(sr.allowed(rel, line, sr.BUILTIN_ALLOW),
+                             f"line {line} must not be exempt")
+
 
 class SplitStageContractTests(unittest.TestCase):
     """Round-2 stage semantics: manual/unknown/empty/repeat stages."""
