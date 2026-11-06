@@ -86,10 +86,22 @@ existing behavior.
 After the keep-latest and safety hold-down protections, a manifest may retire
 only when a newer, retained capture with the same provider, source
 ID, origin kind, origin host and original-path identity preserves every one of
-its source bytes as an identical prefix. Both captures' referenced blob hashes
-are verified first. Equal complete chunks can be compared by their verified
-content addresses; changed tails and old whole-file captures are compared with
-bounded buffers. This also works when the original upstream file is gone.
+its source bytes as an identical prefix. A candidate pair is first checked
+against the recorded chunk digests alone: if an aligned, equal-size chunk pair
+already differs, the pair is skipped and neither capture is read or hashed,
+because no content could make it a prefix. For every other pair, both captures'
+referenced blob hashes are verified before any byte comparison, and a failed
+verification fails the pass before anything is deleted. Equal complete chunks
+can be compared by their verified content addresses; changed tails and old
+whole-file captures are compared with bounded buffers. This also works when the
+original upstream file is gone.
+
+Consequence: a corrupt capture that only sits in skipped pairs cannot retire
+and does not stop automatic retirement elsewhere, and automatic maintenance does
+not hash it. Corruption of a retained successor that a pair does use still fails
+the pass. `cass doctor --json` re-verifies every manifest's content storage,
+so it remains the full integrity check. Long verifications report progress on
+stderr and in the trace file, and a stop interrupts them between bounded reads.
 
 A truncation, rewrite or origin mismatch is not proof of preservation. Such old
 copies remain. Nonstandard verification/recovery records, tagged copies,

@@ -41,7 +41,7 @@ impl Fixture {
     fn bytes(&self, record: &RawMirrorCaptureRecord) -> Vec<u8> {
         let root = raw_mirror_root(&self.data);
         let manifest = read_validated_raw_mirror_manifest(&root, &record.manifest_id).unwrap();
-        verify_capture(&root, &manifest, &mut HashSet::new()).unwrap();
+        RetentionVerification::new().verify(&root, &manifest).unwrap();
         content_chunks(&manifest).iter().flat_map(|r| fs::read(root.join(&r.blob_relative_path)).unwrap()).collect()
     }
 }
@@ -366,4 +366,73 @@ fn gh538_cancelled_maintenance_releases_both_leases_without_retiring_evidence() 
     assert!(fixture.exists(&old));
     assert_eq!(fixture.bytes(&latest), b"one\ntwo\nthree\n");
     assert!(!root.join("pruned.jsonl").exists());
+}
+
+#[test]
+fn corrupt_candidate_is_detected_before_its_retirement_relies_on_it() {
+    let fixture = Fixture::new();
+    let old = fixture.record(b"old\n", 1);
+    fixture.record(b"old\nnew\n", 2);
+    fixture.record(b"old\nnew\nlatest\n", 3);
+    let root = raw_mirror_root(&fixture.data);
+    // Keep the recorded size so only the content digest can expose the damage.
+    fs::write(root.join(&old.blob_relative_path), b"xxx\n").unwrap();
+    assert!(maintain(&fixture.data, &fixture.policy(), 1000).is_err());
+    assert!(fixture.exists(&old));
+}
+
+#[test]
+fn corrupt_capture_whose_prefix_cannot_match_is_never_hashed() {
+    let fixture = Fixture::new();
+    let prefix = fixture.record(b"bb", 1);
+    // Same size as both retained successors but different bytes: its recorded
+    // digests already rule out a prefix, so it can never be retired and must
+    // not block the unrelated retirement of `prefix`.
+    let divergent = fixture.record(b"aaaa\n", 2);
+    fixture.record(b"bbbb\n", 3);
+    fixture.record(b"cccc\n", 4);
+    let root = raw_mirror_root(&fixture.data);
+    fs::write(root.join(&divergent.blob_relative_path), b"xxxx\n").unwrap();
+    let report = maintain(&fixture.data, &fixture.policy(), 1000).unwrap();
+    assert_eq!(report.retired_manifests, 1);
+    assert!(!fixture.exists(&prefix));
+    assert!(fixture.exists(&divergent));
+}
+
+#[test]
+fn stop_on_the_last_bounded_read_interrupts_source_verification() {
+    let fixture = Fixture::new();
+    let record = fixture.record(&transcript(0, 400 * 1024), 1);
+    // Count every observed operation of an uninterrupted pass, then request a
+    // stop once only the final bounded read remains. The tail of verification
+    // has no other cancellation point, so only per-read checks can observe it.
+    let total = Arc::new(AtomicU64::new(0));
+    let counted = total.clone();
+    {
+        let _observer = observe_raw_mirror_io(
+            Arc::new(move || {
+                counted.fetch_add(1, Ordering::Relaxed);
+            }),
+            Arc::new(|| false),
+        );
+        verify_source_capture(&fixture.data, &record.manifest_id).unwrap();
+    }
+    let stop_at = total.load(Ordering::Relaxed) - 1;
+    let ticks = Arc::new(AtomicU64::new(0));
+    let (counted, watched) = (ticks.clone(), ticks.clone());
+    {
+        let _observer = observe_raw_mirror_io(
+            Arc::new(move || {
+                counted.fetch_add(1, Ordering::Relaxed);
+            }),
+            Arc::new(move || watched.load(Ordering::Relaxed) >= stop_at),
+        );
+        let error = verify_source_capture(&fixture.data, &record.manifest_id)
+            .expect_err("a stop on the final read must interrupt source verification");
+        assert!(error.chain().any(|cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::Interrupted)
+        }), "{error:#}");
+    }
 }

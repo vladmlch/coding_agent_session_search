@@ -2,6 +2,7 @@
 // only a checksum-verified prefix of a retained same-source snapshot can retire.
 use super::*;
 use std::io::{Seek, SeekFrom};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct RawMirrorAutomaticRetention {
@@ -158,16 +159,100 @@ fn ordinary_capture(manifest: &RawMirrorManifestFile) -> bool {
         && manifest.compression.state == "none"
 }
 
-fn verify_capture(root: &Path, manifest: &RawMirrorManifestFile, verified: &mut HashSet<String>) -> Result<()> {
-    if verified.insert(manifest.manifest_id.clone()) {
+// Decides from the recorded chunk digests alone whether preserved_prefix can
+// succeed. It walks the same segments without reading bytes and returns false
+// only at an aligned, equal-size chunk pair whose digests differ, which
+// preserved_prefix must reject. Every other case, including an inconsistency
+// the walk cannot model, is admitted so that verification and the real
+// comparison still decide it.
+fn prefix_admissible_by_manifest(old: &RawMirrorManifestFile, new: &RawMirrorManifestFile) -> bool {
+    if old.source_size_bytes > new.source_size_bytes { return false; }
+    let left = content_chunks(old);
+    let right = content_chunks(new);
+    let (mut i, mut j, mut a, mut b) = (0_usize, 0_usize, 0_u64, 0_u64);
+    let mut compared = 0_u64;
+    while compared < old.source_size_bytes {
+        let (Some(l), Some(r)) = (left.get(i), right.get(j)) else { return true; };
+        let (Some(remaining_left), Some(remaining_right)) =
+            (l.blob_size_bytes.checked_sub(a), r.blob_size_bytes.checked_sub(b))
+        else { return true; };
+        if remaining_left == 0 { i += 1; a = 0; continue; }
+        if remaining_right == 0 { j += 1; b = 0; continue; }
+        let length = remaining_left.min(remaining_right).min(old.source_size_bytes - compared);
+        if a == 0 && b == 0 && l.blob_size_bytes == r.blob_size_bytes && l.blob_blake3 != r.blob_blake3 {
+            return false;
+        }
+        compared += length;
+        a += length;
+        b += length;
+    }
+    true
+}
+
+/// Content verification performed by one retention pass. A capture is hashed at
+/// most once per pass, and only after a retirement pair admits it as a prefix
+/// candidate; the pass reports its progress while it hashes.
+struct RetentionVerification {
+    verified: HashSet<String>,
+    captures: u64,
+    bytes: u64,
+    current: String,
+    started: Instant,
+    last_heartbeat: Instant,
+}
+
+/// Cadence of the stderr and trace heartbeat while a pass is hashing.
+const RETENTION_VERIFY_HEARTBEAT: Duration = Duration::from_secs(15);
+
+impl RetentionVerification {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            verified: HashSet::new(),
+            captures: 0,
+            bytes: 0,
+            current: String::new(),
+            started: now,
+            last_heartbeat: now,
+        }
+    }
+
+    fn verify(&mut self, root: &Path, manifest: &RawMirrorManifestFile) -> Result<()> {
+        if !self.verified.insert(manifest.manifest_id.clone()) {
+            return Ok(());
+        }
         // Blob hashes alone are insufficient: the saved descriptor must also
         // agree with the manifest and the concatenated content hash. Reuse the
         // streaming recovery verifier, including its 64 KiB buffers.
         let data_dir = root.parent().and_then(Path::parent)
             .ok_or_else(|| anyhow!("raw-mirror root has no data directory"))?;
-        verify_source_capture(data_dir, &manifest.manifest_id)?;
+        self.current = manifest.manifest_id.clone();
+        verify_source_capture_observed(data_dir, &manifest.manifest_id, &mut |bytes| {
+            self.bytes = self.bytes.saturating_add(bytes);
+            self.heartbeat_if_due();
+        })?;
+        self.captures += 1;
+        Ok(())
     }
-    Ok(())
+
+    fn heartbeat_if_due(&mut self) {
+        if self.last_heartbeat.elapsed() < RETENTION_VERIFY_HEARTBEAT {
+            return;
+        }
+        self.last_heartbeat = Instant::now();
+        let elapsed_secs = self.started.elapsed().as_secs();
+        eprintln!(
+            "[cass index] raw-mirror retention still verifying {}: {} captures and {} bytes verified, {elapsed_secs}s elapsed",
+            self.current, self.captures, self.bytes
+        );
+        tracing::info!(
+            manifest_id = %self.current,
+            captures_verified = self.captures,
+            verified_bytes = self.bytes,
+            elapsed_secs,
+            "raw-mirror retention verification in progress"
+        );
+    }
 }
 
 fn source_key(manifest: &RawMirrorManifestFile) -> Result<String> {
@@ -256,7 +341,7 @@ fn maintain_with_index_lease(
         protected.extend(ids.iter().take(policy.keep_latest).cloned());
     }
     let mut selected: BTreeMap<String, String> = BTreeMap::new();
-    let mut verified = HashSet::new();
+    let mut verification = RetentionVerification::new();
     for ids in groups.values() {
         raw_mirror_checkpoint()?;
         let anchors: Vec<_> = ids.iter().filter(|id| protected.contains(*id)).collect();
@@ -268,14 +353,25 @@ fn maintain_with_index_lease(
                 let new = &manifests[*successor];
                 if !ordinary_capture(new) || new.captured_at_ms < old.captured_at_ms
                     || new.source_size_bytes < old.source_size_bytes { continue; }
-                verify_capture(&root, old, &mut verified)?;
-                verify_capture(&root, new, &mut verified)?;
+                // A pair whose recorded digests already rule out a prefix can
+                // never retire `old`, so neither capture is hashed for it.
+                if !prefix_admissible_by_manifest(old, new) { continue; }
+                verification.verify(&root, old)?;
+                verification.verify(&root, new)?;
                 if preserved_prefix(&root, old, new)? {
                     selected.insert(id.clone(), (*successor).clone());
                     break;
                 }
             }
         }
+    }
+    if verification.captures > 0 {
+        tracing::info!(
+            captures_verified = verification.captures,
+            verified_bytes = verification.bytes,
+            elapsed_ms = u64::try_from(verification.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "raw-mirror retention verification finished"
+        );
     }
     result.protected_manifests = inventory.len() as u64 - selected.len() as u64;
     // Orphans, abandoned tmp files, nonstandard evidence and divergent versions

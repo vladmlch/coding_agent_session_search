@@ -3138,6 +3138,17 @@ pub(crate) fn verify_source_capture(
     data_dir: &Path,
     manifest_id: &str,
 ) -> Result<RawMirrorVerifiedCapture> {
+    verify_source_capture_observed(data_dir, manifest_id, &mut |_| {})
+}
+
+/// Verifies a capture like `verify_source_capture`, reporting every bounded
+/// read's byte count to `on_bytes`. Each read is a cancellation point and an
+/// activity tick, so a long verification stays observable and stoppable.
+pub(crate) fn verify_source_capture_observed(
+    data_dir: &Path,
+    manifest_id: &str,
+    on_bytes: &mut dyn FnMut(u64),
+) -> Result<RawMirrorVerifiedCapture> {
     let root = raw_mirror_root(data_dir);
     let manifest = read_validated_raw_mirror_manifest(&root, manifest_id)?;
     let references = raw_mirror_manifest_blob_references(&manifest)?;
@@ -3191,6 +3202,7 @@ pub(crate) fn verify_source_capture(
         let mut chunk_hasher = blake3::Hasher::new();
         let mut observed_chunk_bytes = 0_u64;
         loop {
+            raw_mirror_checkpoint()?;
             let read = file
                 .read(&mut buffer)
                 .with_context(|| format!("read raw mirror chunk {}", chunk_path.display()))?;
@@ -3200,6 +3212,8 @@ pub(crate) fn verify_source_capture(
             chunk_hasher.update(&buffer[..read]);
             content_hasher.update(&buffer[..read]);
             observed_chunk_bytes = observed_chunk_bytes.saturating_add(read as u64);
+            on_bytes(read as u64);
+            raw_mirror_record_progress();
         }
         let observed_chunk_blake3 = chunk_hasher.finalize().to_hex().to_string();
         if observed_chunk_bytes != chunk.blob_size_bytes
