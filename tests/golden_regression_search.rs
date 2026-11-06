@@ -16,6 +16,10 @@ fn cass_cmd(test_home: &Path) -> Command {
         .env("HOME", test_home)
         .env("XDG_DATA_HOME", test_home.join(".local/share"))
         .env("XDG_CONFIG_HOME", test_home.join(".config"))
+        // CODEX_HOME is an explicit provider override that FAD checks before
+        // dirs::home_dir(); a host-set value would leak real Codex sessions
+        // into this temp-home fixture. Point it at the fixture-local dir.
+        .env("CODEX_HOME", test_home.join(".codex"))
         .current_dir(test_home);
     cmd
 }
