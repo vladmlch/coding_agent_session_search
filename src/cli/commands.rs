@@ -10,15 +10,15 @@ pub(crate) mod chatgpt_import_source_name;
 pub(crate) mod forget;
 pub(crate) mod import_chatgpt_export;
 pub(crate) mod pack;
+#[cfg(test)]
+pub(crate) mod path_spelling_tests;
 pub(crate) mod quarantine_mirror_import;
 pub(crate) mod run_mirror_prune;
 pub(crate) mod run_onboarding_interactive_wizard;
 pub mod search;
-pub(crate) mod stats_diag_storage;
-pub(crate) mod status_health;
-#[cfg(test)]
-pub(crate) mod path_spelling_tests;
 pub mod sessions_context;
 #[cfg(test)]
 pub(crate) mod source_ingest_reuse_capability_tests;
+pub(crate) mod stats_diag_storage;
+pub(crate) mod status_health;
 pub(crate) mod view;

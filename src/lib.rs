@@ -81100,11 +81100,11 @@ pub(crate) use crate::cli::commands::status_health::root_cause_signal_gather_tes
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::status_health::run_health::*;
 // -- generated lib-split bridges --
-#[allow(unused_imports)]
-pub use crate::cli::commands::sessions_context::{SourceIngestReuseCapability};
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::path_spelling_tests::*;
+#[allow(unused_imports)]
+pub use crate::cli::commands::sessions_context::SourceIngestReuseCapability;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::sessions_context::*;
 #[cfg(test)]

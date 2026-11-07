@@ -5,21 +5,19 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
-pub(crate) use anyhow::Result;
-pub(crate) use chrono::Utc;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use crate::franken_sync::compat::{
+        ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
+        open_with_flags as open_franken_with_flags,
+    };
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use chrono::Utc;
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn run_sessions(
     workspace: Option<&PathBuf>,
@@ -334,7 +332,6 @@ pub(crate) fn run_sessions(
     Ok(())
 }
 
-
 /// Find related sessions for a given source path.
 /// Returns sessions that share the same workspace, same day, or same agent.
 ///
@@ -417,9 +414,7 @@ pub(crate) fn find_context_source_conversation(
     .ok()
 }
 
-
 pub(crate) const CONTEXT_CANDIDATES_SQL: &str = "SELECT id, workspace_id, agent_id, started_at FROM conversations INDEXED BY idx_conversations_context";
-
 
 #[derive(Debug)]
 pub(crate) struct ContextCandidate {
@@ -428,7 +423,6 @@ pub(crate) struct ContextCandidate {
     pub(crate) agent_id: Option<i64>,
     pub(crate) started_at: Option<i64>,
 }
-
 
 pub(crate) fn context_related_ids(
     conn: &crate::franken_sync::Connection,
@@ -492,7 +486,6 @@ pub(crate) fn context_related_ids(
     }
     Ok(groups)
 }
-
 
 pub(crate) fn run_context(
     path: &Path,
@@ -761,7 +754,6 @@ pub(crate) fn run_context(
     Ok(())
 }
 
-
 /// The binary's compiled completed-source reuse policy (GH#426). Reuse is
 /// compiled in only when every dependency in the build's `Cargo.lock` has a
 /// registry or git source: a local path dependency or `[patch]` can change a
@@ -773,7 +765,6 @@ pub struct SourceIngestReuseCapability {
     /// The first unpinned package that disabled reuse; `None` when enabled.
     pub disabled_by: Option<String>,
 }
-
 
 impl SourceIngestReuseCapability {
     pub(crate) fn compiled() -> Self {

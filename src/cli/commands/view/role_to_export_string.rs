@@ -3,18 +3,16 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn role_to_export_string(role: &crate::model::types::MessageRole) -> String {
     match role {
@@ -25,7 +23,6 @@ pub(crate) fn role_to_export_string(role: &crate::model::types::MessageRole) -> 
         crate::model::types::MessageRole::Other(s) => s.clone(),
     }
 }
-
 
 pub(crate) fn conversation_view_to_raw_messages(
     view: &crate::ui::data::ConversationView,
@@ -48,7 +45,6 @@ pub(crate) fn conversation_view_to_raw_messages(
         .collect()
 }
 
-
 pub(crate) fn canonical_followup_source_id(source_id: Option<&str>) -> Option<String> {
     let trimmed = source_id?.trim();
     if trimmed.is_empty() {
@@ -61,12 +57,10 @@ pub(crate) fn canonical_followup_source_id(source_id: Option<&str>) -> Option<St
     }
 }
 
-
 pub(crate) fn followup_source_is_local(source_id: Option<&str>) -> bool {
     canonical_followup_source_id(source_id).as_deref()
         == Some(crate::sources::provenance::LOCAL_SOURCE_ID)
 }
-
 
 pub(crate) fn normalized_provenance_origin_host(origin_host: Option<&str>) -> Option<String> {
     origin_host
@@ -74,7 +68,6 @@ pub(crate) fn normalized_provenance_origin_host(origin_host: Option<&str>) -> Op
         .filter(|value| !value.is_empty())
         .map(str::to_string)
 }
-
 
 pub(crate) fn normalized_provenance_source_id(
     source_id: &str,
@@ -98,7 +91,6 @@ pub(crate) fn normalized_provenance_source_id(
     crate::sources::provenance::LOCAL_SOURCE_ID.to_string()
 }
 
-
 pub(crate) fn normalized_provenance_origin_kind(
     normalized_source_id: &str,
     origin_kind: Option<&str>,
@@ -120,14 +112,15 @@ pub(crate) fn normalized_provenance_origin_kind(
     }
 }
 
-
-pub(crate) fn normalized_source_identity_sql_expr(source_id_column: &str, origin_host_column: &str) -> String {
+pub(crate) fn normalized_source_identity_sql_expr(
+    source_id_column: &str,
+    origin_host_column: &str,
+) -> String {
     format!(
         "CASE WHEN TRIM(COALESCE({source_id_column}, '')) = '' THEN CASE WHEN TRIM(COALESCE({origin_host_column}, '')) = '' THEN '{local}' ELSE TRIM(COALESCE({origin_host_column}, '')) END          WHEN LOWER(TRIM(COALESCE({source_id_column}, ''))) = '{local}' THEN '{local}'          ELSE TRIM(COALESCE({source_id_column}, '')) END",
         local = crate::sources::provenance::LOCAL_SOURCE_ID,
     )
 }
-
 
 pub(crate) fn normalized_source_origin_kind_sql_expr(
     source_id_column: &str,
@@ -148,7 +141,6 @@ pub(crate) fn normalized_source_origin_kind_sql_expr(
     )
 }
 
-
 #[cfg(test)]
 pub(crate) fn normalized_source_id_sql_expr(column: &str) -> String {
     format!(
@@ -156,7 +148,6 @@ pub(crate) fn normalized_source_id_sql_expr(column: &str) -> String {
         local = crate::sources::provenance::LOCAL_SOURCE_ID,
     )
 }
-
 
 pub(crate) fn validate_followup_source_id(source_id: &str, command: &str) -> CliResult<()> {
     let trimmed = source_id.trim();
@@ -178,7 +169,6 @@ pub(crate) fn validate_followup_source_id(source_id: &str, command: &str) -> Cli
     Ok(())
 }
 
-
 pub(crate) fn prefers_direct_view_file(path: &Path, source_id: Option<&str>) -> bool {
     if (!followup_source_is_local(source_id) && source_id.is_some()) || !path.exists() {
         return false;
@@ -193,7 +183,6 @@ pub(crate) fn prefers_direct_view_file(path: &Path, source_id: Option<&str>) -> 
     )
 }
 
-
 pub(crate) fn prefers_direct_jsonl_file(path: &Path, source_id: Option<&str>) -> bool {
     if (!followup_source_is_local(source_id) && source_id.is_some()) || !path.exists() {
         return false;
@@ -207,7 +196,6 @@ pub(crate) fn prefers_direct_jsonl_file(path: &Path, source_id: Option<&str>) ->
         Some("jsonl")
     )
 }
-
 
 pub(crate) fn try_load_indexed_conversation_from_db_with_source(
     source_path: &Path,
@@ -254,7 +242,6 @@ pub(crate) fn try_load_indexed_conversation_from_db_with_source(
     crate::ui::data::load_conversation(&storage, &source_path).ok()?
 }
 
-
 pub(crate) fn serialize_indexed_view_lines(
     view: &crate::ui::data::ConversationView,
 ) -> CliResult<Vec<String>> {
@@ -274,7 +261,6 @@ pub(crate) fn serialize_indexed_view_lines(
         })
         .collect::<CliResult<Vec<_>>>()
 }
-
 
 pub(crate) fn read_followup_file_lines(path: &Path) -> CliResult<Vec<String>> {
     use std::fs::File;
@@ -299,7 +285,6 @@ pub(crate) fn read_followup_file_lines(path: &Path) -> CliResult<Vec<String>> {
             retryable: false,
         })
 }
-
 
 pub(crate) fn infer_followup_agent_and_workspace(path: &Path) -> (Option<String>, Option<String>) {
     let path_str = path.to_string_lossy();
@@ -336,7 +321,6 @@ pub(crate) fn infer_followup_agent_and_workspace(path: &Path) -> (Option<String>
     (agent_name, workspace)
 }
 
-
 #[cfg(test)]
 pub(crate) fn try_load_indexed_conversation_from_db(
     source_path: &Path,
@@ -345,13 +329,11 @@ pub(crate) fn try_load_indexed_conversation_from_db(
     try_load_indexed_conversation_from_db_with_source(source_path, db_path, None, None)
 }
 
-
 pub(crate) struct ResolvedViewLine {
     pub(crate) number: usize,
     pub(crate) content: String,
     pub(crate) highlighted: bool,
 }
-
 
 pub(crate) struct ResolvedView {
     pub(crate) lines: Vec<ResolvedViewLine>,
@@ -360,12 +342,10 @@ pub(crate) struct ResolvedView {
     pub(crate) archive_only: bool,
 }
 
-
 pub(crate) enum BoundedViewResolution {
     Completed(CliResult<ResolvedView>),
     TimedOut,
 }
-
 
 pub(crate) fn resolve_view(
     path: &Path,
@@ -501,7 +481,6 @@ pub(crate) fn resolve_view(
     })
 }
 
-
 pub(crate) fn resolve_view_with_hard_timeout(
     path: PathBuf,
     db_path: PathBuf,
@@ -546,13 +525,11 @@ pub(crate) fn resolve_view_with_hard_timeout(
     }
 }
 
-
 #[derive(Clone, Copy)]
 pub(crate) struct ViewWindow {
     pub(crate) line: Option<usize>,
     pub(crate) context: usize,
 }
-
 
 pub(crate) fn bounded_view_retry_command(
     path: &Path,
@@ -602,7 +579,6 @@ pub(crate) fn bounded_view_retry_command(
     command.join(" ")
 }
 
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn output_bounded_view_partial(
     path: &Path,
@@ -643,7 +619,6 @@ pub(crate) fn output_bounded_view_partial(
         format,
     )
 }
-
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_bounded_view(
@@ -776,7 +751,6 @@ pub(crate) fn run_bounded_view(
         ],
     )
 }
-
 
 pub(crate) fn run_view(
     path: &Path,
@@ -1020,7 +994,6 @@ pub(crate) fn run_view(
     Ok(())
 }
 
-
 /// Deterministic slowdown for the `cass view` budget regression test.
 ///
 /// A real one-line file read can legitimately complete inside the timer's
@@ -1036,8 +1009,9 @@ pub(crate) fn maybe_test_view_delay() {
     }
 }
 
-
-pub(crate) fn index_result_counts_from_progress(progress: &indexer::IndexingProgress) -> Option<(i64, i64)> {
+pub(crate) fn index_result_counts_from_progress(
+    progress: &indexer::IndexingProgress,
+) -> Option<(i64, i64)> {
     let stats = progress.stats.lock().ok()?;
     if !stats.total_counts_exact {
         return None;
@@ -1047,7 +1021,6 @@ pub(crate) fn index_result_counts_from_progress(progress: &indexer::IndexingProg
         i64::try_from(stats.total_messages).unwrap_or(i64::MAX),
     ))
 }
-
 
 /// True only when it is PROVEN that the canonical archive holds no messages:
 /// the DB file is absent, or it opens read-only and reports no message id.
@@ -1062,13 +1035,15 @@ pub(crate) fn canonical_archive_has_no_messages(db_path: &Path) -> bool {
         .is_ok_and(|max_id| max_id.is_none())
 }
 
-
 /// Re-prove a completed full index against the final, closed DB/WAL bytes and
 /// cache that exact fingerprint for lightweight status/search projections.
 /// Large archives retain the existing bounded-doctor behavior: an intentionally
 /// deferred deep probe leaves storage state `unchecked` instead of inventing a
 /// pass. An affirmative failure is a failed index postcondition.
-pub(crate) fn persist_post_index_integrity_attestation(data_dir: &Path, db_path: &Path) -> CliResult<()> {
+pub(crate) fn persist_post_index_integrity_attestation(
+    data_dir: &Path,
+    db_path: &Path,
+) -> CliResult<()> {
     let bundle_bytes = doctor_archive_bundle_bytes(db_path);
     let timeout = doctor_archive_db_probe_hard_timeout(bundle_bytes);
     let conn = open_franken_cli_read_db_with_hard_timeout(
@@ -1168,7 +1143,6 @@ pub(crate) fn persist_post_index_integrity_attestation(data_dir: &Path, db_path:
         }
     }
 }
-
 
 pub(crate) fn validate_successful_index_artifacts(
     data_dir: &Path,
@@ -1282,20 +1256,17 @@ pub(crate) fn validate_successful_index_artifacts(
     Ok(())
 }
 
-
 // FrankenSQLite's debug-mode async open futures can exceed the 2 MiB default
 // worker stack on Linux as well as the 1 MiB MSVC default. Keep the explicit
 // bound on every platform so `cass index` does not depend on RUST_MIN_STACK or
 // release-mode frame shrinking just to open the canonical archive.
 pub(crate) const INDEX_WORKER_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 
-
 pub(crate) fn index_worker_thread_builder() -> std::thread::Builder {
     std::thread::Builder::new()
         .name("cass-index-worker".to_string())
         .stack_size(INDEX_WORKER_STACK_SIZE_BYTES)
 }
-
 
 /// Maximum time for an indexing worker to reach a safe boundary after a signal.
 pub(crate) const INDEX_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
