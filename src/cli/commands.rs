@@ -22,3 +22,4 @@ pub(crate) mod source_ingest_reuse_capability_tests;
 pub(crate) mod stats_diag_storage;
 pub(crate) mod status_health;
 pub(crate) mod view;
+pub mod capabilities_introspect;
