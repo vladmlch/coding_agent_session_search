@@ -29,3 +29,19 @@ pub(crate) mod stats_diag_storage;
 pub(crate) mod status_health;
 pub(crate) mod timeline;
 pub(crate) mod view;
+pub(crate) mod sources;
+pub(crate) mod models;
+pub(crate) mod mappings;
+#[cfg(test)]
+pub(crate) mod timeline_datetime_parse_tests;
+pub(crate) mod daemon;
+pub(crate) mod schedule;
+#[cfg(all(test, unix))]
+pub(crate) mod daemon_cli_config_tests;
+pub(crate) mod run_on_large_stack;
+#[cfg(test)]
+pub(crate) mod subcommand_robot_output_tests;
+#[cfg(test)]
+pub(crate) mod cli_models_resolution_tests;
+#[cfg(test)]
+pub(crate) mod state_db_integrity_probe_tests;
