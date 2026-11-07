@@ -14,3 +14,4 @@ pub(crate) mod inventory;
 pub(crate) mod recommendations;
 pub(crate) mod storage;
 pub(crate) mod types;
+pub(crate) mod coverage;
