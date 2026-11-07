@@ -1533,10 +1533,14 @@ fn schema_v7_archive_upgrades_when_owned_writer_opens() -> Result<()> {
     )?;
     init_extensions(&bridge)?;
 
-    // Rewind the profile to v7: V8 is purely additive (one table + the
-    // version marker), so dropping both restores the v7 shape exactly.
+    // Rewind the profile to v7: V8/V9 are additive (a table, an index and
+    // the version marker; the v9 key column cannot be dropped in place,
+    // but its guarded ALTER treats an existing column as done), so
+    // dropping the table + index and resetting the marker restores the
+    // v7 upgrade surface.
     let installer = open(&bridge.db)?;
     installer.execute("DROP TABLE IF EXISTS viewer_lexical_publication")?;
+    installer.execute("DROP INDEX IF EXISTS idx_viewer_session_facts_parent_lookup")?;
     installer.execute(
         "INSERT OR REPLACE INTO viewer_meta (key, value) \
          VALUES ('extension_schema_version', '7')",
@@ -1562,8 +1566,9 @@ fn schema_v7_archive_upgrades_when_owned_writer_opens() -> Result<()> {
 
     let reader = open(&bridge.db)?;
     ensure!(
-        coding_agent_search::viewer_extensions::schema::installed_version(&reader)? == Some(8),
-        "OwnedWriter::open must self-upgrade the v7 profile to v8"
+        coding_agent_search::viewer_extensions::schema::installed_version(&reader)?
+            == Some(coding_agent_search::viewer_extensions::schema::EXTENSION_SCHEMA_VERSION),
+        "OwnedWriter::open must self-upgrade the v7 profile to the current version"
     );
     // Certification is live on the upgraded archive, not a silent no-op.
     let index_dir = coding_agent_search::search::tantivy::expected_index_dir(&bridge.data_dir);

@@ -55,7 +55,14 @@ use crate::franken_sync::compat::RowExt;
 /// same transaction that bumps `lexical_generation` and journals
 /// `index_ready`, so the announced generation always names the committed
 /// Quill manifest it certifies.
-pub const EXTENSION_SCHEMA_VERSION: i64 = 8;
+/// v9: `viewer_session_facts.parent_lookup_key` + its index — the
+/// normalized form of `parent_external_id` (ASCII-lowercased, with
+/// wildcard-bearing evidence collapsed onto a constant sentinel) that
+/// lets the child-before-parent fixup probe candidates by equality
+/// instead of an archive-wide `LIKE` scan per published conversation.
+/// Replaces the v3 `idx_viewer_session_facts_parent_ext` index, which no
+/// query could ever seek (all its readers match suffix `LIKE` patterns).
+pub const EXTENSION_SCHEMA_VERSION: i64 = 9;
 
 /// Additive viewer schema. Every statement is idempotent so re-running the
 /// profile on an initialized archive is a no-op.
@@ -109,6 +116,13 @@ CREATE TABLE IF NOT EXISTS viewer_session_facts (
     -- link when the parent lands on a later ingest. Pre-v3 archives gain
     -- this column through the guarded ALTER in migrate_facts_parent_evidence.
     parent_external_id TEXT,
+    -- Schema v9: normalized parent-evidence lookup key (ASCII-lowercased
+    -- evidence; evidence bearing a LIKE wildcard gets the constant
+    -- sentinel) so the fixup can probe candidates by equality through
+    -- idx_viewer_session_facts_parent_lookup instead of a per-conversation
+    -- LIKE scan. Pre-v9 archives gain this column through the guarded
+    -- ALTER in migrate_facts_parent_lookup_key.
+    parent_lookup_key TEXT,
     task_category TEXT,
     turn_count INTEGER,
     step_count INTEGER,
@@ -780,6 +794,28 @@ INSERT OR REPLACE INTO viewer_meta (key, value)
 VALUES ('extension_schema_version', '8');
 ";
 
+/// Schema v9 — the sargable parent-evidence lookup.
+///
+/// `viewer_session_facts.parent_lookup_key` is the normalized form of
+/// `parent_external_id` that [`super::facts::fixup_pending_parent_links`]
+/// probes with pure equality (nothing but the index term in the WHERE, so
+/// the engine seeks `idx_viewer_session_facts_parent_lookup` instead of
+/// scanning the archive once per published conversation). The column
+/// itself lands via a guarded `ALTER TABLE` backfilled in the same schema
+/// transaction (see [`migrate_facts_parent_lookup_key`]); this batch
+/// carries the index, the retirement of the v3
+/// `idx_viewer_session_facts_parent_ext` (every reader it was built for
+/// matches suffix `LIKE` patterns no B-tree index can serve, so after v9
+/// nothing can ever seek it) and the version marker.
+const VIEWER_SCHEMA_V9: &str = r"
+DROP INDEX IF EXISTS idx_viewer_session_facts_parent_ext;
+CREATE INDEX IF NOT EXISTS idx_viewer_session_facts_parent_lookup
+    ON viewer_session_facts(parent_lookup_key);
+
+INSERT OR REPLACE INTO viewer_meta (key, value)
+VALUES ('extension_schema_version', '9');
+";
+
 /// Guarded v3 column migration: `parent_external_id` cannot ride the
 /// `CREATE TABLE` statement (existing v2 archives keep their table), so it
 /// lands as an `ALTER TABLE` only when the column is absent — inside the
@@ -818,6 +854,59 @@ fn migrate_facts_parent_evidence(connection: &Connection) -> Result<()> {
                AND json_valid(coverage_detail_json)",
         )
         .context("backfilling viewer_session_facts.parent_external_id (schema v3)")?;
+    Ok(())
+}
+
+/// Guarded v9 column migration: `parent_lookup_key` cannot ride the
+/// `CREATE TABLE` statement (existing v8 archives keep their table), so it
+/// lands as an `ALTER TABLE` only when the column is absent — inside the
+/// same schema transaction as the rest of the profile.
+///
+/// The backfill mirrors [`super::facts::parent_lookup_key`] exactly:
+/// evidence bearing a `LIKE` wildcard (`%`/`_`) collapses onto the constant
+/// sentinel `char(1)` (such evidence is not enumerable from a parent id's
+/// suffixes, so the fixup fetches those rows through one sentinel probe and
+/// lets the engine's own `LIKE` decide), everything else is
+/// ASCII-lowercased (`lower` here and `to_ascii_lowercase` in Rust fold
+/// exactly the ASCII range). NULL evidence keeps its NULL key (an equality
+/// probe never fetches it); empty evidence keeps its empty key (no probe
+/// key is ever empty, and the fixup's candidacy filter excludes it), so
+/// rows that were never claimable stay exactly as unclaimable as before.
+fn migrate_facts_parent_lookup_key(connection: &Connection) -> Result<()> {
+    let present = connection
+        .query("PRAGMA table_info(viewer_session_facts)")?
+        .iter()
+        .any(|row| {
+            row.get_typed::<String>(1)
+                .map(|name| name == "parent_lookup_key")
+                .unwrap_or(false)
+        });
+    if !present {
+        connection
+            .execute(
+                "ALTER TABLE viewer_session_facts \
+                 ADD COLUMN parent_lookup_key TEXT",
+            )
+            .context("adding viewer_session_facts.parent_lookup_key (schema v9)")?;
+    }
+    // Pre-v9 rows keep their evidence durably in parent_external_id;
+    // without this backfill the equality lookup would never probe them
+    // and the fixup would silently miss children recorded before the
+    // upgrade. The `parent_lookup_key IS NULL` guard keeps the backfill
+    // idempotent and heals any straggler a crashed publish left behind.
+    connection
+        .execute(
+            "UPDATE viewer_session_facts \
+             SET parent_lookup_key = CASE \
+                     WHEN parent_external_id LIKE '%\\%%' ESCAPE '\\' \
+                          OR parent_external_id LIKE '%\\_%' ESCAPE '\\' \
+                     THEN char(1) \
+                     ELSE lower(parent_external_id) \
+                 END \
+             WHERE parent_lookup_key IS NULL \
+               AND parent_external_id IS NOT NULL",
+        )
+        .context("backfilling viewer_session_facts.parent_lookup_key (schema v9)")?;
     Ok(())
 }
 
@@ -891,6 +980,8 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
         connection.execute_batch(VIEWER_SCHEMA_V6)?;
         connection.execute_batch(VIEWER_SCHEMA_V7)?;
         connection.execute_batch(VIEWER_SCHEMA_V8)?;
+        migrate_facts_parent_lookup_key(connection)?;
+        connection.execute_batch(VIEWER_SCHEMA_V9)?;
         Ok(())
     })();
     match applied {
