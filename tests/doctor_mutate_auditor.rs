@@ -177,7 +177,8 @@ fn pass4_lib_dispatch_routes_through_doctor_chokepoint_apis() {
     // Pass-3 dispatch must reach into the doctor_runs/doctor_undo/doctor_robot_docs
     // modules. Source-level grep ensures the wire-up didn't get reverted.
     let manifest = env!("CARGO_MANIFEST_DIR");
-    let lib = fs::read_to_string(format!("{manifest}/src/cli/output/extract_search_terms.rs")).expect("lib.rs readable")
+    let lib = fs::read_to_string(format!("{manifest}/src/cli/output/extract_search_terms.rs"))
+        .expect("lib.rs readable")
         + &fs::read_to_string(format!("{manifest}/src/doctor/run_doctor_ls.rs"))
             .expect("run_doctor_ls.rs readable");
     for marker in [

@@ -1526,7 +1526,10 @@ mod tests {
 
     #[test]
     fn legacy_cli_dispatch_routes_through_typed_doctor_module() {
-        let lib_source = concat!(include_str!("cli/dispatch.rs"), include_str!("doctor/run.rs"));
+        let lib_source = concat!(
+            include_str!("cli/dispatch.rs"),
+            include_str!("doctor/run.rs")
+        );
         assert!(
             lib_source.contains("doctor::DoctorCommandRequest::from_cli_flags"),
             "Commands::Doctor should build the typed doctor request before execution"
