@@ -30,7 +30,11 @@ pub use providers::classification::SessionQualityMetrics;
 
 /// Bump when any provider extraction semantics change so persisted rows
 /// re-derive on the next ingest pass instead of silently going stale.
-pub const FACTS_EXTRACTOR_VERSION: i64 = 1;
+/// v2: cursor no-record shapes (`extra == {}` with delivered content) no
+/// longer mark `text_inventory`/`block_inventory` partial — the connector
+/// delivers their whole text into `content` and lifts tool_use blocks into
+/// invocations; only thinking stays unverifiable for them.
+pub const FACTS_EXTRACTOR_VERSION: i64 = 2;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)

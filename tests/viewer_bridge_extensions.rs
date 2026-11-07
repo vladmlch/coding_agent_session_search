@@ -6501,8 +6501,9 @@ fn ingest_publishes_coherent_extension_generation() -> Result<()> {
         "receipt must bind the same source_revision as the rows: {receipt}"
     );
     ensure!(
-        receipt["extractor_version"].as_i64() == Some(1)
-            && receipt["projection_version"].as_i64() == Some(1),
+        receipt["extractor_version"].as_i64() == Some(facts::FACTS_EXTRACTOR_VERSION)
+            && receipt["projection_version"].as_i64()
+                == Some(coding_agent_search::viewer_extensions::projection::PROJECTION_VERSION),
         "receipt must name the current extractor/projection versions: {receipt}"
     );
     ensure!(

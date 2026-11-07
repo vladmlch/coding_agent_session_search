@@ -19,7 +19,7 @@ use coding_agent_search::model::conversation_packet::{
 use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use coding_agent_search::storage::sqlite::FrankenStorage;
 use coding_agent_search::viewer_extensions::facts::{
-    FactPublishOutcome, extract_session_facts, publish_session_facts,
+    FACTS_EXTRACTOR_VERSION, FactPublishOutcome, extract_session_facts, publish_session_facts,
 };
 use coding_agent_search::viewer_extensions::schema;
 use serde_json::{Value, json};
@@ -1000,7 +1000,8 @@ fn devin_facts_graph_linking_and_sparse_coverage() {
 // ---------------------------------------------------------------------------
 // Cursor fixture: harvested bubble extras — toolFormerCalls with recorded
 // callIds and inline outputs, allThinkingBlocks, no exit statuses ever,
-// conflicting callIds never merged, empty-extra message stays partial.
+// conflicting callIds never merged; the trailing empty-extra message is a
+// no-record shape (see the no-record tests below).
 // ---------------------------------------------------------------------------
 
 fn cursor_packet() -> ConversationPacket {
@@ -1128,6 +1129,111 @@ fn cursor_facts_bubble_tools_thinking_and_coverage() {
     );
     let exit = coverage(&publication, "tool_exit").expect("tool_exit");
     assert_eq!(exit.state, "unavailable");
+}
+
+// ---------------------------------------------------------------------------
+// Cursor no-record shapes: the pinned connector persists `extra = {}` for
+// agent-transcript messages and composer draft fallback messages — no raw
+// record — while delivering every text-bearing field into `content` and
+// lifting every tool_use block into `invocations` (archived by the ingest
+// merge under `cass.invocations`). Those events' text/block inventories
+// are complete by construction; only thinking stays unverifiable (a
+// dropped thinking block leaves no archive evidence). Unknown shapes — an
+// empty extra WITHOUT content, or a non-object extra — keep the full
+// four-scope mark.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cursor_facts_no_record_shapes_text_inventory_complete() {
+    let publication = extract_session_facts(
+        &packet(
+            "cursor",
+            json!({"source": "cursor"}),
+            vec![
+                // Composer draft fallback: one user message, no bubble record.
+                msg(
+                    0,
+                    "user",
+                    "synthetic draft prompt about wiring tests",
+                    json!({}),
+                ),
+                // Agent-transcript text message: flattened record text, no raw record.
+                msg(1, "assistant", "synthetic transcript reply", json!({})),
+                // Agent-transcript tool message: invocation archived under
+                // cass.invocations, flattened rendering in content.
+                msg(
+                    2,
+                    "assistant",
+                    "[Tool: read_file - /tmp/synthetic.txt]",
+                    json!({"cass": {"invocations": [
+                        {"kind": "tool", "call_id": "call_synth_1", "name": "read_file",
+                         "input": {"file_path": "/tmp/synthetic.txt"}}
+                    ]}}),
+                ),
+            ],
+        ),
+        "cursor",
+    );
+
+    // The delivered text of every no-record event is fully in `content`,
+    // and the projection derives its block inventory from content: the
+    // text and block inventories are complete.
+    for field in ["text_inventory", "block_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+    }
+
+    // Thinking stays honestly unverifiable: the absent record could have
+    // carried thinking blocks — per-event partial, session-level
+    // unavailable, reason naming the absent record.
+    let thinking = coverage(&publication, "thinking").expect("thinking");
+    assert_eq!(thinking.state, "unavailable");
+    assert!(
+        thinking.reasons.iter().any(|r| r == "cursor_extra_absent"),
+        "thinking reasons: {:?}",
+        thinking.reasons
+    );
+
+    // No recorded tool records exist for these events (a `{}` extra means
+    // the connector lifted no invocations; the cass-merged invocation is
+    // archived structure, not recorded call/result evidence): tools is
+    // complete the way a session without tools is.
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "complete", "tools: {tools:?}");
+}
+
+#[test]
+fn cursor_facts_unknown_shapes_stay_fully_marked() {
+    let publication = extract_session_facts(
+        &packet(
+            "cursor",
+            json!({"source": "cursor"}),
+            vec![
+                // Not a known connector shape: every `{}` producer the
+                // pinned connector has delivers non-empty content.
+                msg(0, "assistant", "", json!({})),
+                // Non-object extra: unknown entirely.
+                msg(1, "assistant", "text beside a null extra", Value::Null),
+            ],
+        ),
+        "cursor",
+    );
+    for field in ["tools", "block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "cursor_extra_absent"),
+            "{field}: {entry:?}"
+        );
+    }
+    // Thinking still carries the per-event absent-record mark (visible in
+    // the reason set) under the session-level unverifiable-thinking state.
+    let thinking = coverage(&publication, "thinking").expect("thinking");
+    assert_eq!(thinking.state, "unavailable", "thinking: {thinking:?}");
+    assert!(
+        thinking.reasons.iter().any(|r| r == "cursor_extra_absent"),
+        "thinking: {thinking:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1278,7 +1384,7 @@ fn publish_is_idempotent_replace_and_resolves_parent() -> Result<()> {
     ensure!(outcome == FactPublishOutcome::Published, "first publish");
 
     let (version, revision, state, parent, thinking, category, prompt) = fact_row(&db, child_id)?;
-    ensure!(version == 1, "extractor_version");
+    ensure!(version == FACTS_EXTRACTOR_VERSION, "extractor_version");
     ensure!(revision == publication.source_revision, "source_revision");
     ensure!(state == publication.coverage_state, "coverage_state");
     ensure!(
