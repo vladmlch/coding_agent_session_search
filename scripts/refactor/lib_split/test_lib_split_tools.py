@@ -1059,6 +1059,146 @@ class ScannerParityTests(unittest.TestCase):
         self.assertIn("tests/cli_dispatch_coverage.rs", loa["sources"])
         self.assertIn("src", loa.get("dirs", []))
 
+    # --- emitter-coverage-fix: regex emission predicates + typed diffs ---
+
+    _EMISSION_PATTERNS = [
+        {"name": "cli_error_code_kind",
+         "regex": r"^[ \t]*code: [0-9]+[^\n]*\n([ \t]*\n)*[ \t]*kind:",
+         "suffix": ".rs"},
+        {"name": "process_exit_int",
+         "regex": r"process::exit\([0-9]+\)",
+         "suffix": ".rs"},
+        {"name": "terminate_int",
+         "regex": r"terminate\([0-9]+\)",
+         "suffix": ".rs"},
+    ]
+
+    def _emission_spec(self, sources):
+        return {"scanner": [{"name": "s", "sources": sources,
+                             "patterns": self._EMISSION_PATTERNS}]}
+
+    def test_regex_emission_predicates_counted(self):
+        # the three emission forms the exit-codes test scans must be
+        # countable — the ExitCode-only literal counter cannot see them.
+        spec = self._emission_spec(["src/moved.rs"])
+        src = ("fn f() -> CliError {\n    CliError {\n        code: 3,\n"
+               "        kind: CliErrorKind::Usage,\n"
+               "        message: m(),\n        source: None,\n    }\n}\n"
+               "fn g() { process::exit(70); }\n"
+               "fn h() { terminate(124); }\n")
+        c = sp.counts(spec, {"src/moved.rs": src})["s"]
+        self.assertEqual(c["cli_error_code_kind"], 1)
+        self.assertEqual(c["process_exit_int"], 1)
+        self.assertEqual(c["terminate_int"], 1)
+
+    def test_regex_counts_per_file_never_joined(self):
+        # a code:/kind: pair split across file boundaries must NOT match —
+        # joined-source counting would falsely report an emission site.
+        spec = self._emission_spec(["src/a.rs", "src/b.rs"])
+        texts = {"src/a.rs": "    code: 3,\n",
+                 "src/b.rs": "    kind: CliErrorKind::Usage,\n"}
+        c = sp.counts(spec, texts)["s"]
+        self.assertEqual(c["cli_error_code_kind"], 0,
+                         "boundary-spanning pair must not match")
+
+    def test_regex_suffix_scopes_to_rs_sources(self):
+        # `.rs`-suffixed regex patterns must not scan documentation
+        # sources (README/AGENTS list mentions of emission shapes).
+        spec = self._emission_spec(["src/a.rs", "README.md"])
+        texts = {"src/a.rs": "fn f() {}\n",
+                 "README.md": "code: 3,\nkind: X\nprocess::exit(70)\n"}
+        c = sp.counts(spec, texts)["s"]
+        self.assertEqual(c["cli_error_code_kind"], 0)
+        self.assertEqual(c["process_exit_int"], 0)
+
+    def test_real_spec_sees_synthetic_moved_emission(self):
+        # the REAL configured scanner must count a synthetic moved
+        # CliError — previously the ExitCode literal was the only
+        # pattern and the move was invisible (136 sites lost).
+        spec = sp.load()
+        moved = ("fn fail() -> CliError {\n    CliError {\n"
+                 "        code: 3,\n        kind: CliErrorKind::Usage,\n"
+                 "        message: \"x\".into(),\n        source: None,\n"
+                 "    }\n}\n")
+        texts = {"src/cli/commands/search/run_cli_search.rs": moved}
+        c = sp.counts(spec, texts)["spec_exit_codes_documented"]
+        self.assertGreater(c["cli_error_code_kind"], 0,
+                           "moved emission must be counted by the spec")
+        self.assertEqual(c["ExitCode"], 0,
+                         "ExitCode literal stays blind to the emission")
+
+    def test_diff_rejects_counts_shaped_input(self):
+        # wrong-mode: feeding counts JSON to the source-list differ was
+        # a silent success (real bug in the 2c admission run).
+        with self.assertRaises(ValueError):
+            sp.diff({"s": {"ExitCode": 100}}, {"s": {"ExitCode": 50}})
+
+    def test_diff_counts_rejects_source_shaped_input(self):
+        with self.assertRaises(ValueError):
+            sp.diff_counts({"s": ["src/lib.rs"]}, {"s": ["src/lib.rs"]})
+
+    def test_diff_counts_cli_compare_and_reject(self):
+        import subprocess
+        tool = HERE / "scan_parity.py"
+        good = {"s": {"p": 2, "q": 1}, "absent": "unsupported:no-patterns"}
+        bad = {"s": {"p": 1, "q": 1}, "absent": "unsupported:no-patterns"}
+        sources = {"s": ["src/lib.rs"]}
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            def w(name, obj):
+                p = td / name
+                p.write_text(json.dumps(obj))
+                return str(p)
+            # valid comparison, equal -> 0
+            rc = subprocess.run(
+                [sys.executable, str(tool), "diff-counts",
+                 w("a.json", good), w("b.json", good)],
+                capture_output=True, text=True)
+            self.assertEqual(rc.returncode, 0, rc.stderr)
+            # valid comparison, count dropped -> 1
+            rc = subprocess.run(
+                [sys.executable, str(tool), "diff-counts",
+                 w("c.json", good), w("d.json", bad)],
+                capture_output=True, text=True)
+            self.assertEqual(rc.returncode, 1)
+            self.assertIn("p", rc.stdout)
+            # wrong-mode both ways -> nonzero with a type diagnostic
+            rc = subprocess.run(
+                [sys.executable, str(tool), "diff",
+                 w("e.json", good), w("f.json", bad)],
+                capture_output=True, text=True)
+            self.assertNotEqual(rc.returncode, 0)
+            self.assertIn("diff-counts", rc.stderr)
+            rc = subprocess.run(
+                [sys.executable, str(tool), "diff-counts",
+                 w("g.json", sources), w("h.json", sources)],
+                capture_output=True, text=True)
+            self.assertNotEqual(rc.returncode, 0)
+            self.assertIn("diff", rc.stderr)
+
+    def test_malformed_patterns_rejected(self):
+        # a malformed/ambiguous pattern must raise, never default to 0.
+        for pat in ({"regex": 5}, {"literal": 3}, {"foo": "x"},
+                    {"literal": "a", "regex": "b"},
+                    {"regex": "("}, {"regex": "x", "suffix": 9}):
+            spec = {"scanner": [{"name": "s", "sources": ["src/a.rs"],
+                                 "patterns": [pat]}]}
+            with self.assertRaises((ValueError, KeyError)):
+                sp.counts(spec, {"src/a.rs": "body"})
+
+    def test_exit_code_sources_cover_relocated_emitters(self):
+        # the reviewed gap: every file with `code:`/`kind:` emission
+        # sites must be in the scanner's source union (was 19 missing).
+        spec = sp.load()
+        entry = sp.scanners(spec)["spec_exit_codes_documented"]
+        sources = set(entry["sources"])
+        for rel in ("src/cli/commands/search/run_cli_search.rs",
+                    "src/cli/commands/pack/pack_budget_ms.rs",
+                    "src/cli/commands/stats_diag_storage/run_stats.rs",
+                    "src/cli/commands/status_health/run_health.rs",
+                    "src/cli/commands/run_onboarding_interactive_wizard.rs"):
+            self.assertIn(rel, sources, f"relocated emitter {rel} unscanned")
+
 
 class StaleRefTests(unittest.TestCase):
     def test_detects_include_str_lib(self):

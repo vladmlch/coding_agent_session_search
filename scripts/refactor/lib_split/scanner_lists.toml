@@ -72,7 +72,16 @@ sources = [
   "README.md",
   "AGENTS.md",
 ]
-patterns = ["ExitCode"]
+patterns = [
+  "ExitCode",
+  # Emission-site predicates mirroring the test's three extractors
+  # (spec_exit_codes_documented.rs): a `code: N` line whose next
+  # non-blank line starts `kind:`, literal `process::exit(N)`, literal
+  # `terminate(N)`. Regex patterns count per file, `.rs` sources only.
+  { name = "cli_error_code_kind", regex = '^[ \t]*code: [0-9]+[^\n]*\n([ \t]*\n)*[ \t]*kind:', suffix = ".rs" },
+  { name = "process_exit_int", regex = 'process::exit\([0-9]+\)', suffix = ".rs" },
+  { name = "terminate_int", regex = 'terminate\([0-9]+\)', suffix = ".rs" },
+]
 note = "exit-code literals must be documented; reads sources + docs"
 
 [scanner.spec_aliases_resolve]

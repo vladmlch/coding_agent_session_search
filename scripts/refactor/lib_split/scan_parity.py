@@ -14,7 +14,16 @@ scanner reads lives in scanner_lists.toml beside this script. Modes:
             parity misses a move that drops a second occurrence — count
             parity catches it.
   diff    — compare two source-list snapshots: any scanner that loses a
-            previously-scanned file is a parity violation.
+            previously-scanned file is a parity violation. Input must be
+            a {scanner: [source paths]} map — counts snapshots are
+            rejected.
+  diff-counts — compare two `counts` snapshots: per-pattern drops and
+            gains are both flagged. Input must be a
+            {scanner: {pattern: int}} (or "unsupported:<why>" status)
+            map — source-list snapshots are rejected.
+            (Added after a wrong-mode `diff` invocation on counts JSON
+            compared scanner names only and returned vacuous success
+            on a real coverage loss.)
 """
 
 from __future__ import annotations
@@ -187,6 +196,52 @@ def needles(spec: dict, repo: Path = REPO) -> list[str]:
     return problems
 
 
+def _pattern_spec(pat) -> tuple[str, object, str | None]:
+    """Normalize one `patterns` entry to (key, matcher, suffix).
+
+    Accepted shapes:
+      "literal"                       — count `body.count(literal)`
+      {literal = "…"}                 — same, table form
+      {name = "…", regex = "…", suffix = ".rs"}
+                                      — count regex matches PER FILE
+                                        (never across joined sources),
+                                        restricted to sources whose
+                                        path ends in `suffix` when a
+                                        suffix is declared.
+    Anything else is malformed: raise rather than silently count zero.
+    """
+    if isinstance(pat, str):
+        return pat, pat, None
+    if not isinstance(pat, dict):
+        raise ValueError(f"pattern must be a string or table, got {pat!r}")
+    if "literal" in pat and "regex" in pat:
+        raise ValueError(f"ambiguous pattern declares both literal and regex: {pat!r}")
+    unknown = set(pat) - {"literal", "regex", "name", "suffix"}
+    if unknown:
+        raise ValueError(f"pattern has unknown keys {sorted(unknown)}: {pat!r}")
+    suffix = pat.get("suffix")
+    if suffix is not None and not isinstance(suffix, str):
+        raise ValueError(f"pattern suffix must be a string: {pat!r}")
+    if "literal" in pat:
+        lit = pat["literal"]
+        if not isinstance(lit, str) or not lit:
+            raise ValueError(f"literal pattern must be a nonempty string: {pat!r}")
+        return lit, lit, suffix
+    if "regex" in pat:
+        rx = pat["regex"]
+        if not isinstance(rx, str) or not rx:
+            raise ValueError(f"regex pattern must be a nonempty string: {pat!r}")
+        try:
+            compiled = re.compile(rx, re.MULTILINE)
+        except re.error as e:
+            raise ValueError(f"regex pattern does not compile: {pat!r}: {e}")
+        key = pat.get("name")
+        if key is not None and not isinstance(key, str):
+            raise ValueError(f"pattern name must be a string: {pat!r}")
+        return key or rx, compiled, suffix
+    raise ValueError(f"pattern needs a literal or regex key: {pat!r}")
+
+
 def counts(spec: dict, texts: dict[str, str],
              repo: Path | None = None) -> dict:
     """Per-scanner PER-PATTERN needle counts over the union of its
@@ -197,6 +252,12 @@ def counts(spec: dict, texts: dict[str, str],
     {scanner_name: {pattern: count}} or {name: "unsupported:<why>"} for
     scanners without declared patterns. When `repo` is given, `dirs`
     directory scans are expanded and read from disk.
+
+    Literal patterns count over the joined source union (historical
+    behavior). Regex patterns count PER FILE and may declare a `suffix`
+    (e.g. ".rs") so documentation sources are excluded — matching the
+    Rust source-reader extractors, which scan each file separately and
+    can never match a pair spanning a file boundary.
     """
     out = {}
     for name, entry in scanners(spec).items():
@@ -205,17 +266,27 @@ def counts(spec: dict, texts: dict[str, str],
             out[name] = "unsupported:no-patterns"
             continue
         per = {}
-        body = "".join(texts.get(rel, "") for rel in entry["sources"])
+        files: list[tuple[str, str]] = []
+        for rel in entry["sources"]:
+            files.append((rel, texts.get(rel, "")))
         if repo is not None and entry.get("dirs"):
             for rel in entry["dirs"]:
                 d = Path(repo) / rel
                 if d.is_dir():
                     for p in sorted(d.rglob("*.rs")):
                         if p.is_file():
-                            body += p.read_text(errors="replace")
+                            rp = str(p.relative_to(repo)).replace("\\", "/")
+                            files.append((rp, p.read_text(errors="replace")))
+        body = "".join(t for _, t in files)
         for pat in pats:
-            lit = pat["literal"] if isinstance(pat, dict) else pat
-            per[lit] = body.count(lit)
+            key, matcher, suffix = _pattern_spec(pat)
+            if isinstance(matcher, str):
+                per[key] = body.count(matcher)
+            else:
+                per[key] = sum(
+                    len(matcher.findall(t))
+                    for rp, t in files
+                    if suffix is None or rp.endswith(suffix))
         out[name] = per
     return out
 
@@ -230,7 +301,48 @@ def counts_for_sources(spec: dict, repo: Path) -> dict:
     return counts(spec, texts, repo=repo)
 
 
+def _validate_source_snapshot(obj, label: str) -> None:
+    """`diff` input must map scanner -> list of source paths. Feeding a
+    counts snapshot here used to compare scanner names only and return
+    vacuous success on a real coverage loss — fail closed instead."""
+    if not isinstance(obj, dict):
+        raise ValueError(
+            f"{label}: expected a map of scanner -> source list, "
+            f"got {type(obj).__name__}")
+    for name, val in obj.items():
+        if not isinstance(val, list) or not all(
+                isinstance(s, str) for s in val):
+            raise ValueError(
+                f"{label}: {name}: expected a list of source paths, "
+                f"got {type(val).__name__} — a counts snapshot belongs "
+                f"to `diff-counts`")
+
+
+def _validate_counts_snapshot(obj, label: str) -> None:
+    """`diff-counts` input must map scanner -> {pattern: int} or a
+    "unsupported:<why>" status string (counts output shape)."""
+    if not isinstance(obj, dict):
+        raise ValueError(
+            f"{label}: expected a map of scanner -> counts, "
+            f"got {type(obj).__name__}")
+    for name, val in obj.items():
+        if isinstance(val, str):
+            continue
+        if not isinstance(val, dict):
+            raise ValueError(
+                f"{label}: {name}: expected a per-pattern count map or "
+                f"status string, got {type(val).__name__} — a source-list "
+                f"snapshot belongs to `diff`")
+        for pat, c in val.items():
+            if not isinstance(c, int):
+                raise ValueError(
+                    f"{label}: {name}.{pat}: count must be an int, "
+                    f"got {type(c).__name__}")
+
+
 def diff_counts(before: dict, after: dict) -> list[str]:
+    _validate_counts_snapshot(before, "before")
+    _validate_counts_snapshot(after, "after")
     problems = []
     for name, old in before.items():
         new = after.get(name)
@@ -277,6 +389,8 @@ def snapshot(spec: dict, repo: Path | None = None) -> dict:
 
 
 def diff(before: dict, after: dict) -> list[str]:
+    _validate_source_snapshot(before, "before")
+    _validate_source_snapshot(after, "after")
     problems = []
     for name, old in before.items():
         if name not in after:
@@ -306,7 +420,22 @@ def main(argv):
     if cmd == "diff":
         before = json.loads(Path(argv[2]).read_text())
         after = json.loads(Path(argv[3]).read_text())
-        problems = diff(before, after)
+        try:
+            problems = diff(before, after)
+        except ValueError as e:
+            print(f"PARITY: {e}", file=sys.stderr)
+            return 2
+        for p in problems:
+            print(f"PARITY: {p}")
+        return 1 if problems else 0
+    if cmd == "diff-counts":
+        before = json.loads(Path(argv[2]).read_text())
+        after = json.loads(Path(argv[3]).read_text())
+        try:
+            problems = diff_counts(before, after)
+        except ValueError as e:
+            print(f"PARITY: {e}", file=sys.stderr)
+            return 2
         for p in problems:
             print(f"PARITY: {p}")
         return 1 if problems else 0
