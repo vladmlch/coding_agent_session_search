@@ -2,3 +2,9 @@
 
 // -- lib-split module declarations --
 pub(crate) mod types;
+pub(crate) mod collect_doctor_interrupted_operation_states;
+#[cfg(test)]
+pub(crate) mod doctor_heartbeat_tests;
+pub(crate) mod cliheartbeat;
+pub(crate) mod doctor_sorted_cleanup_actions;
+pub(crate) mod finalize_cleanup_apply_contract;

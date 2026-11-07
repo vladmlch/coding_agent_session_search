@@ -1560,3 +1560,27 @@ pub(crate) mod forensic;
 pub(crate) mod policy;
 pub(crate) mod repair_state;
 pub(crate) mod report;
+pub(crate) mod fs_safety;
+#[cfg(test)]
+pub(crate) mod doctor_asset_taxonomy_tests_part_1;
+#[cfg(test)]
+pub(crate) mod doctor_asset_taxonomy_tests_part_2;
+#[cfg(test)]
+pub(crate) mod doctor_asset_taxonomy_tests_part_3;
+#[cfg(test)]
+pub(crate) mod doctor_asset_taxonomy_tests_part_4;
+#[cfg(test)]
+pub(crate) mod doctor_asset_taxonomy_tests_part_5;
+#[cfg(test)]
+pub(crate) mod doctor_asset_taxonomy_tests_part_6;
+#[cfg(test)]
+pub(crate) mod doctor_asset_taxonomy_tests_part_7;
+#[cfg(all(test, unix))]
+pub(crate) mod doctor_baseline_path_safety_tests;
+#[cfg(all(test, unix))]
+pub(crate) mod doctor_archive_export_path_safety_tests;
+#[cfg(all(test, unix))]
+pub(crate) mod doctor_support_bundle_path_safety_tests;
+#[cfg(all(test, unix))]
+pub(crate) mod cleanup_target_safety_tests;
+pub(crate) mod lexical_cleanup_disposition_label;
