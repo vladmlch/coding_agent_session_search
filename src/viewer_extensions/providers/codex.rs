@@ -286,6 +286,13 @@ fn message(payload: &Value, coverage: &mut CoverageBuilder) {
             "unavailable",
         );
     }
+    message_content(payload, coverage);
+}
+
+/// Content-part parsing shared by `message` and `agent_message_text`: a
+/// string body or text-typed parts with their `text` are chat evidence,
+/// images are known non-text, anything else is malformed.
+fn message_content(payload: &Value, coverage: &mut CoverageBuilder) {
     match payload.get("content") {
         Some(Value::String(_)) => coverage.evidence("chat"),
         Some(Value::Array(parts)) => {
@@ -317,6 +324,24 @@ fn message(payload: &Value, coverage: &mut CoverageBuilder) {
         }
         _ => coverage.unknown("codex_message_malformed"),
     }
+}
+
+/// `agent_message` payloads — inter-agent handoff messages. `event_msg`
+/// records carry a bare `message`/`text` string; `response_item` records
+/// carry the text in `content[].input_text` parts (the same shapes the
+/// connector indexes). No role check: the sender is an agent, not a chat
+/// role — a record with no usable text in either shape stays malformed.
+fn agent_message_text(payload: &Value, coverage: &mut CoverageBuilder) {
+    if payload
+        .get("message")
+        .or_else(|| payload.get("text"))
+        .and_then(Value::as_str)
+        .is_some()
+    {
+        coverage.evidence("chat");
+        return;
+    }
+    message_content(payload, coverage);
 }
 
 fn reasoning(payload: &Value, coverage: &mut CoverageBuilder, thinking: &mut i64) {
@@ -464,10 +489,9 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
             && record.get("type").and_then(Value::as_str) == Some("response_item")
         {
             message(&payload, &mut coverage);
-        } else if matches!(
-            kind,
-            Some("user_message" | "agent_message" | "error" | "event_msg")
-        ) {
+        } else if kind == Some("agent_message") {
+            agent_message_text(&payload, &mut coverage);
+        } else if matches!(kind, Some("user_message" | "error" | "event_msg")) {
             event_text(&payload, &mut coverage);
         } else if CONTROLS.contains(&kind.unwrap_or("")) {
             continue;

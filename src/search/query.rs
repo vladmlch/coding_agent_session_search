@@ -8884,7 +8884,7 @@ impl SearchClient {
     fn sqlite_message_scan_query_sql(
         field_mask: FieldMask,
         filters: &SearchFilters,
-        scan_page_rows: usize,
+        page_last_message_id: i64,
     ) -> (String, Vec<ParamValue>) {
         let mut session_paths = filters
             .session_paths
@@ -8897,16 +8897,47 @@ impl SearchClient {
             filters,
             session_paths.as_slice(),
             None,
-            scan_page_rows,
+            page_last_message_id,
         )
     }
 
+    /// The message ids of one source-scan page: the next `scan_page_rows`
+    /// ids after the cursor, in id order. A bare rowid range, so
+    /// FrankenSQLite seeks it.
+    fn sqlite_message_scan_page_ids(
+        conn: &SearchSqliteConnection,
+        after_message_id: Option<i64>,
+        scan_page_rows: usize,
+    ) -> Result<Vec<i64>> {
+        let limit = ParamValue::from(i64::try_from(scan_page_rows).unwrap_or(i64::MAX));
+        let (sql, params) = match after_message_id {
+            Some(after) => (
+                "SELECT id FROM messages WHERE id > ? ORDER BY id LIMIT ?",
+                vec![ParamValue::from(after), limit],
+            ),
+            None => ("SELECT id FROM messages ORDER BY id LIMIT ?", vec![limit]),
+        };
+        franken_query_map_collect_retry(conn, sql, &params, |row| row.get_typed(0))
+            .context("listing the message ids of a SQLite source-scan page")
+    }
+
+    /// One source-scan page: the messages with ids in
+    /// `(after_message_id, page_last_message_id]`, joined to their
+    /// conversation metadata and narrowed by every filter.
+    ///
+    /// The page is a bare rowid range in a subquery, and the joins and
+    /// filters apply outside it. FrankenSQLite seeks a rowid range only when
+    /// nothing else is in its WHERE; `messages m LEFT JOIN … WHERE 1=1 AND
+    /// <filters> AND m.id > ? ORDER BY m.id LIMIT ?` read the whole table for
+    /// every page (5-15 s per 1,024-row page on a 496,736-message archive,
+    /// so one fallback search took most of an hour; this shape takes
+    /// 0.06-0.27 s per page).
     fn sqlite_message_scan_query_sql_for_session_paths(
         field_mask: FieldMask,
         filters: &SearchFilters,
         session_paths: &[&str],
         after_message_id: Option<i64>,
-        scan_page_rows: usize,
+        page_last_message_id: i64,
     ) -> (String, Vec<ParamValue>) {
         let title_expr = if field_mask.wants_title() {
             "COALESCE(c.title, '')"
@@ -8920,6 +8951,17 @@ impl SearchClient {
         };
         let normalized_source_sql =
             normalized_search_source_id_sql_expr("c.source_id", "s.kind", "c.origin_host");
+
+        // Placeholders bind in text order: the page bounds come first.
+        let mut params = Vec::new();
+        let page_lower_sql = match after_message_id {
+            Some(after_message_id) => {
+                params.push(ParamValue::from(after_message_id));
+                "id > ? AND "
+            }
+            None => "",
+        };
+        params.push(ParamValue::from(page_last_message_id));
 
         let mut sql = format!(
             "SELECT m.id,
@@ -8936,18 +8978,19 @@ impl SearchClient {
                     s.kind,
                     COALESCE(m.content, ''),
                     COALESCE(c.title, '')
-             FROM messages m
+             FROM (SELECT id, conversation_id, idx, content, created_at
+                   FROM messages
+                   WHERE {page_lower_sql}id <= ?) m
              LEFT JOIN conversations c ON m.conversation_id = c.id
              LEFT JOIN sources s ON c.source_id = s.id
              LEFT JOIN agents a ON c.agent_id = a.id
              LEFT JOIN workspaces w ON c.workspace_id = w.id
              WHERE 1=1"
         );
-        let mut params = Vec::new();
 
-        // Each keyset page bounds materialized rows, not corpus completeness.
-        // Apply every metadata filter before LIMIT so pages contain only rows
-        // whose title/content must actually be evaluated.
+        // Each page bounds materialized rows, not corpus completeness. Every
+        // metadata filter applies inside the page query, so only rows whose
+        // title/content must actually be evaluated leave SQLite.
         if !filters.agents.is_empty() {
             let placeholders = sql_placeholders(filters.agents.len());
             sql.push_str(&format!(" AND COALESCE(a.slug, '') IN ({placeholders})"));
@@ -8999,15 +9042,7 @@ impl SearchClient {
             }
         }
 
-        if let Some(after_message_id) = after_message_id {
-            sql.push_str(" AND m.id > ?");
-            params.push(ParamValue::from(after_message_id));
-        }
-
-        sql.push_str(" ORDER BY m.id LIMIT ?");
-        params.push(ParamValue::from(
-            i64::try_from(scan_page_rows).unwrap_or(i64::MAX),
-        ));
+        sql.push_str(" ORDER BY m.id");
         (sql, params)
     }
 
@@ -9148,7 +9183,7 @@ impl SearchClient {
                     0
                 },
             )
-            .saturating_add(2); // pagination cursor + page LIMIT
+            .saturating_add(2); // page bounds: the cursor and the page's last message id
         if fixed_param_count > SQLITE_MAX_VARIABLE_NUMBER {
             bail!(
                 "SQLite source-scan filters require {fixed_param_count} fixed parameters; maximum is {SQLITE_MAX_VARIABLE_NUMBER}"
@@ -9177,12 +9212,27 @@ impl SearchClient {
         for session_path_chunk in session_path_chunks {
             let mut after_message_id = None;
             loop {
+                // The page is the next `scan_page_rows` message ids; the
+                // filtered rows within it come from a second, bounded query.
+                // Termination and the cursor follow the ids, never the
+                // filtered rows: a page whose rows all fail the filters is
+                // not the end of the archive.
+                let page_ids = Self::sqlite_message_scan_page_ids(
+                    conn,
+                    after_message_id,
+                    request.scan_page_rows,
+                )?;
+                let page_len = page_ids.len();
+                let Some(&next_after_message_id) = page_ids.last() else {
+                    break;
+                };
+                drop(page_ids);
                 let (sql, params) = Self::sqlite_message_scan_query_sql_for_session_paths(
                     request.field_mask,
                     request.filters,
                     session_path_chunk,
                     after_message_id,
-                    request.scan_page_rows,
+                    next_after_message_id,
                 );
                 let page_rows = franken_query_map_collect_retry(conn, &sql, &params, |row| {
                     Ok((
@@ -9204,8 +9254,6 @@ impl SearchClient {
                         row.get_typed(13)?,
                     ))
                 })?;
-                let page_len = page_rows.len();
-                let next_after_message_id = page_rows.last().map(|row| row.0.0);
 
                 for row in page_rows {
                     if let Some(hit) =
@@ -9221,9 +9269,6 @@ impl SearchClient {
                 if page_len < request.scan_page_rows {
                     break;
                 }
-                let Some(next_after_message_id) = next_after_message_id else {
-                    break;
-                };
                 if after_message_id.is_some_and(|previous| next_after_message_id <= previous) {
                     bail!(
                         "SQLite source-scan pagination did not advance beyond message id {next_after_message_id}"
@@ -16096,7 +16141,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_message_scan_pushes_all_filters_before_page_limit() {
+    fn sqlite_message_scan_pushes_all_filters_into_the_bounded_page() {
         let filters = SearchFilters {
             agents: HashSet::from(["codex".to_string()]),
             workspaces: HashSet::from(["/workspace".to_string()]),
@@ -16107,9 +16152,16 @@ mod tests {
         };
         let (sql, params) =
             SearchClient::sqlite_message_scan_query_sql(FieldMask::FULL, &filters, 7);
-        let limit_pos = sql
-            .find(" ORDER BY m.id LIMIT ?")
-            .expect("bounded scan limit");
+        // The page must be a bare rowid range: FrankenSQLite full-scans a
+        // rowid range that shares its WHERE with anything else, which made
+        // every page read the whole `messages` table.
+        let page_end = sql
+            .find("WHERE id <= ?) m")
+            .expect("the page is a bare rowid range in a subquery");
+        assert!(
+            !sql.contains("LIMIT"),
+            "the page is bounded by its id range, not by LIMIT: {sql}"
+        );
 
         for predicate in [
             "COALESCE(a.slug, '') IN (?)",
@@ -16121,11 +16173,16 @@ mod tests {
         ] {
             let predicate_pos = sql.find(predicate).expect("source-scan filter predicate");
             assert!(
-                predicate_pos < limit_pos,
-                "filter predicate must precede the bounded scan limit: {predicate}"
+                predicate_pos > page_end,
+                "filter predicate must apply outside the page subquery: {predicate}"
             );
         }
-        assert_eq!(params.len(), 7, "six filter values plus scan limit");
+        assert_eq!(params.len(), 7, "the page bound plus six filter values");
+        assert_eq!(
+            params.first(),
+            Some(&ParamValue::from(7_i64)),
+            "the page bound binds first, as it comes first in the SQL text"
+        );
 
         let (local_sql, _) = SearchClient::sqlite_message_scan_query_sql(
             FieldMask::FULL,

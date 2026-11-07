@@ -419,6 +419,77 @@ fn codex_facts_segment_scoped_call_ids_and_coverage() {
 }
 
 // ---------------------------------------------------------------------------
+// Codex agent_message items: `response_item` inter-agent handoffs carry the
+// text in content[].input_text parts (the `event_msg` form keeps a bare
+// `message` string); a record with no usable text stays malformed.
+// ---------------------------------------------------------------------------
+
+fn codex_agent_message_packet(record: Value) -> ConversationPacket {
+    packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![msg(0, "assistant", "handoff body", record)],
+    )
+}
+
+#[test]
+fn codex_agent_message_response_item_reads_content_parts() {
+    let publication = extract_session_facts(
+        &codex_agent_message_packet(json!({
+            "type": "response_item",
+            "payload": {
+                "type": "agent_message",
+                "role": "agent",
+                "content": [{"type": "input_text", "text": "subagent handoff body"}]
+            }
+        })),
+        "codex",
+    );
+    let chat = coverage(&publication, "chat").expect("chat coverage");
+    assert_eq!(chat.state, "complete", "chat: {chat:?}");
+    assert!(
+        chat.reasons.is_empty(),
+        "agent_message content parts must not be malformed: {:?}",
+        chat.reasons
+    );
+}
+
+#[test]
+fn codex_agent_message_event_msg_keeps_bare_message_string() {
+    let publication = extract_session_facts(
+        &codex_agent_message_packet(json!({
+            "type": "event_msg",
+            "payload": {"type": "agent_message", "message": "inter-agent note"}
+        })),
+        "codex",
+    );
+    let chat = coverage(&publication, "chat").expect("chat coverage");
+    assert_eq!(chat.state, "complete", "chat: {chat:?}");
+}
+
+#[test]
+fn codex_agent_message_without_usable_text_stays_malformed() {
+    let publication = extract_session_facts(
+        &codex_agent_message_packet(json!({
+            "type": "response_item",
+            "payload": {
+                "type": "agent_message",
+                "role": "agent",
+                "content": [{"type": "input_text"}]
+            }
+        })),
+        "codex",
+    );
+    let chat = coverage(&publication, "chat").expect("chat coverage");
+    assert_eq!(chat.state, "unavailable", "chat: {chat:?}");
+    assert!(
+        chat.reasons.iter().any(|r| r == "codex_message_malformed"),
+        "chat reasons: {:?}",
+        chat.reasons
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Antigravity fixture: `agy_type` envelopes, `cass.invocations` calls,
 // TOOL_OUTPUT/VIEW_FILE/RUN_COMMAND results, explicit exit codes only where
 // recorded, unlinked outputs, thinking hints, unknown-kind events.

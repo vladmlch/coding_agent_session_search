@@ -1232,6 +1232,12 @@ fn fetch_bounded_semantic_candidate_conversation_ids(
         // conversations, so global message-id order is not necessarily
         // conversation-id order, while the durable conversation checkpoint
         // must advance in ascending order without skipping an older candidate.
+        //
+        // The WHERE must stay the bare rowid range, with the conversation
+        // bound applied in the row callback: FrankenSQLite seeks a rowid range
+        // only when nothing else is in the WHERE. `AND conversation_id > ?2`
+        // turned every batch into a full `messages` scan (on a 496,736-message
+        // archive: about 1 s warm and 7 s cold per batch, versus 0.5 ms).
         let mut selected = BTreeSet::new();
         let mut rows_scanned = 0_usize;
         storage
@@ -1239,13 +1245,13 @@ fn fetch_bounded_semantic_candidate_conversation_ids(
             .query_with_params_for_each(
                 "SELECT conversation_id
                  FROM messages NOT INDEXED
-                 WHERE id > ?1 AND conversation_id > ?2",
-                &[
-                    SqliteValue::from(after_message_id),
-                    SqliteValue::from(after_conversation_id),
-                ],
+                 WHERE id > ?1",
+                &[SqliteValue::from(after_message_id)],
                 |row| {
                     let conversation_id: i64 = row.get_typed(0)?;
+                    if conversation_id <= after_conversation_id {
+                        return Ok(());
+                    }
                     rows_scanned = rows_scanned.saturating_add(1);
                     if selected.contains(&conversation_id) {
                         return Ok(());
