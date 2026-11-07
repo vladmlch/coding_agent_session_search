@@ -9,11 +9,12 @@
 //! oversized file fails as soon as a stage lands it rather than at the
 //! end of the program.
 //!
-//! Exactly two temporary exemptions are authorized by the plan, each
-//! bound to the stage at which it must be gone:
-//!   - `src/lib.rs` through stage 6 (the thin-shim cleanup stage),
-//!   - `src/doctor/run.rs` through stage 5 (the DoctorRun structural
-//!     decomposition stage).
+//! Exactly one temporary exemption remains, bound to the stage at which
+//! it must be gone:
+//!   - `src/lib.rs` through stage 6 (the thin-shim cleanup stage).
+//!   - `src/doctor/run.rs` was exempt through stage 5 (the DoctorRun
+//!     structural decomposition stage); stage 5 landed it and the cover
+//!     is removed.
 //!
 //! When SPLIT_STAGE advances past an exemption's stage the file loses
 //! its cover and must satisfy BUDGET like everything else; past stage 6
@@ -28,7 +29,7 @@ const BUDGET: usize = 2000;
 /// Current progress through the split program (plan §8 stage order).
 /// Stages 5 and 6 are manual; SPLIT_STAGE records how far the move-only
 /// applies have landed so exemptions age out correctly.
-const SPLIT_STAGE: &str = "4";
+const SPLIT_STAGE: &str = "5";
 
 const STAGE_ORDER: &[&str] = &[
     "1a", "1b", "1c", "2a", "2b", "2c", "2d", "2e", "2f", "2g", "3a", "3b", "3c", "3d", "4", "5",
@@ -52,8 +53,8 @@ const FILES: &[&str] = &[
 ];
 
 /// Temporary exemptions: (path, last stage at which it may exceed the
-/// budget). Only the two plan-authorized exceptions may appear here.
-const TEMPORARY_EXCEPTIONS: &[(&str, &str)] = &[("src/lib.rs", "6"), ("src/doctor/run.rs", "5")];
+/// budget). Only plan-authorized exceptions may appear here.
+const TEMPORARY_EXCEPTIONS: &[(&str, &str)] = &[("src/lib.rs", "6")];
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
@@ -153,12 +154,14 @@ fn lib_rs_split_files_respect_size_budget() {
 }
 
 #[test]
-fn temporary_exceptions_are_exactly_the_two_plan_authorized() {
+fn temporary_exceptions_are_exactly_the_plan_authorized() {
     // The only sanctioned exceptions, each bound to its plan stage.
+    // lib-split 5 removed the src/doctor/run.rs cover when the DoctorRun
+    // decomposition landed; src/lib.rs through stage 6 remains.
     assert_eq!(
         TEMPORARY_EXCEPTIONS,
-        &[("src/lib.rs", "6"), ("src/doctor/run.rs", "5")],
-        "exception list drifted — only the two plan-authorized \
+        &[("src/lib.rs", "6")],
+        "exception list drifted — only plan-authorized \
          stage-bound exceptions are allowed"
     );
     for (_, through) in TEMPORARY_EXCEPTIONS {
@@ -200,19 +203,20 @@ fn budget_rejects_oversized_unexempt_file() {
         past_end.iter().any(|l| l.contains("src/lib.rs")),
         "src/lib.rs exemption expires after stage 6: {past_end:?}"
     );
-    // A stage-5-expired doctor/run.rs exemption is flagged at stage 6 too.
+    // lib-split 5 removed the doctor/run.rs exemption — an oversized
+    // run.rs is flagged at every stage from 5 onward.
     let run = tmp.join("src/doctor/run.rs");
     fs::create_dir_all(run.parent().unwrap()).unwrap();
     fs::write(&run, &blob).unwrap();
     let at_5 = oversized_in_scope(&tmp, "5");
     assert!(
-        !at_5.iter().any(|l| l.contains("run.rs")),
-        "doctor/run.rs exempt through stage 5: {at_5:?}"
+        at_5.iter().any(|l| l.contains("run.rs")),
+        "doctor/run.rs exemption removed in stage 5: {at_5:?}"
     );
     let at_6 = oversized_in_scope(&tmp, "6");
     assert!(
         at_6.iter().any(|l| l.contains("run.rs")),
-        "doctor/run.rs exemption expires after stage 5: {at_6:?}"
+        "doctor/run.rs stays budget-checked past stage 5: {at_6:?}"
     );
 
     // cleanup is best-effort in a test; failure is not fatal.
