@@ -79,7 +79,7 @@ diagnostic surfaces with zero in-tree consumers; retained as public library
 API (file deletion is out of scope without explicit authorization).
 `with_verified_bundle_for_deployment` is consumed by in-module tests.
 `explainability.rs` `run cass models install` card text is live local-command
-guidance, not stale. Exit-143 in `src/lib.rs` is really emitted: the
+guidance, not stale. Exit-143 in `src/indexer/stall_watchdog.rs` is really emitted: the
 `(signal(SignalKind::terminate()), 143)` tuple at
 `IndexShutdownSignals::new` carries the code as a runtime value through
 `received`/`poll_exit_code()` into five `CliError` constructions (index
@@ -285,52 +285,68 @@ Machine: macOS (Darwin arm64, Apple Silicon). Rust nightly-2026-08-31 (pinned).
 ## Mandatory checklist: every manually-maintained command list (Tasks 7–14)
 
 Task 6 built the single rejection mechanism (`REMOVED_COMMANDS` /
-`REMOVED_FLAGS` in `src/lib.rs`, kind `removed-command`). Removing a
+`REMOVED_FLAGS` in `src/cli/argv/normalize.rs`, kind `removed-command`). Removing a
 command from clap is **not** enough — the surfaces below enumerate
 commands, flags and workflows by hand and must be updated **in the same
 commit** that lands a `REMOVED_*` entry, plus the matching
 `REMOVED_COMMAND_CASES` row in `tests/cli_dispatch_coverage.rs` flips
-`pending: false`. Line numbers are the 2026-11-04 snapshot — locate by
-name.
+`pending: false`. Locate each item by name at its defining path.
 
-### `src/lib.rs`
+### `src/cli/` (definitions split out of `src/lib.rs`)
 
-- `Commands` enum variant + clap attributes — removing it automatically
-  drops the command from CLI parse, `--help`, `cass completions`,
-  `cass man`, and capabilities `commands[]` (all clap-derived).
-- `REMOVED_COMMANDS` / `REMOVED_FLAGS` (~line 6691) — append the entry;
-  `hint` may name a local equivalent (reported, never executed).
-- `CANONICAL_TOP_LEVEL_COMMANDS` (~line 6605) — drop the name;
+- `Commands` enum variant + clap attributes (`src/cli/args.rs`) — removing
+  it automatically drops the command from CLI parse, `--help`,
+  `cass completions`, `cass man`, and capabilities `commands[]` (all
+  clap-derived).
+- `REMOVED_COMMANDS` / `REMOVED_FLAGS` (`src/cli/argv/normalize.rs`) —
+  append the entry; `hint` may name a local equivalent (reported, never
+  executed).
+- `CANONICAL_TOP_LEVEL_COMMANDS` (`src/cli/argv/normalize.rs`) — drop the
+  name;
   `removed_invocation_tests::removed_tables_stay_disjoint_from_live_lists`
   pins the disjointness invariant.
-- `SIDE_EFFECT_EXACT_ONLY_COMMANDS` (~line 6664) — drop if present.
-- `SUBCOMMAND_ALIASES` (inside `normalize_args`, ~line 5664) — drop every
-  alias whose target is now removed.
-- `KNOWN_LONG_FLAGS` (inside `normalize_args`, ~line 5499) — drop removed
-  flags so `-mirror`/`--MIRROR`/`--mirror_x` stop normalizing into live
-  flags.
-- `describe_command` (~line 25390) — drop the variant arm.
-- `format_missing_subcommand_error` (~line 6243) — drop removed
-  groups/subcommands from its listings.
-- `robot_docs_topic_shorthand` + `recover_structured_help_requests`
-  (~lines 3752, 4060) — drop shorthand words routing to removed topics.
-- `print_robot_help` + `print_robot_docs` (~line 27750) — the `commands`,
-  `env`, `sources`, `guide`, `examples`, `exit-codes` topic bodies are
+- `SIDE_EFFECT_EXACT_ONLY_COMMANDS` (`src/cli/argv/normalize.rs`) — drop
+  if present.
+- `SUBCOMMAND_ALIASES` (inside `normalize_args`,
+  `src/cli/argv/normalize.rs`) — drop every alias whose target is now
+  removed.
+- `KNOWN_LONG_FLAGS` (inside `normalize_args`,
+  `src/cli/argv/normalize.rs`) — drop removed flags so
+  `-mirror`/`--MIRROR`/`--mirror_x` stop normalizing into live flags.
+- `describe_command` (`src/cli/output/describe_command.rs`) — drop the
+  variant arm.
+- `format_missing_subcommand_error` (`src/cli/argv/normalize.rs`) — drop
+  removed groups/subcommands from its listings.
+- `robot_docs_topic_shorthand`
+  (`src/cli/argv/root_structured_triage_rewrite.rs`) +
+  `recover_structured_help_requests`
+  (`src/cli/argv/structured_output_request_span_at.rs`) — drop shorthand
+  words routing to removed topics.
+- `print_robot_help` + `print_robot_docs`
+  (`src/cli/output/extract_search_terms.rs`) — the `commands`, `env`,
+  `sources`, `guide`, `examples`, `exit-codes` topic bodies are
   hand-written line lists: remove every removed invocation/flag mention.
-- `heuristic_parse_recovery` `known_flags` (~line 7185) — drop removed
-  flags so a flag typo cannot correct into a removed flag.
-- Dispatch arms: `execute_cli`, `try_run_with_parsed_fast` (e.g. the swarm
-  observer fast path), `command_uses_current_thread` in `src/main.rs`.
-- Capabilities builders: `build_workflow_capabilities` (~99067),
-  `build_mistake_recovery_capabilities` (~99171),
-  `build_env_var_capabilities` (~98712), `build_global_flag_schemas`
-  (~98445), `build_exit_code_capabilities` (~98572), the `features` list
-  (~99500), `capabilities_connector_names` (~86701).
-- Triage/readiness: `readiness_recommended_commands` (~24667),
-  `triage_recovery_recommended_commands` (~88490), `starter_workflows`
-  (~88773), `response_schema_recommended_commands` (~100713).
-- Introspect: every `response_schema_*` describing the removed surface
-  (~100596–102203+) and its registration in the introspect payload.
+- `heuristic_parse_recovery` `known_flags`
+  (`src/cli/argv/heuristic_parse_recovery.rs`) — drop removed flags so a
+  flag typo cannot correct into a removed flag.
+- Dispatch arms: `execute_cli` (`src/cli/dispatch.rs`),
+  `try_run_with_parsed_fast` (`src/cli/entry.rs`, e.g. the swarm observer
+  fast path), `command_uses_current_thread` in `src/main.rs`.
+- Capabilities builders
+  (`src/cli/commands/capabilities_introspect/capabilitiesresponse.rs`):
+  `build_workflow_capabilities`, `build_mistake_recovery_capabilities`,
+  `build_env_var_capabilities`, `build_global_flag_schemas`,
+  `build_exit_code_capabilities`, the `features` list,
+  `capabilities_connector_names`
+  (`src/doctor/lexical_cleanup_disposition_label.rs`).
+- Triage/readiness: `readiness_recommended_commands`
+  (`src/cli/state/semantic_readiness_from_state.rs`),
+  `triage_recovery_recommended_commands` and `starter_workflows`
+  (`src/cli/commands/status_health/probe_daemon_runtime_for_diagnostics.rs`),
+  `response_schema_recommended_commands`
+  (`src/robot_schema/response_schema_index_state.rs`).
+- Introspect: every `response_schema_*` (`src/robot_schema/`) describing
+  the removed surface and its registration in the introspect payload.
 - `src/main.rs` `raw_command_name` flag lists and the early-dispatch
   commands (`serve`, `archive`, `codex-layout-migrate`,
   `lexical-quarantine`, semantic-reclaim args) — only if one of those
@@ -699,7 +715,7 @@ Machine: macOS (Darwin 27.0.0 arm64, sw_vers 27.0.1). Rust nightly-2026-08-31 (p
   list absent from `Cargo.toml`/`Cargo.lock`; `url` only via
   `franken-agent-detection`; `semver` dev-only.
 - `removed_command_matrix_is_fully_active` — `REMOVED_COMMANDS` /
-  `REMOVED_FLAGS` live in `src/lib.rs`; all 26
+  `REMOVED_FLAGS` live in `src/cli/argv/normalize.rs`; all 26
   `REMOVED_COMMAND_CASES` rows `pending: false`.
 - `scanner_detects_synthetic_violations` — anti-tautology self-check:
   the scanner must fire on planted `Command::new("ssh")`,
@@ -791,7 +807,7 @@ from the removal commits, each fixed at its smallest point:
 
 - `src/model/cli_error_kind.rs` — `dc0286ff` added `ErrorKind::RemovedCommand`
   but never bumped `AUDITED_KIND_COUNT` (97→98) or its audit comment.
-- `src/lib.rs` `subcommand_robot_output_tests` — one case still parsed removed
+- `src/cli/commands/subcommand_robot_output_tests.rs` — one case still parsed removed
   `cass sources setup`; the match arm already expected `SourcesCommand::List`,
   so the argv is now `sources list`.
 - `src/search/e2e_scenarios.rs` — `7a87ffed` updated the CI scenario count

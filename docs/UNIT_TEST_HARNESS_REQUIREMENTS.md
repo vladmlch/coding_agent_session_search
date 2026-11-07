@@ -81,7 +81,7 @@ has the four categories present (or an explicit, justified N/A).
 ### 2. Command envelopes
 
 - **Home:** `src/robot_budget_envelope.rs`, `src/topology_budget.rs`, and the
-  robot-output paths in `src/lib.rs` (see [`ROBOT_MODE.md`](ROBOT_MODE.md),
+  robot-output paths in `src/cli/output/` (see [`ROBOT_MODE.md`](ROBOT_MODE.md),
   [`ERROR_CODES.md`](ERROR_CODES.md)).
 - **Happy:** safe next command is classified safe; a complete result yields a
   non-partial envelope; `err.kind` strings match the stable taxonomy.
@@ -108,7 +108,7 @@ has the four categories present (or an explicit, justified N/A).
 ### 4. Liveness / progress
 
 - **Home:** `src/search/progress_contract.rs` (+ watch-mode error envelopes in
-  `src/lib.rs`).
+  `src/cli/output/`).
 - **Happy:** heartbeat advances; a completed operation reports `complete`.
 - **Negative:** **stalled vs. slow vs. complete** are distinguished (a slow but
   advancing op is not reported stalled); watch-mode errors are parseable
