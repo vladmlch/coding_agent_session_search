@@ -60,6 +60,13 @@ const SCAN_SOURCES: &[&str] = &[
     "src/cli/commands/export_html.rs",
     "src/cli/commands/expand.rs",
     "src/cli/commands/timeline.rs",
+    "src/cli/commands/sources/run_sources_command.rs",
+    "src/cli/commands/models/run_models_command.rs",
+    "src/cli/commands/models/run_models_remove.rs",
+    "src/cli/commands/mappings.rs",
+    "src/cli/commands/daemon.rs",
+    "src/cli/commands/schedule.rs",
+    "src/cli/commands/subcommand_robot_output_tests.rs",
 ];
 
 fn scanned_source() -> String {

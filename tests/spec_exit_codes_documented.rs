@@ -252,6 +252,37 @@ const SOURCES: &[(&str, &str)] = &[
         "src/cli/commands/timeline.rs",
         include_str!("../src/cli/commands/timeline.rs"),
     ),
+    // lib-split 2g: sources/models/mappings/daemon/schedule owners carry the
+    // moved CliError construction sites plus one process::exit in the sources
+    // owner; the robot-output test mod holds a kind_str/CliErrorKind needle.
+    (
+        "src/cli/commands/sources/run_sources_command.rs",
+        include_str!("../src/cli/commands/sources/run_sources_command.rs"),
+    ),
+    (
+        "src/cli/commands/models/run_models_command.rs",
+        include_str!("../src/cli/commands/models/run_models_command.rs"),
+    ),
+    (
+        "src/cli/commands/models/run_models_remove.rs",
+        include_str!("../src/cli/commands/models/run_models_remove.rs"),
+    ),
+    (
+        "src/cli/commands/mappings.rs",
+        include_str!("../src/cli/commands/mappings.rs"),
+    ),
+    (
+        "src/cli/commands/daemon.rs",
+        include_str!("../src/cli/commands/daemon.rs"),
+    ),
+    (
+        "src/cli/commands/schedule.rs",
+        include_str!("../src/cli/commands/schedule.rs"),
+    ),
+    (
+        "src/cli/commands/subcommand_robot_output_tests.rs",
+        include_str!("../src/cli/commands/subcommand_robot_output_tests.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed

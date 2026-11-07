@@ -42,6 +42,13 @@ sources = [
   "src/cli/commands/export_html.rs",
   "src/cli/commands/expand.rs",
   "src/cli/commands/timeline.rs",
+  "src/cli/commands/sources/run_sources_command.rs",
+  "src/cli/commands/models/run_models_command.rs",
+  "src/cli/commands/models/run_models_remove.rs",
+  "src/cli/commands/mappings.rs",
+  "src/cli/commands/daemon.rs",
+  "src/cli/commands/schedule.rs",
+  "src/cli/commands/subcommand_robot_output_tests.rs",
 ]
 patterns = ["kind_str", "CliErrorKind::"]
 note = "error-kind scan: CliErrorKind literals, kind_str mapping, golden envelope"
@@ -89,6 +96,13 @@ sources = [
   "src/cli/commands/export_html.rs",
   "src/cli/commands/expand.rs",
   "src/cli/commands/timeline.rs",
+  "src/cli/commands/sources/run_sources_command.rs",
+  "src/cli/commands/models/run_models_command.rs",
+  "src/cli/commands/models/run_models_remove.rs",
+  "src/cli/commands/mappings.rs",
+  "src/cli/commands/daemon.rs",
+  "src/cli/commands/schedule.rs",
+  "src/cli/commands/subcommand_robot_output_tests.rs",
   "README.md",
   "AGENTS.md",
 ]
@@ -129,7 +143,7 @@ note = "doctor pass markers (pass-2/3 dispatch, pass-6 watch, pass-8 explain/cap
 
 [scanner.local_only_audit]
 test = "tests/local_only_audit.rs"
-sources = ["src/lib.rs", "tests/cli_dispatch_coverage.rs", "src/cli/commands/stats_diag_storage/run_stats.rs", "src/cli/commands/index/run_lexical_reconcile_cli.rs", "src/cli/paths/session_paths.rs"]
+sources = ["src/lib.rs", "tests/cli_dispatch_coverage.rs", "src/cli/commands/stats_diag_storage/run_stats.rs", "src/cli/commands/index/run_lexical_reconcile_cli.rs", "src/cli/paths/session_paths.rs", "src/cli/commands/sources/run_sources_command.rs", "src/cli/commands/subcommand_robot_output_tests.rs"]
 dirs = ["src"]
 patterns = ["REMOVED_COMMANDS", "REMOVED_FLAGS", "was removed"]
 note = "REMOVED_COMMANDS/REMOVED_FLAGS tables + removed-command diagnostic; recursive .rs scan of src/** plus cli_dispatch_coverage pending flag"
