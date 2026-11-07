@@ -3,3 +3,12 @@
 // -- lib-split module declarations --
 pub mod commands;
 pub mod paths;
+pub(crate) mod contract_version;
+pub mod args;
+pub mod args_sub;
+pub mod error;
+pub(crate) mod argv;
+pub mod entry;
+pub(crate) mod dispatch;
+pub(crate) mod state;
+pub(crate) mod output;
