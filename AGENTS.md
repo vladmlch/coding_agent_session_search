@@ -261,6 +261,30 @@ strip = false
 # Pair with: RUSTFLAGS="-C force-frame-pointers=yes" cargo bench --profile release-perf
 ```
 
+### Do not pay for LTO unless the result needs it (owner rule, 2026-11-07)
+
+All three optimized profiles above inherit `lto = true` + `codegen-units = 1`,
+which costs 20–40 min per build (far more on a loaded machine) versus roughly
+5–10 min without it. Build with LTO **only** when the measured number itself is
+the deliverable: a release binary, a bench-history ratchet, or the final
+same-session A/B behind a speed claim (RULE 0.5; both sides of the A/B use the
+same build settings).
+
+Everything else uses an optimized build with LTO off, through Cargo's
+environment overrides (no Cargo.toml change, and a separate target dir so the
+LTO artifacts are not invalidated):
+
+```bash
+CARGO_PROFILE_PROFILING_LTO=false CARGO_PROFILE_PROFILING_CODEGEN_UNITS=16 \
+  cargo build --profile profiling --bins
+```
+
+That covers profiling to find where time goes, real-archive reindexes run to
+check correctness or coverage, viewer-bridge probes, and any other run that
+needs optimized speed but not shipped-binary numbers. Never use a debug build
+for profiling or timing: it is 10–50x slower and unevenly so, so its profile
+points at costs that the optimized binary does not have.
+
 ---
 
 ## Code Editing Discipline
