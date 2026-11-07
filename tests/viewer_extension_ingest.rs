@@ -490,6 +490,213 @@ fn codex_agent_message_without_usable_text_stays_malformed() {
 }
 
 // ---------------------------------------------------------------------------
+// Unpaired tool calls. FAD's claude_code connector drops `tool_result`
+// content with no `text` part (ToolSearch `tool_reference` results, Read
+// `image` results), so for Claude an unpaired call never means session text
+// was lost: `tools` stays partial, the inventories stay complete. Codex
+// keeps the strict verdict — there the result record itself is missing
+// from storage, so its text really is gone.
+// ---------------------------------------------------------------------------
+
+fn claude_unpaired_call_packet() -> ConversationPacket {
+    let user = json!({
+        "type": "user", "uuid": "u1", "sessionId": "sess-2",
+        "message": {"role": "user", "content": [{"type": "text", "text": "search the tools"}]}
+    });
+    // A ToolSearch answer carries a `tool_reference` part with no text: FAD
+    // drops the tool_result record, so the call stays unpaired in the packet.
+    let call = json!({
+        "type": "assistant", "uuid": "a1", "sessionId": "sess-2",
+        "message": {"id": "m1", "role": "assistant", "model": "claude-opus-5",
+                    "content": [{"type": "tool_use", "id": "toolu_noresult",
+                                 "name": "ToolSearch", "input": {"query": "walrus"}}]}
+    });
+    packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![
+            msg(0, "user", "search the tools", user),
+            msg(1, "assistant", "", call),
+        ],
+    )
+}
+
+#[test]
+fn claude_unpaired_call_keeps_text_inventory_complete() {
+    let publication = extract_session_facts(&claude_unpaired_call_packet(), "claude_code");
+
+    // The pairing gap is real and stays visible on `tools`.
+    let tools = coverage(&publication, "tools").expect("tools coverage");
+    assert_eq!(tools.state, "partial", "tools: {tools:?}");
+    assert!(
+        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        "tools reasons: {:?}",
+        tools.reasons
+    );
+
+    // ...but no session text is missing: the dropped result had no text part.
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "complete", "text_inventory: {text:?}");
+    assert!(
+        !text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "text_inventory reasons: {:?}",
+        text.reasons
+    );
+    let blocks = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(blocks.state, "complete", "block_inventory: {blocks:?}");
+}
+
+fn codex_unpaired_call_packet() -> ConversationPacket {
+    packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "run the probe",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "run the probe"}}),
+            ),
+            // No function_call_output follows: the result record is missing
+            // from storage, so its text really is lost.
+            msg(
+                1,
+                "assistant",
+                "[Tool: shell]",
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_unpaired",
+                                   "name": "shell",
+                                   "arguments": "{\"command\": \"probe\"}",
+                                   "id": "resp-1"}}),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn codex_unpaired_call_still_marks_text_inventory_partial() {
+    let publication = extract_session_facts(&codex_unpaired_call_packet(), "codex");
+
+    let tools = coverage(&publication, "tools").expect("tools coverage");
+    assert_eq!(tools.state, "partial", "tools: {tools:?}");
+    assert!(
+        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        "tools reasons: {:?}",
+        tools.reasons
+    );
+
+    // Codex storage really loses the output record: session text is missing.
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "partial", "text_inventory: {text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "text_inventory reasons: {:?}",
+        text.reasons
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Claude known non-block records. FAD lifts queued_command attachment
+// prompts into user message content (cass GH #500), so their text is never
+// missing; compacted `{"cass":{…}}` extras already carry their partial
+// verdict through mark_compacted. Neither is an unknown shape.
+// ---------------------------------------------------------------------------
+
+fn claude_queued_command_packet() -> ConversationPacket {
+    // Verbatim FAD shape: the raw attachment record plus the cass provenance
+    // `queued_command_message` inserts; the prompt is the message content.
+    let attachment = json!({
+        "type": "attachment", "uuid": "q1", "sessionId": "sess-3",
+        "timestamp": "2026-09-24T10:00:12.000Z",
+        "attachment": {
+            "type": "queued_command", "prompt": "also check the walrus path",
+            "source_uuid": "src1", "commandMode": "prompt",
+            "origin": {"kind": "human"}
+        },
+        "cass": {"queued_command": {"command_mode": "prompt",
+                                    "authorship": "human", "source_uuid": "src1"}}
+    });
+    let reply = json!({
+        "type": "assistant", "uuid": "a1", "sessionId": "sess-3",
+        "message": {"id": "m1", "role": "assistant", "model": "claude-opus-5",
+                    "content": [{"type": "text", "text": "checked the walrus path"}]}
+    });
+    packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![
+            msg(0, "user", "also check the walrus path", attachment),
+            msg(1, "assistant", "checked the walrus path", reply),
+        ],
+    )
+}
+
+#[test]
+fn claude_queued_command_attachment_is_known_non_block() {
+    let publication = extract_session_facts(&claude_queued_command_packet(), "claude_code");
+
+    // The prompt text lives in the message content, so no scope may report
+    // an unknown shape for the attachment record.
+    for entry in &publication.coverage {
+        assert!(
+            !entry.reasons.iter().any(|r| r == "claude_shape_unknown"),
+            "{} must not be shape-unknown: {:?}",
+            entry.field,
+            entry.reasons
+        );
+    }
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "complete", "text_inventory: {text:?}");
+    let blocks = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(blocks.state, "complete", "block_inventory: {blocks:?}");
+
+    // The queued command is a real user turn, not a dropped record.
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("also check the walrus path")
+    );
+    assert_eq!(publication.turn_count, Some(1));
+}
+
+fn claude_compacted_extra_packet() -> ConversationPacket {
+    packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![msg(
+            0,
+            "user",
+            "the recorded structure was compacted away",
+            // Large-session compaction reduces extra to the `{"cass":{…}}`
+            // skeleton; the flattened text stays in the message content.
+            json!({"cass": {"model": "claude-opus-5"}}),
+        )],
+    )
+}
+
+#[test]
+fn claude_compacted_extra_stays_partial_not_unknown() {
+    let publication = extract_session_facts(&claude_compacted_extra_packet(), "claude_code");
+
+    // mark_compacted already recorded the partial verdict on every core
+    // scope; the skeleton shape must not raise it to unavailable.
+    for field in ["text_inventory", "block_inventory", "chat", "tools"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "extra_compacted"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+        assert!(
+            !entry.reasons.iter().any(|r| r == "claude_shape_unknown"),
+            "{field} must not be shape-unknown: {:?}",
+            entry.reasons
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Antigravity fixture: `agy_type` envelopes, `cass.invocations` calls,
 // TOOL_OUTPUT/VIEW_FILE/RUN_COMMAND results, explicit exit codes only where
 // recorded, unlinked outputs, thinking hints, unknown-kind events.

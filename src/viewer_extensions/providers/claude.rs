@@ -85,6 +85,14 @@ fn is_boundary(record: &Value) -> bool {
         || record.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
 }
 
+/// A `queued_command` attachment record: FAD's claude_code connector lifts
+/// the prompt into the message content as a user turn (cass GH #500), so the
+/// record carries no content blocks — a known non-block shape.
+fn is_queued_command_attachment(record: &Value) -> bool {
+    record.get("type").and_then(Value::as_str) == Some("attachment")
+        && record.pointer("/attachment/type").and_then(Value::as_str) == Some("queued_command")
+}
+
 /// `(requestId or message.id, message.id)` — the logical reply key.
 fn logical_key(record: &Value) -> Option<String> {
     let message = record.get("message")?.as_object()?;
@@ -342,7 +350,9 @@ fn part(
 pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
     let input = events(packet);
     let mut coverage = CoverageBuilder::new();
-    let mut tools = ToolCollector::new();
+    // The claude_code connector drops tool_result content with no text part,
+    // so an unpaired call never means session text was lost.
+    let mut tools = ToolCollector::new().unpaired_results_carry_no_text();
     let mut seen_blocks: HashSet<(u64, String, String)> = HashSet::new();
     let mut segment = 0_u64;
     let mut current_session: Option<String> = None;
@@ -358,7 +368,8 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
             deduped.push((event.idx, event.role, event.content));
             continue;
         }
-        if is_compacted_extra(record) {
+        let compacted = is_compacted_extra(record);
+        if compacted {
             coverage.mark_compacted("extra_compacted");
         }
         if let Some(model) = record
@@ -389,6 +400,14 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
             if top_level_result(event, record, &mut coverage, &mut tools)
                 || normalized_result(event, record, &mut coverage, &mut tools)
             {
+                continue;
+            }
+            if compacted || is_queued_command_attachment(record) {
+                // Known non-block shapes, not unknown ones: a compacted
+                // extra already carries its partial verdict above
+                // (mark_compacted — evidence is partial, not absent), and a
+                // queued_command attachment's text lives in the message
+                // content the connector lifted.
                 continue;
             }
             coverage.unknown("claude_shape_unknown");
