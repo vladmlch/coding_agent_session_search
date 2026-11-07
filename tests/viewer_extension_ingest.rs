@@ -1456,8 +1456,8 @@ fn publish_reports_missing_extension_profile() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 use coding_agent_search::viewer_extensions::projection::{
-    ProjectionPublishOutcome, project_session_structure, publish_session_structure,
-    publish_structure_for_canonical_best_effort,
+    PROJECTION_VERSION, ProjectionPublishOutcome, project_session_structure,
+    publish_session_structure, publish_structure_for_canonical_best_effort,
 };
 
 fn members(
@@ -1585,6 +1585,81 @@ fn projection_claude_merges_stream_and_splits_blocks() {
     assert_eq!(structure.steps, again.steps);
     assert_eq!(structure.turns, again.turns);
     assert_eq!(structure.tool_calls, again.tool_calls);
+}
+
+#[test]
+fn cursor_projection_cass_invocations_are_tool_call_parts() {
+    // Cursor transcript tool messages archive their tool_use blocks under
+    // `cass.invocations` (the connector lifts every block; the ingest merge
+    // writes the envelope). For cursor that single-cass-key envelope is
+    // NOT a compaction skeleton — the invocations are the recorded calls —
+    // so the derived block inventory carries one tool_call part per
+    // invocation, call ids preserved, instead of degrading the record to
+    // its flattened text.
+    let packet = packet(
+        "cursor",
+        json!({"source": "cursor"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "synthetic prompt",
+                json!({"type": 1, "rawText": "synthetic prompt", "bubbleId": "b1"}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "[Tool: read_file - /tmp/synthetic.txt] [Tool: bash - ls /tmp]",
+                json!({"cass": {"invocations": [
+                    {"kind": "tool", "call_id": "call_synth_1", "name": "read_file",
+                     "input": {"file_path": "/tmp/synthetic.txt"}},
+                    {"kind": "tool", "call_id": "call_synth_2", "name": "bash",
+                     "input": {"command": "ls /tmp"}},
+                ]}}),
+            ),
+        ],
+    );
+    let facts = extract_session_facts(&packet, "cursor");
+    let structure = project_session_structure(&packet, &facts);
+
+    // Step 2 is the assistant turn: exactly one tool_call part per
+    // invocation, in recorded order; the flattened content is not
+    // double-counted as a text part beside them.
+    assert_eq!(
+        parts(&structure, 2),
+        vec![
+            ("tool_call", Some("call_synth_1"), 1),
+            ("tool_call", Some("call_synth_2"), 1),
+        ],
+        "{:?}",
+        structure.steps
+    );
+}
+
+#[test]
+fn codex_projection_compacted_skeleton_stays_text_only() {
+    // Codex compaction skeletons keep the flattened-text-only projection:
+    // for codex the single-cass-key envelope means the raw response record
+    // was compacted away, so only the flattened text remains projectable.
+    let packet = packet(
+        "codex",
+        json!({"source": "codex"}),
+        vec![msg(
+            0,
+            "assistant",
+            "synthetic compacted codex reply",
+            json!({"cass": {"model": "synthetic-model"}}),
+        )],
+    );
+    let facts = extract_session_facts(&packet, "codex");
+    let structure = project_session_structure(&packet, &facts);
+
+    assert_eq!(
+        parts(&structure, 1),
+        vec![("text", None, 0)],
+        "{:?}",
+        structure.steps
+    );
 }
 
 #[test]
@@ -1838,7 +1913,10 @@ fn projection_publish_is_idempotent_replace_with_anchors() -> Result<()> {
         "SELECT projection_version, source_revision FROM viewer_session_projection \
          WHERE conversation_id = 1",
     )?;
-    ensure!(marker.get_typed::<i64>(0)? == 1, "projection_version");
+    ensure!(
+        marker.get_typed::<i64>(0)? == PROJECTION_VERSION,
+        "projection_version"
+    );
     let revision: i64 = db
         .storage
         .raw()
