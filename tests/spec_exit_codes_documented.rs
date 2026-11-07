@@ -332,6 +332,13 @@ const SOURCES: &[(&str, &str)] = &[
         "src/doctor/raw_mirror/query_doctor_raw_mirror_backfill_candidates.rs",
         include_str!("../src/doctor/raw_mirror/query_doctor_raw_mirror_backfill_candidates.rs"),
     ),
+    // lib-split 3d: run_doctor_impl + probe-integrity owners carry moved
+    // ExitCode literals and code:kind emission sites.
+    ("src/doctor/run.rs", include_str!("../src/doctor/run.rs")),
+    (
+        "src/doctor/probes/integrity.rs",
+        include_str!("../src/doctor/probes/integrity.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed
