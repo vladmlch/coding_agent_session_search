@@ -112,7 +112,9 @@ pub(crate) fn doctor_cleanup_apply_cannot_bypass_fs_mutation_executor_for_prunin
 
 #[test]
 pub(crate) fn run_doctor_stale_lock_removal_cannot_bypass_fs_mutation_executor() {
-    let source = include_str!("run.rs");
+    // lib-split 5: the stale-lock section moved out of run.rs into
+    // run/preflight.rs; concatenating keeps the original marker slicing intact.
+    let source = concat!(include_str!("run.rs"), include_str!("run/preflight.rs"));
     let run_doctor_start = source
         .rfind("fn run_doctor_impl(")
         .expect("run_doctor implementation");

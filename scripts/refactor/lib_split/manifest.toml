@@ -82,6 +82,15 @@ to = [ "src/doctor/run.rs" ]
 markers = [ "fn run_doctor_impl" ]
 
 [[retarget]]
+test = "run_doctor_stale_lock_removal_cannot_bypass_fs_mutation_executor"
+test_file = "src/doctor/doctor_asset_taxonomy_tests_part_4.rs"
+stage = "5"
+find = "include_str!(\"run.rs\")"
+with = "concat!(include_str!(\"run.rs\"), include_str!(\"run/preflight.rs\"))"
+to = [ "src/doctor/run.rs", "src/doctor/run/preflight.rs" ]
+markers = [ "fn run_doctor_impl", "execute_doctor_fs_mutation", "RemoveStaleLegacyIndexLock" ]
+
+[[retarget]]
 test = "legacy_cli_dispatch_routes_through_typed_doctor_module"
 test_file = "src/doctor.rs"
 stage = "3d"
@@ -106,6 +115,15 @@ stage = "3d"
 find = "format!(\"{manifest}/src/lib.rs\")"
 with = "format!(\"{manifest}/src/doctor/run.rs\")"
 to = [ "src/doctor/run.rs" ]
+markers = [ "\"schema_version\": 2,", "\"doctor_contract_version\": 1," ]
+
+[[retarget]]
+test = "pass7_fixture_fm_cli_robot_schema_version_missing_doctor_root"
+test_file = "src/doctor_chokepoint.rs"
+stage = "5"
+find = "format!(\"{manifest}/src/doctor/run.rs\")"
+with = "format!(\"{manifest}/src/doctor/run/report.rs\")"
+to = [ "src/doctor/run/report.rs" ]
 markers = [ "\"schema_version\": 2,", "\"doctor_contract_version\": 1," ]
 
 [[retarget]]
