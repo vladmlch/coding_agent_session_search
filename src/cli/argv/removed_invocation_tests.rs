@@ -3,335 +3,314 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
+pub(crate) fn argv(words: &[&str]) -> Vec<String> {
+    words.iter().map(ToString::to_string).collect()
+}
 
-
-
-    
-
-    pub(crate) fn argv(words: &[&str]) -> Vec<String> {
-        words.iter().map(ToString::to_string).collect()
-    }
-
-
-    pub(crate) const DEMO_COMMANDS: &[RemovedCommand] = &[
-        RemovedCommand {
-            path: &["swarm"],
-            hint: None,
-        },
-        RemovedCommand {
-            path: &["upgrade"],
-            hint: Some("`cargo install --path . --locked`"),
-        },
-        RemovedCommand {
-            path: &["sources", "sync"],
-            hint: None,
-        },
-    ];
-
-
-    pub(crate) const DEMO_FLAGS: &[RemovedFlag] = &[
-        RemovedFlag {
-            path: &["pages"],
-            flag: "target",
-            values: Some(&["github", "cloudflare"]),
-            hint: Some("`cass pages --export-only` for a local archive"),
-        },
-        RemovedFlag {
-            path: &["models", "install"],
-            flag: "mirror",
-            values: None,
-            hint: Some("`cass models install --from-file DIR`"),
-        },
-    ];
-
-
-    #[test]
-    pub(crate) fn empty_tables_never_reject() {
-        for args in [
-            argv(&["cass", "swarm", "status"]),
-            argv(&["cass", "sources", "sync"]),
-            argv(&["cass", "pages", "--target", "github"]),
-            argv(&["cass", "search", "swarm"]),
-        ] {
-            assert!(
-                removed_invocation_error(&args, &[], &[]).is_none(),
-                "empty tables must not reject {args:?}"
-            );
-        }
-    }
-
-
-    #[test]
-    pub(crate) fn exact_and_case_variant_commands_reject() {
-        for args in [
-            argv(&["cass", "swarm"]),
-            argv(&["cass", "swarm", "status", "--json"]),
-            argv(&["cass", "Swarm", "status"]),
-            argv(&["cass", "--json", "swarm", "status"]),
-            argv(&["cass", "--data-dir", "/tmp/x", "swarm"]),
-            argv(&["cass", "upgrade", "--check"]),
-        ] {
-            let error = removed_invocation_error(&args, DEMO_COMMANDS, &[])
-                .unwrap_or_else(|| panic!("{args:?} must be rejected"));
-            assert_eq!(error.code, 2);
-            assert_eq!(error.kind, CliErrorKind::RemovedCommand.kind_str());
-            assert!(!error.retryable);
-        }
-        let error =
-            removed_invocation_error(&argv(&["cass", "swarm", "status"]), DEMO_COMMANDS, &[])
-                .expect("swarm status rejected");
-        assert_eq!(
-            error.message,
-            "`cass swarm` was removed: cass runs fully local-only"
-        );
-        // The removed path is named, not the extra arguments.
-        assert!(error.hint.is_none());
-    }
-
-
-    #[test]
-    pub(crate) fn command_pairs_reject_only_the_named_pair() {
-        let rejected =
-            removed_invocation_error(&argv(&["cass", "sources", "sync"]), DEMO_COMMANDS, &[]);
-        assert!(rejected.is_some(), "sources sync must be rejected");
-        assert_eq!(
-            rejected.unwrap().message,
-            "`cass sources sync` was removed: cass runs fully local-only"
-        );
-        for args in [
-            argv(&["cass", "sources"]),
-            argv(&["cass", "sources", "list"]),
-            argv(&["cass", "sources", "syncer"]),
-        ] {
-            assert!(
-                removed_invocation_error(&args, DEMO_COMMANDS, &[]).is_none(),
-                "{args:?} is a live invocation and must not be rejected"
-            );
-        }
-    }
-
-
-    #[test]
-    pub(crate) fn typos_of_removed_names_resolve_to_the_removed_error() {
-        let error = removed_invocation_error(&argv(&["cass", "swarn"]), DEMO_COMMANDS, &[])
-            .expect("swarn resolves to removed swarm");
-        assert_eq!(error.kind, CliErrorKind::RemovedCommand.kind_str());
-        assert_eq!(
-            error.message,
-            "`cass swarn` resolves to `cass swarm`, which was removed: cass runs fully local-only"
-        );
-    }
-
-
-    #[test]
-    pub(crate) fn typos_closer_to_live_commands_are_not_rejected() {
-        // `serach` is distance 1 from live `search` and distance >= 4 from
-        // every demo removal — the live correction must still win.
-        assert!(
-            removed_invocation_error(&argv(&["cass", "serach"]), DEMO_COMMANDS, &[]).is_none(),
-            "a typo closer to a live command keeps the live typo-recovery path"
-        );
-    }
-
-
-    #[test]
-    pub(crate) fn removed_name_as_search_argument_is_not_rejected() {
-        // `swarm` here is a query word, not the command position.
-        assert!(
-            removed_invocation_error(&argv(&["cass", "search", "swarm"]), DEMO_COMMANDS, &[])
-                .is_none(),
-            "a removed name in argument position must not reject the live command"
-        );
-        assert!(
-            removed_invocation_error(
-                &argv(&["cass", "pack", "sources", "sync"]),
-                DEMO_COMMANDS,
-                &[]
-            )
-            .is_none(),
-            "removed pair words under a different command must not reject"
-        );
-    }
-
-
-    #[test]
-    pub(crate) fn removed_flags_reject_by_presence_or_value() {
-        // Value-restricted flag: only the listed values are rejected.
-        for args in [
-            argv(&["cass", "pages", "--target", "github"]),
-            argv(&["cass", "pages", "--target=github"]),
-            argv(&["cass", "pages", "--target", "CLOUDFLARE"]),
-            argv(&["cass", "pages", "-target", "github"]),
-        ] {
-            let error = removed_invocation_error(&args, &[], DEMO_FLAGS)
-                .unwrap_or_else(|| panic!("{args:?} must be rejected"));
-            assert_eq!(error.code, 2);
-            assert_eq!(error.kind, CliErrorKind::RemovedCommand.kind_str());
-        }
-        let error = removed_invocation_error(
-            &argv(&["cass", "pages", "--target", "github"]),
-            &[],
-            DEMO_FLAGS,
-        )
-        .expect("pages --target github rejected");
-        assert_eq!(
-            error.message,
-            "`--target github` on `cass pages` was removed: cass runs fully local-only"
-        );
-        assert_eq!(
-            error.hint.as_deref(),
-            Some("local equivalent: `cass pages --export-only` for a local archive")
-        );
-        // Surviving values of the same flag stay live.
-        assert!(
-            removed_invocation_error(
-                &argv(&["cass", "pages", "--target", "local"]),
-                &[],
-                DEMO_FLAGS
-            )
-            .is_none(),
-            "an allowed --target value must not be rejected"
-        );
-        // Presence rejection: `models install --mirror X`.
-        for args in [
-            argv(&["cass", "models", "install", "--mirror", "X"]),
-            argv(&["cass", "models", "install", "--mirror=X"]),
-        ] {
-            let error = removed_invocation_error(&args, &[], DEMO_FLAGS)
-                .unwrap_or_else(|| panic!("{args:?} must be rejected"));
-            assert_eq!(
-                error.hint.as_deref(),
-                Some("local equivalent: `cass models install --from-file DIR`")
-            );
-        }
-        // The flag is only removed on its own path.
-        assert!(
-            removed_invocation_error(
-                &argv(&["cass", "models", "verify", "--mirror", "X"]),
-                &[],
-                DEMO_FLAGS
-            )
-            .is_none(),
-            "--mirror on a different command path must not reject"
-        );
-        assert!(
-            removed_invocation_error(
-                &argv(&["cass", "pages", "--target", "github", "--", "x"]),
-                &[],
-                DEMO_FLAGS
-            )
-            .is_some()
-                || removed_invocation_error(
-                    &argv(&["cass", "pages", "--", "--target", "github"]),
-                    &[],
-                    DEMO_FLAGS
-                )
-                .is_none(),
-            "tokens after `--` are never flags"
-        );
-    }
-
-
-    /// The disjointness invariant behind
-    /// `removed_tables_stay_disjoint_from_live_lists`, taking the table so
-    /// tests can prove a pair entry under a live parent is harmless. Only
-    /// one-word paths are checked: `["sources","sync"]` removes that pair
-    /// alone — `sources` stays live, listed, and correctable by design, so
-    /// requiring the parent word out of CANONICAL would break the table.
-    pub(crate) fn assert_disjoint_from_live_lists(removed_commands: &[RemovedCommand]) {
-        // The same commit that adds a one-word REMOVED_COMMANDS entry must
-        // drop the name from CANONICAL_TOP_LEVEL_COMMANDS — a name in both
-        // lists would both reject and still advertise/correct to the
-        // command.
-        for entry in removed_commands {
-            if entry.path.len() != 1 {
-                continue;
-            }
-            let top = entry.path[0];
-            assert!(
-                !CANONICAL_TOP_LEVEL_COMMANDS
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(top)),
-                "removed command `{top}` still listed in CANONICAL_TOP_LEVEL_COMMANDS"
-            );
-            assert!(
-                !SIDE_EFFECT_EXACT_ONLY_COMMANDS
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(top)),
-                "removed command `{top}` still listed in SIDE_EFFECT_EXACT_ONLY_COMMANDS"
-            );
-        }
-        // Fuzzy correction can never return a removed name.
-        for entry in removed_commands {
-            if entry.path.len() != 1 {
-                continue;
-            }
-            let top = entry.path[0];
-            for probe in [
-                top.to_string(),
-                top[..top.len().saturating_sub(1)].to_string(),
-            ] {
-                assert_ne!(
-                    closest_top_level_command_in(&probe, removed_commands),
-                    Some(top),
-                    "removed command `{top}` is still a typo-correction candidate"
-                );
-            }
-        }
-    }
-
-
-    #[test]
-    pub(crate) fn removed_tables_stay_disjoint_from_live_lists() {
-        assert_disjoint_from_live_lists(REMOVED_COMMANDS);
-    }
-
-
-    /// The exact row task 9 lands while `sources` stays a live top-level
-    /// command: the pair is removed, the parent is not.
-    pub(crate) const PAIR_UNDER_LIVE_PARENT: &[RemovedCommand] = &[RemovedCommand {
+pub(crate) const DEMO_COMMANDS: &[RemovedCommand] = &[
+    RemovedCommand {
+        path: &["swarm"],
+        hint: None,
+    },
+    RemovedCommand {
+        path: &["upgrade"],
+        hint: Some("`cargo install --path . --locked`"),
+    },
+    RemovedCommand {
         path: &["sources", "sync"],
         hint: None,
-    }];
+    },
+];
 
+pub(crate) const DEMO_FLAGS: &[RemovedFlag] = &[
+    RemovedFlag {
+        path: &["pages"],
+        flag: "target",
+        values: Some(&["github", "cloudflare"]),
+        hint: Some("`cass pages --export-only` for a local archive"),
+    },
+    RemovedFlag {
+        path: &["models", "install"],
+        flag: "mirror",
+        values: None,
+        hint: Some("`cass models install --from-file DIR`"),
+    },
+];
 
-    #[test]
-    pub(crate) fn pair_entry_leaves_its_live_parent_correctable() {
-        // The exclusion helper scopes to one-word paths only.
+#[test]
+pub(crate) fn empty_tables_never_reject() {
+    for args in [
+        argv(&["cass", "swarm", "status"]),
+        argv(&["cass", "sources", "sync"]),
+        argv(&["cass", "pages", "--target", "github"]),
+        argv(&["cass", "search", "swarm"]),
+    ] {
         assert!(
-            !is_removed_command_name("sources", PAIR_UNDER_LIVE_PARENT),
-            "a removed pair must not mark its live parent as removed"
+            removed_invocation_error(&args, &[], &[]).is_none(),
+            "empty tables must not reject {args:?}"
+        );
+    }
+}
+
+#[test]
+pub(crate) fn exact_and_case_variant_commands_reject() {
+    for args in [
+        argv(&["cass", "swarm"]),
+        argv(&["cass", "swarm", "status", "--json"]),
+        argv(&["cass", "Swarm", "status"]),
+        argv(&["cass", "--json", "swarm", "status"]),
+        argv(&["cass", "--data-dir", "/tmp/x", "swarm"]),
+        argv(&["cass", "upgrade", "--check"]),
+    ] {
+        let error = removed_invocation_error(&args, DEMO_COMMANDS, &[])
+            .unwrap_or_else(|| panic!("{args:?} must be rejected"));
+        assert_eq!(error.code, 2);
+        assert_eq!(error.kind, CliErrorKind::RemovedCommand.kind_str());
+        assert!(!error.retryable);
+    }
+    let error = removed_invocation_error(&argv(&["cass", "swarm", "status"]), DEMO_COMMANDS, &[])
+        .expect("swarm status rejected");
+    assert_eq!(
+        error.message,
+        "`cass swarm` was removed: cass runs fully local-only"
+    );
+    // The removed path is named, not the extra arguments.
+    assert!(error.hint.is_none());
+}
+
+#[test]
+pub(crate) fn command_pairs_reject_only_the_named_pair() {
+    let rejected =
+        removed_invocation_error(&argv(&["cass", "sources", "sync"]), DEMO_COMMANDS, &[]);
+    assert!(rejected.is_some(), "sources sync must be rejected");
+    assert_eq!(
+        rejected.unwrap().message,
+        "`cass sources sync` was removed: cass runs fully local-only"
+    );
+    for args in [
+        argv(&["cass", "sources"]),
+        argv(&["cass", "sources", "list"]),
+        argv(&["cass", "sources", "syncer"]),
+    ] {
+        assert!(
+            removed_invocation_error(&args, DEMO_COMMANDS, &[]).is_none(),
+            "{args:?} is a live invocation and must not be rejected"
+        );
+    }
+}
+
+#[test]
+pub(crate) fn typos_of_removed_names_resolve_to_the_removed_error() {
+    let error = removed_invocation_error(&argv(&["cass", "swarn"]), DEMO_COMMANDS, &[])
+        .expect("swarn resolves to removed swarm");
+    assert_eq!(error.kind, CliErrorKind::RemovedCommand.kind_str());
+    assert_eq!(
+        error.message,
+        "`cass swarn` resolves to `cass swarm`, which was removed: cass runs fully local-only"
+    );
+}
+
+#[test]
+pub(crate) fn typos_closer_to_live_commands_are_not_rejected() {
+    // `serach` is distance 1 from live `search` and distance >= 4 from
+    // every demo removal — the live correction must still win.
+    assert!(
+        removed_invocation_error(&argv(&["cass", "serach"]), DEMO_COMMANDS, &[]).is_none(),
+        "a typo closer to a live command keeps the live typo-recovery path"
+    );
+}
+
+#[test]
+pub(crate) fn removed_name_as_search_argument_is_not_rejected() {
+    // `swarm` here is a query word, not the command position.
+    assert!(
+        removed_invocation_error(&argv(&["cass", "search", "swarm"]), DEMO_COMMANDS, &[]).is_none(),
+        "a removed name in argument position must not reject the live command"
+    );
+    assert!(
+        removed_invocation_error(
+            &argv(&["cass", "pack", "sources", "sync"]),
+            DEMO_COMMANDS,
+            &[]
+        )
+        .is_none(),
+        "removed pair words under a different command must not reject"
+    );
+}
+
+#[test]
+pub(crate) fn removed_flags_reject_by_presence_or_value() {
+    // Value-restricted flag: only the listed values are rejected.
+    for args in [
+        argv(&["cass", "pages", "--target", "github"]),
+        argv(&["cass", "pages", "--target=github"]),
+        argv(&["cass", "pages", "--target", "CLOUDFLARE"]),
+        argv(&["cass", "pages", "-target", "github"]),
+    ] {
+        let error = removed_invocation_error(&args, &[], DEMO_FLAGS)
+            .unwrap_or_else(|| panic!("{args:?} must be rejected"));
+        assert_eq!(error.code, 2);
+        assert_eq!(error.kind, CliErrorKind::RemovedCommand.kind_str());
+    }
+    let error = removed_invocation_error(
+        &argv(&["cass", "pages", "--target", "github"]),
+        &[],
+        DEMO_FLAGS,
+    )
+    .expect("pages --target github rejected");
+    assert_eq!(
+        error.message,
+        "`--target github` on `cass pages` was removed: cass runs fully local-only"
+    );
+    assert_eq!(
+        error.hint.as_deref(),
+        Some("local equivalent: `cass pages --export-only` for a local archive")
+    );
+    // Surviving values of the same flag stay live.
+    assert!(
+        removed_invocation_error(
+            &argv(&["cass", "pages", "--target", "local"]),
+            &[],
+            DEMO_FLAGS
+        )
+        .is_none(),
+        "an allowed --target value must not be rejected"
+    );
+    // Presence rejection: `models install --mirror X`.
+    for args in [
+        argv(&["cass", "models", "install", "--mirror", "X"]),
+        argv(&["cass", "models", "install", "--mirror=X"]),
+    ] {
+        let error = removed_invocation_error(&args, &[], DEMO_FLAGS)
+            .unwrap_or_else(|| panic!("{args:?} must be rejected"));
+        assert_eq!(
+            error.hint.as_deref(),
+            Some("local equivalent: `cass models install --from-file DIR`")
+        );
+    }
+    // The flag is only removed on its own path.
+    assert!(
+        removed_invocation_error(
+            &argv(&["cass", "models", "verify", "--mirror", "X"]),
+            &[],
+            DEMO_FLAGS
+        )
+        .is_none(),
+        "--mirror on a different command path must not reject"
+    );
+    assert!(
+        removed_invocation_error(
+            &argv(&["cass", "pages", "--target", "github", "--", "x"]),
+            &[],
+            DEMO_FLAGS
+        )
+        .is_some()
+            || removed_invocation_error(
+                &argv(&["cass", "pages", "--", "--target", "github"]),
+                &[],
+                DEMO_FLAGS
+            )
+            .is_none(),
+        "tokens after `--` are never flags"
+    );
+}
+
+/// The disjointness invariant behind
+/// `removed_tables_stay_disjoint_from_live_lists`, taking the table so
+/// tests can prove a pair entry under a live parent is harmless. Only
+/// one-word paths are checked: `["sources","sync"]` removes that pair
+/// alone — `sources` stays live, listed, and correctable by design, so
+/// requiring the parent word out of CANONICAL would break the table.
+pub(crate) fn assert_disjoint_from_live_lists(removed_commands: &[RemovedCommand]) {
+    // The same commit that adds a one-word REMOVED_COMMANDS entry must
+    // drop the name from CANONICAL_TOP_LEVEL_COMMANDS — a name in both
+    // lists would both reject and still advertise/correct to the
+    // command.
+    for entry in removed_commands {
+        if entry.path.len() != 1 {
+            continue;
+        }
+        let top = entry.path[0];
+        assert!(
+            !CANONICAL_TOP_LEVEL_COMMANDS
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(top)),
+            "removed command `{top}` still listed in CANONICAL_TOP_LEVEL_COMMANDS"
         );
         assert!(
-            !is_removed_command_name("sources", DEMO_COMMANDS),
-            "the demo table's pair row must not remove `sources` either"
+            !SIDE_EFFECT_EXACT_ONLY_COMMANDS
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(top)),
+            "removed command `{top}` still listed in SIDE_EFFECT_EXACT_ONLY_COMMANDS"
         );
-        assert!(
-            is_removed_command_name("swarm", DEMO_COMMANDS),
-            "a one-word entry still marks its name removed"
-        );
-        // `cass sourcess` keeps typo-correcting to the live `sources`
-        // instead of falling into the implicit-search fold — with the
-        // unscoped parent-word check this returned `None` and `sourcess`
-        // silently executed as `cass search sourcess`.
-        for table in [PAIR_UNDER_LIVE_PARENT, DEMO_COMMANDS] {
-            assert_eq!(
-                closest_top_level_command_in("sourcess", table),
-                Some("sources"),
-                "a removed pair must not exclude its parent from typo candidates"
+    }
+    // Fuzzy correction can never return a removed name.
+    for entry in removed_commands {
+        if entry.path.len() != 1 {
+            continue;
+        }
+        let top = entry.path[0];
+        for probe in [
+            top.to_string(),
+            top[..top.len().saturating_sub(1)].to_string(),
+        ] {
+            assert_ne!(
+                closest_top_level_command_in(&probe, removed_commands),
+                Some(top),
+                "removed command `{top}` is still a typo-correction candidate"
             );
         }
-        // The real consts agree today: `sources` is live and already the
-        // nearest candidate.
-        assert_eq!(closest_top_level_command("sourcess"), Some("sources"));
-        // Disjointness ignores pair rows — the pair-only table passes
-        // while `sources` is legitimately still listed in CANONICAL.
-        assert_disjoint_from_live_lists(PAIR_UNDER_LIVE_PARENT);
-        assert_disjoint_from_live_lists(REMOVED_COMMANDS);
     }
+}
 
+#[test]
+pub(crate) fn removed_tables_stay_disjoint_from_live_lists() {
+    assert_disjoint_from_live_lists(REMOVED_COMMANDS);
+}
+
+/// The exact row task 9 lands while `sources` stays a live top-level
+/// command: the pair is removed, the parent is not.
+pub(crate) const PAIR_UNDER_LIVE_PARENT: &[RemovedCommand] = &[RemovedCommand {
+    path: &["sources", "sync"],
+    hint: None,
+}];
+
+#[test]
+pub(crate) fn pair_entry_leaves_its_live_parent_correctable() {
+    // The exclusion helper scopes to one-word paths only.
+    assert!(
+        !is_removed_command_name("sources", PAIR_UNDER_LIVE_PARENT),
+        "a removed pair must not mark its live parent as removed"
+    );
+    assert!(
+        !is_removed_command_name("sources", DEMO_COMMANDS),
+        "the demo table's pair row must not remove `sources` either"
+    );
+    assert!(
+        is_removed_command_name("swarm", DEMO_COMMANDS),
+        "a one-word entry still marks its name removed"
+    );
+    // `cass sourcess` keeps typo-correcting to the live `sources`
+    // instead of falling into the implicit-search fold — with the
+    // unscoped parent-word check this returned `None` and `sourcess`
+    // silently executed as `cass search sourcess`.
+    for table in [PAIR_UNDER_LIVE_PARENT, DEMO_COMMANDS] {
+        assert_eq!(
+            closest_top_level_command_in("sourcess", table),
+            Some("sources"),
+            "a removed pair must not exclude its parent from typo candidates"
+        );
+    }
+    // The real consts agree today: `sources` is live and already the
+    // nearest candidate.
+    assert_eq!(closest_top_level_command("sourcess"), Some("sources"));
+    // Disjointness ignores pair rows — the pair-only table passes
+    // while `sources` is legitimately still listed in CANONICAL.
+    assert_disjoint_from_live_lists(PAIR_UNDER_LIVE_PARENT);
+    assert_disjoint_from_live_lists(REMOVED_COMMANDS);
+}

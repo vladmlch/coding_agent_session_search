@@ -4,8 +4,6 @@ use super::*;
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 pub(crate) fn root_structured_triage_rewrite(args: &[String]) -> Option<Vec<String>> {
     let mut rewritten = vec!["triage".to_string()];
     let mut saw_structured_request = false;
@@ -43,7 +41,6 @@ pub(crate) fn root_structured_triage_rewrite(args: &[String]) -> Option<Vec<Stri
         None
     }
 }
-
 
 pub(crate) fn command_accepts_leading_structured_flag(command: &str) -> bool {
     matches!(
@@ -83,7 +80,6 @@ pub(crate) fn command_accepts_leading_structured_flag(command: &str) -> bool {
             | "view"
     )
 }
-
 
 pub(crate) fn data_dir_insertion_index(rest: &[String], command_index: usize) -> Option<usize> {
     let command = rest.get(command_index)?.to_ascii_lowercase();
@@ -138,8 +134,10 @@ pub(crate) fn data_dir_insertion_index(rest: &[String], command_index: usize) ->
     }
 }
 
-
-pub(crate) fn recover_leading_data_dir_to_subcommand(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
+pub(crate) fn recover_leading_data_dir_to_subcommand(
+    rest: &mut Vec<String>,
+    corrections: &mut Vec<String>,
+) {
     let mut index = 0;
     let mut leading = Vec::new();
     let mut data_dir_args = Vec::new();
@@ -190,7 +188,6 @@ pub(crate) fn recover_leading_data_dir_to_subcommand(rest: &mut Vec<String>, cor
     }
 }
 
-
 pub(crate) fn move_leading_structured_flag_to_subcommand(rest: &mut Vec<String>) -> bool {
     let mut leading_count = 0;
     while rest
@@ -216,7 +213,6 @@ pub(crate) fn move_leading_structured_flag_to_subcommand(rest: &mut Vec<String>)
     true
 }
 
-
 pub(crate) fn robot_docs_topic_shorthand(arg: &str) -> Option<&'static str> {
     match arg.to_ascii_lowercase().as_str() {
         "commands" | "command" | "cmds" => Some("commands"),
@@ -235,8 +231,10 @@ pub(crate) fn robot_docs_topic_shorthand(arg: &str) -> Option<&'static str> {
     }
 }
 
-
-pub(crate) fn recover_robot_docs_topic_shorthands(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
+pub(crate) fn recover_robot_docs_topic_shorthands(
+    rest: &mut Vec<String>,
+    corrections: &mut Vec<String>,
+) {
     let leading_structured_count = rest
         .iter()
         .take_while(|arg| matches!(arg.as_str(), "--json" | "--robot"))

@@ -2,8 +2,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 pub(crate) fn configure_color(choice: ColorPref, stdout_is_tty: bool, stderr_is_tty: bool) {
     let enabled = match choice {
         ColorPref::Always => true,
@@ -12,7 +10,6 @@ pub(crate) fn configure_color(choice: ColorPref, stdout_is_tty: bool, stderr_is_
     };
     colored::control::set_override(enabled);
 }
-
 
 pub(crate) fn resolve_progress(mode: ProgressMode, stdout_is_tty: bool) -> ProgressResolved {
     match mode {

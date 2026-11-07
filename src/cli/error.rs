@@ -3,14 +3,12 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone)]
 pub struct CliError {
@@ -21,12 +19,9 @@ pub struct CliError {
     pub retryable: bool,
 }
 
-
 pub(crate) const CLI_ERROR_ALREADY_REPORTED_SENTINEL: &str = "__cass_error_already_reported__";
 
-
 pub type CliResult<T = ()> = std::result::Result<T, CliError>;
-
 
 impl std::fmt::Display for CliError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -34,9 +29,7 @@ impl std::fmt::Display for CliError {
     }
 }
 
-
 impl std::error::Error for CliError {}
-
 
 impl CliError {
     /// Stable robot error shape shared by ordinary and delegated commands.
@@ -97,7 +90,6 @@ impl CliError {
     }
 }
 
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ProgressResolved {
     Bars,
@@ -105,13 +97,11 @@ pub enum ProgressResolved {
     None,
 }
 
-
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WrapConfig {
     pub(crate) width: Option<usize>,
     pub(crate) nowrap: bool,
 }
-
 
 impl WrapConfig {
     pub(crate) fn new(width: Option<usize>, nowrap: bool) -> Self {

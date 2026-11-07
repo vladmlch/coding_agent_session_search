@@ -4,8 +4,6 @@ use super::*;
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 pub(crate) fn structured_output_request_span_at(rest: &[String], index: usize) -> Option<usize> {
     let arg = rest.get(index)?;
     if matches!(arg.as_str(), "--json" | "--robot") {
@@ -25,18 +23,15 @@ pub(crate) fn structured_output_request_span_at(rest: &[String], index: usize) -
     parse_format_alias_at(rest, index).map(|(consumed, _, _)| consumed)
 }
 
-
 pub(crate) fn is_canonical_top_level_command_arg(arg: &str) -> bool {
     CANONICAL_TOP_LEVEL_COMMANDS
         .iter()
         .any(|command| arg.eq_ignore_ascii_case(command))
 }
 
-
 pub(crate) fn contains_structured_output_request(rest: &[String]) -> bool {
     (0..rest.len()).any(|index| structured_output_request_span_at(rest, index).is_some())
 }
-
 
 pub(crate) fn prefix_is_structured_output_requests(rest: &[String], end: usize) -> bool {
     let mut index = 0;
@@ -49,7 +44,6 @@ pub(crate) fn prefix_is_structured_output_requests(rest: &[String], end: usize) 
     true
 }
 
-
 pub(crate) fn structured_help_request_index(rest: &[String]) -> Option<usize> {
     rest.iter()
         .enumerate()
@@ -59,7 +53,6 @@ pub(crate) fn structured_help_request_index(rest: &[String]) -> Option<usize> {
             _ => None,
         })
 }
-
 
 pub(crate) fn first_command_arg_after_structured_prefix(rest: &[String]) -> Option<&str> {
     let mut index = 0;
@@ -76,7 +69,6 @@ pub(crate) fn first_command_arg_after_structured_prefix(rest: &[String]) -> Opti
     }
     None
 }
-
 
 pub(crate) fn help_request_target(rest: &[String], help_index: usize) -> Option<&str> {
     if rest.get(help_index).is_some_and(|arg| arg == "help") {
@@ -102,8 +94,10 @@ pub(crate) fn help_request_target(rest: &[String], help_index: usize) -> Option<
     None
 }
 
-
-pub(crate) fn recover_structured_help_requests(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
+pub(crate) fn recover_structured_help_requests(
+    rest: &mut Vec<String>,
+    corrections: &mut Vec<String>,
+) {
     let Some(help_index) = structured_help_request_index(rest) else {
         return;
     };
@@ -127,7 +121,6 @@ pub(crate) fn recover_structured_help_requests(rest: &mut Vec<String>, correctio
     ));
 }
 
-
 pub(crate) fn is_current_session_shorthand(arg: &str) -> bool {
     matches!(
         arg.to_ascii_lowercase().as_str(),
@@ -135,14 +128,15 @@ pub(crate) fn is_current_session_shorthand(arg: &str) -> bool {
     )
 }
 
-
 pub(crate) fn has_current_session_flag(rest: &[String]) -> bool {
     rest.iter()
         .any(|arg| arg == "--current" || arg.starts_with("--current="))
 }
 
-
-pub(crate) fn recover_current_session_shorthands(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
+pub(crate) fn recover_current_session_shorthands(
+    rest: &mut Vec<String>,
+    corrections: &mut Vec<String>,
+) {
     let leading_structured_count = rest
         .iter()
         .take_while(|arg| matches!(arg.as_str(), "--json" | "--robot"))
@@ -182,7 +176,6 @@ pub(crate) fn recover_current_session_shorthands(rest: &mut Vec<String>, correct
     ));
 }
 
-
 pub(crate) fn take_named_value(rest: &mut Vec<String>, names: &[&str]) -> Option<(String, String)> {
     for index in 1..rest.len() {
         let arg = rest[index].clone();
@@ -209,8 +202,10 @@ pub(crate) fn take_named_value(rest: &mut Vec<String>, names: &[&str]) -> Option
     None
 }
 
-
-pub(crate) fn take_assignment_value(rest: &mut Vec<String>, names: &[&str]) -> Option<(String, String)> {
+pub(crate) fn take_assignment_value(
+    rest: &mut Vec<String>,
+    names: &[&str],
+) -> Option<(String, String)> {
     for index in 1..rest.len() {
         let arg = rest[index].clone();
         let Some((key, value)) = arg.split_once('=') else {
@@ -225,7 +220,6 @@ pub(crate) fn take_assignment_value(rest: &mut Vec<String>, names: &[&str]) -> O
     }
     None
 }
-
 
 pub(crate) fn rewrite_named_assignment_positional(
     rest: &mut [String],
@@ -246,7 +240,6 @@ pub(crate) fn rewrite_named_assignment_positional(
     None
 }
 
-
 pub(crate) fn split_path_line_assignment(arg: &str) -> Option<(String, usize)> {
     let (path, line) = arg.rsplit_once(':')?;
     if path.is_empty() {
@@ -255,7 +248,6 @@ pub(crate) fn split_path_line_assignment(arg: &str) -> Option<(String, usize)> {
     let line = line.parse::<usize>().ok().filter(|line| *line > 0)?;
     Some((path.to_string(), line))
 }
-
 
 pub(crate) fn has_line_arg(rest: &[String]) -> bool {
     // An explicit canonical selector must also suppress path:line recovery.
@@ -272,7 +264,6 @@ pub(crate) fn has_line_arg(rest: &[String]) -> bool {
     )
 }
 
-
 pub(crate) fn has_option_alias(rest: &[String], aliases: &[&str]) -> bool {
     rest.iter().any(|arg| {
         aliases.iter().any(|alias| {
@@ -284,13 +275,11 @@ pub(crate) fn has_option_alias(rest: &[String], aliases: &[&str]) -> bool {
     })
 }
 
-
 pub(crate) struct AssignmentOption {
     pub(crate) flag: &'static str,
     pub(crate) aliases: &'static [&'static str],
     pub(crate) repeatable: bool,
 }
-
 
 pub(crate) fn assignment_option_for_command(command: &str, key: &str) -> Option<AssignmentOption> {
     match command {
@@ -529,11 +518,9 @@ pub(crate) fn assignment_option_for_command(command: &str, key: &str) -> Option<
     }
 }
 
-
 pub(crate) fn command_accepts_time_assignment(command: &str) -> bool {
     matches!(command, "search" | "pack" | "timeline")
 }
-
 
 pub(crate) fn compact_relative_time_value(value: &str) -> bool {
     let digits_len = value
@@ -565,7 +552,6 @@ pub(crate) fn compact_relative_time_value(value: &str) -> bool {
     )
 }
 
-
 pub(crate) fn normalize_past_time_window_value(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.starts_with('-')
@@ -582,7 +568,6 @@ pub(crate) fn normalize_past_time_window_value(value: &str) -> String {
     }
     trimmed.to_string()
 }
-
 
 pub(crate) fn time_assignment_option_for_command(
     command: &str,
@@ -609,8 +594,9 @@ pub(crate) fn time_assignment_option_for_command(
     }
 }
 
-
-pub(crate) fn take_time_alias_flag(rest: &mut Vec<String>) -> Option<(String, &'static str, String)> {
+pub(crate) fn take_time_alias_flag(
+    rest: &mut Vec<String>,
+) -> Option<(String, &'static str, String)> {
     for index in 1..rest.len() {
         let arg = rest[index].clone();
         if !arg.starts_with("--") {
@@ -653,7 +639,6 @@ pub(crate) fn take_time_alias_flag(rest: &mut Vec<String>) -> Option<(String, &'
     None
 }
 
-
 pub(crate) fn recover_time_alias_flags(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
     while let Some((alias, flag, value)) = take_time_alias_flag(rest) {
         let command = rest
@@ -666,11 +651,9 @@ pub(crate) fn recover_time_alias_flags(rest: &mut Vec<String>, corrections: &mut
     }
 }
 
-
 pub(crate) fn command_accepts_agent_filter_alias(command: &str) -> bool {
     matches!(command, "search" | "pack" | "timeline")
 }
-
 
 pub(crate) fn take_agent_filter_alias_flag(rest: &mut Vec<String>) -> Option<(String, String)> {
     let command = rest.first().map(String::as_str).unwrap_or_default();
@@ -721,8 +704,10 @@ pub(crate) fn take_agent_filter_alias_flag(rest: &mut Vec<String>) -> Option<(St
     None
 }
 
-
-pub(crate) fn recover_agent_filter_alias_flags(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
+pub(crate) fn recover_agent_filter_alias_flags(
+    rest: &mut Vec<String>,
+    corrections: &mut Vec<String>,
+) {
     while let Some((alias, value)) = take_agent_filter_alias_flag(rest) {
         let command = rest
             .first()
@@ -734,8 +719,10 @@ pub(crate) fn recover_agent_filter_alias_flags(rest: &mut Vec<String>, correctio
     }
 }
 
-
-pub(crate) fn recover_key_value_option_assignments(rest: &mut [String], corrections: &mut Vec<String>) {
+pub(crate) fn recover_key_value_option_assignments(
+    rest: &mut [String],
+    corrections: &mut Vec<String>,
+) {
     let Some(command) = rest.first().cloned() else {
         return;
     };
@@ -774,7 +761,6 @@ pub(crate) fn recover_key_value_option_assignments(rest: &mut [String], correcti
     }
 }
 
-
 pub(crate) fn bare_option_pair_start_index(command: &str) -> Option<usize> {
     match command {
         // Require at least one query token before interpreting bare words as
@@ -786,8 +772,10 @@ pub(crate) fn bare_option_pair_start_index(command: &str) -> Option<usize> {
     }
 }
 
-
-pub(crate) fn recover_bare_option_value_pairs(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
+pub(crate) fn recover_bare_option_value_pairs(
+    rest: &mut Vec<String>,
+    corrections: &mut Vec<String>,
+) {
     let Some(command) = rest.first().cloned() else {
         return;
     };
@@ -847,7 +835,6 @@ pub(crate) fn recover_bare_option_value_pairs(rest: &mut Vec<String>, correction
         index += 1;
     }
 }
-
 
 pub(crate) fn search_like_option_value_count(command: &str, arg: &str) -> Option<usize> {
     let name = arg.strip_prefix("--")?;
@@ -954,7 +941,6 @@ pub(crate) fn search_like_option_value_count(command: &str, arg: &str) -> Option
     is_bool.then_some(1)
 }
 
-
 pub(crate) fn recover_query_after_leading_search_options(
     rest: &mut Vec<String>,
     corrections: &mut Vec<String>,
@@ -1013,7 +999,6 @@ pub(crate) fn recover_query_after_leading_search_options(
     ));
 }
 
-
 pub(crate) fn recover_path_line_positionals(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
     let Some(command) = rest.first().cloned() else {
         return;
@@ -1036,8 +1021,10 @@ pub(crate) fn recover_path_line_positionals(rest: &mut Vec<String>, corrections:
     ));
 }
 
-
-pub(crate) fn recover_named_required_positionals(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
+pub(crate) fn recover_named_required_positionals(
+    rest: &mut Vec<String>,
+    corrections: &mut Vec<String>,
+) {
     let Some(command) = rest.first().cloned() else {
         return;
     };
@@ -1080,7 +1067,6 @@ pub(crate) fn recover_named_required_positionals(rest: &mut Vec<String>, correct
     }
 }
 
-
 pub(crate) fn drilldown_assignment_flag(
     command: &str,
     key: &str,
@@ -1107,8 +1093,10 @@ pub(crate) fn drilldown_assignment_flag(
     }
 }
 
-
-pub(crate) fn recover_drilldown_assignment_flags(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
+pub(crate) fn recover_drilldown_assignment_flags(
+    rest: &mut Vec<String>,
+    corrections: &mut Vec<String>,
+) {
     let Some(command) = rest.first().cloned() else {
         return;
     };
@@ -1141,18 +1129,18 @@ pub(crate) fn recover_drilldown_assignment_flags(rest: &mut Vec<String>, correct
     }
 }
 
-
 pub(crate) fn is_robot_format_alias_value(value: &str) -> bool {
     matches!(value, "json" | "jsonl" | "compact" | "sessions" | "toon")
 }
-
 
 pub(crate) fn can_recover_format_alias_for_command(command: &str) -> bool {
     command != "export" && command_accepts_leading_structured_flag(command)
 }
 
-
-pub(crate) fn parse_format_alias_at(rest: &[String], index: usize) -> Option<(usize, String, &'static str)> {
+pub(crate) fn parse_format_alias_at(
+    rest: &[String],
+    index: usize,
+) -> Option<(usize, String, &'static str)> {
     let arg = rest.get(index)?;
     for alias in ["--format", "--output", "--output-format"] {
         if arg == alias {
@@ -1175,8 +1163,10 @@ pub(crate) fn parse_format_alias_at(rest: &[String], index: usize) -> Option<(us
     None
 }
 
-
-pub(crate) fn recover_structured_format_aliases(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
+pub(crate) fn recover_structured_format_aliases(
+    rest: &mut Vec<String>,
+    corrections: &mut Vec<String>,
+) {
     if let Some((consumed, format, alias)) = parse_format_alias_at(rest, 0) {
         match rest.get(consumed).cloned() {
             Some(command) if can_recover_format_alias_for_command(&command) => {
@@ -1239,7 +1229,6 @@ pub(crate) fn recover_structured_format_aliases(rest: &mut Vec<String>, correcti
     }
 }
 
-
 pub(crate) fn command_accepts_limit_alias(rest: &[String]) -> bool {
     match rest.first().map(String::as_str) {
         Some("analytics") => rest
@@ -1250,12 +1239,10 @@ pub(crate) fn command_accepts_limit_alias(rest: &[String]) -> bool {
     }
 }
 
-
 pub(crate) fn has_canonical_limit(rest: &[String]) -> bool {
     rest.iter()
         .any(|arg| arg == "--limit" || arg.starts_with("--limit="))
 }
-
 
 pub(crate) fn recover_limit_aliases(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
     if !command_accepts_limit_alias(rest) || has_canonical_limit(rest) {
@@ -1310,7 +1297,6 @@ pub(crate) fn recover_limit_aliases(rest: &mut Vec<String>, corrections: &mut Ve
     ));
 }
 
-
 pub(crate) fn has_explicit_structured_output_request(rest: &[String]) -> bool {
     rest.iter().enumerate().any(|(index, arg)| {
         matches!(arg.as_str(), "--json" | "--robot")
@@ -1320,12 +1306,10 @@ pub(crate) fn has_explicit_structured_output_request(rest: &[String]) -> bool {
     })
 }
 
-
 pub(crate) fn is_query_assignment(arg: &str) -> bool {
     arg.split_once('=')
         .is_some_and(|(key, value)| !value.is_empty() && matches!(key, "query" | "q"))
 }
-
 
 pub(crate) fn is_result_count_assignment_key(key: &str) -> bool {
     matches!(
@@ -1344,7 +1328,6 @@ pub(crate) fn is_result_count_assignment_key(key: &str) -> bool {
     )
 }
 
-
 pub(crate) fn is_query_boundary_assignment(command: &str, arg: &str) -> bool {
     let Some((key, value)) = arg.split_once('=') else {
         return false;
@@ -1359,7 +1342,6 @@ pub(crate) fn is_query_boundary_assignment(command: &str, arg: &str) -> bool {
         || is_result_count_assignment_key(&key)
 }
 
-
 pub(crate) fn looks_like_top_level_command_or_typo(arg: &str) -> bool {
     let lower = arg.to_ascii_lowercase();
     matches!(
@@ -1368,7 +1350,6 @@ pub(crate) fn looks_like_top_level_command_or_typo(arg: &str) -> bool {
     ) || CANONICAL_TOP_LEVEL_COMMANDS.contains(&lower.as_str())
         || closest_top_level_command(&lower).is_some()
 }
-
 
 pub(crate) fn arg_marks_implicit_pack_intent(arg: &str) -> bool {
     if let Some(flag) = arg.strip_prefix("--") {
@@ -1410,7 +1391,6 @@ pub(crate) fn arg_marks_implicit_pack_intent(arg: &str) -> bool {
     )
 }
 
-
 pub(crate) fn implicit_robot_query_command(rest: &[String]) -> &'static str {
     if rest.iter().any(|arg| arg_marks_implicit_pack_intent(arg)) {
         "pack"
@@ -1419,8 +1399,10 @@ pub(crate) fn implicit_robot_query_command(rest: &[String]) -> &'static str {
     }
 }
 
-
-pub(crate) fn recover_explicit_search_pack_intent(rest: &mut [String], corrections: &mut Vec<String>) {
+pub(crate) fn recover_explicit_search_pack_intent(
+    rest: &mut [String],
+    corrections: &mut Vec<String>,
+) {
     if !matches!(rest.first().map(String::as_str), Some("search"))
         || !has_explicit_structured_output_request(rest)
         || !rest
@@ -1438,8 +1420,10 @@ pub(crate) fn recover_explicit_search_pack_intent(rest: &mut [String], correctio
     );
 }
 
-
-pub(crate) fn recover_implicit_robot_search_query(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
+pub(crate) fn recover_implicit_robot_search_query(
+    rest: &mut Vec<String>,
+    corrections: &mut Vec<String>,
+) {
     let Some(first) = rest.first().cloned() else {
         return;
     };
@@ -1477,8 +1461,10 @@ pub(crate) fn recover_implicit_robot_search_query(rest: &mut Vec<String>, correc
     ));
 }
 
-
-pub(crate) fn recover_multiword_query_positionals(rest: &mut Vec<String>, corrections: &mut Vec<String>) {
+pub(crate) fn recover_multiword_query_positionals(
+    rest: &mut Vec<String>,
+    corrections: &mut Vec<String>,
+) {
     let Some(command) = rest.first().cloned() else {
         return;
     };
@@ -1506,7 +1492,6 @@ pub(crate) fn recover_multiword_query_positionals(rest: &mut Vec<String>, correc
         "'{command} {query}' → '{command} \"{query}\"' (multi-word query positional)"
     ));
 }
-
 
 /// `cass robot-docs doctor` documents the doctor run-history surface as verbs
 /// (`cass doctor ls`, `undo <run-id>`, `diff [<ref>]`, `gc --before <ts>`,

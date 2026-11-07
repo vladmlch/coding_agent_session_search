@@ -3,297 +3,281 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
+pub(crate) fn idempotency_test_bundle_bytes(db_path: &Path) -> Vec<Option<Vec<u8>>> {
+    ["", "-wal", "-shm"]
+        .into_iter()
+        .map(|suffix| {
+            let mut path = db_path.as_os_str().to_owned();
+            path.push(suffix);
+            match std::fs::read(Path::new(&path)) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                Err(error) => panic!("reading cache fixture {path:?}: {error}"),
+            }
+        })
+        .collect()
+}
 
+#[test]
+pub(crate) fn gh515_idempotency_lookup_never_creates_or_expires_archive_state() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let data_dir = temp.path().join("data");
+    let db_path = temp.path().join("archive-parent/archive.db");
+    assert_eq!(read_index_idempotency_cache(&db_path, "missing", 0), None);
+    assert!(!db_path.parent().unwrap().exists());
 
+    std::fs::create_dir_all(db_path.parent().unwrap())?;
+    let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy())?;
+    conn.execute("CREATE TABLE archive_identity (content TEXT)")?;
+    conn.execute("INSERT INTO archive_identity VALUES ('keep this archive')")?;
+    conn.close()?;
+    let before = idempotency_test_bundle_bytes(&db_path);
+    assert_eq!(read_index_idempotency_cache(&db_path, "missing", 0), None);
+    assert_eq!(idempotency_test_bundle_bytes(&db_path), before);
+    assert!(!data_dir.exists());
+    assert!(!db_path.parent().unwrap().join("doctor").exists());
 
-    
+    let payload = serde_json::json!({"success": true, "messages": 1});
+    store_index_idempotency_result(&data_dir, &db_path, "expired", 7, &payload, 0)?;
+    store_index_idempotency_result(&data_dir, &db_path, "live", 7, &payload, 100)?;
+    let before = idempotency_test_bundle_bytes(&db_path);
+    let now_ms = 24 * 60 * 60 * 1000;
+    assert_eq!(
+        read_index_idempotency_cache(&db_path, "expired", now_ms),
+        None
+    );
+    assert_eq!(
+        read_index_idempotency_cache(&db_path, "unknown", now_ms),
+        None
+    );
+    assert_eq!(
+        read_index_idempotency_cache(&db_path, "live", now_ms),
+        Some(("7".to_string(), payload.to_string()))
+    );
+    assert_eq!(idempotency_test_bundle_bytes(&db_path), before);
+    let storage = crate::storage::sqlite::FrankenStorage::open_strict_readonly(&db_path)?;
+    assert_eq!(
+        storage
+            .raw()
+            .query_row("SELECT COUNT(*) FROM idempotency_keys")?
+            .get_typed::<i64>(0)?,
+        2,
+        "TTL lookup must leave expired rows for an admitted cache writer"
+    );
+    assert_eq!(
+        storage
+            .raw()
+            .query_row("SELECT content FROM archive_identity")?
+            .get_typed::<String>(0)?,
+        "keep this archive"
+    );
+    storage.close_without_checkpoint()?;
+    Ok(())
+}
 
-    pub(crate) fn idempotency_test_bundle_bytes(db_path: &Path) -> Vec<Option<Vec<u8>>> {
-        ["", "-wal", "-shm"]
-            .into_iter()
-            .map(|suffix| {
-                let mut path = db_path.as_os_str().to_owned();
-                path.push(suffix);
-                match std::fs::read(Path::new(&path)) {
-                    Ok(bytes) => Some(bytes),
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-                    Err(error) => panic!("reading cache fixture {path:?}: {error}"),
-                }
-            })
-            .collect()
+#[test]
+pub(crate) fn gh515_idempotency_persistence_obeys_archive_owner_and_recovers() -> Result<()> {
+    use crate::search::asset_state::SearchMaintenanceJobKind;
+
+    let temp = tempfile::tempdir()?;
+    let owner_data = temp.path().join("owner-data");
+    let cache_data = temp.path().join("cache-data");
+    let db_path = temp.path().join("archive.db");
+    let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy())?;
+    conn.execute("CREATE TABLE archive_identity (content TEXT)")?;
+    conn.execute("INSERT INTO archive_identity VALUES ('keep this archive')")?;
+    conn.close()?;
+    let payload = serde_json::json!({"success": true, "messages": 1});
+    let owner = crate::indexer::acquire_search_maintenance_mutation_lock(
+        &owner_data,
+        &db_path,
+        SearchMaintenanceJobKind::SemanticRebuild,
+    )?;
+    let before = idempotency_test_bundle_bytes(&db_path);
+    assert!(
+        store_index_idempotency_result(&cache_data, &db_path, "expired", 7, &payload, 0).is_err()
+    );
+    assert_eq!(read_index_idempotency_cache(&db_path, "expired", 0), None);
+    assert_eq!(idempotency_test_bundle_bytes(&db_path), before);
+    assert!(std::fs::read(cache_data.join("index-run.lock"))?.is_empty());
+    drop(owner);
+
+    store_index_idempotency_result(&cache_data, &db_path, "expired", 7, &payload, 0)?;
+    store_index_idempotency_result(&cache_data, &db_path, "live", 7, &payload, 100)?;
+    let owner = crate::indexer::acquire_search_maintenance_mutation_lock(
+        &owner_data,
+        &db_path,
+        SearchMaintenanceJobKind::SemanticRebuild,
+    )?;
+    let now_ms = 24 * 60 * 60 * 1000;
+    let before = idempotency_test_bundle_bytes(&db_path);
+    assert!(
+        store_index_idempotency_result(&cache_data, &db_path, "retry", 7, &payload, now_ms)
+            .is_err()
+    );
+    assert_eq!(idempotency_test_bundle_bytes(&db_path), before);
+    drop(owner);
+
+    store_index_idempotency_result(&cache_data, &db_path, "retry", 7, &payload, now_ms)?;
+    assert_eq!(
+        read_index_idempotency_cache(&db_path, "retry", now_ms),
+        Some(("7".to_string(), payload.to_string()))
+    );
+    assert!(std::fs::read(cache_data.join("index-run.lock"))?.is_empty());
+    let storage = crate::storage::sqlite::FrankenStorage::open_strict_readonly(&db_path)?;
+    let keys = storage.raw().query_map_collect(
+        "SELECT key FROM idempotency_keys ORDER BY key",
+        &[],
+        |row| row.get_typed::<String>(0),
+    )?;
+    assert_eq!(keys, ["live", "retry"]);
+    assert_eq!(
+        storage
+            .raw()
+            .query_row("SELECT content FROM archive_identity")?
+            .get_typed::<String>(0)?,
+        "keep this archive"
+    );
+    for row in storage.raw().query("PRAGMA integrity_check")? {
+        assert_eq!(row.get_typed::<String>(0)?, "ok");
     }
+    storage.close_without_checkpoint()?;
+    Ok(())
+}
 
-
-    #[test]
-    pub(crate) fn gh515_idempotency_lookup_never_creates_or_expires_archive_state() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let data_dir = temp.path().join("data");
-        let db_path = temp.path().join("archive-parent/archive.db");
-        assert_eq!(read_index_idempotency_cache(&db_path, "missing", 0), None);
-        assert!(!db_path.parent().unwrap().exists());
-
-        std::fs::create_dir_all(db_path.parent().unwrap())?;
-        let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy())?;
-        conn.execute("CREATE TABLE archive_identity (content TEXT)")?;
-        conn.execute("INSERT INTO archive_identity VALUES ('keep this archive')")?;
-        conn.close()?;
-        let before = idempotency_test_bundle_bytes(&db_path);
-        assert_eq!(read_index_idempotency_cache(&db_path, "missing", 0), None);
-        assert_eq!(idempotency_test_bundle_bytes(&db_path), before);
-        assert!(!data_dir.exists());
-        assert!(!db_path.parent().unwrap().join("doctor").exists());
-
-        let payload = serde_json::json!({"success": true, "messages": 1});
-        store_index_idempotency_result(&data_dir, &db_path, "expired", 7, &payload, 0)?;
-        store_index_idempotency_result(&data_dir, &db_path, "live", 7, &payload, 100)?;
-        let before = idempotency_test_bundle_bytes(&db_path);
-        let now_ms = 24 * 60 * 60 * 1000;
-        assert_eq!(
-            read_index_idempotency_cache(&db_path, "expired", now_ms),
-            None
-        );
-        assert_eq!(
-            read_index_idempotency_cache(&db_path, "unknown", now_ms),
-            None
-        );
-        assert_eq!(
-            read_index_idempotency_cache(&db_path, "live", now_ms),
-            Some(("7".to_string(), payload.to_string()))
-        );
-        assert_eq!(idempotency_test_bundle_bytes(&db_path), before);
-        let storage = crate::storage::sqlite::FrankenStorage::open_strict_readonly(&db_path)?;
-        assert_eq!(
-            storage
-                .raw()
-                .query_row("SELECT COUNT(*) FROM idempotency_keys")?
-                .get_typed::<i64>(0)?,
-            2,
-            "TTL lookup must leave expired rows for an admitted cache writer"
-        );
-        assert_eq!(
-            storage
-                .raw()
-                .query_row("SELECT content FROM archive_identity")?
-                .get_typed::<String>(0)?,
-            "keep this archive"
-        );
-        storage.close_without_checkpoint()?;
-        Ok(())
+#[test]
+pub(crate) fn index_idempotency_cache_rejects_non_objects_and_preserves_valid_results() {
+    for invalid in [
+        "",
+        "{",
+        "null",
+        "true",
+        "false",
+        "42",
+        "1.5",
+        "\"cached\"",
+        "[]",
+        "[{}]",
+    ] {
+        assert_eq!(cached_index_payload(invalid, "retry-key"), None);
     }
+    assert_eq!(
+        cached_index_payload(
+            r#"{"ok":true,"messages":3,"nested":{"value":[1,2]},"cached":false,"idempotency_key":"old-key"}"#,
+            "retry-key",
+        ),
+        Some(serde_json::json!({
+            "ok": true,
+            "messages": 3,
+            "nested": {"value": [1, 2]},
+            "cached": true,
+            "idempotency_key": "retry-key",
+        }))
+    );
+}
 
+#[test]
+pub(crate) fn orphan_fk_cleanup_failure_is_retryable_after_operator_remediation() {
+    let err = index_orphan_fk_cleanup_cli_error(
+        "orphan FK self-heal failed for canonical cass archive at /tmp/cass.db: out of memory",
+    );
 
-    #[test]
-    pub(crate) fn gh515_idempotency_persistence_obeys_archive_owner_and_recovers() -> Result<()> {
-        use crate::search::asset_state::SearchMaintenanceJobKind;
+    assert_eq!(err.code, 5);
+    assert_eq!(err.kind, CliErrorKind::Storage.kind_str());
+    assert!(err.retryable);
+    assert!(
+        err.hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("free disk/memory pressure")),
+        "hint should name the resource-pressure retry path: {err:?}"
+    );
+}
 
-        let temp = tempfile::tempdir()?;
-        let owner_data = temp.path().join("owner-data");
-        let cache_data = temp.path().join("cache-data");
-        let db_path = temp.path().join("archive.db");
-        let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy())?;
-        conn.execute("CREATE TABLE archive_identity (content TEXT)")?;
-        conn.execute("INSERT INTO archive_identity VALUES ('keep this archive')")?;
-        conn.close()?;
-        let payload = serde_json::json!({"success": true, "messages": 1});
-        let owner = crate::indexer::acquire_search_maintenance_mutation_lock(
-            &owner_data,
-            &db_path,
-            SearchMaintenanceJobKind::SemanticRebuild,
-        )?;
-        let before = idempotency_test_bundle_bytes(&db_path);
-        assert!(
-            store_index_idempotency_result(&cache_data, &db_path, "expired", 7, &payload, 0)
-                .is_err()
-        );
-        assert_eq!(read_index_idempotency_cache(&db_path, "expired", 0), None);
-        assert_eq!(idempotency_test_bundle_bytes(&db_path), before);
-        assert!(std::fs::read(cache_data.join("index-run.lock"))?.is_empty());
-        drop(owner);
+#[test]
+pub(crate) fn archive_health_failure_remains_non_retryable_index_repair() {
+    let err = index_archive_health_cli_error(
+        "canonical cass archive at /tmp/cass.db is not safe for indexing: malformed. cass index will not replace or truncate the SQLite source of truth.",
+    );
 
-        store_index_idempotency_result(&cache_data, &db_path, "expired", 7, &payload, 0)?;
-        store_index_idempotency_result(&cache_data, &db_path, "live", 7, &payload, 100)?;
-        let owner = crate::indexer::acquire_search_maintenance_mutation_lock(
-            &owner_data,
-            &db_path,
-            SearchMaintenanceJobKind::SemanticRebuild,
-        )?;
-        let now_ms = 24 * 60 * 60 * 1000;
-        let before = idempotency_test_bundle_bytes(&db_path);
-        assert!(
-            store_index_idempotency_result(&cache_data, &db_path, "retry", 7, &payload, now_ms)
-                .is_err()
-        );
-        assert_eq!(idempotency_test_bundle_bytes(&db_path), before);
-        drop(owner);
+    assert_eq!(err.code, 5);
+    assert_eq!(err.kind, CliErrorKind::Storage.kind_str());
+    assert!(!err.retryable);
+}
 
-        store_index_idempotency_result(&cache_data, &db_path, "retry", 7, &payload, now_ms)?;
-        assert_eq!(
-            read_index_idempotency_cache(&db_path, "retry", now_ms),
-            Some(("7".to_string(), payload.to_string()))
-        );
-        assert!(std::fs::read(cache_data.join("index-run.lock"))?.is_empty());
-        let storage = crate::storage::sqlite::FrankenStorage::open_strict_readonly(&db_path)?;
-        let keys = storage.raw().query_map_collect(
-            "SELECT key FROM idempotency_keys ORDER BY key",
-            &[],
-            |row| row.get_typed::<String>(0),
-        )?;
-        assert_eq!(keys, ["live", "retry"]);
-        assert_eq!(
-            storage
-                .raw()
-                .query_row("SELECT content FROM archive_identity")?
-                .get_typed::<String>(0)?,
-            "keep this archive"
-        );
-        for row in storage.raw().query("PRAGMA integrity_check")? {
-            assert_eq!(row.get_typed::<String>(0)?, "ok");
-        }
-        storage.close_without_checkpoint()?;
-        Ok(())
-    }
+#[test]
+pub(crate) fn disk_headroom_failure_is_retryable_after_space_is_freed() {
+    let err = index_disk_headroom_cli_error(
+        "canonical archive disk headroom check failed for /data: available=1 bytes, required=2 bytes",
+    );
 
+    assert_eq!(err.code, 14);
+    assert_eq!(err.kind, CliErrorKind::Storage.kind_str());
+    assert!(err.retryable);
+}
 
-    #[test]
-    pub(crate) fn index_idempotency_cache_rejects_non_objects_and_preserves_valid_results() {
-        for invalid in [
-            "",
-            "{",
-            "null",
-            "true",
-            "false",
-            "42",
-            "1.5",
-            "\"cached\"",
-            "[]",
-            "[{}]",
-        ] {
-            assert_eq!(cached_index_payload(invalid, "retry-key"), None);
-        }
-        assert_eq!(
-            cached_index_payload(
-                r#"{"ok":true,"messages":3,"nested":{"value":[1,2]},"cached":false,"idempotency_key":"old-key"}"#,
-                "retry-key",
-            ),
-            Some(serde_json::json!({
-                "ok": true,
-                "messages": 3,
-                "nested": {"value": [1, 2]},
-                "cached": true,
-                "idempotency_key": "retry-key",
-            }))
-        );
-    }
+/// nw61n: the indexer's own mid-rebuild stop maps to the same retryable
+/// exit 14 / `storage` as the start refusal, with resume wording, and is
+/// not mistaken for the start refusal (or the reverse).
+#[test]
+pub(crate) fn lexical_rebuild_disk_stop_is_retryable_and_names_the_resume() {
+    let stop = crate::indexer::lexical_rebuild_free_space_verdict(
+        1,
+        512 * 1024 * 1024,
+        Path::new("/data/cass/index"),
+    )
+    .expect_err("below the floor");
+    let chain = format!("lexical rebuild failed | {stop:#}");
+    assert!(error_chain_indicates_lexical_rebuild_disk_stop(&chain));
+    assert!(!error_chain_indicates_index_disk_headroom_blocked(&chain));
+    assert!(!error_chain_indicates_lexical_rebuild_disk_stop(
+        "canonical archive disk headroom check failed for /data: available=1 bytes, required=2 bytes"
+    ));
+    let err = lexical_rebuild_disk_stop_cli_error(&chain);
+    assert_eq!(err.code, 14);
+    assert_eq!(err.kind, CliErrorKind::Storage.kind_str());
+    assert!(err.retryable);
+    assert!(err.message.contains("/data/cass/index"), "{err:?}");
+    assert!(
+        err.hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("resumes")),
+        "{err:?}"
+    );
+}
 
+#[test]
+pub(crate) fn unsupported_quill_writer_admission_is_non_retryable_and_actionable() {
+    let chain = "open Quill writer | verify writer-lock support at C:\\cass\\index: cross-process Quill writer admission requires flock semantics";
 
-    #[test]
-    pub(crate) fn orphan_fk_cleanup_failure_is_retryable_after_operator_remediation() {
-        let err = index_orphan_fk_cleanup_cli_error(
-            "orphan FK self-heal failed for canonical cass archive at /tmp/cass.db: out of memory",
-        );
+    assert!(error_chain_indicates_unsupported_quill_writer_admission(
+        chain
+    ));
+    let err = index_unsupported_quill_writer_admission_cli_error(chain);
 
-        assert_eq!(err.code, 5);
-        assert_eq!(err.kind, CliErrorKind::Storage.kind_str());
-        assert!(err.retryable);
-        assert!(
-            err.hint
-                .as_deref()
-                .is_some_and(|hint| hint.contains("free disk/memory pressure")),
-            "hint should name the resource-pressure retry path: {err:?}"
-        );
-    }
+    assert_eq!(err.code, 9);
+    assert_eq!(err.kind, CliErrorKind::Index.kind_str());
+    assert!(!err.retryable);
+    assert!(
+        err.hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("Retrying the same command will not help")),
+        "hint must prevent an infinite retry loop: {err:?}"
+    );
+}
 
-
-    #[test]
-    pub(crate) fn archive_health_failure_remains_non_retryable_index_repair() {
-        let err = index_archive_health_cli_error(
-            "canonical cass archive at /tmp/cass.db is not safe for indexing: malformed. cass index will not replace or truncate the SQLite source of truth.",
-        );
-
-        assert_eq!(err.code, 5);
-        assert_eq!(err.kind, CliErrorKind::Storage.kind_str());
-        assert!(!err.retryable);
-    }
-
-
-    #[test]
-    pub(crate) fn disk_headroom_failure_is_retryable_after_space_is_freed() {
-        let err = index_disk_headroom_cli_error(
-            "canonical archive disk headroom check failed for /data: available=1 bytes, required=2 bytes",
-        );
-
-        assert_eq!(err.code, 14);
-        assert_eq!(err.kind, CliErrorKind::Storage.kind_str());
-        assert!(err.retryable);
-    }
-
-
-    /// nw61n: the indexer's own mid-rebuild stop maps to the same retryable
-    /// exit 14 / `storage` as the start refusal, with resume wording, and is
-    /// not mistaken for the start refusal (or the reverse).
-    #[test]
-    pub(crate) fn lexical_rebuild_disk_stop_is_retryable_and_names_the_resume() {
-        let stop = crate::indexer::lexical_rebuild_free_space_verdict(
-            1,
-            512 * 1024 * 1024,
-            Path::new("/data/cass/index"),
-        )
-        .expect_err("below the floor");
-        let chain = format!("lexical rebuild failed | {stop:#}");
-        assert!(error_chain_indicates_lexical_rebuild_disk_stop(&chain));
-        assert!(!error_chain_indicates_index_disk_headroom_blocked(&chain));
-        assert!(!error_chain_indicates_lexical_rebuild_disk_stop(
-            "canonical archive disk headroom check failed for /data: available=1 bytes, required=2 bytes"
-        ));
-        let err = lexical_rebuild_disk_stop_cli_error(&chain);
-        assert_eq!(err.code, 14);
-        assert_eq!(err.kind, CliErrorKind::Storage.kind_str());
-        assert!(err.retryable);
-        assert!(err.message.contains("/data/cass/index"), "{err:?}");
-        assert!(
-            err.hint
-                .as_deref()
-                .is_some_and(|hint| hint.contains("resumes")),
-            "{err:?}"
-        );
-    }
-
-
-    #[test]
-    pub(crate) fn unsupported_quill_writer_admission_is_non_retryable_and_actionable() {
-        let chain = "open Quill writer | verify writer-lock support at C:\\cass\\index: cross-process Quill writer admission requires flock semantics";
-
-        assert!(error_chain_indicates_unsupported_quill_writer_admission(
-            chain
-        ));
-        let err = index_unsupported_quill_writer_admission_cli_error(chain);
-
-        assert_eq!(err.code, 9);
-        assert_eq!(err.kind, CliErrorKind::Index.kind_str());
-        assert!(!err.retryable);
-        assert!(
-            err.hint
-                .as_deref()
-                .is_some_and(|hint| hint.contains("Retrying the same command will not help")),
-            "hint must prevent an infinite retry loop: {err:?}"
-        );
-    }
-
-
-    #[test]
-    pub(crate) fn unrelated_quill_errors_are_not_misclassified_as_platform_gaps() {
-        assert!(!error_chain_indicates_unsupported_quill_writer_admission(
-            "open Quill writer | another writer currently holds the admission lock"
-        ));
-        assert!(!error_chain_indicates_unsupported_quill_writer_admission(
-            "open Quill reader | unsupported manifest version 99"
-        ));
-    }
-
+#[test]
+pub(crate) fn unrelated_quill_errors_are_not_misclassified_as_platform_gaps() {
+    assert!(!error_chain_indicates_unsupported_quill_writer_admission(
+        "open Quill writer | another writer currently holds the admission lock"
+    ));
+    assert!(!error_chain_indicates_unsupported_quill_writer_admission(
+        "open Quill reader | unsupported manifest version 99"
+    ));
+}

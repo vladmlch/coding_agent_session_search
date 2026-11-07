@@ -5,15 +5,13 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use chrono::Utc;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub struct ParsedCli {
     pub cli: Cli,
@@ -21,7 +19,6 @@ pub struct ParsedCli {
     pub(crate) parse_note: Option<String>,
     pub(crate) heuristic_note: Option<String>,
 }
-
 
 pub fn parse_cli(raw_args: Vec<String>) -> CliResult<ParsedCli> {
     // A removed command or flag errors here, before normalization, alias
@@ -130,12 +127,10 @@ pub fn parse_cli(raw_args: Vec<String>) -> CliResult<ParsedCli> {
     })
 }
 
-
 pub async fn run() -> CliResult<()> {
     let parsed = parse_cli(std::env::args().collect())?;
     run_with_parsed(parsed).await
 }
-
 
 pub async fn run_with_parsed(parsed: ParsedCli) -> CliResult<()> {
     let ParsedCli {
@@ -213,7 +208,6 @@ pub async fn run_with_parsed(parsed: ParsedCli) -> CliResult<()> {
 
     result
 }
-
 
 /// Run startup-sensitive commands before constructing the async runtime.
 ///

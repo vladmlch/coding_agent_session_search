@@ -2,8 +2,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 pub(crate) fn describe_command(cli: &Cli) -> String {
     match &cli.command {
         Some(Commands::Tui { .. }) => "tui".to_string(),
@@ -53,13 +51,11 @@ pub(crate) fn describe_command(cli: &Cli) -> String {
     }
 }
 
-
 pub(crate) fn resolve_subcommand_structured_format(cli: &Cli, json: bool) -> Option<RobotFormat> {
     cli.robot_format
         .or(if json { Some(RobotFormat::Json) } else { None })
         .or_else(robot_format_from_env)
 }
-
 
 pub(crate) fn analytics_requests_structured_output(cmd: &AnalyticsCommand, cli: &Cli) -> bool {
     let json = match cmd {

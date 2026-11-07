@@ -3,15 +3,13 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use chrono::Utc;
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use anyhow::Result;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn warn_tui_terminal_profile(stderr_is_tty: bool) {
     if !stderr_is_tty {
@@ -55,7 +53,6 @@ pub(crate) fn warn_tui_terminal_profile(stderr_is_tty: bool) {
         );
     }
 }
-
 
 pub(crate) fn prepare_headless_once_tui_artifacts(
     data_dir: &Path,
@@ -102,7 +99,6 @@ pub(crate) fn prepare_headless_once_tui_artifacts(
 
     Ok(())
 }
-
 
 pub(crate) fn write_headless_asciicast_sentinel(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent()

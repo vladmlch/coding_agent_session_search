@@ -3,15 +3,13 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use chrono::Utc;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use anyhow::Result;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Extract meaningful search terms from a query string
 ///
@@ -75,7 +73,6 @@ pub(crate) fn extract_search_terms(query: &str) -> Vec<String> {
     terms
 }
 
-
 pub(crate) fn render_block<T: AsRef<str>>(lines: &[T], wrap: WrapConfig) -> String {
     lines
         .iter()
@@ -83,7 +80,6 @@ pub(crate) fn render_block<T: AsRef<str>>(lines: &[T], wrap: WrapConfig) -> Stri
         .collect::<Vec<_>>()
         .join("\n")
 }
-
 
 pub(crate) fn print_robot_help(wrap: WrapConfig) -> CliResult<()> {
     let lines = vec![
@@ -131,7 +127,6 @@ pub(crate) fn print_robot_help(wrap: WrapConfig) -> CliResult<()> {
     println!("{}", render_block(&lines, wrap));
     Ok(())
 }
-
 
 pub(crate) fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
     let lines: Vec<String> = match topic {
@@ -641,7 +636,6 @@ pub(crate) fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult
     Ok(())
 }
 
-
 /// Render comprehensive analytics robot-docs.
 pub(crate) fn render_analytics_docs() -> Vec<String> {
     vec![
@@ -802,7 +796,6 @@ pub(crate) fn render_analytics_docs() -> Vec<String> {
     ]
 }
 
-
 /// Render schema docs from live response schemas
 pub(crate) fn render_schema_docs() -> Vec<String> {
     use serde_json::{Map, Value};
@@ -850,7 +843,6 @@ pub(crate) fn render_schema_docs() -> Vec<String> {
     lines
 }
 
-
 /// Extract request_id from CLI command if present (currently only Search has it)
 pub(crate) fn extract_request_id(cli: &Cli) -> Option<String> {
     match &cli.command {
@@ -859,7 +851,6 @@ pub(crate) fn extract_request_id(cli: &Cli) -> Option<String> {
         _ => None,
     }
 }
-
 
 pub(crate) fn write_trace_line(
     path: &Path,

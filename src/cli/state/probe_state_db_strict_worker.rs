@@ -3,18 +3,16 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{ConnectionExt, RowExt};
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::franken_sync::compat::{ConnectionExt, RowExt};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn probe_state_db_strict_worker(
     db_path: &Path,
@@ -144,9 +142,12 @@ pub(crate) fn probe_state_db_strict_worker(
     snapshot
 }
 
-
 /// One COUNT read on a fresh strict dedicated-owner connection.
-pub(crate) fn strict_owner_fresh_count(db_path: &Path, busy_timeout: Duration, sql: &str) -> Option<i64> {
+pub(crate) fn strict_owner_fresh_count(
+    db_path: &Path,
+    busy_timeout: Duration,
+    sql: &str,
+) -> Option<i64> {
     use crate::franken_sync::compat::RowExt;
 
     let mut conn =
@@ -163,7 +164,6 @@ pub(crate) fn strict_owner_fresh_count(db_path: &Path, busy_timeout: Duration, s
     count
 }
 
-
 pub(crate) fn probe_state_db(
     db_path: &Path,
     reason: &str,
@@ -172,7 +172,6 @@ pub(crate) fn probe_state_db(
 ) -> StateDbSnapshot {
     probe_state_db_modes(db_path, reason, timeout, include_counts, false)
 }
-
 
 /// `coding_agent_session_search` (#301 truthfulness reconciliation):
 /// `watermarks_only` opens the canonical DB but reads ONLY the two
@@ -215,7 +214,6 @@ pub(crate) fn probe_state_db_modes(
     probe_state_db_strict_bounded_scoped(db_path, reason, timeout, include_counts, watermarks_only)
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActiveIndexRunDetails {
     pub(crate) pid: Option<u32>,
@@ -226,7 +224,6 @@ pub(crate) struct ActiveIndexRunDetails {
     pub(crate) job_kind: Option<crate::search::asset_state::SearchMaintenanceJobKind>,
     pub(crate) phase: Option<String>,
 }
-
 
 impl ActiveIndexRunDetails {
     pub(crate) fn from_snapshot(
@@ -313,11 +310,9 @@ impl ActiveIndexRunDetails {
     }
 }
 
-
 pub(crate) fn format_timestamp_millis_rfc3339(ts: i64) -> Option<String> {
     chrono::DateTime::from_timestamp_millis(ts).map(|dt| dt.to_rfc3339())
 }
-
 
 pub(crate) fn normalize_path_identity(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
@@ -382,16 +377,13 @@ pub(crate) fn normalize_path_identity(path: &Path) -> PathBuf {
     })
 }
 
-
 pub(crate) fn path_identities_match(lhs: &Path, rhs: &Path) -> bool {
     normalize_path_identity(lhs) == normalize_path_identity(rhs)
 }
 
-
 pub(crate) fn stored_path_identity_matches(saved: &str, current: &Path) -> bool {
     path_identities_match(Path::new(saved), current)
 }
-
 
 pub(crate) fn read_index_run_lock_snapshot(
     data_dir: &Path,
@@ -402,7 +394,6 @@ pub(crate) fn read_index_run_lock_snapshot(
     // the pure-read variant directly (gh#422).
     crate::search::asset_state::read_search_maintenance_snapshot_reaping(data_dir)
 }
-
 
 pub(crate) fn probe_index_run_lock(
     data_dir: &Path,
@@ -430,46 +421,40 @@ pub(crate) fn probe_index_run_lock(
     snapshot
 }
 
-
-pub(crate) fn active_index_run_details(data_dir: &Path, db_path: &Path) -> Option<ActiveIndexRunDetails> {
+pub(crate) fn active_index_run_details(
+    data_dir: &Path,
+    db_path: &Path,
+) -> Option<ActiveIndexRunDetails> {
     ActiveIndexRunDetails::from_snapshot(data_dir, db_path, read_index_run_lock_snapshot(data_dir))
 }
-
 
 pub(crate) fn error_chain_indicates_active_cass_index(chain: &str) -> bool {
     chain.contains("another cass index process already holds")
 }
 
-
 pub(crate) fn error_chain_indicates_retryable_storage_contention(chain: &str) -> bool {
     crate::storage::sqlite::retryable_storage_error_message(chain)
 }
-
 
 pub(crate) fn error_chain_indicates_index_disk_headroom_blocked(chain: &str) -> bool {
     chain.contains("canonical archive disk headroom check failed")
 }
 
-
 pub(crate) fn error_chain_indicates_lexical_rebuild_disk_stop(chain: &str) -> bool {
     chain.contains(crate::indexer::LEXICAL_REBUILD_DISK_STOP_MARKER)
 }
-
 
 pub(crate) fn error_chain_indicates_orphan_fk_cleanup_blocked(chain: &str) -> bool {
     chain.contains("orphan FK self-heal failed for canonical cass archive")
 }
 
-
 pub(crate) fn error_chain_indicates_archive_health_blocked(chain: &str) -> bool {
     chain.contains("will not replace or truncate the SQLite source of truth")
 }
 
-
 pub(crate) fn error_chain_indicates_unsupported_quill_writer_admission(chain: &str) -> bool {
     chain.contains("cross-process Quill writer admission requires flock semantics")
 }
-
 
 pub(crate) fn index_storage_contention_cli_error(chain: &str) -> CliError {
     CliError {
@@ -484,7 +469,6 @@ pub(crate) fn index_storage_contention_cli_error(chain: &str) -> CliError {
     }
 }
 
-
 pub(crate) fn index_archive_health_cli_error(chain: &str) -> CliError {
     CliError {
         code: 5,
@@ -498,7 +482,6 @@ pub(crate) fn index_archive_health_cli_error(chain: &str) -> CliError {
     }
 }
 
-
 pub(crate) fn index_disk_headroom_cli_error(chain: &str) -> CliError {
     CliError {
         code: 14,
@@ -511,7 +494,6 @@ pub(crate) fn index_disk_headroom_cli_error(chain: &str) -> CliError {
         retryable: true,
     }
 }
-
 
 /// nw61n: a lexical rebuild that started and then stopped at the free-space
 /// floor. Same exit and kind as the start refusal, its own wording: the
@@ -529,7 +511,6 @@ pub(crate) fn lexical_rebuild_disk_stop_cli_error(chain: &str) -> CliError {
     }
 }
 
-
 pub(crate) fn index_orphan_fk_cleanup_cli_error(chain: &str) -> CliError {
     CliError {
         code: 5,
@@ -542,7 +523,6 @@ pub(crate) fn index_orphan_fk_cleanup_cli_error(chain: &str) -> CliError {
         retryable: true,
     }
 }
-
 
 pub(crate) fn index_unsupported_quill_writer_admission_cli_error(chain: &str) -> CliError {
     CliError {

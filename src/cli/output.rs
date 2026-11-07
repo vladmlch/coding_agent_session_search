@@ -2,17 +2,17 @@
 
 // -- lib-split module declarations --
 pub(crate) mod cli_error_json_payload;
-pub(crate) mod warn_tui_terminal_profile;
+pub(crate) mod configure_color;
+pub(crate) mod default_dep_log_suppression;
+pub(crate) mod describe_command;
+pub(crate) mod emit_correction_notes;
+pub(crate) mod extract_search_terms;
 #[cfg(test)]
 pub(crate) mod headless_asciicast_sentinel_tests;
-pub(crate) mod configure_color;
-#[cfg(test)]
-pub(crate) mod watch_once_resolution_tests;
-pub(crate) mod describe_command;
-pub(crate) mod default_dep_log_suppression;
-#[cfg(test)]
-pub(crate) mod log_hygiene_tests;
-pub(crate) mod emit_correction_notes;
 #[cfg(test)]
 pub(crate) mod highlight_matches_tests;
-pub(crate) mod extract_search_terms;
+#[cfg(test)]
+pub(crate) mod log_hygiene_tests;
+pub(crate) mod warn_tui_terminal_profile;
+#[cfg(test)]
+pub(crate) mod watch_once_resolution_tests;

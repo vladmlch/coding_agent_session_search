@@ -5,12 +5,10 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Normalize common robot-mode invocation mistakes to make the CLI more forgiving for AI agents.
 ///
@@ -794,7 +792,6 @@ pub(crate) fn normalize_args(raw: Vec<String>) -> (Vec<String>, Option<String>) 
     (normalized, note)
 }
 
-
 /// Build a helpful error message when a command group (e.g. `analytics`, `sources`,
 /// `models`, `import`) is invoked without a required subcommand.
 pub(crate) fn format_missing_subcommand_error(args: &[String]) -> String {
@@ -879,12 +876,15 @@ pub(crate) fn format_missing_subcommand_error(args: &[String]) -> String {
     msg
 }
 
-
 /// Build a friendly parse error with actionable, context-aware examples for AI agents.
 ///
 /// This function analyzes what the agent was likely trying to do and provides
 /// targeted examples that match their apparent intent.
-pub(crate) fn format_friendly_parse_error(err: clap::Error, raw: &[String], normalized: &[String]) -> String {
+pub(crate) fn format_friendly_parse_error(
+    err: clap::Error,
+    raw: &[String],
+    normalized: &[String],
+) -> String {
     let is_robot = raw
         .iter()
         .any(|s| s == "--json" || s == "--robot" || s == "-robot" || s == "-json");
@@ -964,7 +964,6 @@ pub(crate) fn format_friendly_parse_error(err: clap::Error, raw: &[String], norm
     parts.join("\n")
 }
 
-
 /// Detect the likely command intent from the raw argument string.
 pub(crate) fn detect_command_intent(raw_str: &str) -> String {
     if matches!(
@@ -1003,7 +1002,6 @@ pub(crate) fn detect_command_intent(raw_str: &str) -> String {
         "run a cass command".to_string()
     }
 }
-
 
 /// Get context-aware examples based on detected intent.
 pub(crate) fn get_contextual_examples(intent: &str) -> Vec<&'static str> {
@@ -1063,7 +1061,6 @@ pub(crate) fn get_contextual_examples(intent: &str) -> Vec<&'static str> {
     }
 }
 
-
 /// Get context-aware hints based on detected intent and raw command.
 pub(crate) fn get_contextual_hints(intent: &str, raw_str: &str) -> Vec<String> {
     let mut hints = Vec::new();
@@ -1111,7 +1108,6 @@ pub(crate) fn get_contextual_hints(intent: &str, raw_str: &str) -> Vec<String> {
 
     hints
 }
-
 
 /// Get common mistakes for a given intent.
 ///
@@ -1161,7 +1157,6 @@ pub(crate) fn get_common_mistakes(intent: &str) -> Option<serde_json::Value> {
     ))
 }
 
-
 pub(crate) const CANONICAL_TOP_LEVEL_COMMANDS: &[&str] = &[
     "search",
     "pack",
@@ -1210,7 +1205,6 @@ pub(crate) const CANONICAL_TOP_LEVEL_COMMANDS: &[&str] = &[
     "tui",
 ];
 
-
 /// Commands that mutate state or reach the network must never be entered by
 /// fuzzy typo attraction — only by exact spelling. `forget` deletes indexed
 /// data (its reparse failure also used to swallow the implicit-search
@@ -1219,7 +1213,6 @@ pub(crate) const CANONICAL_TOP_LEVEL_COMMANDS: &[&str] = &[
 /// (`cass parade` executed it) before the local-only port removed it.
 /// Adversarial-review finding F1 on GH #367.
 pub(crate) const SIDE_EFFECT_EXACT_ONLY_COMMANDS: &[&str] = &["forget"];
-
 
 /// A command invocation removed by the local-only port (cass-local plan,
 /// tasks 7–14).
@@ -1240,7 +1233,6 @@ pub(crate) struct RemovedCommand {
     pub(crate) path: &'static [&'static str],
     pub(crate) hint: Option<&'static str>,
 }
-
 
 /// Commands removed by the local-only port. Tasks 7–14 append entries as
 /// each surface is deleted. A one-word entry must drop the name from
@@ -1308,7 +1300,6 @@ pub(crate) const REMOVED_COMMANDS: &[RemovedCommand] = &[
     },
 ];
 
-
 /// A flag (or specific flag values) removed from a command that otherwise
 /// stays live.
 ///
@@ -1327,7 +1318,6 @@ pub(crate) struct RemovedFlag {
     pub(crate) values: Option<&'static [&'static str]>,
     pub(crate) hint: Option<&'static str>,
 }
-
 
 /// Flags removed by the local-only port; see `RemovedFlag`.
 pub(crate) const REMOVED_FLAGS: &[RemovedFlag] = &[
@@ -1417,7 +1407,6 @@ pub(crate) const REMOVED_FLAGS: &[RemovedFlag] = &[
     },
 ];
 
-
 /// Whether `name` is a removed *top-level* command: a one-word path in
 /// `removed_commands`. Removed names are excluded from fuzzy typo
 /// attraction even while a stale `CANONICAL_TOP_LEVEL_COMMANDS` entry
@@ -1431,7 +1420,6 @@ pub(crate) fn is_removed_command_name(name: &str, removed_commands: &[RemovedCom
         .iter()
         .any(|entry| entry.path.len() == 1 && entry.path[0].eq_ignore_ascii_case(name))
 }
-
 
 /// Positional argv words in order, program name excluded. Flag tokens are
 /// skipped, and so is the separate value of the leading flags that take
@@ -1483,7 +1471,6 @@ pub(crate) fn removed_invocation_positionals(raw_args: &[String]) -> Vec<&str> {
     words
 }
 
-
 /// The structured error for a rejected invocation: exit 2 (usage), kind
 /// `removed-command`, never retryable. `typed` is set when the caller's
 /// word only fuzzy-matched the removed name — the message then names both
@@ -1509,7 +1496,6 @@ pub(crate) fn removed_command_error(
     }
 }
 
-
 /// Whether `command`/`sub` name the command path an entry applies to. An
 /// empty entry path matches every command (flag removed suite-wide).
 pub(crate) fn removed_path_matches(path: &[&str], command: &str, sub: &str) -> bool {
@@ -1520,7 +1506,6 @@ pub(crate) fn removed_path_matches(path: &[&str], command: &str, sub: &str) -> b
         _ => false,
     }
 }
-
 
 /// Rejection for `raw_args` under `removed_commands`/`removed_flags`, or
 /// `None` when the invocation is live. Taken as parameters (not the
@@ -1620,7 +1605,6 @@ pub(crate) fn removed_invocation_error(
     None
 }
 
-
 /// The structured error for a removed flag: same envelope contract as a
 /// removed command (exit 2, kind `removed-command`). `matched_value` names a
 /// removed value when only that selection was dropped (`--embedder external`),
@@ -1646,7 +1630,6 @@ pub(crate) fn removed_flag_error(entry: &RemovedFlag, matched_value: Option<&str
     }
 }
 
-
 /// Nearest canonical subcommand for a mistyped first argument.
 ///
 /// An argument that already names a canonical subcommand is never a typo:
@@ -1657,7 +1640,6 @@ pub(crate) fn removed_flag_error(entry: &RemovedFlag, matched_value: Option<&str
 pub(crate) fn closest_top_level_command(arg: &str) -> Option<&'static str> {
     closest_top_level_command_in(arg, REMOVED_COMMANDS)
 }
-
 
 /// `closest_top_level_command` with the removed-command table explicit —
 /// the same parameterized-table pattern as `removed_invocation_error`, so

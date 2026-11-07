@@ -4,8 +4,6 @@ use super::*;
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 /// Print the auto-correction teaching note on stderr.
 ///
 /// Humans get the multi-line bulleted form. Robots get one `note:` line per
@@ -26,7 +24,6 @@ pub(crate) fn emit_correction_notes(notes: &[&str], robot_mode: bool) {
     }
     eprintln!("Tip: Run 'cass --help' for proper syntax.");
 }
-
 
 /// Returns true if the command is using robot/JSON output mode.
 /// Used to auto-suppress INFO logs for clean machine-parseable output.
@@ -132,7 +129,6 @@ pub(crate) fn is_robot_mode(command: &Commands, cli: &Cli) -> bool {
     }
 }
 
-
 pub(crate) fn apply_wrap(line: &str, wrap: WrapConfig) -> String {
     let width = wrap.effective_width();
     if line.trim().is_empty() || width.is_none() {
@@ -160,7 +156,6 @@ pub(crate) fn apply_wrap(line: &str, wrap: WrapConfig) -> String {
     out
 }
 
-
 pub(crate) fn lowercase_with_map(text: &str) -> (String, Vec<usize>, Vec<(usize, usize)>) {
     let mut lower = String::with_capacity(text.len());
     let mut lower_starts = Vec::new();
@@ -178,8 +173,11 @@ pub(crate) fn lowercase_with_map(text: &str) -> (String, Vec<usize>, Vec<(usize,
     (lower, lower_starts, orig_ranges)
 }
 
-
-pub(crate) fn lower_char_index(lower_starts: &[usize], lower_len: usize, byte_idx: usize) -> Option<usize> {
+pub(crate) fn lower_char_index(
+    lower_starts: &[usize],
+    lower_len: usize,
+    byte_idx: usize,
+) -> Option<usize> {
     if byte_idx == lower_len {
         return Some(lower_starts.len());
     }
@@ -190,7 +188,6 @@ pub(crate) fn lower_char_index(lower_starts: &[usize], lower_len: usize, byte_id
         None
     }
 }
-
 
 pub(crate) fn map_lower_range(
     lower_starts: &[usize],
@@ -209,7 +206,6 @@ pub(crate) fn map_lower_range(
     Some((orig_start, orig_end))
 }
 
-
 /// Highlight matching search terms in text
 ///
 /// Extracts query terms and wraps matches with the specified markers.
@@ -220,7 +216,12 @@ pub(crate) fn map_lower_range(
 /// * `query` - The search query to extract terms from
 /// * `start_mark` - Opening marker (e.g., "**" for markdown bold, "<mark>" for HTML)
 /// * `end_mark` - Closing marker (e.g., "**" for markdown bold, "</mark>" for HTML)
-pub(crate) fn highlight_matches(text: &str, query: &str, start_mark: &str, end_mark: &str) -> String {
+pub(crate) fn highlight_matches(
+    text: &str,
+    query: &str,
+    start_mark: &str,
+    end_mark: &str,
+) -> String {
     // Extract search terms from query (handles quoted phrases and individual words)
     let terms = extract_search_terms(query);
     if terms.is_empty() {
@@ -281,7 +282,6 @@ pub(crate) fn highlight_matches(text: &str, query: &str, start_mark: &str, end_m
 
     result
 }
-
 
 /// Byte ranges of `text` already enclosed by `start_mark ... end_mark`,
 /// markers included, pairing each opening mark with the next closing one.

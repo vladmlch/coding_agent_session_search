@@ -5,16 +5,16 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use clap::{Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
-pub(crate) use serde::Serialize;
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use anyhow::Result;
+    pub(crate) use clap::{
+        Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint,
+    };
+    pub(crate) use serde::Serialize;
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// `cass schedule` — register low-priority background index jobs with the
 /// operating system's scheduler so the index is never stale when you search.
@@ -86,7 +86,6 @@ pub enum ScheduleCommand {
     },
 }
 
-
 /// Conversation-ingest quarantine inspection and management (#292 ask #3).
 #[derive(Subcommand, Debug, Clone)]
 pub enum QuarantineCommand {
@@ -149,7 +148,6 @@ pub enum QuarantineCommand {
     },
 }
 
-
 /// Raw-mirror maintenance commands.
 #[derive(Subcommand, Debug, Clone)]
 pub enum MirrorCommand {
@@ -202,7 +200,6 @@ pub enum MirrorCommand {
     },
 }
 
-
 /// Subcommands for importing external data
 #[derive(Subcommand, Debug, Clone)]
 pub enum ImportCommand {
@@ -225,7 +222,6 @@ pub enum ImportCommand {
         json: bool,
     },
 }
-
 
 /// Subcommands for managing sources.
 ///
@@ -290,7 +286,6 @@ pub enum SourcesCommand {
     #[command(subcommand)]
     Agents(AgentsAction),
 }
-
 
 /// Subcommands for managing semantic search models
 #[derive(Subcommand, Debug, Clone)]
@@ -390,7 +385,6 @@ pub enum ModelsCommand {
     },
 }
 
-
 /// Subcommands for managing path mappings (P6.3)
 #[derive(Subcommand, Debug, Clone)]
 pub enum MappingsAction {
@@ -435,7 +429,6 @@ pub enum MappingsAction {
     },
 }
 
-
 /// Subcommands for managing persisted agent indexing exclusions.
 #[derive(Subcommand, Debug, Clone)]
 pub enum AgentsAction {
@@ -460,7 +453,6 @@ pub enum AgentsAction {
     },
 }
 
-
 /// `cass index --rebuild-profile` (GH #483).
 #[derive(Copy, Clone, Debug, Default, ValueEnum, PartialEq, Eq)]
 pub enum RebuildProfileArg {
@@ -471,7 +463,6 @@ pub enum RebuildProfileArg {
     Bounded,
 }
 
-
 impl From<RebuildProfileArg> for indexer::LexicalRebuildProfile {
     fn from(profile: RebuildProfileArg) -> Self {
         match profile {
@@ -480,7 +471,6 @@ impl From<RebuildProfileArg> for indexer::LexicalRebuildProfile {
         }
     }
 }
-
 
 /// Time bucketing for analytics aggregation.
 #[derive(Copy, Clone, Debug, Default, ValueEnum, PartialEq, Eq)]
@@ -496,7 +486,6 @@ pub enum AnalyticsBucketing {
     Month,
 }
 
-
 impl std::fmt::Display for AnalyticsBucketing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -507,7 +496,6 @@ impl std::fmt::Display for AnalyticsBucketing {
         }
     }
 }
-
 
 /// Which analytics track(s) `cass analytics rebuild` regenerates (#397 —
 /// `analytics validate` has recommended `--track all` since the two-track
@@ -521,7 +509,6 @@ pub enum AnalyticsTrack {
     /// Both tracks
     All,
 }
-
 
 /// Subcommands for analytics (token/tool/model breakdowns and bounded incident mining).
 ///
@@ -602,7 +589,6 @@ pub enum AnalyticsCommand {
     },
 }
 
-
 /// Shared argument surface for analytics subcommands.
 ///
 /// Query commands honor the time-range and dimensional filters. Whole-database
@@ -648,7 +634,6 @@ pub struct AnalyticsCommon {
     pub data_dir: Option<PathBuf>,
 }
 
-
 // ---------------------------------------------------------------------------
 // Bridge impls: CLI types → analytics library types
 // ---------------------------------------------------------------------------
@@ -664,7 +649,6 @@ impl From<AnalyticsBucketing> for analytics::GroupBy {
     }
 }
 
-
 pub(crate) fn normalized_analytics_agent_arg(agent: &str) -> String {
     let trimmed = agent.trim();
     if trimmed.is_empty() {
@@ -674,8 +658,9 @@ pub(crate) fn normalized_analytics_agent_arg(agent: &str) -> String {
     }
 }
 
-
-pub(crate) fn analytics_source_filter_from_common_input(source: Option<&str>) -> analytics::SourceFilter {
+pub(crate) fn analytics_source_filter_from_common_input(
+    source: Option<&str>,
+) -> analytics::SourceFilter {
     match source.map(crate::sources::provenance::SourceFilter::parse) {
         None | Some(crate::sources::provenance::SourceFilter::All) => analytics::SourceFilter::All,
         Some(crate::sources::provenance::SourceFilter::Local) => analytics::SourceFilter::Local,
@@ -685,7 +670,6 @@ pub(crate) fn analytics_source_filter_from_common_input(source: Option<&str>) ->
         }
     }
 }
-
 
 pub(crate) fn parse_analytics_datetime_flag(flag: &str, raw: &str) -> CliResult<i64> {
     parse_datetime_str(raw).ok_or_else(|| {
@@ -699,8 +683,9 @@ pub(crate) fn parse_analytics_datetime_flag(flag: &str, raw: &str) -> CliResult<
     })
 }
 
-
-pub(crate) fn analytics_filter_from_common(common: &AnalyticsCommon) -> CliResult<analytics::AnalyticsFilter> {
+pub(crate) fn analytics_filter_from_common(
+    common: &AnalyticsCommon,
+) -> CliResult<analytics::AnalyticsFilter> {
     if common.days.is_some() && common.since.is_some() {
         return Err(CliError::usage(
             "--days and --since cannot be used together",
@@ -748,14 +733,12 @@ pub(crate) fn analytics_filter_from_common(common: &AnalyticsCommon) -> CliResul
     })
 }
 
-
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum ColorPref {
     Auto,
     Never,
     Always,
 }
-
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum ProgressMode {
@@ -764,7 +747,6 @@ pub enum ProgressMode {
     Plain,
     None,
 }
-
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum RobotTopic {
@@ -787,7 +769,6 @@ pub enum RobotTopic {
     Recipes,
 }
 
-
 /// Output format for robot/automation mode
 #[derive(Copy, Clone, Debug, Default, ValueEnum, PartialEq, Eq)]
 pub enum RobotFormat {
@@ -804,7 +785,6 @@ pub enum RobotFormat {
     Toon,
 }
 
-
 /// Human-readable display format for CLI output (non-JSON)
 #[derive(Copy, Clone, Debug, Default, ValueEnum, PartialEq, Eq)]
 pub enum DisplayFormat {
@@ -816,7 +796,6 @@ pub enum DisplayFormat {
     /// Markdown with role headers and code blocks
     Markdown,
 }
-
 
 /// Conversation export format (for export command)
 #[derive(Copy, Clone, Debug, Default, ValueEnum, PartialEq, Eq)]
@@ -832,7 +811,6 @@ pub enum ConvExportFormat {
     Html,
 }
 
-
 /// Timeline grouping options
 #[derive(Copy, Clone, Debug, Default, ValueEnum, PartialEq, Eq)]
 pub enum TimelineGrouping {
@@ -845,7 +823,6 @@ pub enum TimelineGrouping {
     None,
 }
 
-
 /// Subcommands of `cass pages` that operate on an already exported bundle.
 /// The export/wizard surface stays flag-driven on `cass pages` itself; this
 /// enum only carries verbs that need their own argument set.
@@ -855,7 +832,6 @@ pub enum PagesSubcommand {
     /// (`list`, `add-password`, `add-recovery`, `revoke`, `rotate`).
     Key(crate::pages::key_cli::PagesKeyArgs),
 }
-
 
 /// Deployment target for pages export. `local` is the only value that
 /// exists: hosted values (`github`, `cloudflare`) are rejected by
@@ -867,7 +843,6 @@ pub enum PagesDeployTarget {
     Local,
 }
 
-
 impl PagesDeployTarget {
     pub(crate) fn as_config_value(self) -> &'static str {
         match self {
@@ -875,7 +850,6 @@ impl PagesDeployTarget {
         }
     }
 }
-
 
 /// Aggregation field types for --aggregate flag
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -885,7 +859,6 @@ pub enum AggregateField {
     Date,
     MatchType,
 }
-
 
 impl AggregateField {
     /// Parse field name to enum
@@ -911,7 +884,6 @@ impl AggregateField {
     }
 }
 
-
 /// A single bucket in an aggregation result
 #[derive(Debug, Clone, Serialize)]
 pub struct AggregationBucket {
@@ -921,7 +893,6 @@ pub struct AggregationBucket {
     pub count: u64,
 }
 
-
 /// Aggregation result for a single field
 #[derive(Debug, Clone, Serialize)]
 pub struct FieldAggregation {
@@ -930,7 +901,6 @@ pub struct FieldAggregation {
     /// Total count of items that didn't fit in top buckets
     pub other_count: u64,
 }
-
 
 /// Container for all aggregation results
 #[derive(Debug, Clone, Default, Serialize)]
@@ -944,7 +914,6 @@ pub struct Aggregations {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub match_type: Option<FieldAggregation>,
 }
-
 
 impl Aggregations {
     pub(crate) fn is_empty(&self) -> bool {

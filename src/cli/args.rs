@@ -5,13 +5,13 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use clap::{Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use clap::{
+        Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint,
+    };
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Command-line interface.
 #[derive(Parser, Debug, Clone)]
@@ -75,7 +75,6 @@ pub struct Cli {
     pub interpretation: InvocationInterpretation,
 }
 
-
 /// What `parse_cli` changed or inferred about the invocation, so robot
 /// output can echo it under `_meta.effective` instead of leaving it on
 /// stderr only (2l1b0.68).
@@ -86,7 +85,6 @@ pub struct InvocationInterpretation {
     /// `--db` was absent from argv and its value came from `CASS_DB_PATH`.
     pub db_from_env: bool,
 }
-
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug, Clone)]

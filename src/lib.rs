@@ -558,148 +558,148 @@ pub(crate) use crate::doctor::run::*;
 pub(crate) use crate::doctor::sessionsummaryrecord::*;
 // -- generated lib-split bridges --
 #[allow(unused_imports)]
-pub use crate::cli::args::{Cli};
+pub use crate::cli::args::Cli;
 #[allow(unused_imports)]
-pub use crate::cli::args::{InvocationInterpretation};
+pub use crate::cli::args::Commands;
 #[allow(unused_imports)]
-pub use crate::cli::args::{Commands};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{ScheduleCommand};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{QuarantineCommand};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{MirrorCommand};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{ImportCommand};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{SourcesCommand};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{ModelsCommand};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{MappingsAction};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{AgentsAction};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{RebuildProfileArg};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{AnalyticsBucketing};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{AnalyticsTrack};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{AnalyticsCommand};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{AnalyticsCommon};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{ColorPref};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{ProgressMode};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{RobotTopic};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{RobotFormat};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{DisplayFormat};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{ConvExportFormat};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{TimelineGrouping};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{PagesSubcommand};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{PagesDeployTarget};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{AggregateField};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{AggregationBucket};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{FieldAggregation};
-#[allow(unused_imports)]
-pub use crate::cli::args_sub::{Aggregations};
-#[allow(unused_imports)]
-pub use crate::cli::error::{CliError};
-#[allow(unused_imports)]
-pub use crate::cli::error::{CliResult};
-#[allow(unused_imports)]
-pub use crate::cli::error::{ProgressResolved};
-#[allow(unused_imports)]
-pub use crate::cli::entry::{ParsedCli};
-#[allow(unused_imports)]
-pub use crate::cli::entry::{parse_cli};
-#[allow(unused_imports)]
-pub use crate::cli::entry::{run};
-#[allow(unused_imports)]
-pub use crate::cli::entry::{run_with_parsed};
-#[allow(unused_imports)]
-pub use crate::cli::entry::{try_run_with_parsed_fast};
-#[allow(unused_imports)]
-pub(crate) use crate::cli::contract_version::*;
+pub use crate::cli::args::InvocationInterpretation;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::args::*;
 #[allow(unused_imports)]
+pub use crate::cli::args_sub::AgentsAction;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::AggregateField;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::AggregationBucket;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::Aggregations;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::AnalyticsBucketing;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::AnalyticsCommand;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::AnalyticsCommon;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::AnalyticsTrack;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::ColorPref;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::ConvExportFormat;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::DisplayFormat;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::FieldAggregation;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::ImportCommand;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::MappingsAction;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::MirrorCommand;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::ModelsCommand;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::PagesDeployTarget;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::PagesSubcommand;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::ProgressMode;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::QuarantineCommand;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::RebuildProfileArg;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::RobotFormat;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::RobotTopic;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::ScheduleCommand;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::SourcesCommand;
+#[allow(unused_imports)]
+pub use crate::cli::args_sub::TimelineGrouping;
+#[allow(unused_imports)]
 pub(crate) use crate::cli::args_sub::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::error::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::argv::root_structured_triage_rewrite::*;
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::argv::robot_docs_shorthand_regression_tests::*;
+pub(crate) use crate::cli::argv::canonical_top_level_command_tests::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::argv::structured_output_request_span_at::*;
+pub(crate) use crate::cli::argv::heuristic_parse_recovery::*;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::argv::normalize::*;
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::argv::canonical_top_level_command_tests::*;
+pub(crate) use crate::cli::argv::removed_invocation_tests::*;
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::argv::removed_invocation_tests::*;
+pub(crate) use crate::cli::argv::robot_docs_shorthand_regression_tests::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::argv::heuristic_parse_recovery::*;
+pub(crate) use crate::cli::argv::root_structured_triage_rewrite::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::entry::*;
+pub(crate) use crate::cli::argv::structured_output_request_span_at::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::contract_version::*;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::dispatch::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::state::state_db_open_timeout::*;
-#[cfg(test)]
+pub use crate::cli::entry::ParsedCli;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::state::health_watermark_probe_tests::*;
+pub use crate::cli::entry::parse_cli;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::state::probe_state_db_strict_worker::*;
-#[cfg(test)]
+pub use crate::cli::entry::run;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::state::index_error_mapping_tests::*;
+pub use crate::cli::entry::run_with_parsed;
+#[allow(unused_imports)]
+pub use crate::cli::entry::try_run_with_parsed_fast;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::entry::*;
+#[allow(unused_imports)]
+pub use crate::cli::error::CliError;
+#[allow(unused_imports)]
+pub use crate::cli::error::CliResult;
+#[allow(unused_imports)]
+pub use crate::cli::error::ProgressResolved;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::error::*;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::output::cli_error_json_payload::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::state::state_meta_json::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::state::semantic_readiness_from_state::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::state::readiness_projection_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::output::warn_tui_terminal_profile::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::output::headless_asciicast_sentinel_tests::*;
-#[allow(unused_imports)]
 pub(crate) use crate::cli::output::configure_color::*;
-#[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::output::watch_once_resolution_tests::*;
+pub(crate) use crate::cli::output::default_dep_log_suppression::*;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::output::describe_command::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::output::default_dep_log_suppression::*;
+pub(crate) use crate::cli::output::emit_correction_notes::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::output::extract_search_terms::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::output::headless_asciicast_sentinel_tests::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::output::highlight_matches_tests::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::output::log_hygiene_tests::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::output::emit_correction_notes::*;
+pub(crate) use crate::cli::output::warn_tui_terminal_profile::*;
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::output::highlight_matches_tests::*;
+pub(crate) use crate::cli::output::watch_once_resolution_tests::*;
+#[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::output::extract_search_terms::*;
+pub(crate) use crate::cli::state::health_watermark_probe_tests::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::state::index_error_mapping_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::state::probe_state_db_strict_worker::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::state::readiness_projection_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::state::semantic_readiness_from_state::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::state::state_db_open_timeout::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::state::state_meta_json::*;

@@ -2,8 +2,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 /// Heuristic recovery for command-line errors to help agents.
 /// Returns `(corrected_args, correction_note)` if a likely intent is found.
 pub(crate) fn heuristic_parse_recovery(

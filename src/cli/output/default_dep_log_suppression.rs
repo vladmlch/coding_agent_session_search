@@ -3,19 +3,17 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use chrono::Utc;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+    pub(crate) use anyhow::Result;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Default tracing directive for interactive human mode: emit INFO and above
 /// but suppress frankensqlite internal telemetry that spams at INFO level.
@@ -78,7 +76,6 @@ pub(crate) const DEFAULT_DEP_LOG_SUPPRESSION: &str = concat!(
     ",fsqlite.lab_schedule=warn",
 );
 
-
 /// Decide the tracing filter directive for the active output mode.
 ///
 /// Returns `Some(directive)` when the directive is fixed regardless of the
@@ -92,7 +89,11 @@ pub(crate) const DEFAULT_DEP_LOG_SUPPRESSION: &str = concat!(
 /// environment. This is the single source of truth for robot stdout/stderr
 /// hygiene; the regression suite in `tests/cli_robot_log_hygiene.rs` exercises it
 /// end-to-end under deliberately noisy `RUST_LOG` settings.
-pub(crate) fn robot_aware_log_directive(robot_mode: bool, verbose: bool, quiet: bool) -> Option<&'static str> {
+pub(crate) fn robot_aware_log_directive(
+    robot_mode: bool,
+    verbose: bool,
+    quiet: bool,
+) -> Option<&'static str> {
     if quiet || robot_mode {
         // Robot/quiet mode implies error-only output unless --verbose is set.
         Some(if verbose { "debug" } else { "error" })
@@ -103,17 +104,19 @@ pub(crate) fn robot_aware_log_directive(robot_mode: bool, verbose: bool, quiet: 
     }
 }
 
-
 /// Build the concrete [`EnvFilter`] for the active output mode, applying the
 /// robot/quiet hygiene policy from [`robot_aware_log_directive`].
-pub(crate) fn build_robot_aware_log_filter(robot_mode: bool, verbose: bool, quiet: bool) -> EnvFilter {
+pub(crate) fn build_robot_aware_log_filter(
+    robot_mode: bool,
+    verbose: bool,
+    quiet: bool,
+) -> EnvFilter {
     match robot_aware_log_directive(robot_mode, verbose, quiet) {
         Some(directive) => EnvFilter::new(directive),
         None => EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new(DEFAULT_DEP_LOG_SUPPRESSION)),
     }
 }
-
 
 /// Default filter for the explicit `--trace-file` surface.
 ///
@@ -125,7 +128,6 @@ pub(crate) fn build_robot_aware_log_filter(robot_mode: bool, verbose: bool, quie
 /// quarantine warnings remain visible.
 pub(crate) const DEFAULT_TRACE_FILE_LOG_DIRECTIVE: &str =
     "warn,coding_agent_search=debug,cass=debug,cass::redact::memo=warn";
-
 
 /// Default hard ceiling for one trace artifact. Operators may lower or raise it
 /// with `CASS_TRACE_MAX_BYTES`; values are clamped to a safe 4 KiB..1 GiB range.
@@ -163,7 +165,6 @@ pub(crate) const TRACE_SUMMARY_ERROR_MAX_CHARS: usize = 1024;
 
 pub(crate) const TRACE_RECEIPT_TARGET_MAX_CHARS: usize = 128;
 
-
 pub(crate) fn trace_file_log_filter_override() -> Option<EnvFilter> {
     let directive = dotenvy::var("CASS_TRACE_FILTER").ok()?;
     let directive = directive.trim();
@@ -179,7 +180,6 @@ pub(crate) fn trace_file_log_filter_override() -> Option<EnvFilter> {
     }
 }
 
-
 pub(crate) fn trace_file_max_bytes() -> u64 {
     dotenvy::var("CASS_TRACE_MAX_BYTES")
         .ok()
@@ -187,7 +187,6 @@ pub(crate) fn trace_file_max_bytes() -> u64 {
         .map(|value| value.clamp(MIN_TRACE_FILE_MAX_BYTES, MAX_TRACE_FILE_MAX_BYTES))
         .unwrap_or(DEFAULT_TRACE_FILE_MAX_BYTES)
 }
-
 
 pub(crate) fn trace_file_max_events() -> u64 {
     dotenvy::var("CASS_TRACE_MAX_EVENTS")
@@ -197,14 +196,12 @@ pub(crate) fn trace_file_max_events() -> u64 {
         .unwrap_or(DEFAULT_TRACE_FILE_MAX_EVENTS)
 }
 
-
 pub(crate) fn trace_target_is_cass_owned(target: &str) -> bool {
     target.eq("cass")
         || target.starts_with("cass::")
         || target.eq("coding_agent_search")
         || target.starts_with("coding_agent_search::")
 }
-
 
 pub(crate) fn default_trace_metadata_enabled(metadata: &tracing::Metadata<'_>) -> bool {
     if metadata.target().eq("cass::redact::memo") {
@@ -223,25 +220,22 @@ pub(crate) fn default_trace_metadata_enabled(metadata: &tracing::Metadata<'_>) -
         ))
 }
 
-
 pub(crate) fn trace_field_is_sensitive(field: &str) -> bool {
     crate::indexer::redact_secrets::is_sensitive_json_field(field)
 }
 
-
-pub(crate) static TRACE_REDACTION_ENGINE: once_cell::sync::Lazy<crate::pages::redact::RedactionEngine> =
-    once_cell::sync::Lazy::new(|| {
-        crate::pages::redact::RedactionEngine::new(
-            crate::pages::redact::swarm_evidence_redaction_config(),
-        )
-    });
-
+pub(crate) static TRACE_REDACTION_ENGINE: once_cell::sync::Lazy<
+    crate::pages::redact::RedactionEngine,
+> = once_cell::sync::Lazy::new(|| {
+    crate::pages::redact::RedactionEngine::new(
+        crate::pages::redact::swarm_evidence_redaction_config(),
+    )
+});
 
 pub(crate) fn redact_trace_text(text: &str) -> String {
     let secret_redacted = crate::indexer::redact_secrets::redact_text(text).into_owned();
     TRACE_REDACTION_ENGINE.redact_text(&secret_redacted).output
 }
-
 
 pub(crate) fn truncate_trace_text(text: &str, max_chars: usize) -> String {
     let mut chars = text.chars();
@@ -252,11 +246,9 @@ pub(crate) fn truncate_trace_text(text: &str, max_chars: usize) -> String {
     truncated
 }
 
-
 pub(crate) fn redact_bounded_trace_text(text: &str, max_chars: usize) -> String {
     truncate_trace_text(&redact_trace_text(text), max_chars)
 }
-
 
 pub(crate) fn enrich_trace_json(value: &serde_json::Value) -> serde_json::Value {
     let mut enriched = value.clone();
@@ -304,7 +296,6 @@ pub(crate) fn enrich_trace_json(value: &serde_json::Value) -> serde_json::Value 
     enriched
 }
 
-
 pub(crate) fn redact_trace_json(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::String(text) => serde_json::Value::String(redact_trace_text(text)),
@@ -333,7 +324,6 @@ pub(crate) fn redact_trace_json(value: &serde_json::Value) -> serde_json::Value 
         other => other.clone(),
     }
 }
-
 
 pub(crate) fn redact_trace_args(args: &[String]) -> Vec<String> {
     let retained = args.len().min(TRACE_SUMMARY_ARG_LIMIT);
@@ -380,7 +370,6 @@ pub(crate) fn redact_trace_args(args: &[String]) -> Vec<String> {
     redacted
 }
 
-
 pub(crate) fn trace_json_has_valid_envelope(value: &serde_json::Value) -> bool {
     value.is_object()
         && value
@@ -408,7 +397,6 @@ pub(crate) fn trace_json_has_valid_envelope(value: &serde_json::Value) -> bool {
         })
 }
 
-
 pub(crate) fn encode_trace_line(value: &serde_json::Value) -> io::Result<Vec<u8>> {
     let enriched = enrich_trace_json(value);
     let redacted = redact_trace_json(&enriched);
@@ -417,23 +405,22 @@ pub(crate) fn encode_trace_line(value: &serde_json::Value) -> io::Result<Vec<u8>
     Ok(encoded)
 }
 
-
 pub(crate) fn trace_summary_reserve(max_bytes: u64) -> u64 {
     TRACE_SUMMARY_RESERVE_MAX_BYTES.min(max_bytes / 4)
 }
-
 
 pub(crate) fn trace_truncation_reserve(max_bytes: u64) -> u64 {
     TRACE_TRUNCATION_RESERVE_MAX_BYTES.min(max_bytes / 4)
 }
 
-
 pub(crate) fn trace_failure_tail_reserve(max_bytes: u64) -> u64 {
     TRACE_FAILURE_TAIL_RESERVE_MAX_BYTES.min(max_bytes / 8)
 }
 
-
-pub(crate) fn open_trace_append_file(path: &Path, max_bytes: u64) -> io::Result<(File, u64, u64, bool)> {
+pub(crate) fn open_trace_append_file(
+    path: &Path,
+    max_bytes: u64,
+) -> io::Result<(File, u64, u64, bool)> {
     let mut file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -525,7 +512,6 @@ pub(crate) fn open_trace_append_file(path: &Path, max_bytes: u64) -> io::Result<
     Ok((file, bytes_written, events_written, diagnostic_head_closed))
 }
 
-
 pub(crate) struct BoundedTraceState {
     pub(crate) file: File,
     pub(crate) max_bytes: u64,
@@ -548,14 +534,12 @@ pub(crate) struct BoundedTraceState {
     pub(crate) last_error: Option<String>,
 }
 
-
 #[derive(Clone, Copy)]
 pub(crate) enum TraceSuppressionReason {
     ByteBudget,
     EventBudget,
     OversizeEvent,
 }
-
 
 pub(crate) fn increment_trace_target_count(counts: &mut BTreeMap<String, u64>, target: &str) {
     if let Some(count) = counts.get_mut(target) {
@@ -565,7 +549,6 @@ pub(crate) fn increment_trace_target_count(counts: &mut BTreeMap<String, u64>, t
     }
 }
 
-
 pub(crate) fn trace_receipt_target_limit(max_bytes: u64) -> usize {
     if max_bytes < 16 * 1024 {
         2
@@ -573,7 +556,6 @@ pub(crate) fn trace_receipt_target_limit(max_bytes: u64) -> usize {
         TRACE_FILTER_TARGET_LIMIT
     }
 }
-
 
 pub(crate) fn ranked_trace_targets(
     counts: &BTreeMap<String, u64>,
@@ -601,7 +583,6 @@ pub(crate) fn ranked_trace_targets(
     (targets, overflow_events)
 }
 
-
 impl BoundedTraceState {
     pub(crate) fn diagnostic_limit(&self) -> u64 {
         self.max_bytes
@@ -621,7 +602,12 @@ impl BoundedTraceState {
             .saturating_sub(trace_summary_reserve(self.max_bytes))
     }
 
-    pub(crate) fn record_suppressed(&mut self, target: &str, bytes: u64, reason: TraceSuppressionReason) {
+    pub(crate) fn record_suppressed(
+        &mut self,
+        target: &str,
+        bytes: u64,
+        reason: TraceSuppressionReason,
+    ) {
         self.suppressed_events = self.suppressed_events.saturating_add(1);
         self.suppressed_bytes = self.suppressed_bytes.saturating_add(bytes);
         let reason_count = match reason {
@@ -664,12 +650,20 @@ impl BoundedTraceState {
         self.failure_tail_bytes = self.failure_tail_bytes.saturating_add(encoded_len);
     }
 
-    pub(crate) fn write_line_with_limit(&mut self, value: &serde_json::Value, limit: u64) -> io::Result<bool> {
+    pub(crate) fn write_line_with_limit(
+        &mut self,
+        value: &serde_json::Value,
+        limit: u64,
+    ) -> io::Result<bool> {
         let encoded = encode_trace_line(value)?;
         self.write_encoded_line_with_limit(&encoded, limit)
     }
 
-    pub(crate) fn write_encoded_line_with_limit(&mut self, encoded: &[u8], limit: u64) -> io::Result<bool> {
+    pub(crate) fn write_encoded_line_with_limit(
+        &mut self,
+        encoded: &[u8],
+        limit: u64,
+    ) -> io::Result<bool> {
         let encoded_len = u64::try_from(encoded.len()).unwrap_or(u64::MAX);
         if self.bytes_written.saturating_add(encoded_len) > limit {
             return Ok(false);
@@ -906,15 +900,17 @@ impl BoundedTraceState {
     }
 }
 
-
 #[derive(Clone)]
 pub(crate) struct BoundedTraceMakeWriter {
     pub(crate) state: Arc<Mutex<BoundedTraceState>>,
 }
 
-
 impl BoundedTraceMakeWriter {
-    pub(crate) fn open(path: &Path, max_bytes: u64, max_events: u64) -> io::Result<(Self, CliTraceGuard)> {
+    pub(crate) fn open(
+        path: &Path,
+        max_bytes: u64,
+        max_events: u64,
+    ) -> io::Result<(Self, CliTraceGuard)> {
         let (file, bytes_written, events_written, prior_head_closed) =
             open_trace_append_file(path, max_bytes)?;
         let diagnostic_limit = max_bytes
@@ -953,13 +949,11 @@ impl BoundedTraceMakeWriter {
     }
 }
 
-
 pub(crate) struct BoundedTraceEventWriter {
     pub(crate) state: Arc<Mutex<BoundedTraceState>>,
     pub(crate) buffer: Vec<u8>,
     pub(crate) overflow_bytes: u64,
 }
-
 
 impl Write for BoundedTraceEventWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -977,7 +971,6 @@ impl Write for BoundedTraceEventWriter {
     }
 }
 
-
 impl Drop for BoundedTraceEventWriter {
     fn drop(&mut self) {
         let Ok(mut state) = self.state.lock() else {
@@ -988,7 +981,6 @@ impl Drop for BoundedTraceEventWriter {
         }
     }
 }
-
 
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BoundedTraceMakeWriter {
     type Writer = BoundedTraceEventWriter;
@@ -1002,11 +994,9 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BoundedTraceMakeWriter {
     }
 }
 
-
 pub(crate) struct CliTraceGuard {
     pub(crate) state: Arc<Mutex<BoundedTraceState>>,
 }
-
 
 impl Drop for CliTraceGuard {
     fn drop(&mut self) {
@@ -1022,7 +1012,6 @@ impl Drop for CliTraceGuard {
         }
     }
 }
-
 
 /// Initialize the tracing subscriber for non-TUI commands with robot-safe
 /// stdout/stderr hygiene plus an optional explicit `--trace-file` sink.

@@ -3,12 +3,10 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn semantic_readiness_from_state(
     state: &serde_json::Value,
@@ -72,8 +70,10 @@ pub(crate) fn semantic_readiness_from_state(
     SemanticReadinessState::Absent
 }
 
-
-pub(crate) fn semantic_recommended_action(state: &serde_json::Value, not_initialized: bool) -> Option<String> {
+pub(crate) fn semantic_recommended_action(
+    state: &serde_json::Value,
+    not_initialized: bool,
+) -> Option<String> {
     use crate::search::readiness::RecommendedAction;
 
     match readiness_snapshot_from_state(state, not_initialized).recommended_action() {
@@ -89,7 +89,6 @@ pub(crate) fn semantic_recommended_action(state: &serde_json::Value, not_initial
     }
 }
 
-
 pub(crate) fn shell_quote_arg(arg: &str) -> String {
     if !arg.is_empty()
         && arg
@@ -102,8 +101,11 @@ pub(crate) fn shell_quote_arg(arg: &str) -> String {
     }
 }
 
-
-pub(crate) fn cass_dataset_command(data_dir: &Path, db_path: &Path, subcommand_args: &[&str]) -> String {
+pub(crate) fn cass_dataset_command(
+    data_dir: &Path,
+    db_path: &Path,
+    subcommand_args: &[&str],
+) -> String {
     let mut parts = vec!["cass".to_string()];
     let default_db_path = data_dir.join("agent_search.db");
     if db_path != default_db_path {
@@ -116,7 +118,6 @@ pub(crate) fn cass_dataset_command(data_dir: &Path, db_path: &Path, subcommand_a
     parts.join(" ")
 }
 
-
 pub(crate) struct ReadinessCommandRecommendation<'a> {
     pub(crate) id: &'a str,
     pub(crate) command: String,
@@ -127,7 +128,6 @@ pub(crate) struct ReadinessCommandRecommendation<'a> {
     pub(crate) parse_fields: &'a [&'a str],
     pub(crate) retry_after_ms: Option<u64>,
 }
-
 
 pub(crate) fn readiness_command_recommendation(
     recommendation: ReadinessCommandRecommendation<'_>,
@@ -143,7 +143,6 @@ pub(crate) fn readiness_command_recommendation(
         "retry_after_ms": recommendation.retry_after_ms,
     })
 }
-
 
 pub(crate) fn readiness_recommended_commands(
     data_dir: &Path,

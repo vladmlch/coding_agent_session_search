@@ -5,14 +5,12 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use chrono::Utc;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn state_meta_json(
     data_dir: &Path,
@@ -22,7 +20,6 @@ pub(crate) fn state_meta_json(
 ) -> serde_json::Value {
     state_meta_json_with_counts(data_dir, db_path, stale_threshold, allow_db_open, None)
 }
-
 
 /// `coding_agent_session_search-gi4oy` follow-up to d0rmo: the
 /// COUNT(*) skip got cass health from p50=296ms to p50=132ms, but
@@ -59,7 +56,6 @@ pub(crate) fn state_meta_json_with_counts(
     )
 }
 
-
 /// `coding_agent_session_search-gi4oy`: most-general state_meta_json
 /// variant exposing both the include_counts override (d0rmo) AND
 /// the skip_db_open elision (gi4oy). Callers that already use
@@ -88,7 +84,6 @@ pub(crate) fn state_meta_json_full(
     )
 }
 
-
 /// Convenience wrapper for run_health: skip COUNT(*) AND skip the
 /// DB open. Keep semantic asset probing enabled: it is filesystem-only
 /// on this path, and health/status JSON must agree on realized fallback
@@ -110,7 +105,6 @@ pub(crate) fn state_meta_json_for_health(
     )
 }
 
-
 pub(crate) fn state_meta_json_for_status(
     data_dir: &Path,
     db_path: &Path,
@@ -127,7 +121,6 @@ pub(crate) fn state_meta_json_for_status(
         false,
     )
 }
-
 
 /// Filesystem-only state metadata for `search --no-maintenance`. The database
 /// is reported as deliberately unprobed; lexical checkpoint/coordination files
@@ -150,7 +143,6 @@ pub(crate) fn state_meta_json_for_strict_read(
         true,
     )
 }
-
 
 /// Project the `.14.1` storage-integrity block onto a lightweight readiness
 /// surface (`cass status --json`, `cass search --robot-meta`) from the
@@ -228,7 +220,6 @@ pub(crate) fn storage_integrity_value_from_state(
         .unwrap_or(serde_json::Value::Null)
 }
 
-
 #[cfg(test)]
 #[test]
 pub(crate) fn readiness_projection_uses_only_fingerprint_matching_integrity_attestations() {
@@ -273,7 +264,6 @@ pub(crate) fn readiness_projection_uses_only_fingerprint_matching_integrity_atte
     assert_eq!(stale["attestation_source"], "none");
 }
 
-
 #[cfg(test)]
 #[test]
 pub(crate) fn gh422_passive_search_metadata_never_claims_a_database_open() {
@@ -299,7 +289,6 @@ pub(crate) fn gh422_passive_search_metadata_never_claims_a_database_open() {
         "robot metadata must say the DB open was skipped, never that it ran"
     );
 }
-
 
 /// `coding_agent_session_search-d0rmo`: variant of `state_meta_json`
 /// that lets the caller force-skip the COUNT(*) queries on the
@@ -1134,7 +1123,6 @@ pub(crate) fn state_meta_json_inner(
     state
 }
 
-
 pub(crate) fn lexical_manifest_indexed_doc_count(index_path: &Path) -> Option<u64> {
     use crate::indexer::lexical_generation::{LexicalGenerationPublishState, load_manifest};
 
@@ -1150,7 +1138,6 @@ pub(crate) fn lexical_manifest_indexed_doc_count(index_path: &Path) -> Option<u6
         _ => None,
     }
 }
-
 
 /// Stale-on-read catch-up (see `indexer::background_refresh`).
 ///
@@ -1216,7 +1203,6 @@ pub(crate) fn maybe_auto_refresh_index_after_read(
     Some(value)
 }
 
-
 /// True when `data_dir` lives under the platform temp dir (or `CASS_DATA_DIR`
 /// explicitly points at one). Auto-refresh never fires there, and neither
 /// does the TUI's first-run index.
@@ -1234,7 +1220,6 @@ pub(crate) fn auto_refresh_is_scratch_data_dir(data_dir: &Path) -> bool {
         || canon_dir.starts_with("/var/tmp")
         || canon_dir.starts_with("/private/var/tmp")
 }
-
 
 pub(crate) fn state_index_freshness(state: &serde_json::Value) -> Option<serde_json::Value> {
     let index = state.get("index")?;
@@ -1261,7 +1246,6 @@ pub(crate) fn state_index_freshness(state: &serde_json::Value) -> Option<serde_j
         "pending_sessions": pending.and_then(|p| p.get("sessions"))
     }))
 }
-
 
 pub(crate) fn rebuild_progress_summary_json(state: &serde_json::Value) -> serde_json::Value {
     let rebuild = state.get("rebuild").unwrap_or(&serde_json::Value::Null);
@@ -1336,7 +1320,6 @@ pub(crate) fn rebuild_progress_summary_json(state: &serde_json::Value) -> serde_
     })
 }
 
-
 pub(crate) fn state_db_count_json(count: i64, counts_skipped: bool) -> serde_json::Value {
     if counts_skipped {
         serde_json::Value::Null
@@ -1345,8 +1328,10 @@ pub(crate) fn state_db_count_json(count: i64, counts_skipped: bool) -> serde_jso
     }
 }
 
-
-pub(crate) fn state_database_counts_need_refresh(state: &serde_json::Value, db_path: &Path) -> bool {
+pub(crate) fn state_database_counts_need_refresh(
+    state: &serde_json::Value,
+    db_path: &Path,
+) -> bool {
     let current_opened = state
         .get("database")
         .and_then(|db| db.get("opened"))
@@ -1376,8 +1361,10 @@ pub(crate) fn state_database_counts_need_refresh(state: &serde_json::Value, db_p
         && db_path.exists()
 }
 
-
-pub(crate) fn apply_state_database_count_snapshot(state: &mut serde_json::Value, refreshed: StateDbSnapshot) {
+pub(crate) fn apply_state_database_count_snapshot(
+    state: &mut serde_json::Value,
+    refreshed: StateDbSnapshot,
+) {
     let current_opened = state
         .get("database")
         .and_then(|db| db.get("opened"))
@@ -1460,7 +1447,6 @@ pub(crate) fn apply_state_database_count_snapshot(state: &mut serde_json::Value,
     }
 }
 
-
 pub(crate) fn refresh_state_database_counts_if_needed(
     state: &mut serde_json::Value,
     db_path: &Path,
@@ -1474,14 +1460,12 @@ pub(crate) fn refresh_state_database_counts_if_needed(
     apply_state_database_count_snapshot(state, refreshed);
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BoundedCountRefresh {
     NotNeeded,
     Completed,
     TimedOut,
 }
-
 
 pub(crate) fn maybe_test_triage_worker_delay(variable: &str) {
     if let Ok(raw) = dotenvy::var(variable)
@@ -1491,7 +1475,6 @@ pub(crate) fn maybe_test_triage_worker_delay(variable: &str) {
         std::thread::sleep(Duration::from_millis(milliseconds));
     }
 }
-
 
 pub(crate) fn refresh_state_database_counts_with_hard_timeout(
     state: &mut serde_json::Value,
@@ -1529,7 +1512,6 @@ pub(crate) fn refresh_state_database_counts_with_hard_timeout(
     }
 }
 
-
 pub(crate) fn readiness_snapshot_from_state(
     state: &serde_json::Value,
     not_initialized: bool,
@@ -1540,7 +1522,6 @@ pub(crate) fn readiness_snapshot_from_state(
     let semantic = semantic_readiness_from_state(state);
     ReadinessSnapshot::new(lexical, semantic)
 }
-
 
 /// Live bridge (bead `cass-fleet-resilience-20260608-uojcg.envu1`): build the
 /// canonical typed `DerivedAssetTruthTable` for `data_dir` from the same
@@ -1565,7 +1546,6 @@ pub(crate) fn build_truth_table_for_data_dir(
     build_truth_table_from_state(&state)
 }
 
-
 /// Variant of [`build_truth_table_for_data_dir`] for callers that already
 /// hold a `state_meta_json` snapshot (status/doctor compute it once), so the
 /// data dir is not re-probed.
@@ -1589,7 +1569,6 @@ pub(crate) fn build_truth_table_from_state(
     let readiness = readiness_snapshot_from_state(state, not_initialized);
     crate::search::readiness::truth_table_from_state(state, readiness)
 }
-
 
 /// Render the bounded human readiness summary (bead
 /// `coding_agent_session_search-v6vuz`) as a CLI section, from a live
@@ -1619,7 +1598,6 @@ pub(crate) fn print_human_readiness_section(
         println!("{line}");
     }
 }
-
 
 pub(crate) fn lexical_readiness_from_state(
     state: &serde_json::Value,

@@ -5,22 +5,19 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use serde::Serialize;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use anyhow::Result;
+    pub(crate) use serde::Serialize;
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) const CONTRACT_VERSION: &str = "2";
 
 pub(crate) const DEFAULT_STALE_THRESHOLD_SECS: u64 = 1800;
 
 pub(crate) const DEFAULT_PACK_FRESHNESS_WINDOW_SECONDS: i64 = 30 * 24 * 60 * 60;
-
 
 #[cfg(test)]
 pub(crate) fn read_watch_once_paths_env() -> Option<Vec<std::path::PathBuf>> {
@@ -35,12 +32,10 @@ pub(crate) fn read_watch_once_paths_env() -> Option<Vec<std::path::PathBuf>> {
         .filter(|v| !v.is_empty())
 }
 
-
 #[cfg(not(test))]
 pub(crate) fn read_watch_once_paths_env() -> Option<Vec<std::path::PathBuf>> {
     None
 }
-
 
 /// Absolutize explicit paths without erasing provider hints in symlink names.
 /// Classification resolves symlinks after retaining the original hint (#478),
@@ -61,7 +56,6 @@ pub(crate) fn absolutize_watch_once_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
-
 pub(crate) fn resolve_watch_once_paths_from_sources(
     watch: bool,
     watch_once: Option<Vec<PathBuf>>,
@@ -81,11 +75,12 @@ pub(crate) fn resolve_watch_once_paths_from_sources(
     None
 }
 
-
-pub(crate) fn resolve_watch_once_paths(watch: bool, watch_once: Option<Vec<PathBuf>>) -> Option<Vec<PathBuf>> {
+pub(crate) fn resolve_watch_once_paths(
+    watch: bool,
+    watch_once: Option<Vec<PathBuf>>,
+) -> Option<Vec<PathBuf>> {
     resolve_watch_once_paths_from_sources(watch, watch_once, read_watch_once_paths_env())
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct IndexEntrypointDiagnostics {
@@ -98,7 +93,6 @@ pub(crate) struct IndexEntrypointDiagnostics {
     pub(crate) build_hnsw: bool,
     pub(crate) migration_state: &'static str,
 }
-
 
 pub(crate) fn index_entrypoint_diagnostics(
     full: bool,
@@ -135,7 +129,6 @@ pub(crate) fn index_entrypoint_diagnostics(
         migration_state: "tin8o_entrypoint_observed",
     }
 }
-
 
 pub(crate) fn with_frankensqlite_connection<T, F>(
     db_path: &Path,

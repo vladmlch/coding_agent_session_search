@@ -5,18 +5,16 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{ConnectionExt, RowExt};
-pub(crate) use anyhow::Result;
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::franken_sync::compat::{ConnectionExt, RowExt};
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Compute lightweight state snapshot (index/db freshness) for robot meta and state command reuse
 pub(crate) const STATE_DB_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -32,7 +30,6 @@ pub(crate) const STATUS_COUNT_SCAN_MAX_DB_BYTES: u64 = 256 * 1024 * 1024;
 pub(crate) const CLI_DB_QUERY_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) const CLI_DIAG_DB_OPEN_TIMEOUT: Duration = Duration::from_secs(30);
-
 
 #[derive(Debug, Default)]
 pub(crate) struct StateDbSnapshot {
@@ -72,14 +69,12 @@ pub(crate) struct StateDbSnapshot {
     pub(crate) integrity_detail: Option<String>,
 }
 
-
 /// i6upe: verdict of the bounded real-column integrity probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StateDbIntegrity {
     Ok,
     Corrupt,
 }
-
 
 /// True for FrankenError classes that mean the archive's stored pages are
 /// malformed — never for busy/locked/transient classes.
@@ -94,7 +89,6 @@ pub(crate) fn corruption_class_franken_error(err: &crate::franken_sync::FrankenE
     let lower = err.to_string().to_ascii_lowercase();
     lower.contains("malformed") || lower.contains("disk image")
 }
-
 
 /// i6upe: real-column corruption probe used only below a physical archive
 /// bundle-size ceiling.
@@ -138,7 +132,6 @@ pub(crate) fn probe_state_db_integrity(
     }
     (Some(StateDbIntegrity::Ok), None)
 }
-
 
 /// Read the canonical database's fixed-size SQLite header, then run the
 /// stronger real-column probe only when the complete main+sidecar bundle is
@@ -283,7 +276,6 @@ pub(crate) fn bounded_canonical_db_corruption_probe(
     }
 }
 
-
 /// Dedicated-owner twin of [`franken_query_row_map_retry`]: bounded retry on
 /// engine contention only, never replaying a query whose row-mapping
 /// callback failed (negs9).
@@ -323,7 +315,6 @@ where
     }
 }
 
-
 /// Size of a non-empty (frames present) `-wal` sidecar next to `db_path`, or
 /// `None` when there is nothing to recover. Mirrors the shape test the
 /// ordinary opener's dirty-WAL recovery uses, without performing it.
@@ -332,7 +323,6 @@ pub(crate) fn unpublished_wal_sidecar_bytes(db_path: &Path) -> Option<u64> {
     let meta = std::fs::symlink_metadata(wal_path).ok()?;
     (meta.file_type().is_file() && meta.len() > 32).then_some(meta.len())
 }
-
 
 /// Message for a strict readonly open failure on the status lane. A hard
 /// failure next to an unpublished WAL sidecar is the unclean-shutdown shape
@@ -384,7 +374,6 @@ pub(crate) fn state_db_strict_open_error_message(
         None => base,
     }
 }
-
 
 /// k2k20 ask #2: the status-class state probe (every non-watermark caller of
 /// [`probe_state_db_modes`]) — a readiness READ that must neither modify the
@@ -480,7 +469,6 @@ pub(crate) fn probe_state_db_strict_bounded_scoped(
         snapshot
     }
 }
-
 
 /// Apply the `cass health` watermark-lane contract to a strict probe result.
 ///
