@@ -339,6 +339,29 @@ const SOURCES: &[(&str, &str)] = &[
         "src/doctor/probes/integrity.rs",
         include_str!("../src/doctor/probes/integrity.rs"),
     ),
+    // lib-split 4: moved ExitCode literals + code:kind emission owners.
+    (
+        "src/cli/args_sub.rs",
+        include_str!("../src/cli/args_sub.rs"),
+    ),
+    (
+        "src/cli/output/extract_search_terms.rs",
+        include_str!("../src/cli/output/extract_search_terms.rs"),
+    ),
+    (
+        "src/cli/argv/normalize.rs",
+        include_str!("../src/cli/argv/normalize.rs"),
+    ),
+    (
+        "src/cli/dispatch.rs",
+        include_str!("../src/cli/dispatch.rs"),
+    ),
+    ("src/cli/entry.rs", include_str!("../src/cli/entry.rs")),
+    ("src/cli/error.rs", include_str!("../src/cli/error.rs")),
+    (
+        "src/cli/state/probe_state_db_strict_worker.rs",
+        include_str!("../src/cli/state/probe_state_db_strict_worker.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed

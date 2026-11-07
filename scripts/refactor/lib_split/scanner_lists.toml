@@ -53,6 +53,14 @@ sources = [
     "src/doctor/raw_mirror/query_doctor_raw_mirror_backfill_candidates.rs",
     "src/doctor/run.rs",
     "src/doctor/probes/integrity.rs",
+    "src/cli/argv/canonical_top_level_command_tests.rs",
+    "src/cli/argv/normalize.rs",
+    "src/cli/argv/removed_invocation_tests.rs",
+    "src/cli/dispatch.rs",
+    "src/cli/entry.rs",
+    "src/cli/error.rs",
+    "src/cli/state/index_error_mapping_tests.rs",
+    "src/cli/state/probe_state_db_strict_worker.rs",
   ]
 patterns = ["kind_str", "CliErrorKind::"]
 note = "error-kind scan: CliErrorKind literals, kind_str mapping, golden envelope"
@@ -122,6 +130,13 @@ sources = [
     "src/doctor/raw_mirror/query_doctor_raw_mirror_backfill_candidates.rs",
     "src/doctor/run.rs",
     "src/doctor/probes/integrity.rs",
+    "src/cli/args_sub.rs",
+    "src/cli/output/extract_search_terms.rs",
+    "src/cli/argv/normalize.rs",
+    "src/cli/dispatch.rs",
+    "src/cli/entry.rs",
+    "src/cli/error.rs",
+    "src/cli/state/probe_state_db_strict_worker.rs",
   ]
 patterns = [
   "ExitCode",
@@ -137,7 +152,7 @@ note = "exit-code literals must be documented; reads sources + docs"
 
 [scanner.spec_aliases_resolve]
 test = "tests/spec_aliases_resolve.rs"
-sources = ["src/lib.rs"]
+sources = ["src/cli/argv/normalize.rs"]
 patterns = ["SUBCOMMAND_ALIASES"]
 note = "SUBCOMMAND_ALIASES const inside normalize_args body"
 
@@ -150,6 +165,7 @@ sources = [
   "src/doctor_undo.rs",
   "src/doctor_robot_docs.rs",
     "src/doctor/run_doctor_ls.rs",
+    "src/cli/dispatch.rs",
   ]
 patterns = [
   "run_doctor_explain",
@@ -163,6 +179,12 @@ note = "doctor pass markers (pass-2/3 dispatch, pass-6 watch, pass-8 explain/cap
 test = "tests/local_only_audit.rs"
 sources = ["src/lib.rs", "tests/cli_dispatch_coverage.rs", "src/cli/commands/stats_diag_storage/run_stats.rs", "src/cli/commands/index/run_lexical_reconcile_cli.rs", "src/cli/paths/session_paths.rs", "src/cli/commands/sources/run_sources_command.rs", "src/cli/commands/subcommand_robot_output_tests.rs", "src/doctor/report/human.rs",
     "src/doctor/run_doctor_ls.rs",
+    "src/cli/args_sub.rs",
+    "src/cli/argv/canonical_top_level_command_tests.rs",
+    "src/cli/argv/normalize.rs",
+    "src/cli/argv/removed_invocation_tests.rs",
+    "src/cli/entry.rs",
+    "src/cli/output/extract_search_terms.rs",
   ]
 dirs = ["src"]
 patterns = ["REMOVED_COMMANDS", "REMOVED_FLAGS", "was removed"]
@@ -176,7 +198,7 @@ note = "in-source chokepoint audit reads lib.rs (doctor_mutate_auditor companion
 
 [scanner.doctor_insource]
 test = "src/doctor.rs"
-sources = ["src/lib.rs", "src/doctor.rs", "src/doctor/run.rs"]
+sources = ["src/lib.rs", "src/doctor.rs", "src/doctor/run.rs", "src/cli/dispatch.rs"]
 patterns = [
   "pub(crate) fn run_doctor_impl(",
   "doctor::DoctorCommandRequest::from_cli_flags",
