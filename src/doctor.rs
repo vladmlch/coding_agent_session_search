@@ -6,7 +6,8 @@
 
 use std::path::PathBuf;
 
-use crate::{CliError, CliResult, RobotFormat};
+use crate::cli::args_sub::RobotFormat;
+use crate::cli::error::{CliError, CliResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoctorCommandSurface {
@@ -754,16 +755,16 @@ impl DoctorCommandRequest {
 }
 
 pub fn execute_doctor_command(request: DoctorCommandRequest) -> CliResult<()> {
-    execute_doctor_command_with_wrap(request, crate::WrapConfig::new(None, false))
+    execute_doctor_command_with_wrap(request, crate::cli::error::WrapConfig::new(None, false))
 }
 
 pub(crate) fn execute_doctor_command_with_wrap(
     request: DoctorCommandRequest,
-    wrap: crate::WrapConfig,
+    wrap: crate::cli::error::WrapConfig,
 ) -> CliResult<()> {
     request.validate()?;
     if let Some(backup_command) = request.backup_command {
-        return crate::run_doctor_backups_impl(
+        return crate::doctor::backup_restore::run_doctor_backups_impl(
             &request.data_dir,
             request.db_path,
             request.output_format,
@@ -774,7 +775,7 @@ pub(crate) fn execute_doctor_command_with_wrap(
         );
     }
     if request.surface == DoctorCommandSurface::ArchiveScan {
-        return crate::run_doctor_archive_scan_impl(
+        return crate::doctor::archive::doctor_archive_coverage_snapshot::run_doctor_archive_scan_impl(
             &request.data_dir,
             request.db_path,
             request.output_format,
@@ -782,7 +783,7 @@ pub(crate) fn execute_doctor_command_with_wrap(
         );
     }
     if request.surface == DoctorCommandSurface::ArchiveNormalize {
-        return crate::run_doctor_archive_normalize_impl(
+        return crate::doctor::archive::doctor_archive_coverage_snapshot::run_doctor_archive_normalize_impl(
             &request.data_dir,
             request.db_path,
             request.output_format,
@@ -791,7 +792,7 @@ pub(crate) fn execute_doctor_command_with_wrap(
             request.verbose,
         );
     }
-    crate::run_doctor_impl(
+    crate::doctor::run::run_doctor_impl(
         &request.data_dir,
         request.db_path,
         request.output_format,
@@ -1549,7 +1550,7 @@ mod tests {
         );
 
         let doctor_source = include_str!("doctor.rs");
-        let executor_call = ["crate::", "run_doctor_impl("].concat();
+        let executor_call = ["crate::doctor::run::", "run_doctor_impl("].concat();
         assert_eq!(
             doctor_source.matches(&executor_call).count(),
             1,
