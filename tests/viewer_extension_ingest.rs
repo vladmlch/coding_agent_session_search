@@ -597,6 +597,106 @@ fn codex_unpaired_call_still_marks_text_inventory_partial() {
 }
 
 // ---------------------------------------------------------------------------
+// Claude known non-block records. FAD lifts queued_command attachment
+// prompts into user message content (cass GH #500), so their text is never
+// missing; compacted `{"cass":{…}}` extras already carry their partial
+// verdict through mark_compacted. Neither is an unknown shape.
+// ---------------------------------------------------------------------------
+
+fn claude_queued_command_packet() -> ConversationPacket {
+    // Verbatim FAD shape: the raw attachment record plus the cass provenance
+    // `queued_command_message` inserts; the prompt is the message content.
+    let attachment = json!({
+        "type": "attachment", "uuid": "q1", "sessionId": "sess-3",
+        "timestamp": "2026-09-24T10:00:12.000Z",
+        "attachment": {
+            "type": "queued_command", "prompt": "also check the walrus path",
+            "source_uuid": "src1", "commandMode": "prompt",
+            "origin": {"kind": "human"}
+        },
+        "cass": {"queued_command": {"command_mode": "prompt",
+                                    "authorship": "human", "source_uuid": "src1"}}
+    });
+    let reply = json!({
+        "type": "assistant", "uuid": "a1", "sessionId": "sess-3",
+        "message": {"id": "m1", "role": "assistant", "model": "claude-opus-5",
+                    "content": [{"type": "text", "text": "checked the walrus path"}]}
+    });
+    packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![
+            msg(0, "user", "also check the walrus path", attachment),
+            msg(1, "assistant", "checked the walrus path", reply),
+        ],
+    )
+}
+
+#[test]
+fn claude_queued_command_attachment_is_known_non_block() {
+    let publication = extract_session_facts(&claude_queued_command_packet(), "claude_code");
+
+    // The prompt text lives in the message content, so no scope may report
+    // an unknown shape for the attachment record.
+    for entry in &publication.coverage {
+        assert!(
+            !entry.reasons.iter().any(|r| r == "claude_shape_unknown"),
+            "{} must not be shape-unknown: {:?}",
+            entry.field,
+            entry.reasons
+        );
+    }
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "complete", "text_inventory: {text:?}");
+    let blocks = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(blocks.state, "complete", "block_inventory: {blocks:?}");
+
+    // The queued command is a real user turn, not a dropped record.
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("also check the walrus path")
+    );
+    assert_eq!(publication.turn_count, Some(1));
+}
+
+fn claude_compacted_extra_packet() -> ConversationPacket {
+    packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![msg(
+            0,
+            "user",
+            "the recorded structure was compacted away",
+            // Large-session compaction reduces extra to the `{"cass":{…}}`
+            // skeleton; the flattened text stays in the message content.
+            json!({"cass": {"model": "claude-opus-5"}}),
+        )],
+    )
+}
+
+#[test]
+fn claude_compacted_extra_stays_partial_not_unknown() {
+    let publication = extract_session_facts(&claude_compacted_extra_packet(), "claude_code");
+
+    // mark_compacted already recorded the partial verdict on every core
+    // scope; the skeleton shape must not raise it to unavailable.
+    for field in ["text_inventory", "block_inventory", "chat", "tools"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "extra_compacted"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+        assert!(
+            !entry.reasons.iter().any(|r| r == "claude_shape_unknown"),
+            "{field} must not be shape-unknown: {:?}",
+            entry.reasons
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Antigravity fixture: `agy_type` envelopes, `cass.invocations` calls,
 // TOOL_OUTPUT/VIEW_FILE/RUN_COMMAND results, explicit exit codes only where
 // recorded, unlinked outputs, thinking hints, unknown-kind events.
