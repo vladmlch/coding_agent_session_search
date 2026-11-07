@@ -14,3 +14,5 @@ pub(crate) mod quarantine_mirror_import;
 pub(crate) mod run_mirror_prune;
 pub mod search;
 pub(crate) mod stats_diag_storage;
+pub(crate) mod run_onboarding_interactive_wizard;
+pub(crate) mod status_health;
