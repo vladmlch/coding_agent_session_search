@@ -490,6 +490,160 @@ fn codex_agent_message_without_usable_text_stays_malformed() {
 }
 
 // ---------------------------------------------------------------------------
+// Codex agent_message encrypted payloads. Inter-agent handoffs (codex
+// protocol `AgentMessageInputContent`) arrive either as a plaintext
+// `input_text` part or as an envelope-header `input_text` plus the actual
+// payload in an `encrypted_content` part — a Fernet ciphertext the model
+// provider produced and the sending agent hands over already encrypted, so
+// the rollout never held the plaintext. A known, deliberately unreadable
+// shape: the payload marks the text inventory unavailable, the readable
+// header still counts as chat evidence, and no field claims ignorance.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn codex_agent_message_encrypted_payload_is_known_unreadable() {
+    let publication = extract_session_facts(
+        &codex_agent_message_packet(json!({
+            "type": "response_item",
+            "payload": {
+                "type": "agent_message",
+                "id": "amsg_1",
+                "author": "/root/worker",
+                "recipient": "/root",
+                "content": [
+                    {"type": "input_text",
+                     "text": "Message Type: MESSAGE\nTask name: /root\nSender: /root/worker\nPayload:\n"},
+                    {"type": "encrypted_content", "encrypted_content": "gAAAAAB-fixture-ciphertext"}
+                ]
+            }
+        })),
+        "codex",
+    );
+
+    // The payload's text is provider-encrypted: a known shape, unreadable
+    // text — the same verdict redacted thinking earns, never "unknown".
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "unavailable", "text_inventory: {text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "agent_message_encrypted"),
+        "text_inventory reasons: {:?}",
+        text.reasons
+    );
+    assert!(
+        !text
+            .reasons
+            .iter()
+            .any(|r| r == "codex_message_part_unknown"),
+        "an encrypted part is not an unknown shape: {:?}",
+        text.reasons
+    );
+
+    // The readable envelope header is still chat evidence (partial, not
+    // absent), and a message part never touches the tool scopes.
+    let chat = coverage(&publication, "chat").expect("chat coverage");
+    assert_eq!(chat.state, "partial", "chat: {chat:?}");
+    let tools = coverage(&publication, "tools").expect("tools coverage");
+    assert_eq!(tools.state, "complete", "tools: {tools:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Codex extra-compaction envelopes. Past the compaction threshold (cass
+// ≥16 MiB, FAD ≥32 MiB) per-message extras are reduced to the `{"cass":{…}}`
+// skeleton or its empty `{}` product; the message text itself stays in
+// `content`. The connector only ever emits `response_item`/`event_msg`
+// records, so an unwrappable codex record IS the envelope: the honest
+// verdict is the partial `extra_compacted`, never an unknown-shape claim.
+// Legacy-format rollout items (`{"role":…,"content":…}`) are not envelopes
+// and keep the unknown-shape verdict.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn codex_compacted_extra_envelope_is_a_known_shape() {
+    let publication = extract_session_facts(
+        &packet(
+            "codex",
+            json!({"source": "rollout"}),
+            vec![
+                // A plain record anchors the session and parses normally.
+                msg(
+                    0,
+                    "user",
+                    "run the sweep",
+                    json!({"type": "event_msg",
+                           "payload": {"type": "user_message", "message": "run the sweep"}}),
+                ),
+                // `{"cass":{…}}` skeleton — a tool-call record whose
+                // invocation survived the compaction merge.
+                msg(
+                    1,
+                    "assistant",
+                    "[Tool: exec]",
+                    json!({"cass": {"invocations": [
+                        {"kind": "tool", "name": "exec", "call_id": "call_9",
+                         "arguments": "{\"command\": \"ls\"}"}]}}),
+                ),
+                // The empty `{}` product of the same compaction.
+                msg(2, "tool", "file-a\nfile-b", json!({})),
+                // Model-bearing skeleton variant.
+                msg(
+                    3,
+                    "assistant",
+                    "done",
+                    json!({"cass": {"model": "gpt-fixture"}}),
+                ),
+            ],
+        ),
+        "codex",
+    );
+
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "partial", "text_inventory: {text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "extra_compacted"),
+        "text_inventory reasons: {:?}",
+        text.reasons
+    );
+    assert!(
+        !text.reasons.iter().any(|r| r == "codex_shape_unknown"),
+        "the compaction envelope is a known shape: {:?}",
+        text.reasons
+    );
+    let tools = coverage(&publication, "tools").expect("tools coverage");
+    assert_eq!(tools.state, "partial", "tools: {tools:?}");
+    assert!(
+        tools.reasons.iter().any(|r| r == "extra_compacted"),
+        "tools reasons: {:?}",
+        tools.reasons
+    );
+}
+
+#[test]
+fn codex_unwrapped_non_envelope_record_stays_shape_unknown() {
+    // A legacy-format rollout item carries role/content keys and no `type`:
+    // not a compaction product, so the unknown-shape verdict must survive.
+    let publication = extract_session_facts(
+        &packet(
+            "codex",
+            json!({"source": "rollout"}),
+            vec![msg(
+                0,
+                "user",
+                "legacy body",
+                json!({"role": "user", "content": "legacy body"}),
+            )],
+        ),
+        "codex",
+    );
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "unavailable", "text_inventory: {text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "codex_shape_unknown"),
+        "text_inventory reasons: {:?}",
+        text.reasons
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Unpaired tool calls. FAD's claude_code connector drops `tool_result`
 // content with no `text` part (ToolSearch `tool_reference` results, Read
 // `image` results), so for Claude an unpaired call never means session text

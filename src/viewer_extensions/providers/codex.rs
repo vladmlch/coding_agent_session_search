@@ -317,6 +317,21 @@ fn message_content(payload: &Value, coverage: &mut CoverageBuilder) {
                     )
                 {
                     continue;
+                } else if part.is_object()
+                    && part.get("type").and_then(Value::as_str) == Some("encrypted_content")
+                {
+                    // Provider-encrypted inter-agent payload (codex protocol
+                    // `AgentMessageInputContent::EncryptedContent`): the model
+                    // hands the handoff over already encrypted, so the rollout
+                    // never held the plaintext — only the sibling `input_text`
+                    // envelope header is readable. A known shape whose text is
+                    // deliberately unreadable earns the redacted-thinking
+                    // verdict, never an unknown-part claim.
+                    coverage.mark(
+                        &["chat", "text_inventory"],
+                        "agent_message_encrypted",
+                        "unavailable",
+                    );
                 } else {
                     coverage.unknown("codex_message_part_unknown");
                 }
@@ -438,9 +453,6 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
             deduped.push((event.idx, event.role, event.content));
             continue;
         }
-        if is_compacted_extra(record) {
-            coverage.mark_compacted("extra_compacted");
-        }
         if let Some(model) = record
             .get("model")
             .or_else(|| record.pointer("/response/model"))
@@ -460,7 +472,22 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
             continue;
         }
         if !wrapped {
-            coverage.unknown("codex_shape_unknown");
+            // An unwrappable codex record is the extra-compaction envelope:
+            // past the thresholds (cass ≥16 MiB, FAD ≥32 MiB) per-message
+            // extras are reduced to the `{"cass":{…}}` skeleton or its empty
+            // `{}` product — the connector only ever emits
+            // `response_item`/`event_msg` records, and both require a payload
+            // object to become messages, so a record without that shape IS
+            // the skeleton (the message text itself stayed in `content`).
+            // The envelope is a known shape: the partial `extra_compacted`
+            // verdict is the truthful one, never an unknown-shape claim.
+            // Legacy-format rollout items (`{"role":…,"content":…}`) are not
+            // envelopes and keep the unknown verdict.
+            if is_compacted_extra(record) || record.as_object().is_some_and(|map| map.is_empty()) {
+                coverage.mark_compacted("extra_compacted");
+            } else {
+                coverage.unknown("codex_shape_unknown");
+            }
             deduped.push((event.idx, event.role, event.content));
             continue;
         }
