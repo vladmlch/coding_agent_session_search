@@ -3,6 +3,7 @@
 // -- lib-split module declarations --
 pub(crate) mod checks;
 pub(crate) mod config;
+pub(crate) mod coverage;
 pub(crate) mod derived_semantic;
 #[cfg(test)]
 pub(crate) mod doctor_derived_semantic_asset_tests;

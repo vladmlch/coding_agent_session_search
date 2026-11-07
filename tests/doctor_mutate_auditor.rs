@@ -177,7 +177,9 @@ fn pass4_lib_dispatch_routes_through_doctor_chokepoint_apis() {
     // Pass-3 dispatch must reach into the doctor_runs/doctor_undo/doctor_robot_docs
     // modules. Source-level grep ensures the wire-up didn't get reverted.
     let manifest = env!("CARGO_MANIFEST_DIR");
-    let lib = fs::read_to_string(format!("{manifest}/src/lib.rs")).expect("lib.rs readable");
+    let lib = fs::read_to_string(format!("{manifest}/src/lib.rs")).expect("lib.rs readable")
+        + &fs::read_to_string(format!("{manifest}/src/doctor/run_doctor_ls.rs"))
+            .expect("run_doctor_ls.rs readable");
     for marker in [
         "crate::doctor_runs::list_runs",
         "crate::doctor_runs::find_latest_run",
@@ -222,7 +224,8 @@ fn pass4_pass_3_subcommands_wired_in_clap() {
 #[test]
 fn pass8_explain_and_emit_capabilities_dispatch_present() {
     let manifest = env!("CARGO_MANIFEST_DIR");
-    let lib = std::fs::read_to_string(format!("{manifest}/src/lib.rs")).expect("lib.rs readable");
+    let lib = std::fs::read_to_string(format!("{manifest}/src/doctor/run_doctor_ls.rs"))
+        .expect("lib.rs readable");
     for marker in [
         "fn run_doctor_explain",
         "fn run_doctor_emit_capabilities",
@@ -240,7 +243,8 @@ fn pass8_explain_and_emit_capabilities_dispatch_present() {
 fn pass6_watch_helper_routes_through_doctor_runs_apis() {
     // Pass-6 watch dispatch must consume list_runs + find_in_flight_band.
     let manifest = env!("CARGO_MANIFEST_DIR");
-    let lib = std::fs::read_to_string(format!("{manifest}/src/lib.rs")).expect("lib.rs readable");
+    let lib = std::fs::read_to_string(format!("{manifest}/src/doctor/run_doctor_ls.rs"))
+        .expect("lib.rs readable");
     for marker in [
         "fn run_doctor_watch",
         "crate::doctor_runs::list_runs",

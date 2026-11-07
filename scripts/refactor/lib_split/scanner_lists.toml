@@ -49,7 +49,9 @@ sources = [
   "src/cli/commands/daemon.rs",
   "src/cli/commands/schedule.rs",
   "src/cli/commands/subcommand_robot_output_tests.rs",
-]
+    "src/doctor/sources.rs",
+    "src/doctor/raw_mirror/query_doctor_raw_mirror_backfill_candidates.rs",
+  ]
 patterns = ["kind_str", "CliErrorKind::"]
 note = "error-kind scan: CliErrorKind literals, kind_str mapping, golden envelope"
 
@@ -108,7 +110,15 @@ sources = [
   "src/doctor/doctor_asset_taxonomy_tests_part_2.rs",
   "README.md",
   "AGENTS.md",
-]
+    "src/doctor/baseline.rs",
+    "src/doctor/run_doctor_ls.rs",
+    "src/doctor/backup_restore.rs",
+    "src/doctor/sources.rs",
+    "src/doctor/archive/doctor_archive_coverage_snapshot.rs",
+    "src/doctor/baseline/document.rs",
+    "src/doctor/support_bundle/capture.rs",
+    "src/doctor/raw_mirror/query_doctor_raw_mirror_backfill_candidates.rs",
+  ]
 patterns = [
   "ExitCode",
   # Emission-site predicates mirroring the test's three extractors
@@ -135,7 +145,8 @@ sources = [
   "src/doctor_runs.rs",
   "src/doctor_undo.rs",
   "src/doctor_robot_docs.rs",
-]
+    "src/doctor/run_doctor_ls.rs",
+  ]
 patterns = [
   "run_doctor_explain",
   "run_doctor_emit_capabilities",
@@ -146,14 +157,16 @@ note = "doctor pass markers (pass-2/3 dispatch, pass-6 watch, pass-8 explain/cap
 
 [scanner.local_only_audit]
 test = "tests/local_only_audit.rs"
-sources = ["src/lib.rs", "tests/cli_dispatch_coverage.rs", "src/cli/commands/stats_diag_storage/run_stats.rs", "src/cli/commands/index/run_lexical_reconcile_cli.rs", "src/cli/paths/session_paths.rs", "src/cli/commands/sources/run_sources_command.rs", "src/cli/commands/subcommand_robot_output_tests.rs", "src/doctor/report/human.rs"]
+sources = ["src/lib.rs", "tests/cli_dispatch_coverage.rs", "src/cli/commands/stats_diag_storage/run_stats.rs", "src/cli/commands/index/run_lexical_reconcile_cli.rs", "src/cli/paths/session_paths.rs", "src/cli/commands/sources/run_sources_command.rs", "src/cli/commands/subcommand_robot_output_tests.rs", "src/doctor/report/human.rs",
+    "src/doctor/run_doctor_ls.rs",
+  ]
 dirs = ["src"]
 patterns = ["REMOVED_COMMANDS", "REMOVED_FLAGS", "was removed"]
 note = "REMOVED_COMMANDS/REMOVED_FLAGS tables + removed-command diagnostic; recursive .rs scan of src/** plus cli_dispatch_coverage pending flag"
 
 [scanner.doctor_chokepoint]
 test = "src/doctor_chokepoint.rs"
-sources = ["src/lib.rs", "src/doctor/fs_safety/cleanup_apply.rs", "src/doctor/fs_safety/mutation_executor.rs", "src/doctor/cleanup_target_safety_tests.rs", "src/doctor/doctor_asset_taxonomy_tests_part_2.rs", "src/doctor/doctor_asset_taxonomy_tests_part_3.rs", "src/doctor/doctor_asset_taxonomy_tests_part_4.rs", "src/doctor/doctor_asset_taxonomy_tests_part_7.rs"]
+sources = ["src/lib.rs", "src/doctor/fs_safety/cleanup_apply.rs", "src/doctor/fs_safety/mutation_executor.rs", "src/doctor/cleanup_target_safety_tests.rs", "src/doctor/doctor_asset_taxonomy_tests_part_2.rs", "src/doctor/doctor_asset_taxonomy_tests_part_3.rs", "src/doctor/doctor_asset_taxonomy_tests_part_4.rs", "src/doctor/doctor_asset_taxonomy_tests_part_7.rs", "src/doctor/candidate/promote_doctor_reconstruct_candidate_bundle.rs"]
 patterns = ["DoctorFsMutationKind"]
 note = "in-source chokepoint audit reads lib.rs (doctor_mutate_auditor companion)"
 
@@ -168,7 +181,9 @@ note = "legacy_cli_dispatch test in src/doctor.rs reads lib.rs + doctor.rs marke
 
 [scanner.agent_detection_completeness]
 test = "tests/agent_detection_completeness.rs"
-sources = ["src/lib.rs", "src/cli/commands/stats_diag_storage/run_diag.rs", "src/cli/commands/status_health/diagnostics.rs", "src/doctor/lexical_cleanup_disposition_label.rs"]
+sources = ["src/lib.rs", "src/cli/commands/stats_diag_storage/run_diag.rs", "src/cli/commands/status_health/diagnostics.rs", "src/doctor/lexical_cleanup_disposition_label.rs",
+    "src/doctor/sources.rs",
+  ]
 patterns = ["diagnostics_connector_paths", "detect_installed_agents"]
 note = "read_to_string(root.join(src/lib.rs)) — join()-form consumer"
 
