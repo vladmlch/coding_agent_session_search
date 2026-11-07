@@ -1,8 +1,22 @@
 //! Real-engine coverage for manifest-bound doctor backup restoration.
 
+use crate::doctor::backup_restore::kinds::DOCTOR_BACKUP_MANIFEST_KIND;
+use crate::doctor::backup_restore::{
+    DoctorBackupVerification, copy_doctor_backup_restore_bundle,
+    doctor_backup_manifest_record_from_path, doctor_restore_plan_payload,
+    run_doctor_backup_restore_apply, run_doctor_backup_restore_rehearsal,
+    verify_doctor_backup_record,
+};
+use crate::doctor::candidate::build_doctor_reconstruct_candidate::doctor_candidate_promotion_root;
+use crate::doctor::forensic::doctor_sqlite_sidecar_path;
+use crate::doctor::fs_safety::mutation_executor::file_blake3_hex;
 use crate::franken_sync::Connection;
-use crate::*;
+use crate::franken_sync::compat::RowExt;
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 const WAL_MARKER: &str = "private-committed-wal-message-do-not-print";

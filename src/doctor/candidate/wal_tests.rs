@@ -1,8 +1,21 @@
 //! Promotion must authenticate the complete canonical DB/WAL bundle before
 //! replacing live files or deciding whether derived indexes can be reused.
 
+use crate::doctor::backup_restore::write_doctor_restore_candidate_manifest;
+use crate::doctor::candidate::doctor_candidate_root::{
+    doctor_candidate_live_inventory, doctor_candidate_root,
+};
+use crate::doctor::candidate::promote_doctor_reconstruct_candidate_bundle::promote_doctor_reconstruct_candidate_bundle;
+use crate::doctor::candidate::promotion::doctor_candidate_promotion_derived_status;
+use crate::doctor::forensic::doctor_sqlite_sidecar_path;
+use crate::doctor::fs_safety::mutation_executor::file_blake3_hex;
+use crate::doctor::report::inventory::{
+    DoctorCandidateLiveInventory, DoctorCandidatePromotionReport,
+};
 use crate::franken_sync::Connection as FrankenConnection;
-use crate::*;
+use crate::franken_sync::compat::RowExt;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 struct CandidateFixture {
     _temp: tempfile::TempDir,
