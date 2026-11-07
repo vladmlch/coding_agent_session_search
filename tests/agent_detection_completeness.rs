@@ -373,7 +373,7 @@ fn agent_counts_consistent_across_apis() {
 /// not hardcoded path lists.
 #[test]
 fn diagnostics_connector_paths_is_dynamic() {
-    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"))
+    let src = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli/commands/status_health/diagnostics.rs"))
         .expect("should read src/lib.rs");
     let body = extract_function_body(&src, "fn diagnostics_connector_paths(");
 

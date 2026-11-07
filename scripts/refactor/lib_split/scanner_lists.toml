@@ -99,7 +99,7 @@ note = "legacy_cli_dispatch test in src/doctor.rs reads lib.rs + doctor.rs marke
 
 [scanner.agent_detection_completeness]
 test = "tests/agent_detection_completeness.rs"
-sources = ["src/lib.rs", "src/cli/commands/stats_diag_storage/run_diag.rs"]
+sources = ["src/lib.rs", "src/cli/commands/stats_diag_storage/run_diag.rs", "src/cli/commands/status_health/diagnostics.rs"]
 patterns = ["diagnostics_connector_paths", "detect_installed_agents"]
 note = "read_to_string(root.join(src/lib.rs)) — join()-form consumer"
 
