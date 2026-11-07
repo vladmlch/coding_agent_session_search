@@ -90,10 +90,7 @@ pub fn shutdown_thread_local_bridge_runtimes() -> bool {
     fsqlite_shutdown && quill_shutdown && fad_shutdown
 }
 
-use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
+use crate::franken_sync::compat::{ConnectionExt, RowExt};
 use anyhow::Result;
 use base64::prelude::*;
 use chrono::Utc;
@@ -101,7 +98,7 @@ use clap::{Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnu
 use indexer::IndexOptions;
 use model::cli_error_kind::ErrorKind as CliErrorKind;
 use robot_budget_envelope::BudgetSnapshot;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
