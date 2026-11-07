@@ -907,6 +907,12 @@ fn antigravity_real_shape_packet_with_slug(slug: &str) -> ConversationPacket {
                 "made-up checkpoint state",
                 json!({"agy_type": "CHECKPOINT", "agy_source": "made-up source"}),
             ),
+            msg(
+                5,
+                "system",
+                "made-up ephemeral notice text",
+                json!({"agy_type": "EPHEMERAL_MESSAGE"}),
+            ),
         ],
     )
 }
@@ -1036,6 +1042,45 @@ fn antigravity_facts_unknown_future_shape_stays_unknown() {
             "{field}: {entry:?}"
         );
     }
+}
+
+#[test]
+fn antigravity_facts_ephemeral_message_shape_is_known() {
+    // The connector maps EPHEMERAL_MESSAGE records to role `system` with
+    // `agy_type: "EPHEMERAL_MESSAGE"` and the record text as the message
+    // content (verified against the pinned FAD source and the persisted
+    // archive: 11 records across 5 sessions). The label must classify as a
+    // known envelope — an unknown kind here would leave real sessions
+    // degraded for no reason.
+    let ephemeral = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            msg(
+                1,
+                "system",
+                "made-up ephemeral notice text",
+                json!({"agy_type": "EPHEMERAL_MESSAGE"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&ephemeral, "antigravity");
+
+    assert!(
+        !publication
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_record_unknown")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block.reasons.iter().any(|r| r == "agy_canonical_envelope"),
+        "{block:?}"
+    );
 }
 
 #[test]

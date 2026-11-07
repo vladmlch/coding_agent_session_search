@@ -19,7 +19,7 @@
 //!   - role `agent` with extra keys ⊆ {cass, thinking} (PLANNER_RESPONSE),
 //!   - a role `tool`/`system` record carrying an `agy_type` envelope
 //!     (MODEL steps GENERIC/VIEW_FILE/…, SYSTEM_MESSAGE, ERROR_MESSAGE,
-//!     CHECKPOINT, EPHEMERAL).
+//!     CHECKPOINT, EPHEMERAL_MESSAGE).
 //!
 //! Anything else is connector drift and stays `agy_record_unknown`.
 //!
@@ -52,11 +52,14 @@ const SUPPORTED_KINDS: &[&str] = &[
     "CONVERSATION_HISTORY",
     // MODEL-step and lifecycle envelopes present in the connector's real
     // output (the oracle fixture vocabulary predates them): GENERIC
-    // dominates the live transcripts; CHECKPOINT/EPHEMERAL are lifecycle
-    // records; CODE_ACTION/LIST_DIRECTORY are MODEL-step tool kinds.
+    // dominates the live transcripts; CHECKPOINT/EPHEMERAL_MESSAGE are
+    // lifecycle records; CODE_ACTION/LIST_DIRECTORY are MODEL-step tool
+    // kinds. The ephemeral label is EPHEMERAL_MESSAGE in the connector's
+    // verified output (11 persisted records) — bare "EPHEMERAL" never
+    // occurs in the packet.
     "GENERIC",
     "CHECKPOINT",
-    "EPHEMERAL",
+    "EPHEMERAL_MESSAGE",
     "CODE_ACTION",
     "LIST_DIRECTORY",
 ];
