@@ -101,8 +101,8 @@ impl std::error::Error for IndexedExportError {}
 
 /// Normalized source-identity expression for `conversations`, mirrored
 /// verbatim from `src/ui/data.rs::normalized_ui_source_identity_sql_expr`
-/// (which is module-private and unreachable from here) — identical to
-/// `src/lib.rs::normalized_source_identity_sql_expr`.
+/// (which is module-private and unreachable from here) — equivalent to
+/// `cli::commands::view::role_to_export_string::normalized_source_identity_sql_expr`.
 ///
 /// `source_id` wins when non-blank; a blank `source_id` falls back to
 /// `origin_host` and then to `local`. Any case variant of `local` folds to
@@ -140,19 +140,13 @@ fn normalized_source_origin_kind_sql_expr(
 }
 
 /// Normalize the selector's `source_id` the same way `run_export` does via
-/// `src/lib.rs::canonical_followup_source_id` (module private): trim, map any
-/// case variant of `local` to `local`, and treat empty/absent as unscoped
-/// (`None`), which then resolves with the local-first semantics below.
+/// `canonical_followup_source_id` (now owned by
+/// `cli::commands::view::role_to_export_string` and re-exported at the
+/// crate root): trim, map any case variant of `local` to `local`, and
+/// treat empty/absent as unscoped (`None`), which then resolves with the
+/// local-first semantics below.
 fn normalize_selector_source_id(source_id: Option<&str>) -> Option<String> {
-    let trimmed = source_id?.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed.eq_ignore_ascii_case(crate::sources::provenance::LOCAL_SOURCE_ID) {
-        Some(crate::sources::provenance::LOCAL_SOURCE_ID.to_string())
-    } else {
-        Some(trimmed.to_string())
-    }
+    crate::canonical_followup_source_id(source_id)
 }
 
 /// One `conversations` row matching the selector's `source_path`, carrying
