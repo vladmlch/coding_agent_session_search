@@ -73,6 +73,15 @@ const SCAN_SOURCES: &[&str] = &[
     // lib-split 3d: moved CliError/kind_str producers.
     "src/doctor/run.rs",
     "src/doctor/probes/integrity.rs",
+    // lib-split 4: moved CliError/kind_str producers.
+    "src/cli/argv/canonical_top_level_command_tests.rs",
+    "src/cli/argv/normalize.rs",
+    "src/cli/argv/removed_invocation_tests.rs",
+    "src/cli/dispatch.rs",
+    "src/cli/entry.rs",
+    "src/cli/error.rs",
+    "src/cli/state/index_error_mapping_tests.rs",
+    "src/cli/state/probe_state_db_strict_worker.rs",
 ];
 
 fn scanned_source() -> String {

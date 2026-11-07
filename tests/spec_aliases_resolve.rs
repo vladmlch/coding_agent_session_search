@@ -23,7 +23,7 @@ use serde_json::Value;
 /// `src/lib.rs`. Scoped to the const block so unrelated `("x", "y")` tuples
 /// elsewhere in the file are ignored.
 fn alias_targets_from_source() -> BTreeSet<String> {
-    const SRC: &str = include_str!("../src/lib.rs");
+    const SRC: &str = include_str!("../src/cli/argv/normalize.rs");
 
     let mut in_block = false;
     let mut targets = BTreeSet::new();

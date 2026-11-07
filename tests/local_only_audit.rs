@@ -1286,7 +1286,7 @@ fn nextest_config_keeps_local_only_invariants() {
 fn removed_command_matrix_is_fully_active() {
     let root = repo_root();
     let cov = read_text(&root.join("tests/cli_dispatch_coverage.rs"));
-    let lib = read_text(&root.join("src/lib.rs"));
+    let lib = read_text(&root.join("src/cli/argv/normalize.rs"));
 
     assert!(
         lib.contains("REMOVED_COMMANDS"),
