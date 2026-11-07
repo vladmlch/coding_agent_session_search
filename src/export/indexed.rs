@@ -140,13 +140,20 @@ fn normalized_source_origin_kind_sql_expr(
 }
 
 /// Normalize the selector's `source_id` the same way `run_export` does via
-/// `canonical_followup_source_id` (now owned by
-/// `cli::commands::view::role_to_export_string` and re-exported at the
-/// crate root): trim, map any case variant of `local` to `local`, and
-/// treat empty/absent as unscoped (`None`), which then resolves with the
-/// local-first semantics below.
+/// `src/cli/commands/view/role_to_export_string.rs::canonical_followup_source_id`:
+/// trim, map any case variant of `local` to `local`, and treat empty/absent
+/// as unscoped (`None`), which then resolves with the local-first semantics
+/// below.
 fn normalize_selector_source_id(source_id: Option<&str>) -> Option<String> {
-    crate::canonical_followup_source_id(source_id)
+    let trimmed = source_id?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.eq_ignore_ascii_case(crate::sources::provenance::LOCAL_SOURCE_ID) {
+        Some(crate::sources::provenance::LOCAL_SOURCE_ID.to_string())
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// One `conversations` row matching the selector's `source_path`, carrying
