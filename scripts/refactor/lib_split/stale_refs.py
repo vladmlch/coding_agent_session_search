@@ -21,10 +21,13 @@ from __future__ import annotations
 import fnmatch
 import re
 import sys
+from collections import Counter, deque
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
+sys.path.insert(0, str(HERE))
+import rust_items as ri  # noqa: E402
 
 # Two classes of hit:
 #   consumer — code that actually reads src/lib.rs as text
@@ -58,12 +61,12 @@ _STATEMENT_PATTERNS = [
 ]
 
 
-def scan_source(text: str) -> list:
-    """Statement-level hits: every expression addressing src/lib.rs.
+def _scan_source_with_offsets(text: str) -> list:
+    """(byte_off, line, kind, arg) per consumer statement.
 
-    Returns [(line_no, kind, arg)] for each consumer statement —
-    include_str!/include!, join("src/lib.rs"), format! producing the
-    path, and read_* calls on a literal path.
+    `byte_off` is the utf-8 byte offset of the matched expression inside
+    `text` — the exact site a named-item span binds to. Line numbers and
+    (kind, arg) match scan_source hit-for-hit, same order.
     """
     hits = []
     for m in re.finditer(r"[^\n;]*;", text, re.S):
@@ -81,9 +84,23 @@ def scan_source(text: str) -> list:
                 arg = sm.group("arg")
                 if arg == "lib.rs" or arg.endswith("src/lib.rs") or \
                         arg.endswith("/lib.rs"):
-                    hits.append((line, "write" if is_write else kind, arg))
+                    off = len(
+                        text[:m.start() + sm.start()].encode("utf-8"))
+                    hits.append(
+                        (off, line, "write" if is_write else kind, arg))
                 break
     return hits
+
+
+def scan_source(text: str) -> list:
+    """Statement-level hits: every expression addressing src/lib.rs.
+
+    Returns [(line_no, kind, arg)] for each consumer statement —
+    include_str!/include!, join("src/lib.rs"), format! producing the
+    path, and read_* calls on a literal path.
+    """
+    return [(line, kind, arg)
+            for _off, line, kind, arg in _scan_source_with_offsets(text)]
 
 SKIP_DIRS = {".git", "target", ".scratch", "node_modules", ".venv"}
 
@@ -150,6 +167,100 @@ def allowed(rel: str, line: int, allow_globs: list[str]) -> bool:
     return False
 
 
+_WITH_INCLUDE_RX = re.compile(
+    r'(include_str!|include!)\s*\(\s*"([^"]+)"\s*\)')
+
+
+def fn_item_spans(text: str) -> list[tuple[str, int, int]]:
+    """(name, start_byte, end_byte) of every fn item, recursing into
+    inline mods and brace macros.
+
+    Item spans are exact rust_items byte offsets into `text.encode()`
+    (attr/doc trivia included) — code on the same physical line but
+    outside the item stays outside. A file the lexer rejects yields no
+    spans at all — callers treat that as "nothing can be bound", which
+    fails closed.
+    """
+    try:
+        items, _cls, _gaps = ri.parse_items(text)
+    except ri.LexError:
+        return []
+    out = []
+
+    def walk(its):
+        for it in its:
+            if it.kind == "fn":
+                out.append((it.name, it.start, it.end))
+            walk(it.inner)
+
+    walk(items)
+    return out
+
+
+def retarget_with_allowances(man: dict) -> dict:
+    """Emitted-output include allowances: test_file -> test fn ->
+    Counter[(kind, arg)].
+
+    A [[retarget]] `with` is the sanctioned reader expression the
+    splitter emitted inside its named test: the include multiset it
+    declares is exactly what that fn may contain. Staged rewrites of
+    one site (lib.rs -> ../lib.rs -> run.rs) share the (file, fn) key;
+    the allowance per arg is the most any single `with` declares —
+    a sum across stages would admit a state no stage emits. Retargets
+    without a named test or test_file bind nothing and admit nothing.
+    """
+    out = {}
+    for rt in man.get("retarget", []):
+        test, tfile = rt.get("test"), rt.get("test_file")
+        if not test or not tfile:
+            continue
+        declared = Counter(
+            (m.group(1), m.group(2))
+            for m in _WITH_INCLUDE_RX.finditer(rt.get("with", "")))
+        if not declared:
+            continue
+        allow = out.setdefault(tfile, {}).setdefault(test, Counter())
+        for key, n in declared.items():
+            allow[key] = max(allow[key], n)
+    return out
+
+
+def emitted_exemptions(text: str, allowances: dict) -> tuple:
+    """(admitted byte offsets, offset hits) for one file's text.
+
+    `allowances` maps test fn name -> Counter[(kind, arg)]. A hit whose
+    include byte offset sits inside the uniquely-named test fn's item
+    byte span consumes one declared allowance of its kind — code on the
+    same physical line but outside that item span, a missing or
+    ambiguous fn name, and occurrences past the declared multiplicity
+    admit nothing. The returned `hits` are the file's
+    (byte_off, line, kind, arg) consumer statements in source order,
+    so callers can map each reported hit back to its exact site.
+    """
+    spans = fn_item_spans(text)
+    hits = _scan_source_with_offsets(text)
+    adm = set()
+    for test, declared in allowances.items():
+        named = [s for s in spans if s[0] == test]
+        if len(named) != 1:
+            continue
+        _name, lo, hi = named[0]
+        remaining = Counter(declared)
+        for off, _line, kind, arg in hits:
+            if lo <= off < hi and remaining[(kind, arg)] > 0:
+                remaining[(kind, arg)] -= 1
+                adm.add(off)
+    return adm, hits
+
+
+def _desc_parts(desc: str):
+    """Split a consumer descriptor `kind(arg)` back into (kind, arg)."""
+    if "(" not in desc:
+        return None
+    kind, _, rest = desc.partition("(")
+    return kind, rest.rstrip(")")
+
+
 def main(argv):
     repo = REPO
     allow = list(BUILTIN_ALLOW)
@@ -182,34 +293,62 @@ def main(argv):
     # retarget find is scheduled for rewrite at its stage, not stale.
     man = tomllib.loads((HERE / "manifest.toml").read_text())
     rt_finds = set()
-    rt_withs = set()
     for rt in man.get("retarget", []):
         m = re.match(
             r'\s*(include_str!|include!)\s*\(\s*"([^"]+)"\s*\)',
             rt.get("find", ""))
         if m:
             rt_finds.add((m.group(1), m.group(2)))
-        # emitted retarget output: every include inside `with` is the
-        # declared result inside that retarget's own test_file.
-        for wm in re.finditer(
-                r'(include_str!|include!)\s*\(\s*"([^"]+)"\s*\)',
-                rt.get("with", "")):
-            rt_withs.add((rt.get("test_file"), wm.group(1), wm.group(2)))
 
-    def retargeted(rel: str, desc: str) -> bool:
-        if "(" not in desc:
+    # Emitted retarget output: the includes a `with` declares are
+    # sanctioned only inside that retarget's own named test fn, up to
+    # the declared multiplicity. Binding to (test_file, kind, arg)
+    # alone was the 9171 over-admission: a matching reader anywhere in
+    # the file — an unrelated fn or a duplicate site — was exempt. The
+    # binding is byte-exact: a site sharing the named fn's line but
+    # sitting outside its item span is not admitted.
+    allowances = retarget_with_allowances(man)
+    hits_by_file: dict[str, list] = {}
+    for rel, line, desc in consumers:
+        parts = _desc_parts(desc)
+        if parts is not None:
+            hits_by_file.setdefault(rel, []).append((line, *parts))
+    # rel -> (admitted byte offsets, (line, kind, arg) -> deque[off]).
+    # Per-key queues map each reported hit to its exact include site in
+    # scan order — same-line same-arg occurrences stay distinct.
+    exempt: dict[str, tuple] = {}
+    for rel, file_allows in allowances.items():
+        if rel not in hits_by_file:
+            continue
+        try:
+            text = (repo / rel).read_text()
+        except OSError:
+            continue
+        adm, off_hits = emitted_exemptions(text, file_allows)
+        queues: dict[tuple, deque] = {}
+        for off, line, kind, arg in off_hits:
+            queues.setdefault((line, kind, arg), deque()).append(off)
+        exempt[rel] = (adm, queues)
+
+    def retargeted(rel: str, line: int, desc: str) -> bool:
+        parts = _desc_parts(desc)
+        if parts is None:
             return False
-        kind, _, rest = desc.partition("(")
-        arg = rest.rstrip(")")
+        kind, arg = parts
         if rel == "src/lib.rs" and (kind, arg) in rt_finds:
             return True
-        return (rel, kind, arg) in rt_withs
+        entry = exempt.get(rel)
+        if not entry:
+            return False
+        adm, queues = entry
+        site_q = queues.get((line, kind, arg))
+        return bool(site_q) and site_q.popleft() in adm
 
     writers = [h for h in consumers if h[2].startswith("write(")]
     bad = [
         h for h in consumers
         if not h[2].startswith("write(")
-        and not retargeted(h[0], h[2])
+        and not retargeted(h[0], h[1], h[2])
         and h[0] not in listed and not allowed(h[0], h[1], allow)
     ]
     for rel, ln, text in bad:
