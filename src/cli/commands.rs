@@ -16,3 +16,9 @@ pub(crate) mod run_onboarding_interactive_wizard;
 pub mod search;
 pub(crate) mod stats_diag_storage;
 pub(crate) mod status_health;
+#[cfg(test)]
+pub(crate) mod path_spelling_tests;
+pub mod sessions_context;
+#[cfg(test)]
+pub(crate) mod source_ingest_reuse_capability_tests;
+pub(crate) mod view;
