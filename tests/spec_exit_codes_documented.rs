@@ -205,6 +205,17 @@ const SOURCES: &[(&str, &str)] = &[
         "src/cli/commands/status_health/run_health.rs",
         include_str!("../src/cli/commands/status_health/run_health.rs"),
     ),
+    // lib-split 2d: sessions/view owners carry the remaining moved
+    // CliError construction sites (22 in role_to_export_string, 3 in
+    // sessions_context).
+    (
+        "src/cli/commands/sessions_context.rs",
+        include_str!("../src/cli/commands/sessions_context.rs"),
+    ),
+    (
+        "src/cli/commands/view/role_to_export_string.rs",
+        include_str!("../src/cli/commands/view/role_to_export_string.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed

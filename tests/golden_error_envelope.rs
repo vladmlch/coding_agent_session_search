@@ -50,6 +50,8 @@ const SCAN_SOURCES: &[&str] = &[
     "src/cli/commands/status_health/probe_daemon_runtime_for_diagnostics.rs",
     "src/cli/commands/status_health/run_health.rs",
     "src/cli/commands/run_onboarding_interactive_wizard.rs",
+    "src/cli/commands/sessions_context.rs",
+    "src/cli/commands/view/role_to_export_string.rs",
 ];
 
 fn scanned_source() -> String {
