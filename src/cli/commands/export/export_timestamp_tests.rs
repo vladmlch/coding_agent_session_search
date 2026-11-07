@@ -84,7 +84,7 @@ pub(crate) fn ztlan_clipboard_stdin_survives_default_sigpipe_and_delivers_exact_
     let mut child = Command::new(std::env::current_exe().expect("test executable"))
             .args([
                 "--exact",
-                "export_timestamp_tests::ztlan_clipboard_stdin_survives_default_sigpipe_and_delivers_exact_bytes",
+                "cli::commands::export::export_timestamp_tests::ztlan_clipboard_stdin_survives_default_sigpipe_and_delivers_exact_bytes",
                 "--nocapture",
             ])
             .env("CASS_TEST_ZTLAN_SIGPIPE_CHILD", "1")
