@@ -53,6 +53,13 @@ const SCAN_SOURCES: &[&str] = &[
     "src/cli/commands/sessions_context.rs",
     "src/cli/commands/view/role_to_export_string.rs",
     "src/cli/commands/capabilities_introspect/capabilitiesresponse.rs",
+    "src/cli/commands/index/run_lexical_reconcile_cli.rs",
+    "src/cli/paths/session_paths.rs",
+    "src/cli/commands/resume.rs",
+    "src/cli/commands/export/indexed_export_cli_error.rs",
+    "src/cli/commands/export_html.rs",
+    "src/cli/commands/expand.rs",
+    "src/cli/commands/timeline.rs",
 ];
 
 fn scanned_source() -> String {
