@@ -5,20 +5,18 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{ConnectionExt, RowExt};
-pub(crate) use chrono::Utc;
-pub(crate) use crate::indexer::IndexOptions;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use serde::Serialize;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::franken_sync::compat::{ConnectionExt, RowExt};
+    pub(crate) use crate::indexer::IndexOptions;
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use chrono::Utc;
+    pub(crate) use serde::Serialize;
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Internal doctor executor reached through the typed `doctor` module.
 /// CRITICAL: This function NEVER deletes user data. It only rebuilds derived data (index, db)

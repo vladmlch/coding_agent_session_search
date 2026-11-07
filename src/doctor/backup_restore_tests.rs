@@ -1,7 +1,7 @@
 //! Real-engine coverage for manifest-bound doctor backup restoration.
 
-use crate::*;
 use crate::franken_sync::Connection;
+use crate::*;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 

@@ -5,13 +5,11 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use serde::Serialize;
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use serde::Serialize;
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug)]
 pub(crate) struct SessionSummaryRecord {
@@ -29,7 +27,6 @@ pub(crate) struct SessionSummaryRecord {
     pub(crate) human_turns: i64,
 }
 
-
 #[derive(Debug, Serialize)]
 pub(crate) struct SessionSummaryEntry {
     pub(crate) path: String,
@@ -44,7 +41,6 @@ pub(crate) struct SessionSummaryEntry {
     pub(crate) human_turns: i64,
 }
 
-
 pub(crate) fn normalize_session_filter_path(path: &Path) -> CliResult<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -57,7 +53,6 @@ pub(crate) fn normalize_session_filter_path(path: &Path) -> CliResult<PathBuf> {
     // workspace that no longer exists still matches on Windows (9v9xi).
     Ok(dunce::canonicalize(&absolute).unwrap_or(absolute))
 }
-
 
 pub(crate) fn workspace_match_distance(candidate: Option<&Path>, target: &Path) -> Option<usize> {
     let candidate = candidate?;

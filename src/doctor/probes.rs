@@ -3,14 +3,12 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Data gathered by the bounded archive-DB doctor probe (#287): row counts,
 /// the PRAGMA integrity verdict, and (when the database is healthy) the FTS
@@ -26,12 +24,10 @@ pub(crate) struct DoctorBoundedArchiveDbProbe {
     pub(crate) legacy_omp_analytics_pending: Result<bool, String>,
 }
 
-
 pub(crate) enum DoctorBoundedArchiveDbProbeOutcome {
     Completed(DoctorBoundedArchiveDbProbe),
     TimedOut { phase: &'static str },
 }
-
 
 /// Hard deadline for the bounded archive-DB doctor probe (#287).
 /// `CASS_DOCTOR_DB_PROBE_TIMEOUT_SECS` overrides it; otherwise the budget
@@ -49,7 +45,6 @@ pub(crate) fn doctor_archive_db_probe_hard_timeout(bundle_bytes: u64) -> Duratio
         )
 }
 
-
 /// Pure size-scaled budget: 30s base plus 20s per started GiB of archive
 /// bundle (main file + WAL), capped at 10 minutes so the doctor stays
 /// bounded on multi-GB archives.
@@ -64,7 +59,6 @@ pub(crate) fn doctor_probe_timeout_for_bundle(bundle_bytes: u64) -> Duration {
         .min(CAP_SECS);
     Duration::from_secs(secs)
 }
-
 
 /// Archive bundle size the probe budget scales with: the main database file
 /// plus its `-wal` sidecar when present. Unreadable metadata counts as zero

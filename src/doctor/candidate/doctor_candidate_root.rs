@@ -3,22 +3,19 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
-
-
 pub(crate) fn doctor_candidate_root(data_dir: &Path) -> PathBuf {
     data_dir.join("doctor").join("candidates")
 }
-
 
 pub(crate) fn doctor_candidate_id(operation_id: &str, created_at_ms: i64) -> String {
     let mut safe_operation: String = operation_id
@@ -31,7 +28,6 @@ pub(crate) fn doctor_candidate_id(operation_id: &str, created_at_ms: i64) -> Str
     }
     format!("{created_at_ms}-{safe_operation}")
 }
-
 
 pub(crate) fn doctor_candidate_root_is_safe(
     data_dir: &Path,
@@ -82,7 +78,6 @@ pub(crate) fn doctor_candidate_root_is_safe(
     Ok(())
 }
 
-
 pub(crate) fn doctor_candidate_live_inventory(
     db_path: &Path,
     index_path: &Path,
@@ -120,13 +115,11 @@ pub(crate) fn doctor_candidate_live_inventory(
     }
 }
 
-
 pub(crate) fn doctor_candidate_relative_path(candidate_dir: &Path, path: &Path) -> Option<String> {
     path.strip_prefix(candidate_dir)
         .ok()
         .map(doctor_path_to_slash_string)
 }
-
 
 pub(crate) fn doctor_candidate_artifact_class(relative_path: &str) -> DoctorAssetClass {
     if relative_path == "database/candidate.db" {
@@ -144,7 +137,6 @@ pub(crate) fn doctor_candidate_artifact_class(relative_path: &str) -> DoctorAsse
     }
 }
 
-
 pub(crate) fn doctor_candidate_artifact_kind(relative_path: &str) -> String {
     match relative_path {
         "database/candidate.db" => "candidate_archive_db".to_string(),
@@ -157,7 +149,6 @@ pub(crate) fn doctor_candidate_artifact_kind(relative_path: &str) -> String {
         _ => "candidate_artifact".to_string(),
     }
 }
-
 
 pub(crate) fn doctor_candidate_artifact_for_path(
     data_dir: &Path,
@@ -199,7 +190,6 @@ pub(crate) fn doctor_candidate_artifact_for_path(
     })
 }
 
-
 pub(crate) fn collect_doctor_candidate_artifacts(
     data_dir: &Path,
     candidate_dir: &Path,
@@ -220,7 +210,6 @@ pub(crate) fn collect_doctor_candidate_artifacts(
     artifacts
 }
 
-
 pub(crate) fn doctor_candidate_checksum_set(
     artifacts: &[DoctorCandidateArtifact],
 ) -> BTreeMap<String, String> {
@@ -234,7 +223,6 @@ pub(crate) fn doctor_candidate_checksum_set(
         })
         .collect()
 }
-
 
 pub(crate) fn doctor_candidate_write_manifest_atomic(
     data_dir: &Path,
@@ -330,7 +318,6 @@ pub(crate) fn doctor_candidate_write_manifest_atomic(
     file_blake3_hex(&manifest_path)
 }
 
-
 pub(crate) fn doctor_candidate_write_bytes_to_staging(
     operation_id: &str,
     action_id: &str,
@@ -355,7 +342,6 @@ pub(crate) fn doctor_candidate_write_bytes_to_staging(
     })
 }
 
-
 pub(crate) fn doctor_candidate_jsonl_bytes(records: &[serde_json::Value]) -> Vec<u8> {
     let mut out = Vec::new();
     for record in records {
@@ -367,7 +353,6 @@ pub(crate) fn doctor_candidate_jsonl_bytes(records: &[serde_json::Value]) -> Vec
     out
 }
 
-
 pub(crate) struct DoctorCandidateCopyContext<'a> {
     pub(crate) operation_id: &'a str,
     pub(crate) data_dir: &'a Path,
@@ -375,7 +360,6 @@ pub(crate) struct DoctorCandidateCopyContext<'a> {
     pub(crate) index_path: &'a Path,
     pub(crate) candidate_dir: &'a Path,
 }
-
 
 pub(crate) fn doctor_candidate_copy_to_staging(
     context: &DoctorCandidateCopyContext<'_>,
@@ -403,7 +387,6 @@ pub(crate) fn doctor_candidate_copy_to_staging(
     })
 }
 
-
 pub(crate) fn doctor_candidate_table_count(
     conn: &crate::franken_sync::Connection,
     table: &str,
@@ -424,7 +407,6 @@ pub(crate) fn doctor_candidate_table_count(
         None
     }
 }
-
 
 pub(crate) fn doctor_candidate_probe_frankensqlite(
     candidate_db_path: &Path,
@@ -483,7 +465,6 @@ pub(crate) fn doctor_candidate_probe_frankensqlite(
     Ok((conversations, messages))
 }
 
-
 pub(crate) fn doctor_candidate_coverage_before_snapshot(
     coverage_summary: &DoctorCoverageSummary,
 ) -> DoctorCandidateCoverageSnapshot {
@@ -497,7 +478,6 @@ pub(crate) fn doctor_candidate_coverage_before_snapshot(
         confidence_tier: coverage_summary.confidence_tier.clone(),
     }
 }
-
 
 pub(crate) fn doctor_candidate_coverage_after_snapshot(
     coverage_source: impl Into<String>,
@@ -515,7 +495,6 @@ pub(crate) fn doctor_candidate_coverage_after_snapshot(
         confidence_tier: coverage_summary.confidence_tier.clone(),
     }
 }
-
 
 pub(crate) fn doctor_candidate_live_archive_copy_probe(
     db_path: &Path,
@@ -569,8 +548,9 @@ pub(crate) fn doctor_candidate_live_archive_copy_probe(
     })
 }
 
-
-pub(crate) fn doctor_candidate_verified_raw_mirror_db_link_count(raw_mirror: &DoctorRawMirrorReport) -> usize {
+pub(crate) fn doctor_candidate_verified_raw_mirror_db_link_count(
+    raw_mirror: &DoctorRawMirrorReport,
+) -> usize {
     raw_mirror
         .manifests
         .iter()
@@ -578,7 +558,6 @@ pub(crate) fn doctor_candidate_verified_raw_mirror_db_link_count(raw_mirror: &Do
         .map(|manifest| manifest.db_link_count)
         .sum()
 }
-
 
 pub(crate) fn doctor_candidate_raw_mirror_key(manifest: &DoctorRawMirrorManifestReport) -> String {
     if let Some(conversation_id) = manifest
@@ -598,7 +577,6 @@ pub(crate) fn doctor_candidate_raw_mirror_key(manifest: &DoctorRawMirrorManifest
         }),
     )
 }
-
 
 pub(crate) fn doctor_candidate_read_verified_raw_mirror_blob(
     data_dir: &Path,
@@ -624,8 +602,9 @@ pub(crate) fn doctor_candidate_read_verified_raw_mirror_blob(
     })
 }
 
-
-pub(crate) fn doctor_candidate_message_role(value: &serde_json::Value) -> crate::model::types::MessageRole {
+pub(crate) fn doctor_candidate_message_role(
+    value: &serde_json::Value,
+) -> crate::model::types::MessageRole {
     let role = value
         .get("role")
         .or_else(|| value.get("author_role"))
@@ -644,7 +623,6 @@ pub(crate) fn doctor_candidate_message_role(value: &serde_json::Value) -> crate:
     }
 }
 
-
 pub(crate) fn doctor_candidate_json_message_content(value: &serde_json::Value) -> String {
     for key in ["content", "message", "text", "body", "delta"] {
         if let Some(value) = value.get(key) {
@@ -658,7 +636,6 @@ pub(crate) fn doctor_candidate_json_message_content(value: &serde_json::Value) -
     }
     serde_json::to_string(value).unwrap_or_default()
 }
-
 
 pub(crate) fn doctor_candidate_json_message_timestamp(value: &serde_json::Value) -> Option<i64> {
     for key in [
@@ -675,7 +652,6 @@ pub(crate) fn doctor_candidate_json_message_timestamp(value: &serde_json::Value)
     }
     None
 }
-
 
 pub(crate) fn doctor_candidate_parse_raw_mirror_messages(
     manifest: &DoctorRawMirrorManifestReport,
@@ -771,7 +747,6 @@ pub(crate) fn doctor_candidate_parse_raw_mirror_messages(
     messages
 }
 
-
 pub(crate) fn doctor_candidate_conversation_from_raw_mirror(
     manifest: &DoctorRawMirrorManifestReport,
     bytes: &[u8],
@@ -843,7 +818,6 @@ pub(crate) fn doctor_candidate_conversation_from_raw_mirror(
     }
 }
 
-
 /// Re-reads verified raw-mirror sources through their providers' connectors
 /// for one candidate build (zp0fp). It caches each provider's connector and
 /// detected roots and owns the scratch tree the source copies are parsed
@@ -853,10 +827,9 @@ pub(crate) struct DoctorConnectorReparse {
     pub(crate) providers: HashMap<String, Option<DoctorReparseConnector>>,
 }
 
-
 /// A provider's connector and the roots it detects on this machine.
-pub(crate) type DoctorReparseConnector = (Box<dyn crate::connectors::Connector + Send>, Vec<PathBuf>);
-
+pub(crate) type DoctorReparseConnector =
+    (Box<dyn crate::connectors::Connector + Send>, Vec<PathBuf>);
 
 impl DoctorConnectorReparse {
     pub(crate) fn new(candidate_dir: &Path) -> std::io::Result<Self> {
@@ -966,7 +939,6 @@ impl DoctorConnectorReparse {
     }
 }
 
-
 /// zp0fp: a source is re-read by its connector only when it is local, its
 /// provider has a registered connector, and it lies under a root that
 /// connector detects. Otherwise the reason comes back and the build keeps the
@@ -1003,7 +975,6 @@ pub(crate) fn doctor_connector_reparse_reports_why_a_source_keeps_the_line_salva
         "{outside}"
     );
 }
-
 
 pub(crate) fn doctor_candidate_copy_raw_mirror_evidence_to_staging(
     context: &DoctorCandidateCopyContext<'_>,
@@ -1121,7 +1092,6 @@ pub(crate) fn doctor_candidate_copy_raw_mirror_evidence_to_staging(
     ));
     receipts
 }
-
 
 pub(crate) fn doctor_candidate_reconstruct_archive_from_raw_mirror(
     data_dir: &Path,
@@ -1308,7 +1278,6 @@ pub(crate) fn doctor_candidate_reconstruct_archive_from_raw_mirror(
         receipts,
     ))
 }
-
 
 pub(crate) fn doctor_candidate_build_should_run(
     fix_can_mutate: bool,

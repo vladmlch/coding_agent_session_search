@@ -16386,7 +16386,6 @@ fn write_trace_line(
     file.write_all(&fallback_encoded)
 }
 
-
 // -- generated lib-split bridges --
 pub(crate) mod robot_schema;
 #[allow(unused_imports)]
@@ -16822,16 +16821,16 @@ pub(crate) use crate::doctor::support_bundle::doctor_support_bundle_redaction_te
 pub(crate) use crate::doctor::support_bundle::*;
 // -- generated lib-split bridges --
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::candidate::doctor_candidate_root::*;
-#[allow(unused_imports)]
 pub(crate) use crate::doctor::candidate::build_doctor_reconstruct_candidate::*;
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::probes::*;
+pub(crate) use crate::doctor::candidate::doctor_candidate_root::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::probes::doctor_probe_timeout_tests::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::probes::integrity::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::probes::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::run::*;
 #[allow(unused_imports)]

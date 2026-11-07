@@ -5,18 +5,16 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{ConnectionExt, RowExt};
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::franken_sync::compat::{ConnectionExt, RowExt};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 // `PRAGMA quick_check(1)` limits the number of diagnostics returned; it does
 // not limit the number of database pages visited.  FrankenSQLite's synchronous
@@ -36,8 +34,8 @@ pub(crate) const DOCTOR_FRANKEN_DEEP_INTEGRITY_MAX_BYTES: u64 = 256 * 1024 * 102
 /// (`CASS_DOCTOR_DB_PROBE_TIMEOUT_SECS`), so lifting the byte cap without
 /// raising the deadline yields a timed-out probe, not an unbounded wait on the
 /// doctor thread.
-pub(crate) const CASS_DOCTOR_FULL_PAGE_INTEGRITY_PROBE: &str = "CASS_DOCTOR_FULL_PAGE_INTEGRITY_PROBE";
-
+pub(crate) const CASS_DOCTOR_FULL_PAGE_INTEGRITY_PROBE: &str =
+    "CASS_DOCTOR_FULL_PAGE_INTEGRITY_PROBE";
 
 /// Wall-clock budget for the `archive_wal` `--fix` checkpoint (GH #382 /
 /// g3zyo). `CASS_DOCTOR_WAL_CHECKPOINT_TIMEOUT_SECS` overrides the 120 s
@@ -52,7 +50,6 @@ pub(crate) fn doctor_wal_checkpoint_deadline() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-
 pub(crate) fn doctor_full_page_integrity_probe_requested() -> bool {
     dotenvy::var(CASS_DOCTOR_FULL_PAGE_INTEGRITY_PROBE)
         .ok()
@@ -63,7 +60,6 @@ pub(crate) fn doctor_full_page_integrity_probe_requested() -> bool {
             )
         })
 }
-
 
 pub(crate) fn doctor_franken_deep_integrity_skip_reason_for_bytes(
     bundle_bytes: u64,
@@ -78,7 +74,6 @@ pub(crate) fn doctor_franken_deep_integrity_skip_reason_for_bytes(
         )
     })
 }
-
 
 pub(crate) fn doctor_franken_deep_integrity_skip_reason(db_path: &Path) -> Option<String> {
     let main = match std::fs::symlink_metadata(db_path) {
@@ -131,7 +126,6 @@ pub(crate) fn doctor_franken_deep_integrity_skip_reason(db_path: &Path) -> Optio
     )
 }
 
-
 pub(crate) fn doctor_archive_queryable_for_non_destructive_derived_rebuild(
     db_ok: bool,
     row_counts_complete: bool,
@@ -141,7 +135,6 @@ pub(crate) fn doctor_archive_queryable_for_non_destructive_derived_rebuild(
     db_ok || (row_counts_complete && deep_integrity_deferred && !cached_integrity_failed)
 }
 
-
 pub(crate) fn doctor_canonical_candidate_replacement_authorized(
     db_exists: bool,
     not_initialized: bool,
@@ -150,7 +143,6 @@ pub(crate) fn doctor_canonical_candidate_replacement_authorized(
     affirmative_integrity_failure || (!db_exists && !not_initialized)
 }
 
-
 /// Classify only deterministic corruption-class open failures as affirmative
 /// replacement evidence. Timeouts, locks, permissions, and generic engine
 /// failures remain unknown and must never authorize canonical replacement.
@@ -158,7 +150,6 @@ pub(crate) fn doctor_db_open_error_is_affirmative_integrity_failure(error: &CliE
     error.kind.eq(CliErrorKind::DbOpen.kind_str())
         && doctor_open_error_message_is_affirmative_corruption(&error.message)
 }
-
 
 /// An open failure that proves the file is damaged, as opposed to busy,
 /// locked or unreadable for another reason.
@@ -171,7 +162,6 @@ pub(crate) fn doctor_open_error_message_is_affirmative_corruption(message: &str)
         || message.contains("databasecorrupt")
         || message.contains("walcorrupt")
 }
-
 
 pub(crate) fn doctor_archive_wide_collectors_deferred_reason(
     deep_integrity_skip_reason: Option<&str>,
@@ -201,7 +191,6 @@ pub(crate) fn doctor_archive_wide_collectors_deferred_reason(
     ))
 }
 
-
 /// zp0fp: while archive-wide collectors are deferred, the recommended action
 /// names the command that moves recovery forward for the cause doctor
 /// observed. A staged reconstruct candidate goes to the repair dry-run, a
@@ -230,7 +219,6 @@ pub(crate) fn doctor_deferred_archive_recommended_action(
     };
     format!("{reason}. {next}")
 }
-
 
 #[cfg(test)]
 #[test]
@@ -285,7 +273,6 @@ pub(crate) fn doctor_deferred_archive_recommended_action_names_the_next_command_
     );
 }
 
-
 #[cfg(test)]
 #[test]
 pub(crate) fn doctor_franken_deep_integrity_size_gate_has_an_exact_boundary() {
@@ -308,7 +295,6 @@ pub(crate) fn doctor_franken_deep_integrity_size_gate_has_an_exact_boundary() {
     );
 }
 
-
 #[cfg(test)]
 #[test]
 pub(crate) fn doctor_franken_deep_integrity_size_gate_is_lifted_by_explicit_opt_in() {
@@ -321,7 +307,6 @@ pub(crate) fn doctor_franken_deep_integrity_size_gate_is_lifted_by_explicit_opt_
         "GH #390: an explicit full-probe request must lift the byte cap"
     );
 }
-
 
 #[cfg(test)]
 #[test]
@@ -341,7 +326,6 @@ pub(crate) fn doctor_franken_deep_integrity_size_gate_counts_the_wal_bundle() {
         .expect("main plus WAL above the budget must defer the full-page PRAGMA");
     assert!(reason.contains("268435457 bytes"));
 }
-
 
 #[cfg(test)]
 #[test]
@@ -407,11 +391,10 @@ pub(crate) fn doctor_deferred_integrity_never_implies_corruption_or_destructive_
     }
 }
 
-
 #[cfg(test)]
 #[test]
-pub(crate) fn doctor_open_failure_authority_accepts_only_affirmative_corruption_classes() -> Result<(), String>
-{
+pub(crate) fn doctor_open_failure_authority_accepts_only_affirmative_corruption_classes()
+-> Result<(), String> {
     let db_open_error = |message: &str| CliError {
         code: 9,
         kind: CliErrorKind::DbOpen.kind_str(),
@@ -445,7 +428,6 @@ pub(crate) fn doctor_open_failure_authority_accepts_only_affirmative_corruption_
     }
     Ok(())
 }
-
 
 /// #287: the doctor's `SELECT COUNT(*)` row counts and
 /// `PRAGMA quick_check`/`integrity_check` probes used to run unbounded on the
@@ -532,7 +514,6 @@ pub(crate) fn run_bounded_doctor_archive_db_probe(
         },
     }
 }
-
 
 /// GH #457: `doctor` coverage floor for the served lexical document count as
 /// a percentage of the archive's `messages` rows. Not every message becomes a

@@ -5,13 +5,11 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn build_doctor_reconstruct_candidate(
     data_dir: &Path,
@@ -572,7 +570,6 @@ pub(crate) fn build_doctor_reconstruct_candidate(
     report
 }
 
-
 pub(crate) fn collect_doctor_candidate_staging_report(
     data_dir: &Path,
     db_path: &Path,
@@ -736,7 +733,6 @@ pub(crate) fn collect_doctor_candidate_staging_report(
     }
     report
 }
-
 
 pub(crate) fn doctor_candidate_promotion_root(data_dir: &Path) -> PathBuf {
     data_dir.join("doctor").join("candidate-promotions")
