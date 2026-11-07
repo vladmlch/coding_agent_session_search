@@ -289,6 +289,16 @@ const SOURCES: &[(&str, &str)] = &[
         "src/doctor/policy.rs",
         include_str!("../src/doctor/policy.rs"),
     ),
+    // lib-split 3b: taxonomy parts 1+2 carry the moved `ExitCode` literals
+    // in test assertions.
+    (
+        "src/doctor/doctor_asset_taxonomy_tests_part_1.rs",
+        include_str!("../src/doctor/doctor_asset_taxonomy_tests_part_1.rs"),
+    ),
+    (
+        "src/doctor/doctor_asset_taxonomy_tests_part_2.rs",
+        include_str!("../src/doctor/doctor_asset_taxonomy_tests_part_2.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed
