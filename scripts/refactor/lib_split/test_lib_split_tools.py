@@ -1163,18 +1163,21 @@ class ScannerParityTests(unittest.TestCase):
             self.assertEqual(rc.returncode, 1)
             self.assertIn("p", rc.stdout)
             # wrong-mode both ways -> nonzero with a type diagnostic
+            # naming the exact intended command — "diff" is a substring
+            # of "diff-counts", so assert the full phrase, not a prefix.
             rc = subprocess.run(
                 [sys.executable, str(tool), "diff",
                  w("e.json", good), w("f.json", bad)],
                 capture_output=True, text=True)
             self.assertNotEqual(rc.returncode, 0)
-            self.assertIn("diff-counts", rc.stderr)
+            self.assertIn("belongs to `diff-counts`", rc.stderr)
             rc = subprocess.run(
                 [sys.executable, str(tool), "diff-counts",
                  w("g.json", sources), w("h.json", sources)],
                 capture_output=True, text=True)
             self.assertNotEqual(rc.returncode, 0)
-            self.assertIn("diff", rc.stderr)
+            self.assertIn("belongs to `diff`", rc.stderr)
+            self.assertNotIn("diff-counts", rc.stderr)
 
     def test_malformed_patterns_rejected(self):
         # a malformed/ambiguous pattern must raise, never default to 0.
@@ -1185,6 +1188,20 @@ class ScannerParityTests(unittest.TestCase):
                                  "patterns": [pat]}]}
             with self.assertRaises((ValueError, KeyError)):
                 sp.counts(spec, {"src/a.rs": "body"})
+
+    def test_literal_pattern_rejects_scope_options(self):
+        # review Important1: name/suffix on a {literal=…} table were
+        # silently ignored — {literal="x", suffix=".rs"} still counted
+        # over the joined union while looking per-file scoped.
+        for pat in ({"literal": "x", "name": "n"},
+                    {"literal": "x", "suffix": ".rs"},
+                    {"literal": "x", "name": "n", "suffix": ".rs"}):
+            spec = {"scanner": [{"name": "s", "sources": ["src/a.rs"],
+                                 "patterns": [pat]}]}
+            with self.assertRaises(ValueError,
+                                   msg=f"{pat} must not fail open") as ctx:
+                sp.counts(spec, {"src/a.rs": "x", "doc.md": "x"})
+            self.assertIn("literal", str(ctx.exception))
 
     def test_exit_code_sources_cover_relocated_emitters(self):
         # the reviewed gap: every file with `code:`/`kind:` emission

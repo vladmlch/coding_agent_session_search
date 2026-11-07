@@ -208,6 +208,9 @@ def _pattern_spec(pat) -> tuple[str, object, str | None]:
                                         restricted to sources whose
                                         path ends in `suffix` when a
                                         suffix is declared.
+    `name`/`suffix` are regex-only options: a literal counts over the
+    joined union, so a literal table carrying either is rejected —
+    silently dropping a declared scope would undercount.
     Anything else is malformed: raise rather than silently count zero.
     """
     if isinstance(pat, str):
@@ -226,7 +229,12 @@ def _pattern_spec(pat) -> tuple[str, object, str | None]:
         lit = pat["literal"]
         if not isinstance(lit, str) or not lit:
             raise ValueError(f"literal pattern must be a nonempty string: {pat!r}")
-        return lit, lit, suffix
+        scoped = sorted(set(pat) - {"literal"})
+        if scoped:
+            raise ValueError(
+                f"literal pattern ignores options {scoped} "
+                f"(name/suffix are regex-only): {pat!r}")
+        return lit, lit, None
     if "regex" in pat:
         rx = pat["regex"]
         if not isinstance(rx, str) or not rx:
