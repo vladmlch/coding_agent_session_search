@@ -882,6 +882,8 @@ impl ConnectorIngestRun {
         let mut raw_line = Vec::new();
         let mut line_number = 0u64;
         let source_path = path.display().to_string();
+        let mut observations: Vec<crate::indexer::quarantine::ConnectorLineObservation> =
+            Vec::new();
         loop {
             raw_line.clear();
             let bytes_read = match reader.read_until(b'\n', &mut raw_line) {
@@ -920,22 +922,29 @@ impl ConnectorIngestRun {
                 source.disposition = SourceIngestDisposition::Quarantined;
                 source.malformed = true;
             });
-            if let Err(error) = crate::indexer::quarantine::record_connector_line(
-                data_dir,
-                &self.provider,
-                path,
-                line_number,
-                line,
-                kind.as_str(),
-            ) {
-                tracing::warn!(
-                    provider = %self.provider,
-                    source_path = %path.display(),
+            observations.push(
+                crate::indexer::quarantine::ConnectorLineObservation::observe(
                     line_number,
-                    error = %error,
-                    "failed to persist connector line quarantine record"
-                );
-            }
+                    line,
+                    kind.as_str(),
+                ),
+            );
+        }
+        // One ledger publication for the whole source file, not one per
+        // malformed line: a re-scan that observes nothing new writes nothing.
+        if let Err(error) = crate::indexer::quarantine::record_connector_line_batch(
+            data_dir,
+            &self.provider,
+            path,
+            &observations,
+        ) {
+            tracing::warn!(
+                provider = %self.provider,
+                source_path = %path.display(),
+                malformed_lines = observations.len(),
+                error = %error,
+                "failed to persist connector line quarantine records"
+            );
         }
     }
 
@@ -1997,6 +2006,355 @@ mod tests {
         );
         let report = ConnectorIngestRun::begin("pi_agent", temp.path(), &ctx, &[]).finish();
         verify!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+        Ok(())
+    }
+
+    // ---- quarantine ledger publication batching (one write per source file) ----
+
+    /// Path of the connector-line quarantine ledger inside a scan data dir.
+    fn connector_ledger(data_dir: &Path) -> PathBuf {
+        data_dir
+            .join("quarantine")
+            .join("connector_ingest_lines.json")
+    }
+
+    /// Attempted ledger publications whose destination lives in `data_dir`'s
+    /// quarantine directory, as counted by `quarantine::test_support`.
+    fn ledger_save_count(data_dir: &Path) -> u64 {
+        crate::indexer::quarantine::test_support::save_count(&data_dir.join("quarantine"))
+    }
+
+    fn reset_ledger_save_count(data_dir: &Path) {
+        crate::indexer::quarantine::test_support::reset_save_count(&data_dir.join("quarantine"));
+    }
+
+    /// The exact BTreeMap key the quarantine ledger uses for one observation.
+    fn ledger_key(provider: &str, source: &Path, line_number: u64, payload: &[u8]) -> String {
+        format!(
+            "{}|{}|{}|{}",
+            provider,
+            source.display(),
+            line_number,
+            blake3::hash(payload).to_hex()
+        )
+    }
+
+    /// Parse the on-disk ledger into a JSON value, failing with the raw text.
+    fn read_ledger(data_dir: &Path) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+        let text = std::fs::read_to_string(connector_ledger(data_dir))?;
+        Ok(serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("ledger is not valid JSON: {error}: {text}")))
+    }
+
+    fn scan_source(data_dir: &Path, provider: &str, file: &Path) -> ConnectorIngestRun {
+        let root = ScanRoot::local(file.parent().unwrap().to_path_buf());
+        let source = DiscoveredSourceFile::new(
+            provider,
+            &root,
+            file.to_path_buf(),
+            DiscoveredSourceRole::PrimarySessionLog,
+            true,
+        );
+        let ctx = ScanContext::with_roots(data_dir.to_path_buf(), vec![root], None);
+        ConnectorIngestRun::begin(provider, data_dir, &ctx, &[source])
+    }
+
+    /// N distinct malformed lines in one file must publish the ledger O(1)
+    /// times — once for the file — instead of once per malformed line.
+    #[test]
+    fn quarantine_ledger_publications_are_o1_per_source_file() -> TestResult {
+        let temp = tempdir()?;
+        let data_dir = temp.path();
+        let file = data_dir.join("rollout-many-bad-lines.jsonl");
+        let malformed_lines = 64usize;
+        let mut body = String::from("{\"ok\":1}\n");
+        for i in 0..malformed_lines {
+            body.push_str(&format!("{{broken synthetic line {i}}}\n"));
+        }
+        // Final line has no trailing newline: it is a truncated session, a
+        // different failure kind that must land in the same single batch.
+        body.push_str("{broken truncated tail");
+        std::fs::write(&file, body)?;
+
+        reset_ledger_save_count(data_dir);
+        let report = scan_source(data_dir, "codex", &file).finish();
+        let saves = ledger_save_count(data_dir);
+
+        verify_eq!(
+            saves,
+            1,
+            "{malformed_lines} malformed lines in one source file must publish the \
+             ledger exactly once (attempted publications: {saves})",
+        );
+        verify_eq!(report.diagnostics.len(), malformed_lines + 1);
+
+        let ledger = read_ledger(data_dir)?;
+        let entries = ledger["entries"].as_object().unwrap();
+        verify_eq!(entries.len(), malformed_lines + 1);
+        for i in 0..malformed_lines {
+            let payload = format!("{{broken synthetic line {i}}}");
+            let key = ledger_key("codex", &file, (i + 2) as u64, payload.as_bytes());
+            let record = entries
+                .get(&key)
+                .ok_or_else(|| format!("entry for line {} missing from the ledger", i + 2))?;
+            verify_eq!(record["failure_kind"], "malformed-json-line");
+            verify_eq!(record["attempt_count"], 1);
+        }
+        let tail_key = ledger_key("codex", &file, 66, b"{broken truncated tail");
+        let tail = entries
+            .get(&tail_key)
+            .ok_or_else(|| "truncated tail entry missing from the ledger".to_string())?;
+        verify_eq!(tail["failure_kind"], "truncated-session");
+        Ok(())
+    }
+
+    /// A mixed batch (new entries, repeats of entries from an earlier scan,
+    /// two source files) must leave the ledger with exactly the content the
+    /// per-line writer produced: same fields, same attempt counts, first
+    /// observation timestamps preserved.
+    #[test]
+    fn quarantine_ledger_content_matches_per_line_writes_for_a_mixed_batch() -> TestResult {
+        let temp = tempdir()?;
+        let data_dir = temp.path();
+        let file_a = data_dir.join("rollout-a.jsonl");
+        let file_b = data_dir.join("rollout-b.jsonl");
+        std::fs::write(&file_a, "{broken alpha}\n{\"ok\":1}\n{broken gamma}\n")?;
+
+        // Scan 1: file A alone. Two fresh entries, one publication per line
+        // under the old contract — capture the first-observation timestamp
+        // that every later scan must preserve.
+        reset_ledger_save_count(data_dir);
+        let _ = scan_source(data_dir, "codex", &file_a).finish();
+        let ledger = read_ledger(data_dir)?;
+        let alpha_key = ledger_key("codex", &file_a, 1, b"{broken alpha}");
+        let alpha_first_observed = ledger["entries"]
+            .as_object()
+            .unwrap()
+            .get(&alpha_key)
+            .ok_or("alpha entry missing after scan 1")?["first_observed_at"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Scan 2: file A grows one new malformed line while its two earlier
+        // lines repeat byte-for-byte; file B is a second source file.
+        std::fs::write(
+            &file_a,
+            "{broken alpha}\n{\"ok\":1}\n{broken gamma}\n{broken delta}\n",
+        )?;
+        std::fs::write(&file_b, "{broken beta}\n")?;
+        reset_ledger_save_count(data_dir);
+        {
+            let root = ScanRoot::local(data_dir.to_path_buf());
+            let sources = [
+                DiscoveredSourceFile::new(
+                    "codex",
+                    &root,
+                    file_a.clone(),
+                    DiscoveredSourceRole::PrimarySessionLog,
+                    true,
+                ),
+                DiscoveredSourceFile::new(
+                    "codex",
+                    &root,
+                    file_b.clone(),
+                    DiscoveredSourceRole::PrimarySessionLog,
+                    true,
+                ),
+            ];
+            let ctx = ScanContext::with_roots(data_dir.to_path_buf(), vec![root], None);
+            let _ = ConnectorIngestRun::begin("codex", data_dir, &ctx, &sources).finish();
+        }
+        let saves = ledger_save_count(data_dir);
+        verify_eq!(
+            saves,
+            2,
+            "two source files must publish the ledger once per file (got {saves})"
+        );
+
+        let ledger = read_ledger(data_dir)?;
+        let entries = ledger["entries"].as_object().unwrap();
+        verify_eq!(entries.len(), 4, "2 repeats + 2 new entries");
+        for (key, expected_attempts, payload) in [
+            (&alpha_key, 2u64, "{broken alpha}"),
+            (
+                &ledger_key("codex", &file_a, 3, b"{broken gamma}"),
+                2,
+                "{broken gamma}",
+            ),
+            (
+                &ledger_key("codex", &file_a, 4, b"{broken delta}"),
+                1,
+                "{broken delta}",
+            ),
+            (
+                &ledger_key("codex", &file_b, 1, b"{broken beta}"),
+                1,
+                "{broken beta}",
+            ),
+        ] {
+            let record = entries
+                .get(key)
+                .ok_or_else(|| format!("missing ledger entry {key}"))?;
+            verify_eq!(record["attempt_count"], expected_attempts);
+            verify_eq!(record["provider"], "codex");
+            verify_eq!(record["failure_kind"], "malformed-json-line");
+            verify_eq!(record["payload_bytes"].as_u64(), Some(payload.len() as u64));
+            verify_eq!(
+                record["payload_blake3"],
+                blake3::hash(payload.as_bytes()).to_hex().to_string()
+            );
+            let first = record["first_observed_at"].as_str().unwrap();
+            let last = record["last_observed_at"].as_str().unwrap();
+            verify!(first <= last, "first_observed_at must not move backwards");
+        }
+        // The repeated entry keeps its first sighting from scan 1 while its
+        // attempt count advanced — the dedup contract of the ledger.
+        verify_eq!(
+            entries
+                .get(&alpha_key)
+                .ok_or("alpha entry missing after scan 2")?["first_observed_at"],
+            alpha_first_observed.as_str(),
+            "repeated observation must not reset first_observed_at"
+        );
+        // No payload text may ever reach the ledger.
+        let raw = std::fs::read_to_string(connector_ledger(data_dir))?;
+        for payload in ["{broken alpha}", "{broken beta}", "{broken delta}"] {
+            verify!(
+                !raw.contains(payload),
+                "payload text leaked into the ledger"
+            );
+        }
+        Ok(())
+    }
+
+    /// A re-scan that observes no new malformed line must not touch the
+    /// ledger file at all, while still reporting every line as a diagnostic.
+    #[test]
+    fn a_repeat_scan_of_unchanged_malformed_files_writes_nothing() -> TestResult {
+        let temp = tempdir()?;
+        let data_dir = temp.path();
+        let file = data_dir.join("rollout-repeat.jsonl");
+        std::fs::write(&file, "{broken one}\n{\"ok\":1}\n{broken two}\n")?;
+
+        reset_ledger_save_count(data_dir);
+        let first = scan_source(data_dir, "codex", &file).finish();
+        verify_eq!(first.diagnostics.len(), 2);
+        let ledger = connector_ledger(data_dir);
+        let bytes_before = std::fs::read(&ledger)?;
+        let mtime_before = std::fs::metadata(&ledger)?.modified()?;
+
+        reset_ledger_save_count(data_dir);
+        let second = scan_source(data_dir, "codex", &file).finish();
+        let saves = ledger_save_count(data_dir);
+        verify_eq!(
+            saves,
+            0,
+            "a re-scan with no new malformed lines must not publish the ledger (got {saves})"
+        );
+        verify_eq!(
+            std::fs::read(&ledger)?,
+            bytes_before,
+            "ledger bytes must be untouched by a no-change re-scan"
+        );
+        verify_eq!(
+            std::fs::metadata(&ledger)?.modified()?,
+            mtime_before,
+            "ledger mtime must be untouched by a no-change re-scan"
+        );
+        // Diagnostics are per-line observations and stay equivalent.
+        verify_eq!(second.diagnostics.len(), 2, "{:?}", second.diagnostics);
+        verify_eq!(
+            second.diagnostics[0].failure_kind,
+            IngestFailureKind::MalformedJsonLine
+        );
+        verify_eq!(second.diagnostics[0].line_or_row, Some(1));
+        verify_eq!(second.diagnostics[1].line_or_row, Some(3));
+        Ok(())
+    }
+
+    /// Manual before/after cost probe for the ledger publication policy. Not
+    /// part of the suite: run with
+    /// `cargo test --lib quarantine_ledger_write_cost_probe -- --ignored --nocapture`
+    /// and size the synthetic file with `CASS_QUARANTINE_TIMING_LINES`
+    /// (default 15,000, the measured fresh-index magnitude).
+    #[test]
+    #[ignore = "manual perf probe; see .scratch/glm/2026-11-07-quarantine-batch/report.md"]
+    fn quarantine_ledger_write_cost_probe() -> TestResult {
+        let malformed_lines: usize = std::env::var("CASS_QUARANTINE_TIMING_LINES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(15_000);
+        let temp = tempdir()?;
+        let data_dir = temp.path();
+        let file = data_dir.join("rollout-probe.jsonl");
+        let mut body = String::with_capacity(malformed_lines * 64);
+        body.push_str(
+            "{\"timestamp\":\"2026-01-01T00:00:00.000Z\",\"type\":\"session_meta\",\
+             \"payload\":{\"id\":\"synthetic-probe\"}}\n",
+        );
+        for i in 0..malformed_lines {
+            body.push_str(&format!(
+                "{{broken synthetic payload {i} for the quarantine probe}}\n"
+            ));
+        }
+        std::fs::write(&file, body)?;
+
+        reset_ledger_save_count(data_dir);
+        let started = std::time::Instant::now();
+        let report = scan_source(data_dir, "codex", &file).finish();
+        let elapsed = started.elapsed();
+        let saves = ledger_save_count(data_dir);
+        println!(
+            "QUARANTINE_PROBE_BATCHED malformed_lines={malformed_lines} elapsed_ms={} \
+             ledger_publications={saves} diagnostics={}",
+            elapsed.as_millis(),
+            report.diagnostics.len(),
+        );
+        verify_eq!(report.diagnostics.len(), malformed_lines);
+        Ok(())
+    }
+
+    /// Manual cost probe for the incumbent per-line publication policy: the
+    /// retained single-observation entry point performs exactly the per-line
+    /// work the old scan loop did (lock, read and parse the whole ledger,
+    /// upsert one line, serialize and fsync-publish the whole ledger), so
+    /// looping it N times measures the pre-batching cost in the same binary
+    /// as `quarantine_ledger_write_cost_probe`.
+    #[test]
+    #[ignore = "manual perf probe; see .scratch/glm/2026-11-07-quarantine-batch/report.md"]
+    fn quarantine_ledger_per_line_write_cost_probe() -> TestResult {
+        let malformed_lines: usize = std::env::var("CASS_QUARANTINE_TIMING_LINES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(15_000);
+        let temp = tempdir()?;
+        let data_dir = temp.path();
+        let file = data_dir.join("rollout-probe.jsonl");
+        reset_ledger_save_count(data_dir);
+        let started = std::time::Instant::now();
+        for i in 0..malformed_lines {
+            let payload = format!("{{broken synthetic payload {i} for the quarantine probe}}\n");
+            crate::indexer::quarantine::record_connector_line(
+                data_dir,
+                "codex",
+                &file,
+                (i + 2) as u64,
+                payload.trim_end_matches('\n').as_bytes(),
+                "malformed-json-line",
+            )?;
+        }
+        let elapsed = started.elapsed();
+        let saves = ledger_save_count(data_dir);
+        let ledger = read_ledger(data_dir)?;
+        let entries = ledger["entries"].as_object().unwrap().len();
+        println!(
+            "QUARANTINE_PROBE_PER_LINE malformed_lines={malformed_lines} elapsed_ms={} \
+             ledger_publications={saves} entries={entries}",
+            elapsed.as_millis(),
+        );
+        verify_eq!(saves as usize, malformed_lines);
+        verify_eq!(entries, malformed_lines);
         Ok(())
     }
 }

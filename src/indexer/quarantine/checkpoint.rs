@@ -23,10 +23,60 @@ const BUFFER_BYTES: usize = 8 * 1024;
 /// directory durability. Neither this nor fsync guarantees faulty hardware,
 /// network filesystems or newly created ancestor directories survive power loss.
 pub(super) fn save(path: &Path, state: &impl Serialize) -> io::Result<()> {
+    #[cfg(test)]
+    test_counts::bump(path);
     Pending::prepare(path, |writer| {
         serde_json::to_writer_pretty(writer, state).map_err(io::Error::other)
     })?
     .publish(path)
+}
+
+/// Test-only attempted-publication counters, keyed by the parent directory of
+/// the saved path. Keying per directory (instead of one global total) keeps
+/// concurrently running tests, each with its own tempdir, from polluting each
+/// other's counts. Counting at `save` entry records every attempted atomic
+/// publication of either quarantine ledger, which is the quantity the
+/// per-source-file batching contract bounds.
+#[cfg(test)]
+pub(crate) mod test_counts {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, OnceLock};
+
+    fn counts() -> &'static Mutex<HashMap<PathBuf, u64>> {
+        static COUNTS: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
+        COUNTS.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn key(path: &Path) -> PathBuf {
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
+    }
+
+    pub(crate) fn bump(path: &Path) {
+        let mut counts = counts()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *counts.entry(key(path)).or_default() += 1;
+    }
+
+    /// Drop the attempted-save count recorded for `dir`.
+    pub(crate) fn reset(dir: &Path) {
+        let mut counts = counts()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        counts.remove(dir);
+    }
+
+    /// Attempted saves whose destination lives in `dir`.
+    pub(crate) fn get(dir: &Path) -> u64 {
+        let counts = counts()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        counts.get(dir).copied().unwrap_or(0)
+    }
 }
 
 struct Pending {
