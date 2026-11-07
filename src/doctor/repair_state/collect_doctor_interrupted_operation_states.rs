@@ -3,14 +3,12 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn collect_doctor_interrupted_operation_states(
     data_dir: &Path,
@@ -63,7 +61,6 @@ pub(crate) fn collect_doctor_interrupted_operation_states(
     reports.sort_by(|left, right| left.path.cmp(&right.path));
     reports
 }
-
 
 pub(crate) fn build_doctor_operation_state_report(
     data_dir: &Path,
@@ -183,12 +180,10 @@ pub(crate) fn build_doctor_operation_state_report(
     }
 }
 
-
 pub(crate) fn doctor_elapsed_since_ms(now_ms: i64, timestamp_ms: Option<i64>) -> Option<u64> {
     let timestamp_ms = timestamp_ms?;
     Some(now_ms.saturating_sub(timestamp_ms).max(0) as u64)
 }
-
 
 pub(crate) fn doctor_lock_pid_metadata_status(owner: &DoctorOperationOwnerReport) -> String {
     if owner
@@ -215,7 +210,6 @@ pub(crate) fn doctor_lock_pid_metadata_status(owner: &DoctorOperationOwnerReport
     }
 }
 
-
 pub(crate) fn doctor_lock_pid_reuse_ambiguous(owner: &DoctorOperationOwnerReport) -> bool {
     owner.pid.is_some()
         && !owner.owned_by_current_process
@@ -225,7 +219,6 @@ pub(crate) fn doctor_lock_pid_reuse_ambiguous(owner: &DoctorOperationOwnerReport
                 | DoctorOperationOwnerConfidence::StaleMetadataOnly
         )
 }
-
 
 pub(crate) fn doctor_lock_stale_suspected(
     owner: &DoctorOperationOwnerReport,
@@ -242,8 +235,9 @@ pub(crate) fn doctor_lock_stale_suspected(
     }
 }
 
-
-pub(crate) fn doctor_lock_retry_policy(owner: &DoctorOperationOwnerReport) -> (&'static str, Option<u64>) {
+pub(crate) fn doctor_lock_retry_policy(
+    owner: &DoctorOperationOwnerReport,
+) -> (&'static str, Option<u64>) {
     match owner.owner_confidence {
         DoctorOperationOwnerConfidence::CurrentProcess => ("current-process-owned", None),
         DoctorOperationOwnerConfidence::ActiveAdvisoryLock
@@ -252,7 +246,6 @@ pub(crate) fn doctor_lock_retry_policy(owner: &DoctorOperationOwnerReport) -> (&
         DoctorOperationOwnerConfidence::Unavailable => ("inspect-permissions", None),
     }
 }
-
 
 pub(crate) fn build_doctor_lock_diagnostics(
     operation_state: &DoctorOperationStateReport,
@@ -306,23 +299,19 @@ pub(crate) fn build_doctor_lock_diagnostics(
         .collect()
 }
 
-
 /// siekg: last doctor phase that completed, read by the stderr liveness
 /// heartbeat so a multi-minute run says *where* it is, not just that it is
 /// alive. Process-global on purpose: doctor runs once per process and the
 /// value is advisory message text only.
 pub(crate) static DOCTOR_HEARTBEAT_LAST_PHASE: Mutex<String> = Mutex::new(String::new());
 
-
 /// Default liveness cadence for long doctor runs; `CASS_DOCTOR_HEARTBEAT_SECS`
 /// overrides it (`0` disables).
 pub(crate) const DOCTOR_HEARTBEAT_DEFAULT_SECS: u64 = 15;
 
-
 pub(crate) fn doctor_heartbeat_interval() -> Option<std::time::Duration> {
     doctor_heartbeat_interval_from(std::env::var("CASS_DOCTOR_HEARTBEAT_SECS").ok().as_deref())
 }
-
 
 /// Pure resolver for the heartbeat cadence: unset/unparseable → default,
 /// `0` → disabled (`None`).

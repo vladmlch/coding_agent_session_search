@@ -5,14 +5,12 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn finalize_cleanup_apply_contract(
     result: &mut DiagCleanupApplyResult,
@@ -128,7 +126,6 @@ pub(crate) fn finalize_cleanup_apply_contract(
     };
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DiagQuarantineArtifact {
     #[serde(flatten)]
@@ -140,7 +137,6 @@ pub(crate) struct DiagQuarantineArtifact {
     pub(crate) safe_to_gc: bool,
     pub(crate) gc_reason: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DiagQuarantinedGeneration {
@@ -161,7 +157,6 @@ pub(crate) struct DiagQuarantinedGeneration {
     pub(crate) gc_reason: String,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DiagQuarantineInspectionArtifact {
     #[serde(flatten)]
@@ -178,7 +173,6 @@ pub(crate) struct DiagQuarantineInspectionArtifact {
     pub(crate) safe_to_gc: bool,
     pub(crate) gc_reason: String,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DiagQuarantineSummary {
@@ -206,23 +200,24 @@ pub(crate) struct DiagQuarantineSummary {
     pub(crate) cleanup_apply_allowed: bool,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DiagQuarantineReport {
     pub(crate) summary: DiagQuarantineSummary,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) lexical_rebuild_quarantine: Option<crate::search::lexical_quarantine_diagnostics::Report>,
+    pub(crate) lexical_rebuild_quarantine:
+        Option<crate::search::lexical_quarantine_diagnostics::Report>,
     pub(crate) quarantined_artifacts: Vec<DiagQuarantineInspectionArtifact>,
     pub(crate) failed_seed_bundle_files: Vec<DiagQuarantineArtifact>,
     pub(crate) retained_publish_backups: Vec<DiagQuarantineArtifact>,
     pub(crate) lexical_generations: Vec<DiagQuarantinedGeneration>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) lexical_cleanup_dry_run: Option<crate::indexer::lexical_generation::LexicalCleanupDryRunPlan>,
+    pub(crate) lexical_cleanup_dry_run:
+        Option<crate::indexer::lexical_generation::LexicalCleanupDryRunPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) lexical_cleanup_apply_gate: Option<crate::indexer::lexical_generation::LexicalCleanupApplyGate>,
+    pub(crate) lexical_cleanup_apply_gate:
+        Option<crate::indexer::lexical_generation::LexicalCleanupApplyGate>,
     pub(crate) warnings: Vec<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DiagCleanupApplyResult {
@@ -261,7 +256,6 @@ pub(crate) struct DiagCleanupApplyResult {
     pub(crate) warnings: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DiagCleanupApplyInventory {
     pub(crate) summary: DiagQuarantineSummary,
@@ -270,9 +264,9 @@ pub(crate) struct DiagCleanupApplyInventory {
     pub(crate) quarantined_artifacts: Vec<DiagQuarantineInspectionArtifact>,
     pub(crate) lexical_cleanup_inventories:
         Vec<crate::indexer::lexical_generation::LexicalGenerationCleanupInventory>,
-    pub(crate) reclaim_candidates: Vec<crate::indexer::lexical_generation::LexicalCleanupReclaimCandidate>,
+    pub(crate) reclaim_candidates:
+        Vec<crate::indexer::lexical_generation::LexicalCleanupReclaimCandidate>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DiagCleanupApplyAction {

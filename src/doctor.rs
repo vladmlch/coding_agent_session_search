@@ -1556,11 +1556,10 @@ mod tests {
 }
 
 // -- lib-split module declarations --
-pub(crate) mod forensic;
-pub(crate) mod policy;
-pub(crate) mod repair_state;
-pub(crate) mod report;
-pub(crate) mod fs_safety;
+#[cfg(all(test, unix))]
+pub(crate) mod cleanup_target_safety_tests;
+#[cfg(all(test, unix))]
+pub(crate) mod doctor_archive_export_path_safety_tests;
 #[cfg(test)]
 pub(crate) mod doctor_asset_taxonomy_tests_part_1;
 #[cfg(test)]
@@ -1578,9 +1577,10 @@ pub(crate) mod doctor_asset_taxonomy_tests_part_7;
 #[cfg(all(test, unix))]
 pub(crate) mod doctor_baseline_path_safety_tests;
 #[cfg(all(test, unix))]
-pub(crate) mod doctor_archive_export_path_safety_tests;
-#[cfg(all(test, unix))]
 pub(crate) mod doctor_support_bundle_path_safety_tests;
-#[cfg(all(test, unix))]
-pub(crate) mod cleanup_target_safety_tests;
+pub(crate) mod forensic;
+pub(crate) mod fs_safety;
 pub(crate) mod lexical_cleanup_disposition_label;
+pub(crate) mod policy;
+pub(crate) mod repair_state;
+pub(crate) mod report;

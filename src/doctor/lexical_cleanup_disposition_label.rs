@@ -5,14 +5,12 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn lexical_cleanup_disposition_label(
     disposition: crate::indexer::lexical_generation::LexicalCleanupDisposition,
@@ -43,7 +41,6 @@ pub(crate) fn lexical_cleanup_disposition_label(
     }
 }
 
-
 pub(crate) fn diag_retained_publish_backup_limit() -> usize {
     const DEFAULT_RETENTION: usize = 1;
 
@@ -52,7 +49,6 @@ pub(crate) fn diag_retained_publish_backup_limit() -> usize {
         .and_then(|value| value.trim().parse::<usize>().ok())
         .unwrap_or(DEFAULT_RETENTION)
 }
-
 
 pub(crate) fn observe_diag_path(
     path: &Path,
@@ -89,7 +85,6 @@ pub(crate) fn observe_diag_path(
     }
 }
 
-
 pub(crate) fn system_time_to_unix_ms(timestamp: std::time::SystemTime) -> Option<i64> {
     timestamp
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -97,20 +92,17 @@ pub(crate) fn system_time_to_unix_ms(timestamp: std::time::SystemTime) -> Option
         .and_then(|duration| i64::try_from(duration.as_millis()).ok())
 }
 
-
 pub(crate) fn format_optional_u64(value: Option<u64>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-
 pub(crate) fn format_optional_i64(value: Option<i64>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "unknown".to_string())
 }
-
 
 pub(crate) fn lexical_publish_state_label(
     state: crate::indexer::lexical_generation::LexicalGenerationPublishState,
@@ -124,7 +116,6 @@ pub(crate) fn lexical_publish_state_label(
         LexicalGenerationPublishState::Quarantined => "quarantined",
     }
 }
-
 
 pub(crate) fn lexical_generation_build_state_label(
     state: crate::indexer::lexical_generation::LexicalGenerationBuildState,
@@ -140,7 +131,6 @@ pub(crate) fn lexical_generation_build_state_label(
         LexicalGenerationBuildState::Failed => "failed",
     }
 }
-
 
 pub(crate) fn lexical_shard_state_label(
     state: crate::indexer::lexical_generation::LexicalShardLifecycleState,
@@ -159,7 +149,6 @@ pub(crate) fn lexical_shard_state_label(
     }
 }
 
-
 pub(crate) fn lexical_generation_build_state_zero_counts() -> BTreeMap<String, usize> {
     [
         "scratch",
@@ -174,14 +163,12 @@ pub(crate) fn lexical_generation_build_state_zero_counts() -> BTreeMap<String, u
     .collect()
 }
 
-
 pub(crate) fn lexical_generation_publish_state_zero_counts() -> BTreeMap<String, usize> {
     ["staged", "published", "superseded", "quarantined"]
         .into_iter()
         .map(|state| (state.to_string(), 0))
         .collect()
 }
-
 
 pub(crate) fn fs_dir_size(path: &std::path::Path) -> u64 {
     if !path.is_dir() {
@@ -204,7 +191,6 @@ pub(crate) fn fs_dir_size(path: &std::path::Path) -> u64 {
         .unwrap_or(0)
 }
 
-
 pub(crate) fn public_connector_slug(slug: &str) -> &str {
     match slug {
         // Public API contract uses claude_code even though indexer registry key is claude.
@@ -212,7 +198,6 @@ pub(crate) fn public_connector_slug(slug: &str) -> &str {
         other => other,
     }
 }
-
 
 pub(crate) fn capabilities_connector_names() -> Vec<String> {
     // Preserve existing connector ordering for stable API contracts.
@@ -248,7 +233,6 @@ pub(crate) fn capabilities_connector_names() -> Vec<String> {
     connectors
 }
 
-
 /// Roughly count session-like files under a detected provider root, bounded so
 /// first-run onboarding stays fast even against a large existing corpus (the
 /// estimate is an indexing-cost signal, not an exact total).
@@ -283,7 +267,6 @@ pub(crate) fn count_onboarding_sessions(root: &Path) -> u64 {
     }
     count
 }
-
 
 /// Gather a read-only [`OnboardingObservation`](crate::source_onboarding::OnboardingObservation)
 /// from live host state — detected agent providers, source-config exclusions and
@@ -359,7 +342,6 @@ pub(crate) fn gather_onboarding_observation(
         indexed_conversation_count,
     }
 }
-
 
 /// Human-readable onboarding summary (never a bare TUI).
 pub(crate) fn print_onboarding_human(

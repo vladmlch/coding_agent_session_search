@@ -3,17 +3,15 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use anyhow::Result;
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,7 +31,6 @@ pub(crate) enum DoctorFsMutationKind {
     MoveFileToQuarantine,
 }
 
-
 impl DoctorFsMutationKind {
     pub(crate) fn asset_operation(self) -> DoctorAssetOperation {
         match self {
@@ -51,7 +48,6 @@ impl DoctorFsMutationKind {
         }
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorFsMutationRequest<'a> {
@@ -71,7 +67,6 @@ pub(crate) struct DoctorFsMutationRequest<'a> {
     pub(crate) required_min_age_seconds: Option<u64>,
 }
 
-
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorFsWriteMutationRequest<'a> {
@@ -86,7 +81,6 @@ pub(crate) struct DoctorFsWriteMutationRequest<'a> {
     pub(crate) expected_payload_blake3: &'a str,
     pub(crate) planned_bytes: u64,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorFsMutationReceipt {
@@ -122,7 +116,6 @@ pub(crate) struct DoctorFsMutationReceipt {
     pub(crate) forensic_bundle: DoctorForensicBundleMetadata,
 }
 
-
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DiagPathObservation {
     pub(crate) size_bytes: u64,
@@ -130,7 +123,6 @@ pub(crate) struct DiagPathObservation {
     pub(crate) last_read_at_ms: Option<i64>,
     pub(crate) modified_at: Option<std::time::SystemTime>,
 }
-
 
 #[derive(Debug, Clone)]
 pub(crate) struct DiagLexicalManifestEntry {
@@ -140,11 +132,12 @@ pub(crate) struct DiagLexicalManifestEntry {
     pub(crate) quarantined_shards: usize,
 }
 
-
-pub(crate) fn collect_diag_quarantine_report(data_dir: &Path, index_path: &Path) -> DiagQuarantineReport {
+pub(crate) fn collect_diag_quarantine_report(
+    data_dir: &Path,
+    index_path: &Path,
+) -> DiagQuarantineReport {
     collect_diag_quarantine_report_inner(data_dir, index_path, true)
 }
-
 
 pub(crate) fn collect_diag_quarantine_report_without_cleanup_plan(
     data_dir: &Path,
@@ -152,7 +145,6 @@ pub(crate) fn collect_diag_quarantine_report_without_cleanup_plan(
 ) -> DiagQuarantineReport {
     collect_diag_quarantine_report_inner(data_dir, index_path, false)
 }
-
 
 pub(crate) fn collect_diag_quarantine_report_inner(
     data_dir: &Path,
@@ -554,7 +546,6 @@ pub(crate) fn collect_diag_quarantine_report_inner(
     report
 }
 
-
 pub(crate) fn collect_diag_lexical_manifest_entries(
     manifest_root: &Path,
     now: std::time::SystemTime,
@@ -645,11 +636,9 @@ pub(crate) fn collect_diag_lexical_manifest_entries(
     lexical_manifest_entries
 }
 
-
 pub(crate) fn diag_lexical_manifest_scan_root(index_path: &Path) -> PathBuf {
     index_path.parent().unwrap_or(index_path).to_path_buf()
 }
-
 
 pub(crate) fn planned_cleanup_apply_actions(
     before: &DiagQuarantineReport,
@@ -734,13 +723,11 @@ pub(crate) fn planned_cleanup_apply_actions(
     doctor_sorted_cleanup_actions(&actions)
 }
 
-
 pub(crate) fn cleanup_plan_has_mutating_actions(actions: &[DiagCleanupApplyAction]) -> bool {
     actions
         .iter()
         .any(|action| !action.skipped && action.planned_reclaimable_bytes > 0)
 }
-
 
 pub(crate) fn apply_diag_quarantine_cleanup(
     data_dir: &Path,
@@ -1119,8 +1106,10 @@ pub(crate) fn apply_diag_quarantine_cleanup(
     result
 }
 
-
-pub(crate) fn fill_cleanup_after_summary(result: &mut DiagCleanupApplyResult, after: &DiagQuarantineReport) {
+pub(crate) fn fill_cleanup_after_summary(
+    result: &mut DiagCleanupApplyResult,
+    after: &DiagQuarantineReport,
+) {
     result.after_inventory = cleanup_apply_inventory_from_report(after);
     if let Some(plan) = after.lexical_cleanup_dry_run.as_ref() {
         result.after_generation_count = plan.generation_count;
@@ -1130,8 +1119,9 @@ pub(crate) fn fill_cleanup_after_summary(result: &mut DiagCleanupApplyResult, af
     }
 }
 
-
-pub(crate) fn cleanup_apply_inventory_from_report(report: &DiagQuarantineReport) -> DiagCleanupApplyInventory {
+pub(crate) fn cleanup_apply_inventory_from_report(
+    report: &DiagQuarantineReport,
+) -> DiagCleanupApplyInventory {
     let (lexical_cleanup_inventories, reclaim_candidates) = report
         .lexical_cleanup_dry_run
         .as_ref()
@@ -1147,7 +1137,6 @@ pub(crate) fn cleanup_apply_inventory_from_report(report: &DiagQuarantineReport)
         reclaim_candidates,
     }
 }
-
 
 pub(crate) fn doctor_fs_mutation_receipt_for_request(
     request: &DoctorFsMutationRequest<'_>,
@@ -1189,7 +1178,6 @@ pub(crate) fn doctor_fs_mutation_receipt_for_request(
     }
 }
 
-
 /// Pass-15 extraction (pass-16 fresh-eyes follow-up): select the canonical
 /// `exit_code_kind` string for a cleanup-apply RunEnded record. Pulled out of
 /// `run_doctor_impl` so all four branches (`success` / `partial-success` /
@@ -1219,7 +1207,6 @@ pub(crate) fn cleanup_apply_exit_code_kind(
         "no-op"
     }
 }
-
 
 /// Pass-13 structural refactor: translate a `DoctorFsMutationReceipt` produced
 /// by the existing FsMutationExecutor into an `ActionRecord::Mutation` and

@@ -5,19 +5,17 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use chrono::Utc;
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use anyhow::Result;
+    pub(crate) use chrono::Utc;
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// siekg (bead `doctor-check-no-progress-output-siekg`) + k2k20 ask #1: `cass doctor --check`
 /// legitimately runs for 3–16 minutes on multi-GB or corrupt archives and
@@ -33,7 +31,6 @@ pub(crate) struct CliHeartbeat {
     pub(crate) stop: Option<std::sync::mpsc::Sender<()>>,
     pub(crate) handle: Option<std::thread::JoinHandle<()>>,
 }
-
 
 impl CliHeartbeat {
     pub(crate) fn start(surface: &str) -> Option<Self> {
@@ -84,7 +81,6 @@ impl CliHeartbeat {
     }
 }
 
-
 impl Drop for CliHeartbeat {
     fn drop(&mut self) {
         // Disconnect first so a sleeping thread wakes at once, then join.
@@ -94,7 +90,6 @@ impl Drop for CliHeartbeat {
         }
     }
 }
-
 
 pub(crate) fn doctor_push_timing_span(
     spans: &mut Vec<DoctorTimingSpanReport>,
@@ -122,7 +117,6 @@ pub(crate) fn doctor_push_timing_span(
         notes,
     });
 }
-
 
 pub(crate) fn build_doctor_slow_operations(
     spans: &[DoctorTimingSpanReport],
@@ -157,7 +151,6 @@ pub(crate) fn build_doctor_slow_operations(
     slow
 }
 
-
 pub(crate) fn build_doctor_timing_summary(
     spans: &[DoctorTimingSpanReport],
     elapsed_ms: u64,
@@ -182,7 +175,6 @@ pub(crate) fn build_doctor_timing_summary(
         ],
     }
 }
-
 
 pub(crate) fn build_doctor_retry_recommendation(
     operation_state: &DoctorOperationStateReport,
@@ -241,7 +233,6 @@ pub(crate) fn build_doctor_retry_recommendation(
     }
 }
 
-
 pub(crate) fn doctor_artifact_checksum_status(
     exists: bool,
     expected_content_blake3: Option<&str>,
@@ -260,7 +251,6 @@ pub(crate) fn doctor_artifact_checksum_status(
     }
 }
 
-
 pub(crate) fn doctor_action_status_label(status: DoctorActionStatus) -> String {
     serde_json::to_value(status)
         .ok()
@@ -268,14 +258,14 @@ pub(crate) fn doctor_action_status_label(status: DoctorActionStatus) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-
-pub(crate) fn doctor_artifact_checksum_status_label(status: DoctorArtifactChecksumStatus) -> String {
+pub(crate) fn doctor_artifact_checksum_status_label(
+    status: DoctorArtifactChecksumStatus,
+) -> String {
     serde_json::to_value(status)
         .ok()
         .and_then(|value| value.as_str().map(ToOwned::to_owned))
         .unwrap_or_else(|| "unknown".to_string())
 }
-
 
 pub(crate) fn doctor_serde_label<T: Serialize>(value: T) -> String {
     serde_json::to_value(value)
@@ -284,7 +274,6 @@ pub(crate) fn doctor_serde_label<T: Serialize>(value: T) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-
 pub(crate) fn doctor_repair_failure_marker_dir(data_dir: &Path, repair_class: &str) -> PathBuf {
     data_dir
         .join("doctor")
@@ -292,11 +281,9 @@ pub(crate) fn doctor_repair_failure_marker_dir(data_dir: &Path, repair_class: &s
         .join(repair_class)
 }
 
-
 pub(crate) fn doctor_current_repair_class() -> String {
     doctor_serde_label(DoctorRepairMode::RepairApply)
 }
-
 
 pub(crate) fn doctor_repair_class_for_execution(
     command_surface: doctor::DoctorCommandSurface,
@@ -310,7 +297,6 @@ pub(crate) fn doctor_repair_class_for_execution(
         doctor_current_repair_class()
     }
 }
-
 
 pub(crate) fn doctor_command_line_mode(
     fix: bool,
@@ -359,7 +345,6 @@ pub(crate) fn doctor_command_line_mode(
     parts.join(" ")
 }
 
-
 pub(crate) fn doctor_realized_subcommand_name(
     command_surface: doctor::DoctorCommandSurface,
     execution_mode: doctor::DoctorExecutionMode,
@@ -377,7 +362,6 @@ pub(crate) fn doctor_realized_subcommand_name(
     }
 }
 
-
 pub(crate) fn doctor_shell_quote_arg(arg: &str) -> String {
     if !arg.is_empty()
         && arg.bytes().all(|byte| {
@@ -390,7 +374,6 @@ pub(crate) fn doctor_shell_quote_arg(arg: &str) -> String {
         format!("'{}'", arg.replace('\'', "'\\''"))
     }
 }
-
 
 pub(crate) fn doctor_repair_apply_argv(
     data_dir: &Path,
@@ -426,7 +409,6 @@ pub(crate) fn doctor_repair_apply_argv(
     argv
 }
 
-
 pub(crate) fn doctor_repair_apply_command(argv: &[String]) -> String {
     argv.iter()
         .map(|arg| doctor_shell_quote_arg(arg))
@@ -434,15 +416,15 @@ pub(crate) fn doctor_repair_apply_command(argv: &[String]) -> String {
         .join(" ")
 }
 
-
-pub(crate) fn doctor_source_authority_candidate_label(candidate: &DoctorSourceAuthorityCandidate) -> String {
+pub(crate) fn doctor_source_authority_candidate_label(
+    candidate: &DoctorSourceAuthorityCandidate,
+) -> String {
     format!(
         "{}:{}",
         doctor_serde_label(candidate.authority),
         doctor_serde_label(candidate.decision)
     )
 }
-
 
 pub(crate) fn doctor_repair_lock_fingerprint_state(
     operation_state: &DoctorOperationStateReport,
@@ -456,7 +438,6 @@ pub(crate) fn doctor_repair_lock_fingerprint_state(
         "mutation_blocked_reason": operation_state.mutation_blocked_reason,
     })
 }
-
 
 pub(crate) fn doctor_repair_push_blocker(
     blocked_reasons: &mut Vec<String>,
@@ -472,7 +453,6 @@ pub(crate) fn doctor_repair_push_blocker(
         branchable_blocker_codes.push(code.to_string());
     }
 }
-
 
 pub(crate) fn doctor_repair_completed_candidate_fingerprint(
     candidate: &DoctorCandidateSummary,
@@ -500,7 +480,6 @@ pub(crate) fn doctor_repair_completed_candidate_fingerprint(
     })
 }
 
-
 pub(crate) fn doctor_repair_completed_candidate_fingerprints(
     candidate_staging: &DoctorCandidateStagingReport,
 ) -> Vec<serde_json::Value> {
@@ -511,7 +490,6 @@ pub(crate) fn doctor_repair_completed_candidate_fingerprints(
         .map(doctor_repair_completed_candidate_fingerprint)
         .collect()
 }
-
 
 pub(crate) fn doctor_repair_select_completed_candidate_for_promotion(
     candidate_staging: &DoctorCandidateStagingReport,
@@ -524,13 +502,14 @@ pub(crate) fn doctor_repair_select_completed_candidate_for_promotion(
     completed.next().is_none().then_some(selected)
 }
 
-
-pub(crate) fn doctor_repair_plan_has_action(plan: &DoctorRepairPlanPreviewReport, action_kind: &str) -> bool {
+pub(crate) fn doctor_repair_plan_has_action(
+    plan: &DoctorRepairPlanPreviewReport,
+    action_kind: &str,
+) -> bool {
     plan.planned_actions
         .iter()
         .any(|action| action.action_kind == action_kind)
 }
-
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_doctor_repair_plan_preview(
@@ -893,8 +872,9 @@ pub(crate) fn build_doctor_repair_plan_preview(
     }
 }
 
-
-pub(crate) fn doctor_failure_marker_absent_report(repair_class: &str) -> DoctorRepairFailureMarkerReport {
+pub(crate) fn doctor_failure_marker_absent_report(
+    repair_class: &str,
+) -> DoctorRepairFailureMarkerReport {
     DoctorRepairFailureMarkerReport {
         schema_version: DOCTOR_REPAIR_FAILURE_MARKER_SCHEMA_VERSION,
         repair_class: repair_class.to_string(),
@@ -913,7 +893,6 @@ pub(crate) fn doctor_failure_marker_absent_report(repair_class: &str) -> DoctorR
         corrupt_reason: None,
     }
 }
-
 
 pub(crate) fn doctor_failure_marker_corrupt_report(
     data_dir: &Path,
@@ -941,7 +920,6 @@ pub(crate) fn doctor_failure_marker_corrupt_report(
     }
 }
 
-
 pub(crate) fn doctor_failure_marker_report_from_marker(
     data_dir: &Path,
     path: &Path,
@@ -967,13 +945,11 @@ pub(crate) fn doctor_failure_marker_report_from_marker(
     }
 }
 
-
 /// Generous bound after which a dead `doctor --fix` owner's leftovers stop
 /// blocking new repairs (cass#368). Deliberately much larger than
 /// [`DOCTOR_LOCK_HEARTBEAT_STALE_AFTER_MS`]: suspecting staleness only makes
 /// diagnostics honest, while reclaiming re-arms a mutating repair.
 pub(crate) const DOCTOR_STALE_SELF_HEAL_AFTER_MS: u64 = 24 * 60 * 60 * 1000;
-
 
 pub(crate) struct DoctorStaleSelfHealSummary {
     pub(crate) receipt_path: PathBuf,
@@ -981,12 +957,10 @@ pub(crate) struct DoctorStaleSelfHealSummary {
     pub(crate) lock_metadata_cleared: bool,
 }
 
-
 pub(crate) fn doctor_file_mtime_age_ms(path: &Path, now_ms: i64) -> Option<u64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     doctor_elapsed_since_ms(now_ms, system_time_to_unix_ms(modified))
 }
-
 
 /// Self-heal for the cass#368 dead end: a `doctor --fix` that crashed mid
 /// `repair_apply` leaves the mutation-lock file with dead-owner metadata and
@@ -1142,7 +1116,6 @@ pub(crate) fn doctor_self_heal_stale_repair_state(
     outcome
 }
 
-
 pub(crate) fn collect_doctor_repair_failure_marker(
     data_dir: &Path,
     repair_class: &str,
@@ -1227,7 +1200,6 @@ pub(crate) fn collect_doctor_repair_failure_marker(
     doctor_failure_marker_report_from_marker(data_dir, &path, marker)
 }
 
-
 pub(crate) fn doctor_repair_failure_marker_refusal_reason(
     report: &DoctorRepairFailureMarkerReport,
 ) -> Option<String> {
@@ -1245,7 +1217,6 @@ pub(crate) fn doctor_repair_failure_marker_refusal_reason(
     ))
 }
 
-
 pub(crate) fn doctor_failure_marker_file_stem(operation_id: &str, failed_at_ms: i64) -> String {
     let safe_operation_id = operation_id
         .chars()
@@ -1259,7 +1230,6 @@ pub(crate) fn doctor_failure_marker_file_stem(operation_id: &str, failed_at_ms: 
         .collect::<String>();
     format!("{failed_at_ms}-{safe_operation_id}")
 }
-
 
 pub(crate) fn write_doctor_repair_failure_marker(
     data_dir: &Path,
@@ -1321,7 +1291,6 @@ pub(crate) fn write_doctor_repair_failure_marker(
     ))
 }
 
-
 pub(crate) fn doctor_failure_marker_artifact_for_class(
     data_dir: &Path,
     db_path: &Path,
@@ -1355,7 +1324,6 @@ pub(crate) fn doctor_failure_marker_artifact_for_class(
     }
 }
 
-
 pub(crate) struct DoctorRepairFailureMarkerBuildContext<'a> {
     pub(crate) data_dir: &'a Path,
     pub(crate) db_path: &'a Path,
@@ -1370,7 +1338,6 @@ pub(crate) struct DoctorRepairFailureMarkerBuildContext<'a> {
     pub(crate) operation_outcome: &'a DoctorOperationOutcomeReport,
     pub(crate) cleanup_apply_result: Option<&'a DiagCleanupApplyResult>,
 }
-
 
 pub(crate) fn build_doctor_repair_failure_marker(
     context: DoctorRepairFailureMarkerBuildContext<'_>,
@@ -1481,7 +1448,6 @@ pub(crate) fn build_doctor_repair_failure_marker(
     }
 }
 
-
 pub(crate) fn doctor_artifact_descriptor_blake3(
     artifact_kind: &str,
     asset_class: DoctorAssetClass,
@@ -1498,7 +1464,6 @@ pub(crate) fn doctor_artifact_descriptor_blake3(
         }),
     )
 }
-
 
 pub(crate) fn doctor_artifact_from_cleanup_action(
     action: &DiagCleanupApplyAction,
@@ -1541,8 +1506,9 @@ pub(crate) fn doctor_artifact_from_cleanup_action(
     }
 }
 
-
-pub(crate) fn doctor_manifest_drift_status(artifacts: &[DoctorArtifact]) -> DoctorDriftDetectionStatus {
+pub(crate) fn doctor_manifest_drift_status(
+    artifacts: &[DoctorArtifact],
+) -> DoctorDriftDetectionStatus {
     if artifacts
         .iter()
         .any(|artifact| artifact.checksum_status == DoctorArtifactChecksumStatus::Missing)
@@ -1564,7 +1530,6 @@ pub(crate) fn doctor_manifest_drift_status(artifacts: &[DoctorArtifact]) -> Doct
     }
 }
 
-
 pub(crate) fn doctor_artifact_manifest(artifacts: Vec<DoctorArtifact>) -> DoctorArtifactManifest {
     let drift_detection_status = doctor_manifest_drift_status(&artifacts);
     let manifest_blake3 = doctor_canonical_blake3(
@@ -1583,7 +1548,6 @@ pub(crate) fn doctor_artifact_manifest(artifacts: Vec<DoctorArtifact>) -> Doctor
         artifacts,
     }
 }
-
 
 pub(crate) fn doctor_cleanup_coverage_snapshot(
     generation_count: usize,
@@ -1607,7 +1571,6 @@ pub(crate) fn doctor_cleanup_coverage_snapshot(
         covered_asset_classes,
     }
 }
-
 
 pub(crate) fn doctor_safety_gate_for_cleanup_action(
     action: &DiagCleanupApplyAction,
@@ -1648,7 +1611,6 @@ pub(crate) fn doctor_safety_gate_for_cleanup_action(
     }
 }
 
-
 pub(crate) fn doctor_cleanup_action_id(action: &DiagCleanupApplyAction) -> String {
     doctor_canonical_blake3(
         "doctor-action-v1",
@@ -1664,7 +1626,6 @@ pub(crate) fn doctor_cleanup_action_id(action: &DiagCleanupApplyAction) -> Strin
         }),
     )
 }
-
 
 pub(crate) fn doctor_action_from_cleanup_action(
     action: &DiagCleanupApplyAction,

@@ -5,17 +5,17 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
-
-
-pub(crate) fn execute_doctor_fs_mutation(request: DoctorFsMutationRequest<'_>) -> DoctorFsMutationReceipt {
+pub(crate) fn execute_doctor_fs_mutation(
+    request: DoctorFsMutationRequest<'_>,
+) -> DoctorFsMutationReceipt {
     let receipt = doctor_fs_mutation_receipt_for_request(&request);
     match request.mutation_kind {
         DoctorFsMutationKind::PruneCleanupTarget => {
@@ -46,7 +46,6 @@ pub(crate) fn execute_doctor_fs_mutation(request: DoctorFsMutationRequest<'_>) -
         }
     }
 }
-
 
 #[allow(dead_code)]
 pub(crate) fn execute_doctor_fs_write_mutation(
@@ -254,7 +253,6 @@ pub(crate) fn execute_doctor_fs_write_mutation(
     receipt
 }
 
-
 pub(crate) fn execute_doctor_prune_cleanup_target(
     request: DoctorFsMutationRequest<'_>,
     mut receipt: DoctorFsMutationReceipt,
@@ -329,7 +327,6 @@ pub(crate) fn execute_doctor_prune_cleanup_target(
     }
     receipt
 }
-
 
 pub(crate) fn execute_doctor_remove_stale_legacy_index_lock(
     request: DoctorFsMutationRequest<'_>,
@@ -415,7 +412,6 @@ pub(crate) fn execute_doctor_remove_stale_legacy_index_lock(
     }
     receipt
 }
-
 
 pub(crate) fn execute_doctor_copy_file_to_staging(
     request: DoctorFsMutationRequest<'_>,
@@ -645,7 +641,6 @@ pub(crate) fn execute_doctor_copy_file_to_staging(
     receipt
 }
 
-
 pub(crate) fn execute_doctor_promote_staged_file(
     request: DoctorFsMutationRequest<'_>,
     mut receipt: DoctorFsMutationReceipt,
@@ -858,7 +853,6 @@ pub(crate) fn execute_doctor_promote_staged_file(
     receipt
 }
 
-
 pub(crate) fn execute_doctor_restore_staged_file(
     request: DoctorFsMutationRequest<'_>,
     mut receipt: DoctorFsMutationReceipt,
@@ -1070,7 +1064,6 @@ pub(crate) fn execute_doctor_restore_staged_file(
     }
     receipt
 }
-
 
 pub(crate) fn execute_doctor_move_file_to_quarantine(
     request: DoctorFsMutationRequest<'_>,
@@ -1286,7 +1279,6 @@ pub(crate) fn execute_doctor_move_file_to_quarantine(
     receipt
 }
 
-
 pub(crate) fn doctor_fs_mutation_action_id(
     mutation_kind: DoctorFsMutationKind,
     mode: DoctorRepairMode,
@@ -1305,7 +1297,6 @@ pub(crate) fn doctor_fs_mutation_action_id(
         }),
     )
 }
-
 
 pub(crate) fn file_blake3_hex(path: &Path) -> Result<String, String> {
     use std::io::Read as _;
@@ -1326,14 +1317,12 @@ pub(crate) fn file_blake3_hex(path: &Path) -> Result<String, String> {
     Ok(hasher.finalize().to_hex().to_string())
 }
 
-
 #[cfg(test)]
 thread_local! {
     static DOCTOR_TEST_FAIL_NEXT_FILE_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static DOCTOR_TEST_FAIL_NEXT_DIRECTORY_SYNC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static DOCTOR_TEST_FAIL_NEXT_RENAME: std::cell::Cell<Option<DoctorTestRenameFailure>> = const { std::cell::Cell::new(None) };
 }
-
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy)]
@@ -1342,18 +1331,15 @@ pub(crate) enum DoctorTestRenameFailure {
     PermissionDenied,
 }
 
-
 #[cfg(test)]
 pub(crate) fn doctor_test_inject_next_file_sync_failure() {
     DOCTOR_TEST_FAIL_NEXT_FILE_SYNC.with(|fail_next| fail_next.set(true));
 }
 
-
 #[cfg(test)]
 pub(crate) fn doctor_test_inject_next_directory_sync_failure() {
     DOCTOR_TEST_FAIL_NEXT_DIRECTORY_SYNC.with(|fail_next| fail_next.set(true));
 }
-
 
 #[cfg(test)]
 pub(crate) fn doctor_test_inject_next_cross_device_rename_failure() {
@@ -1362,7 +1348,6 @@ pub(crate) fn doctor_test_inject_next_cross_device_rename_failure() {
     });
 }
 
-
 #[cfg(test)]
 pub(crate) fn doctor_test_inject_next_permission_denied_rename_failure() {
     DOCTOR_TEST_FAIL_NEXT_RENAME.with(|fail_next| {
@@ -1370,42 +1355,35 @@ pub(crate) fn doctor_test_inject_next_permission_denied_rename_failure() {
     });
 }
 
-
 #[cfg(test)]
 pub(crate) fn doctor_test_take_next_file_sync_failure() -> bool {
     DOCTOR_TEST_FAIL_NEXT_FILE_SYNC.with(|fail_next| fail_next.replace(false))
 }
 
-
 #[cfg(not(test))]
 pub(crate) fn doctor_test_take_next_file_sync_failure() -> bool {
     false
 }
-
 
 #[cfg(test)]
 pub(crate) fn doctor_test_take_next_directory_sync_failure() -> bool {
     DOCTOR_TEST_FAIL_NEXT_DIRECTORY_SYNC.with(|fail_next| fail_next.replace(false))
 }
 
-
 #[cfg(test)]
 pub(crate) fn doctor_test_take_next_rename_failure() -> Option<DoctorTestRenameFailure> {
     DOCTOR_TEST_FAIL_NEXT_RENAME.with(|fail_next| fail_next.replace(None))
 }
-
 
 #[cfg(not(test))]
 pub(crate) fn doctor_test_take_next_directory_sync_failure() -> bool {
     false
 }
 
-
 #[cfg(not(test))]
 pub(crate) fn doctor_test_take_next_rename_failure() -> Option<()> {
     None
 }
-
 
 pub(crate) fn sync_file(path: &Path, label: &str) -> Result<(), String> {
     if doctor_test_take_next_file_sync_failure() {
@@ -1432,7 +1410,6 @@ pub(crate) fn sync_file(path: &Path, label: &str) -> Result<(), String> {
     }
 }
 
-
 pub(crate) fn sync_directory(path: &Path) -> Result<(), String> {
     if doctor_test_take_next_directory_sync_failure() {
         return Err(format!(
@@ -1452,7 +1429,6 @@ pub(crate) fn sync_directory(path: &Path) -> Result<(), String> {
             .map_err(|err| format!("failed to sync directory {}: {err}", path.display()))
     }
 }
-
 
 pub(crate) fn doctor_rename_file(source_path: &Path, target_path: &Path) -> io::Result<()> {
     #[cfg(test)]
@@ -1479,8 +1455,10 @@ pub(crate) fn doctor_rename_file(source_path: &Path, target_path: &Path) -> io::
     std::fs::rename(source_path, target_path)
 }
 
-
-pub(crate) fn doctor_env_rename_failure(source_path: &Path, target_path: &Path) -> Option<io::Error> {
+pub(crate) fn doctor_env_rename_failure(
+    source_path: &Path,
+    target_path: &Path,
+) -> Option<io::Error> {
     let raw = dotenvy::var(CASS_TEST_DOCTOR_RENAME_FAILURE).ok()?;
     let mode = raw.trim().to_ascii_lowercase();
     if mode.is_empty() || matches!(mode.as_str(), "0" | "false" | "off") {
@@ -1512,13 +1490,11 @@ pub(crate) fn doctor_env_rename_failure(source_path: &Path, target_path: &Path) 
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DoctorFsMoveMethod {
     AtomicRename,
     CrossDeviceCopyRemoveSource,
 }
-
 
 impl DoctorFsMoveMethod {
     pub(crate) fn receipt_fallback_kind(self) -> &'static str {
@@ -1536,11 +1512,9 @@ impl DoctorFsMoveMethod {
     }
 }
 
-
 pub(crate) fn doctor_is_cross_device_rename_error(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::CrossesDevices
 }
-
 
 pub(crate) fn doctor_remove_partial_fallback_target(target_path: &Path) -> Result<(), String> {
     match std::fs::remove_file(target_path) {
@@ -1563,7 +1537,6 @@ pub(crate) fn doctor_remove_partial_fallback_target(target_path: &Path) -> Resul
     }
 }
 
-
 pub(crate) fn doctor_rollback_fallback_target_error(target_path: &Path, failure: String) -> String {
     match doctor_remove_partial_fallback_target(target_path) {
         Ok(()) => format!(
@@ -1573,7 +1546,6 @@ pub(crate) fn doctor_rollback_fallback_target_error(target_path: &Path, failure:
         Err(rollback_err) => format!("{failure}; {rollback_err}"),
     }
 }
-
 
 pub(crate) fn doctor_move_file_with_cross_device_fallback(
     source_path: &Path,
@@ -1677,7 +1649,6 @@ pub(crate) fn doctor_move_file_with_cross_device_fallback(
     }
 }
 
-
 pub(crate) fn cleanup_target_path_is_safe(
     path: &Path,
     data_dir: &Path,
@@ -1739,7 +1710,6 @@ pub(crate) fn cleanup_target_path_is_safe(
         .is_file();
     is_retained_publish_backup || is_manifest_backed_generation
 }
-
 
 pub(crate) fn legacy_index_lock_path_is_safe(path: &Path, data_dir: &Path) -> bool {
     let expected = data_dir.join(".index.lock");

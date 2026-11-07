@@ -5,19 +5,17 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
-pub(crate) use anyhow::Result;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::franken_sync::compat::{
+        ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
+        open_with_flags as open_franken_with_flags,
+    };
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn doctor_sorted_cleanup_actions(
     actions: &[DiagCleanupApplyAction],
@@ -42,7 +40,6 @@ pub(crate) fn doctor_sorted_cleanup_actions(
     sorted
 }
 
-
 pub(crate) fn doctor_cleanup_plan_fingerprint(plan: &DoctorPlan) -> String {
     doctor_canonical_blake3(
         "doctor-plan-v1",
@@ -64,7 +61,6 @@ pub(crate) fn doctor_cleanup_plan_fingerprint(plan: &DoctorPlan) -> String {
         }),
     )
 }
-
 
 pub(crate) fn build_cleanup_doctor_plan(
     result: &DiagCleanupApplyResult,
@@ -147,7 +143,6 @@ pub(crate) fn build_cleanup_doctor_plan(
     plan
 }
 
-
 pub(crate) fn doctor_cleanup_action_status(action: &DiagCleanupApplyAction) -> DoctorActionStatus {
     if action.applied {
         DoctorActionStatus::Applied
@@ -157,7 +152,6 @@ pub(crate) fn doctor_cleanup_action_status(action: &DiagCleanupApplyAction) -> D
         DoctorActionStatus::Blocked
     }
 }
-
 
 pub(crate) fn doctor_action_status_counts(actions: &[DoctorAction]) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
@@ -172,11 +166,9 @@ pub(crate) fn doctor_action_status_counts(actions: &[DoctorAction]) -> BTreeMap<
     counts
 }
 
-
 pub(crate) fn doctor_event_id(event: &DoctorEvent) -> String {
     doctor_canonical_blake3("doctor-event-v1", doctor_event_identity_payload(event))
 }
-
 
 pub(crate) fn doctor_event_log_checksum(events: &[DoctorEvent]) -> String {
     doctor_canonical_blake3(
@@ -190,7 +182,6 @@ pub(crate) fn doctor_event_log_checksum(events: &[DoctorEvent]) -> String {
         }),
     )
 }
-
 
 pub(crate) fn doctor_event_identity_payload(event: &DoctorEvent) -> serde_json::Value {
     serde_json::json!({
@@ -209,7 +200,6 @@ pub(crate) fn doctor_event_identity_payload(event: &DoctorEvent) -> serde_json::
         "artifact_ids": event.artifact_ids,
     })
 }
-
 
 pub(crate) fn doctor_event_log_from_events(
     status: impl Into<String>,
@@ -230,7 +220,6 @@ pub(crate) fn doctor_event_log_from_events(
         events,
     }
 }
-
 
 pub(crate) fn doctor_action_event_draft(
     operation_id: &str,
@@ -267,7 +256,6 @@ pub(crate) fn doctor_action_event_draft(
     }
 }
 
-
 pub(crate) fn doctor_status_event_draft(
     operation_id: &str,
     mode: DoctorRepairMode,
@@ -293,7 +281,6 @@ pub(crate) fn doctor_status_event_draft(
     }
 }
 
-
 pub(crate) fn push_doctor_event(events: &mut Vec<DoctorEvent>, draft: DoctorEventDraft) {
     let previous_event_hash = events.last().map(|event| event.event_id.clone());
     let mut event = DoctorEvent {
@@ -316,7 +303,6 @@ pub(crate) fn push_doctor_event(events: &mut Vec<DoctorEvent>, draft: DoctorEven
     event.event_id = doctor_event_id(&event);
     events.push(event);
 }
-
 
 pub(crate) fn doctor_cleanup_event_log_for_actions(
     operation_id: &str,
@@ -378,7 +364,6 @@ pub(crate) fn doctor_cleanup_event_log_for_actions(
     doctor_event_log_from_events(status, events)
 }
 
-
 pub(crate) fn doctor_check_event_phase(status: &str) -> &'static str {
     match status {
         "pass" => "check_pass",
@@ -387,7 +372,6 @@ pub(crate) fn doctor_check_event_phase(status: &str) -> &'static str {
         _ => "check_unknown",
     }
 }
-
 
 pub(crate) fn doctor_operation_event_log_for_checks(
     operation_id: &str,
@@ -456,11 +440,9 @@ pub(crate) fn doctor_operation_event_log_for_checks(
     doctor_event_log_from_events(status, events)
 }
 
-
 pub(crate) fn doctor_post_repair_probe_fault() -> Option<String> {
     dotenvy::var("CASS_TEST_DOCTOR_POST_REPAIR_PROBE_FAULT").ok()
 }
-
 
 #[derive(Clone, Copy)]
 pub(crate) struct DoctorPostRepairProbeTarget<'a> {
@@ -469,7 +451,6 @@ pub(crate) struct DoctorPostRepairProbeTarget<'a> {
     pub(crate) target_path: &'a Path,
     pub(crate) data_dir: &'a Path,
 }
-
 
 pub(crate) struct DoctorPostRepairProbeOutcome {
     pub(crate) status: &'static str,
@@ -480,7 +461,6 @@ pub(crate) struct DoctorPostRepairProbeOutcome {
     pub(crate) rollback_confirmed: bool,
     pub(crate) steps: Vec<String>,
 }
-
 
 pub(crate) fn doctor_post_repair_probe_outcome(
     status: &'static str,
@@ -501,7 +481,6 @@ pub(crate) fn doctor_post_repair_probe_outcome(
         steps,
     }
 }
-
 
 pub(crate) fn doctor_post_repair_probe_report(
     target: DoctorPostRepairProbeTarget<'_>,
@@ -530,11 +509,9 @@ pub(crate) fn doctor_post_repair_probe_report(
     }
 }
 
-
 pub(crate) fn doctor_post_repair_probe_duration_ms(start: Instant) -> u64 {
     start.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
-
 
 pub(crate) fn doctor_probe_table_name(probe_id: &str, db_path: &Path) -> String {
     let hash = doctor_canonical_blake3(
@@ -554,7 +531,6 @@ pub(crate) fn doctor_probe_table_name(probe_id: &str, db_path: &Path) -> String 
         .collect::<String>();
     format!("cass_doctor_probe_{suffix}")
 }
-
 
 pub(crate) fn run_doctor_archive_db_post_repair_probe(
     data_dir: &Path,
@@ -857,7 +833,6 @@ pub(crate) fn run_doctor_archive_db_post_repair_probe(
     )
 }
 
-
 pub(crate) fn run_doctor_lexical_post_repair_probe(
     data_dir: &Path,
     index_path: &Path,
@@ -959,7 +934,6 @@ pub(crate) fn run_doctor_lexical_post_repair_probe(
     }
 }
 
-
 pub(crate) fn run_doctor_semantic_post_repair_probe(
     data_dir: &Path,
     db_path: &Path,
@@ -1053,7 +1027,6 @@ pub(crate) fn run_doctor_semantic_post_repair_probe(
     report
 }
 
-
 pub(crate) fn doctor_post_repair_probes_should_run(
     fix_can_mutate: bool,
     auto_fix_applied: bool,
@@ -1070,7 +1043,6 @@ pub(crate) fn doctor_post_repair_probes_should_run(
     });
     fix_can_mutate && (auto_fix_applied || fs_mutated || cleanup_mutated)
 }
-
 
 pub(crate) fn write_doctor_post_repair_probe_artifacts(
     data_dir: &Path,
@@ -1164,7 +1136,6 @@ pub(crate) fn write_doctor_post_repair_probe_artifacts(
     }
 }
 
-
 pub(crate) fn doctor_post_repair_probe_failure_context(
     probe_run_id: &str,
     probe: &DoctorPostRepairProbeReport,
@@ -1250,7 +1221,6 @@ pub(crate) fn doctor_post_repair_probe_failure_context(
     }))
 }
 
-
 pub(crate) fn doctor_failure_context_report_failed(
     reason: impl Into<String>,
     data_dir: &Path,
@@ -1266,7 +1236,6 @@ pub(crate) fn doctor_failure_context_report_failed(
         "redaction_status": "redacted",
     })
 }
-
 
 pub(crate) fn write_doctor_lock_contention_failure_context(
     data_dir: &Path,
@@ -1497,7 +1466,6 @@ pub(crate) fn write_doctor_lock_contention_failure_context(
     })
 }
 
-
 pub(crate) struct DoctorPostRepairProbeRunContext<'a> {
     pub(crate) data_dir: &'a Path,
     pub(crate) db_path: &'a Path,
@@ -1508,7 +1476,6 @@ pub(crate) struct DoctorPostRepairProbeRunContext<'a> {
     pub(crate) fs_mutation_receipts: &'a [DoctorFsMutationReceipt],
     pub(crate) cleanup_apply_result: Option<&'a DiagCleanupApplyResult>,
 }
-
 
 pub(crate) fn collect_doctor_post_repair_probes(
     context: DoctorPostRepairProbeRunContext<'_>,
@@ -1628,7 +1595,6 @@ pub(crate) fn collect_doctor_post_repair_probes(
     suite
 }
 
-
 pub(crate) fn doctor_check_operation_id(
     checks: &[DoctorCheckReport],
     fix_requested: bool,
@@ -1663,8 +1629,9 @@ pub(crate) fn doctor_check_operation_id(
     )
 }
 
-
-pub(crate) fn cleanup_apply_outcome_kind(result: &DiagCleanupApplyResult) -> DoctorRepairOutcomeKind {
+pub(crate) fn cleanup_apply_outcome_kind(
+    result: &DiagCleanupApplyResult,
+) -> DoctorRepairOutcomeKind {
     if !result.blocked_reasons.is_empty() && result.pruned_asset_count == 0 {
         DoctorRepairOutcomeKind::Blocked
     } else if result.pruned_asset_count > 0
@@ -1682,8 +1649,9 @@ pub(crate) fn cleanup_apply_outcome_kind(result: &DiagCleanupApplyResult) -> Doc
     }
 }
 
-
-pub(crate) fn cleanup_apply_retry_safety(result: &DiagCleanupApplyResult) -> DoctorRepairRetrySafety {
+pub(crate) fn cleanup_apply_retry_safety(
+    result: &DiagCleanupApplyResult,
+) -> DoctorRepairRetrySafety {
     match result.outcome_kind {
         DoctorRepairOutcomeKind::Applied | DoctorRepairOutcomeKind::NoOp => {
             DoctorRepairRetrySafety::SafeToRetry
@@ -1695,7 +1663,6 @@ pub(crate) fn cleanup_apply_retry_safety(result: &DiagCleanupApplyResult) -> Doc
         }
     }
 }
-
 
 pub(crate) fn cleanup_apply_operation_outcome(
     result: &DiagCleanupApplyResult,

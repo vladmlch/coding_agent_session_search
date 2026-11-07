@@ -3,12 +3,10 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn doctor_copy_source_path_is_safe(path: &Path, data_dir: &Path) -> bool {
     let Ok(metadata) = std::fs::symlink_metadata(path) else {
@@ -29,8 +27,11 @@ pub(crate) fn doctor_copy_source_path_is_safe(path: &Path, data_dir: &Path) -> b
     canonical_path.starts_with(canonical_data_dir)
 }
 
-
-pub(crate) fn doctor_staging_target_path_is_safe(path: &Path, staging_root: &Path, data_dir: &Path) -> bool {
+pub(crate) fn doctor_staging_target_path_is_safe(
+    path: &Path,
+    staging_root: &Path,
+    data_dir: &Path,
+) -> bool {
     if path == staging_root
         || !path.starts_with(staging_root)
         || !staging_root.starts_with(data_dir)
@@ -71,8 +72,11 @@ pub(crate) fn doctor_staging_target_path_is_safe(path: &Path, staging_root: &Pat
     }
 }
 
-
-pub(crate) fn doctor_staged_source_path_is_safe(path: &Path, staging_root: &Path, data_dir: &Path) -> bool {
+pub(crate) fn doctor_staged_source_path_is_safe(
+    path: &Path,
+    staging_root: &Path,
+    data_dir: &Path,
+) -> bool {
     if path == staging_root || !path.starts_with(staging_root) {
         return false;
     }
@@ -104,7 +108,6 @@ pub(crate) fn doctor_staged_source_path_is_safe(path: &Path, staging_root: &Path
     };
     canonical_path.starts_with(canonical_staging_root)
 }
-
 
 pub(crate) fn doctor_staged_rename_target_path_is_safe(
     path: &Path,
@@ -142,7 +145,6 @@ pub(crate) fn doctor_staged_rename_target_path_is_safe(
     }
     true
 }
-
 
 pub(crate) fn doctor_quarantine_source_path_is_safe(
     path: &Path,
@@ -203,7 +205,6 @@ pub(crate) fn doctor_quarantine_source_path_is_safe(
     }
 }
 
-
 pub(crate) fn path_age_seconds(path: &Path) -> Option<u64> {
     std::fs::metadata(path)
         .and_then(|metadata| metadata.modified())
@@ -211,7 +212,6 @@ pub(crate) fn path_age_seconds(path: &Path) -> Option<u64> {
         .and_then(|modified| modified.elapsed().ok())
         .map(|elapsed| elapsed.as_secs())
 }
-
 
 pub(crate) fn path_has_symlink_below_root(path: &Path, root: &Path) -> bool {
     let mut current = path;
@@ -234,7 +234,6 @@ pub(crate) fn path_has_symlink_below_root(path: &Path, root: &Path) -> bool {
         current = parent;
     }
 }
-
 
 pub(crate) fn existing_path_has_symlink_below_root(path: &Path, root: &Path) -> bool {
     let mut current = path;

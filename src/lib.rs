@@ -37811,23 +37811,12 @@ pub(crate) use crate::doctor::report::storage::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::report::types::*;
 // -- generated lib-split bridges --
+#[cfg(all(test, unix))]
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::repair_state::collect_doctor_interrupted_operation_states::*;
-#[cfg(test)]
+pub(crate) use crate::doctor::cleanup_target_safety_tests::*;
+#[cfg(all(test, unix))]
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::repair_state::doctor_heartbeat_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::repair_state::cliheartbeat::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::repair_state::doctor_sorted_cleanup_actions::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::repair_state::finalize_cleanup_apply_contract::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::fs_safety::cleanup_apply::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::fs_safety::mutation_executor::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::fs_safety::doctor_copy_source_path_is_safe::*;
+pub(crate) use crate::doctor::doctor_archive_export_path_safety_tests::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::doctor_asset_taxonomy_tests_part_1::*;
@@ -37854,12 +37843,23 @@ pub(crate) use crate::doctor::doctor_asset_taxonomy_tests_part_7::*;
 pub(crate) use crate::doctor::doctor_baseline_path_safety_tests::*;
 #[cfg(all(test, unix))]
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::doctor_archive_export_path_safety_tests::*;
-#[cfg(all(test, unix))]
-#[allow(unused_imports)]
 pub(crate) use crate::doctor::doctor_support_bundle_path_safety_tests::*;
-#[cfg(all(test, unix))]
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::cleanup_target_safety_tests::*;
+pub(crate) use crate::doctor::fs_safety::cleanup_apply::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::fs_safety::doctor_copy_source_path_is_safe::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::fs_safety::mutation_executor::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::lexical_cleanup_disposition_label::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::repair_state::cliheartbeat::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::repair_state::collect_doctor_interrupted_operation_states::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::repair_state::doctor_heartbeat_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::repair_state::doctor_sorted_cleanup_actions::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::repair_state::finalize_cleanup_apply_contract::*;
