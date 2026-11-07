@@ -342,7 +342,9 @@ fn part(
 pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
     let input = events(packet);
     let mut coverage = CoverageBuilder::new();
-    let mut tools = ToolCollector::new();
+    // The claude_code connector drops tool_result content with no text part,
+    // so an unpaired call never means session text was lost.
+    let mut tools = ToolCollector::new().unpaired_results_carry_no_text();
     let mut seen_blocks: HashSet<(u64, String, String)> = HashSet::new();
     let mut segment = 0_u64;
     let mut current_session: Option<String> = None;

@@ -490,6 +490,113 @@ fn codex_agent_message_without_usable_text_stays_malformed() {
 }
 
 // ---------------------------------------------------------------------------
+// Unpaired tool calls. FAD's claude_code connector drops `tool_result`
+// content with no `text` part (ToolSearch `tool_reference` results, Read
+// `image` results), so for Claude an unpaired call never means session text
+// was lost: `tools` stays partial, the inventories stay complete. Codex
+// keeps the strict verdict — there the result record itself is missing
+// from storage, so its text really is gone.
+// ---------------------------------------------------------------------------
+
+fn claude_unpaired_call_packet() -> ConversationPacket {
+    let user = json!({
+        "type": "user", "uuid": "u1", "sessionId": "sess-2",
+        "message": {"role": "user", "content": [{"type": "text", "text": "search the tools"}]}
+    });
+    // A ToolSearch answer carries a `tool_reference` part with no text: FAD
+    // drops the tool_result record, so the call stays unpaired in the packet.
+    let call = json!({
+        "type": "assistant", "uuid": "a1", "sessionId": "sess-2",
+        "message": {"id": "m1", "role": "assistant", "model": "claude-opus-5",
+                    "content": [{"type": "tool_use", "id": "toolu_noresult",
+                                 "name": "ToolSearch", "input": {"query": "walrus"}}]}
+    });
+    packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![
+            msg(0, "user", "search the tools", user),
+            msg(1, "assistant", "", call),
+        ],
+    )
+}
+
+#[test]
+fn claude_unpaired_call_keeps_text_inventory_complete() {
+    let publication = extract_session_facts(&claude_unpaired_call_packet(), "claude_code");
+
+    // The pairing gap is real and stays visible on `tools`.
+    let tools = coverage(&publication, "tools").expect("tools coverage");
+    assert_eq!(tools.state, "partial", "tools: {tools:?}");
+    assert!(
+        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        "tools reasons: {:?}",
+        tools.reasons
+    );
+
+    // ...but no session text is missing: the dropped result had no text part.
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "complete", "text_inventory: {text:?}");
+    assert!(
+        !text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "text_inventory reasons: {:?}",
+        text.reasons
+    );
+    let blocks = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(blocks.state, "complete", "block_inventory: {blocks:?}");
+}
+
+fn codex_unpaired_call_packet() -> ConversationPacket {
+    packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "run the probe",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "run the probe"}}),
+            ),
+            // No function_call_output follows: the result record is missing
+            // from storage, so its text really is lost.
+            msg(
+                1,
+                "assistant",
+                "[Tool: shell]",
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_unpaired",
+                                   "name": "shell",
+                                   "arguments": "{\"command\": \"probe\"}",
+                                   "id": "resp-1"}}),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn codex_unpaired_call_still_marks_text_inventory_partial() {
+    let publication = extract_session_facts(&codex_unpaired_call_packet(), "codex");
+
+    let tools = coverage(&publication, "tools").expect("tools coverage");
+    assert_eq!(tools.state, "partial", "tools: {tools:?}");
+    assert!(
+        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        "tools reasons: {:?}",
+        tools.reasons
+    );
+
+    // Codex storage really loses the output record: session text is missing.
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "partial", "text_inventory: {text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "text_inventory reasons: {:?}",
+        text.reasons
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Antigravity fixture: `agy_type` envelopes, `cass.invocations` calls,
 // TOOL_OUTPUT/VIEW_FILE/RUN_COMMAND results, explicit exit codes only where
 // recorded, unlinked outputs, thinking hints, unknown-kind events.
