@@ -273,6 +273,11 @@ machine-wide lock. Wrap every cargo command in it:
 lockf -k /tmp/cass-cargo.lock cargo test --test viewer_bridge_extensions
 ```
 
+Because only one compilation runs, it uses every core: plain `cargo` already
+defaults to one job per logical CPU, and `scripts/lib/run_cargo.sh` now does
+too. Do not cap jobs below the CPU count unless the user asks. The remaining
+single-thread phase is LTO with `codegen-units = 1` (see the next section).
+
 `lockf` (macOS `/usr/bin/lockf`) blocks until the lock is free, so a waiting
 command counts against the caller's tool timeout: run long cargo commands in
 the background or with a generous timeout instead of retrying in a loop. An
@@ -370,7 +375,8 @@ Shared cargo defaults come from `scripts/lib/run_cargo.sh` (sourced by the dev s
 `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`/`NEXTEST_TEST_THREADS`) > the user's Cargo config
 (`build.target-dir`, `build.jobs`) > the project default**. Project defaults: the target
 dir is the main checkout's `target/` (worktrees share its dependency cache), build jobs
-and test threads are 2.
+are the logical CPU count (one compilation at a time gets the whole machine), test
+threads are 2.
 
 If you see errors, **carefully understand and resolve each issue**. Read sufficient context to fix them the RIGHT way.
 

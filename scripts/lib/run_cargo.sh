@@ -83,6 +83,17 @@ cass_default_target_dir() {
     fi
 }
 
+# cass_logical_cpus — print the logical CPU count (macOS `hw.logicalcpu`,
+# Linux `nproc`), or 2 when neither tool answers.
+cass_logical_cpus() {
+    local cpus
+    cpus="$(sysctl -n hw.logicalcpu 2>/dev/null || nproc 2>/dev/null)"
+    case "$cpus" in
+        ''|*[!0-9]*|0) printf '2\n' ;;
+        *) printf '%s\n' "$cpus" ;;
+    esac
+}
+
 # Resolved values (filled in by cass_cargo_resolve on the first run_cargo
 # call). Resolution is lazy so it always runs after the calling script has
 # settled into its working directory.
@@ -101,8 +112,10 @@ cass_cargo_resolve() {
     cass_cargo_default CARGO_TARGET_DIR build.target-dir \
         "$(cass_default_target_dir)" CASS_CARGO_TARGET_DIR CASS_CARGO_TARGET_DIR_SOURCE
 
-    # Build parallelism: project default is 2 jobs.
-    cass_cargo_default CARGO_BUILD_JOBS build.jobs 2 \
+    # Build parallelism: project default is every logical CPU. Only one Rust
+    # compilation runs on the machine at a time (AGENTS.md), so that one
+    # build gets all cores instead of the old 2-job share.
+    cass_cargo_default CARGO_BUILD_JOBS build.jobs "$(cass_logical_cpus)" \
         CASS_CARGO_BUILD_JOBS CASS_CARGO_BUILD_JOBS_SOURCE
 
     # Test threads: no Cargo config key exists, so this is env-or-default.
