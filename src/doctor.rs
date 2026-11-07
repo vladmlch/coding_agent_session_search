@@ -1592,3 +1592,8 @@ pub(crate) mod report;
 pub(crate) mod run_doctor_ls;
 pub(crate) mod sources;
 pub(crate) mod support_bundle;
+pub(crate) mod probes;
+pub(crate) mod run;
+pub(crate) mod sessionsummaryrecord;
+#[cfg(test)]
+pub(crate) mod backup_restore_tests;

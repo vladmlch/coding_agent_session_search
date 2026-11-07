@@ -3,3 +3,7 @@
 // -- lib-split module declarations --
 pub(crate) mod promote_doctor_reconstruct_candidate_bundle;
 pub(crate) mod promotion;
+pub(crate) mod doctor_candidate_root;
+pub(crate) mod build_doctor_reconstruct_candidate;
+#[cfg(test)]
+pub(crate) mod wal_tests;
