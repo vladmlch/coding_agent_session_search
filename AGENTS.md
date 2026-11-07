@@ -261,6 +261,24 @@ strip = false
 # Pair with: RUSTFLAGS="-C force-frame-pointers=yes" cargo bench --profile release-perf
 ```
 
+### One Rust compilation at a time on this machine (owner rule, 2026-11-07)
+
+Never run more than one Rust compilation (`cargo build`/`check`/`clippy`/`test`/
+`bench`/`run`, `rustc`) at a time on this machine, across all worktrees, target
+dirs and agents. Parallel agents may read, analyse and run already-built
+binaries concurrently, but their cargo invocations queue behind one
+machine-wide lock. Wrap every cargo command in it:
+
+```bash
+lockf -k /tmp/cass-cargo.lock cargo test --test viewer_bridge_extensions
+```
+
+`lockf` (macOS `/usr/bin/lockf`) blocks until the lock is free, so a waiting
+command counts against the caller's tool timeout: run long cargo commands in
+the background or with a generous timeout instead of retrying in a loop. An
+orchestrator schedules delegated work so that at most one agent is compiling,
+and tells every delegated agent to use the lock.
+
 ### Do not pay for LTO unless the result needs it (owner rule, 2026-11-07)
 
 All three optimized profiles above inherit `lto = true` + `codegen-units = 1`,
