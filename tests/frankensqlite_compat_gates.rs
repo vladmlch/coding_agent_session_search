@@ -40,17 +40,27 @@ fn rusqlite_is_dev_dependency_only() {
     );
 }
 
-/// The fsqlite engine family resolves from exact published package versions
-/// for every direct and transitive consumer (registry-only since the 0.3.14
-/// pin, 5acc0dc6 — no git source, no patch redirect; build.rs rejects
-/// fsqlite-family registry patches and duplicate family resolution).
-/// Freeze the complete source identity across the manifest, lockfile,
-/// build-time validator, and dependency contract so a partial bump cannot
-/// silently bifurcate the engine family.
+/// The fsqlite engine family resolves exclusively from the owner's
+/// frankensqlite fork through the committed [patch.crates-io] table (owner
+/// decision, 2026-11-07): every member is redirected to
+/// `https://github.com/vladmlch/frankensqlite` at rev
+/// `d9414f972bf1fe004e1c991afc213e9be267a7cb` (v0.4.12 plus the two vdbe
+/// range-seek commits), while [dependencies] keep registry-shaped `=0.4.12`
+/// requirements so every consumer — including franken-agent-detection's
+/// `^0.4.1` ask — converges on that one fork resolution per package.
+/// build.rs `validate_fsqlite_source_pin` rejects any family redirect that
+/// misses the exact fork URL+rev, a non-uniform family version, and a
+/// duplicate family resolution. Freeze the complete source identity across
+/// the manifest, patch table, lockfile, build-time validator, and
+/// dependency contract so a partial bump cannot silently bifurcate the
+/// engine family.
 #[test]
-fn frankensqlite_registry_source_identity_is_exact_and_coherent() {
+fn frankensqlite_fork_source_identity_is_exact_and_coherent() {
     const FACADE_REQUIREMENT: &str = "=0.4.12";
     const TYPES_REQUIREMENT: &str = "=0.4.12";
+    const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensqlite";
+    const EXPECTED_FORK_REV: &str = "d9414f972bf1fe004e1c991afc213e9be267a7cb";
+    const EXPECTED_FORK_LOCK_SOURCE: &str = "git+https://github.com/vladmlch/frankensqlite?rev=d9414f972bf1fe004e1c991afc213e9be267a7cb#d9414f972bf1fe004e1c991afc213e9be267a7cb";
     const EXPECTED_FACADE_FEATURES: &[&str] = &["fts5", "async-api"];
 
     let manifest: toml::Table =
@@ -97,8 +107,9 @@ fn frankensqlite_registry_source_identity_is_exact_and_coherent() {
                 && dependency.get("path").is_none()
                 && dependency.get("branch").is_none()
                 && dependency.get("tag").is_none(),
-            "{dependency_name} in [{table_name}] must resolve from the exact \
-             crates.io release, not a source override"
+            "{dependency_name} in [{table_name}] must keep its registry-shaped \
+             `=0.4.12` requirement; the owner-fork redirect lives in \
+             [patch.crates-io], not on the dependency entry"
         );
     }
 
@@ -124,13 +135,47 @@ fn frankensqlite_registry_source_identity_is_exact_and_coherent() {
         "fsqlite facade feature set drifted"
     );
 
-    // No [patch] section may redirect the fsqlite family (build.rs rejects
-    // fsqlite-family registry patches too).
-    assert!(
-        manifest.get("patch").is_none(),
-        "a [patch] section bifurcates the fsqlite family; the family must \
-         resolve from crates.io"
-    );
+    // The committed [patch.crates-io] table is the family's source of truth:
+    // every family entry pins the owner fork's exact git URL and rev — never
+    // a path source, a floating branch/tag, or a stale rev — and the direct
+    // dependencies are always covered. A member missing from the table would
+    // fall back to crates.io and is caught by the lockfile source check below.
+    let patch_crates_io = manifest
+        .get("patch")
+        .and_then(toml::Value::as_table)
+        .and_then(|patch| patch.get("crates-io"))
+        .and_then(toml::Value::as_table)
+        .expect("[patch.crates-io] must redirect the fsqlite family to the owner fork");
+    for (dependency, spec) in patch_crates_io {
+        let dependency = dependency.as_str();
+        assert!(
+            dependency == "fsqlite" || dependency.starts_with("fsqlite-"),
+            "unexpected non-family key `{dependency}` in [patch.crates-io]"
+        );
+        let Some(spec) = spec.as_table() else {
+            panic!("{dependency} [patch.crates-io] entry must be a table");
+        };
+        assert_eq!(
+            spec.get("git").and_then(toml::Value::as_str),
+            Some(EXPECTED_FORK_GIT),
+            "{dependency} patch entry points at the wrong remote"
+        );
+        assert_eq!(
+            spec.get("rev").and_then(toml::Value::as_str),
+            Some(EXPECTED_FORK_REV),
+            "{dependency} patch entry drifted off the pinned fork rev"
+        );
+        assert!(
+            !spec.contains_key("path") && !spec.contains_key("branch") && !spec.contains_key("tag"),
+            "{dependency} patch entry must stay a rev-pinned git redirect"
+        );
+    }
+    for direct in ["fsqlite", "fsqlite-types"] {
+        assert!(
+            patch_crates_io.contains_key(direct),
+            "{direct} must be redirected to the owner fork in [patch.crates-io]"
+        );
+    }
 
     let lockfile: toml::Value =
         toml::from_str(include_str!("../Cargo.lock")).expect("parse Cargo.lock");
@@ -169,8 +214,8 @@ fn frankensqlite_registry_source_identity_is_exact_and_coherent() {
             .and_then(toml::Value::as_str)
             .unwrap_or_default();
         assert_eq!(
-            source, "registry+https://github.com/rust-lang/crates.io-index",
-            "{name} resolved away from the pinned crates.io release"
+            source, EXPECTED_FORK_LOCK_SOURCE,
+            "{name} resolved away from the pinned owner-fork rev"
         );
     }
 
@@ -183,13 +228,18 @@ fn frankensqlite_registry_source_identity_is_exact_and_coherent() {
             && !build_contract.contains("expected_version: \"0.4.4\"")
             && !build_contract.contains("expected_version: \"0.4.2\"")
             && !build_contract.contains("expected_version: \"0.4.0\"")
-            && build_contract.contains("expected_features: &[\"fts5\", \"async-api\"]"),
-        "build.rs must validate the exact FrankenSQLite crates.io identity"
+            && build_contract.contains("expected_features: &[\"fts5\", \"async-api\"]")
+            && build_contract.contains(EXPECTED_FORK_GIT)
+            && build_contract.contains(EXPECTED_FORK_REV),
+        "build.rs must validate the exact FrankenSQLite owner-fork identity"
     );
     let readme = include_str!("../README.md");
     assert!(
-        readme.contains(FACADE_REQUIREMENT) && readme.contains(TYPES_REQUIREMENT),
-        "README must document both exact fsqlite facade and shared-types pins"
+        readme.contains(FACADE_REQUIREMENT)
+            && readme.contains(TYPES_REQUIREMENT)
+            && readme.contains(EXPECTED_FORK_GIT)
+            && readme.contains(EXPECTED_FORK_REV),
+        "README must document both exact fsqlite pins and the owner-fork source"
     );
 }
 

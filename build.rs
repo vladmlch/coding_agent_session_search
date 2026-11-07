@@ -95,7 +95,19 @@ const CONTRACTS: &[DependencyContract] = &[
         // explicit-transaction inserts, bd-obwsy), ROLLBACK returning
         // reserved AUTOINCREMENT rowids (bd-gwoit) and reading a WAL a stock
         // writer truncated to zero bytes as empty (bd-yxqs9, cass GH#519).
-        // fsqlite resolves from crates.io at the exact version below.
+        // Since the 2026-11-07 owner decision the whole family resolves
+        // from the owner's fork github.com/vladmlch/frankensqlite at rev
+        // d9414f972bf1fe004e1c991afc213e9be267a7cb — v0.4.12
+        // (26aa19afcbd5afdb01658a10bb33417ad0b513be) plus two vdbe
+        // range-seek commits (10eadc63 seeks the single-column index range
+        // when the WHERE carries residual conjuncts; d9414f97 lets rowid
+        // range seeks take numbered-placeholder bounds) — so the manifest
+        // keeps registry-shaped `=0.4.12` requirements and the committed
+        // [patch.crates-io] table redirects every family crate (including
+        // FAD's `^0.4.1` ask) to that rev. Empty `expected_git` keeps this
+        // contract registry-shaped; validate_fsqlite_source_pin enforces
+        // the fork URL, rev, uniform 0.4.12 version and single resolution
+        // per package against the [patch.crates-io] table and Cargo.lock.
         expected_git: "",
         expected_rev: "",
         expected_version: "0.4.12",
@@ -116,7 +128,10 @@ const CONTRACTS: &[DependencyContract] = &[
         dep_key: "fsqlite-types",
         crate_package_name: "fsqlite-types",
         manifest_package_field: Some("fsqlite-types"),
-        // The 0.4.12 release publishes the entire family at one version.
+        // The 0.4.12 release publishes the entire family at one version,
+        // and the owner fork keeps those versions; the committed
+        // [patch.crates-io] table redirects the shared types to the fork
+        // rev (see the facade contract and validate_fsqlite_source_pin).
         expected_git: "",
         expected_rev: "",
         expected_version: "0.4.12",
@@ -134,7 +149,9 @@ const CONTRACTS: &[DependencyContract] = &[
         dep_key: "fsqlite-types",
         crate_package_name: "fsqlite-types",
         manifest_package_field: Some("fsqlite-types"),
-        // Match the production shared types from the published family.
+        // Match the production shared types: same fork-pinned 0.4.12 family
+        // resolution (the [patch.crates-io] table covers dev-dependencies
+        // too; validate_fsqlite_source_pin checks the single resolution).
         expected_git: "",
         expected_rev: "",
         expected_version: "0.4.12",
@@ -586,36 +603,70 @@ fn validate_path_dependency_contracts(
 }
 
 fn validate_fsqlite_source_pin(manifest_dir: &Path, manifest: &Value, packaged_manifest: bool) {
-    // The fsqlite engine family must resolve exclusively from crates.io at
-    // the uniform published 0.4.12 version, including the shared types.
-    // One source per package remains load-bearing for read-only integrity.
-    const EXPECTED_REGISTRY_SOURCE: &str = "registry+https://github.com/rust-lang/crates.io-index";
+    // The fsqlite engine family resolves exclusively from the owner's
+    // frankensqlite fork at the exact rev below, at the uniform published
+    // 0.4.12 family version, including the shared types (owner decision,
+    // 2026-11-07). The fork rev is v0.4.12 (26aa19afcbd5afdb01658a10bb33417a
+    // d0b513be) plus two vdbe range-seek commits (10eadc63: seek the
+    // single-column index range when the WHERE carries residual conjuncts;
+    // d9414f97: rowid range seeks accept numbered placeholder bounds), so
+    // the fork's crates keep version 0.4.12 and satisfy the registry-shaped
+    // `=0.4.12` requirements in [dependencies]/[dev-dependencies] through
+    // the committed [patch.crates-io] table. One source per package remains
+    // load-bearing for read-only integrity.
+    const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensqlite";
+    const EXPECTED_FORK_REV: &str = "d9414f972bf1fe004e1c991afc213e9be267a7cb";
+    // A `rev = "<full-sha>"` git source serializes in Cargo.lock as
+    // `git+<url>?rev=<rev>#<resolved-commit>`; with a full-sha rev the
+    // resolved commit equals the rev.
+    let expected_lock_source =
+        format!("git+{EXPECTED_FORK_GIT}?rev={EXPECTED_FORK_REV}#{EXPECTED_FORK_REV}");
 
-    // 1. With the family on crates.io (e926644f), a `[patch]` table is no
-    //    longer required — but if one exists, it must not silently redirect
-    //    any fsqlite family member back to a shadow source.
+    // 1. Every fsqlite-family [patch.crates-io] redirect must name exactly
+    //    the fork's URL and rev: never a path source, another remote, a
+    //    floating branch/tag, or a stale rev. A family member missing from
+    //    the patch table is not caught here — it would resolve from
+    //    crates.io, and check 2 fails on its registry source.
     if !packaged_manifest
         && let Some(patch_tables) = manifest.get("patch")
         && let Some(crates_io) = patch_tables.get("crates-io").and_then(Value::as_table)
     {
-        for dependency in crates_io.keys() {
-            if dependency == "fsqlite" || dependency.starts_with("fsqlite-") {
+        for (dependency, spec) in crates_io {
+            let dependency = dependency.as_str();
+            if dependency != "fsqlite" && !dependency.starts_with("fsqlite-") {
+                continue;
+            }
+            let Some(spec) = spec.as_table() else {
                 fatal(format!(
                     "dependency source contract violation for {dependency}: the fsqlite \
-                     family resolves from the pinned crates.io package versions; a \
-                     [patch.crates-io] redirect would reintroduce an unreviewed shadow \
-                     source"
+                     family [patch.crates-io] entry must be a table pinning the owner fork"
+                ));
+            };
+            let actual_git = spec.get("git").and_then(Value::as_str).unwrap_or("");
+            let actual_rev = spec.get("rev").and_then(Value::as_str).unwrap_or("");
+            let floating = spec.contains_key("branch") || spec.contains_key("tag");
+            if actual_git != EXPECTED_FORK_GIT
+                || actual_rev != EXPECTED_FORK_REV
+                || floating
+                || spec.contains_key("path")
+            {
+                fatal(format!(
+                    "dependency source contract violation for {dependency}: the fsqlite \
+                     family resolves from the owner fork at git = `{EXPECTED_FORK_GIT}`, \
+                     rev = `{EXPECTED_FORK_REV}`; found git = `{actual_git}`, rev = \
+                     `{actual_rev}`"
                 ));
             }
         }
     }
 
     // 2. Lockfile convergence: every resolved fsqlite-family package must be
-    //    its pinned registry version, with exactly one version per crate.
-    //    Cargo resolves the lockfile before running build scripts, so the
-    //    lockfile is authoritative here. Packaged manifests (`cargo package`
-    //    verification builds) re-resolve into a fresh lockfile that inherits
-    //    these same requirements from the manifest pin.
+    //    0.4.12, resolve from the pinned fork rev, and appear exactly once
+    //    per crate. Cargo resolves the lockfile before running build
+    //    scripts, so the lockfile is authoritative here. Packaged manifests
+    //    (`cargo package` verification builds) re-resolve into a fresh
+    //    lockfile that inherits these same requirements from the manifest
+    //    pin (and cannot express the fork [patch] table at all).
     let lock_path = manifest_dir.join("Cargo.lock");
     println!("cargo:rerun-if-changed={}", lock_path.display());
     let lock_text = match fs::read_to_string(&lock_path) {
@@ -661,7 +712,7 @@ fn validate_fsqlite_source_pin(manifest_dir: &Path, manifest: &Value, packaged_m
         if !seen.insert(name) {
             violations.push(format!(
                 "`{name}` resolves more than once; the fsqlite family must converge on \
-                 a single registry version per package"
+                 a single resolution per package"
             ));
         }
         if version != expected_version {
@@ -669,14 +720,16 @@ fn validate_fsqlite_source_pin(manifest_dir: &Path, manifest: &Value, packaged_m
                 "`{name}` resolves at `{version}`, expected `{expected_version}`"
             ));
             remediations.push(format!(
-                "cargo update -p {name}@{version} --precise {expected_version}"
+                "the fork at rev {EXPECTED_FORK_REV} must publish `{name}` at \
+                 {expected_version}; move the family version pins, the [patch.crates-io] \
+                 table and this guard together"
             ));
         }
         let source = package.get("source").and_then(Value::as_str).unwrap_or("");
-        if source != EXPECTED_REGISTRY_SOURCE {
+        if source != expected_lock_source {
             violations.push(format!(
-                "`{name}` resolves from `{source}`, expected the crates.io registry \
-                 (`{EXPECTED_REGISTRY_SOURCE}`)"
+                "`{name}` resolves from `{source}`, expected the pinned owner fork \
+                 (`{expected_lock_source}`)"
             ));
         }
     }
