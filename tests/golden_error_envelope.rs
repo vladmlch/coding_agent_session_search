@@ -73,6 +73,9 @@ const SCAN_SOURCES: &[&str] = &[
     // lib-split 3d: moved CliError/kind_str producers.
     "src/doctor/run.rs",
     "src/doctor/probes/integrity.rs",
+    // lib-split 5: run.rs's CliError/kind_str producers moved into run/ phases.
+    "src/doctor/run/apply.rs",
+    "src/doctor/run/report.rs",
     // lib-split 4: moved CliError/kind_str producers.
     "src/cli/argv/canonical_top_level_command_tests.rs",
     "src/cli/argv/normalize.rs",

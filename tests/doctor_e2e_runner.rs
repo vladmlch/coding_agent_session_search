@@ -647,7 +647,7 @@ fn doctor_e2e_human_output_aligns_with_robot_recommended_actions() {
     );
     assert!(
         human_unwrapped.contains("not archive damage")
-            && human_unwrapped.contains("cass will not download models during doctor")
+            && human_unwrapped.contains("cass never acquires models during doctor")
             && human_unwrapped.contains("cass models install"),
         "human semantic fallback copy should reflect the robot derived semantic fields:\n{human}"
     );

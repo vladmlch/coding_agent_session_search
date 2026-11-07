@@ -339,6 +339,16 @@ const SOURCES: &[(&str, &str)] = &[
         "src/doctor/probes/integrity.rs",
         include_str!("../src/doctor/probes/integrity.rs"),
     ),
+    // lib-split 5: run.rs's ExitCode literals/code:kind owners moved into
+    // run/ phases.
+    (
+        "src/doctor/run/apply.rs",
+        include_str!("../src/doctor/run/apply.rs"),
+    ),
+    (
+        "src/doctor/run/report.rs",
+        include_str!("../src/doctor/run/report.rs"),
+    ),
     // lib-split 4: moved ExitCode literals + code:kind emission owners.
     (
         "src/cli/args_sub.rs",

@@ -53,6 +53,8 @@ sources = [
     "src/doctor/raw_mirror/query_doctor_raw_mirror_backfill_candidates.rs",
     "src/doctor/run.rs",
     "src/doctor/probes/integrity.rs",
+    "src/doctor/run/apply.rs",
+    "src/doctor/run/report.rs",
     "src/cli/argv/canonical_top_level_command_tests.rs",
     "src/cli/argv/normalize.rs",
     "src/cli/argv/removed_invocation_tests.rs",
@@ -130,6 +132,8 @@ sources = [
     "src/doctor/raw_mirror/query_doctor_raw_mirror_backfill_candidates.rs",
     "src/doctor/run.rs",
     "src/doctor/probes/integrity.rs",
+    "src/doctor/run/apply.rs",
+    "src/doctor/run/report.rs",
     "src/cli/args_sub.rs",
     "src/cli/output/extract_search_terms.rs",
     "src/cli/argv/normalize.rs",
@@ -192,7 +196,7 @@ note = "REMOVED_COMMANDS/REMOVED_FLAGS tables + removed-command diagnostic; recu
 
 [scanner.doctor_chokepoint]
 test = "src/doctor_chokepoint.rs"
-sources = ["src/lib.rs", "src/doctor/fs_safety/cleanup_apply.rs", "src/doctor/fs_safety/mutation_executor.rs", "src/doctor/cleanup_target_safety_tests.rs", "src/doctor/doctor_asset_taxonomy_tests_part_2.rs", "src/doctor/doctor_asset_taxonomy_tests_part_3.rs", "src/doctor/doctor_asset_taxonomy_tests_part_4.rs", "src/doctor/doctor_asset_taxonomy_tests_part_7.rs", "src/doctor/candidate/promote_doctor_reconstruct_candidate_bundle.rs", "src/doctor/run.rs", "src/doctor/candidate/doctor_candidate_root.rs"]
+sources = ["src/lib.rs", "src/doctor/fs_safety/cleanup_apply.rs", "src/doctor/fs_safety/mutation_executor.rs", "src/doctor/cleanup_target_safety_tests.rs", "src/doctor/doctor_asset_taxonomy_tests_part_2.rs", "src/doctor/doctor_asset_taxonomy_tests_part_3.rs", "src/doctor/doctor_asset_taxonomy_tests_part_4.rs", "src/doctor/doctor_asset_taxonomy_tests_part_7.rs", "src/doctor/candidate/promote_doctor_reconstruct_candidate_bundle.rs", "src/doctor/run.rs", "src/doctor/run/preflight.rs", "src/doctor/run/report.rs", "src/doctor/candidate/doctor_candidate_root.rs"]
 patterns = ["DoctorFsMutationKind"]
 note = "in-source chokepoint audit reads lib.rs (doctor_mutate_auditor companion)"
 
