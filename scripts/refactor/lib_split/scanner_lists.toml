@@ -21,6 +21,17 @@ sources = [
   "src/cli/commands/search/searchlexicalselfhealdiagnosis.rs",
   "src/cli/commands/search/toon_encode_options_from_env.rs",
   "src/cli/commands/pack/pack_budget_ms.rs",
+  "src/cli/commands/forget/command.rs",
+  "src/cli/commands/analytics/fresh_franken_count_retry.rs",
+  "src/cli/commands/analytics/analytics_query_cli_error_tests.rs",
+  "src/cli/commands/analytics/run_analytics.rs",
+  "src/cli/commands/analytics/analyticsvalidationsummary.rs",
+  "src/cli/commands/import_chatgpt_export.rs",
+  "src/cli/commands/stats_diag_storage/run_stats.rs",
+  "src/cli/commands/status_health/cli_read_db_tests_part_1.rs",
+  "src/cli/commands/status_health/probe_daemon_runtime_for_diagnostics.rs",
+  "src/cli/commands/status_health/run_health.rs",
+  "src/cli/commands/run_onboarding_interactive_wizard.rs",
 ]
 patterns = ["kind_str", "CliErrorKind::"]
 note = "error-kind scan: CliErrorKind literals, kind_str mapping, golden envelope"
@@ -39,10 +50,38 @@ sources = [
   "src/search_service/deadline.rs",
   "src/search_service/memory.rs",
   "src/search_service/once.rs",
+  "src/cli/commands/analytics/analyticsvalidationsummary.rs",
+  "src/cli/commands/analytics/fresh_franken_count_retry.rs",
+  "src/cli/commands/analytics/run_analytics.rs",
+  "src/cli/commands/forget/command.rs",
+  "src/cli/commands/import_chatgpt_export.rs",
+  "src/cli/commands/pack/pack_budget_ms.rs",
+  "src/cli/commands/quarantine_mirror_import.rs",
+  "src/cli/commands/run_mirror_prune.rs",
+  "src/cli/commands/run_onboarding_interactive_wizard.rs",
+  "src/cli/commands/search/effective_db_path_source.rs",
+  "src/cli/commands/search/execute_search_operation.rs",
+  "src/cli/commands/search/fieldbudgets.rs",
+  "src/cli/commands/search/resolve_search_defaults.rs",
+  "src/cli/commands/search/run_cli_search.rs",
+  "src/cli/commands/search/searchlexicalselfhealdiagnosis.rs",
+  "src/cli/commands/search/toon_encode_options_from_env.rs",
+  "src/cli/commands/stats_diag_storage/run_stats.rs",
+  "src/cli/commands/status_health/probe_daemon_runtime_for_diagnostics.rs",
+  "src/cli/commands/status_health/run_health.rs",
   "README.md",
   "AGENTS.md",
 ]
-patterns = ["ExitCode"]
+patterns = [
+  "ExitCode",
+  # Emission-site predicates mirroring the test's three extractors
+  # (spec_exit_codes_documented.rs): a `code: N` line whose next
+  # non-blank line starts `kind:`, literal `process::exit(N)`, literal
+  # `terminate(N)`. Regex patterns count per file, `.rs` sources only.
+  { name = "cli_error_code_kind", regex = '^[ \t]*code: [0-9]+[^\n]*\n([ \t]*\n)*[ \t]*kind:', suffix = ".rs" },
+  { name = "process_exit_int", regex = 'process::exit\([0-9]+\)', suffix = ".rs" },
+  { name = "terminate_int", regex = 'terminate\([0-9]+\)', suffix = ".rs" },
+]
 note = "exit-code literals must be documented; reads sources + docs"
 
 [scanner.spec_aliases_resolve]
@@ -70,7 +109,7 @@ note = "doctor pass markers (pass-2/3 dispatch, pass-6 watch, pass-8 explain/cap
 
 [scanner.local_only_audit]
 test = "tests/local_only_audit.rs"
-sources = ["src/lib.rs", "tests/cli_dispatch_coverage.rs"]
+sources = ["src/lib.rs", "tests/cli_dispatch_coverage.rs", "src/cli/commands/stats_diag_storage/run_stats.rs"]
 dirs = ["src"]
 patterns = ["REMOVED_COMMANDS", "REMOVED_FLAGS", "was removed"]
 note = "REMOVED_COMMANDS/REMOVED_FLAGS tables + removed-command diagnostic; recursive .rs scan of src/** plus cli_dispatch_coverage pending flag"
@@ -92,7 +131,7 @@ note = "legacy_cli_dispatch test in src/doctor.rs reads lib.rs + doctor.rs marke
 
 [scanner.agent_detection_completeness]
 test = "tests/agent_detection_completeness.rs"
-sources = ["src/lib.rs"]
+sources = ["src/lib.rs", "src/cli/commands/stats_diag_storage/run_diag.rs", "src/cli/commands/status_health/diagnostics.rs"]
 patterns = ["diagnostics_connector_paths", "detect_installed_agents"]
 note = "read_to_string(root.join(src/lib.rs)) — join()-form consumer"
 

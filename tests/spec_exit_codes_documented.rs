@@ -126,6 +126,85 @@ const SOURCES: &[(&str, &str)] = &[
         "src/search_service/once.rs",
         include_str!("../src/search_service/once.rs"),
     ),
+    // lib-split 2a/2b/2c relocated CliError producers out of src/lib.rs into
+    // src/cli/commands/**; every file containing `code:`/`kind:` construction
+    // sites is scanned here (mirroring scanner_lists.toml).
+    (
+        "src/cli/commands/analytics/analyticsvalidationsummary.rs",
+        include_str!("../src/cli/commands/analytics/analyticsvalidationsummary.rs"),
+    ),
+    (
+        "src/cli/commands/analytics/fresh_franken_count_retry.rs",
+        include_str!("../src/cli/commands/analytics/fresh_franken_count_retry.rs"),
+    ),
+    (
+        "src/cli/commands/analytics/run_analytics.rs",
+        include_str!("../src/cli/commands/analytics/run_analytics.rs"),
+    ),
+    (
+        "src/cli/commands/forget/command.rs",
+        include_str!("../src/cli/commands/forget/command.rs"),
+    ),
+    (
+        "src/cli/commands/import_chatgpt_export.rs",
+        include_str!("../src/cli/commands/import_chatgpt_export.rs"),
+    ),
+    (
+        "src/cli/commands/pack/pack_budget_ms.rs",
+        include_str!("../src/cli/commands/pack/pack_budget_ms.rs"),
+    ),
+    (
+        "src/cli/commands/quarantine_mirror_import.rs",
+        include_str!("../src/cli/commands/quarantine_mirror_import.rs"),
+    ),
+    (
+        "src/cli/commands/run_mirror_prune.rs",
+        include_str!("../src/cli/commands/run_mirror_prune.rs"),
+    ),
+    (
+        "src/cli/commands/run_onboarding_interactive_wizard.rs",
+        include_str!("../src/cli/commands/run_onboarding_interactive_wizard.rs"),
+    ),
+    (
+        "src/cli/commands/search/effective_db_path_source.rs",
+        include_str!("../src/cli/commands/search/effective_db_path_source.rs"),
+    ),
+    (
+        "src/cli/commands/search/execute_search_operation.rs",
+        include_str!("../src/cli/commands/search/execute_search_operation.rs"),
+    ),
+    (
+        "src/cli/commands/search/fieldbudgets.rs",
+        include_str!("../src/cli/commands/search/fieldbudgets.rs"),
+    ),
+    (
+        "src/cli/commands/search/resolve_search_defaults.rs",
+        include_str!("../src/cli/commands/search/resolve_search_defaults.rs"),
+    ),
+    (
+        "src/cli/commands/search/run_cli_search.rs",
+        include_str!("../src/cli/commands/search/run_cli_search.rs"),
+    ),
+    (
+        "src/cli/commands/search/searchlexicalselfhealdiagnosis.rs",
+        include_str!("../src/cli/commands/search/searchlexicalselfhealdiagnosis.rs"),
+    ),
+    (
+        "src/cli/commands/search/toon_encode_options_from_env.rs",
+        include_str!("../src/cli/commands/search/toon_encode_options_from_env.rs"),
+    ),
+    (
+        "src/cli/commands/stats_diag_storage/run_stats.rs",
+        include_str!("../src/cli/commands/stats_diag_storage/run_stats.rs"),
+    ),
+    (
+        "src/cli/commands/status_health/probe_daemon_runtime_for_diagnostics.rs",
+        include_str!("../src/cli/commands/status_health/probe_daemon_runtime_for_diagnostics.rs"),
+    ),
+    (
+        "src/cli/commands/status_health/run_health.rs",
+        include_str!("../src/cli/commands/status_health/run_health.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed
