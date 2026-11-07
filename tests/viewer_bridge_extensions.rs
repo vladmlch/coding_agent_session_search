@@ -9,6 +9,7 @@ mod support;
 // --init-extensions runs.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -566,6 +567,219 @@ fn facts_parent_delete_trigger_repairs_resolved_child_link() -> Result<()> {
     }
     drop(writer);
     bridge.shutdown()
+}
+
+// ---------------------------------------------------------------------------
+// Parent-link fixup: indexed candidate lookup (differential / cost / v9
+// migration). The truth table these tests pin lives in
+// .scratch/glm/2026-11-07-parent-links-sargable/report.md §1.
+// ---------------------------------------------------------------------------
+
+/// Minimal canonical base for fixup-level fixtures: exactly the upstream
+/// tables/columns the viewer profile's DDL and v5 sort triggers reference,
+/// so `ensure_schema` can install the full additive profile without the
+/// bridge child or a full FrankenStorage seed. The caller owns the db path
+/// (a test-scoped tempdir join).
+fn fixup_fixture_db(db_path: &Path) -> Result<Connection> {
+    let conn = Connection::open(db_path.to_string_lossy().into_owned())?;
+    conn.execute_batch(
+        "CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE);
+         CREATE TABLE sources (id TEXT PRIMARY KEY, kind TEXT NOT NULL, host_label TEXT);
+         CREATE TABLE workspaces (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+             display_name TEXT);
+         CREATE TABLE conversations (
+             id INTEGER PRIMARY KEY,
+             agent_id INTEGER,
+             workspace_id INTEGER,
+             source_id TEXT,
+             external_id TEXT,
+             title TEXT,
+             source_path TEXT,
+             origin_host TEXT,
+             started_at INTEGER,
+             ended_at INTEGER,
+             last_message_created_at INTEGER,
+             last_message_idx INTEGER,
+             metadata_json TEXT,
+             metadata_bin BLOB
+         );
+         CREATE TABLE conversation_tail_state (
+             conversation_id INTEGER PRIMARY KEY,
+             last_message_created_at INTEGER,
+             ended_at INTEGER
+         );
+         INSERT INTO agents (id, slug) VALUES (1, 'codex');
+         INSERT INTO agents (id, slug) VALUES (2, 'claude_code');
+         INSERT INTO sources (id, kind) VALUES ('local', 'local');
+         INSERT INTO sources (id, kind) VALUES ('remote', 'remote');",
+    )?;
+    schema::ensure_schema(&conn)?;
+    Ok(conn)
+}
+
+/// Cost gate for the fixup candidate lookup: with ~50k pending-evidence
+/// rows, the indexed lookup must beat the pre-change scan shape by a wide
+/// margin. The legacy arm times the verbatim pre-change candidate SELECT
+/// (the exact statement facts.rs ran per conversation); the new arm times
+/// the real `fixup_pending_parent_links`. Self-relative (both timings in
+/// one process) so a loaded machine shifts both arms equally.
+#[test]
+fn fixup_parent_links_lookup_cost_is_index_served() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let conn = fixup_fixture_db(&temp.path().join("cost.db"))?;
+
+    const ROWS: i64 = 50_000;
+    // Pre-v9 archives have no `parent_lookup_key` column; detect it so this
+    // test also compiles and runs RED against today's code (where the fixup
+    // is the archive-wide scan) instead of dying in fixture setup.
+    let has_lookup_key = conn
+        .query("PRAGMA table_info(viewer_session_facts)")?
+        .iter()
+        .any(|row| {
+            matches!(row.get_typed::<String>(1), Ok(name) if name == "parent_lookup_key")
+        });
+    // Every row carries DISTINCT pending parent evidence (the archive-wide
+    // worst case for the old scan); the parent call below matches exactly
+    // one child (`evid-7`).
+    conn.execute("BEGIN")?;
+    // 100k rows seed in this one transaction, so the per-row strings are
+    // formatted into preallocated reusable buffers rather than fresh
+    // allocations every iteration (`fmt::Write` into a String is
+    // infallible, hence the discarded results).
+    let mut path = String::with_capacity(32);
+    let mut evidence = String::with_capacity(16);
+    for i in 0..ROWS {
+        path.clear();
+        let _ = write!(path, "/cost/dir/evid-{i}.jsonl");
+        evidence.clear();
+        let _ = write!(evidence, "evid-{i}");
+        conn.execute_with_params(
+            "INSERT INTO conversations \
+             (id, agent_id, source_id, external_id, source_path) \
+             VALUES (?1, 1, 'local', ?2, ?3)",
+            &param_slice_to_values(params![i, path.as_str(), path.as_str()]),
+        )?;
+        // `evid-{i}` is lowercase ASCII with no LIKE wildcards, so it is
+        // its own lookup key — exactly what facts::parent_lookup_key
+        // returns for it (inlined here so this test also compiles before
+        // the v9 column/function exist). The pre-v9 branch omits the
+        // column entirely.
+        if has_lookup_key {
+            conn.execute_with_params(
+                "INSERT INTO viewer_session_facts \
+                 (conversation_id, extractor_version, source_revision, coverage_state, \
+                  parent_external_id, parent_lookup_key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                &param_slice_to_values(params![
+                    i,
+                    1_i64,
+                    42_i64,
+                    "partial",
+                    evidence.as_str(),
+                    evidence.as_str()
+                ]),
+            )?;
+        } else {
+            conn.execute_with_params(
+                "INSERT INTO viewer_session_facts \
+                 (conversation_id, extractor_version, source_revision, coverage_state, \
+                  parent_external_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                &param_slice_to_values(params![
+                    i,
+                    1_i64,
+                    42_i64,
+                    "partial",
+                    evidence.as_str()
+                ]),
+            )?;
+        }
+    }
+    conn.execute("COMMIT")?;
+
+    // The facts table's `parent_conversation_id` carries a real FK to
+    // conversations(id) and ensure_schema enables FK enforcement, so the
+    // parent conversations the fixup links to must exist.
+    for (id, external_id, source_path) in [
+        (900_001_i64, "cost-parent-1", "/cost/dir/cost-parent-1.jsonl"),
+        (900_002_i64, "cost-parent-2", "/cost/dir/cost-parent-2.jsonl"),
+    ] {
+        conn.execute_with_params(
+            "INSERT INTO conversations \
+             (id, agent_id, source_id, external_id, source_path) \
+             VALUES (?1, 1, 'local', ?2, ?3)",
+            &param_slice_to_values(params![id, external_id, source_path]),
+        )?;
+    }
+
+    let parent_external_id = "/cost/dir/evid-7.jsonl";
+    // The fixup must still find the one real child (correctness gate for
+    // the timed path — a vacuous probe-fest would pass the timing alone).
+    let claimed = facts::fixup_pending_parent_links(
+        &conn, 900_001, "codex", "local", parent_external_id,
+    )?;
+    ensure!(claimed == 1, "the fixup must link its one matching child: {claimed}");
+    let link: Option<i64> = conn
+        .query_row(
+            "SELECT parent_conversation_id FROM viewer_session_facts \
+             WHERE conversation_id = 7",
+        )?
+        .get_typed(0)?;
+    ensure!(link == Some(900_001), "the matching child must carry the link: {link:?}");
+
+    let legacy_sql = "\
+         SELECT f.conversation_id, f.coverage_detail_json \
+         FROM viewer_session_facts f \
+         JOIN conversations c ON c.id = f.conversation_id \
+         JOIN agents a ON a.id = c.agent_id \
+         WHERE f.parent_conversation_id IS NULL \
+           AND f.parent_external_id IS NOT NULL \
+           AND f.parent_external_id != '' \
+           AND f.conversation_id != ?4 \
+           AND a.slug = ?1 AND c.source_id = ?2 \
+           AND (?3 = f.parent_external_id \
+                OR ?3 LIKE '%/' || f.parent_external_id \
+                OR ?3 LIKE '%' || f.parent_external_id || '.jsonl') \
+         ORDER BY f.conversation_id";
+    let legacy_params = param_slice_to_values(params![
+        "codex",
+        "local",
+        parent_external_id,
+        900_001_i64
+    ]);
+
+    // Warm both paths (statement cache, page cache) before timing.
+    let _ = conn.query_with_params(legacy_sql, &legacy_params)?;
+    let _ = facts::fixup_pending_parent_links(
+        &conn, 900_002, "codex", "local", parent_external_id,
+    )?;
+
+    const LEGACY_CALLS: usize = 6;
+    const NEW_CALLS: usize = 30;
+    let start = std::time::Instant::now();
+    for _ in 0..LEGACY_CALLS {
+        let _ = conn.query_with_params(legacy_sql, &legacy_params)?;
+    }
+    let legacy_elapsed = start.elapsed();
+    let start = std::time::Instant::now();
+    for _ in 0..NEW_CALLS {
+        let _ = facts::fixup_pending_parent_links(
+            &conn, 900_002, "codex", "local", parent_external_id,
+        )?;
+    }
+    let new_elapsed = start.elapsed();
+    let legacy_avg_ms = legacy_elapsed.as_secs_f64() * 1000.0 / LEGACY_CALLS as f64;
+    let new_avg_ms = new_elapsed.as_secs_f64() * 1000.0 / NEW_CALLS as f64;
+    eprintln!(
+        "fixup cost: legacy scan {legacy_avg_ms:.3} ms/call, indexed {new_avg_ms:.3} ms/call \
+         over {ROWS} pending rows"
+    );
+    ensure!(
+        legacy_avg_ms >= 5.0 * new_avg_ms,
+        "the fixup lookup must be index-served: legacy scan {legacy_avg_ms:.3} ms/call \
+         vs new {new_avg_ms:.3} ms/call over {ROWS} rows"
+    );
+    Ok(())
 }
 
 #[test]
