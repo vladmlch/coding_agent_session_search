@@ -1755,22 +1755,24 @@ fn _packet_events(packet: &ConversationPacket) -> usize {
 // Facts and the structural projection are ONE extension generation of a
 // canonical source revision: they must be computed from the same replayed
 // bytes and committed — with their durable receipt — inside a single
-// transaction. A crash between the `pending` mark and the generation
-// commit leaves honest durable evidence; a failed generation leaves the
-// exact reason; only rows+receipt committed together may ever read
-// `complete`.
+// transaction. A crash before that commit leaves the pre-attempt state
+// (the prior receipt — possibly a `complete` at an older revision, honest
+// for that revision, since its rows still exist — or no receipt at all);
+// a failed generation leaves the exact reason; only rows+receipt
+// committed together may ever read `complete`.
 //
 // Recovery is the explicit `--backfill-viewer-extensions` lane: it scans
 // canonical conversations and republishes through THIS same code, so
-// `pending`/`failed`/missing receipts converge without a startup or
-// request-time reconstruction path.
+// `failed`/missing receipts — and stale `complete` receipts at older
+// revisions — converge without a startup or request-time reconstruction
+// path.
 
 /// Facts + structure computed from ONE canonical replay — the generation
 /// unit the ingest lane publishes. `project_session_structure` copies
 /// `facts.source_revision`, so the two sides are revision-coherent by
 /// construction; the durable [`facts::IngestReceipt`] makes that coherence
-/// auditable (the receipt's `source_revision` is bound at `pending` time
-/// and certified at `complete`).
+/// auditable (the receipt's `source_revision` is the generation's own
+/// revision, certified only when the rows commit beside it).
 pub struct IngestGeneration {
     pub facts: FactPublication,
     pub structure: StructuralPublication,
@@ -1791,8 +1793,9 @@ pub enum GenerationPublishOutcome {
     /// durable idempotence key. Nothing was rewritten, so unchanged
     /// reingest moves no row and no revision counter.
     SkippedUnchanged,
-    /// Crash-probe short-circuit (test-only): the `pending` receipt
-    /// committed and the generation transaction never ran.
+    /// Crash-probe short-circuit (test-only): the generation transaction
+    /// never committed — the pre-attempt durable state (the prior receipt
+    /// or none) is exactly what a pre-commit kill leaves.
     Interrupted,
 }
 
@@ -1868,10 +1871,16 @@ pub fn generation_markers_visible(
 }
 
 /// Deterministic crash injection for the receipt protocol's restart path:
-/// `CASS_TEST_VIEWER_GENERATION_CRASH` returns early AFTER the `pending`
-/// mark commits — the state a real mid-publication kill leaves (pending
-/// receipt, no generation rows).
+/// `CASS_TEST_VIEWER_GENERATION_CRASH` returns early BEFORE the generation
+/// transaction writes anything — the durable state any pre-commit kill
+/// leaves now that the receipt rides the transaction (no receipt for the
+/// attempted revision, no generation rows; the prior receipt, if any,
+/// stays honest for its own revision).
 fn generation_crash_probe() -> bool {
+    #[cfg(test)]
+    if test_generation_crash_probe_override() {
+        return true;
+    }
     dotenvy::var("CASS_TEST_VIEWER_GENERATION_CRASH")
         .map(|value| !value.is_empty() && value != "0")
         .unwrap_or(false)
@@ -1891,9 +1900,80 @@ const TIE_EVIDENCE_RACE_ATTEMPTS: usize = 3;
 /// receipt) rolls back together, so the archive can never hold a facts row
 /// without its structure.
 fn generation_fail_probe() -> bool {
+    #[cfg(test)]
+    if test_generation_fail_probe_override() {
+        return true;
+    }
     dotenvy::var("CASS_TEST_VIEWER_GENERATION_FAIL")
         .map(|value| !value.is_empty() && value != "0")
         .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Test-only instrumentation for the publication lane's durable-commit budget.
+//
+// `TEST_PUBLICATION_COMMIT_CALLS` counts the durable-commit calls
+// `publish_ingest_generation` issues on this thread: the generation
+// transaction commit, and — on the error path only — the standalone
+// `failed` receipt write (an autocommit commit). The publication lane is
+// synchronous on the caller's thread, so a thread-local counter keeps
+// parallel lib tests from counting each other's commits. Lib tests use it
+// to pin the per-conversation commit count without reaching into the
+// engine; it compiles away entirely in production builds. The probe
+// overrides below are thread-local for the same reason.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+thread_local! {
+    static TEST_PUBLICATION_COMMIT_CALLS: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(0) };
+}
+
+/// Record one durable-commit call in the publication lane (test builds only).
+#[cfg(test)]
+fn note_publication_commit_call() {
+    TEST_PUBLICATION_COMMIT_CALLS.with(|calls| calls.set(calls.get() + 1));
+}
+
+/// Durable-commit calls issued by the publication lane on this thread so far
+/// (test builds only).
+#[cfg(test)]
+pub(crate) fn test_publication_commit_calls() -> u64 {
+    TEST_PUBLICATION_COMMIT_CALLS.with(std::cell::Cell::get)
+}
+
+/// Reset the publication-lane commit-call counter (test builds only).
+#[cfg(test)]
+pub(crate) fn test_reset_publication_commit_calls() {
+    TEST_PUBLICATION_COMMIT_CALLS.with(|calls| calls.set(0));
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_GENERATION_CRASH_PROBE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+    static TEST_GENERATION_FAIL_PROBE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn test_generation_crash_probe_override() -> bool {
+    TEST_GENERATION_CRASH_PROBE.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn test_set_generation_crash_probe(enabled: bool) {
+    TEST_GENERATION_CRASH_PROBE.with(|probe| probe.set(enabled));
+}
+
+#[cfg(test)]
+fn test_generation_fail_probe_override() -> bool {
+    TEST_GENERATION_FAIL_PROBE.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn test_set_generation_fail_probe(enabled: bool) {
+    TEST_GENERATION_FAIL_PROBE.with(|probe| probe.set(enabled));
 }
 
 /// Deterministic stale-tie-race injection (test-only):
@@ -2020,17 +2100,22 @@ pub fn publish_ingest_generation_in_tx(
 /// 2. Compute the generation once (shared replay → shared
 ///    `source_revision`).
 /// 3. Skip when a `complete` receipt already binds this exact generation.
-/// 4. Commit a `pending` receipt on its own — the durable marker a
-///    mid-publication crash leaves behind.
-/// 5. Commit the whole generation in one transaction: facts + structure +
-///    parent fixup + `complete` receipt.
-/// 6. On error, commit a `failed` receipt carrying the exact reason, and
+/// 4. Commit the whole generation in ONE durable commit: facts + structure +
+///    parent fixup + search/meta regions + sort tie key + the `complete`
+///    receipt all ride one transaction. The receipt only becomes durable
+///    with the rows it certifies — one fewer durable commit per published
+///    conversation than the old standalone `pending` mark.
+/// 5. On error, commit a `failed` receipt carrying the exact reason, and
 ///    return the error (canonical ingest is unaffected — the caller
 ///    already committed).
 ///
-/// A `pending` receipt that outlives step 5 is durable evidence of an
-/// interrupted publication; the explicit resumable backfill lane
-/// reconciles it. No state here can ever masquerade as `complete`.
+/// A crash before step 4's commit leaves the pre-attempt state: no receipt
+/// for the attempted revision, or the prior receipt — possibly a `complete`
+/// at an older revision, honest for that revision since its rows still
+/// exist. Both the next ingest run's skip check (revision-keyed: a
+/// mismatch never skips) and the backfill lane's full revision-keyed
+/// conversation scan republish it. No state here can ever masquerade as
+/// `complete` for the current revision.
 pub fn publish_ingest_generation(
     connection: &Connection,
     conv: &Conversation,
@@ -2068,12 +2153,13 @@ pub fn publish_ingest_generation(
         attempts: previous.map(|r| r.attempts + 1).unwrap_or(1),
         updated_at_ms: now_ms(),
     };
-    // The pending mark commits on its own so a crash between here and the
-    // generation commit leaves durable, honest evidence — never a false
-    // complete and never a silently missing row-set.
-    super::facts::write_ingest_receipt(connection, &receipt)
-        .context("committing pending ingest receipt")?;
-
+    // The receipt rides the generation transaction below — it only becomes
+    // durable when the rows it certifies do, so a published conversation
+    // costs ONE durable commit instead of two. A crash before that commit
+    // leaves the pre-attempt state (the prior receipt — a `complete` at an
+    // older revision, honest for that revision — or none at all); the
+    // revision-keyed skip check and the backfill scan both repair it.
+    // Never a false `complete`, never a silently missing row-set.
     if generation_crash_probe() {
         return Ok(GenerationPublishOutcome::Interrupted);
     }
@@ -2123,6 +2209,8 @@ pub fn publish_ingest_generation(
                 }
                 tx.commit()
                     .context("committing ingest generation transaction")?;
+                #[cfg(test)]
+                note_publication_commit_call();
                 return Ok(());
             }
             // The guard refused: canonical identity moved between the
@@ -2154,6 +2242,9 @@ pub fn publish_ingest_generation(
                     error = %mark_error,
                     "failed to record the ingest publication failure durably"
                 );
+            } else {
+                #[cfg(test)]
+                note_publication_commit_call();
             }
             Err(error)
         }
@@ -2179,9 +2270,9 @@ pub fn publish_ingest_generation_best_effort(
     }
 }
 
-/// Best-effort batch hook: the same coherent-generation protocol, one
-/// pending/work pair per conversation so a single bad row leaves an
-/// honest `failed` receipt instead of aborting the batch's other work.
+/// Best-effort batch hook: the same coherent-generation protocol per
+/// conversation, so a single bad row leaves an honest `failed` receipt
+/// instead of aborting the batch's other work.
 pub fn publish_ingest_generations_batch_best_effort<'a>(
     connection: &Connection,
     pairs: impl IntoIterator<Item = (&'a Conversation, i64)>,

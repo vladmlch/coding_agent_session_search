@@ -12,6 +12,8 @@
 //! this is a ported implementation over the normalized CASS packet, not a
 //! re-parse of source journals (no JSONL rescan, no second parser).
 
+use std::collections::BTreeSet;
+
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
@@ -50,12 +52,15 @@ pub const RECEIPT_FAILED: &str = "failed";
 
 /// Durable per-session publication receipt persisted in `viewer_meta`.
 ///
-/// Lifecycle: the ingest orchestrator commits `pending` BEFORE the
-/// generation transaction so a crash mid-publication is visible rather
-/// than silent; `complete` is written INSIDE the generation transaction
-/// (the receipt can never claim coverage the rows do not have); `failed`
-/// is committed afterwards with the exact error. `attempts` counts
-/// pending marks so repeated failures are visible to operators.
+/// Lifecycle: the ingest orchestrator writes `complete` INSIDE the
+/// generation transaction — the receipt becomes durable with the rows it
+/// certifies and can never claim coverage they do not have, at a cost of
+/// ONE durable commit per published conversation. A crash before that
+/// commit leaves the pre-attempt state (no receipt, or the prior
+/// receipt — possibly a `complete` at an older revision, honest for
+/// that revision); the next ingest's revision-keyed skip check and the
+/// backfill lane's full conversation scan both repair it. `failed` is
+/// committed after the rollback with the exact error.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct IngestReceipt {
     pub conversation_id: i64,
@@ -68,7 +73,10 @@ pub struct IngestReceipt {
     pub projection_version: i64,
     /// Exact failure reason for `failed`; `null` otherwise.
     pub reason: Option<String>,
-    /// Number of `pending` marks written for this conversation.
+    /// Number of publication attempts for this conversation that reached a
+    /// durable verdict (`complete` or `failed`). A hard crash before the
+    /// generation commit leaves no trace in this count — the repair story
+    /// is revision-keyed, not attempts-keyed.
     pub attempts: i64,
     pub updated_at_ms: i64,
 }
@@ -371,6 +379,10 @@ pub fn publish_session_facts(
     let (parent_id, parent_resolution) =
         resolve_parent_conversation(db, publication, conversation_id)?;
     let detail = coverage_detail_json(publication, parent_resolution);
+    let parent_key = publication
+        .parent_external_id
+        .as_deref()
+        .map(parent_lookup_key);
 
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -382,12 +394,12 @@ pub fn publish_session_facts(
         "INSERT OR REPLACE INTO viewer_session_facts (\
             conversation_id, extractor_version, source_revision, coverage_state, \
             coverage_detail_json, is_subagent, parent_conversation_id, \
-            parent_external_id, \
+            parent_external_id, parent_lookup_key, \
             task_category, turn_count, step_count, thinking_block_count, \
             artifact_count, subagent_count, tool_error_count, \
             tool_calls_with_exit_status, file_fact_count, compaction_count, \
             model_set_json, first_prompt, extracted_at_ms\
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
         &[
             ParamValue::from(conversation_id),
             ParamValue::from(publication.extractor_version),
@@ -397,6 +409,9 @@ pub fn publish_session_facts(
             ParamValue::from(publication.is_subagent.map(i64::from)),
             ParamValue::from(parent_id),
             ParamValue::from(publication.parent_external_id.as_deref()),
+            // REPLACE rewrites the whole row, so the derived key must ride
+            // the same INSERT or a republication would NULL it.
+            ParamValue::from(parent_key),
             ParamValue::from(publication.task_category.as_deref()),
             ParamValue::from(publication.turn_count),
             ParamValue::from(publication.step_count),
@@ -669,25 +684,129 @@ fn resolve_parent_conversation(
     }
 }
 
-/// Targeted child-before-parent fixup (schema v3): sessions whose durable
-/// `parent_external_id` evidence matches the JUST-PUBLISHED parent gain a
-/// resolved `parent_conversation_id` inside the parent's own publication
-/// transaction — the child never needs a republish and the work stays
-/// scoped to rows that recorded this exact evidence (the evidence index),
-/// never a catalog rescan.
+/// The constant `parent_lookup_key` for evidence bearing a `LIKE`
+/// wildcard (`%`/`_`): such evidence is a pattern, not a literal, so it
+/// cannot be enumerated from a parent id's suffixes — every such row
+/// shares this one key, the fixup fetches them through a single sentinel
+/// probe and the engine's own `LIKE` (run per fetched row) decides the
+/// match. `\u{1}` cannot occur in real provider evidence (UUID-shaped
+/// `parentSessionId`/`parent_id` values, session file names).
+pub const PARENT_LOOKUP_WILDCARD_SENTINEL: &str = "\u{1}";
+
+/// The normalized form of `parent_external_id` the fixup probes by
+/// equality: ASCII-lowercased evidence, or the wildcard sentinel for
+/// evidence containing `%`/`_` (a `LIKE` wildcard acts as a pattern
+/// character, not a literal, so a plain lowercase key could never be
+/// derived from a parent id's suffixes). NULL evidence keeps its NULL
+/// key — an equality probe never fetches it.
 ///
-/// The match rule is `resolve_parent_conversation` inverted: same
-/// provider + same `source_id` scope, and the child's evidence equal to
-/// the parent's `external_id` or matching its `/{evidence}` /
+/// The SQL backfill in `migrate_facts_parent_lookup_key` mirrors this
+/// derivation exactly (`lower`/`char(1)`/`LIKE ... ESCAPE` are pinned to
+/// the Rust forms by the schema-migration test).
+pub fn parent_lookup_key(evidence: &str) -> String {
+    if evidence.contains('%') || evidence.contains('_') {
+        PARENT_LOOKUP_WILDCARD_SENTINEL.to_owned()
+    } else {
+        evidence.to_ascii_lowercase()
+    }
+}
+
+/// Every `parent_lookup_key` a parent's `external_id` can possibly claim,
+/// derived once per fixup call. For wildcard-free evidence the three arms
+/// of the fixup's match predicate reduce to key equality (the engine's
+/// `LIKE` is ASCII-case-insensitive and its `lower` folds exactly the
+/// ASCII range, so `X LIKE E ⟺ ascii_lower(X) == ascii_lower(E)`):
+/// * arm A (`parent = evidence`, byte-exact): probe the id itself,
+///   lowercased;
+/// * arm B (`parent LIKE '%/' || evidence`): probe every suffix that
+///   follows a `/`;
+/// * arm C (`parent LIKE '%' || evidence || '.jsonl'`): when the id ends
+///   with `.jsonl` (ASCII-ci), probe every suffix of the id minus that
+///   extension.
+///
+/// Wildcard-bearing evidence always keys to the sentinel, so the sentinel
+/// rides every probe set. Empty keys are dropped: they could only ever
+/// fetch empty-evidence rows, which the candidacy filter excludes anyway.
+/// A probe fetching a superset is fine — the engine's own predicate runs
+/// per fetched row — but a MISSED key would silently change linking, so
+/// this set must stay a proven superset (the differential test pins that
+/// property directly against the engine).
+pub fn parent_fixup_probe_keys(parent_external_id: &str) -> Vec<String> {
+    // ASCII-lowering is per-byte, so every probe key is a slice of one
+    // lowered copy of the id taken at the same char boundaries. The set
+    // dedups borrowed slices; the keys materialize once, after dedup, so
+    // a repeated suffix never allocates twice.
+    let lowered = parent_external_id.to_ascii_lowercase();
+    let mut keys = BTreeSet::new();
+    // Arm A.
+    keys.insert(lowered.as_str());
+    // Arm B: each suffix after a '/'.
+    for (idx, ch) in parent_external_id.char_indices() {
+        if ch == '/' {
+            keys.insert(&lowered[idx + 1..]);
+        }
+    }
+    // Arm C: each suffix of the id with a trailing `.jsonl` extension
+    // stripped. The extension bytes are ASCII, so the strip point is a
+    // char boundary of `lowered`.
+    let bytes = parent_external_id.as_bytes();
+    if bytes.len() >= 6 && bytes[bytes.len() - 6..].eq_ignore_ascii_case(b".jsonl") {
+        let core_len = bytes.len() - 6;
+        for (idx, _) in lowered
+            .char_indices()
+            .take_while(|&(idx, _)| idx <= core_len)
+        {
+            keys.insert(&lowered[idx..core_len]);
+        }
+    }
+    keys.retain(|key| !key.is_empty());
+    // Wildcard-bearing evidence keys to the sentinel, whatever the parent
+    // id looks like.
+    keys.insert(PARENT_LOOKUP_WILDCARD_SENTINEL);
+    keys.into_iter().map(str::to_owned).collect()
+}
+
+/// One probe-fetched candidate row awaiting the Rust-side candidacy
+/// filters: its conversation, coverage manifest, recorded evidence and
+/// the parent link it already carries (if any).
+struct FixupCandidate {
+    conversation_id: i64,
+    detail: Option<String>,
+    evidence: Option<String>,
+    existing_parent: Option<i64>,
+}
+
+/// Targeted child-before-parent fixup (schema v3, sargable since v9):
+/// sessions whose durable `parent_external_id` evidence matches the
+/// JUST-PUBLISHED parent gain a resolved `parent_conversation_id` inside
+/// the parent's own publication transaction — the child never needs a
+/// republish and the work stays scoped to rows that recorded this exact
+/// evidence, never a catalog rescan.
+///
+/// Candidates are fetched through `parent_lookup_key` (schema v9): one
+/// equality probe per key in [`parent_fixup_probe_keys`] — nothing but the
+/// index term in the WHERE, so the engine seeks
+/// `idx_viewer_session_facts_parent_lookup` instead of running the old
+/// suffix-`LIKE` scan across the whole archive once per published
+/// conversation. Every condition the old query filtered in SQL is then
+/// re-applied per fetched row: the unresolved/no-self/empty-evidence
+/// checks in Rust, the live provider + `source_id` scope in
+/// [`parent_scope_matches`] (a join inside the probe would break the
+/// index seek, and scope is mutable on canonical rows, so it is verified
+/// per candidate instead of denormalized), and the match predicate in
+/// [`parent_evidence_matches`] — the engine's own `=`/`LIKE` arms, so
+/// case sensitivity and wildcard semantics cannot drift from the old
+/// query. The match rule stays `resolve_parent_conversation` inverted:
+/// same provider + same `source_id` scope, and the child's evidence equal
+/// to the parent's `external_id` or matching its `/{evidence}` /
 /// `{evidence}.jsonl` suffix shapes. The forward rule's self-exclusion is
-/// kept too (`f.conversation_id != ?4`) so a corrupt row can never
-/// self-parent.
+/// kept too so a corrupt row can never self-parent.
 ///
 /// One recorded resolution is NOT claimable here: children the forward
 /// pass deliberately left `ambiguous` (their evidence matched several
 /// parents at publish time) must stay NULL rather than be linked to
 /// whichever matching parent arrives later. `no_evidence` rows are
-/// already excluded by the `parent_external_id IS NOT NULL` guard.
+/// already excluded: a NULL key is never fetched by an equality probe.
 ///
 /// Each resolved child's `coverage_detail_json` manifest is refreshed
 /// honestly (`parent.resolution` → `resolved`), so the persisted record
@@ -699,35 +818,59 @@ pub fn fixup_pending_parent_links(
     parent_source_id: &str,
     parent_external_id: &str,
 ) -> Result<usize> {
-    let candidates = db.facts_query_map(
-        "SELECT f.conversation_id, f.coverage_detail_json \
-         FROM viewer_session_facts f \
-         JOIN conversations c ON c.id = f.conversation_id \
-         JOIN agents a ON a.id = c.agent_id \
-         WHERE f.parent_conversation_id IS NULL \
-           AND f.parent_external_id IS NOT NULL \
-           AND f.parent_external_id != '' \
-           AND f.conversation_id != ?4 \
-           AND a.slug = ?1 AND c.source_id = ?2 \
-           AND (?3 = f.parent_external_id \
-                OR ?3 LIKE '%/' || f.parent_external_id \
-                OR ?3 LIKE '%' || f.parent_external_id || '.jsonl') \
-         ORDER BY f.conversation_id",
-        &[
-            ParamValue::from(parent_provider),
-            ParamValue::from(parent_source_id),
-            ParamValue::from(parent_external_id),
-            ParamValue::from(parent_conversation_id),
-        ],
-        |row| {
-            Ok((
-                row.get_typed::<i64>(0)?,
-                row.get_typed::<Option<String>>(1)?,
-            ))
-        },
-    )?;
+    // One index probe per derived key; candidates land in id order below,
+    // exactly the old query's ORDER BY.
+    let mut candidates: Vec<FixupCandidate> = Vec::new();
+    for key in parent_fixup_probe_keys(parent_external_id) {
+        let probed = db.facts_query_map(
+            "SELECT conversation_id, coverage_detail_json, parent_external_id, \
+                    parent_conversation_id \
+             FROM viewer_session_facts \
+             WHERE parent_lookup_key = ?1",
+            &[ParamValue::from(key)],
+            |row| {
+                Ok(FixupCandidate {
+                    conversation_id: row.get_typed(0)?,
+                    detail: row.get_typed(1)?,
+                    evidence: row.get_typed(2)?,
+                    existing_parent: row.get_typed(3)?,
+                })
+            },
+        )?;
+        candidates.extend(probed);
+    }
+    // A row carries exactly one key value and probe keys are unique, so a
+    // row surfaces at most once; the dedup is defense-in-depth for the
+    // corner where a clean evidence key equals the sentinel string.
+    candidates.sort_by_key(|row| row.conversation_id);
+    candidates.dedup_by_key(|row| row.conversation_id);
+
     let mut resolved = 0_usize;
-    for (child_id, detail) in candidates {
+    for FixupCandidate {
+        conversation_id: child_id,
+        detail,
+        evidence,
+        existing_parent,
+    } in candidates
+    {
+        // The old query's row filters, re-applied in Rust so the probe
+        // stays a pure index seek. A non-NULL key implies non-NULL
+        // evidence; the Option read keeps a corrupt row (key set,
+        // evidence NULL) skipped exactly like the old `IS NOT NULL`
+        // filter instead of erroring the publication transaction.
+        let Some(evidence) = evidence else { continue };
+        if existing_parent.is_some() || evidence.is_empty() {
+            continue;
+        }
+        if child_id == parent_conversation_id {
+            continue;
+        }
+        if !parent_scope_matches(db, child_id, parent_provider, parent_source_id)? {
+            continue;
+        }
+        if !parent_evidence_matches(db, parent_external_id, &evidence)? {
+            continue;
+        }
         let parsed = detail
             .as_deref()
             .and_then(|text| serde_json::from_str::<Value>(text).ok());
@@ -774,6 +917,57 @@ pub fn fixup_pending_parent_links(
         };
     }
     Ok(resolved)
+}
+
+/// Live scope check for one fetched candidate (the old query's
+/// `conversations`/`agents` join): the child's conversation must exist,
+/// still carry the parent's `source_id`, and its agent row must still
+/// slug to the parent's provider. Kept out of the probe query (a join
+/// there would break the index seek) and evaluated per row, so a scope
+/// reassigned between ingest passes can never link through stale scope.
+fn parent_scope_matches(
+    db: &impl FactsDb,
+    child_conversation_id: i64,
+    parent_provider: &str,
+    parent_source_id: &str,
+) -> Result<bool> {
+    let matched = db.facts_query_map(
+        "SELECT 1 FROM conversations c \
+         JOIN agents a ON a.id = c.agent_id \
+         WHERE c.id = ?1 AND c.source_id = ?2 AND a.slug = ?3 \
+         LIMIT 1",
+        &[
+            ParamValue::from(child_conversation_id),
+            ParamValue::from(parent_source_id),
+            ParamValue::from(parent_provider),
+        ],
+        |row| row.get_typed::<i64>(0),
+    )?;
+    Ok(!matched.is_empty())
+}
+
+/// The engine's own match predicate for one fetched candidate — the three
+/// arms of the old query's WHERE, evaluated as a scalar: byte-exact
+/// equality (case-SENSITIVE) or the two suffix `LIKE` shapes (ASCII
+/// case-insensitive, `%`/`_` wildcards live inside the evidence). Running
+/// the engine's `=`/`LIKE` instead of re-implementing them keeps case and
+/// wildcard semantics pinned to exactly what the old query did.
+fn parent_evidence_matches(
+    db: &impl FactsDb,
+    parent_external_id: &str,
+    evidence: &str,
+) -> Result<bool> {
+    let matched = db.facts_query_map(
+        "SELECT (?1 = ?2) \
+             OR (?1 LIKE '%/' || ?2) \
+             OR (?1 LIKE '%' || ?2 || '.jsonl')",
+        &[
+            ParamValue::from(parent_external_id),
+            ParamValue::from(evidence),
+        ],
+        |row| row.get_typed::<i64>(0),
+    )?;
+    Ok(matches!(matched.as_slice(), [1]))
 }
 
 /// Per-scope coverage manifest persisted in `coverage_detail_json`: every

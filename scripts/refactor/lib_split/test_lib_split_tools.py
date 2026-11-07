@@ -1260,14 +1260,252 @@ class StaleRefTests(unittest.TestCase):
 
     def test_indexer_fixture_allow_is_exact_line(self):
         # Controller ruling: the TempDir snippet-metadata fixture at
-        # src/indexer/mod.rs:41996 is the only admitted reference; the
-        # former 41920-41929 range and every adjacent line stay findings.
+        # src/indexer/mod.rs:42480 (repinned from 41996 after upstream
+        # indexer drift; still the same single
+        # `dir.path().join("src/lib.rs")` NormalizedSnippet file_path in
+        # backfill_lane_agrees_with_ingest_revision) is the only admitted
+        # reference; the former range and every adjacent line stay
+        # findings.
         import stale_refs as sr
         rel = "src/indexer/mod.rs"
-        self.assertTrue(sr.allowed(rel, 41996, sr.BUILTIN_ALLOW))
-        for line in (41927, 41995, 41997):
+        self.assertTrue(sr.allowed(rel, 42480, sr.BUILTIN_ALLOW))
+        for line in (41996, 42479, 42481):
             self.assertFalse(sr.allowed(rel, line, sr.BUILTIN_ALLOW),
                              f"line {line} must not be exempt")
+
+
+class StaleRefRetargetTests(unittest.TestCase):
+    """Emitted-retarget include allowances bind to the declared named
+    test and its exact include multiplicity.
+
+    Controller reproducer for 9171b5b5: a bare (test_file, kind, arg)
+    membership test exempted any matching include anywhere in the file —
+    inside unrelated functions and duplicated in the named test. The
+    declared site is the `test` fn's item span and the `with` bytes'
+    include multiset; anything else stays stale.
+    """
+
+    PART4 = "src/doctor/doctor_asset_taxonomy_tests_part_4.rs"
+    NAMED = ("run_doctor_stale_lock_removal_cannot_bypass_"
+             "fs_mutation_executor")
+
+    def _run(self, files):
+        import contextlib, io
+        import stale_refs as sr
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for rel, body in files.items():
+                p = root / rel
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(body)
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = sr.main(["stale_refs.py", "--repo", str(root)])
+        return rc, buf.getvalue()
+
+    def _named_test(self):
+        return ("#[test]\n"
+                f"fn {self.NAMED}() {{\n"
+                '    let source = include_str!("../lib.rs");\n'
+                "    assert!(!source.is_empty());\n"
+                "}\n")
+
+    def test_declared_named_test_site_admitted(self):
+        # the false positive at 06297f3a: the moved source reader inside
+        # its declared named test must be admitted.
+        rc, out = self._run({self.PART4: self._named_test()})
+        self.assertEqual(rc, 0, out)
+
+    def test_named_test_inside_mod_admitted(self):
+        # fn lookup is recursive: a sanctioned reader inside an inline
+        # mod (the doctor.rs test-mod shape) still binds.
+        body = ("mod tests {\n"
+                "    #[test]\n"
+                f"    fn {self.NAMED}() {{\n"
+                '        let source = include_str!("../lib.rs");\n'
+                "        assert!(!source.is_empty());\n"
+                "    }\n"
+                "}\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 0, out)
+
+    def test_rogue_reader_same_file_stays_stale(self):
+        # a matching reader in an unrelated fn is not emitted output —
+        # it stays STALE even beside a valid sanctioned site.
+        body = (self._named_test() +
+                "\n#[test]\n"
+                "fn unrelated_reader() {\n"
+                '    let rogue = include_str!("../lib.rs");\n'
+                "    assert!(!rogue.is_empty());\n"
+                "}\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("STALE-CONSUMER", out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_wrong_named_function_fails_closed(self):
+        body = ("#[test]\n"
+                "fn unrelated_reader() {\n"
+                '    let rogue = include_str!("../lib.rs");\n'
+                "    assert!(!rogue.is_empty());\n"
+                "}\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_duplicate_include_in_named_test_fails_closed(self):
+        # the `with` declares exactly one include_str!("../lib.rs");
+        # a second matching site in the named fn must fail closed.
+        body = ("#[test]\n"
+                f"fn {self.NAMED}() {{\n"
+                '    let a = include_str!("../lib.rs");\n'
+                '    let b = include_str!("../lib.rs");\n'
+                "    assert_eq!(a, b);\n"
+                "}\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_duplicate_include_same_line_fails_closed(self):
+        # controller reproducer shape: both matching includes on one
+        # line — per-line exemption would wrongly admit both; only the
+        # first occurrence is sanctioned.
+        body = ("#[test]\n"
+                f"fn {self.NAMED}() {{ "
+                'let a = include_str!("../lib.rs"); '
+                'let b = include_str!("../lib.rs"); '
+                "assert_eq!(a, b); }\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_ambiguous_named_target_fails_closed(self):
+        # two fns carrying the declared name: the site binding is
+        # ambiguous, so every matching include stays stale.
+        dup = ("#[test]\n"
+               f"fn {self.NAMED}() {{ "
+               'let s = include_str!("../lib.rs"); let _ = s; }\n')
+        rc, out = self._run({self.PART4: dup + "\n" + dup})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(2 unlisted", out)
+
+    def test_same_line_rogue_after_empty_named_fails_closed(self):
+        # controller dc302e90 reproducer: the empty named test shares a
+        # physical line with an unrelated reader — the include is
+        # outside the named item's byte span and must stay stale.
+        body = ("#[test]\n"
+                f"fn {self.NAMED}() {{}} "
+                "fn unrelated_unlisted_reader() { "
+                'let source = include_str!("../lib.rs"); '
+                "assert!(!source.is_empty()); }\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_same_line_rogue_before_named_fails_closed(self):
+        body = ("fn unrelated_unlisted_reader() { "
+                'let source = include_str!("../lib.rs"); '
+                "assert!(!source.is_empty()); } "
+                f"fn {self.NAMED}() {{}}\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_same_line_legitimate_site_admitted(self):
+        # the declared site shares a line with an unrelated fn — the
+        # include inside the named byte span is still admitted.
+        body = (f"fn {self.NAMED}() {{ "
+                'let s = include_str!("../lib.rs"); let _ = s; } '
+                "fn other() {}\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 0, out)
+
+    def test_same_line_rogue_beside_legitimate_fails_closed(self):
+        # sanctioned site inside the named span + rogue site after it
+        # on the same line: only the declared occurrence is admitted.
+        body = (f"fn {self.NAMED}() {{ "
+                'let a = include_str!("../lib.rs"); let _ = a; } '
+                'fn rogue() { let b = include_str!("../lib.rs"); '
+                "let _ = b; }\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_same_line_rogue_before_legitimate_fails_closed(self):
+        body = ('fn rogue() { let b = include_str!("../lib.rs"); '
+                "let _ = b; } "
+                f"fn {self.NAMED}() {{ "
+                'let a = include_str!("../lib.rs"); let _ = a; }\n')
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_unicode_inside_named_site_admitted(self):
+        body = (f'fn {self.NAMED}() {{ let s = "éé"; '
+                'let x = include_str!("../lib.rs"); let _ = x; }\n')
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 0, out)
+
+    def test_unicode_prefix_byte_offset_binding(self):
+        # multibyte text inside the named fn shifts byte offsets vs
+        # char offsets — the boundary must stay byte-exact: the rogue
+        # after `}` stays stale even though its char offset would look
+        # inside a byte-measured span.
+        body = (f'fn {self.NAMED}() {{ let s = "ééééé"; }} '
+                'fn rogue() { let r = include_str!("../lib.rs"); '
+                "let _ = r; }\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_unparseable_test_file_fails_closed(self):
+        # fn boundaries cannot be attributed in an unbalanced file —
+        # nothing is sanctioned.
+        body = (f"fn {self.NAMED}() {{ "
+                'let s = include_str!("../lib.rs"); let _ = s;\n')
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+
+    def test_src_lib_rs_find_site_still_exempt(self):
+        # preexisting source-root rule: a declared [[retarget]] `find`
+        # inside src/lib.rs is a scheduled rewrite site, not stale.
+        body = 'fn t() { let s = include_str!("lib.rs"); let _ = s; }\n'
+        rc, out = self._run({"src/lib.rs": body})
+        self.assertEqual(rc, 0, out)
+
+    def test_with_allowances_preserve_concat_multiplicities(self):
+        # concat output: each declared include counts with its own
+        # multiplicity; an arg re-declared by a later stage admits the
+        # maximum single-stage count, never the sum.
+        from collections import Counter
+        import stale_refs as sr
+        man = {"retarget": [
+            {"test": "t", "test_file": "src/x.rs", "stage": "1",
+             "find": 'include_str!("lib.rs")',
+             "with": 'concat!(include_str!("../lib.rs"), '
+                     'include_str!("../src/lib.rs"))'},
+            {"test": "t", "test_file": "src/x.rs", "stage": "2",
+             "find": 'include_str!("../lib.rs")',
+             "with": 'include_str!("run.rs")'},
+        ]}
+        sites = sr.retarget_with_allowances(man)
+        self.assertEqual(
+            sites["src/x.rs"]["t"],
+            Counter({("include_str!", "../lib.rs"): 1,
+                     ("include_str!", "../src/lib.rs"): 1,
+                     ("include_str!", "run.rs"): 1}))
+
+    def test_exemptions_consume_one_site_per_declared_include(self):
+        from collections import Counter
+        import stale_refs as sr
+        text = ("fn t() {\n"
+                '    let a = include_str!("../lib.rs");\n'
+                '    let b = include_str!("../lib.rs");\n'
+                "}\n")
+        adm, hits = sr.emitted_exemptions(
+            text, {"t": Counter({("include_str!", "../lib.rs"): 1})})
+        self.assertEqual(adm, {text.encode().index(b"include_str!")})
+        self.assertEqual(len(hits), 2)
 
 
 class SplitStageContractTests(unittest.TestCase):

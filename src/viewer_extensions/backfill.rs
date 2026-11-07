@@ -97,7 +97,10 @@ pub struct BackfillStats {
     pub failed_conversation_ids: Vec<i64>,
     /// Sessions that carried a NON-`complete` ingest receipt (`pending`
     /// or `failed`) before this run and are now durably `complete` — the
-    /// reconciliation signal for interrupted ingest publications.
+    /// reconciliation signal for interrupted ingest publications. A hard
+    /// ingest crash (kill before the generation commit) leaves no receipt
+    /// at all, so those sessions converge as ordinary `published` work
+    /// through the same revision-keyed scan.
     pub reconciled: usize,
     /// `limit` was reached mid-archive; more work remains for a later run.
     pub limit_reached: bool,

@@ -4,12 +4,20 @@
 //! Observed drift: on 2026-09-26 the manifest moved franken-agent-detection
 //! to `=0.3.2` while both tables still said `=0.3.1`, and the 2026-09-23 audit
 //! found the tables two releases stale.
+//!
+//! Since 2026-11-07 the fsqlite family resolves from the owner's
+//! frankensqlite fork through the committed `[patch.crates-io]` table: the
+//! `[dependencies]` entries keep registry-shaped `=0.4.12` requirements, so
+//! the fork's git revision is adopted from the patch entry here — otherwise
+//! a row documenting the fork source would be unchecked (and the family row
+//! would silently drop out of the `checked >= 6` floor).
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 /// An exactly pinned `[dependencies]` entry: its version, and the git
-/// revision when it resolves from git instead of the registry.
+/// revision when it resolves from git instead of the registry — either its
+/// own `git`/`rev` fields or the committed `[patch.crates-io]` redirect.
 struct Pin {
     version: String,
     rev: Option<String>,
@@ -18,6 +26,19 @@ struct Pin {
 /// `[dependencies]` entries pinned to an exact version: key -> pin.
 fn exact_pins(manifest: &str) -> BTreeMap<String, Pin> {
     let manifest: toml::Table = manifest.parse().expect("Cargo.toml parses");
+    let patches = manifest
+        .get("patch")
+        .and_then(|patch| patch.get("crates-io"))
+        .and_then(toml::Value::as_table);
+    // A patch entry contributes a rev only when it is a git redirect.
+    let patch_rev = |package: &str| {
+        let entry = patches?.get(package)?.as_table()?;
+        entry.get("git").and_then(toml::Value::as_str)?;
+        entry
+            .get("rev")
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+    };
     let deps = manifest["dependencies"]
         .as_table()
         .expect("[dependencies] table");
@@ -32,11 +53,22 @@ fn exact_pins(manifest: &str) -> BTreeMap<String, Pin> {
                 _ => return None,
             };
             let exact = version.strip_prefix('=')?;
+            let package = match spec {
+                toml::Value::Table(table) => table.get("package").and_then(toml::Value::as_str),
+                _ => None,
+            };
+            let rev = match rev {
+                Some(rev) => Some(rev.to_owned()),
+                None => package
+                    .map(str::to_owned)
+                    .or_else(|| Some(key.clone()))
+                    .and_then(|package| patch_rev(&package)),
+            };
             Some((
                 key.clone(),
                 Pin {
                     version: exact.trim().to_owned(),
-                    rev: rev.map(str::to_owned),
+                    rev,
                 },
             ))
         })

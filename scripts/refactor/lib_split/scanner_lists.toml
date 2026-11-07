@@ -104,6 +104,8 @@ sources = [
   "src/cli/commands/schedule.rs",
   "src/cli/commands/subcommand_robot_output_tests.rs",
   "src/doctor/policy.rs",
+  "src/doctor/doctor_asset_taxonomy_tests_part_1.rs",
+  "src/doctor/doctor_asset_taxonomy_tests_part_2.rs",
   "README.md",
   "AGENTS.md",
 ]
@@ -151,7 +153,7 @@ note = "REMOVED_COMMANDS/REMOVED_FLAGS tables + removed-command diagnostic; recu
 
 [scanner.doctor_chokepoint]
 test = "src/doctor_chokepoint.rs"
-sources = ["src/lib.rs"]
+sources = ["src/lib.rs", "src/doctor/fs_safety/cleanup_apply.rs", "src/doctor/fs_safety/mutation_executor.rs", "src/doctor/cleanup_target_safety_tests.rs", "src/doctor/doctor_asset_taxonomy_tests_part_2.rs", "src/doctor/doctor_asset_taxonomy_tests_part_3.rs", "src/doctor/doctor_asset_taxonomy_tests_part_4.rs", "src/doctor/doctor_asset_taxonomy_tests_part_7.rs"]
 patterns = ["DoctorFsMutationKind"]
 note = "in-source chokepoint audit reads lib.rs (doctor_mutate_auditor companion)"
 
@@ -166,7 +168,7 @@ note = "legacy_cli_dispatch test in src/doctor.rs reads lib.rs + doctor.rs marke
 
 [scanner.agent_detection_completeness]
 test = "tests/agent_detection_completeness.rs"
-sources = ["src/lib.rs", "src/cli/commands/stats_diag_storage/run_diag.rs", "src/cli/commands/status_health/diagnostics.rs"]
+sources = ["src/lib.rs", "src/cli/commands/stats_diag_storage/run_diag.rs", "src/cli/commands/status_health/diagnostics.rs", "src/doctor/lexical_cleanup_disposition_label.rs"]
 patterns = ["diagnostics_connector_paths", "detect_installed_agents"]
 note = "read_to_string(root.join(src/lib.rs)) — join()-form consumer"
 

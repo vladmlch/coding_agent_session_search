@@ -280,11 +280,208 @@ struct ConnectorLineQuarantineState {
     entries: BTreeMap<String, ConnectorLineQuarantineRecord>,
 }
 
-static CONNECTOR_LINE_QUARANTINE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+/// One malformed-line observation for a source file: the line's identity
+/// plus privacy-safe payload facts (digest and size), never the payload
+/// itself. [`ConnectorLineObservation::observe`] digests the line immediately
+/// so a collected per-file batch never retains private content.
+#[derive(Debug, Clone)]
+pub struct ConnectorLineObservation {
+    line_number: u64,
+    payload_blake3: String,
+    payload_bytes: usize,
+    failure_kind: String,
+}
 
-/// Upsert one malformed connector line without retaining its private content.
-/// Concurrent connector scans are serialized so one provider cannot overwrite
-/// another provider's newly observed record.
+impl ConnectorLineObservation {
+    /// Digest one malformed line without retaining it.
+    #[must_use]
+    pub fn observe(line_number: u64, payload: &[u8], failure_kind: &str) -> Self {
+        Self {
+            line_number,
+            payload_blake3: blake3::hash(payload).to_hex().to_string(),
+            payload_bytes: payload.len(),
+            failure_kind: failure_kind.to_string(),
+        }
+    }
+}
+
+/// In-memory [`ConnectorLineQuarantineState`] for one scan data dir, kept for
+/// the life of the process behind [`CONNECTOR_LINE_QUARANTINE_LOCK`] so a
+/// source-file batch does not re-read and re-serialize the whole ledger per
+/// malformed line. Only the batch path caches; a cache for a different data
+/// dir is dropped on the next batch (only tests use more than one data dir
+/// per process, and an unpublished attempt-count bump is advisory data).
+struct ConnectorLineLedgerCache {
+    data_dir: PathBuf,
+    state: ConnectorLineQuarantineState,
+    /// Sticky flag: the cached state holds at least one entry not yet
+    /// published. Set when a batch inserts a new entry, cleared by a
+    /// successful [`publish_connector_line_cache`]. Attempt-count-only
+    /// updates deliberately leave it unset, so an unchanged re-scan writes
+    /// nothing at all.
+    needs_persist: bool,
+}
+
+static CONNECTOR_LINE_QUARANTINE_LOCK: OnceLock<Mutex<Option<ConnectorLineLedgerCache>>> =
+    OnceLock::new();
+
+fn lock_connector_line_ledger() -> std::sync::MutexGuard<'static, Option<ConnectorLineLedgerCache>>
+{
+    CONNECTOR_LINE_QUARANTINE_LOCK
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn connector_line_ledger_path(data_dir: &Path) -> PathBuf {
+    data_dir
+        .join("quarantine")
+        .join("connector_ingest_lines.json")
+}
+
+fn load_connector_line_state(data_dir: &Path) -> std::io::Result<ConnectorLineQuarantineState> {
+    let path = connector_line_ledger_path(data_dir);
+    match std::fs::read_to_string(&path) {
+        Ok(json) => serde_json::from_str(&json).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid connector quarantine state: {error}"),
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Reuse the cached ledger for `data_dir`, or load it from disk when the cache
+/// holds a different data dir (or nothing). A load failure must not poison
+/// the slot: it leaves the previous cache untouched so a later batch retries
+/// the load.
+fn ensure_connector_line_cache<'a>(
+    cache: &'a mut Option<ConnectorLineLedgerCache>,
+    data_dir: &Path,
+) -> std::io::Result<&'a mut ConnectorLineLedgerCache> {
+    if !cache
+        .as_ref()
+        .is_some_and(|cached| cached.data_dir == data_dir)
+    {
+        let state = load_connector_line_state(data_dir)?;
+        *cache = Some(ConnectorLineLedgerCache {
+            data_dir: data_dir.to_path_buf(),
+            state,
+            needs_persist: false,
+        });
+    }
+    Ok(cache
+        .as_mut()
+        .expect("connector-line ledger cache was just ensured"))
+}
+
+/// Upsert observations into `state`, returning whether any observation was a
+/// first sighting (an entry insert). A repeat of an already-recorded
+/// `(provider, source, line, digest)` advances only `last_observed_at` and
+/// `attempt_count` — the dedup contract that keeps re-scans from growing the
+/// ledger. All other fields keep their first-recorded values, exactly as the
+/// per-line writer did.
+fn upsert_connector_line_observations(
+    state: &mut ConnectorLineQuarantineState,
+    provider: &str,
+    source_path: &str,
+    observations: &[ConnectorLineObservation],
+) -> bool {
+    let mut inserted = false;
+    for observation in observations {
+        let key = format!(
+            "{}|{}|{}|{}",
+            provider, source_path, observation.line_number, observation.payload_blake3
+        );
+        let now = Utc::now();
+        if let Some(record) = state.entries.get_mut(&key) {
+            record.last_observed_at = now;
+            record.attempt_count = record.attempt_count.saturating_add(1);
+        } else {
+            state.entries.insert(
+                key,
+                ConnectorLineQuarantineRecord {
+                    provider: provider.to_string(),
+                    source_path: source_path.to_string(),
+                    line_number: observation.line_number,
+                    payload_blake3: observation.payload_blake3.clone(),
+                    payload_bytes: observation.payload_bytes,
+                    failure_kind: observation.failure_kind.clone(),
+                    first_observed_at: now,
+                    last_observed_at: now,
+                    attempt_count: 1,
+                },
+            );
+            inserted = true;
+        }
+    }
+    inserted
+}
+
+/// Atomically publish the cached ledger (single-file replacement with fsyncs,
+/// see `checkpoint::save`) and clear the sticky flag.
+fn publish_connector_line_cache(cache: &mut ConnectorLineLedgerCache) -> std::io::Result<()> {
+    let quarantine_dir = cache.data_dir.join("quarantine");
+    std::fs::create_dir_all(&quarantine_dir)?;
+    let path = quarantine_dir.join("connector_ingest_lines.json");
+    checkpoint::save(&path, &cache.state)?;
+    cache.needs_persist = false;
+    Ok(())
+}
+
+/// Record one source file's malformed lines and publish the ledger at most
+/// once for the whole batch: O(1) ledger publications per source file per
+/// scan, instead of one full-ledger rewrite plus two fsyncs per malformed
+/// line.
+///
+/// Every observation still lands with the same fields and attempt-count
+/// semantics as a per-line [`record_connector_line`]: first sightings insert a
+/// fresh entry, repeats advance `last_observed_at`/`attempt_count`, and the
+/// payload itself is never stored. Publication is skipped only when the batch
+/// observed nothing the ledger does not already hold — every entry present
+/// with the same digest and failure kind — so an unchanged re-scan costs no
+/// ledger write at all. A skipped batch's attempt-count updates stay in the
+/// in-memory cache and ride along with the next publication of the same data
+/// dir; a crash may drop such not-yet-published advisory updates, but
+/// publication itself stays a single atomic replacement, so the ledger can
+/// only ever be behind, never corrupted.
+pub fn record_connector_line_batch(
+    data_dir: &Path,
+    provider: &str,
+    source_path: &Path,
+    observations: &[ConnectorLineObservation],
+) -> std::io::Result<()> {
+    if observations.is_empty() {
+        return Ok(());
+    }
+    let mut guard = lock_connector_line_ledger();
+    let cache = ensure_connector_line_cache(&mut guard, data_dir)?;
+    let source_path_string = source_path.display().to_string();
+    if upsert_connector_line_observations(
+        &mut cache.state,
+        provider,
+        &source_path_string,
+        observations,
+    ) {
+        cache.needs_persist = true;
+    }
+    if !cache.needs_persist {
+        return Ok(());
+    }
+    publish_connector_line_cache(cache)
+}
+
+/// Upsert one malformed connector line without retaining its private content
+/// and publish the ledger immediately. Concurrent connector scans are
+/// serialized so one provider cannot overwrite another provider's newly
+/// observed record. The source-file scan path batches through
+/// [`record_connector_line_batch`]; this entry point keeps the direct
+/// one-observation, one-publication contract (a repeated observation is
+/// published too) for callers outside a file scan. It reads the ledger from
+/// disk on every call and therefore never depends on, or disturbs, the batch
+/// cache beyond dropping a same-dir cache it just superseded.
 pub fn record_connector_line(
     data_dir: &Path,
     provider: &str,
@@ -293,51 +490,38 @@ pub fn record_connector_line(
     payload: &[u8],
     failure_kind: &str,
 ) -> std::io::Result<()> {
-    let _guard = CONNECTOR_LINE_QUARANTINE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut guard = lock_connector_line_ledger();
     let quarantine_dir = data_dir.join("quarantine");
     std::fs::create_dir_all(&quarantine_dir)?;
     let path = quarantine_dir.join("connector_ingest_lines.json");
-    let mut state: ConnectorLineQuarantineState = match std::fs::read_to_string(&path) {
-        Ok(json) => serde_json::from_str(&json).map_err(|error| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("invalid connector quarantine state: {error}"),
-            )
-        })?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Default::default(),
-        Err(error) => return Err(error),
-    };
-    let digest = blake3::hash(payload).to_hex().to_string();
-    let key = format!(
-        "{}|{}|{}|{}",
+    let mut state = load_connector_line_state(data_dir)?;
+    let source_path_string = source_path.display().to_string();
+    let observation = ConnectorLineObservation::observe(line_number, payload, failure_kind);
+    upsert_connector_line_observations(
+        &mut state,
         provider,
-        source_path.display(),
-        line_number,
-        digest
+        &source_path_string,
+        std::slice::from_ref(&observation),
     );
-    let now = Utc::now();
-    state
-        .entries
-        .entry(key)
-        .and_modify(|record| {
-            record.last_observed_at = now;
-            record.attempt_count = record.attempt_count.saturating_add(1);
-        })
-        .or_insert_with(|| ConnectorLineQuarantineRecord {
-            provider: provider.to_string(),
-            source_path: source_path.display().to_string(),
-            line_number,
-            payload_blake3: digest,
-            payload_bytes: payload.len(),
-            failure_kind: failure_kind.to_string(),
-            first_observed_at: now,
-            last_observed_at: now,
-            attempt_count: 1,
-        });
-    checkpoint::save(&path, &state)
+    let result = checkpoint::save(&path, &state);
+    if result.is_ok()
+        && guard
+            .as_ref()
+            .is_some_and(|cached| cached.data_dir == data_dir)
+    {
+        // The cache predates this publication; drop it so the next batch
+        // reloads the fresh on-disk state instead of publishing a stale one.
+        *guard = None;
+    }
+    result
+}
+
+/// In-crate test hooks for asserting how often the quarantine ledgers are
+/// published. `save_count(dir)` counts attempted atomic publications of a
+/// ledger stored inside `dir`; see `checkpoint::test_counts`.
+#[cfg(test)]
+pub(crate) mod test_support {
+    pub(crate) use super::checkpoint::test_counts::{get as save_count, reset as reset_save_count};
 }
 
 #[cfg(test)]
