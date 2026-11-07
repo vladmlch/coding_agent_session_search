@@ -32,6 +32,8 @@ sources = [
   "src/cli/commands/status_health/probe_daemon_runtime_for_diagnostics.rs",
   "src/cli/commands/status_health/run_health.rs",
   "src/cli/commands/run_onboarding_interactive_wizard.rs",
+  "src/cli/commands/sessions_context.rs",
+  "src/cli/commands/view/role_to_export_string.rs",
 ]
 patterns = ["kind_str", "CliErrorKind::"]
 note = "error-kind scan: CliErrorKind literals, kind_str mapping, golden envelope"
@@ -69,6 +71,8 @@ sources = [
   "src/cli/commands/stats_diag_storage/run_stats.rs",
   "src/cli/commands/status_health/probe_daemon_runtime_for_diagnostics.rs",
   "src/cli/commands/status_health/run_health.rs",
+  "src/cli/commands/sessions_context.rs",
+  "src/cli/commands/view/role_to_export_string.rs",
   "README.md",
   "AGENTS.md",
 ]
