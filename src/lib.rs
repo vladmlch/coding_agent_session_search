@@ -70715,50 +70715,50 @@ pub use crate::cli::commands::capabilities_introspect::run_api_version::register
 pub(crate) use crate::cli::commands::capabilities_introspect::run_api_version::*;
 // -- generated lib-split bridges --
 #[allow(unused_imports)]
-pub use crate::cli::paths::{default_db_path};
-#[allow(unused_imports)]
-pub use crate::cli::paths::{resolve_data_dir};
-#[allow(unused_imports)]
-pub use crate::cli::paths::{default_data_dir};
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::index::run_lexical_reconcile_cli::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::paths::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::paths::resolve_data_dir_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::paths::session_paths::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::resume::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::export::indexed_export_cli_error::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::export::export_html_password_tests::*;
+pub(crate) use crate::cli::commands::expand::*;
 #[cfg(all(test, not(windows)))]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::export::clipboard_helper_tests::*;
+#[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::export_html::*;
+pub(crate) use crate::cli::commands::export::export_html_password_tests::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::export::export_timestamp_tests::*;
-#[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::export::legacy_source_filter_tests::*;
+pub(crate) use crate::cli::commands::export::format_as_markdown::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::export::indexed_conversation_fallback_tests_part_1::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::export::indexed_conversation_fallback_tests_part_2::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::export::indexed_export_cli_error::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::export::legacy_source_filter_tests::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::export::robot_output_score_tests::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::export::format_as_markdown::*;
+pub(crate) use crate::cli::commands::export_html::*;
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::expand::*;
+pub(crate) use crate::cli::commands::index::run_lexical_reconcile_cli::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::resume::*;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::timeline::*;
+#[allow(unused_imports)]
+pub use crate::cli::paths::default_data_dir;
+#[allow(unused_imports)]
+pub use crate::cli::paths::default_db_path;
+#[allow(unused_imports)]
+pub use crate::cli::paths::resolve_data_dir;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::paths::resolve_data_dir_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::paths::session_paths::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::paths::*;

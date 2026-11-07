@@ -5,13 +5,11 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Show messages around a specific line in a session file
 pub(crate) fn run_expand(
@@ -196,7 +194,6 @@ pub(crate) fn run_expand(
     Ok(())
 }
 
-
 pub(crate) fn extract_message_timestamp(msg: &serde_json::Value) -> Option<i64> {
     msg.get("timestamp")
         .and_then(crate::connectors::parse_timestamp)
@@ -211,7 +208,6 @@ pub(crate) fn extract_message_timestamp(msg: &serde_json::Value) -> Option<i64> 
                 .and_then(crate::connectors::parse_timestamp)
         })
 }
-
 
 pub(crate) fn flatten_pi_family_text_content(content: &serde_json::Value) -> Option<String> {
     let blocks = content.as_array()?;
@@ -253,7 +249,6 @@ pub(crate) fn flatten_pi_family_text_content(content: &serde_json::Value) -> Opt
 
     (!parts.is_empty()).then(|| parts.join("\n"))
 }
-
 
 pub(crate) fn extract_text_content_without_tool_blocks(msg: &serde_json::Value) -> String {
     fn flatten_without_tool_blocks(content: &serde_json::Value) -> Option<String> {
@@ -321,7 +316,6 @@ pub(crate) fn extract_text_content_without_tool_blocks(msg: &serde_json::Value) 
     String::new()
 }
 
-
 pub(crate) fn extract_text_content(msg: &serde_json::Value) -> String {
     // Use the well-tested flatten_content helper from connectors module
     // It handles: direct strings, {"type": "text"}, {"type": "input_text"},
@@ -361,14 +355,12 @@ pub(crate) fn extract_text_content(msg: &serde_json::Value) -> String {
     String::new()
 }
 
-
 pub(crate) fn normalized_export_role(role: &str) -> &str {
     match role {
         "toolResult" | "tool_result" => "tool",
         other => other,
     }
 }
-
 
 /// Extract role from message (supports various formats)
 pub(crate) fn extract_role(msg: &serde_json::Value) -> String {
@@ -401,7 +393,6 @@ pub(crate) fn extract_role(msg: &serde_json::Value) -> String {
     "unknown".to_string()
 }
 
-
 /// Remove lossy tool-call lines from normalized Pi-family assistant text.
 ///
 /// This is only used when the canonical source envelope is unavailable and
@@ -418,7 +409,6 @@ pub(crate) fn strip_flattened_tool_call_lines(content: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
-
 
 /// Strip redundant "[Tool: X]" markers from content when tool call is shown separately.
 pub(crate) fn strip_tool_marker(content: &str) -> String {
@@ -440,7 +430,6 @@ pub(crate) fn strip_tool_marker(content: &str) -> String {
 
     content.to_string()
 }
-
 
 /// Truncate a string smartly at word boundaries with ellipsis.
 ///

@@ -5,20 +5,18 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
-pub(crate) use chrono::Utc;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::franken_sync::compat::{
+        ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
+        open_with_flags as open_franken_with_flags,
+    };
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Show activity timeline for a time range
 #[allow(clippy::too_many_arguments)]

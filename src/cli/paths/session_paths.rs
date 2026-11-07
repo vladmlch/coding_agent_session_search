@@ -3,26 +3,26 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::franken_sync::compat::{
+        ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
+        open_with_flags as open_franken_with_flags,
+    };
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
-
-
 /// Read session paths from a file or stdin (when path is "-").
 /// Returns a HashSet of session paths for filtering.
-pub(crate) fn read_session_paths(source: &str) -> Result<std::collections::HashSet<String>, std::io::Error> {
+pub(crate) fn read_session_paths(
+    source: &str,
+) -> Result<std::collections::HashSet<String>, std::io::Error> {
     use std::collections::HashSet;
     use std::io::{BufRead, BufReader};
 
@@ -45,12 +45,10 @@ pub(crate) fn read_session_paths(source: &str) -> Result<std::collections::HashS
     Ok(paths)
 }
 
-
 pub(crate) enum BoundedSessionPaths {
     Complete(std::collections::HashSet<String>),
     TimedOut,
 }
-
 
 pub(crate) fn sessions_from_error(error: impl std::fmt::Display) -> CliError {
     CliError {
@@ -61,7 +59,6 @@ pub(crate) fn sessions_from_error(error: impl std::fmt::Display) -> CliError {
         retryable: false,
     }
 }
-
 
 /// Materialize a session-path scope all-or-nothing behind the caller's robot
 /// deadline. The caller never searches against a partially read scope.
@@ -96,7 +93,6 @@ pub(crate) fn read_session_paths_bounded(
         }
     }
 }
-
 
 /// GH#414: how many of the requested `--sessions-from` paths the index has
 /// actually seen. A filter that resolves to ZERO indexed sessions makes an
@@ -149,7 +145,6 @@ pub(crate) fn count_indexed_session_paths(
     complete.then_some(matched)
 }
 
-
 /// Workspace paths the archive knows about, through the strict read-only
 /// opener. `None` when the database cannot be read quickly.
 pub(crate) fn indexed_workspace_paths(db_path: &Path) -> Option<Vec<String>> {
@@ -173,7 +168,6 @@ pub(crate) fn indexed_workspace_paths(db_path: &Path) -> Option<Vec<String>> {
     let _ = conn.close_without_checkpoint_sync();
     paths
 }
-
 
 /// uojcg.7.1: a search filtered to one `--workspace` that comes back empty
 /// reads exactly like "nothing matches", so an agent drops a query that a
@@ -207,7 +201,6 @@ pub(crate) fn diagnose_empty_workspace_search(
     ))
 }
 
-
 // ============================================================================
 // NEW COMMANDS: Export, Expand, Timeline
 // ============================================================================
@@ -226,7 +219,6 @@ pub(crate) struct ResumeTarget {
     /// Why the agent was detected — useful for diagnostics and JSON output.
     pub(crate) detection_reason: String,
 }
-
 
 /// POSIX shell escaping for a single argument: wraps in single quotes
 /// and escapes any embedded single quotes. Keeps the output suitable
@@ -254,7 +246,6 @@ pub(crate) fn shell_quote(arg: &str) -> String {
     out
 }
 
-
 /// Result of agent detection: the normalized slug and a short human-readable
 /// reason for diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,7 +258,6 @@ pub(crate) struct DetectedAgent {
     pub(crate) is_override: bool,
     pub(crate) reason: String,
 }
-
 
 pub(crate) fn omp_session_dir_from_path(path: &Path) -> Option<PathBuf> {
     if let Some(root) = crate::connectors::omp::configured_session_root(path) {
@@ -286,13 +276,15 @@ pub(crate) fn omp_session_dir_from_path(path: &Path) -> Option<PathBuf> {
     })
 }
 
-
 /// Detect which coding-agent harness owns a given session path.
 ///
 /// Detection is path-based and mirrors the layouts that the bundled
 /// connectors understand. If `agent_override` is set, its value is
 /// validated and returned verbatim.
-pub(crate) fn detect_resume_agent(path: &Path, agent_override: Option<&str>) -> CliResult<DetectedAgent> {
+pub(crate) fn detect_resume_agent(
+    path: &Path,
+    agent_override: Option<&str>,
+) -> CliResult<DetectedAgent> {
     if let Some(raw) = agent_override {
         let normalized = raw.trim().to_ascii_lowercase();
         let slug = match normalized.as_str() {
@@ -418,7 +410,6 @@ pub(crate) fn detect_resume_agent(path: &Path, agent_override: Option<&str>) -> 
     })
 }
 
-
 /// Extract a UUID-ish identifier from a session filename.
 ///
 /// Strips a single trailing extension (`.jsonl`, `.json`, `.log`, …)
@@ -431,7 +422,6 @@ pub(crate) fn extract_filename_session_id(path: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-
 /// Best-effort check that `candidate` looks like a UUID in the canonical
 /// 8-4-4-4-12 hex form (case-insensitive). Both Claude Code and Codex
 /// store sessions at `<dir>/<uuid>.jsonl`, so if we extracted something
@@ -440,7 +430,6 @@ pub(crate) fn extract_filename_session_id(path: &Path) -> Option<String> {
 pub(crate) fn looks_like_session_uuid(candidate: &str) -> bool {
     looks_like_session_uuid_bytes(candidate.as_bytes())
 }
-
 
 /// Byte-level core of [`looks_like_session_uuid`], reused by
 /// [`extract_uuid_from_stem`] so a sliding window can be checked without an
@@ -465,7 +454,6 @@ pub(crate) fn looks_like_session_uuid_bytes(bytes: &[u8]) -> bool {
     }
     true
 }
-
 
 /// Recover a canonical 8-4-4-4-12 hex UUID from a filename stem that may carry
 /// a prefix. Codex names rollout sessions
@@ -498,13 +486,11 @@ pub(crate) fn extract_uuid_from_stem(stem: &str) -> Option<String> {
     None
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PiFamilyHarness {
     PiAgent,
     Omp,
 }
-
 
 impl PiFamilyHarness {
     pub(crate) const fn display_name(self) -> &'static str {
@@ -522,7 +508,6 @@ impl PiFamilyHarness {
     }
 }
 
-
 /// Extract a Pi-family session id from a JSONL session file.
 ///
 /// Pi-family session files begin with a `{"type":"session", ...}` header
@@ -535,7 +520,10 @@ impl PiFamilyHarness {
 /// first line (e.g. a JSONL file with no newlines, or a single megabyte
 /// of garbage before the real content) cannot OOM the process. The
 /// session header is always well under this budget in practice.
-pub(crate) fn extract_pi_family_session_id(path: &Path, harness: PiFamilyHarness) -> CliResult<String> {
+pub(crate) fn extract_pi_family_session_id(
+    path: &Path,
+    harness: PiFamilyHarness,
+) -> CliResult<String> {
     use std::io::{BufRead as _, Read as _};
     const MAX_SCAN_BYTES: u64 = 1024 * 1024; // 1 MiB
     let file = std::fs::File::open(path).map_err(|err| CliError {
@@ -626,7 +614,6 @@ pub(crate) fn extract_pi_family_session_id(path: &Path, harness: PiFamilyHarness
     })
 }
 
-
 /// Extract an OpenCode session id from a cass-stored source_path.
 ///
 /// Cass records OpenCode conversations with
@@ -699,7 +686,6 @@ pub(crate) fn extract_opencode_session_id(path: &Path, strict: bool) -> CliResul
     Ok(decoded)
 }
 
-
 /// Extract the Antigravity conversation UUID from a transcript source path.
 ///
 /// Antigravity records each conversation under
@@ -755,11 +741,13 @@ pub(crate) fn extract_antigravity_conversation_id(path: &Path) -> CliResult<Stri
     })
 }
 
-
 /// Build the ready-to-run resume target for a session path. Does not
 /// touch the filesystem unless the agent requires file-based id
 /// extraction (pi-agent).
-pub(crate) fn resolve_resume_target(path: &Path, agent_override: Option<&str>) -> CliResult<ResumeTarget> {
+pub(crate) fn resolve_resume_target(
+    path: &Path,
+    agent_override: Option<&str>,
+) -> CliResult<ResumeTarget> {
     let detected = detect_resume_agent(path, agent_override)?;
     let detection_reason = detected.reason;
     // Skip strict validations (like UUID-shape checks) when the user

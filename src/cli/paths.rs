@@ -3,17 +3,14 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
-
-
 pub fn default_db_path() -> PathBuf {
     default_data_dir().join("agent_search.db")
 }
-
 
 /// Resolve the effective data dir, honoring an explicit `--db` override
 /// (GH #403).
@@ -52,7 +49,6 @@ pub fn resolve_data_dir(
     default_dir
 }
 
-
 /// Best-effort path identity: canonicalize both sides when possible (resolves
 /// symlinks and relative segments), fall back to the literal paths otherwise
 /// (e.g. the default data dir does not exist yet on a fresh install).
@@ -66,11 +62,9 @@ pub(crate) fn same_directory(a: &Path, b: &Path) -> bool {
     }
 }
 
-
 pub fn default_data_dir() -> PathBuf {
     default_data_dir_with_source().0
 }
-
 
 /// The default data dir and what chose it: `env:CASS_DATA_DIR`,
 /// `env:XDG_DATA_HOME`, or `default` (the platform data dir).

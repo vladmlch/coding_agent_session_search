@@ -2,22 +2,17 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
-
-    #[allow(unused_imports)]
+#[allow(unused_imports)]
 use crate::strip_stdin_line_ending;
 
-
-    #[test]
-    pub(crate) fn stdin_password_preserves_significant_surrounding_space() {
-        assert_eq!(
-            strip_stdin_line_ending("  pass phrase  \n".to_string()),
-            "  pass phrase  "
-        );
-        assert_eq!(
-            strip_stdin_line_ending("\tpass phrase\t\r\n".to_string()),
-            "\tpass phrase\t"
-        );
-    }
-
+#[test]
+pub(crate) fn stdin_password_preserves_significant_surrounding_space() {
+    assert_eq!(
+        strip_stdin_line_ending("  pass phrase  \n".to_string()),
+        "  pass phrase  "
+    );
+    assert_eq!(
+        strip_stdin_line_ending("\tpass phrase\t\r\n".to_string()),
+        "\tpass phrase\t"
+    );
+}

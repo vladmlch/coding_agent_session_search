@@ -3,12 +3,10 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use chrono::Utc;
+    pub(crate) use chrono::Utc;
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn format_as_markdown(
     messages: &[serde_json::Value],
@@ -98,7 +96,6 @@ pub(crate) fn format_as_markdown(
     md
 }
 
-
 pub(crate) fn format_as_text(messages: &[serde_json::Value], include_tools: bool) -> String {
     let mut text = String::new();
     for msg in messages {
@@ -146,7 +143,6 @@ pub(crate) fn format_as_text(messages: &[serde_json::Value], include_tools: bool
     }
     text
 }
-
 
 pub(crate) fn format_as_html(
     messages: &[serde_json::Value],
@@ -315,7 +311,6 @@ pub(crate) fn format_as_html(
     html.push_str("</body>\n</html>\n");
     html
 }
-
 
 pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")

@@ -3,20 +3,18 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use chrono::Utc;
-pub(crate) use crate::indexer::IndexOptions;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::indexer::IndexOptions;
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// CLI wrapper for the qhiv2 / gh#382 targeted lexical reconcile: one
 /// canonical conversation, upserted under stable identities, retry-safe.
@@ -89,7 +87,6 @@ pub(crate) fn run_lexical_reconcile_cli(
     Ok(())
 }
 
-
 /// `cass index --gc` (gh#453): run the lexical engine's garbage sweep on its
 /// own and report what it reclaimed.
 pub(crate) fn run_lexical_gc_cli(
@@ -158,7 +155,6 @@ pub(crate) fn run_lexical_gc_cli(
     Ok(())
 }
 
-
 pub(crate) fn cached_index_payload(result_json: &str, key: &str) -> Option<serde_json::Value> {
     let mut payload =
         serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(result_json).ok()?;
@@ -174,7 +170,6 @@ pub(crate) fn cached_index_payload(result_json: &str, key: &str) -> Option<serde
     );
     Some(serde_json::Value::Object(payload))
 }
-
 
 pub(crate) fn read_index_idempotency_cache(
     db_path: &Path,
@@ -205,7 +200,6 @@ pub(crate) fn read_index_idempotency_cache(
     );
     cached
 }
-
 
 pub(crate) fn store_index_idempotency_result(
     data_dir: &Path,
@@ -251,7 +245,6 @@ pub(crate) fn store_index_idempotency_result(
     })?;
     Ok(())
 }
-
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_index_with_data(
@@ -1235,7 +1228,6 @@ pub(crate) fn run_index_with_data(
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub(crate) struct IndexingExclusionNotice {
     pub(crate) config_path: String,
@@ -1246,7 +1238,6 @@ pub(crate) struct IndexingExclusionNotice {
     pub(crate) enabled_connectors: usize,
     pub(crate) reenable_commands: Vec<String>,
 }
-
 
 impl IndexingExclusionNotice {
     pub(crate) fn to_json(&self) -> serde_json::Value {
@@ -1261,7 +1252,6 @@ impl IndexingExclusionNotice {
         })
     }
 }
-
 
 pub(crate) fn active_indexing_exclusion_notice() -> Option<IndexingExclusionNotice> {
     use crate::sources::config::SourcesConfig;
@@ -1312,14 +1302,12 @@ pub(crate) fn active_indexing_exclusion_notice() -> Option<IndexingExclusionNoti
     })
 }
 
-
 pub(crate) fn index_agent_slug_for_connector_notice(connector_name: &str) -> &str {
     match connector_name {
         "claude" => "claude_code",
         other => other,
     }
 }
-
 
 /// Names of legacy `type = "ssh"` source entries the index run will treat as
 /// read-only archives. `None` when the config is ignored, unreadable, or has
@@ -1342,7 +1330,6 @@ pub(crate) fn legacy_remote_source_notice() -> Option<Vec<String>> {
     (!names.is_empty()).then_some(names)
 }
 
-
 pub(crate) fn emit_legacy_remote_source_notice(names: &[String]) {
     eprintln!(
         "warning: sources.toml lists {} legacy remote entr{} ({}); remote synchronization was removed, so {} treated as read-only archive record(s) — mirrored data is indexed if present",
@@ -1357,8 +1344,10 @@ pub(crate) fn emit_legacy_remote_source_notice(names: &[String]) {
     );
 }
 
-
-pub(crate) fn emit_indexing_exclusion_notice(notice: &IndexingExclusionNotice, structured_output: bool) {
+pub(crate) fn emit_indexing_exclusion_notice(
+    notice: &IndexingExclusionNotice,
+    structured_output: bool,
+) {
     if structured_output {
         let mut payload = notice.to_json();
         if let serde_json::Value::Object(ref mut map) = payload {

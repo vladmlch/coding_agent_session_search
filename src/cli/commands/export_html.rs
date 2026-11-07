@@ -5,15 +5,15 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use chrono::Utc;
-pub(crate) use clap::{Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use chrono::Utc;
+    pub(crate) use clap::{
+        Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint,
+    };
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Export a session as a beautiful, self-contained HTML file with optional encryption.
 #[allow(clippy::too_many_arguments)]
@@ -699,7 +699,6 @@ pub(crate) fn run_export_html(
     Ok(())
 }
 
-
 pub(crate) fn stringify_tool_value(value: &serde_json::Value) -> String {
     if value.is_object() || value.is_array() {
         serde_json::to_string_pretty(value).unwrap_or_default()
@@ -709,7 +708,6 @@ pub(crate) fn stringify_tool_value(value: &serde_json::Value) -> String {
         value.to_string()
     }
 }
-
 
 /// Extract all tool call/result blocks from a message for HTML export.
 ///
@@ -835,7 +833,6 @@ pub(crate) fn extract_tool_calls(msg: &serde_json::Value) -> Vec<html_export::To
 
     tool_calls
 }
-
 
 pub(crate) fn extract_tool_correlation_id(value: &serde_json::Value) -> Option<String> {
     value

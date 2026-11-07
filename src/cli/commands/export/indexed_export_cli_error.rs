@@ -5,17 +5,17 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use clap::{Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use clap::{
+        Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint,
+    };
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Map an index-resolution failure onto the CLI error taxonomy (plan Task 4,
 /// "Error contract"). Every variant is terminal: export never falls back to
@@ -24,7 +24,9 @@ use __lib_split_root_uses::*;
 /// failure, no renderable messages) are operational failures (code 9).
 /// Hints name `cass index` because the exported state is the indexed
 /// snapshot — freshness is repaired by indexing, never by re-reading files.
-pub(crate) fn indexed_export_cli_error(err: crate::export::indexed::IndexedExportError) -> CliError {
+pub(crate) fn indexed_export_cli_error(
+    err: crate::export::indexed::IndexedExportError,
+) -> CliError {
     use crate::export::indexed::IndexedExportError;
     match err {
         IndexedExportError::IndexUnavailable { path, source } => CliError {
@@ -103,10 +105,11 @@ pub(crate) fn indexed_export_cli_error(err: crate::export::indexed::IndexedExpor
     }
 }
 
-
 /// Map a projection failure onto the CLI error taxonomy. A non-empty indexed
 /// conversation must never become an empty successful export.
-pub(crate) fn export_projection_cli_error(err: crate::export::projection::ExportProjectionError) -> CliError {
+pub(crate) fn export_projection_cli_error(
+    err: crate::export::projection::ExportProjectionError,
+) -> CliError {
     use crate::export::projection::ExportProjectionError;
     match err {
         ExportProjectionError::NoRenderableMessages { indexed } => CliError {
@@ -123,7 +126,6 @@ pub(crate) fn export_projection_cli_error(err: crate::export::projection::Export
         },
     }
 }
-
 
 /// Export a conversation to markdown or other formats
 #[allow(clippy::too_many_arguments)]
@@ -274,7 +276,6 @@ pub(crate) fn run_export(
     Ok(())
 }
 
-
 /// Stream `text` into the system clipboard by spawning the platform's
 /// canonical clipboard tool. Returns the name of the tool used on success.
 ///
@@ -330,7 +331,6 @@ pub(crate) fn copy_to_system_clipboard(text: &str) -> Result<&'static str, Strin
     })
 }
 
-
 pub(crate) fn write_clipboard_command(
     mut command: std::process::Command,
     text: &str,
@@ -374,7 +374,6 @@ pub(crate) fn write_clipboard_command(
     status
 }
 
-
 pub(crate) fn strip_stdin_line_ending(mut input: String) -> String {
     while input.ends_with('\n') || input.ends_with('\r') {
         input.pop();
@@ -382,8 +381,10 @@ pub(crate) fn strip_stdin_line_ending(mut input: String) -> String {
     input
 }
 
-
-pub(crate) fn format_export_duration(session_start: Option<i64>, session_end: Option<i64>) -> Option<String> {
+pub(crate) fn format_export_duration(
+    session_start: Option<i64>,
+    session_end: Option<i64>,
+) -> Option<String> {
     let (Some(start), Some(end)) = (session_start, session_end) else {
         return None;
     };
@@ -397,7 +398,6 @@ pub(crate) fn format_export_duration(session_start: Option<i64>, session_end: Op
         Some("< 1m".to_string())
     }
 }
-
 
 pub(crate) fn publish_unique_export_output_file(
     output_directory: &Path,
@@ -446,7 +446,6 @@ pub(crate) fn publish_unique_export_output_file(
     ))
 }
 
-
 pub(crate) fn write_unique_export_output_file(
     output_directory: &Path,
     final_filename: &str,
@@ -458,7 +457,6 @@ pub(crate) fn write_unique_export_output_file(
     })
 }
 
-
 #[cfg(not(windows))]
 pub(crate) fn sync_export_parent_directory(path: &Path) -> io::Result<()> {
     let Some(parent) = path.parent() else {
@@ -466,7 +464,6 @@ pub(crate) fn sync_export_parent_directory(path: &Path) -> io::Result<()> {
     };
     std::fs::File::open(parent)?.sync_all()
 }
-
 
 #[cfg(windows)]
 pub(crate) fn sync_export_parent_directory(_path: &Path) -> io::Result<()> {

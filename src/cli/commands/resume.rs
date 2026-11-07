@@ -3,14 +3,14 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use clap::{Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use clap::{
+        Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint,
+    };
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// `cass resume <path>` — resolve and optionally execute the native
 /// harness resume command for a session.
