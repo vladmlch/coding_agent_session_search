@@ -299,6 +299,39 @@ const SOURCES: &[(&str, &str)] = &[
         "src/doctor/doctor_asset_taxonomy_tests_part_2.rs",
         include_str!("../src/doctor/doctor_asset_taxonomy_tests_part_2.rs"),
     ),
+    // lib-split 3c: moved `code: N,` + `kind:` CliError emission sites.
+    (
+        "src/doctor/baseline.rs",
+        include_str!("../src/doctor/baseline.rs"),
+    ),
+    (
+        "src/doctor/run_doctor_ls.rs",
+        include_str!("../src/doctor/run_doctor_ls.rs"),
+    ),
+    (
+        "src/doctor/backup_restore.rs",
+        include_str!("../src/doctor/backup_restore.rs"),
+    ),
+    (
+        "src/doctor/sources.rs",
+        include_str!("../src/doctor/sources.rs"),
+    ),
+    (
+        "src/doctor/archive/doctor_archive_coverage_snapshot.rs",
+        include_str!("../src/doctor/archive/doctor_archive_coverage_snapshot.rs"),
+    ),
+    (
+        "src/doctor/baseline/document.rs",
+        include_str!("../src/doctor/baseline/document.rs"),
+    ),
+    (
+        "src/doctor/support_bundle/capture.rs",
+        include_str!("../src/doctor/support_bundle/capture.rs"),
+    ),
+    (
+        "src/doctor/raw_mirror/query_doctor_raw_mirror_backfill_candidates.rs",
+        include_str!("../src/doctor/raw_mirror/query_doctor_raw_mirror_backfill_candidates.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed

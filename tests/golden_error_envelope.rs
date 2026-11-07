@@ -67,6 +67,9 @@ const SCAN_SOURCES: &[&str] = &[
     "src/cli/commands/daemon.rs",
     "src/cli/commands/schedule.rs",
     "src/cli/commands/subcommand_robot_output_tests.rs",
+    // lib-split 3c: moved CliError/kind_str producers.
+    "src/doctor/sources.rs",
+    "src/doctor/raw_mirror/query_doctor_raw_mirror_backfill_candidates.rs",
 ];
 
 fn scanned_source() -> String {
