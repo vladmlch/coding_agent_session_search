@@ -283,6 +283,12 @@ const SOURCES: &[(&str, &str)] = &[
         "src/cli/commands/subcommand_robot_output_tests.rs",
         include_str!("../src/cli/commands/subcommand_robot_output_tests.rs"),
     ),
+    // lib-split 3a: the doctor policy owner carries 18 `ExitCode` literals
+    // (exit-code mapping), moved out of lib.rs.
+    (
+        "src/doctor/policy.rs",
+        include_str!("../src/doctor/policy.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed
