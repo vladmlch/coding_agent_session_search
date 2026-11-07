@@ -462,10 +462,21 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
     // excluded: the format has no mcp surface at all (verified — no
     // mcp-ish key in any raw record), so no mcp evidence can be missing.
     coverage.mark(
-        &["chat", "thinking", "text_inventory", "files"],
+        &["chat", "text_inventory", "files"],
         "agy_connector_drops_source_text",
         "partial",
     );
+    // `thinking` is the one provable exception: only PLANNER_RESPONSE
+    // records ever carry thinking (verified — every raw thinking record is
+    // PLANNER_RESPONSE), the connector never drops that record type, and no
+    // source record has thinking truncated to empty/absent. Zero thinking
+    // blocks therefore prove zero thinking text at the source, and those
+    // sessions keep the claude-style complete empty inventory; sessions
+    // WITH thinking stay partial (source-side thinking truncation is
+    // invisible in the packet).
+    if thinking > 0 {
+        coverage.mark(&["thinking"], "agy_connector_drops_source_text", "partial");
+    }
     coverage.mark(
         &["compaction"],
         "boundary_records_not_normalized",

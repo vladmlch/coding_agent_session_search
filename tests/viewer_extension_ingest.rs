@@ -1039,6 +1039,64 @@ fn antigravity_facts_unknown_future_shape_stays_unknown() {
 }
 
 #[test]
+fn antigravity_facts_zero_thinking_session_proves_thinking_complete() {
+    // Verified against the raw transcripts: only PLANNER_RESPONSE records
+    // ever carry `thinking`, the connector never drops that record type,
+    // and no record has thinking truncated to empty/absent at the source.
+    // So a packet with zero thinking blocks provably had zero thinking text
+    // at the source, and `thinking` keeps the claude-style complete empty
+    // inventory — the connector-contract mark must not over-mark it.
+    let zero_thinking = packet(
+        "antigravity",
+        json!({"source": "antigravity", "model": "MadeUp Model"}),
+        vec![
+            msg(0, "user", "made-up user request text", json!({})),
+            msg(
+                1,
+                "assistant",
+                "made-up planner narration without thinking",
+                json!({"cass": {"invocations": [
+                    {"kind": "tool", "name": "view_file", "call_id": null,
+                     "arguments": {"TargetFile": "/made/up/target.rs"}}
+                ]}}),
+            ),
+            msg(
+                2,
+                "tool",
+                "made-up model step output",
+                json!({"agy_type": "GENERIC"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&zero_thinking, "antigravity");
+    assert_eq!(publication.thinking_block_count, Some(0));
+
+    let thinking = coverage(&publication, "thinking").expect("thinking coverage");
+    assert_eq!(thinking.state, "complete", "{thinking:?}");
+    assert!(
+        !thinking
+            .reasons
+            .iter()
+            .any(|r| r == "agy_connector_drops_source_text"),
+        "{thinking:?}"
+    );
+
+    // The unconditional members of the connector-contract mark stay
+    // partial — only `thinking` is provable-empty.
+    for field in ["chat", "text_inventory", "files"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "agy_connector_drops_source_text"),
+            "{field}: {entry:?}"
+        );
+    }
+}
+
+#[test]
 fn antigravity_regions_index_planner_arguments_and_user_wrappers() {
     let packet = antigravity_real_shape_packet();
     let facts = extract_session_facts(&packet, "antigravity");
