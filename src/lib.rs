@@ -79162,26 +79162,26 @@ pub(crate) use crate::cli::commands::source_ingest_reuse_capability_tests::*;
 pub(crate) use crate::cli::commands::view::role_to_export_string::*;
 // -- generated lib-split bridges --
 #[allow(unused_imports)]
-pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::{CapabilitiesResponse};
+pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::ArgumentSchema;
 #[allow(unused_imports)]
-pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::{CapabilitiesLimits};
+pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::CapabilitiesLimits;
 #[allow(unused_imports)]
-pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::{ExitCodeCapability};
+pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::CapabilitiesResponse;
 #[allow(unused_imports)]
-pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::{EnvVarCapability};
+pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::CommandSchema;
 #[allow(unused_imports)]
-pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::{WorkflowCapability};
+pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::EnvVarCapability;
 #[allow(unused_imports)]
-pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::{MistakeRecoveryCapability};
+pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::ExitCodeCapability;
 #[allow(unused_imports)]
-pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::{IntrospectResponse};
+pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::IntrospectResponse;
 #[allow(unused_imports)]
-pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::{CommandSchema};
+pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::MistakeRecoveryCapability;
 #[allow(unused_imports)]
-pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::{ArgumentSchema};
-#[allow(unused_imports)]
-pub use crate::cli::commands::capabilities_introspect::run_api_version::{register_external_subcommands};
+pub use crate::cli::commands::capabilities_introspect::capabilitiesresponse::WorkflowCapability;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::capabilities_introspect::capabilitiesresponse::*;
+#[allow(unused_imports)]
+pub use crate::cli::commands::capabilities_introspect::run_api_version::register_external_subcommands;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::capabilities_introspect::run_api_version::*;

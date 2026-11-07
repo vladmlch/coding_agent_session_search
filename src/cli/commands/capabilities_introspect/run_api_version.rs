@@ -3,12 +3,12 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use clap::{Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
+    pub(crate) use clap::{
+        Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint,
+    };
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Show API and contract versions (robot-friendly)
 pub(crate) fn run_api_version(output_format: Option<RobotFormat>) -> CliResult<()> {
@@ -40,11 +40,10 @@ pub(crate) fn run_api_version(output_format: Option<RobotFormat>) -> CliResult<(
     Ok(())
 }
 
-
 /// Builds the clap trees of the subcommands the `cass` binary dispatches
 /// before [`parse_cli`] (`serve`, `archive`; see src/main.rs).
-pub(crate) static EXTERNAL_SUBCOMMANDS: std::sync::OnceLock<fn() -> Vec<Command>> = std::sync::OnceLock::new();
-
+pub(crate) static EXTERNAL_SUBCOMMANDS: std::sync::OnceLock<fn() -> Vec<Command>> =
+    std::sync::OnceLock::new();
 
 /// Called by the `cass` binary so help, completions, the man page,
 /// `capabilities` and `introspect` describe the subcommands it parses itself.
@@ -53,7 +52,6 @@ pub fn register_external_subcommands(build: fn() -> Vec<Command>) {
     let _ = EXTERNAL_SUBCOMMANDS.set(build);
 }
 
-
 pub(crate) fn external_subcommands() -> Vec<Command> {
     EXTERNAL_SUBCOMMANDS
         .get()
@@ -61,13 +59,11 @@ pub(crate) fn external_subcommands() -> Vec<Command> {
         .unwrap_or_default()
 }
 
-
 /// The whole `cass` command tree: this crate's CLI plus the registered
 /// binary-dispatched subcommands.
 pub(crate) fn cli_command() -> Command {
     Cli::command().subcommands(external_subcommands())
 }
-
 
 /// Build command schemas for all CLI commands
 pub(crate) fn build_command_schemas() -> Vec<CommandSchema> {
@@ -89,8 +85,10 @@ pub(crate) fn build_command_schemas() -> Vec<CommandSchema> {
         .collect()
 }
 
-
-pub(crate) fn command_schema_from_clap(cmd: &Command, global_robot_format: Option<&Arg>) -> CommandSchema {
+pub(crate) fn command_schema_from_clap(
+    cmd: &Command,
+    global_robot_format: Option<&Arg>,
+) -> CommandSchema {
     let mut arguments: Vec<ArgumentSchema> = cmd
         .get_arguments()
         .filter(|arg| !should_skip_arg(arg))
@@ -120,14 +118,12 @@ pub(crate) fn command_schema_from_clap(cmd: &Command, global_robot_format: Optio
     }
 }
 
-
 /// Whether `cmd` or any subcommand beneath it accepts a `--json` flag.
 pub(crate) fn command_tree_has_json_flag(cmd: &Command) -> bool {
     cmd.get_arguments()
         .any(|arg| arg.get_id().as_str() == "json")
         || cmd.get_subcommands().any(command_tree_has_json_flag)
 }
-
 
 pub(crate) fn argument_schema_from_clap(arg: &Arg) -> ArgumentSchema {
     let num_args = arg.get_num_args().unwrap_or_default();
@@ -182,7 +178,6 @@ pub(crate) fn argument_schema_from_clap(arg: &Arg) -> ArgumentSchema {
     }
 }
 
-
 pub(crate) const INTEGER_ARG_NAMES: &[&str] = &[
     "limit",
     "offset",
@@ -201,7 +196,6 @@ pub(crate) const INTEGER_ARG_NAMES: &[&str] = &[
     "stale-threshold",
     "timeout",
 ];
-
 
 pub(crate) fn infer_value_type(arg: &Arg) -> Option<String> {
     let name = arg.get_long().map_or_else(
@@ -227,7 +221,6 @@ pub(crate) fn infer_value_type(arg: &Arg) -> Option<String> {
     Some("string".to_string())
 }
 
-
 pub(crate) fn extract_enum_values(arg: &Arg) -> Option<Vec<String>> {
     let values = arg.get_possible_values();
     if values.is_empty() {
@@ -236,7 +229,6 @@ pub(crate) fn extract_enum_values(arg: &Arg) -> Option<Vec<String>> {
         Some(values.iter().map(|v| v.get_name().to_string()).collect())
     }
 }
-
 
 pub(crate) fn infer_repeatable(arg: &Arg, num_args: clap::builder::ValueRange) -> Option<bool> {
     let multi_values = num_args.max_values() > 1;
@@ -248,7 +240,6 @@ pub(crate) fn infer_repeatable(arg: &Arg, num_args: clap::builder::ValueRange) -
         None
     }
 }
-
 
 pub(crate) fn should_skip_arg(arg: &Arg) -> bool {
     arg.is_hide_set() || matches!(arg.get_id().as_str(), "help" | "version")

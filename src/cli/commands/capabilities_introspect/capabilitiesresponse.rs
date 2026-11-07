@@ -3,17 +3,15 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Capabilities response for agent introspection.
 /// Provides static information about CLI features, versions, and limits.
@@ -57,7 +55,6 @@ pub struct CapabilitiesResponse {
     pub limits: CapabilitiesLimits,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub struct CapabilitiesLimits {
     /// Maximum --limit value
@@ -69,7 +66,6 @@ pub struct CapabilitiesLimits {
     /// Maximum aggregation bucket count per field
     pub max_agg_buckets: usize,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ExitCodeCapability {
@@ -83,7 +79,6 @@ pub struct ExitCodeCapability {
     pub agent_action: String,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub struct EnvVarCapability {
     /// Environment variable name
@@ -94,7 +89,6 @@ pub struct EnvVarCapability {
     /// Agent-oriented description of the behavior it controls
     pub description: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkflowCapability {
@@ -112,7 +106,6 @@ pub struct WorkflowCapability {
     pub note: String,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub struct MistakeRecoveryCapability {
     /// Common mistaken invocation
@@ -124,7 +117,6 @@ pub struct MistakeRecoveryCapability {
     /// What cass does with this form
     pub behavior: String,
 }
-
 
 // ============================================================================
 // Introspect command schema structures
@@ -153,7 +145,6 @@ pub struct IntrospectResponse {
     pub response_schemas: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
-
 /// Schema for a single CLI command
 #[derive(Debug, Clone, Serialize)]
 pub struct CommandSchema {
@@ -166,7 +157,6 @@ pub struct CommandSchema {
     /// Whether this command supports --json output
     pub has_json_output: bool,
 }
-
 
 /// Schema for a command argument/option
 #[derive(Debug, Clone, Serialize)]
@@ -195,7 +185,6 @@ pub struct ArgumentSchema {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repeatable: Option<bool>,
 }
-
 
 /// Global flags that apply to all commands
 pub(crate) fn build_global_flag_schemas() -> Vec<ArgumentSchema> {
@@ -311,7 +300,6 @@ pub(crate) fn build_global_flag_schemas() -> Vec<ArgumentSchema> {
     ]
 }
 
-
 pub(crate) fn exit_code_capability(
     code: &str,
     meaning: &str,
@@ -325,7 +313,6 @@ pub(crate) fn exit_code_capability(
         agent_action: agent_action.to_string(),
     }
 }
-
 
 pub(crate) fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
     vec![
@@ -471,15 +458,17 @@ pub(crate) fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
     ]
 }
 
-
-pub(crate) fn env_var_capability(name: &str, default: Option<&str>, description: &str) -> EnvVarCapability {
+pub(crate) fn env_var_capability(
+    name: &str,
+    default: Option<&str>,
+    description: &str,
+) -> EnvVarCapability {
     EnvVarCapability {
         name: name.to_string(),
         default: default.map(str::to_string),
         description: description.to_string(),
     }
 }
-
 
 pub(crate) fn build_env_var_capabilities() -> Vec<EnvVarCapability> {
     vec![
@@ -800,7 +789,6 @@ pub(crate) fn build_env_var_capabilities() -> Vec<EnvVarCapability> {
     ]
 }
 
-
 pub(crate) fn workflow_capability(
     name: &str,
     intent: &str,
@@ -821,7 +809,6 @@ pub(crate) fn workflow_capability(
         note: note.to_string(),
     }
 }
-
 
 pub(crate) fn build_workflow_capabilities() -> Vec<WorkflowCapability> {
     vec![
@@ -912,7 +899,6 @@ pub(crate) fn build_workflow_capabilities() -> Vec<WorkflowCapability> {
     ]
 }
 
-
 pub(crate) fn mistake_recovery_capability(
     wrong: &str,
     canonical: &str,
@@ -926,7 +912,6 @@ pub(crate) fn mistake_recovery_capability(
         behavior: behavior.to_string(),
     }
 }
-
 
 pub(crate) fn build_mistake_recovery_capabilities() -> Vec<MistakeRecoveryCapability> {
     vec![
@@ -1215,7 +1200,6 @@ pub(crate) fn build_mistake_recovery_capabilities() -> Vec<MistakeRecoveryCapabi
     ]
 }
 
-
 /// Discover the first-stop self-description contract for agent introspection.
 pub(crate) fn run_capabilities(output_format: Option<RobotFormat>) -> CliResult<()> {
     let crate_version = env!("CARGO_PKG_VERSION").to_string();
@@ -1359,11 +1343,10 @@ pub(crate) fn run_capabilities(output_format: Option<RobotFormat>) -> CliResult<
     Ok(())
 }
 
-
-pub(crate) fn build_introspect_subsystem_coverage() -> crate::subsystem_coverage_matrix::MatrixReport {
+pub(crate) fn build_introspect_subsystem_coverage() -> crate::subsystem_coverage_matrix::MatrixReport
+{
     crate::subsystem_coverage_matrix::matrix_report()
 }
-
 
 pub(crate) fn build_introspect_response() -> IntrospectResponse {
     IntrospectResponse {
@@ -1375,7 +1358,6 @@ pub(crate) fn build_introspect_response() -> IntrospectResponse {
         response_schemas: build_response_schemas(),
     }
 }
-
 
 /// Full API schema introspection - commands, arguments, and response schemas.
 pub(crate) fn run_introspect(output_format: Option<RobotFormat>) -> CliResult<()> {
@@ -1500,7 +1482,6 @@ pub(crate) fn run_introspect(output_format: Option<RobotFormat>) -> CliResult<()
     Ok(())
 }
 
-
 pub(crate) fn staged_secret_scan_json(
     scan: &crate::pages::secret_scan::StagedSecretScan,
     approval_state: &str,
@@ -1515,13 +1496,11 @@ pub(crate) fn staged_secret_scan_json(
     })
 }
 
-
 /// Run export based on JSON config file.
 pub(crate) struct ConfigExportSecretInputs<'a> {
     pub(crate) allow: &'a [String],
     pub(crate) deny: &'a [String],
 }
-
 
 pub(crate) fn run_config_based_export(
     config: &crate::pages::config_input::PagesConfig,
