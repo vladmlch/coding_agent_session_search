@@ -89,8 +89,13 @@ notify = "8.2.0"
 # rowids it reserved (bd-gwoit), reading a WAL a stock writer truncated to zero
 # bytes as empty (bd-yxqs9, cass GH#519), and index seeks for IN lists and
 # k = ? ORDER BY id (GH#497/#498).
-# All family packages use 0.4.12 and build.rs checks each resolved package
-# exactly.
+# All family packages use 0.4.12 and resolve from the owner's frankensqlite
+# fork (github.com/vladmlch/frankensqlite) at the exact rev named in the
+# committed [patch.crates-io] table below — owner decision 2026-11-07. These
+# registry-shaped `=0.4.12` requirements stay here so the [patch.crates-io]
+# table redirects every consumer (including franken-agent-detection's
+# `^0.4.1` ask) to one fork resolution per package. build.rs checks each
+# resolved package exactly.
 frankensqlite = { version = "=0.4.12", package = "fsqlite", features = ["fts5", "async-api"] }
 # The production storage-integrity probe calls FrankenSQLite's public VFS API
 # directly so it can inspect native writer locks without opening the pager.
@@ -261,8 +266,10 @@ rusqlite = { version = "0.40.2", features = ["bundled", "modern_sqlite"] }
 # fixture assertions, even though production also uses the same pinned crate.
 fsqlite-types = { version = "=0.4.12", package = "fsqlite-types" }
 
-# The fsqlite family resolves from exact reviewed registry versions for every
-# direct and transitive consumer. build.rs rejects duplicates and mixed sources.
+# The fsqlite family resolves from the owner's frankensqlite fork (see the
+# committed [patch.crates-io] table below) for every direct and transitive
+# consumer, at uniform reviewed 0.4.12 versions. build.rs rejects duplicates
+# and mixed sources.
 
 [[bin]]
 name = "cass"
@@ -331,9 +338,52 @@ inherits = "release"
 debug = "line-tables-only"
 strip = false
 
+# ── fsqlite family: owner-fork resolution (2026-11-07 owner decision) ──────
+# Every fsqlite family crate resolves from the owner's frankensqlite fork,
+# github.com/vladmlch/frankensqlite (branch cass-local-fixes), at the exact
+# rev below. The rev is v0.4.12 (26aa19afcbd5afdb01658a10bb33417ad0b513be)
+# plus two vdbe range-seek commits, so every family crate still publishes
+# version 0.4.12 and satisfies the registry-shaped `=0.4.12` requirements:
+#   - 10eadc63 perf(vdbe): seek the index range when the WHERE carries
+#     residual conjuncts — `WHERE <indexed col> <range> AND <residual>` no
+#     longer falls back to a full table scan; the walk re-applies the whole
+#     WHERE per row (row set byte-identical, ~208x on the motivating
+#     UNIQUE-text-key shape).
+#   - d9414f97 perf(vdbe): rowid range seeks accept numbered placeholder
+#     bounds — `WHERE id > ?1 AND ...` now uses the rowid range seek
+#     instead of a full scan, proven bit-identical to stock SQLite by the
+#     fork's differential e2e oracle (~160x on its fixture).
+# Patching crates.io (rather than rewriting the [dependencies] entries to
+# git) keeps one resolution per package across every consumer: FAD's own
+# `^0.4.1` requirement converges on the same fork source. build.rs
+# (validate_fsqlite_source_pin) refuses any family redirect that misses this
+# exact URL+rev, any duplicate resolution, any version drift off 0.4.12, and
+# any lockfile entry that resolves from elsewhere.
+[patch.crates-io]
+fsqlite = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-ast = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-btree = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-core = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-error = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-ext-fts5 = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-ext-icu = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-ext-json = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-ext-misc = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-ext-rtree = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-func = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-mvcc = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-observability = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-pager = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-parser = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-planner = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-types = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-vdbe = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-vfs = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+
 # The dependency graph is pinned to the asupersync 0.5.x line (0.5.0). Keep
-# the frankensqlite, frankensearch, and franken-agent-detection registry pins
-# aligned so Cargo.lock does not reintroduce an older parallel runtime stack.
+# the frankensqlite (owner-fork), frankensearch, and franken-agent-detection
+# pins aligned so Cargo.lock does not reintroduce an older parallel runtime stack.
 #
 # If you need to build against a local checkout of asupersync (sibling
 # at ../asupersync) during runtime-level hacking, add the following
@@ -357,9 +407,11 @@ strip = false
 # Never commit any of these sibling-path [patch] blocks re-enabled: a fresh
 # clone without the sibling checkouts would no longer build.
 #
-# [patch."https://github.com/Dicklesworthstone/frankensqlite"]
-# fsqlite = { path = "../frankensqlite/crates/fsqlite" }
-# fsqlite-types = { path = "../frankensqlite/crates/fsqlite-types" }
+# The fsqlite family has NO sibling-path override anymore: it resolves from
+# the owner's fork through the committed [patch.crates-io] table above, and
+# build.rs rejects any family entry that is not that exact git URL+rev. To
+# hack the engine, work in the fork clone (../frankensqlite) and move the
+# table's rev to the fork commit; do not re-enable a path patch for it.
 # [patch."https://github.com/Dicklesworthstone/franken_agent_detection"]
 # franken-agent-detection = { path = "../franken_agent_detection" }
 #

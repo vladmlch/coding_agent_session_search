@@ -180,6 +180,24 @@ macOS and Windows storage subsets (the Windows failures are identical on
 0.4.9, v107y); release index timing on macOS inside its A/A null. The strict
 UBS gate (5v57k) remains pending. Do not publish a release candidate until it
 passes.
+
+Dependency update (2026-11-07, owner decision): the entire SQLite family now
+resolves from the owner's frankensqlite fork, `https://github.com/vladmlch/frankensqlite`
+(branch cass-local-fixes), at the exact rev
+`d9414f972bf1fe004e1c991afc213e9be267a7cb`, through a committed
+`[patch.crates-io]` table in Cargo.toml — this overrides the registry-only
+rule for this family. The rev is v0.4.12 (`26aa19afcbd5afdb01658a10bb33417ad0b513be`)
+plus two vdbe range-seek commits: `10eadc63` seeks the single-column index
+range when the WHERE carries residual conjuncts (`WHERE key >= ? AND key < ?
+AND value IS NOT NULL` no longer falls back to a full table scan; ~208x on
+the motivating UNIQUE-text-key shape), and `d9414f97` lets rowid range
+seeks take numbered-placeholder bounds (`WHERE id > ?1 AND ...`, proven
+bit-identical to stock SQLite by the fork's differential e2e oracle; ~160x
+on its fixture); both keep the row set byte-identical to the full scan. The
+fork keeps every family crate at version 0.4.12, so the registry-shaped
+`=0.4.12` requirements still hold and FAD's `^0.4.1` ask converges on the
+same single resolution per package. The strict family guard requires uniform
+0.4.12 versions and this exact fork source for every family member.
 SQLite `0.4.2` adds explicit derived WAL-index recovery for read-only opens
 (GH#477). The published SQLite 0.4.1 includes the GH#462 reserved-page WAL
 repair, but damaged-archive recovery remains unproven. SQLite 0.4.4 adds
@@ -197,11 +215,13 @@ WAL index (0853f5e8e). 0.4.9 refuses that index promptly again (48c6cf6b2) and
 lets the first write after stock SQLite opened the archive read-only
 establish the WAL generation instead of failing `BusyRecovery` on every later
 commit (frankensqlite GH#443, 4b48c95d8; cass GH#509/#508).
-The strict family guard requires uniform 0.4.12 registry versions.
+The strict family guard requires uniform 0.4.12 versions and the pinned
+owner-fork source (`https://github.com/vladmlch/frankensqlite` at rev
+`d9414f972bf1fe004e1c991afc213e9be267a7cb`) for every family member.
 
 | Dependency | Pinned source |
 |------------|-----------------|
-| `frankensqlite` (`fsqlite`) / `fsqlite-types` and the whole SQLite family | crates.io `=0.4.12` (tag v0.4.12 = `26aa19afcbd5afdb01658a10bb33417ad0b513be`); `build.rs` refuses a mixed family. Carries 0.4.12's bd-obwsy (the 0.4.10 advisory), bd-gwoit, bd-yxqs9 and largest-rowid explicit-write (9308c4bb6) fixes, plus 0.4.1's GH#462 reserved-page WAL repair, 0.4.2's derived WAL-index recovery for read-only opens (GH#477), 0.4.4's durable pending-freelist repairs, 0.4.6's page-referenced-twice (bd-b5vmw) and lost-index-entry (bd-11sz4) fixes, 0.4.7's large multi-row INSERT index fix (bd-2eebi), serialized-DDL race fix (bd-4iaoi), GH#503 shadow-autoindex repair open, bounded published-page plane (5s1la) and first-`sqlite_master` full-file read fix (k2k20), and 0.4.9's prompt stale-WAL-index refusal (48c6cf6b2) and stock-empty-WAL-index first-write fix (4b48c95d8, cass GH#509). CASS runtime qualification of 0.4.12 passed (gi7k7). 0.4.6 included upstream's likely fix (fd8c16a94) for a long-lived connection left refusing every BEGIN (2l1b0.75, frankensqlite GH#429), not yet verified on the owner-archive scenario; the legacy OMP analytics phase keeps its own fresh writer regardless |
+| `frankensqlite` (`fsqlite`) / `fsqlite-types` and the whole SQLite family | git fork `=0.4.12` at rev `d9414f972bf1fe004e1c991afc213e9be267a7cb` — the owner's frankensqlite fork `https://github.com/vladmlch/frankensqlite` (branch cass-local-fixes), resolved through the committed `[patch.crates-io]` table; `build.rs` refuses a mixed family, any family redirect that misses this exact git URL+rev, duplicate package resolution, wrong version, or a non-fork lockfile source. The rev is v0.4.12 (tag `26aa19afcbd5afdb01658a10bb33417ad0b513be`) plus two vdbe range-seek commits: `10eadc63` seeks the single-column index range when the WHERE carries residual conjuncts (`WHERE key >= ? AND key < ? AND value IS NOT NULL` no longer falls back to a full table scan; ~208x on the motivating UNIQUE-text-key shape) and `d9414f97` lets rowid range seeks take numbered-placeholder bounds (`WHERE id > ?1 AND ...`, proven bit-identical to stock SQLite by the fork's differential e2e oracle; ~160x on its fixture); both keep the row set byte-identical to the full scan, and the fork keeps every family crate at 0.4.12 so FAD's `^0.4.1` ask converges on the same single resolution. Carries 0.4.12's bd-obwsy (the 0.4.10 advisory), bd-gwoit, bd-yxqs9 and largest-rowid explicit-write (9308c4bb6) fixes, plus 0.4.1's GH#462 reserved-page WAL repair, 0.4.2's derived WAL-index recovery for read-only opens (GH#477), 0.4.4's durable pending-freelist repairs, 0.4.6's page-referenced-twice (bd-b5vmw) and lost-index-entry (bd-11sz4) fixes, 0.4.7's large multi-row INSERT index fix (bd-2eebi), serialized-DDL race fix (bd-4iaoi), GH#503 shadow-autoindex repair open, bounded published-page plane (5s1la) and first-`sqlite_master` full-file read fix (k2k20), and 0.4.9's prompt stale-WAL-index refusal (48c6cf6b2) and stock-empty-WAL-index first-write fix (4b48c95d8, cass GH#509). CASS runtime qualification of 0.4.12 passed (gi7k7). 0.4.6 included upstream's likely fix (fd8c16a94) for a long-lived connection left refusing every BEGIN (2l1b0.75, frankensqlite GH#429), not yet verified on the owner-archive scenario; the legacy OMP analytics phase keeps its own fresh writer regardless |
 | `franken-agent-detection` | `=0.3.10` at git rev `ad61098922cfbdf8f749425d60105105dab281f7` (GH#520 remote-mirror source identity, Cursor `state.vscdb` scan progress ticks so the stall watchdog sees the parse (local fork F7), Cursor key-range queries that seek the `cursorDiskKV` index instead of scanning the table per composer (F8), Continue `continue` and Kiro CLI `kiro` connectors, early SQLite connector runtime shutdown and full OpenCode read-error chains, GH#519), features `pi-durable` and `pi-sqlite` (the `pi_durable` connector for Pi's durable-harness stores, FAD#28; `pi_agent_rust` SQLite sessions; Pi compaction/branch provenance, FAD#27) and `codex-zstd` (reads Codex rollouts compressed to `rollout-*.jsonl.zst` by Codex's `local_thread_store_compression`, with the id of their plain form, GH#513; indexes native Codebuff transcripts, whose timestamps are a locale time of day, with each instant taken from the message ID, and keeps indexing a store's other chats when one transcript does not parse, FAD#28) |
 | `asupersync` | crates.io `=0.5.0` (the line fsqlite 0.4.x requires) |
 | `frankensearch` | crates.io `=0.7.1` (tag `crates-v0.7.1`), resolving `frankensearch-index 0.4.2` (hotfix, tag `frankensearch-index-v0.4.2`: files are installed with `std::fs::rename`, so on Windows an open reader no longer blocks an install, bead if17v; and the dumped HNSW sidecars are flushed through write handles, so an HNSW build works on Windows, bead ujxiq), `frankensearch-quill 0.4.1` (hotfix, tag `frankensearch-quill-v0.4.1`: opening a writer verifies each segment once instead of four times; bead hfosx), `frankensearch-rerank 0.5.0`, `frankenhnsw 0.3.5` and the `frankentorch-*` family; features `hash`, `cass-compat`, `quill`, `ann`, `native`. Quill 0.4.0 is the first main-branch release after the 0.3.4 hotfix and carries all three of its fixes: the GH#499 live-doc numeric scoring, the standard CASS Boolean grammar (NOT > AND > OR, parentheses; frankensearch#56) and the union seek_danger fix (a disjunction under a conjunction lost matches on concat-merged segments). It also verifies snapshot segments concurrently on open (GH#501; up to 8 threads, the same bytes are still hashed), builds snippets only for returned hits, and skips a read-only reopen when nothing was published. The CASS schema hash is unchanged (`v9-quill`), so the upgrade does not rebuild the lexical index |

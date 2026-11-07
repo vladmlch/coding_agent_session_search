@@ -9,6 +9,7 @@ mod support;
 // --init-extensions runs.
 
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -452,20 +453,22 @@ fn facts_fixup_never_self_parents() -> Result<()> {
 
     // Conversation 1's own external_id is "fixture-1" — its facts row
     // corruptly names itself as the parent evidence; conversation 2
-    // legitimately names fixture-1 as its parent.
+    // legitimately names fixture-1 as its parent. The key column is
+    // seeded through the real derivation, exactly like the publish path.
     for conversation_id in [1_i64, 2_i64] {
         writer.execute_with_params(
             "INSERT INTO viewer_session_facts \
              (conversation_id,extractor_version,source_revision,coverage_state,\
-              coverage_detail_json,parent_external_id) \
-             VALUES (?1,?2,?3,?4,?5,?6)",
+              coverage_detail_json,parent_external_id,parent_lookup_key) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
             &param_slice_to_values(params![
                 conversation_id,
                 1_i64,
                 42_i64,
                 "partial",
                 r#"{"parent":{"evidence":"fixture-1","resolution":"unresolved"}}"#,
-                "fixture-1"
+                "fixture-1",
+                facts::parent_lookup_key("fixture-1")
             ]),
         )?;
     }
@@ -566,6 +569,870 @@ fn facts_parent_delete_trigger_repairs_resolved_child_link() -> Result<()> {
     }
     drop(writer);
     bridge.shutdown()
+}
+
+// ---------------------------------------------------------------------------
+// Parent-link fixup: indexed candidate lookup (differential / cost / v9
+// migration). The truth table these tests pin lives in
+// .scratch/glm/2026-11-07-parent-links-sargable/report.md §1.
+// ---------------------------------------------------------------------------
+
+/// Canonical base only — exactly the upstream tables/columns the viewer
+/// profile's DDL and v5 sort triggers reference, with NO viewer profile
+/// installed yet. The migration test builds a simulated pre-v9 archive on
+/// this base; every other fixup fixture wraps it in `ensure_schema`. The
+/// caller owns the db path (a test-scoped tempdir join).
+fn fixup_base_db(db_path: &Path) -> Result<Connection> {
+    let conn = Connection::open(db_path.to_string_lossy().into_owned())?;
+    conn.execute_batch(
+        "CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE);
+         CREATE TABLE sources (id TEXT PRIMARY KEY, kind TEXT NOT NULL, host_label TEXT);
+         CREATE TABLE workspaces (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+             display_name TEXT);
+         CREATE TABLE conversations (
+             id INTEGER PRIMARY KEY,
+             agent_id INTEGER,
+             workspace_id INTEGER,
+             source_id TEXT,
+             external_id TEXT,
+             title TEXT,
+             source_path TEXT,
+             origin_host TEXT,
+             started_at INTEGER,
+             ended_at INTEGER,
+             last_message_created_at INTEGER,
+             last_message_idx INTEGER,
+             metadata_json TEXT,
+             metadata_bin BLOB
+         );
+         CREATE TABLE conversation_tail_state (
+             conversation_id INTEGER PRIMARY KEY,
+             last_message_created_at INTEGER,
+             ended_at INTEGER
+         );
+         INSERT INTO agents (id, slug) VALUES (1, 'codex');
+         INSERT INTO agents (id, slug) VALUES (2, 'claude_code');
+         INSERT INTO sources (id, kind) VALUES ('local', 'local');
+         INSERT INTO sources (id, kind) VALUES ('remote', 'remote');",
+    )?;
+    Ok(conn)
+}
+
+/// The fixup-level fixture: canonical base plus the current viewer
+/// extension profile (`ensure_schema`), without the bridge child or a full
+/// FrankenStorage seed.
+fn fixup_fixture_db(db_path: &Path) -> Result<Connection> {
+    let conn = fixup_base_db(db_path)?;
+    schema::ensure_schema(&conn)?;
+    Ok(conn)
+}
+
+/// Cost gate for the fixup candidate lookup: with ~50k pending-evidence
+/// rows, the indexed lookup must beat the pre-change scan shape by a wide
+/// margin. The legacy arm times the verbatim pre-change candidate SELECT
+/// (the exact statement facts.rs ran per conversation); the new arm times
+/// the real `fixup_pending_parent_links`. Self-relative (both timings in
+/// one process) so a loaded machine shifts both arms equally.
+#[test]
+fn fixup_parent_links_lookup_cost_is_index_served() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let conn = fixup_fixture_db(&temp.path().join("cost.db"))?;
+
+    const ROWS: i64 = 50_000;
+    // Pre-v9 archives have no `parent_lookup_key` column; detect it so this
+    // test also compiles and runs RED against today's code (where the fixup
+    // is the archive-wide scan) instead of dying in fixture setup.
+    let has_lookup_key = conn
+        .query("PRAGMA table_info(viewer_session_facts)")?
+        .iter()
+        .any(|row| matches!(row.get_typed::<String>(1), Ok(name) if name == "parent_lookup_key"));
+    // Every row carries DISTINCT pending parent evidence (the archive-wide
+    // worst case for the old scan); the parent call below matches exactly
+    // one child (`evid-7`).
+    conn.execute("BEGIN")?;
+    // 100k rows seed in this one transaction, so the per-row strings are
+    // formatted into preallocated reusable buffers rather than fresh
+    // allocations every iteration (`fmt::Write` into a String is
+    // infallible, hence the discarded results).
+    let mut path = String::with_capacity(32);
+    let mut evidence = String::with_capacity(16);
+    for i in 0..ROWS {
+        path.clear();
+        let _ = write!(path, "/cost/dir/evid-{i}.jsonl");
+        evidence.clear();
+        let _ = write!(evidence, "evid-{i}");
+        conn.execute_with_params(
+            "INSERT INTO conversations \
+             (id, agent_id, source_id, external_id, source_path) \
+             VALUES (?1, 1, 'local', ?2, ?3)",
+            &param_slice_to_values(params![i, path.as_str(), path.as_str()]),
+        )?;
+        // `evid-{i}` is lowercase ASCII with no LIKE wildcards, so it is
+        // its own lookup key — exactly what facts::parent_lookup_key
+        // returns for it (inlined here so this test also compiles before
+        // the v9 column/function exist). The pre-v9 branch omits the
+        // column entirely.
+        if has_lookup_key {
+            conn.execute_with_params(
+                "INSERT INTO viewer_session_facts \
+                 (conversation_id, extractor_version, source_revision, coverage_state, \
+                  parent_external_id, parent_lookup_key) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                &param_slice_to_values(params![
+                    i,
+                    1_i64,
+                    42_i64,
+                    "partial",
+                    evidence.as_str(),
+                    evidence.as_str()
+                ]),
+            )?;
+        } else {
+            conn.execute_with_params(
+                "INSERT INTO viewer_session_facts \
+                 (conversation_id, extractor_version, source_revision, coverage_state, \
+                  parent_external_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                &param_slice_to_values(params![i, 1_i64, 42_i64, "partial", evidence.as_str()]),
+            )?;
+        }
+    }
+    conn.execute("COMMIT")?;
+
+    // The facts table's `parent_conversation_id` carries a real FK to
+    // conversations(id) and ensure_schema enables FK enforcement, so the
+    // parent conversations the fixup links to must exist.
+    for (id, external_id, source_path) in [
+        (
+            900_001_i64,
+            "cost-parent-1",
+            "/cost/dir/cost-parent-1.jsonl",
+        ),
+        (
+            900_002_i64,
+            "cost-parent-2",
+            "/cost/dir/cost-parent-2.jsonl",
+        ),
+    ] {
+        conn.execute_with_params(
+            "INSERT INTO conversations \
+             (id, agent_id, source_id, external_id, source_path) \
+             VALUES (?1, 1, 'local', ?2, ?3)",
+            &param_slice_to_values(params![id, external_id, source_path]),
+        )?;
+    }
+
+    let parent_external_id = "/cost/dir/evid-7.jsonl";
+    // The fixup must still find the one real child (correctness gate for
+    // the timed path — a vacuous probe-fest would pass the timing alone).
+    let claimed =
+        facts::fixup_pending_parent_links(&conn, 900_001, "codex", "local", parent_external_id)?;
+    ensure!(
+        claimed == 1,
+        "the fixup must link its one matching child: {claimed}"
+    );
+    let link: Option<i64> = conn
+        .query_row(
+            "SELECT parent_conversation_id FROM viewer_session_facts \
+             WHERE conversation_id = 7",
+        )?
+        .get_typed(0)?;
+    ensure!(
+        link == Some(900_001),
+        "the matching child must carry the link: {link:?}"
+    );
+
+    let legacy_sql = "\
+         SELECT f.conversation_id, f.coverage_detail_json \
+         FROM viewer_session_facts f \
+         JOIN conversations c ON c.id = f.conversation_id \
+         JOIN agents a ON a.id = c.agent_id \
+         WHERE f.parent_conversation_id IS NULL \
+           AND f.parent_external_id IS NOT NULL \
+           AND f.parent_external_id != '' \
+           AND f.conversation_id != ?4 \
+           AND a.slug = ?1 AND c.source_id = ?2 \
+           AND (?3 = f.parent_external_id \
+                OR ?3 LIKE '%/' || f.parent_external_id \
+                OR ?3 LIKE '%' || f.parent_external_id || '.jsonl') \
+         ORDER BY f.conversation_id";
+    let legacy_params =
+        param_slice_to_values(params!["codex", "local", parent_external_id, 900_001_i64]);
+
+    // Warm both paths (statement cache, page cache) before timing.
+    let _ = conn.query_with_params(legacy_sql, &legacy_params)?;
+    let _ =
+        facts::fixup_pending_parent_links(&conn, 900_002, "codex", "local", parent_external_id)?;
+
+    const LEGACY_CALLS: usize = 6;
+    const NEW_CALLS: usize = 30;
+    let start = std::time::Instant::now();
+    for _ in 0..LEGACY_CALLS {
+        let _ = conn.query_with_params(legacy_sql, &legacy_params)?;
+    }
+    let legacy_elapsed = start.elapsed();
+    let start = std::time::Instant::now();
+    for _ in 0..NEW_CALLS {
+        let _ = facts::fixup_pending_parent_links(
+            &conn,
+            900_002,
+            "codex",
+            "local",
+            parent_external_id,
+        )?;
+    }
+    let new_elapsed = start.elapsed();
+    let legacy_avg_ms = legacy_elapsed.as_secs_f64() * 1000.0 / LEGACY_CALLS as f64;
+    let new_avg_ms = new_elapsed.as_secs_f64() * 1000.0 / NEW_CALLS as f64;
+    eprintln!(
+        "fixup cost: legacy scan {legacy_avg_ms:.3} ms/call, indexed {new_avg_ms:.3} ms/call \
+         over {ROWS} pending rows"
+    );
+    ensure!(
+        legacy_avg_ms >= 5.0 * new_avg_ms,
+        "the fixup lookup must be index-served: legacy scan {legacy_avg_ms:.3} ms/call \
+         vs new {new_avg_ms:.3} ms/call over {ROWS} rows"
+    );
+    Ok(())
+}
+
+/// Seed one canonical conversation row with the caller-chosen live scope
+/// (agent id + source) — the child's scope the fixup joins against. The
+/// id-derived strings are written into preallocated buffers (`fmt::Write`
+/// into a String is infallible) so the seeding loops stay allocation-lean.
+fn fixup_seed_conversation(
+    conn: &Connection,
+    id: i64,
+    agent_id: i64,
+    source_id: &str,
+) -> Result<()> {
+    let mut external_id = String::with_capacity(16);
+    let _ = write!(external_id, "child-{id}");
+    let mut source_path = String::with_capacity(32);
+    let _ = write!(source_path, "/seed/child-{id}.jsonl");
+    conn.execute_with_params(
+        "INSERT INTO conversations \
+         (id, agent_id, source_id, external_id, source_path) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        &param_slice_to_values(params![
+            id,
+            agent_id,
+            source_id,
+            external_id.as_str(),
+            source_path.as_str()
+        ]),
+    )?;
+    Ok(())
+}
+
+/// Seed one facts row exactly the way the publish pipeline does: durable
+/// evidence, its lookup key (the real derivation) and a caller-chosen
+/// manifest / pre-resolved link.
+fn fixup_seed_fact(
+    conn: &Connection,
+    conversation_id: i64,
+    evidence: Option<&str>,
+    manifest: Option<&str>,
+    parent_conversation_id: Option<i64>,
+) -> Result<()> {
+    let lookup_key = evidence.map(facts::parent_lookup_key);
+    conn.execute_with_params(
+        "INSERT INTO viewer_session_facts \
+         (conversation_id, extractor_version, source_revision, coverage_state, \
+          coverage_detail_json, parent_external_id, parent_lookup_key, \
+          parent_conversation_id) \
+         VALUES (?1, 1, 42, 'partial', ?2, ?3, ?4, ?5)",
+        &param_slice_to_values(params![
+            conversation_id,
+            manifest,
+            evidence,
+            lookup_key,
+            parent_conversation_id
+        ]),
+    )?;
+    Ok(())
+}
+
+/// The engine's own match predicate (the old query's arms, evaluated as a
+/// scalar): byte-exact equality or the two LIKE suffix shapes.
+fn fixup_engine_evidence_matches(
+    conn: &Connection,
+    parent_external_id: &str,
+    evidence: &str,
+) -> Result<bool> {
+    let matched = conn.query_with_params(
+        "SELECT (?1 = ?2) \
+             OR (?1 LIKE '%/' || ?2) \
+             OR (?1 LIKE '%' || ?2 || '.jsonl')",
+        &param_slice_to_values(params![parent_external_id, evidence]),
+    )?;
+    Ok(matches!(
+        matched.first().map(|row| row.get_typed::<i64>(0)),
+        Some(Ok(1))
+    ))
+}
+
+/// The pre-change candidate query + update loop, verbatim (only the row
+/// plumbing adapted to a bare Connection): the differential oracle is the
+/// exact old behavior, not a paraphrase of it.
+#[allow(clippy::too_many_lines)]
+fn fixup_legacy_pending_parent_links(
+    conn: &Connection,
+    parent_conversation_id: i64,
+    parent_provider: &str,
+    parent_source_id: &str,
+    parent_external_id: &str,
+) -> Result<usize> {
+    let candidates: Vec<(i64, Option<String>)> = conn
+        .query_with_params(
+            "SELECT f.conversation_id, f.coverage_detail_json \
+             FROM viewer_session_facts f \
+             JOIN conversations c ON c.id = f.conversation_id \
+             JOIN agents a ON a.id = c.agent_id \
+             WHERE f.parent_conversation_id IS NULL \
+               AND f.parent_external_id IS NOT NULL \
+               AND f.parent_external_id != '' \
+               AND f.conversation_id != ?4 \
+               AND a.slug = ?1 AND c.source_id = ?2 \
+               AND (?3 = f.parent_external_id \
+                    OR ?3 LIKE '%/' || f.parent_external_id \
+                    OR ?3 LIKE '%' || f.parent_external_id || '.jsonl') \
+             ORDER BY f.conversation_id",
+            &param_slice_to_values(params![
+                parent_provider,
+                parent_source_id,
+                parent_external_id,
+                parent_conversation_id
+            ]),
+        )?
+        .iter()
+        .map(|row| -> Result<(i64, Option<String>)> { Ok((row.get_typed(0)?, row.get_typed(1)?)) })
+        .collect::<Result<Vec<_>>>()?;
+    let mut resolved = 0_usize;
+    for (child_id, detail) in candidates {
+        let parsed = detail
+            .as_deref()
+            .and_then(|text| serde_json::from_str::<Value>(text).ok());
+        if parsed
+            .as_ref()
+            .and_then(|value| value.pointer("/parent/resolution"))
+            .and_then(Value::as_str)
+            == Some("ambiguous")
+        {
+            continue;
+        }
+        resolved += 1;
+        let patched = match (detail, parsed) {
+            (Some(text), Some(mut value)) => {
+                if let Some(slot) = value.pointer_mut("/parent/resolution") {
+                    *slot = json!("resolved");
+                }
+                Some(serde_json::to_string(&value).unwrap_or(text))
+            }
+            _ => None,
+        };
+        match patched {
+            Some(detail) => conn.execute_with_params(
+                "UPDATE viewer_session_facts \
+                 SET parent_conversation_id = ?1, coverage_detail_json = ?2 \
+                 WHERE conversation_id = ?3",
+                &param_slice_to_values(params![parent_conversation_id, detail, child_id]),
+            )?,
+            None => conn.execute_with_params(
+                "UPDATE viewer_session_facts \
+                 SET parent_conversation_id = ?1 \
+                 WHERE conversation_id = ?2",
+                &param_slice_to_values(params![parent_conversation_id, child_id]),
+            )?,
+        };
+    }
+    Ok(resolved)
+}
+
+/// Deterministic LCG for the differential sweep (no ambient randomness).
+struct FixupLcg(u64);
+
+impl FixupLcg {
+    fn below(&mut self, bound: u64) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        self.0 % bound
+    }
+}
+
+/// Differential oracle for the fixup rewrite: the legacy query (verbatim)
+/// and the real fixup must produce IDENTICAL per-call counts and IDENTICAL
+/// final row state over a fixture built from the report's truth table —
+/// nested path suffixes, the `a/b` vs `xa/b` suffix collision, empty/NULL
+/// evidence, pre-resolved/self/wrong-scope rows, wildcard evidence,
+/// case-sensitivity, non-ASCII ids, ambiguous and unparseable manifests,
+/// several candidates — plus a deterministic 120-pair (P, E) sweep whose
+/// alphabet stresses suffix boundaries, wildcards, case and multi-byte
+/// characters. The no-miss check pins the index design directly: any pair
+/// the ENGINE matches must be reachable by a probe key.
+#[test]
+fn fixup_parent_links_differential_matches_legacy_query() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let legacy = fixup_fixture_db(&temp.path().join("legacy.db"))?;
+    let indexed = fixup_fixture_db(&temp.path().join("indexed.db"))?;
+
+    const UNRESOLVED: Option<&str> = Some(r#"{"parent":{"resolution":"unresolved"}}"#);
+    const AMBIGUOUS: Option<&str> = Some(r#"{"parent":{"resolution":"ambiguous"}}"#);
+    const NO_SLOT: Option<&str> = Some(r#"{"extractor":"fixture"}"#);
+    const INVALID: Option<&str> = Some("not json{{");
+
+    // Truth-table rows: (conversation_id, evidence, manifest, pre-set link).
+    type FixupRow<'a> = (i64, Option<&'a str>, Option<&'a str>, Option<i64>);
+    let rows: &[FixupRow] = &[
+        // P1 = /deep/nest/ed/rollout-x.jsonl: nested suffixes, all three
+        // arms, and every way a row can fall out of candidacy.
+        (1, Some("rollout-x"), UNRESOLVED, None),    // arm C
+        (2, Some("rollout-x.jsonl"), NO_SLOT, None), // arm B, manifest without the slot
+        (3, Some("ed/rollout-x"), UNRESOLVED, None), // arm C, nested suffix
+        (4, Some("nest/ed/rollout-x"), UNRESOLVED, None), // arm C, nested suffix
+        (5, Some("deep/nest/ed/rollout-x"), UNRESOLVED, None), // arm C, whole core
+        (6, Some("ROLLOUT-X"), UNRESOLVED, None),    // arm C, ASCII-ci
+        (7, Some("rollout_x"), UNRESOLVED, None),    // '_' wildcard (sentinel key)
+        (8, Some("%t-x"), UNRESOLVED, None),         // '%' wildcard (sentinel key)
+        (9, Some("rollout-x"), AMBIGUOUS, None),     // candidate, never claimed
+        (10, Some("rollout-x"), UNRESOLVED, Some(555)), // already resolved
+        (12, Some("rollout-x"), UNRESOLVED, None),   // wrong agent scope
+        (13, Some("rollout-x"), UNRESOLVED, None),   // wrong source scope
+        (16, Some("rollout-xj"), UNRESOLVED, None),  // suffix boundary
+        (17, Some("x.jsonl"), UNRESOLVED, None),     // arm B boundary ('-' before)
+        (18, Some("rollout-x.jsonl.jsonl"), UNRESOLVED, None), // arm C boundary
+        (19, Some("rollout-x"), INVALID, None),      // unparseable manifest
+        (20, Some("rollout-x"), None, None),         // NULL manifest
+        // P2 = /root/xa/b: the a/b vs xa/b suffix collision.
+        (21, Some("a/b"), UNRESOLVED, None),  // NOT a candidate
+        (22, Some("b"), UNRESOLVED, None),    // arm B
+        (23, Some("xa/b"), UNRESOLVED, None), // arm B
+        (24, Some("root/xa/b"), UNRESOLVED, None), // arm B, whole core
+        // P3 = abc: arm A only (no '/', no .jsonl).
+        (25, Some("abc"), UNRESOLVED, None), // arm A
+        (26, Some("ABC"), UNRESOLVED, None), // A is case-SENSITIVE: no match
+        (27, Some("a_c"), UNRESOLVED, None), // no arm reaches it
+        // P4 = '' claims nothing (E='%' only matches ids containing '/').
+        (28, Some("%"), UNRESOLVED, None), // wildcard sentinel row
+        // P5 = /p/sess-É.jsonl (claude_code scope, non-ASCII).
+        (29, Some("sess-É"), UNRESOLVED, None), // arm C, ASCII part folds
+        (30, Some("sess-é"), UNRESOLVED, None), // non-ASCII case: no match
+        (31, Some("SESS-É"), UNRESOLVED, None), // arm C
+        (32, Some("sess-É"), UNRESOLVED, None), // wrong agent scope for P5
+        // P6 = /logs/s_2026/roll.jsonl: wildcard-heavy id, several
+        // candidates sharing one evidence.
+        (33, Some("s_2026/roll"), UNRESOLVED, None), // sentinel, arm C
+        (34, Some("%"), UNRESOLVED, None),           // sentinel, arm B (contains '/')
+        (35, Some("roll"), UNRESOLVED, None),        // several candidates...
+        (36, Some("roll"), UNRESOLVED, None),        // ...sharing one evidence...
+        (37, Some("roll"), UNRESOLVED, None),        // ...and one ambiguous skip
+        (38, Some("roll"), AMBIGUOUS, None),
+        (39, Some("r%ll"), UNRESOLVED, None), // sentinel, arm C
+        (40, Some("sX2026/roll"), UNRESOLVED, None), // '_' literal vs X
+        (42, Some("rollout-x"), UNRESOLVED, None), // agent row missing
+        // The corrupt self-row for P1: conversation 900 IS P1's parent id.
+        (900, Some("rollout-x"), UNRESOLVED, None),
+        // Empty/NULL evidence never matches anything.
+        (14, Some(""), UNRESOLVED, None),
+        (15, None, UNRESOLVED, None),
+    ];
+
+    for id in 1..=40_i64 {
+        let (agent_id, source) = match id {
+            12 => (2, "local"),      // claude_code row: P1/P6 are codex
+            13 => (1, "remote"),     // wrong source
+            29..=31 => (2, "local"), // claude_code rows for P5
+            _ => (1, "local"),
+        };
+        fixup_seed_conversation(&legacy, id, agent_id, source)?;
+        fixup_seed_conversation(&indexed, id, agent_id, source)?;
+    }
+    for (id, agent_id, source) in [
+        (42_i64, 999, "local"), // agent row 999 does not exist
+        (900_i64, 1, "local"),  // doubles as P1's parent conversation
+        (555_i64, 1, "local"),  // row 10's pre-set link target
+        (901_i64, 1, "local"),
+        (902_i64, 1, "local"),
+        (903_i64, 1, "local"),
+        (904_i64, 1, "local"),
+        (905_i64, 1, "local"),
+    ] {
+        fixup_seed_conversation(&legacy, id, agent_id, source)?;
+        fixup_seed_conversation(&indexed, id, agent_id, source)?;
+    }
+    for &(id, evidence, manifest, parent) in rows {
+        fixup_seed_fact(&legacy, id, evidence, manifest, parent)?;
+        fixup_seed_fact(&indexed, id, evidence, manifest, parent)?;
+    }
+
+    let parent_calls: &[(i64, &str, &str, &str)] = &[
+        (900, "codex", "local", "/deep/nest/ed/rollout-x.jsonl"),
+        (901, "codex", "local", "/root/xa/b"),
+        (902, "codex", "local", "abc"),
+        (903, "codex", "local", ""),
+        (904, "claude_code", "local", "/p/sess-É.jsonl"),
+        (905, "codex", "local", "/logs/s_2026/roll.jsonl"),
+    ];
+    for &(parent_id, provider, source, parent_external_id) in parent_calls {
+        let legacy_claimed = fixup_legacy_pending_parent_links(
+            &legacy,
+            parent_id,
+            provider,
+            source,
+            parent_external_id,
+        )?;
+        let indexed_claimed = facts::fixup_pending_parent_links(
+            &indexed,
+            parent_id,
+            provider,
+            source,
+            parent_external_id,
+        )?;
+        ensure!(
+            legacy_claimed == indexed_claimed,
+            "parent {parent_id} ({parent_external_id}): legacy claimed \
+             {legacy_claimed}, indexed claimed {indexed_claimed}"
+        );
+    }
+
+    // Truth-table spot pins: the full state is compared below; these make
+    // a mismatch legible instead of a dump diff.
+    let link = |conn: &Connection, id: i64| -> Result<Option<i64>> {
+        Ok(conn
+            .query_row_with_params(
+                "SELECT parent_conversation_id FROM viewer_session_facts \
+                 WHERE conversation_id = ?1",
+                &[SqliteValue::Integer(id)],
+            )?
+            .get_typed(0)?)
+    };
+    for (id, expected) in [
+        (1_i64, Some(900_i64)),
+        (900, None),     // corrupt self-row never self-parents
+        (9, None),       // ambiguous never claimed
+        (10, Some(555)), // already-resolved link untouched
+        (12, None),      // wrong agent scope
+        (13, None),      // wrong source scope
+        (21, None),      // a/b vs xa/b suffix collision
+        (25, Some(902)), // case-sensitive arm A
+        (26, None),      // 'ABC' is not 'abc'
+        (29, Some(904)), // ASCII part of sess-É folds
+        (30, None),      // non-ASCII case does not fold
+        (32, None),      // codex row invisible to the claude_code parent
+        (42, None),      // missing agent row
+        (38, None),      // ambiguous among several candidates
+    ] {
+        let got = link(&indexed, id)?;
+        ensure!(
+            got == expected,
+            "conversation {id}: expected link {expected:?}, got {got:?}"
+        );
+    }
+    let manifest_of = |conn: &Connection, id: i64| -> Result<Option<String>> {
+        Ok(conn
+            .query_row_with_params(
+                "SELECT coverage_detail_json FROM viewer_session_facts \
+                 WHERE conversation_id = ?1",
+                &[SqliteValue::Integer(id)],
+            )?
+            .get_typed(0)?)
+    };
+    ensure!(
+        manifest_of(&indexed, 9)?.as_deref() == Some(r#"{"parent":{"resolution":"ambiguous"}}"#),
+        "the never-claimed ambiguous row keeps its recorded resolution"
+    );
+    ensure!(
+        manifest_of(&indexed, 19)?.as_deref() == Some("not json{{"),
+        "an unparseable manifest must be left untouched by the link-only update"
+    );
+    ensure!(
+        manifest_of(&indexed, 1)?.as_deref() == Some(r#"{"parent":{"resolution":"resolved"}}"#),
+        "a claimed row's manifest must record the resolution"
+    );
+
+    // Deterministic (P, E) sweep: 120 generated parent/evidence pairs over
+    // an alphabet stressing suffix boundaries, wildcards, case and
+    // multi-byte characters, interleaved into the archive one pair at a
+    // time so both sides see identical incremental growth.
+    let mut rng = FixupLcg(0x5EED_2026_1110_0007);
+    let alphabet = ['a', 'A', '/', '.', 'x', 'j', '_', '%', 'é', '9'];
+    for i in 0..120_i64 {
+        let parent_len = 3 + rng.below(10);
+        let evidence_len = 1 + rng.below(8);
+        let mut parent_external_id = String::new();
+        for _ in 0..parent_len {
+            parent_external_id.push(alphabet[rng.below(alphabet.len() as u64) as usize]);
+        }
+        let mut evidence = String::new();
+        for _ in 0..evidence_len {
+            evidence.push(alphabet[rng.below(alphabet.len() as u64) as usize]);
+        }
+        let (child_id, parent_id) = (2000 + i, 30_000 + i);
+        for conn in [&legacy, &indexed] {
+            fixup_seed_conversation(conn, child_id, 1, "local")?;
+            fixup_seed_conversation(conn, parent_id, 1, "local")?;
+            fixup_seed_fact(conn, child_id, Some(evidence.as_str()), UNRESOLVED, None)?;
+        }
+        let legacy_claimed = fixup_legacy_pending_parent_links(
+            &legacy,
+            parent_id,
+            "codex",
+            "local",
+            &parent_external_id,
+        )?;
+        let indexed_claimed = facts::fixup_pending_parent_links(
+            &indexed,
+            parent_id,
+            "codex",
+            "local",
+            &parent_external_id,
+        )?;
+        ensure!(
+            legacy_claimed == indexed_claimed,
+            "sweep pair {i} ({parent_external_id:?} vs {evidence:?}): \
+             legacy claimed {legacy_claimed}, indexed claimed {indexed_claimed}"
+        );
+        // No-miss property, checked directly against the engine: a pair
+        // the engine matches must be reachable by a probe key.
+        if fixup_engine_evidence_matches(&legacy, &parent_external_id, &evidence)? {
+            let key = facts::parent_lookup_key(&evidence);
+            let probes = facts::parent_fixup_probe_keys(&parent_external_id);
+            ensure!(
+                probes.contains(&key) || key == facts::PARENT_LOOKUP_WILDCARD_SENTINEL,
+                "sweep pair {i}: engine match {parent_external_id:?} vs \
+                 {evidence:?} has no covering probe key"
+            );
+        }
+    }
+    // The handcrafted pairs get the same direct no-miss check. Empty
+    // evidence is skipped: the old query's `parent_external_id != ''`
+    // candidacy filter runs BEFORE the match predicate, so an empty
+    // evidence row is never a candidate even though the bare engine
+    // predicate can match it (arm B's `%/'`-shaped pattern with E=`''`
+    // degenerates to "contains a slash") — the fixup filters empties in
+    // Rust, exactly like the old SQL did.
+    for &(_, evidence, _, _) in rows {
+        let Some(evidence) = evidence else { continue };
+        if evidence.is_empty() {
+            continue;
+        }
+        for &(_, _, _, parent_external_id) in parent_calls {
+            if fixup_engine_evidence_matches(&legacy, parent_external_id, evidence)? {
+                let key = facts::parent_lookup_key(evidence);
+                let probes = facts::parent_fixup_probe_keys(parent_external_id);
+                ensure!(
+                    probes.contains(&key) || key == facts::PARENT_LOOKUP_WILDCARD_SENTINEL,
+                    "engine match {parent_external_id:?} vs {evidence:?} has \
+                     no covering probe key"
+                );
+            }
+        }
+    }
+
+    // Identical final state, row for row.
+    type DumpRow = (i64, Option<i64>, Option<String>);
+    let dump = |conn: &Connection| -> Result<Vec<DumpRow>> {
+        conn.query(
+            "SELECT conversation_id, parent_conversation_id, coverage_detail_json \
+             FROM viewer_session_facts ORDER BY conversation_id",
+        )?
+        .iter()
+        .map(|row| -> Result<DumpRow> {
+            Ok((row.get_typed(0)?, row.get_typed(1)?, row.get_typed(2)?))
+        })
+        .collect()
+    };
+    let (legacy_state, indexed_state) = (dump(&legacy)?, dump(&indexed)?);
+    ensure!(
+        legacy_state == indexed_state,
+        "final facts state diverged: {} legacy rows vs {} indexed rows",
+        legacy_state.len(),
+        indexed_state.len()
+    );
+    Ok(())
+}
+
+/// The pre-v9 `viewer_session_facts` shape — the v1 DDL exactly as the v8
+/// profile shipped it, without the v9 lookup-key column — for simulating an
+/// existing archive before the upgrade.
+const FIXUP_PRE_V9_FACTS_DDL: &str = "CREATE TABLE viewer_session_facts (\
+    conversation_id INTEGER PRIMARY KEY \
+        REFERENCES conversations(id) ON DELETE CASCADE, \
+    extractor_version INTEGER NOT NULL, \
+    source_revision INTEGER NOT NULL DEFAULT 0, \
+    coverage_state TEXT NOT NULL DEFAULT 'unknown', \
+    coverage_detail_json TEXT, \
+    is_subagent INTEGER, \
+    parent_conversation_id INTEGER REFERENCES conversations(id), \
+    parent_external_id TEXT, \
+    task_category TEXT, \
+    turn_count INTEGER, \
+    step_count INTEGER, \
+    thinking_block_count INTEGER, \
+    artifact_count INTEGER, \
+    subagent_count INTEGER, \
+    tool_error_count INTEGER, \
+    tool_calls_with_exit_status INTEGER, \
+    file_fact_count INTEGER, \
+    compaction_count INTEGER, \
+    model_set_json TEXT, \
+    first_prompt TEXT, \
+    extracted_at_ms INTEGER \
+)";
+
+/// v9 migration: an archive whose profile predates the lookup-key column
+/// must upgrade in place — guarded ALTER, a backfill matching the Rust
+/// derivation exactly (clean ASCII-lowercase, the wildcard sentinel for
+/// `%`/`_` evidence, untouched NULL for missing evidence), the index, and
+/// pre-migration rows must stay claimable through the new path.
+#[test]
+fn facts_parent_lookup_key_migration_for_pre_v9_archives() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let conn = fixup_base_db(&temp.path().join("migrate.db"))?;
+
+    // Simulate the existing v8 archive: the pre-v9 facts table, the meta
+    // marker at 8, and pending rows whose evidence predates the key.
+    conn.execute_batch(&format!(
+        "{FIXUP_PRE_V9_FACTS_DDL}; \
+         CREATE TABLE viewer_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); \
+         INSERT INTO viewer_meta (key, value) VALUES ('extension_schema_version', '8');"
+    ))?;
+    for id in 1..=5_i64 {
+        fixup_seed_conversation(&conn, id, 1, "local")?;
+    }
+    for (id, external_id, source_path) in [
+        (800_i64, "migrate-parent-a", "/arch/migrate-parent-a.jsonl"),
+        (801_i64, "migrate-parent-b", "/arch/migrate-parent-b.jsonl"),
+    ] {
+        conn.execute_with_params(
+            "INSERT INTO conversations \
+             (id, agent_id, source_id, external_id, source_path) \
+             VALUES (?1, 1, 'local', ?2, ?3)",
+            &param_slice_to_values(params![id, external_id, source_path]),
+        )?;
+    }
+    // (id, evidence) — the keys are backfilled by the migration, never
+    // seeded here.
+    let rows: &[(i64, Option<&str>)] = &[
+        (1, Some("migrate-clean")),
+        (2, Some("migrate_wild")), // '_' is a LIKE wildcard: sentinel key
+        (3, Some("")),             // empty evidence stays unclaimable
+        (4, None),                 // no evidence stays NULL
+        (5, Some("MIXED-Case")),   // ASCII-lowercase key
+    ];
+    for &(id, evidence) in rows {
+        conn.execute_with_params(
+            "INSERT INTO viewer_session_facts \
+             (conversation_id, extractor_version, source_revision, coverage_state, \
+              coverage_detail_json, parent_external_id) \
+             VALUES (?1, 1, 42, 'partial', ?2, ?3)",
+            &param_slice_to_values(params![
+                id,
+                r#"{"parent":{"resolution":"unresolved"}}"#,
+                evidence
+            ]),
+        )?;
+    }
+    ensure!(
+        schema::installed_version(&conn)? == Some(8),
+        "fixture must stand at schema v8"
+    );
+
+    // The upgrade: guarded ALTER + backfill + index, one schema
+    // transaction.
+    schema::ensure_schema(&conn)?;
+
+    ensure!(
+        schema::installed_version(&conn)? == Some(schema::EXTENSION_SCHEMA_VERSION),
+        "the upgrade must land on the current extension profile"
+    );
+    let index = conn.query(
+        "SELECT 1 FROM sqlite_master \
+         WHERE type='index' AND name='idx_viewer_session_facts_parent_lookup'",
+    )?;
+    ensure!(
+        !index.is_empty(),
+        "the v9 batch must create the lookup index"
+    );
+
+    // Backfilled keys must equal the Rust derivation exactly — the SQL
+    // CASE (lower/char(1)/LIKE...ESCAPE) mirrors facts::parent_lookup_key.
+    for &(id, evidence) in rows {
+        let expected = evidence.map(facts::parent_lookup_key);
+        let actual: Option<String> = conn
+            .query_row_with_params(
+                "SELECT parent_lookup_key FROM viewer_session_facts \
+                 WHERE conversation_id = ?1",
+                &[SqliteValue::Integer(id)],
+            )?
+            .get_typed(0)?;
+        ensure!(
+            actual == expected,
+            "conversation {id}: backfilled key {actual:?} != derivation {expected:?}"
+        );
+    }
+
+    // Idempotence: a second ensure_schema keeps the backfilled keys.
+    schema::ensure_schema(&conn)?;
+    let stable: Option<String> = conn
+        .query_row_with_params(
+            "SELECT parent_lookup_key FROM viewer_session_facts \
+             WHERE conversation_id = 1",
+            &[SqliteValue::Integer(1)],
+        )?
+        .get_typed(0)?;
+    ensure!(
+        stable.as_deref() == Some("migrate-clean"),
+        "a re-run must not touch backfilled keys: {stable:?}"
+    );
+
+    // End-to-end: the fixup links PRE-MIGRATION rows through the new
+    // index — both a clean key and the sentinel-served wildcard row.
+    let clean = facts::fixup_pending_parent_links(
+        &conn,
+        800,
+        "codex",
+        "local",
+        "/arch/migrate-clean.jsonl",
+    )?;
+    ensure!(
+        clean == 1,
+        "the migrated clean row must be claimable: {clean}"
+    );
+    let wildcard = facts::fixup_pending_parent_links(
+        &conn,
+        801,
+        "codex",
+        "local",
+        "/arch/migrate_wild.jsonl",
+    )?;
+    ensure!(
+        wildcard == 1,
+        "the migrated wildcard row must be claimable through the sentinel \
+         probe: {wildcard}"
+    );
+    for (id, expected) in [
+        (1_i64, Some(800_i64)),
+        (2, Some(801)),
+        (3, None),
+        (4, None),
+        (5, None),
+    ] {
+        let got: Option<i64> = conn
+            .query_row_with_params(
+                "SELECT parent_conversation_id FROM viewer_session_facts \
+                 WHERE conversation_id = ?1",
+                &[SqliteValue::Integer(id)],
+            )?
+            .get_typed(0)?;
+        ensure!(
+            got == expected,
+            "conversation {id}: expected link {expected:?}, got {got:?}"
+        );
+    }
+    Ok(())
 }
 
 #[test]
@@ -5800,18 +6667,19 @@ fn ingest_removal_drops_extension_rows_and_receipt() -> Result<()> {
     Ok(())
 }
 
-/// Interrupted publication: a crash after the pending receipt commits but
-/// before the generation transaction lands leaves a durable `pending`
-/// receipt and NO rows — never a falsely complete archive. The explicit
-/// resumable backfill converges it to `complete` with no loss or
-/// duplication.
+/// Interrupted publication: the receipt rides the generation transaction,
+/// so a crash before that commit leaves the pre-attempt state — NO receipt
+/// and NO rows, never a falsely complete archive (nothing claims coverage
+/// the rows do not have). The explicit resumable backfill converges it to
+/// `complete` with no loss or duplication.
 #[test]
-fn ingest_interrupted_publication_leaves_pending_and_backfill_completes() -> Result<()> {
+fn ingest_interrupted_publication_leaves_no_false_state_and_backfill_completes() -> Result<()> {
     let fixture = ingest_fixture()?;
     seed_codex_rollout(&fixture, "gen-codex-5", "crash mid publication")?;
 
-    // Crash injection: pending receipt committed, generation transaction
-    // never attempted (process "dies" between the two adjacent commits).
+    // Crash injection: the process "dies" before the generation transaction
+    // commits — with the receipt folded in, that means nothing durable was
+    // written this attempt.
     run_cass_index(&fixture, &[("CASS_TEST_VIEWER_GENERATION_CRASH", "1")])?;
     run_init_extensions(&fixture)?;
 
@@ -5823,16 +6691,14 @@ fn ingest_interrupted_publication_leaves_pending_and_backfill_completes() -> Res
         "an interrupted publication must leave no partial rows: \
          {facts_n}/{projection_n}/{steps_n}"
     );
-    let receipt = ingest_receipt(&conn, conversation_id)?.expect("crash receipt");
     ensure!(
-        receipt["state"] == "pending",
-        "interrupted publication must leave a pending receipt: {receipt}"
+        ingest_receipt(&conn, conversation_id)?.is_none(),
+        "a crash before the generation commit must leave NO receipt — \
+         the receipt only becomes durable with the rows it certifies"
     );
     ensure!(
-        facts::list_incomplete_ingest_receipts(&conn)?
-            .iter()
-            .any(|receipt| receipt.conversation_id == conversation_id),
-        "the pending receipt must surface in the incomplete-receipt set"
+        facts::list_incomplete_ingest_receipts(&conn)?.is_empty(),
+        "a receipt-less crash must not surface as an incomplete receipt"
     );
     drop(conn);
 

@@ -31,12 +31,14 @@
 //! Facts and structure are ONE extension generation of a canonical source
 //! revision, published by `projection::publish_ingest_generation`:
 //! computed from a single `ConversationPacket::from_canonical_replay` and
-//! committed — with a durable `viewer_meta` ingest receipt — inside one
-//! transaction. The receipt (`pending|complete|failed` plus the exact
-//! reason) is the publication's durable state: `complete` is only honest
-//! when both lane markers are durably visible at the bound
-//! `source_revision`; an interrupted or failed generation is reconciled
-//! by the explicit resumable backfill, never at request/startup time.
+//! committed — with its durable `viewer_meta` ingest receipt (`complete`
+//! or, after a rollback, `failed` with the exact reason) — inside ONE
+//! transaction, so the receipt never claims coverage the rows do not have.
+//! `complete` is only honest when both lane markers are durably visible at
+//! the bound `source_revision`; a crash before the commit leaves the
+//! pre-attempt state (no receipt, or a prior receipt honest for its own
+//! revision), and an interrupted or failed generation is reconciled by the
+//! explicit resumable backfill, never at request/startup time.
 //! Canonical removal drops both the cascade-owned extension rows and the
 //! receipt itself (schema-v3 `viewer_ingest_receipt_cleanup` trigger).
 //!
