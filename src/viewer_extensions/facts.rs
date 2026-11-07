@@ -30,7 +30,12 @@ pub use providers::classification::SessionQualityMetrics;
 
 /// Bump when any provider extraction semantics change so persisted rows
 /// re-derive on the next ingest pass instead of silently going stale.
-pub const FACTS_EXTRACTOR_VERSION: i64 = 1;
+///
+/// v2: antigravity record classification re-verified against the pinned
+/// connector's real output (known USER_INPUT/PLANNER_RESPONSE/MODEL-step
+/// shapes, narrowed envelope taint, connector-contract marks for dropped
+/// source text and status).
+pub const FACTS_EXTRACTOR_VERSION: i64 = 2;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
