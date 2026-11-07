@@ -8451,12 +8451,58 @@ struct MessageMergeFingerprint {
     content_hash: [u8; 32],
 }
 
+/// Replay-equivalence core: everything the replay guard compares except the
+/// native record identity a connector carried onto the message.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct MessageReplayFingerprint {
+struct MessageReplayCore {
     created_at: Option<i64>,
     role: MessageRole,
     author: Option<String>,
     content_hash: [u8; 32],
+}
+
+/// Replay state for one conversation: the set of `MessageReplayCore`s already
+/// stored (or pending in the same transaction), each with the native record
+/// ids seen for that core.
+///
+/// A `None` id means "this copy carried no native identity" — unknown, not
+/// absent. Unknown ids match every id: connectors that surface no native id
+/// keep the legacy four-tuple replay semantics, and codex records archived
+/// after franken-agent-detection compacts their extras (>=32 MiB sessions)
+/// still replay against the full copies stored earlier instead of
+/// duplicating them.
+#[derive(Debug, Clone, Default)]
+struct MessageReplayFingerprintSet {
+    cores: HashMap<MessageReplayCore, HashSet<Option<String>>>,
+}
+
+impl MessageReplayFingerprintSet {
+    fn contains_parts(&self, core: &MessageReplayCore, native_id: &Option<String>) -> bool {
+        let Some(native_ids) = self.cores.get(core) else {
+            return false;
+        };
+        native_id.is_none() || native_ids.contains(native_id) || native_ids.contains(&None)
+    }
+
+    fn insert_parts(&mut self, core: MessageReplayCore, native_id: Option<String>) {
+        self.cores.entry(core).or_default().insert(native_id);
+    }
+
+    fn contains_message(&self, msg: &Message) -> bool {
+        let (core, native_id) = message_replay_parts(msg);
+        self.contains_parts(&core, &native_id)
+    }
+
+    fn insert_message(&mut self, msg: &Message) {
+        let (core, native_id) = message_replay_parts(msg);
+        self.insert_parts(core, native_id);
+    }
+
+    fn absorb(&mut self, other: Self) {
+        for (core, native_ids) in other.cores {
+            self.cores.entry(core).or_default().extend(native_ids);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -8549,13 +8595,44 @@ fn message_merge_fingerprint(msg: &Message) -> MessageMergeFingerprint {
     }
 }
 
-fn message_replay_fingerprint(msg: &Message) -> MessageReplayFingerprint {
-    MessageReplayFingerprint {
+/// The replay core of one message: the replay fingerprint fields without the
+/// native record identity.
+fn message_replay_core(msg: &Message) -> MessageReplayCore {
+    MessageReplayCore {
         created_at: msg.created_at,
         role: msg.role.clone(),
         author: msg.author.clone(),
         content_hash: *blake3::hash(msg.content.as_bytes()).as_bytes(),
     }
+}
+
+/// Stable native record identity a connector archived onto the message.
+///
+/// The codex connector archives whole response_item envelopes in `extra`, and
+/// tool outputs carry the Responses API call identity at `payload.call_id`,
+/// falling back to `payload.id` — the same resolution order
+/// franken-agent-detection applies to tool calls. Tool and skill call
+/// messages additionally archive `cass.invocations[0].call_id` (indexer
+/// invocation merge). Any connector that exposes one of these shapes
+/// participates in native-id replay disambiguation; messages without a
+/// native id keep the legacy four-tuple replay semantics.
+fn message_native_id(msg: &Message) -> Option<String> {
+    native_id_from_extra(&msg.extra_json)
+}
+
+fn native_id_from_extra(extra: &serde_json::Value) -> Option<String> {
+    extra
+        .pointer("/payload/call_id")
+        .or_else(|| extra.pointer("/payload/id"))
+        .or_else(|| extra.pointer("/cass/invocations/0/call_id"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|native_id| !native_id.is_empty())
+        .map(str::to_owned)
+}
+
+/// The replay core plus the native record identity of one message.
+fn message_replay_parts(msg: &Message) -> (MessageReplayCore, Option<String>) {
+    (message_replay_core(msg), message_native_id(msg))
 }
 
 fn conversation_message_fingerprints(conv: &Conversation) -> HashSet<MessageMergeFingerprint> {
@@ -8565,19 +8642,12 @@ fn conversation_message_fingerprints(conv: &Conversation) -> HashSet<MessageMerg
         .collect()
 }
 
-fn conversation_message_replay_fingerprints(
-    conv: &Conversation,
-) -> HashSet<MessageReplayFingerprint> {
-    conv.messages
-        .iter()
-        .map(message_replay_fingerprint)
-        .collect()
+fn conversation_message_replay_cores(conv: &Conversation) -> HashSet<MessageReplayCore> {
+    conv.messages.iter().map(message_replay_core).collect()
 }
 
-fn replay_fingerprint_from_merge(
-    fingerprint: &MessageMergeFingerprint,
-) -> MessageReplayFingerprint {
-    MessageReplayFingerprint {
+fn replay_core_from_merge(fingerprint: &MessageMergeFingerprint) -> MessageReplayCore {
+    MessageReplayCore {
         created_at: fingerprint.created_at,
         role: fingerprint.role.clone(),
         author: fingerprint.author.clone(),
@@ -8585,20 +8655,17 @@ fn replay_fingerprint_from_merge(
     }
 }
 
-fn replay_fingerprints_from_merge_set(
+fn replay_cores_from_merge_set(
     fingerprints: &HashSet<MessageMergeFingerprint>,
-) -> HashSet<MessageReplayFingerprint> {
-    fingerprints
-        .iter()
-        .map(replay_fingerprint_from_merge)
-        .collect()
+) -> HashSet<MessageReplayCore> {
+    fingerprints.iter().map(replay_core_from_merge).collect()
 }
 
 fn collect_new_messages_for_existing_conversation<'a>(
     conversation_id: i64,
     conv: &'a Conversation,
     existing_messages: &mut HashMap<i64, MessageMergeFingerprint>,
-    existing_replay_fingerprints: &mut HashSet<MessageReplayFingerprint>,
+    existing_replay_fingerprints: &mut MessageReplayFingerprintSet,
     replay_skip_log: &'static str,
 ) -> ExistingConversationNewMessages<'a> {
     if matches!(conv.agent_slug.as_str(), "grok_bot" | "codebuff") {
@@ -8619,8 +8686,8 @@ fn collect_new_messages_for_existing_conversation<'a>(
             continue;
         }
 
-        let incoming_replay = replay_fingerprint_from_merge(&incoming_fingerprint);
-        if existing_replay_fingerprints.contains(&incoming_replay) {
+        let (incoming_core, incoming_native_id) = message_replay_parts(msg);
+        if existing_replay_fingerprints.contains_parts(&incoming_core, &incoming_native_id) {
             tracing::debug!(
                 conversation_id,
                 idx = msg.idx,
@@ -8631,7 +8698,7 @@ fn collect_new_messages_for_existing_conversation<'a>(
         }
 
         existing_messages.insert(msg.idx, incoming_fingerprint);
-        existing_replay_fingerprints.insert(incoming_replay);
+        existing_replay_fingerprints.insert_parts(incoming_core, incoming_native_id);
         new_chars += msg.content.len() as i64;
         messages.push(msg);
     }
@@ -9653,7 +9720,7 @@ fn collect_append_only_tail_messages<'a>(
     }
 
     let mut seen_tail_idx = HashSet::new();
-    let mut seen_tail_replay = HashSet::new();
+    let mut seen_tail_replay = MessageReplayFingerprintSet::default();
     let mut new_chars = 0i64;
     let mut messages = Vec::new();
     for msg in &conv.messages[split_idx..] {
@@ -9666,10 +9733,11 @@ fn collect_append_only_tail_messages<'a>(
             return None;
         }
 
-        let replay_fingerprint = message_replay_fingerprint(msg);
-        if !seen_tail_replay.insert(replay_fingerprint) {
+        let (replay_core, replay_native_id) = message_replay_parts(msg);
+        if seen_tail_replay.contains_parts(&replay_core, &replay_native_id) {
             return None;
         }
+        seen_tail_replay.insert_parts(replay_core, replay_native_id);
 
         new_chars += msg.content.len() as i64;
         messages.push(msg);
@@ -9748,14 +9816,15 @@ fn collect_existing_conversation_tail_from_ended_at<'a>(
         }
     }
 
-    let mut seen_tail_replay = HashSet::new();
+    let mut seen_tail_replay = MessageReplayFingerprintSet::default();
     let mut new_chars = 0i64;
     let mut messages = Vec::new();
     for msg in &conv.messages {
-        let replay_fingerprint = message_replay_fingerprint(msg);
-        if !seen_tail_replay.insert(replay_fingerprint) {
+        let (replay_core, replay_native_id) = message_replay_parts(msg);
+        if seen_tail_replay.contains_parts(&replay_core, &replay_native_id) {
             return None;
         }
+        seen_tail_replay.insert_parts(replay_core, replay_native_id);
 
         new_chars += msg.content.len() as i64;
         messages.push(msg);
@@ -9892,9 +9961,9 @@ fn start_distance_ms(left: Option<i64>, right: Option<i64>) -> i64 {
 
 fn conversation_merge_evidence(
     incoming_exact: &HashSet<MessageMergeFingerprint>,
-    incoming_replay: &HashSet<MessageReplayFingerprint>,
+    incoming_replay: &HashSet<MessageReplayCore>,
     existing_exact: &HashSet<MessageMergeFingerprint>,
-    existing_replay: &HashSet<MessageReplayFingerprint>,
+    existing_replay: &HashSet<MessageReplayCore>,
     incoming_started_at: Option<i64>,
     existing_started_at: Option<i64>,
 ) -> Option<ConversationMergeEvidence> {
@@ -14622,7 +14691,7 @@ impl FrankenStorage {
         let mut total_chars: i64 = 0;
         let mut inserted_indices = Vec::new();
         let mut pending_messages = HashMap::new();
-        let mut pending_replay_fingerprints = HashSet::new();
+        let mut pending_replay_fingerprints = MessageReplayFingerprintSet::default();
         let mut idx_collision_count = 0usize;
         let mut first_collision_idx: Option<i64> = None;
         let mut new_messages = Vec::new();
@@ -14635,9 +14704,9 @@ impl FrankenStorage {
                 }
                 continue;
             }
-            let incoming_replay = message_replay_fingerprint(msg);
+            let (incoming_core, incoming_native_id) = message_replay_parts(msg);
             if conv.agent_slug != "grok_bot"
-                && pending_replay_fingerprints.contains(&incoming_replay)
+                && pending_replay_fingerprints.contains_parts(&incoming_core, &incoming_native_id)
             {
                 tracing::debug!(
                     conversation_id = conv_id,
@@ -14648,7 +14717,7 @@ impl FrankenStorage {
                 continue;
             }
             pending_messages.insert(msg.idx, incoming_fingerprint);
-            pending_replay_fingerprints.insert(incoming_replay);
+            pending_replay_fingerprints.insert_parts(incoming_core, incoming_native_id);
             new_messages.push(msg);
         }
         let inserted_message_ids = franken_batch_insert_new_messages(&tx, conv_id, &new_messages)?;
@@ -14775,7 +14844,7 @@ impl FrankenStorage {
         let mut total_chars: i64 = 0;
         let mut inserted_indices = Vec::new();
         let mut pending_messages = HashMap::new();
-        let mut pending_replay_fingerprints = HashSet::new();
+        let mut pending_replay_fingerprints = MessageReplayFingerprintSet::default();
         let mut idx_collision_count = 0usize;
         let mut first_collision_idx: Option<i64> = None;
         let mut new_messages = Vec::new();
@@ -14790,9 +14859,9 @@ impl FrankenStorage {
                 continue;
             }
 
-            let incoming_replay = message_replay_fingerprint(msg);
+            let (incoming_core, incoming_native_id) = message_replay_parts(msg);
             if conv.agent_slug != "grok_bot"
-                && pending_replay_fingerprints.contains(&incoming_replay)
+                && pending_replay_fingerprints.contains_parts(&incoming_core, &incoming_native_id)
             {
                 tracing::debug!(
                     conversation_id = conv_id,
@@ -14804,7 +14873,7 @@ impl FrankenStorage {
             }
 
             pending_messages.insert(msg.idx, incoming_fingerprint);
-            pending_replay_fingerprints.insert(incoming_replay);
+            pending_replay_fingerprints.insert_parts(incoming_core, incoming_native_id);
             new_messages.push(msg);
         }
 
@@ -17668,10 +17737,8 @@ impl FrankenStorage {
         let mut pending_conversation_ids: HashMap<PendingConversationKey, i64> = HashMap::new();
         let mut pending_message_fingerprints: HashMap<i64, HashMap<i64, MessageMergeFingerprint>> =
             HashMap::new();
-        let mut pending_message_replay_fingerprints: HashMap<
-            i64,
-            HashSet<MessageReplayFingerprint>,
-        > = HashMap::new();
+        let mut pending_message_replay_fingerprints: HashMap<i64, MessageReplayFingerprintSet> =
+            HashMap::new();
 
         for &(agent_id, workspace_id, raw_conv) in conversations {
             let normalized_conv = normalized_conversation_for_storage(raw_conv);
@@ -17808,15 +17875,17 @@ impl FrankenStorage {
                             .or_default();
                         let mut new_messages = Vec::new();
                         for msg in &conv.messages {
-                            let incoming_replay = message_replay_fingerprint(msg);
+                            let (incoming_core, incoming_native_id) = message_replay_parts(msg);
                             if pending_messages.contains_key(&msg.idx)
                                 || (!matches!(conv.agent_slug.as_str(), "grok_bot" | "codebuff")
-                                    && pending_replay_fingerprints.contains(&incoming_replay))
+                                    && pending_replay_fingerprints
+                                        .contains_parts(&incoming_core, &incoming_native_id))
                             {
                                 continue;
                             }
                             pending_messages.insert(msg.idx, message_merge_fingerprint(msg));
-                            pending_replay_fingerprints.insert(incoming_replay);
+                            pending_replay_fingerprints
+                                .insert_parts(incoming_core, incoming_native_id);
                             new_messages.push(msg);
                         }
                         let inserted_message_ids =
@@ -19235,7 +19304,7 @@ fn franken_find_existing_conversation_by_key_impl(
             if incoming_fingerprints.is_empty() {
                 return Ok(None);
             }
-            let incoming_replay_fingerprints = conversation_message_replay_fingerprints(conv);
+            let incoming_replay_fingerprints = conversation_message_replay_cores(conv);
 
             let candidates: Vec<(i64, Option<i64>)> = tx.query_map_collect(
                 "SELECT
@@ -19261,7 +19330,7 @@ fn franken_find_existing_conversation_by_key_impl(
                 let existing_fingerprints =
                     franken_existing_message_fingerprints(tx, candidate_id)?;
                 let existing_replay_fingerprints =
-                    replay_fingerprints_from_merge_set(&existing_fingerprints);
+                    replay_cores_from_merge_set(&existing_fingerprints);
                 let Some(evidence) = conversation_merge_evidence(
                     &incoming_fingerprints,
                     &incoming_replay_fingerprints,
@@ -19866,7 +19935,7 @@ fn franken_existing_message_fingerprints(
 
 struct ExistingMessageLookup {
     by_idx: HashMap<i64, MessageMergeFingerprint>,
-    replay: HashSet<MessageReplayFingerprint>,
+    replay: MessageReplayFingerprintSet,
 }
 
 fn existing_message_lookup_from_rows(
@@ -19875,9 +19944,10 @@ fn existing_message_lookup_from_rows(
     max_idx: i64,
     created_bounds: Option<(i64, i64)>,
     replay_full_scan: bool,
+    include_row_native_ids: bool,
 ) -> Result<ExistingMessageLookup> {
     let mut by_idx = HashMap::with_capacity(rows.len());
-    let mut replay = HashSet::with_capacity(rows.len());
+    let mut replay = MessageReplayFingerprintSet::default();
     for row in rows {
         let idx: i64 = row.get_typed(0)?;
         let role: String = row.get_typed(1)?;
@@ -19908,12 +19978,18 @@ fn existing_message_lookup_from_rows(
             true
         };
         if replay_matches {
-            replay.insert(MessageReplayFingerprint {
-                created_at,
-                role,
-                author,
-                content_hash,
-            });
+            let native_id = include_row_native_ids
+                .then(|| native_id_from_extra(&franken_read_message_extra_compat(&row, 5, 6)))
+                .flatten();
+            replay.insert_parts(
+                MessageReplayCore {
+                    created_at,
+                    role,
+                    author,
+                    content_hash,
+                },
+                native_id,
+            );
         }
     }
     Ok(ExistingMessageLookup { by_idx, replay })
@@ -19927,7 +20003,7 @@ fn franken_existing_message_lookup(
     if incoming_messages.is_empty() {
         return Ok(ExistingMessageLookup {
             by_idx: HashMap::new(),
-            replay: HashSet::new(),
+            replay: MessageReplayFingerprintSet::default(),
         });
     }
 
@@ -19973,9 +20049,15 @@ fn franken_existing_message_lookup(
     if missing_messages.is_empty() {
         return Ok(ExistingMessageLookup {
             by_idx,
-            replay: HashSet::new(),
+            replay: MessageReplayFingerprintSet::default(),
         });
     }
+
+    // Native-id replay disambiguation only pays off — and the stored-extra
+    // read only costs — when the incoming batch itself carries native ids.
+    let include_row_native_ids = missing_messages
+        .iter()
+        .any(|msg| message_native_id(msg).is_some());
 
     let requires_full_scan = missing_messages.iter().any(|msg| msg.created_at.is_none());
     let created_bounds = missing_messages
@@ -19991,34 +20073,62 @@ fn franken_existing_message_lookup(
             })
         });
 
-    let mut replay = HashSet::new();
-    if requires_full_scan {
-        let rows = tx.query_params(
+    let (full_scan_sql, bounded_sql) = if include_row_native_ids {
+        (
+            "SELECT idx, role, author, created_at, content, extra_json, extra_bin
+             FROM messages INDEXED BY sqlite_autoindex_messages_1
+             WHERE conversation_id = ?1",
+            "SELECT idx, role, author, created_at, content, extra_json, extra_bin
+             FROM messages INDEXED BY sqlite_autoindex_messages_1
+             WHERE conversation_id = ?1
+               AND created_at IS NOT NULL
+               AND created_at >= ?2
+               AND created_at <= ?3",
+        )
+    } else {
+        (
             "SELECT idx, role, author, created_at, content
              FROM messages INDEXED BY sqlite_autoindex_messages_1
              WHERE conversation_id = ?1",
-            fparams![conversation_id],
-        )?;
-        record_message_lookup_full_scan_query(rows.len());
-        let content_lookup =
-            existing_message_lookup_from_rows(rows, min_idx, max_idx, created_bounds, true)?;
-        by_idx.extend(content_lookup.by_idx);
-        replay.extend(content_lookup.replay);
-    } else if let Some((min_created_at, max_created_at)) = created_bounds {
-        let rows = tx.query_params(
             "SELECT idx, role, author, created_at, content
              FROM messages INDEXED BY sqlite_autoindex_messages_1
              WHERE conversation_id = ?1
                AND created_at IS NOT NULL
                AND created_at >= ?2
                AND created_at <= ?3",
+        )
+    };
+
+    let mut replay = MessageReplayFingerprintSet::default();
+    if requires_full_scan {
+        let rows = tx.query_params(full_scan_sql, fparams![conversation_id])?;
+        record_message_lookup_full_scan_query(rows.len());
+        let content_lookup = existing_message_lookup_from_rows(
+            rows,
+            min_idx,
+            max_idx,
+            created_bounds,
+            true,
+            include_row_native_ids,
+        )?;
+        by_idx.extend(content_lookup.by_idx);
+        replay.absorb(content_lookup.replay);
+    } else if let Some((min_created_at, max_created_at)) = created_bounds {
+        let rows = tx.query_params(
+            bounded_sql,
             fparams![conversation_id, min_created_at, max_created_at],
         )?;
         record_message_lookup_bounded_queries(1, rows.len());
-        let created_lookup =
-            existing_message_lookup_from_rows(rows, min_idx, max_idx, created_bounds, false)?;
+        let created_lookup = existing_message_lookup_from_rows(
+            rows,
+            min_idx,
+            max_idx,
+            created_bounds,
+            false,
+            include_row_native_ids,
+        )?;
         by_idx.extend(created_lookup.by_idx);
-        replay.extend(created_lookup.replay);
+        replay.absorb(created_lookup.replay);
     }
 
     Ok(ExistingMessageLookup { by_idx, replay })
@@ -20029,15 +20139,16 @@ fn franken_existing_message_lookup_with_pending(
     conversation_id: i64,
     incoming_messages: &[Message],
     pending_message_fingerprints: &mut HashMap<i64, HashMap<i64, MessageMergeFingerprint>>,
-    pending_message_replay_fingerprints: &mut HashMap<i64, HashSet<MessageReplayFingerprint>>,
+    pending_message_replay_fingerprints: &mut HashMap<i64, MessageReplayFingerprintSet>,
 ) -> Result<ExistingMessageLookup> {
     if let (Some(by_idx), Some(replay)) = (
         pending_message_fingerprints.get(&conversation_id),
         pending_message_replay_fingerprints.get(&conversation_id),
     ) {
-        if incoming_messages.iter().all(|msg| {
-            by_idx.contains_key(&msg.idx) || replay.contains(&message_replay_fingerprint(msg))
-        }) {
+        if incoming_messages
+            .iter()
+            .all(|msg| by_idx.contains_key(&msg.idx) || replay.contains_message(msg))
+        {
             return Ok(ExistingMessageLookup {
                 by_idx: by_idx.clone(),
                 replay: replay.clone(),
@@ -20048,7 +20159,7 @@ fn franken_existing_message_lookup_with_pending(
         let mut merged_by_idx = by_idx.clone();
         let mut merged_replay = replay.clone();
         merged_by_idx.extend(fresh.by_idx);
-        merged_replay.extend(fresh.replay);
+        merged_replay.absorb(fresh.replay);
         pending_message_fingerprints.insert(conversation_id, merged_by_idx.clone());
         pending_message_replay_fingerprints.insert(conversation_id, merged_replay.clone());
         return Ok(ExistingMessageLookup {
@@ -20068,18 +20179,18 @@ fn franken_collect_batched_existing_new_messages<'a>(
     conversation_id: i64,
     conv: &'a Conversation,
     pending_message_fingerprints: &mut HashMap<i64, HashMap<i64, MessageMergeFingerprint>>,
-    pending_message_replay_fingerprints: &mut HashMap<i64, HashSet<MessageReplayFingerprint>>,
+    pending_message_replay_fingerprints: &mut HashMap<i64, MessageReplayFingerprintSet>,
     replay_skip_log: &'static str,
 ) -> Result<(
     ExistingConversationNewMessages<'a>,
     HashMap<i64, MessageMergeFingerprint>,
-    HashSet<MessageReplayFingerprint>,
+    MessageReplayFingerprintSet,
 )> {
     if matches!(conv.agent_slug.as_str(), "grok_bot" | "codebuff") {
         return Ok((
             reconciled_native_messages(conv),
             HashMap::new(),
-            HashSet::new(),
+            MessageReplayFingerprintSet::default(),
         ));
     }
     let tail_metadata = franken_cached_existing_conversation_tail_metadata(tx, conversation_id)?;
@@ -20098,9 +20209,8 @@ fn franken_collect_batched_existing_new_messages<'a>(
             .remove(&conversation_id)
             .unwrap_or_default();
         for msg in &tail_plan.messages {
-            let fingerprint = message_merge_fingerprint(msg);
-            by_idx.insert(msg.idx, fingerprint.clone());
-            replay.insert(replay_fingerprint_from_merge(&fingerprint));
+            by_idx.insert(msg.idx, message_merge_fingerprint(msg));
+            replay.insert_message(msg);
         }
         return Ok((tail_plan, by_idx, replay));
     }
@@ -20133,9 +20243,8 @@ fn franken_collect_batched_existing_new_messages<'a>(
             .remove(&conversation_id)
             .unwrap_or_default();
         for msg in &tail_plan.messages {
-            let fingerprint = message_merge_fingerprint(msg);
-            by_idx.insert(msg.idx, fingerprint.clone());
-            replay.insert(replay_fingerprint_from_merge(&fingerprint));
+            by_idx.insert(msg.idx, message_merge_fingerprint(msg));
+            replay.insert_message(msg);
         }
         return Ok((tail_plan, by_idx, replay));
     }
@@ -20156,9 +20265,8 @@ fn franken_collect_batched_existing_new_messages<'a>(
             .remove(&conversation_id)
             .unwrap_or_default();
         for msg in &tail_plan.messages {
-            let fingerprint = message_merge_fingerprint(msg);
-            by_idx.insert(msg.idx, fingerprint.clone());
-            replay.insert(replay_fingerprint_from_merge(&fingerprint));
+            by_idx.insert(msg.idx, message_merge_fingerprint(msg));
+            replay.insert_message(msg);
         }
         return Ok((tail_plan, by_idx, replay));
     }
@@ -34397,6 +34505,332 @@ sys.exit('stock writer does not own WAL_WRITE_LOCK')
             )
             .unwrap();
         assert_eq!(stored_indices, vec![0, 1, 12]);
+    }
+
+    #[test]
+    fn insert_conversation_tree_keeps_both_tool_outputs_when_only_call_id_differs() {
+        use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+        use std::path::PathBuf;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = SqliteStorage::open(&db_path).unwrap();
+
+        let agent = Agent {
+            id: None,
+            slug: "codex".into(),
+            name: "Codex".into(),
+            version: Some("0.2.3".into()),
+            kind: AgentKind::Cli,
+        };
+        let agent_id = storage.ensure_agent(&agent).unwrap();
+
+        let make_conv = |messages: Vec<Message>| Conversation {
+            id: None,
+            agent_slug: "codex".into(),
+            workspace: Some(PathBuf::from("/tmp/workspace")),
+            external_id: None,
+            title: Some("Codex twin tool outputs".into()),
+            source_path: PathBuf::from("/tmp/codex-twin-tool-outputs.jsonl"),
+            started_at: Some(1_700_000_000_000),
+            ended_at: Some(1_700_000_000_999),
+            approx_tokens: None,
+            metadata_json: serde_json::Value::Null,
+            messages,
+            source_id: "local".into(),
+            origin_host: None,
+        };
+
+        // Two codex `function_call_output` records whose raw JSONL envelopes are
+        // archived whole in `extra`. They collide on the replay fingerprint
+        // (same millisecond created_at, role, author and content); only the
+        // native `payload.call_id` distinguishes them.
+        let tool_output = |idx: i64, call_id: &str| Message {
+            id: None,
+            idx,
+            role: MessageRole::Tool,
+            author: None,
+            created_at: Some(1_700_000_000_000),
+            content: "0 files changed\n".into(),
+            extra_json: serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": "0 files changed\n"
+                }
+            }),
+            snippets: Vec::new(),
+        };
+
+        let outcome = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![
+                    tool_output(0, "call_apply_patch"),
+                    tool_output(1, "call_read_file"),
+                ]),
+            )
+            .unwrap();
+
+        assert_eq!(outcome.inserted_indices, vec![0, 1]);
+        let stored_call_ids: Vec<String> = storage
+            .conn
+            .query_map_collect(
+                "SELECT extra_json, extra_bin
+                 FROM messages
+                 WHERE conversation_id = ?1
+                 ORDER BY idx",
+                fparams![outcome.conversation_id],
+                |row| {
+                    let extra = franken_read_message_extra_compat(row, 0, 1);
+                    Ok(extra
+                        .pointer("/payload/call_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            stored_call_ids,
+            vec!["call_apply_patch".to_string(), "call_read_file".to_string(),]
+        );
+    }
+
+    #[test]
+    fn insert_conversation_tree_appends_tool_outputs_when_only_call_id_differs() {
+        use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+        use std::path::PathBuf;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = SqliteStorage::open(&db_path).unwrap();
+
+        let agent = Agent {
+            id: None,
+            slug: "codex".into(),
+            name: "Codex".into(),
+            version: Some("0.2.3".into()),
+            kind: AgentKind::Cli,
+        };
+        let agent_id = storage.ensure_agent(&agent).unwrap();
+
+        let make_conv = |messages: Vec<Message>| Conversation {
+            id: None,
+            agent_slug: "codex".into(),
+            workspace: Some(PathBuf::from("/tmp/workspace")),
+            external_id: None,
+            title: Some("Codex twin tool outputs".into()),
+            source_path: PathBuf::from("/tmp/codex-twin-tool-outputs.jsonl"),
+            started_at: Some(1_700_000_000_000),
+            ended_at: Some(1_700_000_000_999),
+            approx_tokens: None,
+            metadata_json: serde_json::Value::Null,
+            messages,
+            source_id: "local".into(),
+            origin_host: None,
+        };
+
+        let tool_output = |idx: i64, call_id: &str| Message {
+            id: None,
+            idx,
+            role: MessageRole::Tool,
+            author: None,
+            created_at: Some(1_700_000_000_000),
+            content: "0 files changed\n".into(),
+            extra_json: serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": "0 files changed\n"
+                }
+            }),
+            snippets: Vec::new(),
+        };
+
+        let first = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![tool_output(0, "call_apply_patch")]),
+            )
+            .unwrap();
+
+        // Re-scan of the same session file that now carries two further tool
+        // outputs sharing the stored record's millisecond timestamp and
+        // content; only their native call ids differ.
+        let second = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![
+                    tool_output(0, "call_apply_patch"),
+                    tool_output(1, "call_read_file"),
+                    tool_output(2, "call_shell"),
+                ]),
+            )
+            .unwrap();
+
+        assert_eq!(first.conversation_id, second.conversation_id);
+        assert_eq!(second.inserted_indices, vec![1, 2]);
+        let stored_call_ids: Vec<String> = storage
+            .conn
+            .query_map_collect(
+                "SELECT extra_json, extra_bin
+                 FROM messages
+                 WHERE conversation_id = ?1
+                 ORDER BY idx",
+                fparams![first.conversation_id],
+                |row| {
+                    let extra = franken_read_message_extra_compat(row, 0, 1);
+                    Ok(extra
+                        .pointer("/payload/call_id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string())
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            stored_call_ids,
+            vec![
+                "call_apply_patch".to_string(),
+                "call_read_file".to_string(),
+                "call_shell".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn insert_conversation_tree_reingests_tool_outputs_with_native_ids_once() {
+        use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+        use std::path::PathBuf;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = SqliteStorage::open(&db_path).unwrap();
+
+        let agent = Agent {
+            id: None,
+            slug: "codex".into(),
+            name: "Codex".into(),
+            version: Some("0.2.3".into()),
+            kind: AgentKind::Cli,
+        };
+        let agent_id = storage.ensure_agent(&agent).unwrap();
+
+        let make_conv = |messages: Vec<Message>| Conversation {
+            id: None,
+            agent_slug: "codex".into(),
+            workspace: Some(PathBuf::from("/tmp/workspace")),
+            external_id: None,
+            title: Some("Codex twin tool outputs".into()),
+            source_path: PathBuf::from("/tmp/codex-twin-tool-outputs.jsonl"),
+            started_at: Some(1_700_000_000_000),
+            ended_at: Some(1_700_000_000_999),
+            approx_tokens: None,
+            metadata_json: serde_json::Value::Null,
+            messages,
+            source_id: "local".into(),
+            origin_host: None,
+        };
+
+        let tool_output = |idx: i64, call_id: &str| Message {
+            id: None,
+            idx,
+            role: MessageRole::Tool,
+            author: None,
+            created_at: Some(1_700_000_000_000),
+            content: "0 files changed\n".into(),
+            extra_json: serde_json::json!({
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": "0 files changed\n"
+                }
+            }),
+            snippets: Vec::new(),
+        };
+
+        fn stored_message_count(storage: &SqliteStorage, conversation_id: i64) -> i64 {
+            storage
+                .conn
+                .query_row_map(
+                    "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                    fparams![conversation_id],
+                    |row| row.get_typed(0),
+                )
+                .unwrap()
+        }
+
+        // Two native-identified tool outputs sharing a replay core.
+        let first = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![
+                    tool_output(0, "call_apply_patch"),
+                    tool_output(1, "call_read_file"),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(first.inserted_indices, vec![0, 1]);
+
+        // Identical re-ingest: every message must be stored exactly once.
+        let second = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![
+                    tool_output(0, "call_apply_patch"),
+                    tool_output(1, "call_read_file"),
+                ]),
+            )
+            .unwrap();
+        assert!(second.inserted_indices.is_empty());
+        assert_eq!(stored_message_count(&storage, first.conversation_id), 2);
+
+        // Re-ingest of renumbered source records: the replay guard must match
+        // through the native call ids rather than re-insert the messages.
+        let third = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![
+                    tool_output(10, "call_apply_patch"),
+                    tool_output(11, "call_read_file"),
+                ]),
+            )
+            .unwrap();
+        assert!(third.inserted_indices.is_empty());
+        assert_eq!(stored_message_count(&storage, first.conversation_id), 2);
+
+        // Re-ingest whose extras lost the native id (franken-agent-detection
+        // compacts codex records for >=32 MiB sessions): the unknown id must
+        // still replay the stored copies instead of duplicating them.
+        let compacted_tool_output = |idx: i64| Message {
+            id: None,
+            idx,
+            role: MessageRole::Tool,
+            author: None,
+            created_at: Some(1_700_000_000_000),
+            content: "0 files changed\n".into(),
+            extra_json: serde_json::json!({"cass": {}}),
+            snippets: Vec::new(),
+        };
+        let fourth = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![compacted_tool_output(20), compacted_tool_output(21)]),
+            )
+            .unwrap();
+        assert!(fourth.inserted_indices.is_empty());
+        assert_eq!(stored_message_count(&storage, first.conversation_id), 2);
     }
 
     #[test]
