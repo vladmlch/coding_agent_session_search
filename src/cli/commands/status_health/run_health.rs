@@ -3,15 +3,13 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Minimal health check (<50ms). Exit 0=healthy, 1=unhealthy.
 /// Designed for agent pre-flight checks before complex operations.
@@ -490,7 +488,6 @@ pub(crate) fn run_health(
     }
 }
 
-
 pub(crate) fn rebuild_tantivy_from_db(
     db_path: &Path,
     data_dir: &Path,
@@ -507,7 +504,6 @@ pub(crate) fn rebuild_tantivy_from_db(
             retryable: true,
         })
 }
-
 
 pub(crate) fn wait_with_progress<T>(
     handle: std::thread::JoinHandle<CliResult<T>>,
@@ -717,7 +713,6 @@ pub(crate) fn wait_with_progress<T>(
     result
 }
 
-
 /// frankensqlite VFS namespace lock sidecars (`-fsqlite-ns-gate`,
 /// `-fsqlite-ns-use`) are created next to any database the moment it is
 /// opened — including by an export verification's own read-only probe of
@@ -726,7 +721,6 @@ pub(crate) fn wait_with_progress<T>(
 pub(crate) fn is_fsqlite_runtime_lock_sidecar(relative_path: &str) -> bool {
     relative_path.ends_with("-fsqlite-ns-gate") || relative_path.ends_with("-fsqlite-ns-use")
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DoctorFtsTableState {
@@ -750,8 +744,9 @@ pub(crate) enum DoctorFtsTableState {
     },
 }
 
-
-pub(crate) fn probe_doctor_fts_table<C: DoctorArchiveReadConnection>(conn: &C) -> DoctorFtsTableState {
+pub(crate) fn probe_doctor_fts_table<C: DoctorArchiveReadConnection>(
+    conn: &C,
+) -> DoctorFtsTableState {
     if let Err(frankensqlite_error) = conn.doctor_query("SELECT rowid FROM fts_messages LIMIT 1;") {
         // GH #413 follow-up (iify0): an absent shadow may be a deliberate drop
         // (the corpus is too large for the engine to materialize); say so.

@@ -83146,21 +83146,21 @@ pub(crate) use crate::cli::commands::stats_diag_storage::run_stats::*;
 // -- generated lib-split bridges --
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::run_onboarding_interactive_wizard::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::status_health::diagnostics::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::status_health::root_cause_signal_gather_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::status_health::probe_daemon_runtime_for_diagnostics::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::status_health::run_health::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::status_health::doctor_fts_tests::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::status_health::cli_read_db_tests_part_1::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::status_health::cli_read_db_tests_part_2::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::status_health::diagnostics::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::status_health::doctor_fts_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::status_health::probe_daemon_runtime_for_diagnostics::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::status_health::root_cause_signal_gather_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::status_health::run_health::*;

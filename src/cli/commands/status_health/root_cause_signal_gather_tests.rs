@@ -2,147 +2,133 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
-
-    #[allow(unused_imports)]
+#[allow(unused_imports)]
 use crate::gather_projection_signals_from_state;
 #[allow(unused_imports)]
 use crate::root_cause_projection::project_root_cause;
 #[allow(unused_imports)]
 use crate::root_cause_taxonomy::{AttributionConfidence, RootCauseFamily};
 
+#[test]
+pub(crate) fn malformed_db_open_failure_attributes_storage() {
+    let state = serde_json::json!({
+        "database": {
+            "open_error": "OpenRead failed: database disk image is malformed",
+            "open_retryable": false
+        }
+    });
+    let s = gather_projection_signals_from_state(&state, None, None);
+    assert!(s.open_read_failure);
+    assert_eq!(
+        project_root_cause(&s).family,
+        RootCauseFamily::FrankensqliteStorage
+    );
+}
 
-    #[test]
-    pub(crate) fn malformed_db_open_failure_attributes_storage() {
-        let state = serde_json::json!({
-            "database": {
-                "open_error": "OpenRead failed: database disk image is malformed",
-                "open_retryable": false
-            }
+#[test]
+pub(crate) fn storage_integrity_fault_without_open_error_attributes_storage() {
+    // #374 Issue 3: no /database/open_error, but the storage-integrity
+    // verdict reports a canonical-store fault — must still attribute to the
+    // frankensqlite-storage family instead of returning unknown.
+    let state = serde_json::json!({
+        "database": { "opened": true, "open_retryable": false }
+    });
+    for storage_state in ["openread_failed", "integrity_failed", "fts_metadata_failed"] {
+        let integrity = serde_json::json!({
+            "storage_state": storage_state,
+            "archive_readability": "unreadable",
         });
-        let s = gather_projection_signals_from_state(&state, None, None);
-        assert!(s.open_read_failure);
+        let s = gather_projection_signals_from_state(&state, None, Some(&integrity));
+        assert!(
+            s.open_read_failure,
+            "storage_state {storage_state} must raise a storage fault"
+        );
         assert_eq!(
             project_root_cause(&s).family,
             RootCauseFamily::FrankensqliteStorage
         );
     }
 
+    // archive_readability alone (unreadable) is sufficient.
+    let readability_only = serde_json::json!({
+        "storage_state": "unchecked",
+        "archive_readability": "unreadable",
+    });
+    assert!(
+        gather_projection_signals_from_state(&state, None, Some(&readability_only))
+            .open_read_failure
+    );
 
-    #[test]
-    pub(crate) fn storage_integrity_fault_without_open_error_attributes_storage() {
-        // #374 Issue 3: no /database/open_error, but the storage-integrity
-        // verdict reports a canonical-store fault — must still attribute to the
-        // frankensqlite-storage family instead of returning unknown.
-        let state = serde_json::json!({
-            "database": { "opened": true, "open_retryable": false }
-        });
-        for storage_state in ["openread_failed", "integrity_failed", "fts_metadata_failed"] {
-            let integrity = serde_json::json!({
-                "storage_state": storage_state,
-                "archive_readability": "unreadable",
-            });
-            let s = gather_projection_signals_from_state(&state, None, Some(&integrity));
-            assert!(
-                s.open_read_failure,
-                "storage_state {storage_state} must raise a storage fault"
-            );
-            assert_eq!(
-                project_root_cause(&s).family,
-                RootCauseFamily::FrankensqliteStorage
-            );
-        }
-
-        // archive_readability alone (unreadable) is sufficient.
-        let readability_only = serde_json::json!({
-            "storage_state": "unchecked",
-            "archive_readability": "unreadable",
+    // Transient / non-canonical states are NOT storage faults.
+    for storage_state in ["ok", "unchecked", "busy_or_locked", "derived_only_drift"] {
+        let integrity = serde_json::json!({
+            "storage_state": storage_state,
+            "archive_readability": "not_checked",
         });
         assert!(
-            gather_projection_signals_from_state(&state, None, Some(&readability_only))
-                .open_read_failure
+            !gather_projection_signals_from_state(&state, None, Some(&integrity)).open_read_failure,
+            "storage_state {storage_state} must not raise a storage fault"
         );
-
-        // Transient / non-canonical states are NOT storage faults.
-        for storage_state in ["ok", "unchecked", "busy_or_locked", "derived_only_drift"] {
-            let integrity = serde_json::json!({
-                "storage_state": storage_state,
-                "archive_readability": "not_checked",
-            });
-            assert!(
-                !gather_projection_signals_from_state(&state, None, Some(&integrity))
-                    .open_read_failure,
-                "storage_state {storage_state} must not raise a storage fault"
-            );
-        }
-
-        // Absent storage_integrity leaves the existing behavior untouched.
-        assert!(!gather_projection_signals_from_state(&state, None, None).open_read_failure);
     }
 
+    // Absent storage_integrity leaves the existing behavior untouched.
+    assert!(!gather_projection_signals_from_state(&state, None, None).open_read_failure);
+}
 
-    #[test]
-    pub(crate) fn retryable_or_permission_open_error_is_not_a_storage_fault() {
-        for (err, retryable) in [
-            ("database is locked", true),
-            ("permission denied", false),
-            ("no such file or directory", false),
-        ] {
-            let state =
-                serde_json::json!({"database": {"open_error": err, "open_retryable": retryable}});
-            let s = gather_projection_signals_from_state(&state, None, None);
-            assert!(!s.open_read_failure, "{err} must not be a storage fault");
-            assert_eq!(project_root_cause(&s).family, RootCauseFamily::Unknown);
-        }
-    }
-
-
-    #[test]
-    pub(crate) fn empty_index_with_messages_attributes_derived_state() {
-        let state = serde_json::json!({"index": {"empty_with_messages": true}});
+#[test]
+pub(crate) fn retryable_or_permission_open_error_is_not_a_storage_fault() {
+    for (err, retryable) in [
+        ("database is locked", true),
+        ("permission denied", false),
+        ("no such file or directory", false),
+    ] {
+        let state =
+            serde_json::json!({"database": {"open_error": err, "open_retryable": retryable}});
         let s = gather_projection_signals_from_state(&state, None, None);
-        assert!(s.derived_truth_table_mismatch);
-        assert_eq!(
-            project_root_cause(&s).family,
-            RootCauseFamily::CassDerivedState
-        );
+        assert!(!s.open_read_failure, "{err} must not be a storage fault");
+        assert_eq!(project_root_cause(&s).family, RootCauseFamily::Unknown);
     }
+}
 
+#[test]
+pub(crate) fn empty_index_with_messages_attributes_derived_state() {
+    let state = serde_json::json!({"index": {"empty_with_messages": true}});
+    let s = gather_projection_signals_from_state(&state, None, None);
+    assert!(s.derived_truth_table_mismatch);
+    assert_eq!(
+        project_root_cause(&s).family,
+        RootCauseFamily::CassDerivedState
+    );
+}
 
-    #[test]
-    pub(crate) fn semantic_load_failed_is_a_fault_but_absent_is_not() {
-        let failed = serde_json::json!({"semantic": {"availability": "load_failed"}});
-        assert!(
-            gather_projection_signals_from_state(&failed, None, None)
-                .semantic_requested_but_missing
-        );
-        let absent = serde_json::json!({"semantic": {"availability": "not_initialized"}});
-        assert!(
-            !gather_projection_signals_from_state(&absent, None, None)
-                .semantic_requested_but_missing
-        );
-    }
+#[test]
+pub(crate) fn semantic_load_failed_is_a_fault_but_absent_is_not() {
+    let failed = serde_json::json!({"semantic": {"availability": "load_failed"}});
+    assert!(
+        gather_projection_signals_from_state(&failed, None, None).semantic_requested_but_missing
+    );
+    let absent = serde_json::json!({"semantic": {"availability": "not_initialized"}});
+    assert!(
+        !gather_projection_signals_from_state(&absent, None, None).semantic_requested_but_missing
+    );
+}
 
+#[test]
+pub(crate) fn host_disk_pct_below_threshold_attributes_host_pressure() {
+    let s = gather_projection_signals_from_state(&serde_json::json!({}), Some(2.0), None);
+    assert_eq!(
+        project_root_cause(&s).family,
+        RootCauseFamily::HostDiskPressure
+    );
+    // Abundant free space rules it out.
+    let plenty = gather_projection_signals_from_state(&serde_json::json!({}), Some(60.0), None);
+    assert_eq!(project_root_cause(&plenty).family, RootCauseFamily::Unknown);
+}
 
-    #[test]
-    pub(crate) fn host_disk_pct_below_threshold_attributes_host_pressure() {
-        let s = gather_projection_signals_from_state(&serde_json::json!({}), Some(2.0), None);
-        assert_eq!(
-            project_root_cause(&s).family,
-            RootCauseFamily::HostDiskPressure
-        );
-        // Abundant free space rules it out.
-        let plenty = gather_projection_signals_from_state(&serde_json::json!({}), Some(60.0), None);
-        assert_eq!(project_root_cause(&plenty).family, RootCauseFamily::Unknown);
-    }
-
-
-    #[test]
-    pub(crate) fn empty_state_is_explicit_unknown() {
-        let s = gather_projection_signals_from_state(&serde_json::json!({}), None, None);
-        let a = project_root_cause(&s);
-        assert_eq!(a.family, RootCauseFamily::Unknown);
-        assert_eq!(a.confidence, AttributionConfidence::Unknown);
-    }
-
+#[test]
+pub(crate) fn empty_state_is_explicit_unknown() {
+    let s = gather_projection_signals_from_state(&serde_json::json!({}), None, None);
+    let a = project_root_cause(&s);
+    assert_eq!(a.family, RootCauseFamily::Unknown);
+    assert_eq!(a.confidence, AttributionConfidence::Unknown);
+}

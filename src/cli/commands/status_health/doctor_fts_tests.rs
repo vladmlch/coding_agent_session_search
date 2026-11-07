@@ -3,23 +3,18 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
+    pub(crate) use anyhow::Result;
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
-
-
-
-    
-
-    pub(crate) fn create_search_schema(
-        conn: &crate::franken_sync::Connection,
-    ) -> Result<(), crate::franken_sync::FrankenError> {
-        // BEGIN/COMMIT keeps the fixture schema atomic so a transient
-        // fsqlite-0.3.x BusySnapshot abort can be retried wholesale.
-        conn.execute_batch(
-            "BEGIN;
+pub(crate) fn create_search_schema(
+    conn: &crate::franken_sync::Connection,
+) -> Result<(), crate::franken_sync::FrankenError> {
+    // BEGIN/COMMIT keeps the fixture schema atomic so a transient
+    // fsqlite-0.3.x BusySnapshot abort can be retried wholesale.
+    conn.execute_batch(
+        "BEGIN;
              CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE);
              CREATE TABLE workspaces (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE);
              CREATE TABLE conversations (
@@ -39,26 +34,25 @@ use __lib_split_root_uses::*;
                 created_at INTEGER
              );
              COMMIT;",
-        )
-    }
+    )
+}
 
+#[test]
+pub(crate) fn doctor_fts_probe_accepts_frankensqlite_fts_table()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::TempDir::new()?;
+    let db_path = temp_dir.path().join("legacy-fts.db");
 
-    #[test]
-    pub(crate) fn doctor_fts_probe_accepts_frankensqlite_fts_table() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let temp_dir = tempfile::TempDir::new()?;
-        let db_path = temp_dir.path().join("legacy-fts.db");
-
-        let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())?;
-        // create_search_schema is IF-NOT-EXISTS idempotent and the fixture
-        // batch below is BEGIN/COMMIT-atomic, so both survive a bounded retry
-        // of the transient fsqlite-0.3.x BusySnapshot flake (stale registry
-        // state after tempdir inode reuse).
-        crate::storage::sqlite::retry_transient_storage_op("doctor_fts_fixture_schema", || {
-            create_search_schema(&conn).map_err(anyhow::Error::new)
-        })?;
-        crate::storage::sqlite::retry_transient_storage_op("doctor_fts_fixture_batch", || {
-            conn.execute_batch(
+    let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())?;
+    // create_search_schema is IF-NOT-EXISTS idempotent and the fixture
+    // batch below is BEGIN/COMMIT-atomic, so both survive a bounded retry
+    // of the transient fsqlite-0.3.x BusySnapshot flake (stale registry
+    // state after tempdir inode reuse).
+    crate::storage::sqlite::retry_transient_storage_op("doctor_fts_fixture_schema", || {
+        create_search_schema(&conn).map_err(anyhow::Error::new)
+    })?;
+    crate::storage::sqlite::retry_transient_storage_op("doctor_fts_fixture_batch", || {
+        conn.execute_batch(
                 "BEGIN;
              CREATE VIRTUAL TABLE fts_messages USING fts5(
                 content,
@@ -81,45 +75,44 @@ use __lib_split_root_uses::*;
              COMMIT;",
             )
             .map_err(anyhow::Error::new)
-        })?;
-        let state = probe_doctor_fts_table(&conn);
-        assert!(
-            matches!(state, DoctorFtsTableState::QueryableViaFrankensqlite),
-            "frankensqlite FTS table should be accepted by doctor: {state:?}"
-        );
+    })?;
+    let state = probe_doctor_fts_table(&conn);
+    assert!(
+        matches!(state, DoctorFtsTableState::QueryableViaFrankensqlite),
+        "frankensqlite FTS table should be accepted by doctor: {state:?}"
+    );
 
-        Ok(())
-    }
+    Ok(())
+}
 
+#[test]
+pub(crate) fn doctor_fts_probe_reports_missing_fts_table() -> Result<(), Box<dyn std::error::Error>>
+{
+    let temp_dir = tempfile::TempDir::new()?;
+    let db_path = temp_dir.path().join("missing-fts.db");
 
-    #[test]
-    pub(crate) fn doctor_fts_probe_reports_missing_fts_table() -> Result<(), Box<dyn std::error::Error>> {
-        let temp_dir = tempfile::TempDir::new()?;
-        let db_path = temp_dir.path().join("missing-fts.db");
+    let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())?;
+    create_search_schema(&conn)?;
+    let state = probe_doctor_fts_table(&conn);
+    assert!(
+        matches!(state, DoctorFtsTableState::Missing { .. }),
+        "missing FTS table should be reported as missing: {state:?}"
+    );
 
-        let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())?;
-        create_search_schema(&conn)?;
-        let state = probe_doctor_fts_table(&conn);
-        assert!(
-            matches!(state, DoctorFtsTableState::Missing { .. }),
-            "missing FTS table should be reported as missing: {state:?}"
-        );
+    Ok(())
+}
 
-        Ok(())
-    }
+/// #355: a queryable-but-partial FTS shadow (interrupted rebuild) must not
+/// report as healthy. The messages table mirrors the production
+/// `UNIQUE(conversation_id, idx)` so `sqlite_autoindex_messages_1` exists
+/// for the indexable-count query.
+#[test]
+pub(crate) fn doctor_fts_probe_reports_partial_parity() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::TempDir::new()?;
+    let db_path = temp_dir.path().join("partial-fts.db");
 
-
-    /// #355: a queryable-but-partial FTS shadow (interrupted rebuild) must not
-    /// report as healthy. The messages table mirrors the production
-    /// `UNIQUE(conversation_id, idx)` so `sqlite_autoindex_messages_1` exists
-    /// for the indexable-count query.
-    #[test]
-    pub(crate) fn doctor_fts_probe_reports_partial_parity() -> Result<(), Box<dyn std::error::Error>> {
-        let temp_dir = tempfile::TempDir::new()?;
-        let db_path = temp_dir.path().join("partial-fts.db");
-
-        let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())?;
-        conn.execute_batch(
+    let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())?;
+    conn.execute_batch(
             "CREATE TABLE conversations (
                 id INTEGER PRIMARY KEY,
                 agent_id INTEGER,
@@ -156,43 +149,41 @@ use __lib_split_root_uses::*;
              INSERT INTO fts_messages(rowid, content, title, agent, workspace, source_path, created_at, message_id)
              VALUES(7, 'retro investigation', 'retro', 'codex', '/ws', '/tmp/retro.jsonl', 42, '7');",
         )?;
-        let state = probe_doctor_fts_table(&conn);
-        assert!(
-            matches!(
-                state,
-                DoctorFtsTableState::PartialParity {
-                    indexable_messages: 2,
-                    indexed_messages: 1,
-                }
-            ),
-            "queryable-but-partial FTS shadow must be reported out of parity (#355): {state:?}"
-        );
+    let state = probe_doctor_fts_table(&conn);
+    assert!(
+        matches!(
+            state,
+            DoctorFtsTableState::PartialParity {
+                indexable_messages: 2,
+                indexed_messages: 1,
+            }
+        ),
+        "queryable-but-partial FTS shadow must be reported out of parity (#355): {state:?}"
+    );
 
-        Ok(())
-    }
+    Ok(())
+}
 
+/// Adversarial-review F6 (the #362/#368 corruption class): a queryable
+/// `fts_messages` whose docsize shadow cannot even be counted must
+/// classify as `ShadowCorrupt` (doctor warns), not `Missing` (doctor
+/// passes with the error buried in a green message).
+#[test]
+pub(crate) fn doctor_fts_probe_reports_uncountable_docsize_as_shadow_corrupt()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::TempDir::new()?;
+    let db_path = temp_dir.path().join("corrupt-shadow-fts.db");
 
-    /// Adversarial-review F6 (the #362/#368 corruption class): a queryable
-    /// `fts_messages` whose docsize shadow cannot even be counted must
-    /// classify as `ShadowCorrupt` (doctor warns), not `Missing` (doctor
-    /// passes with the error buried in a green message).
-    #[test]
-    pub(crate) fn doctor_fts_probe_reports_uncountable_docsize_as_shadow_corrupt()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let temp_dir = tempfile::TempDir::new()?;
-        let db_path = temp_dir.path().join("corrupt-shadow-fts.db");
+    let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())?;
+    // A plain table satisfies the queryability probe while having no
+    // docsize shadow behind it — the same observable shape as a shadow
+    // whose structure record is corrupt.
+    conn.execute_batch("CREATE TABLE fts_messages (rowid INTEGER PRIMARY KEY, content TEXT);")?;
+    let state = probe_doctor_fts_table(&conn);
+    assert!(
+        matches!(state, DoctorFtsTableState::ShadowCorrupt { .. }),
+        "queryable table with uncountable docsize must be ShadowCorrupt: {state:?}"
+    );
 
-        let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())?;
-        // A plain table satisfies the queryability probe while having no
-        // docsize shadow behind it — the same observable shape as a shadow
-        // whose structure record is corrupt.
-        conn.execute_batch("CREATE TABLE fts_messages (rowid INTEGER PRIMARY KEY, content TEXT);")?;
-        let state = probe_doctor_fts_table(&conn);
-        assert!(
-            matches!(state, DoctorFtsTableState::ShadowCorrupt { .. }),
-            "queryable table with uncountable docsize must be ShadowCorrupt: {state:?}"
-        );
-
-        Ok(())
-    }
-
+    Ok(())
+}

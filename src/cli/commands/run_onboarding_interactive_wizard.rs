@@ -3,13 +3,11 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Run the TTY-only guided review shell over an already-gathered onboarding
 /// report. The shell is deliberately advisory: choosing an item only explains
@@ -107,7 +105,6 @@ pub(crate) fn run_onboarding_interactive_wizard(
     }
 }
 
-
 /// `cass onboarding` — read-only first-run onboarding/readiness surface. Gathers
 /// a live observation, maps it through the pure `source_onboarding::recommend`
 /// core, and emits the deterministic report (`--json` for agents, otherwise a
@@ -146,7 +143,6 @@ pub(crate) fn run_onboarding(
     }
     Ok(())
 }
-
 
 /// `cass guide [INTENT]` — intent-to-command planner plus gated runner (beads
 /// `…5u82n.1` and `…5u82n.17`). Dry-run is the default. Apply mode automatically
@@ -282,7 +278,6 @@ pub(crate) fn run_guide(
     print_guide_human(&payload);
     Ok(())
 }
-
 
 /// Human-readable guide summary (never a bare TUI). The richer interactive
 /// shell is a later dependent surface; this stays terse and copy-safe.

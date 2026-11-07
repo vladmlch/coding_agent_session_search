@@ -3,16 +3,14 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use chrono::Utc;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn probe_daemon_runtime_for_diagnostics(
     data_dir: &std::path::Path,
@@ -40,7 +38,6 @@ pub(crate) fn probe_daemon_runtime_for_diagnostics(
     }
 }
 
-
 /// The status/health warning for conversations the watcher keeps deferring
 /// after a bounded-guard NoMem (GH#510). They are not quarantined, but they are
 /// missing from search until one ingests.
@@ -49,7 +46,6 @@ pub(crate) fn watch_nomem_deferral_warning(deferred_conversations: u64) -> Strin
         "{deferred_conversations} conversation(s) are deferred by the watcher after repeated bounded-allocation NoMem and are missing from search until they ingest; `cass quarantine list --json` lists them"
     )
 }
-
 
 pub(crate) fn run_status(
     data_dir_override: &Option<PathBuf>,
@@ -667,7 +663,6 @@ pub(crate) fn run_status(
     Ok(())
 }
 
-
 /// One-shot first stop for agents: never starts repair/indexing, but returns
 /// exact next commands and discovery pointers for the current dataset.
 pub(crate) fn triage_budget_ms(timeout_ms: Option<u64>) -> u64 {
@@ -680,7 +675,6 @@ pub(crate) fn triage_budget_ms(timeout_ms: Option<u64>) -> u64 {
     })
 }
 
-
 /// Deterministic slowdown for the bounded triage E2E. This is inert unless the
 /// explicit test-only environment variable is present.
 pub(crate) fn maybe_test_triage_delay() {
@@ -692,9 +686,7 @@ pub(crate) fn maybe_test_triage_delay() {
     }
 }
 
-
 pub(crate) const TRIAGE_RESPONSE_RESERVE_MS: u64 = 25;
-
 
 pub(crate) fn triage_remaining_operation_timeout(
     budget: &crate::robot_budget_envelope::RobotBudget,
@@ -705,19 +697,16 @@ pub(crate) fn triage_remaining_operation_timeout(
     (milliseconds > 0).then(|| Duration::from_millis(milliseconds))
 }
 
-
 #[derive(Clone, Copy)]
 pub(crate) struct TriageCoreReadiness {
     pub(crate) db_exists: bool,
     pub(crate) lexical_exists: bool,
 }
 
-
 pub(crate) enum TriageReadinessWorkerMessage {
     Core(TriageCoreReadiness),
     Complete(serde_json::Value),
 }
-
 
 pub(crate) fn triage_budget_fallback_state(
     data_dir: &Path,
@@ -763,7 +752,6 @@ pub(crate) fn triage_budget_fallback_state(
         }
     })
 }
-
 
 pub(crate) fn triage_readiness_state_with_hard_timeout(
     data_dir: &Path,
@@ -830,7 +818,6 @@ pub(crate) fn triage_readiness_state_with_hard_timeout(
     }
 }
 
-
 pub(crate) fn triage_recovery_probe(
     data_dir: &Path,
     db_path: &Path,
@@ -852,7 +839,6 @@ pub(crate) fn triage_recovery_probe(
     )
 }
 
-
 pub(crate) fn triage_uninspected_search_completeness(recovery_probe: &str) -> serde_json::Value {
     serde_json::json!({
         "inspected": false,
@@ -866,7 +852,6 @@ pub(crate) fn triage_uninspected_search_completeness(recovery_probe: &str) -> se
     })
 }
 
-
 pub(crate) fn triage_uninspected_root_cause(recovery_probe: &str) -> serde_json::Value {
     serde_json::json!({
         "schema_version": crate::root_cause_taxonomy::ROOT_CAUSE_TAXONOMY_VERSION,
@@ -879,7 +864,6 @@ pub(crate) fn triage_uninspected_root_cause(recovery_probe: &str) -> serde_json:
         "recommended_next_probe": recovery_probe,
     })
 }
-
 
 pub(crate) fn triage_recovery_recommended_commands(recovery_probe: &str) -> Vec<serde_json::Value> {
     vec![readiness_command_recommendation(
@@ -901,7 +885,6 @@ pub(crate) fn triage_recovery_recommended_commands(recovery_probe: &str) -> Vec<
         },
     )]
 }
-
 
 pub(crate) fn run_triage(
     data_dir_override: &Option<PathBuf>,
@@ -1283,7 +1266,6 @@ pub(crate) fn run_triage(
     Ok(())
 }
 
-
 /// Assemble and emit the redacted recovery/support evidence bundle (bead
 /// `coding_agent_session_search-6f1lm`; the `.13.3` contract). Composes the
 /// canonical readiness, next-command, source-doctor, quarantine, and
@@ -1448,7 +1430,6 @@ pub(crate) fn run_support_bundle(
     Ok(())
 }
 
-
 /// Archive-independent executable probe for package and binary-promotion gates.
 ///
 /// This deliberately does not resolve a data directory or database override.
@@ -1542,25 +1523,20 @@ pub(crate) fn run_selftest(output_format: Option<RobotFormat>) -> CliResult<()> 
     }
 }
 
-
 /// GH #457: `errors[]` entry for a hollow lexical generation on `cass health`.
 pub(crate) const HOLLOW_INDEX_HEALTH_ERROR: &str = "index hollow — the published lexical generation serves far fewer documents than its completed rebuild checkpoint certified; run 'cass index' to rebuild it from the canonical database";
-
 
 /// GH #457: `recommended_action` shared by `cass health` and `cass status`
 /// for a hollow lexical generation.
 pub(crate) const HOLLOW_INDEX_RECOMMENDED_ACTION: &str = "Run 'cass index' to rebuild the hollow search index from the canonical database (the published generation serves far fewer documents than its completed checkpoint certified; the pre-scan repair rebuilds it, and 'cass index --full' does the same after a full rescan).";
 
-
 /// mknmt: `errors[]` entry on `cass health` when readers serve `MANIFEST.prev`
 /// because the current MANIFEST is corrupt.
 pub(crate) const CORRUPT_MANIFEST_HEALTH_ERROR: &str = "index MANIFEST corrupt — search serves the previous lexical generation (MANIFEST.prev), which lacks the newest publish; run 'cass index' to rebuild it from the canonical database";
 
-
 /// mknmt: `recommended_action` shared by `cass health` and `cass status` for
 /// a corrupt current MANIFEST.
 pub(crate) const CORRUPT_MANIFEST_RECOMMENDED_ACTION: &str = "Run 'cass index' to rebuild the search index from the canonical database (its current MANIFEST is corrupt, so search serves the previous generation from MANIFEST.prev, which lacks the newest publish; 'cass index --full' does the same after a full rescan).";
-
 
 /// mknmt: readers serve `MANIFEST.prev` because the current slot is corrupt.
 pub(crate) fn state_index_manifest_corrupt(state: &serde_json::Value) -> bool {

@@ -3,13 +3,11 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn diagnostics_connector_paths(
     _home: &std::path::Path,
@@ -53,7 +51,6 @@ pub(crate) fn diagnostics_connector_paths(
     roots
 }
 
-
 pub(crate) fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -70,7 +67,6 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
     }
 }
 
-
 /// Truncate a string from the start, keeping the last `max_chars` characters.
 /// UTF-8 safe. Adds "..." prefix if truncated.
 pub(crate) fn truncate_start(s: &str, max_chars: usize) -> String {
@@ -85,7 +81,6 @@ pub(crate) fn truncate_start(s: &str, max_chars: usize) -> String {
         format!("...{}", s.chars().skip(skip).collect::<String>())
     }
 }
-
 
 /// Truncate a string from the end, keeping the first `max_chars` characters.
 /// UTF-8 safe. Adds "..." suffix if truncated.
@@ -102,7 +97,6 @@ pub(crate) fn truncate_end(s: &str, max_chars: usize) -> String {
     }
 }
 
-
 /// Quick health check for agents: index freshness, db stats, recommended action.
 /// Designed to be fast (<100ms) for pre-search checks.
 /// Bounded budget (ms) for `cass status` before it sheds optional/expensive
@@ -116,7 +110,6 @@ pub(crate) fn status_budget_ms() -> u64 {
         .unwrap_or(8000)
 }
 
-
 /// Test-only deterministic slowdown so E2E can trip the status budget. Honored
 /// only when `CASS_TEST_STATUS_SLOW_MS` is set (operators never set it). Bead
 /// uojcg.2.2.
@@ -128,7 +121,6 @@ pub(crate) fn maybe_test_status_delay() {
         std::thread::sleep(Duration::from_millis(ms));
     }
 }
-
 
 /// Build a read-only [`ProjectionSignals`](crate::root_cause_projection::ProjectionSignals)
 /// snapshot from the shared status/health `state` JSON so status/triage/doctor
