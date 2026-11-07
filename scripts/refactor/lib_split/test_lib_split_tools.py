@@ -1389,6 +1389,75 @@ class StaleRefRetargetTests(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("(2 unlisted", out)
 
+    def test_same_line_rogue_after_empty_named_fails_closed(self):
+        # controller dc302e90 reproducer: the empty named test shares a
+        # physical line with an unrelated reader — the include is
+        # outside the named item's byte span and must stay stale.
+        body = ("#[test]\n"
+                f"fn {self.NAMED}() {{}} "
+                "fn unrelated_unlisted_reader() { "
+                'let source = include_str!("../lib.rs"); '
+                "assert!(!source.is_empty()); }\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_same_line_rogue_before_named_fails_closed(self):
+        body = ("fn unrelated_unlisted_reader() { "
+                'let source = include_str!("../lib.rs"); '
+                "assert!(!source.is_empty()); } "
+                f"fn {self.NAMED}() {{}}\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_same_line_legitimate_site_admitted(self):
+        # the declared site shares a line with an unrelated fn — the
+        # include inside the named byte span is still admitted.
+        body = (f"fn {self.NAMED}() {{ "
+                'let s = include_str!("../lib.rs"); let _ = s; } '
+                "fn other() {}\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 0, out)
+
+    def test_same_line_rogue_beside_legitimate_fails_closed(self):
+        # sanctioned site inside the named span + rogue site after it
+        # on the same line: only the declared occurrence is admitted.
+        body = (f"fn {self.NAMED}() {{ "
+                'let a = include_str!("../lib.rs"); let _ = a; } '
+                'fn rogue() { let b = include_str!("../lib.rs"); '
+                "let _ = b; }\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_same_line_rogue_before_legitimate_fails_closed(self):
+        body = ('fn rogue() { let b = include_str!("../lib.rs"); '
+                "let _ = b; } "
+                f"fn {self.NAMED}() {{ "
+                'let a = include_str!("../lib.rs"); let _ = a; }\n')
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
+    def test_unicode_inside_named_site_admitted(self):
+        body = (f'fn {self.NAMED}() {{ let s = "éé"; '
+                'let x = include_str!("../lib.rs"); let _ = x; }\n')
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 0, out)
+
+    def test_unicode_prefix_byte_offset_binding(self):
+        # multibyte text inside the named fn shifts byte offsets vs
+        # char offsets — the boundary must stay byte-exact: the rogue
+        # after `}` stays stale even though its char offset would look
+        # inside a byte-measured span.
+        body = (f'fn {self.NAMED}() {{ let s = "ééééé"; }} '
+                'fn rogue() { let r = include_str!("../lib.rs"); '
+                "let _ = r; }\n")
+        rc, out = self._run({self.PART4: body})
+        self.assertEqual(rc, 1, out)
+        self.assertIn("(1 unlisted", out)
+
     def test_unparseable_test_file_fails_closed(self):
         # fn boundaries cannot be attributed in an unbalanced file —
         # nothing is sanctioned.
@@ -1433,12 +1502,10 @@ class StaleRefRetargetTests(unittest.TestCase):
                 '    let a = include_str!("../lib.rs");\n'
                 '    let b = include_str!("../lib.rs");\n'
                 "}\n")
-        ex = sr.emitted_exemptions(
-            text, {"t": Counter({("include_str!", "../lib.rs"): 1})},
-            [(2, "include_str!", "../lib.rs"),
-             (3, "include_str!", "../lib.rs")])
-        self.assertEqual(
-            ex, Counter({(2, "include_str!", "../lib.rs"): 1}))
+        adm, hits = sr.emitted_exemptions(
+            text, {"t": Counter({("include_str!", "../lib.rs"): 1})})
+        self.assertEqual(adm, {text.encode().index(b"include_str!")})
+        self.assertEqual(len(hits), 2)
 
 
 class SplitStageContractTests(unittest.TestCase):
