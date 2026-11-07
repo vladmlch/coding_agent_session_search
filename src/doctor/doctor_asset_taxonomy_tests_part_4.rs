@@ -112,7 +112,7 @@ pub(crate) fn doctor_cleanup_apply_cannot_bypass_fs_mutation_executor_for_prunin
 
 #[test]
 pub(crate) fn run_doctor_stale_lock_removal_cannot_bypass_fs_mutation_executor() {
-    let source = include_str!("../lib.rs");
+    let source = include_str!("run.rs");
     let run_doctor_start = source
         .rfind("fn run_doctor_impl(")
         .expect("run_doctor implementation");
