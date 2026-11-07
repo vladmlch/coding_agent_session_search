@@ -3,16 +3,16 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use chrono::Utc;
-pub(crate) use clap::{Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint};
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use chrono::Utc;
+    pub(crate) use clap::{
+        Arg, ArgAction, Command, CommandFactory, Parser, Subcommand, ValueEnum, ValueHint,
+    };
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn schedule_error_to_cli(err: crate::schedule::ScheduleError) -> CliError {
     use crate::schedule::ScheduleError;
@@ -47,7 +47,6 @@ pub(crate) fn schedule_error_to_cli(err: crate::schedule::ScheduleError) -> CliE
     }
 }
 
-
 /// Resolve the absolute cass binary the scheduler units should invoke.
 pub(crate) fn schedule_binary_path() -> CliResult<PathBuf> {
     let exe = std::env::current_exe().map_err(|e| CliError {
@@ -69,7 +68,6 @@ pub(crate) fn schedule_binary_path() -> CliResult<PathBuf> {
         Ok(dunce::canonicalize(&exe).unwrap_or(exe))
     }
 }
-
 
 pub(crate) fn run_schedule_command(subcmd: ScheduleCommand, cli: &Cli) -> CliResult<()> {
     use crate::schedule::{self, RunConfig, ScheduleSpec};

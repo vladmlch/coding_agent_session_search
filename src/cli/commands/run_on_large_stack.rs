@@ -2,8 +2,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 /// Run `f` on a dedicated thread with a 16 MiB stack. Used for clap-parse
 /// tests whose monomorphized parser depth can exceed the 2 MiB default test
 /// stack in debug builds. Lifting this out of any one test module so both

@@ -5,12 +5,10 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Handle mappings subcommands (P6.3)
 pub(crate) fn run_mappings_command(action: MappingsAction, cli: &Cli) -> CliResult<()> {
@@ -40,7 +38,6 @@ pub(crate) fn run_mappings_command(action: MappingsAction, cli: &Cli) -> CliResu
     }
     Ok(())
 }
-
 
 /// List path mappings for a source (P6.3)
 pub(crate) fn run_mappings_list(
@@ -145,7 +142,6 @@ pub(crate) fn run_mappings_list(
     Ok(())
 }
 
-
 /// Add a path mapping to a source (P6.3)
 pub(crate) fn run_mappings_add(
     source_name: &str,
@@ -218,7 +214,6 @@ pub(crate) fn run_mappings_add(
     Ok(())
 }
 
-
 /// Remove a path mapping from a source (P6.3)
 pub(crate) fn run_mappings_remove(source_name: &str, index: usize) -> CliResult<()> {
     use crate::sources::config::SourcesConfig;
@@ -271,9 +266,12 @@ pub(crate) fn run_mappings_remove(source_name: &str, index: usize) -> CliResult<
     Ok(())
 }
 
-
 /// Test how a path would be rewritten for a source (P6.3)
-pub(crate) fn run_mappings_test(source_name: &str, path: &str, agent: Option<&str>) -> CliResult<()> {
+pub(crate) fn run_mappings_test(
+    source_name: &str,
+    path: &str,
+    agent: Option<&str>,
+) -> CliResult<()> {
     use crate::sources::config::{PathMapping, SourcesConfig};
     use colored::Colorize;
 

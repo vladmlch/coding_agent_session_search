@@ -5,14 +5,12 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Run the semantic model daemon (Unix only)
 #[cfg(unix)]
@@ -40,7 +38,6 @@ pub(crate) fn resolved_daemon_config(
 
     config
 }
-
 
 /// Run the semantic model daemon (Unix only)
 #[cfg(unix)]

@@ -66091,38 +66091,38 @@ pub(crate) use crate::cli::paths::session_paths::*;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::paths::*;
 // -- generated lib-split bridges --
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::cli_models_resolution_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::daemon::*;
+#[cfg(all(test, unix))]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::daemon_cli_config_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::mappings::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::models::run_models_command::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::models::run_models_remove::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::models::semantic_identity_backfill_checkpoint_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::run_on_large_stack::*;
+#[allow(unused_imports)]
+pub(crate) use crate::cli::commands::schedule::*;
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::sources::run_sources_command::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::sources::source_doctor_local_storage_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::models::run_models_command::*;
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::models::semantic_identity_backfill_checkpoint_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::models::run_models_remove::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::mappings::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::timeline_datetime_parse_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::daemon::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::schedule::*;
-#[cfg(all(test, unix))]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::daemon_cli_config_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::run_on_large_stack::*;
+pub(crate) use crate::cli::commands::state_db_integrity_probe_tests::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::cli::commands::subcommand_robot_output_tests::*;
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use crate::cli::commands::cli_models_resolution_tests::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::cli::commands::state_db_integrity_probe_tests::*;
+pub(crate) use crate::cli::commands::timeline_datetime_parse_tests::*;

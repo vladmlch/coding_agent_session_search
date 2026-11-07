@@ -3,16 +3,14 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Handle sources subcommands.
 pub(crate) fn run_sources_command(cmd: SourcesCommand, cli: &Cli) -> CliResult<()> {
@@ -44,7 +42,6 @@ pub(crate) fn run_sources_command(cmd: SourcesCommand, cli: &Cli) -> CliResult<(
         SourcesCommand::Agents(action) => run_agents_command(action, cli),
     }
 }
-
 
 /// List configured sources.
 ///
@@ -218,7 +215,6 @@ pub(crate) fn run_sources_list(verbose: bool, output_format: Option<RobotFormat>
     Ok(())
 }
 
-
 /// Add a new local source: extra directories indexed in place under a name.
 pub(crate) fn run_sources_add(
     name: &str,
@@ -341,7 +337,6 @@ pub(crate) fn run_sources_add(
     Ok(())
 }
 
-
 /// Remove a configured source (P5.7)
 pub(crate) fn run_sources_remove(name: &str, purge: bool, skip_confirm: bool) -> CliResult<()> {
     use crate::sources::config::SourcesConfig;
@@ -430,7 +425,6 @@ pub(crate) fn run_sources_remove(name: &str, purge: bool, skip_confirm: bool) ->
     Ok(())
 }
 
-
 /// Diagnostic check result for sources doctor command (P5.6)
 #[derive(serde::Serialize)]
 pub(crate) struct DiagnosticCheck {
@@ -439,7 +433,6 @@ pub(crate) struct DiagnosticCheck {
     pub(crate) message: String,
     pub(crate) remediation: Option<String>,
 }
-
 
 /// Aggregated diagnostics for a single source (P5.6)
 #[derive(serde::Serialize)]
@@ -450,7 +443,6 @@ pub(crate) struct SourceDiagnostics {
     pub(crate) warnings: usize,
     pub(crate) failed: usize,
 }
-
 
 /// The `sources doctor --json` envelope: the detailed raw per-source checks
 /// under `diagnostics`, the robot budget block, and `sources.toml` validation
@@ -463,7 +455,6 @@ pub(crate) struct SourcesDoctorOutput<'a> {
     /// Problems in `sources.toml` itself that no per-source check can see.
     pub(crate) config_validation: &'a crate::sources::config_validation::SourceConfigValidation,
 }
-
 
 /// Validate the parsed source configuration against this host. The validator
 /// is pure; this gathers its environment signals: `.sources.toml.tmp.*` files
@@ -498,11 +489,9 @@ pub(crate) fn sources_doctor_config_validation(
     validate_sources_config(config, &ctx)
 }
 
-
 /// Default wall-clock budget for `sources doctor` when `--budget-ms` is not
 /// given. All remaining checks are local metadata reads, so this is generous.
 pub(crate) const SOURCES_DOCTOR_DEFAULT_BUDGET_MS: u64 = 5_000;
-
 
 /// Diagnose source configuration and local storage issues (P5.6).
 ///
@@ -722,7 +711,6 @@ pub(crate) fn run_sources_doctor(
     Ok(())
 }
 
-
 /// Metadata-only existence check for a local (non-remote) source path.
 pub(crate) fn check_local_source_path(path: &str) -> DiagnosticCheck {
     let expanded = if let Some(rest) = path.strip_prefix("~/") {
@@ -760,14 +748,12 @@ pub(crate) fn check_local_source_path(path: &str) -> DiagnosticCheck {
     }
 }
 
-
 /// Conservatively assess local storage from metadata without mutating it.
 pub(crate) fn check_local_storage(source_name: &str) -> DiagnosticCheck {
     let data_dir = default_data_dir();
     let source_dir = data_dir.join("remotes").join(source_name);
     check_local_storage_path(&source_dir)
 }
-
 
 pub(crate) fn check_local_storage_path(source_dir: &Path) -> DiagnosticCheck {
     let mut inspected = None;

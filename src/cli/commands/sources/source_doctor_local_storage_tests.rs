@@ -2,64 +2,56 @@
 #[allow(unused_imports)]
 use crate::*;
 
+#[test]
+pub(crate) fn existing_directory_check_is_explicitly_non_mutating() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_dir = temp.path().join("fixture-source");
+    std::fs::create_dir(&source_dir).expect("create source directory");
+    let members_before = std::fs::read_dir(&source_dir)
+        .expect("list source directory before check")
+        .count();
 
+    let check = check_local_storage_path(&source_dir);
 
+    assert_eq!(check.status, "pass");
+    assert!(check.message.contains("appears writable"));
+    assert!(check.message.contains("no write attempted"));
+    assert_eq!(
+        std::fs::read_dir(&source_dir)
+            .expect("list source directory after check")
+            .count(),
+        members_before
+    );
+}
 
-    
+#[test]
+pub(crate) fn missing_target_uses_nearest_existing_ancestor_without_creating_it() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_dir = temp.path().join("remotes").join("fixture-source");
 
-    #[test]
-    pub(crate) fn existing_directory_check_is_explicitly_non_mutating() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let source_dir = temp.path().join("fixture-source");
-        std::fs::create_dir(&source_dir).expect("create source directory");
-        let members_before = std::fs::read_dir(&source_dir)
-            .expect("list source directory before check")
-            .count();
+    let check = check_local_storage_path(&source_dir);
 
-        let check = check_local_storage_path(&source_dir);
+    assert_eq!(check.status, "pass");
+    assert!(check.message.contains(&temp.path().display().to_string()));
+    assert!(check.message.contains("no write attempted"));
+    assert!(!source_dir.exists());
+    assert!(!temp.path().join("remotes").exists());
+}
 
-        assert_eq!(check.status, "pass");
-        assert!(check.message.contains("appears writable"));
-        assert!(check.message.contains("no write attempted"));
-        assert_eq!(
-            std::fs::read_dir(&source_dir)
-                .expect("list source directory after check")
-                .count(),
-            members_before
-        );
-    }
+#[test]
+pub(crate) fn non_directory_target_fails_without_writing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source_dir = temp.path().join("fixture-source");
+    std::fs::write(&source_dir, b"not a directory").expect("write fixture file");
+    let contents_before = std::fs::read(&source_dir).expect("read fixture before check");
 
+    let check = check_local_storage_path(&source_dir);
 
-    #[test]
-    pub(crate) fn missing_target_uses_nearest_existing_ancestor_without_creating_it() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let source_dir = temp.path().join("remotes").join("fixture-source");
-
-        let check = check_local_storage_path(&source_dir);
-
-        assert_eq!(check.status, "pass");
-        assert!(check.message.contains(&temp.path().display().to_string()));
-        assert!(check.message.contains("no write attempted"));
-        assert!(!source_dir.exists());
-        assert!(!temp.path().join("remotes").exists());
-    }
-
-
-    #[test]
-    pub(crate) fn non_directory_target_fails_without_writing() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let source_dir = temp.path().join("fixture-source");
-        std::fs::write(&source_dir, b"not a directory").expect("write fixture file");
-        let contents_before = std::fs::read(&source_dir).expect("read fixture before check");
-
-        let check = check_local_storage_path(&source_dir);
-
-        assert_eq!(check.status, "fail");
-        assert!(check.message.contains("is not a directory"));
-        assert!(check.message.contains("no write attempted"));
-        assert_eq!(
-            std::fs::read(&source_dir).expect("read fixture after check"),
-            contents_before
-        );
-    }
-
+    assert_eq!(check.status, "fail");
+    assert!(check.message.contains("is not a directory"));
+    assert!(check.message.contains("no write attempted"));
+    assert_eq!(
+        std::fs::read(&source_dir).expect("read fixture after check"),
+        contents_before
+    );
+}

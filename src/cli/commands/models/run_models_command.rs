@@ -5,16 +5,14 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use chrono::Utc;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::sync::{Arc, Mutex};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use chrono::Utc;
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::sync::{Arc, Mutex};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Handle models subcommands
 pub(crate) fn run_models_command(cmd: ModelsCommand, cli: &Cli) -> CliResult<()> {
@@ -77,7 +75,6 @@ pub(crate) fn run_models_command(cmd: ModelsCommand, cli: &Cli) -> CliResult<()>
         } => run_models_remove(&model, yes, data_dir),
     }
 }
-
 
 /// Show semantic model installation status.
 ///
@@ -362,7 +359,6 @@ pub(crate) fn run_models_status(output_format: Option<RobotFormat>) -> CliResult
     Ok(())
 }
 
-
 /// Resolve a CLI-supplied semantic model name (or alias) to the canonical
 /// registry name used by model installation and removal. Embedder aliases match
 /// the manifest-attested daemon worker; retired ONNX-era aliases are rejected before
@@ -377,7 +373,6 @@ pub(crate) fn run_models_status(output_format: Option<RobotFormat>) -> CliResult
 pub(crate) fn native_backend_supports_model(registry_name: &str) -> bool {
     matches!(registry_name, "minilm" | "multilingual-minilm" | "ms-marco")
 }
-
 
 pub(crate) fn resolve_cli_model_name(model_name: &str) -> CliResult<&'static str> {
     match model_name.to_ascii_lowercase().as_str() {
@@ -436,7 +431,6 @@ pub(crate) fn resolve_cli_model_name(model_name: &str) -> CliResult<&'static str
     }
 }
 
-
 /// Returns the on-disk model directory for either an embedder or a reranker.
 ///
 /// `registry_name` must be a canonical name returned by `resolve_cli_model_name`.
@@ -481,7 +475,6 @@ pub(crate) fn resolve_model_install_dir(
         retryable: false,
     })
 }
-
 
 /// Install the semantic search model from a local directory.
 ///
@@ -584,7 +577,6 @@ pub(crate) fn run_models_install(
     );
     Ok(())
 }
-
 
 /// Verify model file integrity
 pub(crate) fn run_models_verify(
@@ -755,7 +747,6 @@ pub(crate) fn run_models_verify(
 
     Ok(())
 }
-
 
 /// `cass models build-hnsw` (bead uaulb, gh#408): build or verify the HNSW
 /// accelerator for an ALREADY-PUBLISHED semantic vector artifact.
@@ -1038,8 +1029,9 @@ pub(crate) fn run_models_build_hnsw(
     Ok(())
 }
 
-
-pub(crate) fn parse_models_backfill_tier(raw: &str) -> CliResult<crate::search::semantic_manifest::TierKind> {
+pub(crate) fn parse_models_backfill_tier(
+    raw: &str,
+) -> CliResult<crate::search::semantic_manifest::TierKind> {
     use crate::search::semantic_manifest::TierKind;
 
     match raw.trim().to_ascii_lowercase().as_str() {
@@ -1054,7 +1046,6 @@ pub(crate) fn parse_models_backfill_tier(raw: &str) -> CliResult<crate::search::
         }),
     }
 }
-
 
 pub(crate) fn resolve_semantic_index_embedder(raw: Option<&str>) -> String {
     if let Some(requested) = raw {
@@ -1086,7 +1077,6 @@ pub(crate) fn resolve_semantic_index_embedder(raw: Option<&str>) -> String {
     }
 }
 
-
 pub(crate) fn semantic_identity_backfill_fingerprint(
     canonical_db_fingerprint: &str,
     identity_generation: Option<&str>,
@@ -1100,12 +1090,10 @@ pub(crate) fn semantic_identity_backfill_fingerprint(
     )
 }
 
-
 pub(crate) struct ModelsBackfillRunOptions {
     pub(crate) scheduled: bool,
     pub(crate) max_batches: u32,
 }
-
 
 pub(crate) fn run_models_backfill(
     tier_raw: &str,
@@ -1323,7 +1311,6 @@ pub(crate) fn run_models_backfill(
     }
 }
 
-
 /// The one semantic model a bounded backfill keeps across its batches, and how
 /// many times it was actually constructed (GH #471: the receipt must show a
 /// per-batch reload, not merely that a model exists).
@@ -1333,7 +1320,6 @@ pub(crate) struct RetainedBackfillModel {
     pub(crate) initializations: u32,
     pub(crate) cancelled: Option<crate::indexer::semantic::CancelCheck>,
 }
-
 
 pub(crate) fn run_models_backfill_batch(
     tier_raw: &str,

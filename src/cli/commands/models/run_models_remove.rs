@@ -3,15 +3,13 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use tracing::{info, warn};
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use tracing::{info, warn};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// Remove model files
 pub(crate) fn run_models_remove(
@@ -82,7 +80,6 @@ pub(crate) fn run_models_remove(
     Ok(())
 }
 
-
 pub(crate) fn run_agents_command(action: AgentsAction, cli: &Cli) -> CliResult<()> {
     match action {
         AgentsAction::List { json } => {
@@ -97,7 +94,6 @@ pub(crate) fn run_agents_command(action: AgentsAction, cli: &Cli) -> CliResult<(
     }
 }
 
-
 pub(crate) fn archive_agent_slug_for_exclusion(agent: &str) -> String {
     match agent.trim().to_ascii_lowercase().as_str() {
         "claude" | "claude-code" | "claude_code" => "claude_code".to_string(),
@@ -106,14 +102,12 @@ pub(crate) fn archive_agent_slug_for_exclusion(agent: &str) -> String {
     }
 }
 
-
 pub(crate) fn archive_data_dir_for_agents_command(cli: &Cli) -> PathBuf {
     cli.db
         .as_ref()
         .and_then(|db_path| db_path.parent().map(Path::to_path_buf))
         .unwrap_or_else(default_data_dir)
 }
-
 
 /// What `sources agents exclude` did with rows already archived for the agent.
 /// "Nothing to purge" and "could not look" must not print the same sentence.
@@ -126,8 +120,10 @@ pub(crate) enum ExcludedAgentPurge {
     ArchiveUnavailable { db_path: PathBuf, error: String },
 }
 
-
-pub(crate) fn purge_excluded_agent_archive_data(agent: &str, cli: &Cli) -> CliResult<ExcludedAgentPurge> {
+pub(crate) fn purge_excluded_agent_archive_data(
+    agent: &str,
+    cli: &Cli,
+) -> CliResult<ExcludedAgentPurge> {
     use crate::storage::sqlite::FrankenStorage;
 
     let db_path = cli.db.clone().unwrap_or_else(default_db_path);
@@ -222,7 +218,6 @@ pub(crate) fn purge_excluded_agent_archive_data(agent: &str, cli: &Cli) -> CliRe
     Ok(ExcludedAgentPurge::Purged(purge))
 }
 
-
 pub(crate) fn run_agents_list(output_format: Option<RobotFormat>) -> CliResult<()> {
     use crate::sources::config::SourcesConfig;
 
@@ -263,7 +258,6 @@ pub(crate) fn run_agents_list(output_format: Option<RobotFormat>) -> CliResult<(
     }
     Ok(())
 }
-
 
 pub(crate) fn run_agents_exclude(agent: &str, keep_indexed_data: bool, cli: &Cli) -> CliResult<()> {
     use crate::sources::config::SourcesConfig;
@@ -344,7 +338,6 @@ pub(crate) fn run_agents_exclude(agent: &str, keep_indexed_data: bool, cli: &Cli
     println!("  cass sources agents list");
     Ok(())
 }
-
 
 pub(crate) fn run_agents_include(agent: &str) -> CliResult<()> {
     use crate::sources::config::SourcesConfig;
