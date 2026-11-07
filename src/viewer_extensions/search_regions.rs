@@ -1433,6 +1433,27 @@ pub fn stage_region_docs(
     db: &impl FactsDb,
     conversation_id: i64,
 ) -> Result<(usize, Option<RegionDocStamp>)> {
+    let Some((docs, stamp)) = region_doc_stage(db, conversation_id)? else {
+        return Ok((0, None));
+    };
+    let doc_count = docs.len();
+    index
+        .upsert_cass_documents(&docs)
+        .context("upserting search-region documents")?;
+    Ok((doc_count, Some(stamp)))
+}
+
+/// Read what [`stage_region_docs`] writes for one session without writing
+/// it: the session's current region documents and the marks-row snapshot
+/// that certifies them. `None` when the session has no marks row. Callers
+/// that converge many sessions upsert the documents of many sessions in one
+/// batch: replacing documents a committed candidate already holds costs one
+/// publication per upsert call, and one call per session made a resumed
+/// terminal converge quadratic in the session count.
+pub fn region_doc_stage(
+    db: &impl FactsDb,
+    conversation_id: i64,
+) -> Result<Option<(Vec<CassDocument>, RegionDocStamp)>> {
     let mark = db
         .facts_query_map(
             "SELECT region_version, source_revision, docs_state, pending_doc_deletes \
@@ -1450,7 +1471,7 @@ pub fn stage_region_docs(
         .into_iter()
         .next();
     let Some((region_version, source_revision, docs_state, pending_json)) = mark else {
-        return Ok((0, None));
+        return Ok(None);
     };
     // Stale-identity deletes are NOT executed here: `delete_cass_document_ids`
     // requires a committed writer and would commit this writer mid-batch —
@@ -1459,20 +1480,16 @@ pub fn stage_region_docs(
     // `pending_doc_deletes` JSON so the post-commit stamp pass can retire
     // them and then compare-and-swap the queue away.
     let docs = region_docs(db, conversation_id)?;
-    let doc_count = docs.len();
-    index
-        .upsert_cass_documents(&docs)
-        .context("upserting search-region documents")?;
-    Ok((
-        doc_count,
-        Some(RegionDocStamp {
+    Ok(Some((
+        docs,
+        RegionDocStamp {
             conversation_id,
             region_version,
             source_revision,
             docs_state,
             pending_doc_deletes: pending_json,
-        }),
-    ))
+        },
+    )))
 }
 
 /// True when the session's region documents are already committed in the
@@ -1851,6 +1868,56 @@ mod tests {
             pending,
             vec![still_stale],
             "unrelated stale ids stay queued"
+        );
+        Ok(())
+    }
+
+    /// A resumed terminal rebuild re-converges every marked session onto a
+    /// candidate whose commit already holds their region documents, so each
+    /// upsert replaces live documents and publishes a successor. One upsert
+    /// per session published one segment per session and validated every
+    /// segment each time: quadratic, hours on a real archive. The converge
+    /// must batch sessions, and the replacement must still leave exactly one
+    /// live document per identity.
+    #[test]
+    fn converge_all_onto_a_committed_candidate_publishes_per_batch_not_per_session() -> Result<()> {
+        let (temp, storage) = fixture();
+        let db = storage.raw();
+        let agent = agent_id(&storage);
+        let sessions = 6_i64;
+        for id in 1..=sessions {
+            insert_conversation(db, id, agent);
+            insert_marks(db, id, "[]");
+            insert_region(db, id, 0, base(0), Some("first region"));
+            insert_region(db, id, 1, base(1), Some("second region"));
+        }
+        let index_path = temp.path().join("index");
+        let mut index = crate::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+        assert_eq!(
+            index.converge_all_search_region_docs(db, i64::MAX)?,
+            (sessions as usize, 2 * sessions as usize)
+        );
+        index.commit()?;
+        drop(index);
+
+        // The resumed run opens a new writer on the committed candidate.
+        let mut resumed = crate::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+        let segments_before = resumed.segment_count();
+        assert_eq!(
+            resumed.converge_all_search_region_docs(db, i64::MAX)?,
+            (sessions as usize, 2 * sessions as usize)
+        );
+        resumed.commit()?;
+        let published = resumed.segment_count().saturating_sub(segments_before);
+        assert!(
+            published <= 1,
+            "re-converging {sessions} sessions published {published} segments; \
+             one batch must publish at most one"
+        );
+        assert_eq!(
+            resumed.doc_count()?,
+            2 * sessions as u64,
+            "replacement must leave one live document per identity"
         );
         Ok(())
     }
