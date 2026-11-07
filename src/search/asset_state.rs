@@ -1591,7 +1591,10 @@ pub(crate) fn completed_lexical_checkpoint_indexed_docs(
 ) -> Option<u64> {
     let checkpoint = load_lexical_rebuild_checkpoint(index_path).ok().flatten()?;
     let certified = checkpoint.completed
-        && crate::stored_path_identity_matches(&checkpoint.db_path, db_path)
+        && crate::cli::state::probe_state_db_strict_worker::stored_path_identity_matches(
+            &checkpoint.db_path,
+            db_path,
+        )
         && checkpoint.schema_hash == SCHEMA_HASH
         && lexical_rebuild_page_size_is_compatible(checkpoint.page_size);
     certified.then_some(checkpoint.indexed_docs as u64)
@@ -1633,8 +1636,12 @@ fn lexical_state_from_observations(input: LexicalObservationInput<'_>) -> Lexica
             .exists()
         && !crate::search::tantivy::federated_search_manifest_path(index_path).exists()
         && index_path.join("meta.json").exists();
-    let checkpoint_db_matches =
-        checkpoint.map(|state| crate::stored_path_identity_matches(&state.db_path, db_path));
+    let checkpoint_db_matches = checkpoint.map(|state| {
+        crate::cli::state::probe_state_db_strict_worker::stored_path_identity_matches(
+            &state.db_path,
+            db_path,
+        )
+    });
     let schema_matches = checkpoint.map(|state| state.schema_hash == SCHEMA_HASH);
     let page_size_matches =
         checkpoint.map(|state| state.page_size == LEXICAL_REBUILD_PAGE_SIZE_PUBLIC);
@@ -1686,10 +1693,12 @@ fn lexical_state_from_observations(input: LexicalObservationInput<'_>) -> Lexica
     let age_stale_covered_by_fingerprint =
         age_seconds.is_some() && fingerprint_matches == Some(true);
     let age_stale = age_exceeds_threshold && !age_stale_covered_by_fingerprint;
-    let maintenance_targets_current_db = maintenance
-        .db_path
-        .as_ref()
-        .is_none_or(|lock_db_path| crate::path_identities_match(lock_db_path, db_path));
+    let maintenance_targets_current_db = maintenance.db_path.as_ref().is_none_or(|lock_db_path| {
+        crate::cli::state::probe_state_db_strict_worker::path_identities_match(
+            lock_db_path,
+            db_path,
+        )
+    });
     let watch_active = maintenance.active
         && maintenance_targets_current_db
         && maintenance

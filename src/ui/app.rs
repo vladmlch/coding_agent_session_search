@@ -5716,10 +5716,10 @@ impl CassApp {
     }
 
     fn doctor_hud_summary_from_cached_state(&self) -> Option<DoctorHudSummary> {
-        let state = crate::state_meta_json_for_health(
+        let state = crate::cli::state::state_meta_json::state_meta_json_for_health(
             &self.data_dir,
             &self.db_path,
-            crate::DEFAULT_STALE_THRESHOLD_SECS,
+            crate::cli::contract_version::DEFAULT_STALE_THRESHOLD_SECS,
         );
         let index_exists = state
             .pointer("/index/exists")
@@ -5746,9 +5746,15 @@ impl CassApp {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
-        let lexical_index_initialized = crate::cass_lexical_index_initialized(&self.data_dir);
-        let not_initialized =
-            crate::cass_not_initialized(db_exists, lexical_index_initialized, rebuild_active);
+        let lexical_index_initialized =
+            crate::cli::output::cli_error_json_payload::cass_lexical_index_initialized(
+                &self.data_dir,
+            );
+        let not_initialized = crate::cli::output::cli_error_json_payload::cass_not_initialized(
+            db_exists,
+            lexical_index_initialized,
+            rebuild_active,
+        );
         let healthy = db_exists
             && db_opened
             && index_exists
@@ -5769,7 +5775,10 @@ impl CassApp {
         let recommended_action = if rebuild_active {
             Some("Index rebuild is already in progress".to_string())
         } else if not_initialized {
-            Some(crate::cass_not_initialized_recommended_action())
+            Some(
+                crate::cli::output::cli_error_json_payload::cass_not_initialized_recommended_action(
+                ),
+            )
         } else if db_exists && !db_opened {
             Some("Run 'cass doctor check --json' to inspect archive repair readiness.".to_string())
         } else if !healthy {
@@ -5778,22 +5787,25 @@ impl CassApp {
             None
         };
 
-        let coverage_risk = crate::doctor_fast_coverage_risk_unchecked(db_exists);
-        let summary = crate::build_doctor_runtime_summary(crate::DoctorRuntimeSummaryInput {
-            surface: "tui-footer-summary",
-            state: &state,
-            status,
-            healthy,
-            initialized: !not_initialized,
-            db_exists,
-            rebuild_active,
-            coverage_risk: &coverage_risk,
-            coverage_source: "tui-cached-health-state",
-            coverage_checked: false,
-            quarantine_summary: None,
-            recommended_action: recommended_action.as_ref(),
-            data_dir: &self.data_dir,
-        });
+        let coverage_risk =
+            crate::doctor::report::coverage::doctor_fast_coverage_risk_unchecked(db_exists);
+        let summary = crate::doctor::report::coverage::build_doctor_runtime_summary(
+            crate::doctor::report::coverage::DoctorRuntimeSummaryInput {
+                surface: "tui-footer-summary",
+                state: &state,
+                status,
+                healthy,
+                initialized: !not_initialized,
+                db_exists,
+                rebuild_active,
+                coverage_risk: &coverage_risk,
+                coverage_source: "tui-cached-health-state",
+                coverage_checked: false,
+                quarantine_summary: None,
+                recommended_action: recommended_action.as_ref(),
+                data_dir: &self.data_dir,
+            },
+        );
         DoctorHudSummary::from_runtime_summary(&summary)
     }
 
@@ -7273,7 +7285,7 @@ impl CassApp {
         };
         const MANUAL: &str = "Search index not found. Run `cass index --full` to enable search.";
         if dotenvy::var("TUI_HEADLESS").is_ok()
-            || crate::auto_refresh_is_scratch_data_dir(&self.data_dir)
+            || crate::cli::state::state_meta_json::auto_refresh_is_scratch_data_dir(&self.data_dir)
         {
             return MANUAL.to_string();
         }
@@ -7329,7 +7341,7 @@ impl CassApp {
             crate::search::asset_state::read_search_maintenance_snapshot(&self.data_dir);
         let progress = crate::search::tantivy::index_dir(&self.data_dir)
             .ok()
-            .and_then(|path| crate::lexical_rebuild_progress_note(&path));
+            .and_then(|path| crate::cli::commands::search::searchlexicalselfhealdiagnosis::lexical_rebuild_progress_note(&path));
         // Go live only once the first index run has released its lock. An
         // index that opens while the run still holds it can be a generation
         // the run has not filled yet, and a search against it found nothing.
@@ -22153,7 +22165,7 @@ fn export_session_task(
 
     let mut messages: Vec<HtmlMessage> = Vec::new();
     for (idx, msg) in raw_messages.iter().enumerate() {
-        let role = crate::extract_role(msg);
+        let role = crate::cli::commands::expand::extract_role(msg);
         if !include_tools && role == "tool" {
             continue;
         }
@@ -22163,23 +22175,25 @@ fn export_session_task(
         }
 
         let tool_calls = if include_tools {
-            crate::extract_tool_calls(msg)
+            crate::cli::commands::export_html::extract_tool_calls(msg)
         } else {
             Vec::new()
         };
 
         let content = if include_tools {
             if !tool_calls.is_empty() {
-                crate::strip_tool_marker(
-                    crate::extract_text_content_without_tool_blocks(msg).as_str(),
+                crate::cli::commands::expand::strip_tool_marker(
+                    crate::cli::commands::expand::extract_text_content_without_tool_blocks(msg)
+                        .as_str(),
                 )
             } else {
-                crate::extract_text_content(msg)
+                crate::cli::commands::expand::extract_text_content(msg)
             }
         } else {
-            let content = crate::extract_text_content_without_tool_blocks(msg);
+            let content =
+                crate::cli::commands::expand::extract_text_content_without_tool_blocks(msg);
             if pi_family_export && role == "assistant" {
-                crate::strip_flattened_tool_call_lines(&content)
+                crate::cli::commands::expand::strip_flattened_tool_call_lines(&content)
             } else {
                 content
             }
@@ -22196,7 +22210,7 @@ fn export_session_task(
             continue;
         }
 
-        let timestamp = crate::extract_message_timestamp(msg)
+        let timestamp = crate::cli::commands::expand::extract_message_timestamp(msg)
             .and_then(|ts| DateTime::from_timestamp_millis(ts).map(|dt| dt.to_rfc3339()));
         let author = msg
             .get("author")
@@ -22337,25 +22351,30 @@ fn export_session_markdown_task(
     // Same skill-injection default as the CLI (`!include_skills` retain loop):
     // the TUI exposes no opt-in flag, so skill bodies never reach the file.
     messages.retain(|msg| {
-        let content = crate::extract_text_content(msg);
+        let content = crate::cli::commands::expand::extract_text_content(msg);
         !crate::export::is_skill_injection(&content)
     });
 
     if session_title.is_none() {
         for message in &messages {
-            if crate::extract_role(message) == "user" {
-                let content = crate::extract_text_content(message);
+            if crate::cli::commands::expand::extract_role(message) == "user" {
+                let content = crate::cli::commands::expand::extract_text_content(message);
                 if !content.trim().is_empty() {
                     let first_line = content.lines().next().unwrap_or("Untitled Session");
-                    session_title = Some(crate::smart_truncate(first_line, 80));
+                    session_title =
+                        Some(crate::cli::commands::expand::smart_truncate(first_line, 80));
                     break;
                 }
             }
         }
     }
 
-    let markdown =
-        crate::format_as_markdown(&messages, &session_title, session_start, include_tools);
+    let markdown = crate::cli::commands::export::format_as_markdown::format_as_markdown(
+        &messages,
+        &session_title,
+        session_start,
+        include_tools,
+    );
     match write_export_bytes_no_overwrite(output_path, markdown.as_bytes()) {
         Ok(final_path) => CassMsg::ExportCompleted {
             output_path: final_path,
