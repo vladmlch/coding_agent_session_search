@@ -1526,7 +1526,7 @@ mod tests {
 
     #[test]
     fn legacy_cli_dispatch_routes_through_typed_doctor_module() {
-        let lib_source = include_str!("lib.rs");
+        let lib_source = concat!(include_str!("lib.rs"), include_str!("doctor/run.rs"));
         assert!(
             lib_source.contains("doctor::DoctorCommandRequest::from_cli_flags"),
             "Commands::Doctor should build the typed doctor request before execution"
@@ -1558,6 +1558,8 @@ mod tests {
 // -- lib-split module declarations --
 pub(crate) mod archive;
 pub(crate) mod backup_restore;
+#[cfg(test)]
+pub(crate) mod backup_restore_tests;
 pub(crate) mod baseline;
 pub(crate) mod candidate;
 #[cfg(all(test, unix))]
@@ -1586,9 +1588,12 @@ pub(crate) mod forensic;
 pub(crate) mod fs_safety;
 pub(crate) mod lexical_cleanup_disposition_label;
 pub(crate) mod policy;
+pub(crate) mod probes;
 pub(crate) mod raw_mirror;
 pub(crate) mod repair_state;
 pub(crate) mod report;
+pub(crate) mod run;
 pub(crate) mod run_doctor_ls;
+pub(crate) mod sessionsummaryrecord;
 pub(crate) mod sources;
 pub(crate) mod support_bundle;

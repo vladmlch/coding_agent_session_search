@@ -1,8 +1,8 @@
 //! Promotion must authenticate the complete canonical DB/WAL bundle before
 //! replacing live files or deciding whether derived indexes can be reused.
 
-use super::*;
 use crate::franken_sync::Connection as FrankenConnection;
+use crate::*;
 
 struct CandidateFixture {
     _temp: tempfile::TempDir,

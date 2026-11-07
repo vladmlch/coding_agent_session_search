@@ -549,7 +549,7 @@ last = { kind = "fn", name = "shutdown_thread_local_bridge_runtimes" }
 [[file]]
 target = "src/lib.rs"
 stage = "stay"
-first = { kind = "use", name = "crate::franken_sync::compat::{ ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt, open_with_flags as open_franken_with_flags, }" }
+first = { kind = "use", name = "crate::franken_sync::compat::{ConnectionExt, RowExt}" }
 last = { kind = "use", name = "tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt}" }
 
 [[file]]
