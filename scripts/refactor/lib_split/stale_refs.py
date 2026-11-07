@@ -89,13 +89,13 @@ SKIP_DIRS = {".git", "target", ".scratch", "node_modules", ".venv"}
 
 # Scanner tests listed in scanner_lists.toml legitimately read src/lib.rs;
 # the splitter's own docs/scripts may name it too.
-# src/indexer/mod.rs:41996 assigns `file_path: Some(dir.path().join(
+# src/indexer/mod.rs:42480 assigns `file_path: Some(dir.path().join(
 # "src/lib.rs"))` — snippet metadata for a TempDir fixture (evidence:
 # `dir` is a tempfile::TempDir; the test maps snippets to fixture paths).
 # Data, not a source read — allowed at that exact line only.
 BUILTIN_ALLOW = [
     "scripts/refactor/lib_split/*",
-    "src/indexer/mod.rs:41996",
+    "src/indexer/mod.rs:42480",
 ]
 
 
@@ -182,19 +182,28 @@ def main(argv):
     # retarget find is scheduled for rewrite at its stage, not stale.
     man = tomllib.loads((HERE / "manifest.toml").read_text())
     rt_finds = set()
+    rt_withs = set()
     for rt in man.get("retarget", []):
         m = re.match(
             r'\s*(include_str!|include!)\s*\(\s*"([^"]+)"\s*\)',
             rt.get("find", ""))
         if m:
             rt_finds.add((m.group(1), m.group(2)))
+        # emitted retarget output: every include inside `with` is the
+        # declared result inside that retarget's own test_file.
+        for wm in re.finditer(
+                r'(include_str!|include!)\s*\(\s*"([^"]+)"\s*\)',
+                rt.get("with", "")):
+            rt_withs.add((rt.get("test_file"), wm.group(1), wm.group(2)))
 
     def retargeted(rel: str, desc: str) -> bool:
-        if rel != "src/lib.rs" or "(" not in desc:
+        if "(" not in desc:
             return False
         kind, _, rest = desc.partition("(")
         arg = rest.rstrip(")")
-        return (kind, arg) in rt_finds
+        if rel == "src/lib.rs" and (kind, arg) in rt_finds:
+            return True
+        return (rel, kind, arg) in rt_withs
 
     writers = [h for h in consumers if h[2].startswith("write(")]
     bad = [
