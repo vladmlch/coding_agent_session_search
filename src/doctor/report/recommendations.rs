@@ -4,8 +4,6 @@ use super::*;
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 pub(crate) fn doctor_risk_level_for_reports(
     coverage_risk: &DoctorCoverageRiskSummary,
     checks: &[DoctorCheckReport],
@@ -37,7 +35,6 @@ pub(crate) fn doctor_risk_level_for_reports(
     "none"
 }
 
-
 pub(crate) fn doctor_recommended_action_for_reports(
     initialized_action: Option<String>,
     operation_state: &DoctorOperationStateReport,
@@ -62,7 +59,6 @@ pub(crate) fn doctor_recommended_action_for_reports(
         .find(|check| check.status != "pass" && check.recommended_action != "none")
         .map(|check| check.recommended_action.to_string())
 }
-
 
 #[cfg(test)]
 #[test]
@@ -108,8 +104,9 @@ pub(crate) fn doctor_recommended_action_defers_to_operation_state_only_when_muta
     );
 }
 
-
-pub(crate) fn doctor_active_repair_report(operation_state: &DoctorOperationStateReport) -> serde_json::Value {
+pub(crate) fn doctor_active_repair_report(
+    operation_state: &DoctorOperationStateReport,
+) -> serde_json::Value {
     serde_json::json!({
         "active": operation_state.active_doctor_repair,
         "active_index_maintenance": operation_state.active_index_maintenance,
@@ -122,7 +119,6 @@ pub(crate) fn doctor_active_repair_report(operation_state: &DoctorOperationState
         "next_action": operation_state.next_action.clone(),
     })
 }
-
 
 pub(crate) fn doctor_check_scope_report(
     command_surface: doctor::DoctorCommandSurface,
@@ -180,7 +176,6 @@ pub(crate) fn doctor_check_scope_report(
     })
 }
 
-
 pub(crate) fn doctor_normalized_provider_slug(provider: &str) -> String {
     let normalized = provider.trim().to_ascii_lowercase().replace('-', "_");
     if normalized.is_empty() {
@@ -190,13 +185,11 @@ pub(crate) fn doctor_normalized_provider_slug(provider: &str) -> String {
     }
 }
 
-
 pub(crate) fn doctor_normalized_source_path(path: Option<&str>) -> Option<String> {
     path.map(str::trim)
         .filter(|path| !path.is_empty())
         .map(ToOwned::to_owned)
 }
-
 
 pub(crate) fn doctor_provider_prune_risk(provider: &str) -> DoctorProviderPruneRisk {
     match provider {
@@ -222,7 +215,6 @@ pub(crate) fn doctor_provider_prune_risk(provider: &str) -> DoctorProviderPruneR
         },
     }
 }
-
 
 pub(crate) const DOCTOR_AUTHORITY_ARCHIVE_REPAIRS: &[DoctorAssetClass] = &[
     DoctorAssetClass::DerivedLexicalIndex,
@@ -259,7 +251,6 @@ pub(crate) const DOCTOR_AUTHORITY_REMOTE_COPY_REPAIRS: &[DoctorAssetClass] = &[
 ];
 
 pub(crate) const DOCTOR_AUTHORITY_NO_REPAIRS: &[DoctorAssetClass] = &[];
-
 
 pub(crate) const DOCTOR_SOURCE_AUTHORITY_POLICY_TABLE: &[DoctorSourceAuthorityPolicy] = &[
     DoctorSourceAuthorityPolicy {

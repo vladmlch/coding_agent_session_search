@@ -5,18 +5,16 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
-pub(crate) use anyhow::Result;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use crate::franken_sync::compat::{
+        ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
+        open_with_flags as open_franken_with_flags,
+    };
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorDatabaseIntegrityProbe {
@@ -24,9 +22,7 @@ pub(crate) struct DoctorDatabaseIntegrityProbe {
     pub(crate) integrity_check_diagnostics: Vec<String>,
 }
 
-
 pub(crate) const DOCTOR_DATABASE_INTEGRITY_DIAGNOSTIC_LIMIT: usize = 20;
-
 
 pub(crate) const DOCTOR_ANOMALY_POLICY_TABLE: &[DoctorAnomalyPolicy] = &[
     DoctorAnomalyPolicy {
@@ -246,14 +242,12 @@ pub(crate) const DOCTOR_ANOMALY_POLICY_TABLE: &[DoctorAnomalyPolicy] = &[
     },
 ];
 
-
 pub(crate) fn doctor_anomaly_policy(anomaly_class: DoctorAnomaly) -> &'static DoctorAnomalyPolicy {
     DOCTOR_ANOMALY_POLICY_TABLE
         .iter()
         .find(|policy| policy.anomaly_class == anomaly_class)
         .expect("doctor anomaly policy table must cover every anomaly")
 }
-
 
 pub(crate) fn doctor_anomaly_taxonomy_report() -> Vec<DoctorAnomalyTaxonomyEntry> {
     DOCTOR_ANOMALY_POLICY_TABLE
@@ -270,7 +264,6 @@ pub(crate) fn doctor_anomaly_taxonomy_report() -> Vec<DoctorAnomalyTaxonomyEntry
         })
         .collect()
 }
-
 
 /// Minimal synchronous read surface shared by same-thread raw test fixtures
 /// and production dedicated-owner handles. The production hard-timeout path
@@ -291,7 +284,6 @@ pub(crate) trait DoctorArchiveReadConnection {
     where
         F: FnOnce(&crate::franken_sync::Row) -> Result<T, crate::franken_sync::FrankenError>;
 }
-
 
 impl DoctorArchiveReadConnection for crate::franken_sync::Connection {
     fn doctor_query(
@@ -314,7 +306,6 @@ impl DoctorArchiveReadConnection for crate::franken_sync::Connection {
     }
 }
 
-
 impl DoctorArchiveReadConnection for crate::storage::sqlite::FrankenOwnerConnection {
     fn doctor_query(
         &self,
@@ -336,8 +327,9 @@ impl DoctorArchiveReadConnection for crate::storage::sqlite::FrankenOwnerConnect
     }
 }
 
-
-pub(crate) fn doctor_quick_check_status(rows: Vec<crate::franken_sync::Row>) -> Result<String, String> {
+pub(crate) fn doctor_quick_check_status(
+    rows: Vec<crate::franken_sync::Row>,
+) -> Result<String, String> {
     use crate::franken_sync::compat::RowExt as _;
 
     if rows.is_empty() {
@@ -371,8 +363,9 @@ pub(crate) fn doctor_quick_check_status(rows: Vec<crate::franken_sync::Row>) -> 
     Ok(diagnostics.join("; "))
 }
 
-
-pub(crate) fn doctor_database_quick_check<C: DoctorArchiveReadConnection>(conn: &C) -> Result<String, String> {
+pub(crate) fn doctor_database_quick_check<C: DoctorArchiveReadConnection>(
+    conn: &C,
+) -> Result<String, String> {
     // Some engine versions return multiple findings despite the requested
     // limit. Preserve those findings instead of replacing them with a row-count
     // error. Inspect every row before declaring health; bound only the output.
@@ -381,7 +374,6 @@ pub(crate) fn doctor_database_quick_check<C: DoctorArchiveReadConnection>(conn: 
         .map_err(|err| format!("running PRAGMA quick_check(1): {err}"))?;
     doctor_quick_check_status(rows)
 }
-
 
 #[test]
 pub(crate) fn doctor_quick_check_preserves_multiple_findings_and_bounds_output() {
@@ -415,7 +407,6 @@ pub(crate) fn doctor_quick_check_preserves_multiple_findings_and_bounds_output()
     assert!(doctor_quick_check_status(conn.query("SELECT 'ok' WHERE 0").unwrap()).is_err());
     assert!(doctor_quick_check_status(conn.query("SELECT ''").unwrap()).is_err());
 }
-
 
 pub(crate) fn doctor_database_integrity_probe<C: DoctorArchiveReadConnection>(
     conn: &C,
@@ -459,7 +450,6 @@ pub(crate) fn doctor_database_integrity_probe<C: DoctorArchiveReadConnection>(
     })
 }
 
-
 impl DoctorDatabaseIntegrityProbe {
     pub(crate) fn is_ok(&self) -> bool {
         self.quick_check_status.trim().eq_ignore_ascii_case("ok")
@@ -499,7 +489,6 @@ impl DoctorDatabaseIntegrityProbe {
         }
     }
 }
-
 
 pub(crate) fn doctor_anomaly_for_check(name: &str, status: &str, message: &str) -> DoctorAnomaly {
     if status == "pass" {
@@ -617,7 +606,6 @@ pub(crate) fn doctor_anomaly_for_check(name: &str, status: &str, message: &str) 
     }
 }
 
-
 /// #438: queryability does not establish FTS segment integrity. The historical
 /// disagreement was a real writer-format defect (frankensqlite#404), even
 /// though some MATCH queries succeeded. A newer engine does not establish
@@ -631,7 +619,6 @@ pub(crate) const DOCTOR_FTS_TABLE_QUERYABLE_MESSAGE: &str = concat!(
     "`cass doctor --rebuild-canonical-fts --yes` explicitly regenerates it from canonical rows ",
     "and may require substantial memory on large archives."
 );
-
 
 pub(crate) fn doctor_check_report(
     name: &str,
@@ -659,7 +646,6 @@ pub(crate) fn doctor_check_report(
     }
 }
 
-
 pub(crate) fn doctor_safe_auto_action_for_check(check: &DoctorCheckReport) -> &'static str {
     match check.name.as_str() {
         "data_directory" => "create_missing_cass_data_dir",
@@ -682,7 +668,6 @@ pub(crate) fn doctor_safe_auto_action_for_check(check: &DoctorCheckReport) -> &'
     }
 }
 
-
 pub(crate) fn doctor_safe_auto_manual_next_command(check: &DoctorCheckReport) -> &'static str {
     match check.name.as_str() {
         "safe_auto_archive_rebuild" | "database" | "database_backup" => {
@@ -699,7 +684,6 @@ pub(crate) fn doctor_safe_auto_manual_next_command(check: &DoctorCheckReport) ->
         _ => "cass doctor check --json",
     }
 }
-
 
 /// Pick the next command to recommend from a read-only `doctor check`.
 ///
@@ -724,7 +708,6 @@ pub(crate) fn doctor_leaked_pages_remedy_suffix(leaked_pages_only: bool) -> Stri
         String::new()
     }
 }
-
 
 pub(crate) fn doctor_read_only_next_command(check_reports: &[DoctorCheckReport]) -> String {
     let failing = |name: &str| {
@@ -760,7 +743,6 @@ pub(crate) fn doctor_read_only_next_command(check_reports: &[DoctorCheckReport])
     }
     "cass doctor --fix --json".to_string()
 }
-
 
 pub(crate) fn build_doctor_safe_auto_run_report(
     input: DoctorSafeAutoRunBuildInput<'_>,
@@ -971,7 +953,6 @@ pub(crate) fn build_doctor_safe_auto_run_report(
     report
 }
 
-
 pub(crate) fn doctor_severity_rank(severity: DoctorSeverity) -> u8 {
     match severity {
         DoctorSeverity::Info => 0,
@@ -980,7 +961,6 @@ pub(crate) fn doctor_severity_rank(severity: DoctorSeverity) -> u8 {
     }
 }
 
-
 pub(crate) fn doctor_max_severity(left: DoctorSeverity, right: DoctorSeverity) -> DoctorSeverity {
     if doctor_severity_rank(right) > doctor_severity_rank(left) {
         right
@@ -988,7 +968,6 @@ pub(crate) fn doctor_max_severity(left: DoctorSeverity, right: DoctorSeverity) -
         left
     }
 }
-
 
 pub(crate) fn doctor_max_data_loss_risk(
     left: DoctorDataLossRisk,
@@ -1001,7 +980,6 @@ pub(crate) fn doctor_max_data_loss_risk(
     }
 }
 
-
 pub(crate) fn doctor_add_unique_string(values: &mut Vec<String>, value: impl Into<String>) {
     let value = value.into();
     if !value.is_empty() && !values.iter().any(|existing| existing == &value) {
@@ -1009,13 +987,14 @@ pub(crate) fn doctor_add_unique_string(values: &mut Vec<String>, value: impl Int
     }
 }
 
-
-pub(crate) fn doctor_add_unique_asset_class(values: &mut Vec<DoctorAssetClass>, value: DoctorAssetClass) {
+pub(crate) fn doctor_add_unique_asset_class(
+    values: &mut Vec<DoctorAssetClass>,
+    value: DoctorAssetClass,
+) {
     if !values.contains(&value) {
         values.push(value);
     }
 }
-
 
 pub(crate) fn doctor_incident_kind_for_check(
     check: &DoctorCheckReport,
@@ -1080,7 +1059,6 @@ pub(crate) fn doctor_incident_kind_for_check(
     }
 }
 
-
 pub(crate) fn doctor_incident_summary(kind: DoctorIncidentRootCauseKind) -> &'static str {
     match kind {
         DoctorIncidentRootCauseKind::DerivedIndexStale => {
@@ -1128,7 +1106,6 @@ pub(crate) fn doctor_incident_summary(kind: DoctorIncidentRootCauseKind) -> &'st
     }
 }
 
-
 pub(crate) fn doctor_incident_confidence(
     kind: DoctorIncidentRootCauseKind,
     coverage_risk: &DoctorCoverageRiskSummary,
@@ -1150,7 +1127,6 @@ pub(crate) fn doctor_incident_confidence(
         "medium"
     }
 }
-
 
 pub(crate) fn doctor_incident_blocked_actions(
     check: &DoctorCheckReport,
@@ -1184,7 +1160,6 @@ pub(crate) fn doctor_incident_blocked_actions(
         _ => {}
     }
 }
-
 
 pub(crate) fn doctor_incident_redacted_paths(
     kind: DoctorIncidentRootCauseKind,
@@ -1228,7 +1203,6 @@ pub(crate) fn doctor_incident_redacted_paths(
     paths.sort();
     paths
 }
-
 
 pub(crate) fn build_doctor_root_cause_incidents(
     checks: &[DoctorCheckReport],
@@ -1387,7 +1361,6 @@ pub(crate) fn build_doctor_root_cause_incidents(
     incidents
 }
 
-
 pub(crate) fn doctor_health_class_for_checks(checks: &[DoctorCheckReport]) -> DoctorHealth {
     if checks
         .iter()
@@ -1422,7 +1395,6 @@ pub(crate) fn doctor_health_class_for_checks(checks: &[DoctorCheckReport]) -> Do
     DoctorHealth::Healthy
 }
 
-
 pub(crate) fn doctor_data_loss_risk_rank(risk: DoctorDataLossRisk) -> u8 {
     match risk {
         DoctorDataLossRisk::None => 0,
@@ -1433,7 +1405,6 @@ pub(crate) fn doctor_data_loss_risk_rank(risk: DoctorDataLossRisk) -> u8 {
     }
 }
 
-
 pub(crate) fn doctor_highest_data_loss_risk(checks: &[DoctorCheckReport]) -> DoctorDataLossRisk {
     checks
         .iter()
@@ -1441,7 +1412,6 @@ pub(crate) fn doctor_highest_data_loss_risk(checks: &[DoctorCheckReport]) -> Doc
         .max_by_key(|risk| doctor_data_loss_risk_rank(*risk))
         .unwrap_or(DoctorDataLossRisk::None)
 }
-
 
 pub(crate) fn doctor_top_level_operation_outcome(
     checks: &[DoctorCheckReport],

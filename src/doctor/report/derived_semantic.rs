@@ -3,12 +3,10 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn doctor_fallback_mode_from_state(state: &serde_json::Value) -> String {
     state
@@ -28,8 +26,11 @@ pub(crate) fn doctor_fallback_mode_from_state(state: &serde_json::Value) -> Stri
         })
 }
 
-
-pub(crate) fn doctor_json_pointer_string(value: &serde_json::Value, pointer: &str, fallback: &str) -> String {
+pub(crate) fn doctor_json_pointer_string(
+    value: &serde_json::Value,
+    pointer: &str,
+    fallback: &str,
+) -> String {
     value
         .pointer(pointer)
         .and_then(serde_json::Value::as_str)
@@ -37,11 +38,9 @@ pub(crate) fn doctor_json_pointer_string(value: &serde_json::Value, pointer: &st
         .to_string()
 }
 
-
 pub(crate) fn doctor_json_pointer_bool(value: &serde_json::Value, pointer: &str) -> Option<bool> {
     value.pointer(pointer).and_then(serde_json::Value::as_bool)
 }
-
 
 pub(crate) struct DoctorDerivedSemanticComponentInput {
     pub(crate) asset_class: DoctorAssetClass,
@@ -54,7 +53,6 @@ pub(crate) struct DoctorDerivedSemanticComponentInput {
     pub(crate) safe_for_auto_repair: bool,
     pub(crate) note: String,
 }
-
 
 pub(crate) fn doctor_derived_semantic_component_report(
     data_dir: &Path,
@@ -93,13 +91,11 @@ pub(crate) fn doctor_derived_semantic_component_report(
     }
 }
 
-
 pub(crate) fn doctor_existing_quarantine_marker(path: Option<&str>) -> Option<String> {
     let path = path?;
     let marker = Path::new(path).join(".quarantined");
     marker.is_file().then(|| marker.display().to_string())
 }
-
 
 pub(crate) fn doctor_semantic_memo_quarantine_marker(data_dir: &Path) -> Option<String> {
     [
@@ -114,7 +110,6 @@ pub(crate) fn doctor_semantic_memo_quarantine_marker(data_dir: &Path) -> Option<
     .map(|path| path.display().to_string())
 }
 
-
 pub(crate) fn doctor_semantic_model_asset_class(availability: &str) -> DoctorAssetClass {
     match availability {
         "not_installed" | "disabled" | "model_missing" | "load_failed" => {
@@ -123,7 +118,6 @@ pub(crate) fn doctor_semantic_model_asset_class(availability: &str) -> DoctorAss
         _ => DoctorAssetClass::DerivedSemanticIndex,
     }
 }
-
 
 pub(crate) fn doctor_semantic_recommended_action(
     status: &str,
@@ -155,7 +149,6 @@ pub(crate) fn doctor_semantic_recommended_action(
         _ => "cass models status --json; lexical search remains usable".to_string(),
     }
 }
-
 
 pub(crate) fn doctor_build_derived_semantic_asset_report(
     data_dir: &Path,

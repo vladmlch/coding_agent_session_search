@@ -3,16 +3,14 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -21,7 +19,6 @@ pub(crate) enum DoctorOperationLockKind {
     WatchIngestion,
     DoctorRepair,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,7 +29,6 @@ pub(crate) enum DoctorOperationOwnerConfidence {
     StaleMetadataOnly,
     Unavailable,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -50,14 +46,12 @@ pub(crate) enum DoctorInterruptedOperationKind {
     Unknown,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DoctorInterruptedOperationDisposition {
     NeedsInspection,
     RecoverOnNextIndexRun,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorOperationOwnerReport {
@@ -83,7 +77,6 @@ pub(crate) struct DoctorOperationOwnerReport {
     pub(crate) next_action: String,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorLockDiagnosticReport {
     pub(crate) schema_version: u32,
@@ -108,7 +101,6 @@ pub(crate) struct DoctorLockDiagnosticReport {
     pub(crate) evidence: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorTimingSpanReport {
     pub(crate) schema_version: u32,
@@ -122,7 +114,6 @@ pub(crate) struct DoctorTimingSpanReport {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorSlowOperationReport {
     pub(crate) schema_version: u32,
@@ -134,7 +125,6 @@ pub(crate) struct DoctorSlowOperationReport {
     pub(crate) event_log_correlation_id: String,
     pub(crate) recommended_action: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorTimingSummaryReport {
@@ -148,7 +138,6 @@ pub(crate) struct DoctorTimingSummaryReport {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRetryRecommendationReport {
     pub(crate) schema_version: u32,
@@ -159,7 +148,6 @@ pub(crate) struct DoctorRetryRecommendationReport {
     pub(crate) reason: String,
     pub(crate) notes: Vec<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorInterruptedOperationReport {
@@ -172,7 +160,6 @@ pub(crate) struct DoctorInterruptedOperationReport {
     pub(crate) evidence: Vec<String>,
     pub(crate) next_action: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorOperationStateReport {
@@ -193,19 +180,16 @@ pub(crate) struct DoctorOperationStateReport {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug)]
 pub(crate) struct DoctorMutationLockGuard {
     pub(crate) file: std::fs::File,
 }
-
 
 impl Drop for DoctorMutationLockGuard {
     fn drop(&mut self) {
         let _ = fs2::FileExt::unlock(&self.file);
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub(crate) enum DoctorMutationLockObservation {
@@ -230,7 +214,6 @@ pub(crate) enum DoctorMutationLockObservation {
     },
 }
 
-
 impl DoctorMutationLockObservation {
     pub(crate) fn path(&self) -> &Path {
         match self {
@@ -247,18 +230,20 @@ impl DoctorMutationLockObservation {
     }
 }
 
-
 pub(crate) const DOCTOR_STORAGE_MIN_FREE_BYTES: u64 = 1024 * 1024 * 1024;
 
-pub(crate) const CASS_TEST_DOCTOR_STORAGE_AVAILABLE_BYTES: &str = "CASS_TEST_DOCTOR_STORAGE_AVAILABLE_BYTES";
+pub(crate) const CASS_TEST_DOCTOR_STORAGE_AVAILABLE_BYTES: &str =
+    "CASS_TEST_DOCTOR_STORAGE_AVAILABLE_BYTES";
 
-pub(crate) const CASS_RAW_MIRROR_SIZE_WARN_THRESHOLD_BYTES: &str = "CASS_RAW_MIRROR_SIZE_WARN_THRESHOLD_BYTES";
+pub(crate) const CASS_RAW_MIRROR_SIZE_WARN_THRESHOLD_BYTES: &str =
+    "CASS_RAW_MIRROR_SIZE_WARN_THRESHOLD_BYTES";
 
 pub(crate) const DOCTOR_RAW_MIRROR_SIZE_WARN_THRESHOLD_BYTES_DEFAULT: u64 = 100 * 1_000_000_000;
 
 pub(crate) const DOCTOR_RAW_MIRROR_SOURCE_AMPLIFICATION_WARN_RATIO_MILLI_DEFAULT: u64 = 4_000;
 
-pub(crate) const DOCTOR_RAW_MIRROR_SOURCE_AMPLIFICATION_WARN_EXCESS_BYTES_DEFAULT: u64 = 256 * 1024 * 1024;
+pub(crate) const DOCTOR_RAW_MIRROR_SOURCE_AMPLIFICATION_WARN_EXCESS_BYTES_DEFAULT: u64 =
+    256 * 1024 * 1024;
 
 pub(crate) const DOCTOR_RAW_MIRROR_MANIFEST_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -292,7 +277,6 @@ pub(crate) const DOCTOR_SLOW_OPERATION_DEFAULT_THRESHOLD_MS: u64 = 500;
 /// compile-time constant.
 pub(crate) const DOCTOR_LOCK_HEARTBEAT_STALE_AFTER_MS: u64 = 5 * 60 * 1000;
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorStoragePressureReport {
     pub(crate) schema_version: u32,
@@ -322,7 +306,6 @@ pub(crate) struct DoctorStoragePressureReport {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorStorageAssetClassBreakdown {
     pub(crate) bytes: u64,
@@ -333,7 +316,6 @@ pub(crate) struct DoctorStorageAssetClassBreakdown {
     pub(crate) reclaimable: bool,
     pub(crate) example_paths: Vec<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct DoctorConfigExclusionRiskReport {
@@ -346,7 +328,6 @@ pub(crate) struct DoctorConfigExclusionRiskReport {
     pub(crate) auto_fix_available: bool,
 }
 
-
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorConfigExclusionTarget {
     pub(crate) path: PathBuf,
@@ -354,7 +335,6 @@ pub(crate) struct DoctorConfigExclusionTarget {
     pub(crate) label: &'static str,
     pub(crate) tokens: &'static [&'static str],
 }
-
 
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorConfigPatternMatch {

@@ -3,15 +3,13 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use anyhow::Result;
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn doctor_storage_probe_path(data_dir: &Path) -> PathBuf {
     for ancestor in data_dir.ancestors() {
@@ -21,7 +19,6 @@ pub(crate) fn doctor_storage_probe_path(data_dir: &Path) -> PathBuf {
     }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
-
 
 pub(crate) fn doctor_available_space(probe_path: &Path) -> io::Result<u64> {
     if let Ok(raw) = dotenvy::var(CASS_TEST_DOCTOR_STORAGE_AVAILABLE_BYTES) {
@@ -35,14 +32,12 @@ pub(crate) fn doctor_available_space(probe_path: &Path) -> io::Result<u64> {
     fs2::available_space(probe_path)
 }
 
-
 pub(crate) fn doctor_asset_class_name(asset_class: DoctorAssetClass) -> String {
     serde_json::to_value(asset_class)
         .ok()
         .and_then(|value| value.as_str().map(ToOwned::to_owned))
         .unwrap_or_else(|| format!("{asset_class:?}"))
 }
-
 
 pub(crate) fn doctor_storage_relative_components(relative_path: &Path) -> Vec<String> {
     relative_path
@@ -53,7 +48,6 @@ pub(crate) fn doctor_storage_relative_components(relative_path: &Path) -> Vec<St
         })
         .collect()
 }
-
 
 /// GH#324: crash-orphaned lexical staging roots (`cass-lexical-shards.*`,
 /// `cass-lexical-merge.*`, `cass-federated-materialize-*`,
@@ -74,7 +68,6 @@ pub(crate) fn doctor_storage_component_is_lexical_staging_dir(component: &str) -
         .iter()
         .any(|prefix| component.len() > prefix.len() && component.starts_with(prefix))
 }
-
 
 pub(crate) fn doctor_classify_storage_relative_path(relative_path: &Path) -> DoctorAssetClass {
     let components = doctor_storage_relative_components(relative_path);
@@ -161,7 +154,6 @@ pub(crate) fn doctor_classify_storage_relative_path(relative_path: &Path) -> Doc
     DoctorAssetClass::Unknown
 }
 
-
 pub(crate) fn doctor_storage_breakdown_for_class(
     asset_class: DoctorAssetClass,
 ) -> DoctorStorageAssetClassBreakdown {
@@ -176,7 +168,6 @@ pub(crate) fn doctor_storage_breakdown_for_class(
         example_paths: Vec::new(),
     }
 }
-
 
 pub(crate) fn doctor_record_storage_bytes(
     bytes_by_class: &mut BTreeMap<String, DoctorStorageAssetClassBreakdown>,
@@ -196,7 +187,6 @@ pub(crate) fn doctor_record_storage_bytes(
             .push(relative_path.display().to_string());
     }
 }
-
 
 pub(crate) fn doctor_collect_storage_bytes_by_class(
     data_dir: &Path,
@@ -253,7 +243,6 @@ pub(crate) fn doctor_collect_storage_bytes_by_class(
     (bytes_by_class, warnings)
 }
 
-
 pub(crate) fn doctor_storage_pressure_action(
     low_disk_risk: &str,
     reclaimable_derived_bytes: u64,
@@ -274,7 +263,6 @@ pub(crate) fn doctor_storage_pressure_action(
         "No immediate storage-pressure action is needed.".to_string()
     }
 }
-
 
 pub(crate) fn build_doctor_storage_pressure_report(
     data_dir: &Path,
@@ -409,8 +397,10 @@ pub(crate) fn build_doctor_storage_pressure_report(
     }
 }
 
-
-pub(crate) fn collect_doctor_storage_pressure(data_dir: &Path, db_path: &Path) -> DoctorStoragePressureReport {
+pub(crate) fn collect_doctor_storage_pressure(
+    data_dir: &Path,
+    db_path: &Path,
+) -> DoctorStoragePressureReport {
     let probe_path = doctor_storage_probe_path(data_dir);
     let used_test_override = dotenvy::var(CASS_TEST_DOCTOR_STORAGE_AVAILABLE_BYTES).is_ok();
     let available_space = doctor_available_space(&probe_path);
@@ -423,7 +413,6 @@ pub(crate) fn collect_doctor_storage_pressure(data_dir: &Path, db_path: &Path) -
         full_rebuild_readiness,
     )
 }
-
 
 /// GH#442: the answer to the predicate `cass index --full` refuses on.
 ///
@@ -495,7 +484,6 @@ pub(crate) struct DoctorFullRebuildReadinessReport {
     pub(crate) notes: Vec<String>,
 }
 
-
 pub(crate) fn collect_doctor_full_rebuild_readiness(
     data_dir: &Path,
     db_path: &Path,
@@ -515,7 +503,6 @@ pub(crate) fn collect_doctor_full_rebuild_readiness(
         !crate::indexer::index_disk_headroom_check_disabled(),
     )
 }
-
 
 pub(crate) fn build_doctor_full_rebuild_readiness(
     projection: crate::indexer::FullRebuildHeadroomProjection,

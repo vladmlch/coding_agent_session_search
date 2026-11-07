@@ -5,13 +5,11 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,7 +30,6 @@ pub(crate) enum DoctorRepairMode {
     EmergencyForce,
 }
 
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DoctorApprovalRequirement {
@@ -43,7 +40,6 @@ pub(crate) enum DoctorApprovalRequirement {
     RehearsalReceipt,
     Refused,
 }
-
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -56,7 +52,6 @@ pub(crate) enum DoctorRepairOutcomeKind {
     Blocked,
     Failed,
 }
-
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -78,7 +73,6 @@ pub(crate) enum DoctorOperationOutcomeKind {
     RequiresManualReview,
 }
 
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum DoctorExitCodeKind {
@@ -90,7 +84,6 @@ pub(crate) enum DoctorExitCodeKind {
     RepairFailure,
 }
 
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DoctorRepairRetrySafety {
@@ -100,7 +93,6 @@ pub(crate) enum DoctorRepairRetrySafety {
     RetryAfterInspection,
     DoNotRetryWithoutReview,
 }
-
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DoctorRepairModePolicy {
@@ -116,7 +108,6 @@ pub(crate) struct DoctorRepairModePolicy {
     pub(crate) notes: &'static str,
 }
 
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DoctorOperationOutcomePolicy {
     pub(crate) kind: DoctorOperationOutcomeKind,
@@ -130,7 +121,6 @@ pub(crate) struct DoctorOperationOutcomePolicy {
     pub(crate) artifact_manifest_path: Option<&'static str>,
     pub(crate) exit_code_kind: DoctorExitCodeKind,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorOperationOutcomeReport {
@@ -146,7 +136,6 @@ pub(crate) struct DoctorOperationOutcomeReport {
     pub(crate) exit_code_kind: DoctorExitCodeKind,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorOperationOutcomePolicyReport {
     pub(crate) kind: DoctorOperationOutcomeKind,
@@ -160,7 +149,6 @@ pub(crate) struct DoctorOperationOutcomePolicyReport {
     pub(crate) artifact_manifest_path: Option<&'static str>,
     pub(crate) exit_code_kind: DoctorExitCodeKind,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRepairModePolicyReport {
@@ -176,14 +164,12 @@ pub(crate) struct DoctorRepairModePolicyReport {
     pub(crate) notes: &'static str,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRepairLegacyAliasReport {
     pub(crate) invocation: &'static str,
     pub(crate) mode: DoctorRepairMode,
     pub(crate) notes: &'static str,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRepairContractReport {
@@ -200,7 +186,6 @@ pub(crate) struct DoctorRepairContractReport {
     pub(crate) mode_policies: Vec<DoctorRepairModePolicyReport>,
     pub(crate) legacy_aliases: Vec<DoctorRepairLegacyAliasReport>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorRepairReceipt {
@@ -239,11 +224,9 @@ pub(crate) struct DoctorRepairReceipt {
     pub(crate) blocked_reasons: Vec<String>,
 }
 
-
 pub(crate) const DOCTOR_REPAIR_FAILURE_MARKER_SCHEMA_VERSION: u32 = 1;
 
 pub(crate) const DOCTOR_REPAIR_FAILURE_MARKER_KIND: &str = "cass_doctor_repair_failure_marker_v1";
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DoctorRepairFailureMarkerArtifact {
@@ -252,7 +235,6 @@ pub(crate) struct DoctorRepairFailureMarkerArtifact {
     pub(crate) path: String,
     pub(crate) redacted_path: String,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DoctorRepairFailureMarker {
@@ -279,7 +261,6 @@ pub(crate) struct DoctorRepairFailureMarker {
     pub(crate) operation_outcome_kind: String,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRepairFailureMarkerReport {
     pub(crate) schema_version: u32,
@@ -299,7 +280,6 @@ pub(crate) struct DoctorRepairFailureMarkerReport {
     pub(crate) corrupt_reason: Option<String>,
 }
 
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DoctorActionStatus {
@@ -312,7 +292,6 @@ pub(crate) enum DoctorActionStatus {
     Refused,
 }
 
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DoctorArtifactChecksumStatus {
@@ -322,7 +301,6 @@ pub(crate) enum DoctorArtifactChecksumStatus {
     Mismatched,
     Missing,
 }
-
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -334,7 +312,6 @@ pub(crate) enum DoctorDriftDetectionStatus {
     MissingArtifact,
     ManifestMismatch,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorPlanReceiptSchemaReport {
@@ -352,7 +329,6 @@ pub(crate) struct DoctorPlanReceiptSchemaReport {
     pub(crate) tamper_evidence_scope: &'static str,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorVerificationMatrixEntry {
     pub(crate) scenario_id: &'static str,
@@ -365,7 +341,6 @@ pub(crate) struct DoctorVerificationMatrixEntry {
     pub(crate) archive_preservation_assertion: &'static str,
     pub(crate) notes: &'static str,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorVerificationContractReport {
@@ -381,7 +356,6 @@ pub(crate) struct DoctorVerificationContractReport {
     pub(crate) matrix: Vec<DoctorVerificationMatrixEntry>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorCoverageSnapshot {
     pub(crate) generation_count: usize,
@@ -391,7 +365,6 @@ pub(crate) struct DoctorCoverageSnapshot {
     pub(crate) artifact_count: usize,
     pub(crate) covered_asset_classes: Vec<DoctorAssetClass>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorSafetyGate {
@@ -405,7 +378,6 @@ pub(crate) struct DoctorSafetyGate {
     pub(crate) passed: bool,
     pub(crate) blocked_reasons: Vec<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorArtifact {
@@ -421,7 +393,6 @@ pub(crate) struct DoctorArtifact {
     pub(crate) actual_content_blake3: Option<String>,
     pub(crate) checksum_status: DoctorArtifactChecksumStatus,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorAction {
@@ -447,7 +418,6 @@ pub(crate) struct DoctorAction {
     pub(crate) artifacts: Vec<DoctorArtifact>,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorEvent {
     pub(crate) schema_version: u32,
@@ -467,7 +437,6 @@ pub(crate) struct DoctorEvent {
     pub(crate) artifact_ids: Vec<String>,
 }
 
-
 pub(crate) struct DoctorEventDraft {
     pub(crate) operation_id: String,
     pub(crate) action_id: Option<String>,
@@ -483,7 +452,6 @@ pub(crate) struct DoctorEventDraft {
     pub(crate) artifact_ids: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorEventLogMetadata {
     pub(crate) path: Option<String>,
@@ -493,7 +461,6 @@ pub(crate) struct DoctorEventLogMetadata {
     pub(crate) event_count: usize,
     pub(crate) events: Vec<DoctorEvent>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorPostRepairProbeSuiteReport {
@@ -513,7 +480,6 @@ pub(crate) struct DoctorPostRepairProbeSuiteReport {
     pub(crate) probes: Vec<DoctorPostRepairProbeReport>,
     pub(crate) warnings: Vec<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorPostRepairProbeReport {
@@ -537,7 +503,6 @@ pub(crate) struct DoctorPostRepairProbeReport {
     pub(crate) steps: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorForensicBundleArtifact {
     pub(crate) artifact_kind: String,
@@ -552,7 +517,6 @@ pub(crate) struct DoctorForensicBundleArtifact {
     pub(crate) checksum_blake3: Option<String>,
     pub(crate) error: Option<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorForensicBundleMetadata {
@@ -574,7 +538,6 @@ pub(crate) struct DoctorForensicBundleMetadata {
     pub(crate) artifacts: Vec<DoctorForensicBundleArtifact>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorArtifactManifest {
     pub(crate) schema_version: u32,
@@ -583,7 +546,6 @@ pub(crate) struct DoctorArtifactManifest {
     pub(crate) drift_detection_status: DoctorDriftDetectionStatus,
     pub(crate) artifacts: Vec<DoctorArtifact>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorPlan {
@@ -607,7 +569,6 @@ pub(crate) struct DoctorPlan {
     pub(crate) remaining_risk: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRepairPlanActionPreview {
     pub(crate) action_kind: String,
@@ -618,7 +579,6 @@ pub(crate) struct DoctorRepairPlanActionPreview {
     pub(crate) planned_bytes: u64,
     pub(crate) safety_notes: Vec<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRepairPlanPreviewReport {
@@ -650,7 +610,6 @@ pub(crate) struct DoctorRepairPlanPreviewReport {
     pub(crate) never_prunes_source_evidence: bool,
 }
 
-
 pub(crate) const DOCTOR_REPAIR_ACTION_PROMOTE_RECONSTRUCT_CANDIDATE: &str =
     "promote_reconstruct_candidate_archive_bundle";
 
@@ -659,7 +618,6 @@ pub(crate) const DOCTOR_REPAIR_ACTION_REBUILD_FROM_PROMOTED_CANDIDATE: &str =
 
 pub(crate) const DOCTOR_REPAIR_ACTION_REBUILD_FROM_ARCHIVE_DB: &str =
     "rebuild_derived_lexical_index_from_archive_db";
-
 
 #[cfg(test)]
 pub(crate) const DOCTOR_REPAIR_ALL_MODES: &[DoctorRepairMode] = &[
@@ -677,7 +635,6 @@ pub(crate) const DOCTOR_REPAIR_ALL_MODES: &[DoctorRepairMode] = &[
     DoctorRepairMode::SafeAutoRun,
     DoctorRepairMode::EmergencyForce,
 ];
-
 
 pub(crate) const DOCTOR_REPAIR_NO_MUTATION_ASSETS: &[DoctorAssetClass] = &[];
 
@@ -944,7 +901,6 @@ pub(crate) const DOCTOR_REPAIR_RECONSTRUCT_ASSETS: &[DoctorAssetClass] = &[
     DoctorAssetClass::DerivedSemanticIndex,
 ];
 
-
 pub(crate) const DOCTOR_REPAIR_READ_ONLY_FIELDS: &[&str] = &["mode", "outcome_kind"];
 
 pub(crate) const DOCTOR_REPAIR_MUTATION_FIELDS: &[&str] = &[
@@ -1059,8 +1015,8 @@ pub(crate) const DOCTOR_REPAIR_MUTATION_ABORTS: &[&str] = &[
     "verification_failed",
 ];
 
-pub(crate) const DOCTOR_REPAIR_EMERGENCY_ABORTS: &[&str] = &["always_refused_until_explicitly_implemented"];
-
+pub(crate) const DOCTOR_REPAIR_EMERGENCY_ABORTS: &[&str] =
+    &["always_refused_until_explicitly_implemented"];
 
 pub(crate) const DOCTOR_REPAIR_MODE_POLICY_TABLE: &[DoctorRepairModePolicy] = &[
     DoctorRepairModePolicy {
@@ -1221,14 +1177,12 @@ pub(crate) const DOCTOR_REPAIR_MODE_POLICY_TABLE: &[DoctorRepairModePolicy] = &[
     },
 ];
 
-
 pub(crate) fn doctor_repair_mode_policy(mode: DoctorRepairMode) -> &'static DoctorRepairModePolicy {
     DOCTOR_REPAIR_MODE_POLICY_TABLE
         .iter()
         .find(|policy| policy.mode == mode)
         .expect("doctor repair mode policy table must cover every mode")
 }
-
 
 pub(crate) fn doctor_repair_mode_allows_asset_mutation(
     mode: DoctorRepairMode,
@@ -1240,7 +1194,6 @@ pub(crate) fn doctor_repair_mode_allows_asset_mutation(
         DoctorAssetOperation::PruneReclaim,
     )
 }
-
 
 pub(crate) fn doctor_repair_mode_allows_asset_operation_mutation(
     mode: DoctorRepairMode,
@@ -1260,7 +1213,6 @@ pub(crate) fn doctor_repair_mode_allows_asset_operation_mutation(
     true
 }
 
-
 pub(crate) fn doctor_repair_mode_policy_report() -> Vec<DoctorRepairModePolicyReport> {
     DOCTOR_REPAIR_MODE_POLICY_TABLE
         .iter()
@@ -1279,7 +1231,6 @@ pub(crate) fn doctor_repair_mode_policy_report() -> Vec<DoctorRepairModePolicyRe
         .collect()
 }
 
-
 pub(crate) fn doctor_operation_outcome_policy(
     kind: DoctorOperationOutcomeKind,
 ) -> &'static DoctorOperationOutcomePolicy {
@@ -1289,8 +1240,8 @@ pub(crate) fn doctor_operation_outcome_policy(
         .expect("doctor operation outcome policy table must cover every kind")
 }
 
-
-pub(crate) fn doctor_operation_outcome_contract_report() -> Vec<DoctorOperationOutcomePolicyReport> {
+pub(crate) fn doctor_operation_outcome_contract_report() -> Vec<DoctorOperationOutcomePolicyReport>
+{
     DOCTOR_OPERATION_OUTCOME_POLICY_TABLE
         .iter()
         .map(|policy| DoctorOperationOutcomePolicyReport {
@@ -1307,7 +1258,6 @@ pub(crate) fn doctor_operation_outcome_contract_report() -> Vec<DoctorOperationO
         })
         .collect()
 }
-
 
 pub(crate) fn doctor_operation_outcome_from_policy(
     kind: DoctorOperationOutcomeKind,
@@ -1326,7 +1276,6 @@ pub(crate) fn doctor_operation_outcome_from_policy(
         exit_code_kind: policy.exit_code_kind,
     }
 }
-
 
 pub(crate) fn doctor_operation_outcome_with_details(
     kind: DoctorOperationOutcomeKind,
@@ -1347,8 +1296,9 @@ pub(crate) fn doctor_operation_outcome_with_details(
     report
 }
 
-
-pub(crate) fn doctor_operation_outcome_kind_label(kind: DoctorOperationOutcomeKind) -> &'static str {
+pub(crate) fn doctor_operation_outcome_kind_label(
+    kind: DoctorOperationOutcomeKind,
+) -> &'static str {
     match kind {
         DoctorOperationOutcomeKind::OkNoActionNeeded => "ok-no-action-needed",
         DoctorOperationOutcomeKind::OkReadOnlyDiagnosed => "ok-read-only-diagnosed",
@@ -1367,7 +1317,6 @@ pub(crate) fn doctor_operation_outcome_kind_label(kind: DoctorOperationOutcomeKi
     }
 }
 
-
 pub(crate) fn doctor_data_loss_risk_label(risk: DoctorDataLossRisk) -> &'static str {
     match risk {
         DoctorDataLossRisk::None => "none",
@@ -1379,5 +1328,5 @@ pub(crate) fn doctor_data_loss_risk_label(risk: DoctorDataLossRisk) -> &'static 
 }
 
 // -- lib-split module declarations --
-pub(crate) mod types;
 pub(crate) mod assets;
+pub(crate) mod types;

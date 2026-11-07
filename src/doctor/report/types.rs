@@ -3,13 +3,11 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorCheckReport {
@@ -28,7 +26,6 @@ pub(crate) struct DoctorCheckReport {
     pub(crate) fix_applied: bool,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DoctorSafeAutoRunDecisionKind {
@@ -38,7 +35,6 @@ pub(crate) enum DoctorSafeAutoRunDecisionKind {
     Blocked,
     ManualApprovalRequired,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorSafeAutoRunFinding {
@@ -53,14 +49,12 @@ pub(crate) struct DoctorSafeAutoRunFinding {
     pub(crate) next_exact_command: Option<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorSafeAutoRunReceiptReference {
     pub(crate) receipt_kind: String,
     pub(crate) action_id: String,
     pub(crate) status: DoctorActionStatus,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorSafeAutoRunReport {
@@ -82,7 +76,6 @@ pub(crate) struct DoctorSafeAutoRunReport {
     pub(crate) event_log_reference: String,
 }
 
-
 pub(crate) struct DoctorSafeAutoRunBuildInput<'a> {
     pub(crate) enabled: bool,
     pub(crate) check_reports: &'a [DoctorCheckReport],
@@ -94,7 +87,6 @@ pub(crate) struct DoctorSafeAutoRunBuildInput<'a> {
     pub(crate) db_messages: Option<usize>,
     pub(crate) event_log_reference: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorDerivedSemanticComponentReport {
@@ -113,7 +105,6 @@ pub(crate) struct DoctorDerivedSemanticComponentReport {
     pub(crate) present: Option<bool>,
     pub(crate) note: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorDerivedSemanticAssetReport {
@@ -147,7 +138,6 @@ pub(crate) struct DoctorDerivedSemanticAssetReport {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum DoctorIncidentRootCauseKind {
@@ -167,7 +157,6 @@ pub(crate) enum DoctorIncidentRootCauseKind {
     Unknown,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRootCauseIncident {
     pub(crate) schema_version: u32,
@@ -185,7 +174,6 @@ pub(crate) struct DoctorRootCauseIncident {
     pub(crate) redacted_evidence_paths: Vec<String>,
     pub(crate) summary: String,
 }
-
 
 impl DoctorCheckReport {
     pub(crate) fn anomaly_class_label(&self) -> String {

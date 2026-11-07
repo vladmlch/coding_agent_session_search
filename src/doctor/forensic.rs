@@ -3,21 +3,18 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
-
-
 pub(crate) fn doctor_now_ms() -> i64 {
     system_time_to_unix_ms(std::time::SystemTime::now()).unwrap_or(0)
 }
-
 
 pub(crate) fn doctor_canonical_json_value(value: serde_json::Value) -> serde_json::Value {
     match value {
@@ -37,7 +34,6 @@ pub(crate) fn doctor_canonical_json_value(value: serde_json::Value) -> serde_jso
     }
 }
 
-
 pub(crate) fn doctor_canonical_blake3(prefix: &str, value: serde_json::Value) -> String {
     let canonical = doctor_canonical_json_value(value);
     let encoded = serde_json::to_vec(&canonical).unwrap_or_default();
@@ -47,7 +43,6 @@ pub(crate) fn doctor_canonical_blake3(prefix: &str, value: serde_json::Value) ->
     hasher.update(&encoded);
     format!("{prefix}-{}", hasher.finalize().to_hex())
 }
-
 
 pub(crate) fn doctor_redacted_path(path: &str, data_dir: &Path) -> String {
     fn portable_display(path: &Path) -> String {
@@ -67,12 +62,10 @@ pub(crate) fn doctor_redacted_path(path: &str, data_dir: &Path) -> String {
         .unwrap_or_else(|| "[external]".to_string())
 }
 
-
 pub(crate) fn doctor_redacted_text(text: &str, data_dir: &Path) -> String {
     let data_dir_text = data_dir.display().to_string();
     text.replace(&data_dir_text, "[cass-data]")
 }
-
 
 pub(crate) fn doctor_forensic_bundle_uncaptured(status: &str) -> DoctorForensicBundleMetadata {
     DoctorForensicBundleMetadata {
@@ -83,8 +76,9 @@ pub(crate) fn doctor_forensic_bundle_uncaptured(status: &str) -> DoctorForensicB
     }
 }
 
-
-pub(crate) fn doctor_forensic_bundle_failed(reason: impl Into<String>) -> DoctorForensicBundleMetadata {
+pub(crate) fn doctor_forensic_bundle_failed(
+    reason: impl Into<String>,
+) -> DoctorForensicBundleMetadata {
     DoctorForensicBundleMetadata {
         status: "failed".to_string(),
         sidecar_complete: false,
@@ -94,11 +88,9 @@ pub(crate) fn doctor_forensic_bundle_failed(reason: impl Into<String>) -> Doctor
     }
 }
 
-
 pub(crate) fn doctor_forensic_bundle_root(data_dir: &Path) -> PathBuf {
     data_dir.join("doctor").join("forensic-bundles")
 }
-
 
 pub(crate) fn doctor_forensic_create_private_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
@@ -123,7 +115,6 @@ pub(crate) fn doctor_forensic_create_private_dir(path: &Path) -> io::Result<()> 
         std::fs::create_dir(path)
     }
 }
-
 
 pub(crate) fn doctor_forensic_create_private_dir_all(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
@@ -152,7 +143,6 @@ pub(crate) fn doctor_forensic_create_private_dir_all(path: &Path) -> io::Result<
     }
 }
 
-
 pub(crate) fn doctor_forensic_create_private_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -171,7 +161,6 @@ pub(crate) fn doctor_forensic_create_private_file(path: &Path) -> io::Result<std
     }
 }
 
-
 pub(crate) fn doctor_forensic_bundle_id(operation_id: &str, created_at_ms: i64) -> String {
     let mut safe_operation: String = operation_id
         .chars()
@@ -183,7 +172,6 @@ pub(crate) fn doctor_forensic_bundle_id(operation_id: &str, created_at_ms: i64) 
     }
     format!("{created_at_ms}-{safe_operation}")
 }
-
 
 pub(crate) fn doctor_forensic_relative_path_is_safe(relative_path: &Path) -> bool {
     let raw = relative_path.as_os_str().to_string_lossy();
@@ -197,7 +185,6 @@ pub(crate) fn doctor_forensic_relative_path_is_safe(relative_path: &Path) -> boo
             _ => false,
         })
 }
-
 
 pub(crate) fn doctor_forensic_portable_child_path(prefix: &str, child: &Path) -> Option<PathBuf> {
     if prefix.is_empty() || prefix.contains('\\') || prefix.contains(':') {
@@ -220,7 +207,6 @@ pub(crate) fn doctor_forensic_portable_child_path(prefix: &str, child: &Path) ->
     let relative = PathBuf::from(relative);
     doctor_forensic_relative_path_is_safe(&relative).then_some(relative)
 }
-
 
 pub(crate) fn doctor_portable_relative_component_is_safe(name: &std::ffi::OsStr) -> bool {
     let text = name.to_string_lossy();
@@ -268,8 +254,10 @@ pub(crate) fn doctor_portable_relative_component_is_safe(name: &std::ffi::OsStr)
     )
 }
 
-
-pub(crate) fn doctor_forensic_bundle_root_is_safe(data_dir: &Path, root: &Path) -> Result<(), String> {
+pub(crate) fn doctor_forensic_bundle_root_is_safe(
+    data_dir: &Path,
+    root: &Path,
+) -> Result<(), String> {
     let data_dir_metadata = std::fs::symlink_metadata(data_dir).map_err(|err| {
         format!(
             "cannot inspect data directory {} before forensic bundle capture: {err}",
@@ -307,13 +295,11 @@ pub(crate) fn doctor_forensic_bundle_root_is_safe(data_dir: &Path, root: &Path) 
     Ok(())
 }
 
-
 pub(crate) fn doctor_sqlite_sidecar_path(db_path: &Path, suffix: &str) -> Option<PathBuf> {
     let mut file_name = db_path.file_name()?.to_os_string();
     file_name.push(suffix);
     Some(db_path.with_file_name(file_name))
 }
-
 
 pub(crate) struct DoctorForensicCopySpec<'a> {
     pub(crate) artifact_kind: &'a str,
@@ -322,7 +308,6 @@ pub(crate) struct DoctorForensicCopySpec<'a> {
     pub(crate) required: bool,
     pub(crate) sidecar_group: Option<&'a str>,
 }
-
 
 pub(crate) fn doctor_forensic_source_artifact(
     data_dir: &Path,
@@ -343,7 +328,6 @@ pub(crate) fn doctor_forensic_source_artifact(
         error: None,
     }
 }
-
 
 pub(crate) fn doctor_forensic_generated_artifact(
     artifact_kind: &str,
@@ -366,7 +350,6 @@ pub(crate) fn doctor_forensic_generated_artifact(
     }
 }
 
-
 pub(crate) fn doctor_forensic_record_missing_artifact(
     artifacts: &mut Vec<DoctorForensicBundleArtifact>,
     data_dir: &Path,
@@ -387,7 +370,6 @@ pub(crate) fn doctor_forensic_record_missing_artifact(
         },
     ));
 }
-
 
 pub(crate) fn doctor_forensic_copy_file_artifact(
     artifacts: &mut Vec<DoctorForensicBundleArtifact>,
@@ -540,7 +522,6 @@ pub(crate) fn doctor_forensic_copy_file_artifact(
     Ok(())
 }
 
-
 pub(crate) fn doctor_forensic_write_json_artifact(
     artifacts: &mut Vec<DoctorForensicBundleArtifact>,
     bundle_dir: &Path,
@@ -611,7 +592,6 @@ pub(crate) fn doctor_forensic_write_json_artifact(
     Ok(())
 }
 
-
 pub(crate) fn doctor_forensic_safe_command_args() -> Vec<String> {
     let mut redact_next = false;
     let sensitive_terms = ["password", "passwd", "secret", "token", "apikey", "api-key"];
@@ -634,7 +614,6 @@ pub(crate) fn doctor_forensic_safe_command_args() -> Vec<String> {
         })
         .collect()
 }
-
 
 pub(crate) fn doctor_forensic_safe_env_metadata() -> serde_json::Value {
     let safe_env_keys = [
@@ -665,7 +644,6 @@ pub(crate) fn doctor_forensic_safe_env_metadata() -> serde_json::Value {
     })
 }
 
-
 pub(crate) struct DoctorForensicBundleCaptureInput<'a> {
     pub(crate) operation_id: &'a str,
     pub(crate) data_dir: &'a Path,
@@ -675,7 +653,6 @@ pub(crate) struct DoctorForensicBundleCaptureInput<'a> {
     pub(crate) quarantine_report: Option<&'a DiagQuarantineReport>,
     pub(crate) extra_file_artifacts: &'a [DoctorForensicCopySpec<'a>],
 }
-
 
 pub(crate) fn capture_doctor_forensic_bundle(
     input: DoctorForensicBundleCaptureInput<'_>,

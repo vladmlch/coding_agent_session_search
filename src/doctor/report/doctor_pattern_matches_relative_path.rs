@@ -3,15 +3,16 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
-
-
-pub(crate) fn doctor_pattern_matches_relative_path(raw_pattern: &str, relative_path: &Path) -> bool {
+pub(crate) fn doctor_pattern_matches_relative_path(
+    raw_pattern: &str,
+    relative_path: &Path,
+) -> bool {
     let mut pattern = raw_pattern.trim();
     if pattern.is_empty() || pattern.starts_with('#') {
         return false;
@@ -68,7 +69,6 @@ pub(crate) fn doctor_pattern_matches_relative_path(raw_pattern: &str, relative_p
     })
 }
 
-
 pub(crate) fn doctor_parse_exclusion_pattern_line(line: &str) -> Option<(String, bool)> {
     let trimmed = line.trim();
     if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -91,7 +91,6 @@ pub(crate) fn doctor_parse_exclusion_pattern_line(line: &str) -> Option<(String,
     }
     Some((trimmed.to_string(), false))
 }
-
 
 pub(crate) fn doctor_last_matching_exclusion_in_file(
     config_path: &Path,
@@ -117,7 +116,6 @@ pub(crate) fn doctor_last_matching_exclusion_in_file(
     last_match
 }
 
-
 pub(crate) fn doctor_existing_or_parent(path: &Path) -> PathBuf {
     for ancestor in path.ancestors() {
         if ancestor.exists() {
@@ -128,7 +126,6 @@ pub(crate) fn doctor_existing_or_parent(path: &Path) -> PathBuf {
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf()
 }
-
 
 pub(crate) fn doctor_repo_root_for_path(path: &Path) -> Option<PathBuf> {
     let start = doctor_existing_or_parent(path);
@@ -142,7 +139,6 @@ pub(crate) fn doctor_repo_root_for_path(path: &Path) -> Option<PathBuf> {
         .find(|ancestor| ancestor.join(".git").exists())
         .map(Path::to_path_buf)
 }
-
 
 pub(crate) fn doctor_gitignore_files_between(repo_root: &Path, target_path: &Path) -> Vec<PathBuf> {
     let target_parent = target_path.parent().unwrap_or(target_path);
@@ -163,8 +159,9 @@ pub(crate) fn doctor_gitignore_files_between(repo_root: &Path, target_path: &Pat
         .collect()
 }
 
-
-pub(crate) fn doctor_repo_gitignore_exclusion(target_path: &Path) -> Option<DoctorConfigPatternMatch> {
+pub(crate) fn doctor_repo_gitignore_exclusion(
+    target_path: &Path,
+) -> Option<DoctorConfigPatternMatch> {
     let repo_root = doctor_repo_root_for_path(target_path)?;
     let mut last_match = None;
     for config_path in doctor_gitignore_files_between(&repo_root, target_path) {
@@ -177,7 +174,6 @@ pub(crate) fn doctor_repo_gitignore_exclusion(target_path: &Path) -> Option<Doct
     }
     last_match.filter(|pattern_match| !pattern_match.include)
 }
-
 
 pub(crate) fn doctor_local_exclusion_config_files(data_dir: &Path) -> Vec<PathBuf> {
     [
@@ -196,7 +192,6 @@ pub(crate) fn doctor_local_exclusion_config_files(data_dir: &Path) -> Vec<PathBu
     .collect()
 }
 
-
 pub(crate) fn doctor_path_has_cache_component(path: &Path) -> bool {
     path.components().any(|component| {
         let std::path::Component::Normal(part) = component else {
@@ -211,14 +206,14 @@ pub(crate) fn doctor_path_has_cache_component(path: &Path) -> bool {
     })
 }
 
-
-pub(crate) fn doctor_config_target_recommended_action(target: &DoctorConfigExclusionTarget) -> String {
+pub(crate) fn doctor_config_target_recommended_action(
+    target: &DoctorConfigExclusionTarget,
+) -> String {
     format!(
         "Review backup, sync, and ignore configuration before trusting archival coverage for {}; remove broad exclusions or add a later include/allow rule. cass will not edit these files automatically.",
         target.label
     )
 }
-
 
 pub(crate) fn doctor_push_config_exclusion_risk(
     risks: &mut Vec<DoctorConfigExclusionRiskReport>,
@@ -244,7 +239,6 @@ pub(crate) fn doctor_push_config_exclusion_risk(
         auto_fix_available: false,
     });
 }
-
 
 pub(crate) fn doctor_scan_text_config_for_exclusion_mentions(
     risks: &mut Vec<DoctorConfigExclusionRiskReport>,
@@ -304,7 +298,6 @@ pub(crate) fn doctor_scan_text_config_for_exclusion_mentions(
         }
     }
 }
-
 
 pub(crate) fn collect_doctor_config_exclusion_risks(
     data_dir: &Path,

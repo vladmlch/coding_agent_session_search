@@ -5,13 +5,11 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,7 +39,6 @@ pub(crate) enum DoctorAssetClass {
     Unknown,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DoctorAssetSafetyClassification {
@@ -57,7 +54,6 @@ pub(crate) enum DoctorAssetSafetyClassification {
     ExternalSource,
     Unknown,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,7 +72,6 @@ pub(crate) enum DoctorAssetOperation {
     SupportBundle,
 }
 
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DoctorAssetPolicy {
     pub(crate) asset_class: DoctorAssetClass,
@@ -88,7 +83,6 @@ pub(crate) struct DoctorAssetPolicy {
     pub(crate) allowed_operations: &'static [DoctorAssetOperation],
     pub(crate) notes: &'static str,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorAssetTaxonomyEntry {
@@ -102,7 +96,6 @@ pub(crate) struct DoctorAssetTaxonomyEntry {
     pub(crate) notes: &'static str,
 }
 
-
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(crate) struct DoctorAssetSafety {
     pub(crate) asset_class: DoctorAssetClass,
@@ -112,7 +105,6 @@ pub(crate) struct DoctorAssetSafety {
     pub(crate) auto_delete_allowed: bool,
     pub(crate) safe_to_gc_allowed: bool,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -124,7 +116,6 @@ pub(crate) enum DoctorHealth {
     RepairPreviouslyFailed,
     SourceAuthorityUnsafe,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -156,7 +147,6 @@ pub(crate) enum DoctorAnomaly {
     PrivacyRedactionRequired,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum DoctorSeverity {
@@ -164,7 +154,6 @@ pub(crate) enum DoctorSeverity {
     Warn,
     Error,
 }
-
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -177,7 +166,6 @@ pub(crate) enum DoctorDataLossRisk {
     Unknown,
 }
 
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DoctorAnomalyPolicy {
     pub(crate) anomaly_class: DoctorAnomaly,
@@ -189,7 +177,6 @@ pub(crate) struct DoctorAnomalyPolicy {
     pub(crate) safe_for_auto_repair: bool,
     pub(crate) recommended_action: &'static str,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorAnomalyTaxonomyEntry {

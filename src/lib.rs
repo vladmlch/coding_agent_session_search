@@ -57919,36 +57919,36 @@ pub(crate) use crate::cli::commands::subcommand_robot_output_tests::*;
 pub(crate) use crate::cli::commands::timeline_datetime_parse_tests::*;
 // -- generated lib-split bridges --
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::policy::types::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::report::types::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::report::checks::*;
+pub(crate) use crate::doctor::forensic::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::policy::assets::*;
 #[allow(unused_imports)]
+pub(crate) use crate::doctor::policy::types::*;
+#[allow(unused_imports)]
 pub(crate) use crate::doctor::policy::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::report::human::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::forensic::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::report::inventory::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::repair_state::types::*;
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::report::storage::*;
+pub(crate) use crate::doctor::report::checks::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::report::config::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::report::derived_semantic::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::report::doctor_derived_semantic_asset_tests::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::report::doctor_path_slash_string_tests::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::report::doctor_pattern_matches_relative_path::*;
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::report::derived_semantic::*;
-#[cfg(test)]
+pub(crate) use crate::doctor::report::human::*;
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::report::doctor_derived_semantic_asset_tests::*;
+pub(crate) use crate::doctor::report::inventory::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::report::recommendations::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::report::storage::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::report::types::*;

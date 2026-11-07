@@ -3,12 +3,10 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn doctor_config_exclusion_targets(
     data_dir: &Path,
@@ -59,7 +57,6 @@ pub(crate) fn doctor_config_exclusion_targets(
         },
     ]
 }
-
 
 /// `path` with `/` separators, `.` and `..` dropped. A Windows prefix is kept
 /// (`C:`, `//server/share`; the verbatim forms render like the plain ones):

@@ -3,12 +3,10 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[cfg(test)]
 pub(crate) const DOCTOR_ASSET_ALL_OPERATIONS: &[DoctorAssetOperation] = &[
@@ -26,7 +24,6 @@ pub(crate) const DOCTOR_ASSET_ALL_OPERATIONS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::SupportBundle,
 ];
 
-
 pub(crate) const DOCTOR_ASSET_PRECIOUS_EVIDENCE_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::Read,
     DoctorAssetOperation::Backup,
@@ -37,7 +34,6 @@ pub(crate) const DOCTOR_ASSET_PRECIOUS_EVIDENCE_OPS: &[DoctorAssetOperation] = &
     DoctorAssetOperation::Export,
     DoctorAssetOperation::SupportBundle,
 ];
-
 
 pub(crate) const DOCTOR_ASSET_ARCHIVE_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::Read,
@@ -52,7 +48,6 @@ pub(crate) const DOCTOR_ASSET_ARCHIVE_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::SupportBundle,
 ];
 
-
 pub(crate) const DOCTOR_ASSET_SIDECAR_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::Read,
     DoctorAssetOperation::Backup,
@@ -62,7 +57,6 @@ pub(crate) const DOCTOR_ASSET_SIDECAR_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::Restore,
     DoctorAssetOperation::SupportBundle,
 ];
-
 
 pub(crate) const DOCTOR_ASSET_USER_STATE_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::Read,
@@ -74,7 +68,6 @@ pub(crate) const DOCTOR_ASSET_USER_STATE_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::SupportBundle,
 ];
 
-
 pub(crate) const DOCTOR_ASSET_AUDIT_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::Read,
     DoctorAssetOperation::Backup,
@@ -83,7 +76,6 @@ pub(crate) const DOCTOR_ASSET_AUDIT_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::Export,
     DoctorAssetOperation::SupportBundle,
 ];
-
 
 pub(crate) const DOCTOR_ASSET_BACKUP_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::Read,
@@ -94,7 +86,6 @@ pub(crate) const DOCTOR_ASSET_BACKUP_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::SupportBundle,
 ];
 
-
 pub(crate) const DOCTOR_ASSET_DERIVED_REBUILDABLE_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::Read,
     DoctorAssetOperation::Backup,
@@ -104,7 +95,6 @@ pub(crate) const DOCTOR_ASSET_DERIVED_REBUILDABLE_OPS: &[DoctorAssetOperation] =
     DoctorAssetOperation::Rebuild,
     DoctorAssetOperation::SupportBundle,
 ];
-
 
 pub(crate) const DOCTOR_ASSET_DERIVED_RECLAIMABLE_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::Read,
@@ -117,7 +107,6 @@ pub(crate) const DOCTOR_ASSET_DERIVED_RECLAIMABLE_OPS: &[DoctorAssetOperation] =
     DoctorAssetOperation::SupportBundle,
 ];
 
-
 pub(crate) const DOCTOR_ASSET_DIAGNOSTIC_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::Read,
     DoctorAssetOperation::Backup,
@@ -127,16 +116,13 @@ pub(crate) const DOCTOR_ASSET_DIAGNOSTIC_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::SupportBundle,
 ];
 
-
 pub(crate) const DOCTOR_ASSET_EXTERNAL_SOURCE_OPS: &[DoctorAssetOperation] = &[
     DoctorAssetOperation::Read,
     DoctorAssetOperation::Copy,
     DoctorAssetOperation::SupportBundle,
 ];
 
-
 pub(crate) const DOCTOR_ASSET_NO_OPS: &[DoctorAssetOperation] = &[];
-
 
 pub(crate) const DOCTOR_ASSET_POLICY_TABLE: &[DoctorAssetPolicy] = &[
     DoctorAssetPolicy {
@@ -371,14 +357,12 @@ pub(crate) const DOCTOR_ASSET_POLICY_TABLE: &[DoctorAssetPolicy] = &[
     },
 ];
 
-
 pub(crate) fn doctor_asset_policy(asset_class: DoctorAssetClass) -> &'static DoctorAssetPolicy {
     DOCTOR_ASSET_POLICY_TABLE
         .iter()
         .find(|policy| policy.asset_class == asset_class)
         .expect("doctor asset policy table must cover every class")
 }
-
 
 pub(crate) fn doctor_asset_safety(asset_class: DoctorAssetClass) -> DoctorAssetSafety {
     let policy = doctor_asset_policy(asset_class);
@@ -392,7 +376,6 @@ pub(crate) fn doctor_asset_safety(asset_class: DoctorAssetClass) -> DoctorAssetS
     }
 }
 
-
 pub(crate) fn doctor_asset_allows_operation(
     asset_class: DoctorAssetClass,
     operation: DoctorAssetOperation,
@@ -402,15 +385,16 @@ pub(crate) fn doctor_asset_allows_operation(
         .contains(&operation)
 }
 
-
-pub(crate) fn doctor_asset_safe_to_gc(asset_class: DoctorAssetClass, candidate_safe_to_gc: bool) -> bool {
+pub(crate) fn doctor_asset_safe_to_gc(
+    asset_class: DoctorAssetClass,
+    candidate_safe_to_gc: bool,
+) -> bool {
     let policy = doctor_asset_policy(asset_class);
     candidate_safe_to_gc
         && policy.safe_to_gc_allowed
         && policy.auto_delete_allowed
         && doctor_asset_allows_operation(asset_class, DoctorAssetOperation::PruneReclaim)
 }
-
 
 pub(crate) fn doctor_asset_taxonomy_report() -> Vec<DoctorAssetTaxonomyEntry> {
     DOCTOR_ASSET_POLICY_TABLE
@@ -427,7 +411,6 @@ pub(crate) fn doctor_asset_taxonomy_report() -> Vec<DoctorAssetTaxonomyEntry> {
         })
         .collect()
 }
-
 
 pub(crate) fn doctor_asset_class_for_cleanup_disposition(
     disposition: crate::indexer::lexical_generation::LexicalCleanupDisposition,

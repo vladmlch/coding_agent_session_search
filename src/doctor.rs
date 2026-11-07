@@ -1556,7 +1556,7 @@ mod tests {
 }
 
 // -- lib-split module declarations --
-pub(crate) mod policy;
-pub(crate) mod report;
 pub(crate) mod forensic;
+pub(crate) mod policy;
 pub(crate) mod repair_state;
+pub(crate) mod report;

@@ -2,12 +2,9 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 pub(crate) fn print_doctor_human_line(wrap: WrapConfig, line: impl AsRef<str>) {
     println!("{}", apply_wrap(line.as_ref(), wrap));
 }
-
 
 pub(crate) fn doctor_human_highest_incident_risk(
     incidents: &[DoctorRootCauseIncident],
@@ -19,7 +16,6 @@ pub(crate) fn doctor_human_highest_incident_risk(
         .max_by_key(|risk| doctor_data_loss_risk_rank(*risk))
         .unwrap_or(DoctorDataLossRisk::None)
 }
-
 
 pub(crate) fn doctor_human_semantic_fallback_summary(
     derived_semantic_assets: &DoctorDerivedSemanticAssetReport,
@@ -44,7 +40,6 @@ pub(crate) fn doctor_human_semantic_fallback_summary(
     ))
 }
 
-
 pub(crate) struct DoctorHumanRiskSummaryInput<'a> {
     pub(crate) wrap: WrapConfig,
     pub(crate) doctor_status: &'a str,
@@ -59,7 +54,6 @@ pub(crate) struct DoctorHumanRiskSummaryInput<'a> {
     pub(crate) operation_outcome: &'a DoctorOperationOutcomeReport,
     pub(crate) not_initialized: bool,
 }
-
 
 pub(crate) fn print_doctor_human_risk_summary(input: DoctorHumanRiskSummaryInput<'_>) {
     use colored::Colorize;
@@ -159,8 +153,10 @@ pub(crate) fn print_doctor_human_risk_summary(input: DoctorHumanRiskSummaryInput
     }
 }
 
-
-pub(crate) fn print_doctor_operation_outcome_human(outcome: &DoctorOperationOutcomeReport, wrap: WrapConfig) {
+pub(crate) fn print_doctor_operation_outcome_human(
+    outcome: &DoctorOperationOutcomeReport,
+    wrap: WrapConfig,
+) {
     use colored::Colorize;
 
     println!();
@@ -196,7 +192,6 @@ pub(crate) fn print_doctor_operation_outcome_human(outcome: &DoctorOperationOutc
     }
 }
 
-
 pub(crate) fn doctor_plan_receipt_schema_report() -> DoctorPlanReceiptSchemaReport {
     DoctorPlanReceiptSchemaReport {
         plan_schema_version: 1,
@@ -213,7 +208,6 @@ pub(crate) fn doctor_plan_receipt_schema_report() -> DoctorPlanReceiptSchemaRepo
         tamper_evidence_scope: "plan fingerprints, artifact manifests, event logs, and forensic bundles",
     }
 }
-
 
 pub(crate) fn doctor_verification_contract_report() -> DoctorVerificationContractReport {
     DoctorVerificationContractReport {
@@ -384,7 +378,6 @@ pub(crate) fn doctor_verification_contract_report() -> DoctorVerificationContrac
         ],
     }
 }
-
 
 pub(crate) fn doctor_repair_contract_report() -> DoctorRepairContractReport {
     DoctorRepairContractReport {

@@ -3,13 +3,11 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorSourceInventoryDbRow {
@@ -20,7 +18,6 @@ pub(crate) struct DoctorSourceInventoryDbRow {
     pub(crate) origin_kind: Option<String>,
     pub(crate) conversation_count: usize,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorSourceInventoryReport {
@@ -41,7 +38,6 @@ pub(crate) struct DoctorSourceInventoryReport {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorProviderSourceInventory {
     pub(crate) provider: String,
@@ -57,20 +53,17 @@ pub(crate) struct DoctorProviderSourceInventory {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct DoctorProviderPruneRisk {
     pub(crate) level: &'static str,
     pub(crate) note: &'static str,
 }
 
-
 impl Default for DoctorProviderPruneRisk {
     fn default() -> Self {
         doctor_provider_prune_risk("unknown")
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorSourceIdentityInventory {
@@ -85,7 +78,6 @@ pub(crate) struct DoctorSourceIdentityInventory {
     pub(crate) unknown_mapping_count: usize,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorDetectedProviderRoot {
     pub(crate) provider: String,
@@ -94,7 +86,6 @@ pub(crate) struct DoctorDetectedProviderRoot {
     pub(crate) redacted_path: String,
     pub(crate) exists: bool,
 }
-
 
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorRawMirrorBackfillCandidate {
@@ -108,13 +99,11 @@ pub(crate) struct DoctorRawMirrorBackfillCandidate {
     pub(crate) message_count: usize,
 }
 
-
 /// Maximum number of per-record doctor details emitted by default on robot
 /// surfaces. The full collections remain in memory for coverage/risk decisions;
 /// only the serialized projection is capped. `--verbose` removes this output
 /// cap for operators who explicitly need the complete evidence listing.
 pub(crate) const DOCTOR_STRUCTURED_DETAIL_DEFAULT_LIMIT: usize = 64;
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorRawMirrorBackfillReport {
@@ -143,7 +132,6 @@ pub(crate) struct DoctorRawMirrorBackfillReport {
     pub(crate) warnings: Vec<String>,
     pub(crate) notes: Vec<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorRawMirrorBackfillReceipt {
@@ -178,7 +166,6 @@ pub(crate) struct DoctorRawMirrorBackfillReceipt {
     pub(crate) warnings: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorRawMirrorBackfillSourceStatSnapshot {
     pub(crate) exists: bool,
@@ -188,7 +175,6 @@ pub(crate) struct DoctorRawMirrorBackfillSourceStatSnapshot {
     pub(crate) content_blake3: Option<String>,
     pub(crate) stat_error: Option<String>,
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub(crate) struct DoctorCandidateLiveInventory {
@@ -205,7 +191,6 @@ pub(crate) struct DoctorCandidateLiveInventory {
     pub(crate) index_size_bytes: u64,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorCandidateArtifact {
     pub(crate) artifact_kind: String,
@@ -218,7 +203,6 @@ pub(crate) struct DoctorCandidateArtifact {
     pub(crate) checksum_blake3: Option<String>,
     pub(crate) checksum_status: DoctorArtifactChecksumStatus,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorCandidateManifest {
@@ -252,7 +236,6 @@ pub(crate) struct DoctorCandidateManifest {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorCandidateCoverageSnapshot {
     pub(crate) coverage_source: String,
@@ -263,7 +246,6 @@ pub(crate) struct DoctorCandidateCoverageSnapshot {
     pub(crate) missing_current_source_count: usize,
     pub(crate) confidence_tier: String,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorCandidateSummary {
@@ -285,7 +267,6 @@ pub(crate) struct DoctorCandidateSummary {
     pub(crate) evidence: Vec<String>,
     pub(crate) next_action: String,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorCandidateBuildReport {
@@ -321,7 +302,6 @@ pub(crate) struct DoctorCandidateBuildReport {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorCandidateStagingReport {
     pub(crate) schema_version: u32,
@@ -341,7 +321,6 @@ pub(crate) struct DoctorCandidateStagingReport {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorCandidatePromotionArtifact {
     pub(crate) artifact_kind: String,
@@ -357,7 +336,6 @@ pub(crate) struct DoctorCandidatePromotionArtifact {
     pub(crate) copied_to_backup: bool,
     pub(crate) promoted_to_live: bool,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorCandidatePromotionReport {
@@ -414,7 +392,6 @@ pub(crate) struct DoctorCandidatePromotionReport {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorRawMirrorExistingEvidence {
     pub(crate) manifest_id: String,
@@ -429,7 +406,6 @@ pub(crate) struct DoctorRawMirrorExistingEvidence {
     pub(crate) source_mtime_ms: Option<i64>,
     pub(crate) db_linked: bool,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorCoverageSummary {
@@ -462,7 +438,6 @@ pub(crate) struct DoctorCoverageSummary {
     pub(crate) recommended_action: String,
     pub(crate) notes: Vec<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorCoverageComparisonGateReport {
@@ -501,7 +476,6 @@ pub(crate) struct DoctorCoverageComparisonGateReport {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorSoleCopyWarning {
     pub(crate) stable_warning_id: String,
@@ -519,7 +493,6 @@ pub(crate) struct DoctorSoleCopyWarning {
     pub(crate) reason: String,
     pub(crate) recommended_action: String,
 }
-
 
 pub(crate) fn bounded_doctor_structured_details(
     raw_mirror_backfill: &mut DoctorRawMirrorBackfillReport,
@@ -559,7 +532,6 @@ pub(crate) fn bounded_doctor_structured_details(
     })
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorCoverageRiskSummary {
     pub(crate) schema_version: u32,
@@ -579,7 +551,6 @@ pub(crate) struct DoctorCoverageRiskSummary {
     pub(crate) recommended_action: String,
 }
 
-
 #[derive(Debug, Default)]
 pub(crate) struct DoctorProviderInventoryBuilder {
     pub(crate) indexed_conversation_count: usize,
@@ -589,7 +560,6 @@ pub(crate) struct DoctorProviderInventoryBuilder {
     pub(crate) local_source_count: usize,
     pub(crate) detected_roots: Vec<DoctorDetectedProviderRoot>,
 }
-
 
 #[derive(Debug, Default)]
 pub(crate) struct DoctorSourceIdentityInventoryBuilder {
@@ -602,7 +572,6 @@ pub(crate) struct DoctorSourceIdentityInventoryBuilder {
     pub(crate) missing_current_source_count: usize,
     pub(crate) unknown_mapping_count: usize,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -618,7 +587,6 @@ pub(crate) enum DoctorSourceAuthorityKind {
     SupportBundle,
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DoctorSourceAuthorityDecision {
@@ -627,7 +595,6 @@ pub(crate) enum DoctorSourceAuthorityDecision {
     Promotable,
     Refused,
 }
-
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DoctorSourceAuthorityPolicy {
@@ -639,7 +606,6 @@ pub(crate) struct DoctorSourceAuthorityPolicy {
     pub(crate) notes: &'static str,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorSourceAuthorityMatrixEntry {
     pub(crate) authority: DoctorSourceAuthorityKind,
@@ -649,7 +615,6 @@ pub(crate) struct DoctorSourceAuthorityMatrixEntry {
     pub(crate) decision_when_valid: DoctorSourceAuthorityDecision,
     pub(crate) notes: &'static str,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorSourceAuthorityCandidate {
@@ -663,7 +628,6 @@ pub(crate) struct DoctorSourceAuthorityCandidate {
     pub(crate) evidence: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorSourceAuthorityCoverageDelta {
     pub(crate) archive_conversation_count: usize,
@@ -676,7 +640,6 @@ pub(crate) struct DoctorSourceAuthorityCoverageDelta {
     pub(crate) raw_mirror_links_minus_archive: i64,
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorSourceAuthorityFreshnessDelta {
     pub(crate) archive_db_modified_at_ms: Option<i64>,
@@ -685,7 +648,6 @@ pub(crate) struct DoctorSourceAuthorityFreshnessDelta {
     pub(crate) raw_mirror_capture_minus_archive_db_ms: Option<i64>,
     pub(crate) freshness_state: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorSourceAuthorityChecksumEvidence {
@@ -699,7 +661,6 @@ pub(crate) struct DoctorSourceAuthorityChecksumEvidence {
     pub(crate) raw_mirror_invalid_manifest_count: usize,
     pub(crate) summary_status: DoctorArtifactChecksumStatus,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorSourceAuthorityReport {
