@@ -34,6 +34,7 @@ sources = [
   "src/cli/commands/run_onboarding_interactive_wizard.rs",
   "src/cli/commands/sessions_context.rs",
   "src/cli/commands/view/role_to_export_string.rs",
+  "src/cli/commands/capabilities_introspect/capabilitiesresponse.rs",
 ]
 patterns = ["kind_str", "CliErrorKind::"]
 note = "error-kind scan: CliErrorKind literals, kind_str mapping, golden envelope"
@@ -73,6 +74,7 @@ sources = [
   "src/cli/commands/status_health/run_health.rs",
   "src/cli/commands/sessions_context.rs",
   "src/cli/commands/view/role_to_export_string.rs",
+  "src/cli/commands/capabilities_introspect/capabilitiesresponse.rs",
   "README.md",
   "AGENTS.md",
 ]

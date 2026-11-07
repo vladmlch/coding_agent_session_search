@@ -2,6 +2,7 @@
 
 // -- lib-split module declarations --
 pub(crate) mod analytics;
+pub mod capabilities_introspect;
 #[cfg(test)]
 pub(crate) mod chatgpt_import_file_stem_tests;
 #[cfg(test)]

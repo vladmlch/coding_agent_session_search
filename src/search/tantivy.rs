@@ -2498,6 +2498,13 @@ impl TantivyIndex {
     /// `published` marks must be re-materialized alongside `pending` ones.
     /// Returns `(sessions_converged, documents_upserted)` so the rebuild's
     /// published-doc accounting binds exactly what ships.
+    ///
+    /// The documents of many sessions go to the writer in one bounded upsert
+    /// (the prebuilt batch limits). A resumed terminal converges onto a
+    /// candidate whose commit already holds these documents, so every upsert
+    /// that replaces one publishes a successor and validates every segment;
+    /// one upsert per session made that pass quadratic in the session count
+    /// (hours on a 6,484-session archive, versus minutes from scratch).
     pub fn converge_all_search_region_docs(
         &mut self,
         db: &impl crate::viewer_extensions::facts::FactsDb,
@@ -2505,9 +2512,48 @@ impl TantivyIndex {
     ) -> Result<(usize, usize)> {
         let sessions =
             crate::viewer_extensions::search_regions::marked_region_doc_sessions(db, limit)?;
+        if sessions.is_empty() {
+            return Ok((0, 0));
+        }
+        // Task 8: the first staged work on this writer captures the
+        // coverage floor its eventual commit will certify.
+        self.capture_publication_floor(db)?;
+        let max_docs = tantivy_prebuilt_add_batch_max_messages();
+        let max_chars = tantivy_add_batch_max_chars();
+        let mut batch: Vec<FsCassDocument> = Vec::new();
+        let mut batch_stamps = Vec::new();
+        let mut batch_chars = 0_usize;
         let mut docs = 0_usize;
-        for conversation_id in &sessions {
-            docs += self.stage_search_region_docs(db, *conversation_id)?;
+        for (position, &conversation_id) in sessions.iter().enumerate() {
+            // Same idempotence as `stage_search_region_docs`: a session
+            // already staged in this writer generation is not re-upserted.
+            if !self.staged_region_doc_sessions.contains(&conversation_id)
+                && let Some((session_docs, stamp)) =
+                    crate::viewer_extensions::search_regions::region_doc_stage(db, conversation_id)?
+            {
+                docs += session_docs.len();
+                batch_chars = session_docs.iter().fold(batch_chars, |sum, doc| {
+                    sum.saturating_add(doc.content.len())
+                });
+                batch.extend(session_docs);
+                batch_stamps.push(stamp);
+            }
+            let last = position + 1 == sessions.len();
+            if !batch_stamps.is_empty()
+                && (last || batch.len() >= max_docs || batch_chars >= max_chars)
+            {
+                self.inner
+                    .upsert_cass_documents(&batch)
+                    .context("upserting search-region documents")?;
+                // Stamps queue only once their documents are staged.
+                for stamp in batch_stamps.drain(..) {
+                    self.staged_region_doc_sessions
+                        .insert(stamp.conversation_id);
+                    self.pending_region_doc_stamps.push(stamp);
+                }
+                batch.clear();
+                batch_chars = 0;
+            }
         }
         Ok((sessions.len(), docs))
     }

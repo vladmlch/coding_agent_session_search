@@ -216,6 +216,12 @@ const SOURCES: &[(&str, &str)] = &[
         "src/cli/commands/view/role_to_export_string.rs",
         include_str!("../src/cli/commands/view/role_to_export_string.rs"),
     ),
+    // lib-split 2e: capabilities region carries one CliError
+    // construction site.
+    (
+        "src/cli/commands/capabilities_introspect/capabilitiesresponse.rs",
+        include_str!("../src/cli/commands/capabilities_introspect/capabilitiesresponse.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed
