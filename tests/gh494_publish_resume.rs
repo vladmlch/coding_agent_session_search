@@ -114,10 +114,35 @@ fn plant_eof_checkpoint(index: &Path) {
 }
 
 fn assert_certified_and_searches_are_read_only(home: &Path, data_dir: &Path, index: &Path) {
+    // Fixture-derived accounting: each seeded session contributes exactly 2
+    // canonical message documents and 1 persisted search-region document.
+    // The Task-5 contract records indexed_docs as the physical total
+    // (canonical + region); the canonical share is the difference.
+    const CANONICAL_DOCS: usize = SESSIONS * 2;
+    const REGION_DOCS: usize = SESSIONS;
+    const TOTAL_DOCS: usize = CANONICAL_DOCS + REGION_DOCS;
     let checkpoint = read_json(&index.join(CHECKPOINT));
     assert_eq!(checkpoint["completed"], true, "{checkpoint}");
     assert_eq!(checkpoint["pending"], Value::Null, "{checkpoint}");
-    assert_eq!(checkpoint["indexed_docs"], SESSIONS * 2, "{checkpoint}");
+    assert_eq!(
+        checkpoint["indexed_region_docs"], REGION_DOCS,
+        "{checkpoint}"
+    );
+    assert_eq!(checkpoint["indexed_docs"], TOTAL_DOCS, "{checkpoint}");
+    assert_eq!(
+        checkpoint["indexed_docs"].as_u64().unwrap()
+            - checkpoint["indexed_region_docs"].as_u64().unwrap(),
+        CANONICAL_DOCS as u64,
+        "indexed_docs - indexed_region_docs must be the canonical share: {checkpoint}"
+    );
+    assert_eq!(
+        checkpoint["db"]["total_conversations"], SESSIONS,
+        "db.total_conversations pins the canonical session input: {checkpoint}"
+    );
+    assert_eq!(
+        checkpoint["db"]["total_messages"], CANONICAL_DOCS,
+        "db.total_messages pins the canonical message input: {checkpoint}"
+    );
     assert!(
         checkpoint["db"]["storage_fingerprint"]
             .as_str()
@@ -127,7 +152,15 @@ fn assert_certified_and_searches_are_read_only(home: &Path, data_dir: &Path, ind
     let generation = read_json(&index.join(GENERATION));
     assert_ne!(generation["generation_id"], OLD_GENERATION_ID);
     assert_eq!(generation["publish_state"], "published");
-    assert_eq!(generation["indexed_doc_count"], SESSIONS * 2);
+    assert_eq!(generation["indexed_doc_count"], TOTAL_DOCS as u64);
+    assert_eq!(
+        generation["message_count"], CANONICAL_DOCS as u64,
+        "generation message_count pins canonical messages"
+    );
+    assert_eq!(
+        generation["conversation_count"], SESSIONS as u64,
+        "generation conversation_count pins canonical sessions"
+    );
     let manifest_before = std::fs::read(index.join("MANIFEST")).unwrap();
     let checkpoint_before = std::fs::read(index.join(CHECKPOINT)).unwrap();
     let generation_before = std::fs::read(index.join(GENERATION)).unwrap();

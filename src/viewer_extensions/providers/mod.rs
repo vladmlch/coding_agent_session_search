@@ -389,6 +389,10 @@ fn argument_path(arguments: Option<&Value>) -> Option<String> {
 pub(crate) struct ToolCollector {
     pub calls: BTreeMap<String, Vec<RecordedCall>>,
     pub results: BTreeMap<String, Vec<RecordedResult>>,
+    /// Scopes an unpaired call marks `tool_result_missing` partial. The
+    /// default is text-bearing loss (the result record is missing from
+    /// storage); claude_code narrows it to `tools` only.
+    result_missing_scopes: &'static [&'static str],
 }
 
 impl ToolCollector {
@@ -396,7 +400,18 @@ impl ToolCollector {
         Self {
             calls: BTreeMap::new(),
             results: BTreeMap::new(),
+            result_missing_scopes: &["tools", "text_inventory"],
         }
+    }
+
+    /// claude_code only: its connector drops `tool_result` content with no
+    /// `text` part (ToolSearch `tool_reference` results, Read `image`
+    /// results), so an unpaired call means the result carried no text —
+    /// not that session text was lost. `tool_result_missing` then keeps
+    /// `tools` partial but leaves the text inventory complete.
+    pub fn unpaired_results_carry_no_text(mut self) -> Self {
+        self.result_missing_scopes = &["tools"];
+        self
     }
 
     pub fn call(&mut self, call: RecordedCall) {
@@ -489,11 +504,7 @@ impl ToolCollector {
                 None
             };
             if results.is_empty() {
-                coverage.mark(
-                    &["tools", "text_inventory"],
-                    "tool_result_missing",
-                    "partial",
-                );
+                coverage.mark(self.result_missing_scopes, "tool_result_missing", "partial");
             }
             let exit_code = result.and_then(|r| r.exit_code);
             let is_error = result.and_then(|r| r.is_error);

@@ -2,3 +2,4 @@
 
 // -- lib-split module declarations --
 pub mod commands;
+pub mod paths;

@@ -222,6 +222,36 @@ const SOURCES: &[(&str, &str)] = &[
         "src/cli/commands/capabilities_introspect/capabilitiesresponse.rs",
         include_str!("../src/cli/commands/capabilities_introspect/capabilitiesresponse.rs"),
     ),
+    // lib-split 2f: index/paths/resume/export owners carry the moved
+    // CliError construction sites (58 occurrences across 7 files).
+    (
+        "src/cli/commands/index/run_lexical_reconcile_cli.rs",
+        include_str!("../src/cli/commands/index/run_lexical_reconcile_cli.rs"),
+    ),
+    (
+        "src/cli/paths/session_paths.rs",
+        include_str!("../src/cli/paths/session_paths.rs"),
+    ),
+    (
+        "src/cli/commands/resume.rs",
+        include_str!("../src/cli/commands/resume.rs"),
+    ),
+    (
+        "src/cli/commands/export/indexed_export_cli_error.rs",
+        include_str!("../src/cli/commands/export/indexed_export_cli_error.rs"),
+    ),
+    (
+        "src/cli/commands/export_html.rs",
+        include_str!("../src/cli/commands/export_html.rs"),
+    ),
+    (
+        "src/cli/commands/expand.rs",
+        include_str!("../src/cli/commands/expand.rs"),
+    ),
+    (
+        "src/cli/commands/timeline.rs",
+        include_str!("../src/cli/commands/timeline.rs"),
+    ),
 ];
 
 /// Extract the integer from every `code: N,` line that is immediately followed
