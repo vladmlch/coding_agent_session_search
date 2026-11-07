@@ -5800,18 +5800,19 @@ fn ingest_removal_drops_extension_rows_and_receipt() -> Result<()> {
     Ok(())
 }
 
-/// Interrupted publication: a crash after the pending receipt commits but
-/// before the generation transaction lands leaves a durable `pending`
-/// receipt and NO rows — never a falsely complete archive. The explicit
-/// resumable backfill converges it to `complete` with no loss or
-/// duplication.
+/// Interrupted publication: the receipt rides the generation transaction,
+/// so a crash before that commit leaves the pre-attempt state — NO receipt
+/// and NO rows, never a falsely complete archive (nothing claims coverage
+/// the rows do not have). The explicit resumable backfill converges it to
+/// `complete` with no loss or duplication.
 #[test]
-fn ingest_interrupted_publication_leaves_pending_and_backfill_completes() -> Result<()> {
+fn ingest_interrupted_publication_leaves_no_false_state_and_backfill_completes() -> Result<()> {
     let fixture = ingest_fixture()?;
     seed_codex_rollout(&fixture, "gen-codex-5", "crash mid publication")?;
 
-    // Crash injection: pending receipt committed, generation transaction
-    // never attempted (process "dies" between the two adjacent commits).
+    // Crash injection: the process "dies" before the generation transaction
+    // commits — with the receipt folded in, that means nothing durable was
+    // written this attempt.
     run_cass_index(&fixture, &[("CASS_TEST_VIEWER_GENERATION_CRASH", "1")])?;
     run_init_extensions(&fixture)?;
 
@@ -5823,16 +5824,14 @@ fn ingest_interrupted_publication_leaves_pending_and_backfill_completes() -> Res
         "an interrupted publication must leave no partial rows: \
          {facts_n}/{projection_n}/{steps_n}"
     );
-    let receipt = ingest_receipt(&conn, conversation_id)?.expect("crash receipt");
     ensure!(
-        receipt["state"] == "pending",
-        "interrupted publication must leave a pending receipt: {receipt}"
+        ingest_receipt(&conn, conversation_id)?.is_none(),
+        "a crash before the generation commit must leave NO receipt — \
+         the receipt only becomes durable with the rows it certifies"
     );
     ensure!(
-        facts::list_incomplete_ingest_receipts(&conn)?
-            .iter()
-            .any(|receipt| receipt.conversation_id == conversation_id),
-        "the pending receipt must surface in the incomplete-receipt set"
+        facts::list_incomplete_ingest_receipts(&conn)?.is_empty(),
+        "a receipt-less crash must not surface as an incomplete receipt"
     );
     drop(conn);
 

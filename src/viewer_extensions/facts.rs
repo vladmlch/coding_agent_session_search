@@ -50,12 +50,15 @@ pub const RECEIPT_FAILED: &str = "failed";
 
 /// Durable per-session publication receipt persisted in `viewer_meta`.
 ///
-/// Lifecycle: the ingest orchestrator commits `pending` BEFORE the
-/// generation transaction so a crash mid-publication is visible rather
-/// than silent; `complete` is written INSIDE the generation transaction
-/// (the receipt can never claim coverage the rows do not have); `failed`
-/// is committed afterwards with the exact error. `attempts` counts
-/// pending marks so repeated failures are visible to operators.
+/// Lifecycle: the ingest orchestrator writes `complete` INSIDE the
+/// generation transaction — the receipt becomes durable with the rows it
+/// certifies and can never claim coverage they do not have, at a cost of
+/// ONE durable commit per published conversation. A crash before that
+/// commit leaves the pre-attempt state (no receipt, or the prior
+/// receipt — possibly a `complete` at an older revision, honest for
+/// that revision); the next ingest's revision-keyed skip check and the
+/// backfill lane's full conversation scan both repair it. `failed` is
+/// committed after the rollback with the exact error.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct IngestReceipt {
     pub conversation_id: i64,
@@ -68,7 +71,10 @@ pub struct IngestReceipt {
     pub projection_version: i64,
     /// Exact failure reason for `failed`; `null` otherwise.
     pub reason: Option<String>,
-    /// Number of `pending` marks written for this conversation.
+    /// Number of publication attempts for this conversation that reached a
+    /// durable verdict (`complete` or `failed`). A hard crash before the
+    /// generation commit leaves no trace in this count — the repair story
+    /// is revision-keyed, not attempts-keyed.
     pub attempts: i64,
     pub updated_at_ms: i64,
 }

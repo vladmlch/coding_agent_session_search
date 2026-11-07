@@ -39134,8 +39134,9 @@ pub mod persist {
                 let outcome = franken.insert_conversation_tree(agent_id, workspace_id, internal)?;
                 // One coherent extension generation (facts + structural
                 // projection + durable viewer_meta receipt) rides the same
-                // ingest pass — pending → one transaction → complete, or a
-                // durable failed mark the backfill lane reconciles.
+                // ingest pass — one transaction, receipt and rows land
+                // together, or a durable failed mark the backfill lane
+                // reconciles.
                 crate::viewer_extensions::projection::publish_ingest_generation_best_effort(
                     franken.raw(),
                     internal,
@@ -40027,8 +40028,8 @@ pub mod persist {
                 writer.insert_conversation_tree(agent_id, workspace_id, &internal_conv)?;
             // One coherent extension generation (facts + structural
             // projection + durable viewer_meta receipt) in the same ingest
-            // pass — pending → one transaction → complete, or a durable
-            // failed mark the backfill lane reconciles.
+            // pass — one transaction, receipt and rows land together, or
+            // a durable failed mark the backfill lane reconciles.
             crate::viewer_extensions::projection::publish_ingest_generation_best_effort(
                 writer.raw(),
                 &internal_conv,
@@ -40896,10 +40897,10 @@ pub mod persist {
                 }
 
                 // One coherent extension generation per conversation rides
-                // the same ingest pass — pending → one transaction →
-                // complete — each with its durable viewer_meta receipt so
-                // a failure names the reason instead of silently skipping
-                // the lane. Idempotent on the receipt's
+                // the same ingest pass — one transaction whose commit
+                // makes rows and receipt durable together, so a failure
+                // names the reason instead of silently skipping the lane.
+                // Idempotent on the receipt's
                 // (source_revision, extractor_version, projection_version).
                 crate::viewer_extensions::projection::publish_ingest_generations_batch_best_effort(
                     writer.raw(),
@@ -41936,6 +41937,489 @@ pub mod persist {
                 crate::viewer_extensions::search_regions::DOCS_PUBLISHED
             );
             assert_eq!(mark_revision, after.source_revision);
+        }
+
+        // -------------------------------------------------------------------
+        // Publication durable-commit budget + crash-point protocol
+        // (scan-perf §4 fix 3, option (a): the PENDING receipt rides the
+        // generation transaction). The commit counter counts the
+        // publication lane's durable-commit calls: standalone receipt
+        // writes on the bare connection plus the generation transaction
+        // commit. The probe guards are thread-local, so parallel tests
+        // never inherit each other's injections.
+        // -------------------------------------------------------------------
+
+        use crate::viewer_extensions::projection::GenerationPublishOutcome;
+
+        struct CrashProbeGuard;
+        impl CrashProbeGuard {
+            fn arm() -> Self {
+                crate::viewer_extensions::projection::test_set_generation_crash_probe(true);
+                CrashProbeGuard
+            }
+        }
+        impl Drop for CrashProbeGuard {
+            fn drop(&mut self) {
+                crate::viewer_extensions::projection::test_set_generation_crash_probe(false);
+            }
+        }
+
+        struct FailProbeGuard;
+        impl FailProbeGuard {
+            fn arm() -> Self {
+                crate::viewer_extensions::projection::test_set_generation_fail_probe(true);
+                FailProbeGuard
+            }
+        }
+        impl Drop for FailProbeGuard {
+            fn drop(&mut self) {
+                crate::viewer_extensions::projection::test_set_generation_fail_probe(false);
+            }
+        }
+
+        /// Distinct-identity two-message session for the commit-budget and
+        /// crash-point tests (`region_reingest_session`'s shape, seeded
+        /// `external_id` so several conversations can coexist in one db).
+        fn budget_session(dir: &std::path::Path, id: i64, answer: &str) -> NormalizedConversation {
+            let mut session = region_reingest_session(dir, answer);
+            session.external_id = Some(format!("budget-{id}"));
+            session
+        }
+
+        /// Ensure the session's agent and return its id (one upsert).
+        fn ensure_cli_agent(storage: &FrankenStorage, slug: &str) -> i64 {
+            storage
+                .ensure_agent(&crate::model::types::Agent {
+                    id: None,
+                    slug: slug.into(),
+                    name: slug.into(),
+                    version: None,
+                    kind: crate::model::types::AgentKind::Cli,
+                })
+                .unwrap()
+        }
+
+        /// Commit one canonical conversation tree and hand back the internal
+        /// model + canonical id the ingest hook would hold post-commit, for
+        /// direct `publish_ingest_generation` calls.
+        fn insert_for_publication(
+            storage: &FrankenStorage,
+            agent_id: i64,
+            conv: &NormalizedConversation,
+        ) -> (Conversation, i64) {
+            let internal = map_to_internal(conv);
+            let outcome = storage
+                .insert_conversation_tree(agent_id, None, &internal)
+                .unwrap();
+            (internal, outcome.conversation_id)
+        }
+
+        fn publication_commit_calls() -> u64 {
+            crate::viewer_extensions::projection::test_publication_commit_calls()
+        }
+
+        fn reset_publication_commit_calls() {
+            crate::viewer_extensions::projection::test_reset_publication_commit_calls();
+        }
+
+        fn receipt_of(
+            storage: &FrankenStorage,
+            conversation_id: i64,
+        ) -> Option<crate::viewer_extensions::facts::IngestReceipt> {
+            crate::viewer_extensions::facts::ingest_receipt_for(storage.raw(), conversation_id)
+                .unwrap()
+        }
+
+        fn facts_rows_at(storage: &FrankenStorage, conversation_id: i64) -> (i64, Option<i64>) {
+            // (row count, source_revision of the single row when present)
+            let rows = storage
+                .raw()
+                .query(&format!(
+                    "SELECT COUNT(*), MAX(source_revision) FROM viewer_session_facts \
+                     WHERE conversation_id = {conversation_id}"
+                ))
+                .unwrap();
+            (
+                rows[0].get_typed::<i64>(0).unwrap(),
+                rows[0].get_typed::<Option<i64>>(1).unwrap(),
+            )
+        }
+
+        /// A fresh publication must cost exactly ONE durable commit — the
+        /// generation transaction, with the PENDING receipt folded into it —
+        /// and an unchanged re-publication must cost none (the skip path never
+        /// writes).
+        #[test]
+        fn fresh_publication_costs_one_durable_commit_and_skip_costs_none() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("budget.db"));
+            let agent_id = ensure_cli_agent(&storage, "claude_code");
+            let (internal, conversation_id) = insert_for_publication(
+                &storage,
+                agent_id,
+                &budget_session(dir.path(), 1, "budgeted answer"),
+            );
+
+            reset_publication_commit_calls();
+            let outcome = crate::viewer_extensions::projection::publish_ingest_generation(
+                storage.raw(),
+                &internal,
+                conversation_id,
+            )
+            .unwrap();
+            assert_eq!(outcome, GenerationPublishOutcome::Published);
+            assert_eq!(
+                publication_commit_calls(),
+                1,
+                "a fresh publication must issue exactly one durable commit: \
+                 the generation transaction (the PENDING receipt rides it)"
+            );
+
+            reset_publication_commit_calls();
+            let outcome = crate::viewer_extensions::projection::publish_ingest_generation(
+                storage.raw(),
+                &internal,
+                conversation_id,
+            )
+            .unwrap();
+            assert_eq!(outcome, GenerationPublishOutcome::SkippedUnchanged);
+            assert_eq!(
+                publication_commit_calls(),
+                0,
+                "an unchanged session must republish nothing — zero durable commits"
+            );
+        }
+
+        /// Crash point: a kill before the generation transaction commits (the
+        /// only remaining pre-complete crash window after the PENDING fold)
+        /// leaves NO receipt and NO rows — never a false complete — and costs
+        /// zero durable commits. The resumable backfill's full conversation
+        /// scan (its repair authority for receipt-less sessions) converges it.
+        #[test]
+        fn crashed_first_publication_leaves_no_receipt_and_backfill_converges() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("crash-first.db"));
+            let agent_id = ensure_cli_agent(&storage, "claude_code");
+            let (internal, conversation_id) = insert_for_publication(
+                &storage,
+                agent_id,
+                &budget_session(dir.path(), 2, "crash before the generation commit"),
+            );
+
+            {
+                let _probe = CrashProbeGuard::arm();
+                reset_publication_commit_calls();
+                let outcome = crate::viewer_extensions::projection::publish_ingest_generation(
+                    storage.raw(),
+                    &internal,
+                    conversation_id,
+                )
+                .unwrap();
+                assert_eq!(outcome, GenerationPublishOutcome::Interrupted);
+                assert_eq!(
+                    publication_commit_calls(),
+                    0,
+                    "a crash before the generation commit must not leave any \
+                     durable commit behind"
+                );
+            }
+
+            // Durable state: no receipt, no rows — an interrupted first
+            // publication is indistinguishable from "never attempted", which
+            // is exactly the state the backfill scan reconciles.
+            assert!(
+                receipt_of(&storage, conversation_id).is_none(),
+                "an interrupted first publication must leave no receipt"
+            );
+            let (facts_rows, _) = facts_rows_at(&storage, conversation_id);
+            assert_eq!(facts_rows, 0, "no partial rows may survive the crash");
+
+            // Repair: converge through the explicit resumable backfill.
+            crate::viewer_extensions::schema::ensure_schema(storage.raw()).unwrap();
+            let stats = crate::viewer_extensions::backfill::backfill_viewer_extensions(
+                storage.raw(),
+                &crate::viewer_extensions::backfill::BackfillOptions::default(),
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(stats.conversations_scanned, 1);
+            assert_eq!(stats.facts_published, 1, "the backfill must publish it");
+            assert_eq!(stats.failures, 0);
+            let receipt = receipt_of(&storage, conversation_id).expect("receipt after backfill");
+            assert_eq!(receipt.state, "complete", "{receipt:?}");
+            let (facts_rows, revision) = facts_rows_at(&storage, conversation_id);
+            assert_eq!(facts_rows, 1);
+            assert_eq!(revision, Some(receipt.source_revision));
+        }
+
+        /// Crash point during a RE-publication: the canonical row already
+        /// moved to a new revision, and the crash leaves the prior
+        /// `complete(R1)` receipt in place. That state is honest (the receipt
+        /// certifies R1 and R1's rows exist) but must never mask the moved
+        /// canonical row: the resume path's skip check is revision-keyed, so
+        /// a plain re-publish repairs it — never a false skip.
+        #[test]
+        fn crashed_republish_keeps_prior_complete_honest_and_republish_repairs() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("crash-republish.db"));
+            let agent_id = ensure_cli_agent(&storage, "claude_code");
+            let (mut internal, conversation_id) = insert_for_publication(
+                &storage,
+                agent_id,
+                &budget_session(dir.path(), 3, "first answer"),
+            );
+            crate::viewer_extensions::projection::publish_ingest_generation(
+                storage.raw(),
+                &internal,
+                conversation_id,
+            )
+            .unwrap();
+            let first = receipt_of(&storage, conversation_id).expect("first receipt");
+            assert_eq!(first.state, "complete");
+
+            // The canonical row moves to a new revision (the real update
+            // path: same conversation, changed message payload).
+            storage
+                .raw()
+                .execute_with_params(
+                    "UPDATE messages SET content = ?1 \
+                     WHERE conversation_id = ?2 AND idx = 1",
+                    &[
+                        SqliteValue::Text("second answer".into()),
+                        SqliteValue::Integer(conversation_id),
+                    ],
+                )
+                .unwrap();
+            internal.messages[1].content = "second answer".into();
+
+            {
+                let _probe = CrashProbeGuard::arm();
+                let outcome = crate::viewer_extensions::projection::publish_ingest_generation(
+                    storage.raw(),
+                    &internal,
+                    conversation_id,
+                )
+                .unwrap();
+                assert_eq!(outcome, GenerationPublishOutcome::Interrupted);
+            }
+
+            // The durable state is the prior generation's: complete at R1 with
+            // its rows — honest for R1, claiming nothing about R2.
+            let stale = receipt_of(&storage, conversation_id).expect("stale receipt");
+            assert_eq!(stale.state, "complete", "{stale:?}");
+            assert_eq!(stale.source_revision, first.source_revision);
+            let (facts_rows, revision) = facts_rows_at(&storage, conversation_id);
+            assert_eq!(facts_rows, 1);
+            assert_eq!(revision, Some(first.source_revision));
+
+            // Repair (resume): the revision-keyed skip check must NOT skip —
+            // the stale complete cannot stand in for the moved canonical row.
+            let outcome = crate::viewer_extensions::projection::publish_ingest_generation(
+                storage.raw(),
+                &internal,
+                conversation_id,
+            )
+            .unwrap();
+            assert_eq!(
+                outcome,
+                GenerationPublishOutcome::Published,
+                "a stale complete at an older revision must never skip"
+            );
+            let after = receipt_of(&storage, conversation_id).expect("receipt after repair");
+            assert_eq!(after.state, "complete");
+            assert_ne!(after.source_revision, first.source_revision);
+            let (facts_rows, revision) = facts_rows_at(&storage, conversation_id);
+            assert_eq!(facts_rows, 1);
+            assert_eq!(revision, Some(after.source_revision));
+        }
+
+        /// Crash point during a RE-publication, repaired through the
+        /// converge lane instead: the backfill's revision-keyed full scan
+        /// republishes the moved conversation even though its receipt says
+        /// `complete` (at the old revision) — a stale complete is not a skip
+        /// key for the scan either.
+        #[test]
+        fn crashed_republish_backfill_converges_stale_complete_to_new_revision() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("crash-backfill.db"));
+            let agent_id = ensure_cli_agent(&storage, "claude_code");
+            let (mut internal, conversation_id) = insert_for_publication(
+                &storage,
+                agent_id,
+                &budget_session(dir.path(), 4, "first answer"),
+            );
+            crate::viewer_extensions::projection::publish_ingest_generation(
+                storage.raw(),
+                &internal,
+                conversation_id,
+            )
+            .unwrap();
+            let first = receipt_of(&storage, conversation_id).expect("first receipt");
+            assert_eq!(first.state, "complete");
+
+            storage
+                .raw()
+                .execute_with_params(
+                    "UPDATE messages SET content = ?1 \
+                     WHERE conversation_id = ?2 AND idx = 1",
+                    &[
+                        SqliteValue::Text("second answer".into()),
+                        SqliteValue::Integer(conversation_id),
+                    ],
+                )
+                .unwrap();
+            internal.messages[1].content = "second answer".into();
+
+            {
+                let _probe = CrashProbeGuard::arm();
+                let outcome = crate::viewer_extensions::projection::publish_ingest_generation(
+                    storage.raw(),
+                    &internal,
+                    conversation_id,
+                )
+                .unwrap();
+                assert_eq!(outcome, GenerationPublishOutcome::Interrupted);
+            }
+
+            // Repair (converge): the backfill republishes at the new revision.
+            crate::viewer_extensions::schema::ensure_schema(storage.raw()).unwrap();
+            let stats = crate::viewer_extensions::backfill::backfill_viewer_extensions(
+                storage.raw(),
+                &crate::viewer_extensions::backfill::BackfillOptions::default(),
+                |_| {},
+            )
+            .unwrap();
+            assert_eq!(
+                stats.facts_published, 1,
+                "the backfill must republish the moved conversation, not skip it"
+            );
+            assert_eq!(stats.failures, 0);
+            let after = receipt_of(&storage, conversation_id).expect("receipt after backfill");
+            assert_eq!(after.state, "complete");
+            assert_ne!(after.source_revision, first.source_revision);
+            let (facts_rows, revision) = facts_rows_at(&storage, conversation_id);
+            assert_eq!(facts_rows, 1);
+            assert_eq!(revision, Some(after.source_revision));
+        }
+
+        /// Crash point inside the generation transaction (an aborting error,
+        /// not a kill): the whole generation rolls back, the durable FAILED
+        /// receipt — carrying the exact reason — is the publication lane's
+        /// ONLY durable commit, and a plain re-publish (fault cleared)
+        /// converges without residue.
+        #[test]
+        fn failed_publication_costs_exactly_one_failed_receipt_commit() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("fail-budget.db"));
+            let agent_id = ensure_cli_agent(&storage, "claude_code");
+            let (internal, conversation_id) = insert_for_publication(
+                &storage,
+                agent_id,
+                &budget_session(dir.path(), 5, "fails mid transaction"),
+            );
+
+            {
+                let _probe = FailProbeGuard::arm();
+                reset_publication_commit_calls();
+                let error = crate::viewer_extensions::projection::publish_ingest_generation(
+                    storage.raw(),
+                    &internal,
+                    conversation_id,
+                )
+                .unwrap_err();
+                assert!(
+                    format!("{error:#}").contains("CASS_TEST_VIEWER_GENERATION_FAIL"),
+                    "{error:#}"
+                );
+                assert_eq!(
+                    publication_commit_calls(),
+                    1,
+                    "a failed publication's only durable commit must be the \
+                     failed receipt — the generation rolled back"
+                );
+            }
+
+            let receipt = receipt_of(&storage, conversation_id).expect("failure receipt");
+            assert_eq!(receipt.state, "failed", "{receipt:?}");
+            assert!(
+                receipt
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("CASS_TEST_VIEWER_GENERATION_FAIL")),
+                "{receipt:?}"
+            );
+            let (facts_rows, _) = facts_rows_at(&storage, conversation_id);
+            assert_eq!(facts_rows, 0, "the rolled-back generation leaves no rows");
+
+            // Repair (resume): the failed receipt never masks a retry.
+            let outcome = crate::viewer_extensions::projection::publish_ingest_generation(
+                storage.raw(),
+                &internal,
+                conversation_id,
+            )
+            .unwrap();
+            assert_eq!(outcome, GenerationPublishOutcome::Published);
+            let after = receipt_of(&storage, conversation_id).expect("receipt after repair");
+            assert_eq!(after.state, "complete");
+            let (facts_rows, revision) = facts_rows_at(&storage, conversation_id);
+            assert_eq!(facts_rows, 1);
+            assert_eq!(revision, Some(after.source_revision));
+        }
+
+        /// Synthetic consumer-throughput bench for the ingest projection
+        /// lane (scan-perf §4 fix 3 A/B): publish N small conversations
+        /// through the same per-conversation `publish_ingest_generation`
+        /// the streaming consumer runs, on one long-lived writer under the
+        /// consumer's bulk checkpoint policy. Not part of the default suite —
+        /// run explicitly with
+        /// `cargo test --lib bench_publish_ingest_generation -- --ignored --nocapture`.
+        #[test]
+        #[ignore = "synthetic throughput bench; run with --ignored --nocapture"]
+        fn bench_publish_ingest_generation_throughput() {
+            let conversations: usize = dotenvy::var("CASS_BENCH_PUBLISH_N")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(2000);
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("bench.db"));
+            apply_index_writer_checkpoint_policy(&storage, true);
+            let agent_id = ensure_cli_agent(&storage, "claude_code");
+
+            // Untimed setup: commit the canonical rows the consumer would
+            // already have committed.
+            let mut pairs = Vec::with_capacity(conversations);
+            for id in 0..conversations as i64 {
+                let (internal, conversation_id) = insert_for_publication(
+                    &storage,
+                    agent_id,
+                    &budget_session(dir.path(), id, "bench answer"),
+                );
+                pairs.push((internal, conversation_id));
+            }
+
+            let start = std::time::Instant::now();
+            for (internal, conversation_id) in &pairs {
+                let outcome = crate::viewer_extensions::projection::publish_ingest_generation(
+                    storage.raw(),
+                    internal,
+                    *conversation_id,
+                )
+                .unwrap();
+                assert!(
+                    matches!(outcome, GenerationPublishOutcome::Published),
+                    "every bench conversation must publish: {outcome:?}"
+                );
+            }
+            let elapsed = start.elapsed();
+            let per_conv_us = elapsed.as_micros() as f64 / pairs.len() as f64;
+            println!(
+                "BENCH publish_ingest_generation N={} elapsed_ms={} conv_per_s={:.2} \
+                 per_conv_us={:.0}",
+                pairs.len(),
+                elapsed.as_millis(),
+                pairs.len() as f64 / elapsed.as_secs_f64(),
+                per_conv_us,
+            );
         }
 
         /// The rebuild lanes populate a fresh snapshot without region documents,
