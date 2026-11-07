@@ -5,10 +5,13 @@
 //! vector positions. One read transaction observes identity and messages
 //! together; it never reparses or mutates the source file or archive.
 
+use crate::cli::args_sub::RobotFormat;
+use crate::cli::commands::view::role_to_export_string::ViewWindow;
+use crate::cli::error::{CliError, CliResult};
 use crate::franken_sync::compat::{ConnectionExt, RowExt};
+use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
 use crate::robot_budget_envelope::RobotBudget;
 use crate::storage::sqlite::FrankenStorage;
-use crate::{CliError, CliErrorKind, CliResult, RobotFormat, ViewWindow};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -109,7 +112,11 @@ fn resolve_snapshot(
     budget: &RobotBudget,
 ) -> CliResult<Value> {
     check_deadline(budget)?;
-    let source_sql = crate::normalized_source_identity_sql_expr("c.source_id", "c.origin_host");
+    let source_sql =
+        crate::cli::commands::view::role_to_export_string::normalized_source_identity_sql_expr(
+            "c.source_id",
+            "c.origin_host",
+        );
     // Resolve ambiguity before reading ANY message content. Empty conversations
     // still participate, including multiple sessions stored in one provider DB.
     let sql = format!(
@@ -339,10 +346,13 @@ fn run(
     timeout_ms: Option<u64>,
 ) -> CliResult<()> {
     if let Some(source) = request.source.as_deref() {
-        crate::validate_followup_source_id(source, "canonical message lookup")?;
+        crate::cli::commands::view::role_to_export_string::validate_followup_source_id(
+            source,
+            "canonical message lookup",
+        )?;
     }
     let format = output_format
-        .or_else(crate::robot_format_from_env)
+        .or_else(crate::cli::commands::search::fieldbudgets::robot_format_from_env)
         .map(|format| {
             if matches!(format, RobotFormat::Sessions) {
                 RobotFormat::Compact
@@ -360,33 +370,37 @@ fn run(
     let budget = RobotBudget::new(budget_ms);
     // Lookup AND output projection run inside the existing read-only deadline.
     // A timeout is an error, not a successful payload with an invented target.
-    let encoded = crate::run_read_only_search_worker(budget.remaining_ms(), move || {
-        let payload = resolve(&request, expand, &budget)?;
-        check_deadline(&budget)?;
-        if let Some(format) = format {
-            let encoded = crate::encode_structured_value(payload, format)?;
-            check_deadline(&budget)?;
-            return Ok(encoded);
-        }
-        let lines = if expand { &payload } else { &payload["lines"] };
-        let mut output = format!("Archived messages in {}\n", request.path.display());
-        for message in lines.as_array().expect("message projection is an array") {
-            check_deadline(&budget)?;
-            output.push_str(&format!(
-                "{} M{} {}\n{}\n\n",
-                if message["is_target"] == true {
-                    ">>>"
-                } else {
-                    "   "
-                },
-                message["message_index"],
-                message["role"].as_str().unwrap_or("unknown"),
-                message["content"].as_str().unwrap_or_default(),
-            ));
-        }
-        check_deadline(&budget)?;
-        Ok(output)
-    });
+    let encoded =
+        crate::cli::commands::search::resolve_search_defaults::run_read_only_search_worker(
+            budget.remaining_ms(),
+            move || {
+                let payload = resolve(&request, expand, &budget)?;
+                check_deadline(&budget)?;
+                if let Some(format) = format {
+                    let encoded = crate::cli::commands::search::toon_encode_options_from_env::encode_structured_value(payload, format)?;
+                    check_deadline(&budget)?;
+                    return Ok(encoded);
+                }
+                let lines = if expand { &payload } else { &payload["lines"] };
+                let mut output = format!("Archived messages in {}\n", request.path.display());
+                for message in lines.as_array().expect("message projection is an array") {
+                    check_deadline(&budget)?;
+                    output.push_str(&format!(
+                        "{} M{} {}\n{}\n\n",
+                        if message["is_target"] == true {
+                            ">>>"
+                        } else {
+                            "   "
+                        },
+                        message["message_index"],
+                        message["role"].as_str().unwrap_or("unknown"),
+                        message["content"].as_str().unwrap_or_default(),
+                    ));
+                }
+                check_deadline(&budget)?;
+                Ok(output)
+            },
+        );
     let encoded = match encoded {
         Err(error) if error.kind == DEADLINE_EXCEEDED => None,
         result => result?,
@@ -546,8 +560,8 @@ fn resolve_physical(
                 continue;
             };
             json!({
-                "role": crate::extract_role(&record),
-                "content": crate::extract_text_content(&record),
+                "role": crate::cli::commands::expand::extract_role(&record),
+                "content": crate::cli::commands::expand::extract_text_content(&record),
             })
         } else {
             json!({"content": raw})
@@ -645,11 +659,18 @@ fn run_physical(
     timeout_ms: Option<u64>,
 ) -> CliResult<()> {
     if let Some(source) = source_id {
-        crate::validate_followup_source_id(source, "physical file lookup")?;
+        crate::cli::commands::view::role_to_export_string::validate_followup_source_id(
+            source,
+            "physical file lookup",
+        )?;
     }
-    let source = crate::canonical_followup_source_id(source_id);
+    let source =
+        crate::cli::commands::view::role_to_export_string::canonical_followup_source_id(source_id);
     if conversation_id.is_some()
-        || (source.is_some() && !crate::followup_source_is_local(source.as_deref()))
+        || (source.is_some()
+            && !crate::cli::commands::view::role_to_export_string::followup_source_is_local(
+                source.as_deref(),
+            ))
     {
         return Err(error(
             CliErrorKind::InvalidLine.kind_str(),
@@ -665,7 +686,7 @@ fn run_physical(
         )
     })?;
     let format = output_format
-        .or_else(crate::robot_format_from_env)
+        .or_else(crate::cli::commands::search::fieldbudgets::robot_format_from_env)
         .map(|format| {
             if matches!(format, RobotFormat::Sessions) {
                 RobotFormat::Compact
@@ -685,55 +706,63 @@ fn run_physical(
     let context = window.context;
     let read_finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker_read_finished = std::sync::Arc::clone(&read_finished);
-    let encoded = crate::run_read_only_search_worker(budget.remaining_ms(), move || {
-        crate::maybe_test_view_delay();
-        check_deadline(&budget)?;
-        let mut payload = resolve_physical(&request_path, line, context, expand, &budget)?;
-        worker_read_finished.store(true, std::sync::atomic::Ordering::Release);
-        crate::maybe_test_search_worker_delay("CASS_TEST_VIEW_PROJECTION_SLOW_MS");
-        check_deadline(&budget)?;
-        if !expand {
-            payload["budget"] = serde_json::to_value(
-                crate::robot_budget_envelope::BudgetBlock::from_budget(&budget, Vec::new(), None),
-            )
-            .map_err(|err| {
-                error(
-                    CliErrorKind::SerializeMessage.kind_str(),
-                    err.to_string(),
-                    "Retry this physical-file lookup.",
-                )
-            })?;
-        }
-        if let Some(format) = format {
-            let encoded = crate::encode_structured_value(payload, format)?;
-            check_deadline(&budget)?;
-            return Ok(encoded);
-        }
-        let lines = if expand { &payload } else { &payload["lines"] };
-        let mut output = format!("Physical lines in {}\n", request_path.display());
-        for entry in lines.as_array().expect("physical projection is an array") {
-            check_deadline(&budget)?;
-            let content = entry["content"].as_str().unwrap_or_default();
-            let display = if expand {
-                content.chars().take(300).collect::<String>()
-            } else {
-                content.to_string()
-            };
-            output.push_str(&format!(
-                "{} L{} {}\n{}\n\n",
-                if entry["is_target"] == true {
-                    ">>>"
-                } else {
-                    "   "
-                },
-                entry["line"],
-                entry["role"].as_str().unwrap_or_default(),
-                display,
-            ));
-        }
-        check_deadline(&budget)?;
-        Ok(output)
-    });
+    let encoded =
+        crate::cli::commands::search::resolve_search_defaults::run_read_only_search_worker(
+            budget.remaining_ms(),
+            move || {
+                crate::cli::commands::view::role_to_export_string::maybe_test_view_delay();
+                check_deadline(&budget)?;
+                let mut payload = resolve_physical(&request_path, line, context, expand, &budget)?;
+                worker_read_finished.store(true, std::sync::atomic::Ordering::Release);
+                crate::cli::commands::search::resolve_search_defaults::maybe_test_search_worker_delay("CASS_TEST_VIEW_PROJECTION_SLOW_MS");
+                check_deadline(&budget)?;
+                if !expand {
+                    payload["budget"] = serde_json::to_value(
+                        crate::robot_budget_envelope::BudgetBlock::from_budget(
+                            &budget,
+                            Vec::new(),
+                            None,
+                        ),
+                    )
+                    .map_err(|err| {
+                        error(
+                            CliErrorKind::SerializeMessage.kind_str(),
+                            err.to_string(),
+                            "Retry this physical-file lookup.",
+                        )
+                    })?;
+                }
+                if let Some(format) = format {
+                    let encoded = crate::cli::commands::search::toon_encode_options_from_env::encode_structured_value(payload, format)?;
+                    check_deadline(&budget)?;
+                    return Ok(encoded);
+                }
+                let lines = if expand { &payload } else { &payload["lines"] };
+                let mut output = format!("Physical lines in {}\n", request_path.display());
+                for entry in lines.as_array().expect("physical projection is an array") {
+                    check_deadline(&budget)?;
+                    let content = entry["content"].as_str().unwrap_or_default();
+                    let display = if expand {
+                        content.chars().take(300).collect::<String>()
+                    } else {
+                        content.to_string()
+                    };
+                    output.push_str(&format!(
+                        "{} L{} {}\n{}\n\n",
+                        if entry["is_target"] == true {
+                            ">>>"
+                        } else {
+                            "   "
+                        },
+                        entry["line"],
+                        entry["role"].as_str().unwrap_or_default(),
+                        display,
+                    ));
+                }
+                check_deadline(&budget)?;
+                Ok(output)
+            },
+        );
     let encoded = match encoded {
         Err(error) if error.kind == DEADLINE_EXCEEDED => None,
         result => result?,
@@ -747,7 +776,7 @@ fn run_physical(
         if read_finished.load(std::sync::atomic::Ordering::Acquire) {
             skipped.push("output_projection".into());
         }
-        return crate::output_bounded_view_partial(
+        return crate::cli::commands::view::role_to_export_string::output_bounded_view_partial(
             path,
             &db_override.unwrap_or_else(crate::default_db_path),
             source_id,
@@ -797,7 +826,7 @@ pub(super) fn run_view(
             );
         }
         // Unanchored browsing can render the archive; it asserts no target.
-        return crate::run_view(
+        return crate::cli::commands::view::role_to_export_string::run_view(
             path,
             db_override,
             source_id,
@@ -810,7 +839,9 @@ pub(super) fn run_view(
     let request = Request {
         path: path.to_path_buf(),
         db: db_override.unwrap_or_else(crate::default_db_path),
-        source: crate::canonical_followup_source_id(source_id),
+        source: crate::cli::commands::view::role_to_export_string::canonical_followup_source_id(
+            source_id,
+        ),
         conversation_id,
         message_index,
         context: window.context,
@@ -818,7 +849,10 @@ pub(super) fn run_view(
     // Validate before normalization so an explicitly empty source cannot become
     // an unconstrained lookup.
     if let Some(source) = source_id {
-        crate::validate_followup_source_id(source, "cass view")?;
+        crate::cli::commands::view::role_to_export_string::validate_followup_source_id(
+            source,
+            "cass view",
+        )?;
     }
     run(request, false, output_format, timeout_ms)
 }
@@ -845,7 +879,14 @@ pub(super) fn run_expand(
         if line == 0 {
             // The existing zero-line validator returns before any file/archive
             // lookup. Positive physical coordinates use the file-only reader.
-            return crate::run_expand(path, db_override, source_id, line, context, output_format);
+            return crate::cli::commands::expand::run_expand(
+                path,
+                db_override,
+                source_id,
+                line,
+                context,
+                output_format,
+            );
         }
         return run_physical(
             path,
@@ -862,13 +903,18 @@ pub(super) fn run_expand(
         );
     };
     if let Some(source) = source_id {
-        crate::validate_followup_source_id(source, "cass expand")?;
+        crate::cli::commands::view::role_to_export_string::validate_followup_source_id(
+            source,
+            "cass expand",
+        )?;
     }
     run(
         Request {
             path: path.to_path_buf(),
             db: db_override.unwrap_or_else(crate::default_db_path),
-            source: crate::canonical_followup_source_id(source_id),
+            source: crate::cli::commands::view::role_to_export_string::canonical_followup_source_id(
+                source_id,
+            ),
             conversation_id,
             message_index,
             context,

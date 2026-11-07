@@ -273,31 +273,10 @@ strip = false
 - For many simple changes: use parallel subagents
 - For subtle/complex changes: do them methodically yourself
 
-**Scoped exception — lib.rs modularization tooling.** The approved
-`src/lib.rs` split program authorizes the tooling under
-`scripts/refactor/lib_split/` (item lexer, manifest builder, test
-inventory, scan parity, stale refs, splitter). That tooling may emit
-files only per the checked-in `scripts/refactor/lib_split/manifest.toml`;
-every other no-script rule still applies to all other code.
-
-### lib.rs modularization (split program rules)
-
-- **Size budget:** no file produced from `src/lib.rs` may exceed 2000
-  lines (working target ~1800). Enforced by
-  `tests/source_file_size_budget.rs` over `src/cli/`, `src/doctor/`,
-  `src/robot_schema/`, `src/indexer/stall_watchdog.rs` and
-  `src/export/messages.rs`. `src/lib.rs` is the only temporary exception
-  and must be removed from the exception list when the shim lands.
-- **Temporary glob imports:** during the staged move, new files seeded by
-  the splitter carry `use super::*;` + `use crate::*;` plus a copy of the
-  former root `use` block, and moved non-public items are mechanically
-  promoted to `pub(crate)` (including fields). This is transitional glue
-  to keep every stage compiling; tightening visibility and pruning
-  imports is deferred cleanup, not optional polish to fix mid-move.
-- **No squashing:** commits in the split program stay one-stage-per-move
-  — never squash or rewrite them. `git bisect --first-parent` must be
-  able to bisect the split history, so stage commits land on the branch
-  directly and stay ordered.
+**History — landed split-program commits.** Commits produced by the
+`src/lib.rs` split program stay one-stage-per-move — never squash or
+rewrite them. `git bisect --first-parent` must be able to bisect the
+split history, so stage commits stay landed on their branch in order.
 
 ### No File Proliferation
 
@@ -556,8 +535,8 @@ Provides unified full-text and semantic search across all local coding agent ses
 - **Hollow generations:** readiness compares the live Quill MANIFEST document count with a completed checkpoint for the current archive/contract. Fewer than 50% reports `index.status="hollow"`, `index.hollow=true`, and `index.live_documents`; missing counts give no hollow verdict. Follow the reported `cass index` remedy: its pre-scan sparse-index repair rebuilds from SQLite. The indexer's final check refuses to certify a hollow generation (GH #457).
 - **Merge memory:** `CASS_LEXICAL_MERGE_MAX_OUTPUT_BYTES` defaults to 1 GiB and caps each planned merge-output estimate, including document-ID range overhead. An oversized singleton is left unmerged; the setting does not cap total process RSS. Zero/unparseable values keep the default (GH #456). Every planned run also holds at most 4,194,304 physical documents (`MAX_FOLD_OUTPUT_DOCS`, Quill's per-term posting limit), and `cass_quill_config` sets `tier_fanout = usize::MAX` so the engine's unbounded in-commit tier merge never runs; CASS's capped planners are the only merge authority (GH #498).
 
-- **Stale-on-read catch-up is on by default.** When `search`/`pack`/TUI launch sees a stale (>30 min), partial, or behind index, cass spawns a *detached* `cass index --background` (nice 15 / ionice idle, own process group, 5-min cooldown, honors `index-run.lock`) and returns the current results immediately. `--robot-meta` shows it under `_meta.index_freshness.auto_refresh` (`outcome`: `spawned|disabled|index_run_active|cooldown|guard_busy|spawn_failed`, plus `trigger`). It never fires for data dirs under the OS temp dir or under `TUI_HEADLESS`, so tests are unaffected. `CASS_AUTO_REFRESH=0` disables. Implementation: `src/indexer/background_refresh.rs`, hook `maybe_auto_refresh_index_after_read` in `src/lib.rs`.
-- **A missing or unusable index is rebuilt in the background, never by the search that found it.** When search needs a lexical repair it will not run inline (archive over the inline repair budget, or a robot caller facing `checkpoint_incomplete`), it spawns the same detached child with `--full` (or plain `cass index` for a small archive's checkpoint) and puts the outcome in the error hint: pid, "already rebuilding", or why no spawn happened. A rebuild run inside the search process, or an agent's own `cass index --full`, dies with the command timeout that wraps it and a large archive commits nothing before its first batch, so every retry used to start from zero and the index never converged. While a rebuild runs and no searchable generation exists, robot searches return exit 7 `index-busy` with `N of M conversations processed` at once instead of waiting `CASS_SEARCH_ACTIVE_REBUILD_WAIT_MS`. Implementation: `start_background_lexical_repair_for_search` in `src/lib.rs`.
+- **Stale-on-read catch-up is on by default.** When `search`/`pack`/TUI launch sees a stale (>30 min), partial, or behind index, cass spawns a *detached* `cass index --background` (nice 15 / ionice idle, own process group, 5-min cooldown, honors `index-run.lock`) and returns the current results immediately. `--robot-meta` shows it under `_meta.index_freshness.auto_refresh` (`outcome`: `spawned|disabled|index_run_active|cooldown|guard_busy|spawn_failed`, plus `trigger`). It never fires for data dirs under the OS temp dir or under `TUI_HEADLESS`, so tests are unaffected. `CASS_AUTO_REFRESH=0` disables. Implementation: `src/indexer/background_refresh.rs`, hook `maybe_auto_refresh_index_after_read` in `src/cli/state/state_meta_json.rs`.
+- **A missing or unusable index is rebuilt in the background, never by the search that found it.** When search needs a lexical repair it will not run inline (archive over the inline repair budget, or a robot caller facing `checkpoint_incomplete`), it spawns the same detached child with `--full` (or plain `cass index` for a small archive's checkpoint) and puts the outcome in the error hint: pid, "already rebuilding", or why no spawn happened. A rebuild run inside the search process, or an agent's own `cass index --full`, dies with the command timeout that wraps it and a large archive commits nothing before its first batch, so every retry used to start from zero and the index never converged. While a rebuild runs and no searchable generation exists, robot searches return exit 7 `index-busy` with `N of M conversations processed` at once instead of waiting `CASS_SEARCH_ACTIVE_REBUILD_WAIT_MS`. Implementation: `start_background_lexical_repair_for_search` in `src/cli/commands/search/searchlexicalselfhealdiagnosis.rs`.
 - **TUI first run:** launching the TUI with no index starts the same detached `cass index --full --background` child (same guards: never for scratch/temp data dirs or under `TUI_HEADLESS`, honors `CASS_AUTO_REFRESH`, cooldown and breaker), shows its progress in the status line, and opens search once the first generation publishes, without a restart. Implementation: `CassApp::start_first_run_index` / `poll_first_run_index` in `src/ui/app.rs`.
 - **`cass schedule install`** registers launchd LaunchAgents (macOS) / systemd user timers (Linux): incremental every 15 min, nightly full index + bounded `models backfill --scheduled` (fast/hash tier always, quality/MiniLM tier when installed; model-unavailable and index-busy exits count as skips, not failures), all at OS background priority. `cass schedule status --json` / `schedule run --job incremental|nightly [--force]` / `schedule uninstall`. Unsupported platforms get `err.kind="schedule"` with a manual recipe. Implementation: `src/schedule.rs`.
 - **Daemon timer:** `CASS_DAEMON_INDEX_INTERVAL_SECS=900` makes the resident semantic daemon spawn the same detached incremental index while it lives (`src/daemon/core.rs::spawn_periodic_index`).
@@ -584,7 +563,7 @@ Provides unified full-text and semantic search across all local coding agent ses
 - Every JSON contract surface is pinned by golden-file regression tests under `tests/golden/robot/` (JSON) and `tests/golden/robot_docs/` (plain-text docs topics). The full set: capabilities, health, status, diag, diag_quarantine, models_status, models_verify, introspect, doctor, doctor_quarantine, api_version, stats (missing-db error envelope), robot_docs topics (paths, env, exit-codes, schemas, guide, robot_help).
 - **If you add a new field or change a type**, run `UPDATE_GOLDENS=1 cargo test --test golden_robot_json --test golden_robot_docs`, review the diff via `git diff tests/golden/`, and commit both the code + golden in one change. Do not regenerate goldens without reviewing — every diff is either an intentional schema change or a bug.
 - `cass introspect --json`'s `response_schemas` is `BTreeMap`-backed so the serialized key order is alphabetical and deterministic (bead 8sl73).
-- Error envelopes use **kebab-case `err.kind`** values. For codes 0-9 the numeric code is sufficient; for codes ≥ 10 the code is ambiguous (e.g. 10 covers both `config` and `timeout`) — always branch on `err.kind`. Full taxonomy in src/lib.rs `CliError` literals + the Exit Codes table below (bead wan21).
+- Error envelopes use **kebab-case `err.kind`** values. For codes 0-9 the numeric code is sufficient; for codes ≥ 10 the code is ambiguous (e.g. 10 covers both `config` and `timeout`) — always branch on `err.kind`. Full taxonomy in src/cli/error.rs `CliError` literals + the Exit Codes table below (bead wan21).
 
 ### Project Structure
 

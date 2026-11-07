@@ -30,11 +30,13 @@
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::cli::args_sub::RobotFormat;
+use crate::cli::error::{CliError, CliResult};
+use crate::cli::paths::default_data_dir;
 use crate::storage::sqlite::{
     FrankenStorage, FtsConsistencyRepair, FtsDryRunParity, FtsShadowParity, FtsShadowParityStatus,
     RecoveryConversationRow,
 };
-use crate::{CliError, CliResult, RobotFormat, default_data_dir};
 
 /// Page size for streaming conversations during reconstruction. Keeps memory
 /// bounded on multi-GB archives (the exact failure surface from #285/#266).
@@ -1297,7 +1299,7 @@ fn inspect_leaked_pages(db_path: &Path) -> CliResult<LeakedPagesInspection> {
         // Damage can fail the open itself (a freelist entry naming a live
         // page, say). That is other damage, not a busy archive to retry.
         Err(err)
-            if crate::doctor_open_error_message_is_affirmative_corruption(&format!("{err:#}")) =>
+            if crate::doctor::probes::integrity::doctor_open_error_message_is_affirmative_corruption(&format!("{err:#}")) =>
         {
             return Ok(LeakedPagesInspection::other_damage(
                 format!("read-only open failed: {err:#}"),
@@ -1320,7 +1322,7 @@ fn inspect_leaked_pages(db_path: &Path) -> CliResult<LeakedPagesInspection> {
         });
         let (quick, full) = match checks {
             Ok(rows) => rows,
-            Err(err) if crate::doctor_open_error_message_is_affirmative_corruption(&err) => {
+            Err(err) if crate::doctor::probes::integrity::doctor_open_error_message_is_affirmative_corruption(&err) => {
                 return Ok(LeakedPagesInspection::other_damage(err, started));
             }
             Err(err) => return Err(err),
@@ -1380,7 +1382,7 @@ fn leaked_pages_inspection_json(inspection: &LeakedPagesInspection) -> serde_jso
 fn leaked_pages_bundle_components(db_path: &Path) -> Vec<(&'static str, PathBuf)> {
     let mut components = vec![("", db_path.to_path_buf())];
     for suffix in ["-wal", "-shm"] {
-        match crate::doctor_sqlite_sidecar_path(db_path, suffix) {
+        match crate::doctor::forensic::doctor_sqlite_sidecar_path(db_path, suffix) {
             Some(path) if path.is_file() => components.push((suffix, path)),
             // Without a WAL there is no SHM worth keeping.
             _ if suffix == "-wal" => break,
@@ -1403,16 +1405,18 @@ fn backup_bundle_before_leaked_pages_repair(
         .filter_map(|(_, path)| std::fs::metadata(path).ok())
         .map(|metadata| metadata.len())
         .sum();
-    let backup_root = crate::doctor_candidate_promotion_root(data_dir);
-    crate::doctor_forensic_create_private_dir_all(&backup_root).map_err(|err| {
-        io_error(
-            format!(
-                "creating the doctor backup root {}: {err}",
-                backup_root.display()
-            ),
-            None,
-        )
-    })?;
+    let backup_root = crate::doctor::candidate::build_doctor_reconstruct_candidate::doctor_candidate_promotion_root(data_dir);
+    crate::doctor::forensic::doctor_forensic_create_private_dir_all(&backup_root).map_err(
+        |err| {
+            io_error(
+                format!(
+                    "creating the doctor backup root {}: {err}",
+                    backup_root.display()
+                ),
+                None,
+            )
+        },
+    )?;
     // Keep 64 MiB spare so the backup cannot fill the disk the repair then
     // needs for its own commit.
     let available = fs2::available_space(&backup_root).map_err(|err| {
@@ -1437,7 +1441,10 @@ fn backup_bundle_before_leaked_pages_repair(
         ));
     }
 
-    let backup_id = crate::doctor_candidate_id("leaked-pages-repair", crate::doctor_now_ms());
+    let backup_id = crate::doctor::candidate::doctor_candidate_root::doctor_candidate_id(
+        "leaked-pages-repair",
+        crate::doctor::forensic::doctor_now_ms(),
+    );
     let backup_dir = backup_root.join(&backup_id).join("backup");
     let file_name = db_path
         .file_name()
@@ -1451,27 +1458,28 @@ fn backup_bundle_before_leaked_pages_repair(
             _ => "prior_live_archive_shm_backup",
         };
         let target = backup_dir.join(format!("{file_name}{suffix}"));
-        let (size_bytes, blake3) = crate::doctor_copy_regular_file_to_private_target(
-            source,
-            &target,
-            None,
-            "leaked-page repair backup",
-        )
-        .map_err(|err| {
-            io_error(
-                err,
-                Some("The archive was not modified; free space or fix permissions and retry."),
+        let (size_bytes, blake3) =
+            crate::doctor::candidate::promotion::doctor_copy_regular_file_to_private_target(
+                source,
+                &target,
+                None,
+                "leaked-page repair backup",
             )
-        })?;
+            .map_err(|err| {
+                io_error(
+                    err,
+                    Some("The archive was not modified; free space or fix permissions and retry."),
+                )
+            })?;
         artifacts.push(serde_json::json!({
             "artifact_kind": artifact_kind,
             "asset_class": "backup_bundle",
             "source_path": source.display().to_string(),
-            "redacted_source_path": crate::doctor_redacted_path(&source.display().to_string(), data_dir),
+            "redacted_source_path": crate::doctor::forensic::doctor_redacted_path(&source.display().to_string(), data_dir),
             "backup_path": target.display().to_string(),
-            "redacted_backup_path": crate::doctor_redacted_path(&target.display().to_string(), data_dir),
+            "redacted_backup_path": crate::doctor::forensic::doctor_redacted_path(&target.display().to_string(), data_dir),
             "target_path": source.display().to_string(),
-            "redacted_target_path": crate::doctor_redacted_path(&source.display().to_string(), data_dir),
+            "redacted_target_path": crate::doctor::forensic::doctor_redacted_path(&source.display().to_string(), data_dir),
             "size_bytes": size_bytes,
             "checksum_blake3": blake3,
             "copied_to_backup": true,
@@ -1481,14 +1489,14 @@ fn backup_bundle_before_leaked_pages_repair(
     let manifest_path = backup_dir.join("manifest.json");
     let manifest = serde_json::json!({
         "schema_version": 1,
-        "manifest_kind": crate::DOCTOR_LEAKED_PAGES_REPAIR_BACKUP_MANIFEST_KIND,
+        "manifest_kind": crate::doctor::backup_restore::kinds::DOCTOR_LEAKED_PAGES_REPAIR_BACKUP_MANIFEST_KIND,
         "promotion_id": &backup_id,
         "backup_dir": backup_dir.display().to_string(),
-        "redacted_backup_dir": crate::doctor_redacted_path(&backup_dir.display().to_string(), data_dir),
+        "redacted_backup_dir": crate::doctor::forensic::doctor_redacted_path(&backup_dir.display().to_string(), data_dir),
         "inspection_before": leaked_pages_inspection_json(inspection),
         "artifacts": artifacts,
     });
-    crate::doctor_write_private_json_artifact(
+    crate::doctor::candidate::promotion::doctor_write_private_json_artifact(
         &manifest_path,
         &manifest,
         "leaked-page repair backup manifest",

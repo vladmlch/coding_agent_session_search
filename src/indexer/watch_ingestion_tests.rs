@@ -1427,7 +1427,10 @@ fn gh538_watch_narrowed_root_replays_only_its_share_of_ancestor_debt() -> Result
     assert_publication_receipts(&handles, 0)?;
     let debts = load_watch_lexical_replay_debt(&handles.storage.lock().unwrap())?;
     assert_eq!(debts.len(), 1);
-    assert_eq!(debts[0].path, crate::normalize_path_identity(&parent.path));
+    assert_eq!(
+        debts[0].path,
+        crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(&parent.path)
+    );
 
     // Only an explicitly current parent can finish the remaining obligation.
     // Replaying the child again must retain its already-published identities.

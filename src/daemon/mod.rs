@@ -357,7 +357,8 @@ pub(crate) fn initialize_daemon_attestation_authority(
 pub(crate) fn daemon_socket_endpoint_fingerprint(socket_path: &Path) -> String {
     use std::os::unix::ffi::OsStrExt as _;
 
-    let normalized = crate::normalize_path_identity(socket_path);
+    let normalized =
+        crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(socket_path);
     let encoded = hex::encode(normalized.as_os_str().as_bytes());
     frankensearch::daemon_endpoint_fingerprint(&format!("uds-unix-hex:{encoded}"))
 }
@@ -370,7 +371,8 @@ pub(crate) fn daemon_socket_path_for_data_dir(data_dir: &Path) -> PathBuf {
     use sha2::{Digest as _, Sha256};
     use std::os::unix::ffi::OsStrExt as _;
 
-    let normalized = crate::normalize_path_identity(data_dir);
+    let normalized =
+        crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(data_dir);
     let mut hasher = Sha256::new();
     hasher.update(b"cass.semantic-daemon.socket.v1");
     if let Ok(user) = dotenvy::var("USER") {

@@ -14,7 +14,9 @@ Covers the preservation gates the plan requires:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import subprocess
 import sys
 import tempfile
 import tomllib
@@ -31,6 +33,74 @@ import split  # noqa: E402
 REPO = HERE.parents[2]
 SRC = REPO / "src" / "lib.rs"
 MANIFEST = HERE / "manifest.toml"
+
+# --- immutable original-monolith fixture -------------------------------------
+#
+# The live src/lib.rs is the reduced post-split remainder (334 items), and the
+# live manifest.toml has since gained stage-5 retargets. The partition /
+# coverage / anchor / body / cfg tests below therefore bind the immutable
+# pre-split inputs by full commit and blob SHA-256. A missing or diverging
+# historical object is a loud failure — never a silent fallback to the live
+# tree.
+ORIGINAL_COMMIT = "b056227964dc6db817d43d00ed2af219d6f520fe"
+ORIGINAL_SOURCE_SHA256 = (
+    "377c94a01582642007b192fd210568f055d647fd06e61f73eac66984d84fa6a0")
+ORIGINAL_MANIFEST_SHA256 = (
+    "ef0cb94d3953d00d50e435b2b57d7e32b13d1807dd283c54d6c00bfb31d27e70")
+# The unchanged emitter on the original inputs produces the 195-file pre-5
+# intermediate layout, whose not-yet-decomposed src/doctor/run.rs is a known
+# over-budget file. We bind its exact bytes, not a generic exemption.
+HISTORICAL_EMIT_COUNT = 195
+HISTORICAL_RUN_TARGET = "src/doctor/run.rs"
+HISTORICAL_RUN_SHA256 = (
+    "9a9073890a89e94c8b3d02450f65e4144b7e4db0ef97293398f9b2ba616d11d6")
+HISTORICAL_RUN_LINES = 3657
+HISTORICAL_RUN_PROBLEM = (
+    f"{HISTORICAL_RUN_TARGET}: {HISTORICAL_RUN_LINES} lines exceeds "
+    "2000 budget")
+# Plan §8 stage 5: the seven `impl DoctorRun` phase files produced by the
+# manual stage — the only admissible non-`[[file]]` retarget `to` paths.
+STAGE5_PHASE_PATHS = frozenset(
+    f"src/doctor/run/{p}.rs"
+    for p in ("preflight", "collectors", "evidence", "candidate",
+              "repair_plan", "apply", "report"))
+
+
+def _original_blob(repo_rel: str, expected_sha256: str) -> bytes:
+    """Return `repo_rel` at ORIGINAL_COMMIT with a verified SHA-256.
+
+    Raises a descriptive error if the pinned historical object is missing or
+    diverges — the fixture must fail loudly rather than read the live tree.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(REPO), "show", f"{ORIGINAL_COMMIT}:{repo_rel}"],
+            capture_output=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            f"git is unavailable to read the pinned original fixture "
+            f"{ORIGINAL_COMMIT}:{repo_rel}") from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"immutable original fixture {ORIGINAL_COMMIT}:{repo_rel} "
+            f"unreadable: {proc.stderr.decode('utf-8', 'replace').strip()}")
+    blob = proc.stdout
+    digest = hashlib.sha256(blob).hexdigest()
+    if digest != expected_sha256:
+        raise RuntimeError(
+            f"original fixture {ORIGINAL_COMMIT}:{repo_rel} sha256 {digest} "
+            f"!= expected {expected_sha256}")
+    return blob
+
+
+def _original_source() -> str:
+    return _original_blob("src/lib.rs", ORIGINAL_SOURCE_SHA256).decode("utf-8")
+
+
+def _original_manifest() -> dict:
+    text = _original_blob("scripts/refactor/lib_split/manifest.toml",
+                          ORIGINAL_MANIFEST_SHA256).decode("utf-8")
+    return tomllib.loads(text)
 
 FIXTURE = '''#![allow(dead_code)]
 // crate preamble comment
@@ -299,11 +369,18 @@ class OwnershipTests(unittest.TestCase):
 
 
 class ManifestTests(unittest.TestCase):
+    """Manifest coverage/anchor tests against the original monolith.
+
+    The manifest's `first`/`last` anchors resolve item positions in the
+    pre-split src/lib.rs, so these tests pin the immutable
+    b0562279 source + manifest pair rather than the live remainder.
+    """
+
     @classmethod
     def setUpClass(cls):
-        cls.src = SRC.read_text()
+        cls.src = _original_source()
         cls.items, _c, cls.gaps = ri.parse_items(cls.src)
-        cls.manifest = tomllib.loads(MANIFEST.read_text())
+        cls.manifest = _original_manifest()
 
     def _resolve(self, spec, pool=None):
         pool = pool if pool is not None else self.items
@@ -863,15 +940,24 @@ class SplitFixtureTests(unittest.TestCase):
 
 
 class SplitRealSourceTests(unittest.TestCase):
+    """Dry-run emission against the immutable original monolith.
+
+    The unchanged emitter on the b0562279 source + manifest reproduces the
+    195-file pre-5 intermediate layout. Its still-whole src/doctor/run.rs is
+    a known over-budget intermediate: the current checker must report that
+    exact single diagnostic and nothing else, and the run.rs bytes are bound
+    by content hash + length — no exemption is restored.
+    """
+
     @classmethod
     def setUpClass(cls):
-        cls.man = split.load_manifest(MANIFEST)
-        cls.src = SRC.read_text()
+        cls.man = _original_manifest()
+        cls.src = _original_source()
         cls.res = split.emit(cls.man, cls.src)
 
-    def test_real_source_dry_run_clean(self):
+    def test_real_source_dry_run_reports_only_historical_budget_overage(self):
         problems = split.check(self.res, self.src.encode(), self.man)
-        self.assertEqual(problems, [])
+        self.assertEqual(problems, [HISTORICAL_RUN_PROBLEM])
 
     def test_real_source_test_inventory_unchanged(self):
         inv = ti.collect(self.src)
@@ -879,9 +965,17 @@ class SplitRealSourceTests(unittest.TestCase):
         self.assertEqual(len(inv), len(set(inv)))
 
     def test_emitted_files_under_budget(self):
+        self.assertEqual(len(self.res.files), HISTORICAL_EMIT_COUNT)
         for f in self.res.files:
-            lines = b"".join(f.parts).count(b"\n") + 1
+            body = b"".join(f.parts)
+            lines = body.count(b"\n") + 1
             if f.target in split.SIZE_EXEMPTIONS:
+                continue
+            if f.target == HISTORICAL_RUN_TARGET:
+                # exact pre-5 intermediate, not an exemption
+                self.assertEqual(lines, HISTORICAL_RUN_LINES)
+                self.assertEqual(hashlib.sha256(body).hexdigest(),
+                                 HISTORICAL_RUN_SHA256)
                 continue
             self.assertLessEqual(
                 lines, 2000, f"{f.target} has {lines} lines (>2000)")
@@ -1970,8 +2064,17 @@ class ManifestNamedPathTests(unittest.TestCase):
         targets = {e["target"] for e in self.files}
         for rt in self.man.get("retarget", []):
             for p in rt.get("to", []):
+                # stage-5 manual phase outputs exist on disk but are not
+                # move-only [[file]] targets; every other `to` path must
+                # stay a real manifest target or src/lib.rs.
+                ok = (
+                    p == "src/lib.rs"
+                    or p in targets
+                    or (rt.get("stage") == "5"
+                        and p in STAGE5_PHASE_PATHS
+                        and (REPO / p).is_file()))
                 self.assertTrue(
-                    p == "src/lib.rs" or p in targets,
+                    ok,
                     f"retarget {rt['test']}: `to` path {p} not a target")
 
     def test_retargets_follow_named_paths(self):

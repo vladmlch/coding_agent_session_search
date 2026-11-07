@@ -2704,7 +2704,7 @@ cass completions bash > ~/.bash_completion.d/cass
 | `sources` | Manage local sources: add/list/remove/doctor/mappings/agents |
 | `doctor` | Diagnose and repair installation issues (safe, never deletes data) |
 
-Other subcommands (all present in the `Commands` enum in `src/lib.rs`):
+Other subcommands (all present in the `Commands` enum in `src/cli/args.rs`):
 
 | Command | Purpose |
 |---------|---------|

@@ -2888,9 +2888,10 @@ fn matching_completed_lexical_rebuild_state_status_without_fingerprint(
         return Ok(None);
     }
 
-    let normalized_db_path = crate::normalize_path_identity(db_path)
-        .to_string_lossy()
-        .into_owned();
+    let normalized_db_path =
+        crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(db_path)
+            .to_string_lossy()
+            .into_owned();
     if state.version != LEXICAL_REBUILD_STATE_VERSION
         || state.schema_hash != crate::search::tantivy::SCHEMA_HASH
         || state.db.total_conversations != total_conversations
@@ -2989,9 +2990,10 @@ fn nonresumable_pending_lexical_rebuild_state_for_db(
         return Ok(None);
     }
 
-    let normalized_db_path = crate::normalize_path_identity(db_path)
-        .to_string_lossy()
-        .into_owned();
+    let normalized_db_path =
+        crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(db_path)
+            .to_string_lossy()
+            .into_owned();
     if !lexical_rebuild_db_paths_match(&state.db.db_path, &normalized_db_path) {
         return Ok(None);
     }
@@ -3534,7 +3536,10 @@ pub(crate) fn lexical_rebuild_page_size_is_compatible(page_size: i64) -> bool {
 }
 
 fn lexical_rebuild_db_paths_match(saved: &str, current: &str) -> bool {
-    crate::path_identities_match(Path::new(saved), Path::new(current))
+    crate::cli::state::probe_state_db_strict_worker::path_identities_match(
+        Path::new(saved),
+        Path::new(current),
+    )
 }
 
 fn lexical_rebuild_db_state_matches(
@@ -9474,8 +9479,12 @@ fn sync_parent_directory(_path: &Path) -> Result<()> {
 /// against: its completed rebuild checkpoint for this database, if any.
 fn completed_lexical_checkpoint_conversations(index_path: &Path, db_path: &Path) -> Option<usize> {
     let state = load_lexical_rebuild_state(index_path).ok().flatten()?;
-    (state.completed && crate::stored_path_identity_matches(&state.db.db_path, db_path))
-        .then_some(state.db.total_conversations)
+    (state.completed
+        && crate::cli::state::probe_state_db_strict_worker::stored_path_identity_matches(
+            &state.db.db_path,
+            db_path,
+        ))
+    .then_some(state.db.total_conversations)
 }
 
 fn load_lexical_rebuild_state(index_path: &Path) -> Result<Option<LexicalRebuildState>> {
@@ -9605,7 +9614,10 @@ pub(crate) fn has_usable_lexical_publication_receipt(index_path: &Path, db_path:
             "lexical publication receipt exceeds its read budget"
         );
         let state: LexicalRebuildState = serde_json::from_slice(&bytes)?;
-        if !crate::stored_path_identity_matches(&state.db.db_path, db_path) {
+        if !crate::cli::state::probe_state_db_strict_worker::stored_path_identity_matches(
+            &state.db.db_path,
+            db_path,
+        ) {
             return Ok(false);
         }
         lexical_publication_receipt_matches_live(index_path, &state)
@@ -12100,9 +12112,10 @@ fn lexical_rebuild_db_state_with_total_conversations(
 ) -> Result<LexicalRebuildDbState> {
     let prep_profile = std::env::var_os("CASS_PREP_PROFILE").is_some();
     let normalize_started = Instant::now();
-    let normalized_db_path = crate::normalize_path_identity(db_path)
-        .to_string_lossy()
-        .into_owned();
+    let normalized_db_path =
+        crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(db_path)
+            .to_string_lossy()
+            .into_owned();
     if prep_profile {
         eprintln!(
             "CASS_PREP_PROFILE step=normalize_db_path step_ms={}",
@@ -12145,9 +12158,10 @@ fn lexical_rebuild_db_state_with_exact_totals(
     total_conversations: usize,
     total_messages: usize,
 ) -> Result<LexicalRebuildDbState> {
-    let normalized_db_path = crate::normalize_path_identity(db_path)
-        .to_string_lossy()
-        .into_owned();
+    let normalized_db_path =
+        crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(db_path)
+            .to_string_lossy()
+            .into_owned();
     Ok(lexical_rebuild_db_state_from_storage_fingerprint(
         &normalized_db_path,
         total_conversations,
@@ -12161,7 +12175,7 @@ fn deferred_lexical_rebuild_db_state(
     total_conversations: usize,
 ) -> LexicalRebuildDbState {
     LexicalRebuildDbState {
-        db_path: crate::normalize_path_identity(db_path)
+        db_path: crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(db_path)
             .to_string_lossy()
             .into_owned(),
         total_conversations,
@@ -13058,7 +13072,12 @@ pub(crate) fn load_active_lexical_rebuild_pipeline_runtime(
         return Ok(None);
     };
 
-    if state.completed || !crate::stored_path_identity_matches(&state.db.db_path, db_path) {
+    if state.completed
+        || !crate::cli::state::probe_state_db_strict_worker::stored_path_identity_matches(
+            &state.db.db_path,
+            db_path,
+        )
+    {
         return Ok(None);
     }
 
@@ -13210,7 +13229,12 @@ pub(crate) fn prime_archive_fingerprint_cache_from_completed_checkpoint(
     let Ok(Some(checkpoint)) = load_lexical_rebuild_checkpoint(index_path) else {
         return;
     };
-    if checkpoint.completed && crate::stored_path_identity_matches(&checkpoint.db_path, db_path) {
+    if checkpoint.completed
+        && crate::cli::state::probe_state_db_strict_worker::stored_path_identity_matches(
+            &checkpoint.db_path,
+            db_path,
+        )
+    {
         write_archive_fingerprint_cache_best_effort(
             db_path,
             index_path,
@@ -13349,7 +13373,12 @@ fn published_lexical_index_validated_for_current_data(index_path: &Path, db_path
             return false;
         }
     };
-    if !checkpoint.completed || !crate::stored_path_identity_matches(&checkpoint.db_path, db_path) {
+    if !checkpoint.completed
+        || !crate::cli::state::probe_state_db_strict_worker::stored_path_identity_matches(
+            &checkpoint.db_path,
+            db_path,
+        )
+    {
         return false;
     }
     match lexical_storage_fingerprint_for_db(db_path) {
@@ -13814,7 +13843,12 @@ pub(crate) fn load_lexical_rebuild_snapshot(
         return Ok(None);
     };
 
-    if state.completed || !crate::stored_path_identity_matches(&state.db.db_path, db_path) {
+    if state.completed
+        || !crate::cli::state::probe_state_db_strict_worker::stored_path_identity_matches(
+            &state.db.db_path,
+            db_path,
+        )
+    {
         return Ok(None);
     }
     let processed_conversations = state.reported_processed_conversations();
@@ -17605,7 +17639,10 @@ fn run_index_with_storage_ownership(
     // verified raw mirror, rather than to an external sqlite3 '.recover'.
     if !dotenvy::var("CASS_INDEX_ALLOW_MALFORMED_DB").is_ok_and(|v| v == "1")
         && let Some(detail) =
-            crate::bounded_canonical_db_corruption_probe(&opts.db_path, "index-preflight")
+            crate::cli::state::state_db_open_timeout::bounded_canonical_db_corruption_probe(
+                &opts.db_path,
+                "index-preflight",
+            )
     {
         return Err(canonical_archive_unhealthy_for_index_error(
             &opts.db_path,
@@ -34350,7 +34387,9 @@ fn reindex_paths_with_semantic_delta(
                 if let Some(progress) = &opts.progress {
                     progress.check_stop()?;
                 }
-                let path = crate::normalize_path_identity(&entry.key.source_path);
+                let path = crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                    &entry.key.source_path,
+                );
                 if let Some(progress) = &opts.progress {
                     progress.tick_activity();
                 }
@@ -34524,10 +34563,16 @@ fn reindex_paths_with_semantic_delta(
                 let storage = storage
                     .lock()
                     .map_err(|_| anyhow::anyhow!("storage lock poisoned"))?;
-                let selected_path = crate::normalize_path_identity(&root.path);
+                let selected_path =
+                    crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                        &root.path,
+                    );
                 for debt in pending_lexical_debt.iter().filter(|debt| {
                     debt.discovery_only
-                        && crate::normalize_path_identity(&debt.path).starts_with(&selected_path)
+                        && crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                            &debt.path,
+                        )
+                        .starts_with(&selected_path)
                 }) {
                     clear_watch_lexical_replay_debt(&storage, debt)?;
                 }
@@ -34618,7 +34663,10 @@ fn reindex_paths_with_semantic_delta(
                 && lexical_rebuild_page_size_is_compatible(pending.page_size)
                 && lexical_rebuild_db_paths_match(
                     &pending.db.db_path,
-                    &crate::normalize_path_identity(&opts.db_path).to_string_lossy(),
+                    &crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                        &opts.db_path,
+                    )
+                    .to_string_lossy(),
                 )
             {
                 // A previous metadata transaction may already have landed.
@@ -34767,7 +34815,10 @@ fn reindex_paths_with_semantic_delta(
                     // Each receipt follows all of its source's canonical and
                     // lexical commits. A failed earlier chunk cannot certify
                     // a multi-conversation source from its successful tail.
-                    let selected_path = crate::normalize_path_identity(&root.path);
+                    let selected_path =
+                        crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                            &root.path,
+                        );
                     let publication_complete = !lexical_replay_deferred
                         && quarantined_conversations == 0
                         && deferred_conversations == 0
@@ -34783,7 +34834,7 @@ fn reindex_paths_with_semantic_delta(
                             .iter()
                             .chain(std::iter::once(&current_debt))
                             .filter(|debt| {
-                                crate::normalize_path_identity(&debt.path)
+                                crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(&debt.path)
                                     .starts_with(&selected_path)
                                     && if debt.discovery_only {
                                         recovery_scan_complete
@@ -35068,7 +35119,9 @@ impl WatchLexicalReplayDebt {
         Self {
             connector: kind,
             source_id: root.origin.source_id.clone(),
-            path: crate::normalize_path_identity(&root.path),
+            path: crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                &root.path,
+            ),
             discovery_only: false,
         }
     }
@@ -35117,11 +35170,20 @@ fn watch_lexical_replay_sources(
     }
     let roots: Vec<_> = roots
         .iter()
-        .map(|(kind, root)| (kind, root, crate::normalize_path_identity(&root.path)))
+        .map(|(kind, root)| {
+            (
+                kind,
+                root,
+                crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                    &root.path,
+                ),
+            )
+        })
         .collect();
     let mut pending = BTreeSet::new();
     for debt in debts {
-        let debt_path = crate::normalize_path_identity(&debt.path);
+        let debt_path =
+            crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(&debt.path);
         for (kind, root, root_path) in &roots {
             if debt.connector == **kind
                 && debt.source_id == root.origin.source_id
@@ -35139,14 +35201,16 @@ fn watch_lexical_replay_debt_for_root(
     kind: ConnectorKind,
     root: &ScanRoot,
 ) -> Result<Vec<WatchLexicalReplayDebt>> {
-    let selected_path = crate::normalize_path_identity(&root.path);
+    let selected_path =
+        crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(&root.path);
     let mut pending = Vec::new();
     for debt in load_watch_lexical_replay_debt(storage)? {
         // Re-normalize the saved path: an older build (or another alias of the
         // same root) may have stored a different spelling, e.g. Windows' \\?\
         // form before txc9h. The debt itself is returned as stored, so clearing
         // deletes exactly the saved key.
-        let debt_path = crate::normalize_path_identity(&debt.path);
+        let debt_path =
+            crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(&debt.path);
         if debt.connector == kind
             && debt.source_id == root.origin.source_id
             && (debt_path.starts_with(&selected_path) || selected_path.starts_with(&debt_path))
@@ -35208,7 +35272,9 @@ fn promote_missing_watch_replay_paths(
                 std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
             )
         }) {
-            missing.insert(crate::normalize_path_identity(path));
+            missing.insert(
+                crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(path),
+            );
         }
     }
     if missing.is_empty() {
@@ -35226,13 +35292,23 @@ fn promote_missing_watch_replay_paths(
     let debts: Vec<_> = debts
         .into_iter()
         .map(|debt| {
-            let path = crate::normalize_path_identity(&debt.path);
+            let path = crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                &debt.path,
+            );
             (debt.connector, debt.source_id, path, debt.discovery_only)
         })
         .collect();
     let roots: Vec<_> = roots
         .iter()
-        .map(|(kind, root)| (*kind, root, crate::normalize_path_identity(&root.path)))
+        .map(|(kind, root)| {
+            (
+                *kind,
+                root,
+                crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                    &root.path,
+                ),
+            )
+        })
         .collect();
     let mut observed_roots = BTreeMap::new();
     let mut promoted = BTreeSet::new();
@@ -35383,7 +35459,8 @@ fn recover_absent_watch_roots(
         if !debts.iter().any(|debt| !debt.discovery_only) {
             continue;
         }
-        let selected_path = crate::normalize_path_identity(&root.path);
+        let selected_path =
+            crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(&root.path);
         let provider = crate::connectors::archive_provider_slug(kind.slug());
         let held = nomem_deferrals.entries.values().any(|entry| {
             if entry.next_retry_at_ms <= now_ms
@@ -35393,12 +35470,17 @@ fn recover_absent_watch_roots(
             {
                 return false;
             }
-            let path = crate::normalize_path_identity(Path::new(&entry.source_path));
-            path.starts_with(&selected_path)
-                && debts.iter().any(|debt| {
-                    !debt.discovery_only
-                        && path.starts_with(crate::normalize_path_identity(&debt.path))
-                })
+            let path = crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                Path::new(&entry.source_path),
+            );
+            path.starts_with(&selected_path) && debts.iter().any(|debt| {
+                !debt.discovery_only
+                    && path.starts_with(
+                        crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                            &debt.path,
+                        ),
+                    )
+            })
         });
         if held {
             outcome.retry_sources.insert(root.path.clone());
@@ -35488,7 +35570,8 @@ impl WatchRecoverySourceCoverage {
             if let Some(progress) = progress {
                 progress.check_stop()?;
             }
-            let normalized = crate::normalize_path_identity(path);
+            let normalized =
+                crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(path);
             fingerprints.push(Self::fingerprint(&normalized));
             if let Some(progress) = progress {
                 progress.tick_activity();
@@ -35540,7 +35623,8 @@ fn recover_absent_watch_source_publications(
     t_index: &Mutex<Option<TantivyIndex>>,
     index_path: &Path,
 ) -> Result<WatchAbsentSourceRecovery> {
-    let selected_path = crate::normalize_path_identity(&root.path);
+    let selected_path =
+        crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(&root.path);
     // (input index, effective scope, saw absent source, existing coverage,
     //  whole debt is inside this current root and may be discharged)
     let mut scopes: Vec<_> = debts
@@ -35552,7 +35636,9 @@ fn recover_absent_watch_source_publications(
                 && debt.source_id == root.origin.source_id
         })
         .filter_map(|(index, debt)| {
-            let path = crate::normalize_path_identity(&debt.path);
+            let path = crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                &debt.path,
+            );
             if path.starts_with(&selected_path) {
                 Some((index, path, false, true, true))
             } else if selected_path.starts_with(&path) {
@@ -35623,7 +35709,9 @@ fn recover_absent_watch_source_publications(
             if let Some(progress) = &opts.progress {
                 progress.check_stop()?;
             }
-            let path = crate::normalize_path_identity(Path::new(&source_path));
+            let path = crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                Path::new(&source_path),
+            );
             if !scopes
                 .iter()
                 .any(|(_, scope, _, _, _)| path.starts_with(scope))
@@ -73733,7 +73821,9 @@ c.close()
         persist_watch_lexical_replay_debt(&storage, &saved).unwrap();
         persist_watch_lexical_replay_debt(&storage, &unrelated).unwrap();
         assert!(
-            !alias.starts_with(crate::normalize_path_identity(&real)),
+            !alias.starts_with(
+                crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(&real)
+            ),
             "the alias must be a different spelling, or this test proves nothing"
         );
 
@@ -73869,7 +73959,7 @@ c.close()
         assert_eq!(parent_debt.len(), 1, "child retry must retain sibling debt");
         assert_eq!(
             parent_debt[0].path,
-            crate::normalize_path_identity(&selected)
+            crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(&selected)
         );
 
         for fault in [
@@ -76896,9 +76986,11 @@ c.close()
             storage_fingerprint: "seed:400".to_string(),
         };
         let current_db_state = LexicalRebuildDbState {
-            db_path: crate::normalize_path_identity(&db_path)
-                .to_string_lossy()
-                .into_owned(),
+            db_path: crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
+                &db_path,
+            )
+            .to_string_lossy()
+            .into_owned(),
             total_conversations: 400,
             total_messages: 800,
             storage_fingerprint: "seed:400".to_string(),
@@ -80280,7 +80372,7 @@ c.close()
             .expect("refreshed checkpoint");
         assert_eq!(
             checkpoint.db_path,
-            crate::normalize_path_identity(&db_path)
+            crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(&db_path)
                 .to_string_lossy()
                 .into_owned()
         );
