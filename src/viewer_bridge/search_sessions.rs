@@ -48,6 +48,7 @@ use super::protocol::{ListFilters, PAGE_LIMIT, RESPONSE_BYTES, refuse};
 use super::query;
 use super::revisions;
 use super::search::{ReaderSet, decode_hit, engine_filters, raw_page};
+use coding_agent_search::viewer_extensions::facts::is_source_absent_gap;
 
 // ---------------------------------------------------------------------------
 // Budgets (mirroring dsl/normalize.py + evaluate.py EvaluationBudget)
@@ -1282,6 +1283,16 @@ struct SessionCtx {
     /// Per-field coverage states (`coverage_detail_json /fields/<f>/state`
     /// of the persisted facts row, else the query-time extraction).
     coverage: HashMap<String, String>,
+    /// Per-field coverage reason codes (`coverage_detail_json
+    /// /fields/<f>/reasons`) — the evidence that decides whether an
+    /// incomplete state is text ABSENT AT THE SOURCE (owner decision
+    /// 2026-11-07: exact, never blocks strict search) or text that was
+    /// NOT READ (still blocks).
+    coverage_reasons: HashMap<String, Vec<String>>,
+    /// Every reason code this session's facts prove as text absent at the
+    /// source (sorted, deduped) — the per-item `source_text_absent`
+    /// annotation. Empty for sessions without such gaps.
+    source_text_absent: Vec<String>,
     /// `true` when the message inventory was truncated by budget.
     inventory_partial: bool,
 }
@@ -1295,6 +1306,21 @@ impl SessionCtx {
             .get(field)
             .map(String::as_str)
             .unwrap_or("unavailable")
+    }
+    fn coverage_reasons_of(&self, field: &str) -> &[String] {
+        self.coverage_reasons
+            .get(field)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+    /// `true` when the field's coverage gap is a NOT-READ gap: incomplete
+    /// coverage that is not provably text absent at the source. Such a
+    /// field can still hide a matching region, so it keeps strict
+    /// membership `Unknown`; a source-absent gap cannot (no local record
+    /// ever held the text), so it stops contributing `unseen`.
+    fn field_blocks_strict(&self, field: &str) -> bool {
+        let state = self.coverage_of(field);
+        state != "complete" && !is_source_absent_gap(state, self.coverage_reasons_of(field))
     }
 }
 
@@ -1375,6 +1401,7 @@ fn session_ctx_from_parts(
     let provider =
         identity::normalize_agent_slug(&agent_slug.unwrap_or_default()).unwrap_or_default();
     let mut coverage: HashMap<String, String> = HashMap::new();
+    let mut coverage_reasons: HashMap<String, Vec<String>> = HashMap::new();
     if let Some(detail) = fact
         .coverage_detail_json
         .as_deref()
@@ -1384,6 +1411,16 @@ fn session_ctx_from_parts(
         for (field, entry) in fields {
             if let Some(state) = entry.get("state").and_then(Value::as_str) {
                 coverage.insert(field.clone(), state.to_owned());
+            }
+            if let Some(reasons) = entry.get("reasons").and_then(Value::as_array) {
+                let parsed: Vec<String> = reasons
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect();
+                if !parsed.is_empty() {
+                    coverage_reasons.insert(field.clone(), parsed);
+                }
             }
         }
     }
@@ -1417,6 +1454,35 @@ fn session_ctx_from_parts(
             .or_insert_with(|| "complete".to_owned());
     }
 
+    // Source-absent classification (owner decision 2026-11-07): every
+    // field whose incomplete coverage is PROVEN text absent at the
+    // source — all of its reason codes are on the closed allowlist —
+    // contributes its reasons to the per-item annotation. The docs-pending
+    // overwrite above is `pending` state, which never classifies, so
+    // unconverged region documents keep blocking strict search.
+    let source_text_absent: Vec<String> = coverage
+        .iter()
+        .filter(|(field, state)| {
+            is_source_absent_gap(
+                state.as_str(),
+                coverage_reasons
+                    .get(field.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            )
+        })
+        .flat_map(|(field, _)| {
+            coverage_reasons
+                .get(field.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+                .iter()
+                .cloned()
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
     Ok(SessionCtx {
         conversation_id,
         public_id: None,
@@ -1444,6 +1510,8 @@ fn session_ctx_from_parts(
         model: conv.primary_model,
         regions: Vec::new(),
         coverage,
+        coverage_reasons,
+        source_text_absent,
         inventory_partial,
     })
 }
@@ -2043,9 +2111,10 @@ fn region_value(
 }
 
 /// `_unknown_field`: coverage decides whether a missing value is
-/// `FALSE` (complete inventory) or `UNKNOWN`.
+/// `FALSE` (complete inventory — or text provably absent at the source,
+/// which cannot record a value it never had) or `UNKNOWN`.
 fn unknown_field(session: &SessionCtx, field: &str, region: &Region) -> Truth {
-    if session.coverage_of(field) == "complete" {
+    if !session.field_blocks_strict(field) {
         return Truth::False;
     }
     if matches!(field, "tools" | "tool_exit")
@@ -2076,9 +2145,15 @@ fn collection(field: &str, op: &str, expected: &Value, session: &SessionCtx) -> 
         }
     }
     // Unseen: block inventory or the field's own coverage incomplete can
-    // still hide a matching region.
-    let unseen = (session.coverage_of("block_inventory") != "complete"
-        && session.coverage_of(coverage) != "complete")
+    // still hide a matching region. Source-absent gaps (owner decision
+    // 2026-11-07) cannot: unrecorded blocks would have to exist (not-read
+    // `block_inventory`) AND carry this field's text (the field's own
+    // not-read coverage) for a match to hide. The title leg stays on the
+    // raw state: an unread title (`overlay_not_supplied`) is a not-read
+    // gap that can hide a chat-scope match independent of the block
+    // inventory's source-absence.
+    let unseen = (session.field_blocks_strict("block_inventory")
+        && session.field_blocks_strict(coverage))
         || session.inventory_partial
         || (field == "scope"
             && expected.as_str() == Some("chat")
@@ -2325,13 +2400,18 @@ fn eval_literal(
             }
         }
     }
+    // Unseen: an inventory gap that could still hide a matching region.
+    // Source-absent gaps (text provably non-existent in any local record,
+    // owner decision 2026-11-07) cannot hide anything, so they stop
+    // contributing `unseen` — the session's existing text answers exactly.
+    // `inventory_partial` (docs not converged) is never source-absent.
     let unseen = session.inventory_partial
-        || session.coverage_of("block_inventory") != "complete"
-        || session.coverage_of("text_inventory") != "complete";
+        || session.field_blocks_strict("block_inventory")
+        || session.field_blocks_strict("text_inventory");
     if unseen {
         out.unseen = true;
         for field in ["block_inventory", "text_inventory"] {
-            if session.coverage_of(field) != "complete" || session.inventory_partial {
+            if session.inventory_partial || session.field_blocks_strict(field) {
                 out.reasons.insert(format!(
                     "{field}:{}:inventory_incomplete",
                     session.coverage_of(field)
@@ -2848,6 +2928,15 @@ pub fn search_sessions(
     // evaluates inside the request deadline).
     let sessions =
         load_sessions_indexed(connection, &universe, &id_subquery, &id_params, &mut stats)?;
+    // How many of the evaluated sessions carry source-absent (b) gaps —
+    // counted over the WHOLE candidate universe, not just result items:
+    // a (b) session excluded by proven absence (a NOT-match or a
+    // non-member) still had its verdict decided by source-absence, and
+    // the response must not hide that.
+    let source_absent_sessions = sessions
+        .iter()
+        .filter(|session| !session.source_text_absent.is_empty())
+        .count();
     // One chunked set read for every `messages.content` row the gated
     // literals can touch — replacing a point read per gated region with an
     // O(1)-queries-per-request hydration memo.
@@ -3077,6 +3166,12 @@ pub fn search_sessions(
             "started_at_ms": session.created_ms,
             "activity_ms": session.activity_ms,
             "score": entry.score,
+            // Owner decision 2026-11-07: reason codes this session's facts
+            // prove as text ABSENT AT THE SOURCE — the strict answer is
+            // exact over the existing text even though these fields'
+            // coverage is incomplete. Always present; empty when every
+            // gap is a read-recoverable one.
+            "source_text_absent": session.source_text_absent,
         });
         // Public identity is resolved lazily and stays nullable on failure
         // (a search page must not die on one unverifiable row).
@@ -3159,6 +3254,10 @@ pub fn search_sessions(
         "evaluated_sessions": accepted.len() + unknown_sessions,
         "unknown_sessions": unknown_sessions,
         "unknown_reasons": unknown_reasons,
+        // Sessions in the evaluated universe whose only inventory gaps
+        // are provably text absent at the source (see the per-item
+        // `source_text_absent` annotation).
+        "source_absent_sessions": source_absent_sessions,
         "generation": generation,
         "index_epoch": readers.index_epoch,
         "warnings": warnings,

@@ -181,6 +181,45 @@ pub struct CoverageEntry {
     pub reasons: Vec<String>,
 }
 
+/// The closed allowlist of coverage `reason` codes that prove missing text
+/// is ABSENT AT THE SOURCE — it never existed in any local record, so no
+/// read of any local artifact could ever recover it (owner decision,
+/// 2026-11-07). A gap whose reasons are ALL on this list is exact
+/// evidence: strict search over the text that does exist stays strict.
+/// Everything else — unknown shapes, parser/connector gaps, facts
+/// pending, unrecorded tool output, dropped markers — is a NOT-READ gap
+/// and keeps blocking strict search exactly as before.
+///
+/// Members:
+/// - `agent_message_encrypted`: a provider-encrypted codex `agent_message`
+///   handoff. The model hands the inter-agent payload over already
+///   encrypted, so the rollout never held the plaintext — the sibling
+///   `input_text` envelope header is the only readable part (pinned by
+///   `codex_agent_message_encrypted_payload_is_known_unreadable`).
+///
+/// NOT here on purpose:
+/// - `agy_connector_drops_source_text`: the connector DROPS a marker, so
+///   per-session absence is not provable yet — stays a NOT-READ gap.
+/// - `reasoning_encrypted`: same provider-encrypted class, but not
+///   owner-confirmed for this rule — stays a NOT-READ gap.
+/// - Any unknown/new reason code: defaults to NOT-READ. Adding a member
+///   is an owner decision, never an inference from a state string.
+pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &["agent_message_encrypted"];
+
+/// `true` when a coverage entry's gap is provably text absent at the
+/// source (owner decision, 2026-11-07): a `partial`/`unavailable` state
+/// whose every reason is on the [`SOURCE_TEXT_ABSENT_REASONS`]
+/// allowlist. Empty reason lists, `complete`/`pending` states and any
+/// reason off the allowlist (alone or mixed in) are NOT source-absent —
+/// they are not-read gaps and keep their strict-blocking semantics.
+pub fn is_source_absent_gap(state: &str, reasons: &[String]) -> bool {
+    matches!(state, "partial" | "unavailable")
+        && !reasons.is_empty()
+        && reasons
+            .iter()
+            .all(|reason| SOURCE_TEXT_ABSENT_REASONS.contains(&reason.as_str()))
+}
+
 /// One verified call→result link. Persisted columns carry only the counts
 /// today (`viewer_step_links`/`viewer_tool_calls` land with Task 8); the full
 /// link stays in-memory so tests pin exact call IDs and scoping.
@@ -1116,5 +1155,82 @@ pub fn publish_facts_for_canonical_batch_best_effort<'a>(
             error = %error,
             "viewer session facts batch publication failed; session facts remain unknown"
         );
+    }
+}
+
+#[cfg(test)]
+mod source_absent_tests {
+    use super::*;
+
+    fn reasons(codes: &[&str]) -> Vec<String> {
+        codes.iter().map(|code| code.to_string()).collect()
+    }
+
+    #[test]
+    fn allowlisted_gap_is_source_absent_in_both_partial_and_unavailable_states() {
+        // The real codex shape: `chat` degrades to partial (the readable
+        // envelope header is evidence), `text_inventory` stays unavailable.
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["agent_message_encrypted"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["agent_message_encrypted"])
+        ));
+    }
+
+    #[test]
+    fn complete_and_pending_states_are_never_source_absent() {
+        // `complete` is not a gap at all; `pending` is query-time honest
+        // work-in-progress (docs not converged, facts not published) that
+        // a later read CAN settle — both keep blocking.
+        assert!(!is_source_absent_gap(
+            "complete",
+            &reasons(&["agent_message_encrypted"])
+        ));
+        assert!(!is_source_absent_gap("pending", &[]));
+        assert!(!is_source_absent_gap(
+            "pending",
+            &reasons(&["agent_message_encrypted"])
+        ));
+    }
+
+    #[test]
+    fn empty_or_unlisted_reasons_default_to_not_read() {
+        // A state without reasons cannot prove WHERE the text went.
+        assert!(!is_source_absent_gap("unavailable", &[]));
+        // Known not-read gaps stay not-read.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["tool_output_not_recorded"])
+        ));
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["agy_connector_drops_source_text"])
+        ));
+        assert!(!is_source_absent_gap(
+            "unavailable",
+            &reasons(&["reasoning_encrypted"])
+        ));
+        // A brand-new reason code is not-read by default.
+        assert!(!is_source_absent_gap(
+            "unavailable",
+            &reasons(&["brand_new_gap_code"])
+        ));
+    }
+
+    #[test]
+    fn mixed_reason_sets_are_never_source_absent() {
+        // One unlisted member alone breaks the proof: the session might
+        // still be missing text a read could recover.
+        assert!(!is_source_absent_gap(
+            "unavailable",
+            &reasons(&["agent_message_encrypted", "brand_new_gap_code"])
+        ));
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["agent_message_encrypted", "tool_output_not_recorded"])
+        ));
     }
 }
