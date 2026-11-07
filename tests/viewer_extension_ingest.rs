@@ -19,9 +19,10 @@ use coding_agent_search::model::conversation_packet::{
 use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use coding_agent_search::storage::sqlite::FrankenStorage;
 use coding_agent_search::viewer_extensions::facts::{
-    FactPublishOutcome, extract_session_facts, publish_session_facts,
+    FACTS_EXTRACTOR_VERSION, FactPublishOutcome, extract_session_facts, publish_session_facts,
 };
 use coding_agent_search::viewer_extensions::schema;
+use coding_agent_search::viewer_extensions::search_regions::derive_message_regions;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -915,8 +916,17 @@ fn antigravity_packet() -> ConversationPacket {
                 "the run blew up",
                 json!({"agy_type": "ERROR_MESSAGE", "content": "the run blew up"}),
             ),
-            // Unverifiable event (no agy/type/kind evidence): unknown arm.
-            msg(6, "assistant", "trailing text", json!({})),
+            // Connector drift: a record outside the verified FAD output
+            // contract (role `agent` with an unmapped extra key) keeps the
+            // unknown-record arm. A bare `assistant` message with an empty
+            // extra is a REAL planner shape (planner response with neither
+            // thinking nor calls) and must not land here.
+            msg(
+                6,
+                "assistant",
+                "trailing text",
+                json!({"unmapped_future_key": "made-up drift value"}),
+            ),
         ],
     )
 }
@@ -989,6 +999,390 @@ fn antigravity_facts_agy_tools_exit_codes_and_coverage() {
             .any(|entry| entry.reasons.iter().any(|r| r == "agy_record_unknown")),
         "coverage: {:?}",
         publication.coverage
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Antigravity REAL-shape fixture: the exact extra/role shapes the pinned FAD
+// connector emits for live transcripts (verified message-by-message against
+// 96,722 persisted antigravity messages, synthetic text only):
+//   - USER_INPUT  -> role user,    extra ⊆ {settings_change, additional_metadata}
+//   - PLANNER_RESPONSE -> role agent/assistant, extra ⊆ {cass, thinking},
+//     with `cass.invocations[]` carrying {kind:"tool", name, call_id: null,
+//     arguments} — call ids are NEVER recorded by the connector.
+//   - MODEL steps (GENERIC …) -> role tool, bare `agy_type` envelope, no
+//     call identity and no status (the raw `status` field is dropped).
+//   - SYSTEM_MESSAGE/CHECKPOINT -> role system, `agy_type` envelope.
+// ---------------------------------------------------------------------------
+
+fn antigravity_real_shape_packet_with_slug(slug: &str) -> ConversationPacket {
+    packet(
+        slug,
+        json!({"source": "antigravity", "model": "MadeUp Model"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "made-up user request text",
+                json!({
+                    "settings_change": "made-up settings change text",
+                    "additional_metadata": "made-up additional metadata text"
+                }),
+            ),
+            msg(
+                1,
+                "assistant",
+                "made-up planner narration",
+                json!({
+                    "thinking": "made-up thinking text",
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "view_file", "call_id": null,
+                         "arguments": {"TargetFile": "/made/up/target.rs"}},
+                        {"kind": "tool", "name": "run_command",
+                         "arguments": {"CommandLine": "made-up-run --flag"}}
+                    ]}
+                }),
+            ),
+            msg(
+                2,
+                "tool",
+                "made-up model step output",
+                json!({"agy_type": "GENERIC"}),
+            ),
+            msg(
+                3,
+                "system",
+                "made-up system message text",
+                json!({"agy_type": "SYSTEM_MESSAGE"}),
+            ),
+            msg(
+                4,
+                "system",
+                "made-up checkpoint state",
+                json!({"agy_type": "CHECKPOINT", "agy_source": "made-up source"}),
+            ),
+            msg(
+                5,
+                "system",
+                "made-up ephemeral notice text",
+                json!({"agy_type": "EPHEMERAL_MESSAGE"}),
+            ),
+        ],
+    )
+}
+
+fn antigravity_real_shape_packet() -> ConversationPacket {
+    antigravity_real_shape_packet_with_slug("antigravity")
+}
+
+#[test]
+fn antigravity_facts_real_shapes_known_with_connector_contract_marks() {
+    let publication = extract_session_facts(&antigravity_real_shape_packet(), "antigravity");
+
+    // Every real FAD output shape classifies as known: no unknown-record
+    // degradation anywhere.
+    assert!(
+        !publication
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_record_unknown")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+
+    // The pinned connector structurally drops source text with no
+    // packet-visible signal (source `truncated_fields` markers, whole
+    // ERROR_MESSAGE records whose only text is the `error` field, the
+    // `error` field itself, `media` references), so text-bearing scopes
+    // cannot be certified complete from the packet.
+    for field in ["chat", "thinking", "text_inventory", "files"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "agy_connector_drops_source_text"),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // The canonical envelope loses raw record structure — block inventory
+    // only. Its text IS the message content and lands in chat regions, so
+    // text_inventory must not carry the envelope reason.
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block.reasons.iter().any(|r| r == "agy_canonical_envelope"),
+        "{block:?}"
+    );
+    let text_inventory = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert!(
+        !text_inventory
+            .reasons
+            .iter()
+            .any(|r| r == "agy_canonical_envelope"),
+        "{text_inventory:?}"
+    );
+
+    // Planner calls without recorded ids stay uncollected, never fabricated;
+    // MODEL-step records without identity keep the result-side reason too.
+    assert!(publication.tools.is_empty(), "{:?}", publication.tools);
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "partial", "{tools:?}");
+    assert!(
+        tools
+            .reasons
+            .iter()
+            .any(|r| r == "agy_tool_call_identity_missing"),
+        "{tools:?}"
+    );
+    assert!(
+        tools
+            .reasons
+            .iter()
+            .any(|r| r == "agy_tool_result_identity_missing"),
+        "{tools:?}"
+    );
+
+    // Source tool steps record `status` on every record; the connector
+    // drops the field, so exit/error evidence is unavailable — never
+    // silently complete.
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "agy_status_dropped_by_connector"),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // The format has no mcp surface at all (verified against the raw
+    // transcripts): no mcp evidence can be missing, so mcp stays complete.
+    let mcp = coverage(&publication, "mcp").expect("mcp");
+    assert_eq!(mcp.state, "complete", "{mcp:?}");
+
+    assert_eq!(publication.thinking_block_count, Some(1));
+}
+
+#[test]
+fn antigravity_facts_unknown_future_shape_stays_unknown() {
+    // Connector drift: a record outside the verified FAD antigravity
+    // contract (role `agent` with an unmapped extra key) must keep the
+    // unknown-record degradation — the gate never silently absorbs new
+    // shapes as known.
+    let drift = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            msg(
+                1,
+                "assistant",
+                "made-up drift record",
+                json!({"unmapped_future_key": "made-up value"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&drift, "antigravity");
+    for field in ["chat", "tools", "text_inventory", "block_inventory"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "agy_record_unknown"),
+            "{field}: {entry:?}"
+        );
+    }
+}
+
+#[test]
+fn antigravity_facts_ephemeral_message_shape_is_known() {
+    // The connector maps EPHEMERAL_MESSAGE records to role `system` with
+    // `agy_type: "EPHEMERAL_MESSAGE"` and the record text as the message
+    // content (verified against the pinned FAD source and the persisted
+    // archive: 11 records across 5 sessions). The label must classify as a
+    // known envelope — an unknown kind here would leave real sessions
+    // degraded for no reason.
+    let ephemeral = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            msg(
+                1,
+                "system",
+                "made-up ephemeral notice text",
+                json!({"agy_type": "EPHEMERAL_MESSAGE"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&ephemeral, "antigravity");
+
+    assert!(
+        !publication
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_record_unknown")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block.reasons.iter().any(|r| r == "agy_canonical_envelope"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_zero_thinking_session_proves_thinking_complete() {
+    // Verified against the raw transcripts: only PLANNER_RESPONSE records
+    // ever carry `thinking`, the connector never drops that record type,
+    // and no record has thinking truncated to empty/absent at the source.
+    // So a packet with zero thinking blocks provably had zero thinking text
+    // at the source, and `thinking` keeps the claude-style complete empty
+    // inventory — the connector-contract mark must not over-mark it.
+    let zero_thinking = packet(
+        "antigravity",
+        json!({"source": "antigravity", "model": "MadeUp Model"}),
+        vec![
+            msg(0, "user", "made-up user request text", json!({})),
+            msg(
+                1,
+                "assistant",
+                "made-up planner narration without thinking",
+                json!({"cass": {"invocations": [
+                    {"kind": "tool", "name": "view_file", "call_id": null,
+                     "arguments": {"TargetFile": "/made/up/target.rs"}}
+                ]}}),
+            ),
+            msg(
+                2,
+                "tool",
+                "made-up model step output",
+                json!({"agy_type": "GENERIC"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&zero_thinking, "antigravity");
+    assert_eq!(publication.thinking_block_count, Some(0));
+
+    let thinking = coverage(&publication, "thinking").expect("thinking coverage");
+    assert_eq!(thinking.state, "complete", "{thinking:?}");
+    assert!(
+        !thinking
+            .reasons
+            .iter()
+            .any(|r| r == "agy_connector_drops_source_text"),
+        "{thinking:?}"
+    );
+
+    // The unconditional members of the connector-contract mark stay
+    // partial — only `thinking` is provable-empty.
+    for field in ["chat", "text_inventory", "files"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "agy_connector_drops_source_text"),
+            "{field}: {entry:?}"
+        );
+    }
+}
+
+#[test]
+fn antigravity_regions_index_planner_arguments_and_user_wrappers() {
+    let packet = antigravity_real_shape_packet();
+    let facts = extract_session_facts(&packet, "antigravity");
+    let structure = project_session_structure(&packet, &facts);
+    let regions = derive_message_regions(1, &packet, &structure);
+
+    // Planner invocation arguments are packet text that must reach the
+    // tools scope as searchable regions (the connector records no call
+    // ids, so the region set is the only place the arguments live).
+    let tools_regions: Vec<_> = regions.iter().filter(|r| r.scope == "tools").collect();
+    let view = tools_regions
+        .iter()
+        .find(|r| r.tool_name.as_deref() == Some("view_file"))
+        .expect("view_file call region");
+    assert!(
+        view.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("/made/up/target.rs")),
+        "view_file region: {view:?}"
+    );
+    assert_eq!(view.file_path.as_deref(), Some("/made/up/target.rs"));
+    let run = tools_regions
+        .iter()
+        .find(|r| r.tool_name.as_deref() == Some("run_command"))
+        .expect("run_command call region");
+    assert!(
+        run.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up-run --flag")),
+        "run_command region: {run:?}"
+    );
+
+    // The MODEL-step fallback keeps its content in the tools scope.
+    let fallback = tools_regions
+        .iter()
+        .find(|r| r.region_key.ends_with(":role:2"))
+        .expect("role fallback region");
+    assert!(
+        fallback
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up model step output")),
+        "fallback region: {fallback:?}"
+    );
+
+    // USER_INPUT wrapper blocks the connector lifted to extra are user
+    // turn text: chat-scope regions, deterministically keyed.
+    for (key, needle) in [
+        ("m0:user_settings_change", "made-up settings change text"),
+        (
+            "m0:user_additional_metadata",
+            "made-up additional metadata text",
+        ),
+    ] {
+        let region = regions
+            .iter()
+            .find(|r| r.region_key == key)
+            .unwrap_or_else(|| panic!("{key} missing: {regions:?}"));
+        assert_eq!(region.scope, "chat", "{region:?}");
+        assert!(
+            region
+                .indexed_text
+                .as_deref()
+                .is_some_and(|text| text.contains(needle)),
+            "{region:?}"
+        );
+    }
+
+    // The provider gate: the same message shapes under a foreign slug must
+    // not grow antigravity regions (no invocation regions, no wrappers).
+    let foreign = antigravity_real_shape_packet_with_slug("pi_agent");
+    let foreign_facts = extract_session_facts(&foreign, "pi_agent");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("view_file")
+                || r.tool_name.as_deref() == Some("run_command")),
+        "foreign slug must not derive invocation regions: {foreign_regions:?}"
+    );
+    assert!(
+        !foreign_regions
+            .iter()
+            .any(|r| r.region_key.contains("user_settings_change")
+                || r.region_key.contains("user_additional_metadata")),
+        "foreign slug must not derive wrapper regions: {foreign_regions:?}"
     );
 }
 
@@ -1432,7 +1826,7 @@ fn publish_is_idempotent_replace_and_resolves_parent() -> Result<()> {
     ensure!(outcome == FactPublishOutcome::Published, "first publish");
 
     let (version, revision, state, parent, thinking, category, prompt) = fact_row(&db, child_id)?;
-    ensure!(version == 1, "extractor_version");
+    ensure!(version == FACTS_EXTRACTOR_VERSION, "extractor_version");
     ensure!(revision == publication.source_revision, "source_revision");
     ensure!(state == publication.coverage_state, "coverage_state");
     ensure!(
