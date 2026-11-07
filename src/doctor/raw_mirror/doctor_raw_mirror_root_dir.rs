@@ -2,8 +2,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 pub(crate) const DOCTOR_RAW_MIRROR_ROOT_DIR: &str = "raw-mirror";
 
 pub(crate) const DOCTOR_RAW_MIRROR_SCHEMA_VERSION: u32 = 1;

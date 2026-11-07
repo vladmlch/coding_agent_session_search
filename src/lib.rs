@@ -23095,54 +23095,54 @@ pub(crate) use crate::doctor::repair_state::doctor_sorted_cleanup_actions::*;
 pub(crate) use crate::doctor::repair_state::finalize_cleanup_apply_contract::*;
 // -- generated lib-split bridges --
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::sources::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::raw_mirror::doctor_raw_mirror_root_dir::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::raw_mirror::doctor_bound_healthy_listing::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::raw_mirror::doctor_raw_mirror_listing_bound_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::raw_mirror::doctorrawmirrorverificationmode::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::raw_mirror::collect_doctor_raw_mirror_report_with_thresholds_and::*;
-#[allow(unused_imports)]
 pub(crate) use crate::doctor::archive::doctor_archive_coverage_snapshot::*;
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::raw_mirror::query_doctor_raw_mirror_backfill_candidates::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::report::coverage::*;
+pub(crate) use crate::doctor::archive::export::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::backup_restore::kinds::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::backup_restore::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::archive::export::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::run_doctor_ls::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::support_bundle::*;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::support_bundle::doctor_support_bundle_redaction_tests::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::support_bundle::capture::*;
-#[allow(unused_imports)]
-pub(crate) use crate::doctor::baseline::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::baseline::doctor_baseline_path_tests::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::baseline::document::*;
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::candidate::promotion::*;
+pub(crate) use crate::doctor::baseline::*;
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::candidate::promote_doctor_reconstruct_candidate_bundle::*;
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::repair_state::locks::*;
+pub(crate) use crate::doctor::candidate::promotion::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::raw_mirror::collect_doctor_raw_mirror_report_with_thresholds_and::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::raw_mirror::doctor_bound_healthy_listing::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::raw_mirror::doctor_raw_mirror_listing_bound_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::raw_mirror::doctor_raw_mirror_root_dir::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::raw_mirror::doctorrawmirrorverificationmode::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::raw_mirror::query_doctor_raw_mirror_backfill_candidates::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::repair_state::doctor_acquire_mutation_lock::*;
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(crate) use crate::doctor::repair_state::doctor_lock_probe_error_tests::*;
 #[allow(unused_imports)]
-pub(crate) use crate::doctor::repair_state::doctor_acquire_mutation_lock::*;
+pub(crate) use crate::doctor::repair_state::locks::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::report::coverage::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::run_doctor_ls::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::sources::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::support_bundle::capture::*;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::support_bundle::doctor_support_bundle_redaction_tests::*;
+#[allow(unused_imports)]
+pub(crate) use crate::doctor::support_bundle::*;

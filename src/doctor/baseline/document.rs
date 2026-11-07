@@ -5,17 +5,18 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
-
-
-pub(crate) fn doctor_baseline_write_path_is_safe(data_dir: &Path, baseline_path: &Path) -> Result<(), String> {
+pub(crate) fn doctor_baseline_write_path_is_safe(
+    data_dir: &Path,
+    baseline_path: &Path,
+) -> Result<(), String> {
     if let Ok(metadata) = std::fs::symlink_metadata(data_dir)
         && (!metadata.is_dir() || metadata.file_type().is_symlink())
     {
@@ -35,7 +36,6 @@ pub(crate) fn doctor_baseline_write_path_is_safe(data_dir: &Path, baseline_path:
     }
     Ok(())
 }
-
 
 pub(crate) fn build_doctor_baseline_snapshot(
     data_dir: &Path,
@@ -153,7 +153,6 @@ pub(crate) fn build_doctor_baseline_snapshot(
     })
 }
 
-
 pub(crate) fn build_doctor_baseline_document(
     data_dir: &Path,
     baseline_path: &Path,
@@ -173,7 +172,6 @@ pub(crate) fn build_doctor_baseline_document(
         "redacted_report": snapshot["redacted_report"].clone(),
     })
 }
-
 
 pub(crate) fn write_doctor_baseline_document(
     data_dir: &Path,
@@ -219,7 +217,6 @@ pub(crate) fn write_doctor_baseline_document(
     sync_directory(parent)?;
     file_blake3_hex(baseline_path)
 }
-
 
 pub(crate) fn read_doctor_baseline_document(path: &Path) -> CliResult<serde_json::Value> {
     let bytes = std::fs::read(path).map_err(|err| CliError {
@@ -329,7 +326,6 @@ pub(crate) fn read_doctor_baseline_document(path: &Path) -> CliResult<serde_json
     }
     Ok(document)
 }
-
 
 pub(crate) fn build_doctor_baseline_diff(
     data_dir: &Path,
@@ -465,7 +461,6 @@ pub(crate) fn build_doctor_baseline_diff(
     })
 }
 
-
 pub(crate) fn doctor_baseline_backup_generation(data_dir: &Path) -> serde_json::Value {
     let backup_root = doctor_candidate_promotion_root(data_dir);
     let mut backup_count = 0usize;
@@ -490,7 +485,6 @@ pub(crate) fn doctor_baseline_backup_generation(data_dir: &Path) -> serde_json::
         "redacted_backup_root": doctor_redacted_path(&backup_root.display().to_string(), data_dir),
     })
 }
-
 
 pub(crate) fn doctor_baseline_anomaly_classes_from_parts(
     db_exists: bool,
@@ -547,7 +541,6 @@ pub(crate) fn doctor_baseline_anomaly_classes_from_parts(
     classes.into_iter().collect()
 }
 
-
 pub(crate) fn doctor_baseline_recommendations_from_parts(
     coverage_risk: &serde_json::Value,
     storage_pressure: &serde_json::Value,
@@ -570,8 +563,10 @@ pub(crate) fn doctor_baseline_recommendations_from_parts(
     recommendations.into_iter().collect()
 }
 
-
-pub(crate) fn doctor_baseline_redact_paths(value: serde_json::Value, data_dir: &Path) -> serde_json::Value {
+pub(crate) fn doctor_baseline_redact_paths(
+    value: serde_json::Value,
+    data_dir: &Path,
+) -> serde_json::Value {
     match value {
         serde_json::Value::String(text) => {
             serde_json::Value::String(doctor_redacted_text(&text, data_dir))
@@ -621,11 +616,9 @@ pub(crate) fn doctor_baseline_redact_paths(value: serde_json::Value, data_dir: &
     }
 }
 
-
 pub(crate) fn doctor_baseline_key_looks_like_path(key: &str) -> bool {
     key == "path" || key == "paths" || key.ends_with("_path") || key.ends_with("_paths")
 }
-
 
 pub(crate) fn doctor_string_set_at(value: &serde_json::Value, pointer: &str) -> BTreeSet<String> {
     value
@@ -638,11 +631,12 @@ pub(crate) fn doctor_string_set_at(value: &serde_json::Value, pointer: &str) -> 
         .collect()
 }
 
-
-pub(crate) fn doctor_sorted_set_difference(left: &BTreeSet<String>, right: &BTreeSet<String>) -> Vec<String> {
+pub(crate) fn doctor_sorted_set_difference(
+    left: &BTreeSet<String>,
+    right: &BTreeSet<String>,
+) -> Vec<String> {
     left.difference(right).cloned().collect()
 }
-
 
 pub(crate) fn doctor_baseline_changed_assets(
     baseline_report: &serde_json::Value,
@@ -730,7 +724,6 @@ pub(crate) fn doctor_baseline_changed_assets(
         .collect()
 }
 
-
 pub(crate) fn doctor_baseline_changed_recommendations(
     baseline_report: &serde_json::Value,
     current_report: &serde_json::Value,
@@ -757,7 +750,6 @@ pub(crate) fn doctor_baseline_changed_recommendations(
         )
         .collect()
 }
-
 
 pub(crate) fn doctor_baseline_perf_delta(
     baseline_report: &serde_json::Value,

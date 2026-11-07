@@ -3,16 +3,14 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use anyhow::Result;
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn doctor_candidate_promotion_id(candidate_id: &str, created_at_ms: i64) -> String {
     let safe_candidate_id = candidate_id
@@ -27,7 +25,6 @@ pub(crate) fn doctor_candidate_promotion_id(candidate_id: &str, created_at_ms: i
         .collect::<String>();
     format!("{created_at_ms}-{safe_candidate_id}")
 }
-
 
 pub(crate) fn doctor_candidate_promotion_unique_location(
     data_dir: &Path,
@@ -50,7 +47,6 @@ pub(crate) fn doctor_candidate_promotion_unique_location(
     (promotion_id, promotion_dir)
 }
 
-
 pub(crate) fn doctor_candidate_promotion_set_location(
     report: &mut DoctorCandidatePromotionReport,
     data_dir: &Path,
@@ -69,7 +65,6 @@ pub(crate) fn doctor_candidate_promotion_set_location(
     report.redacted_receipt_path = doctor_redacted_path(&report.receipt_path, data_dir);
     promotion_dir
 }
-
 
 pub(crate) fn doctor_candidate_live_inventory_from_value(
     value: Option<&serde_json::Value>,
@@ -125,7 +120,6 @@ pub(crate) fn doctor_candidate_live_inventory_from_value(
     }
 }
 
-
 pub(crate) fn doctor_candidate_manifest_checksum<'a>(
     manifest: &'a serde_json::Value,
     relative_path: &str,
@@ -137,8 +131,9 @@ pub(crate) fn doctor_candidate_manifest_checksum<'a>(
         .and_then(serde_json::Value::as_str)
 }
 
-
-pub(crate) fn doctor_candidate_manifest_value(candidate_dir: &Path) -> Result<serde_json::Value, String> {
+pub(crate) fn doctor_candidate_manifest_value(
+    candidate_dir: &Path,
+) -> Result<serde_json::Value, String> {
     let manifest_path = candidate_dir.join("manifest.json");
     let raw = std::fs::read(&manifest_path).map_err(|err| {
         format!(
@@ -154,7 +149,6 @@ pub(crate) fn doctor_candidate_manifest_value(candidate_dir: &Path) -> Result<se
     })
 }
 
-
 pub(crate) struct DoctorCandidatePromotionArtifactSpec<'a> {
     pub(crate) artifact_kind: &'a str,
     pub(crate) asset_class: DoctorAssetClass,
@@ -164,7 +158,6 @@ pub(crate) struct DoctorCandidatePromotionArtifactSpec<'a> {
     pub(crate) size_bytes: u64,
     pub(crate) checksum_blake3: Option<String>,
 }
-
 
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorCandidatePromotionBundleItem {
@@ -185,7 +178,6 @@ pub(crate) struct DoctorCandidatePromotionBundleItem {
     pub(crate) candidate_bytes: u64,
     pub(crate) live_backup_blake3: Option<String>,
 }
-
 
 pub(crate) fn doctor_candidate_promotion_artifact(
     data_dir: &Path,
@@ -214,7 +206,6 @@ pub(crate) fn doctor_candidate_promotion_artifact(
     }
 }
 
-
 pub(crate) fn doctor_candidate_live_inventory_component(
     inventory: &DoctorCandidateLiveInventory,
     suffix: &str,
@@ -226,7 +217,6 @@ pub(crate) fn doctor_candidate_live_inventory_component(
         _ => (false, None),
     }
 }
-
 
 pub(crate) fn doctor_candidate_promotion_bundle_items(
     db_path: &Path,
@@ -312,7 +302,6 @@ pub(crate) fn doctor_candidate_promotion_bundle_items(
     .collect()
 }
 
-
 pub(crate) fn doctor_candidate_promotion_record_metadata_artifact(
     report: &mut DoctorCandidatePromotionReport,
     data_dir: &Path,
@@ -368,7 +357,6 @@ pub(crate) fn doctor_candidate_promotion_record_metadata_artifact(
     }
 }
 
-
 pub(crate) fn doctor_candidate_promotion_record_derived_metadata(
     report: &mut DoctorCandidatePromotionReport,
     data_dir: &Path,
@@ -388,7 +376,6 @@ pub(crate) fn doctor_candidate_promotion_record_derived_metadata(
         );
     }
 }
-
 
 pub(crate) fn doctor_candidate_promotion_derived_status(
     live_inventory_before: &DoctorCandidateLiveInventory,
@@ -425,7 +412,6 @@ pub(crate) fn doctor_candidate_promotion_derived_status(
         true,
     )
 }
-
 
 pub(crate) fn doctor_copy_regular_file_to_private_target(
     source_path: &Path,
@@ -500,7 +486,6 @@ pub(crate) fn doctor_copy_regular_file_to_private_target(
     Ok((copied, target_blake3))
 }
 
-
 pub(crate) fn doctor_write_private_json_artifact<T: Serialize + ?Sized>(
     path: &Path,
     value: &T,
@@ -528,7 +513,6 @@ pub(crate) fn doctor_write_private_json_artifact<T: Serialize + ?Sized>(
     file_blake3_hex(path)
 }
 
-
 pub(crate) fn doctor_candidate_promotion_write_receipt(
     report: &DoctorCandidatePromotionReport,
 ) -> Result<String, String> {
@@ -539,13 +523,13 @@ pub(crate) fn doctor_candidate_promotion_write_receipt(
     )
 }
 
-
-pub(crate) fn doctor_candidate_promotion_finalize_report(report: &mut DoctorCandidatePromotionReport) {
+pub(crate) fn doctor_candidate_promotion_finalize_report(
+    report: &mut DoctorCandidatePromotionReport,
+) {
     if let Err(err) = doctor_candidate_promotion_write_receipt(report) {
         report.warnings.push(err);
     }
 }
-
 
 pub(crate) fn doctor_candidate_promotion_restore_live_from_backup(
     db_path: &Path,
@@ -585,7 +569,6 @@ pub(crate) fn doctor_candidate_promotion_restore_live_from_backup(
     sync_file(db_path, "rolled back live archive")?;
     sync_directory(parent)
 }
-
 
 pub(crate) fn doctor_candidate_promotion_park_new_live_target(
     target_path: &Path,
@@ -629,7 +612,6 @@ pub(crate) fn doctor_candidate_promotion_park_new_live_target(
     Ok(Some(parked_path.display().to_string()))
 }
 
-
 pub(crate) fn doctor_candidate_promotion_restore_live_bundle_from_backups(
     bundle_items: &[DoctorCandidatePromotionBundleItem],
     backup_dir: &Path,
@@ -666,7 +648,6 @@ pub(crate) fn doctor_candidate_promotion_restore_live_bundle_from_backups(
     Ok(rollback_evidence)
 }
 
-
 pub(crate) fn doctor_remove_candidate_replace_tmp(temp_path: &Path) -> Result<(), String> {
     match std::fs::remove_file(temp_path) {
         Ok(()) => Ok(()),
@@ -678,8 +659,10 @@ pub(crate) fn doctor_remove_candidate_replace_tmp(temp_path: &Path) -> Result<()
     }
 }
 
-
-pub(crate) fn doctor_candidate_promotion_test_failpoint(phase: &str, path: &Path) -> Result<(), String> {
+pub(crate) fn doctor_candidate_promotion_test_failpoint(
+    phase: &str,
+    path: &Path,
+) -> Result<(), String> {
     let Ok(raw) = dotenvy::var(CASS_TEST_DOCTOR_CANDIDATE_PROMOTION_FAILPOINT) else {
         return Ok(());
     };
@@ -696,7 +679,6 @@ pub(crate) fn doctor_candidate_promotion_test_failpoint(phase: &str, path: &Path
     }
     Ok(())
 }
-
 
 pub(crate) fn doctor_candidate_promotion_replace_file(
     source_path: &Path,
@@ -791,7 +773,6 @@ pub(crate) fn doctor_candidate_promotion_replace_file(
     }
 }
 
-
 pub(crate) fn doctor_candidate_promotion_event_log(
     report: &DoctorCandidatePromotionReport,
     receipt: &DoctorFsMutationReceipt,
@@ -860,7 +841,6 @@ pub(crate) fn doctor_candidate_promotion_event_log(
     doctor_event_log_from_events("candidate_promotion_embedded_events", events)
 }
 
-
 pub(crate) fn doctor_candidate_promotion_write_audit_artifacts(
     data_dir: &Path,
     promotion_dir: &Path,
@@ -882,7 +862,6 @@ pub(crate) fn doctor_candidate_promotion_write_audit_artifacts(
     let marker_path = promotion_dir.join("promotion-marker.json");
     doctor_candidate_promotion_write_marker(data_dir, &marker_path, report);
 }
-
 
 pub(crate) fn doctor_candidate_promotion_write_marker(
     data_dir: &Path,
@@ -940,7 +919,6 @@ pub(crate) fn doctor_candidate_promotion_write_marker(
         Err(err) => report.warnings.push(err),
     }
 }
-
 
 pub(crate) fn doctor_candidate_promotion_record_derived_followup_artifact(
     data_dir: &Path,

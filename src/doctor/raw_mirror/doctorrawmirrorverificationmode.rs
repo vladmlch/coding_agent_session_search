@@ -3,17 +3,15 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use anyhow::Result;
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DoctorRawMirrorVerificationMode {
@@ -23,7 +21,6 @@ pub(crate) enum DoctorRawMirrorVerificationMode {
         byte_limit: u64,
     },
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRawMirrorReport {
@@ -45,7 +42,6 @@ pub(crate) struct DoctorRawMirrorReport {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRawMirrorLayoutReport {
     pub(crate) root_relative_path: String,
@@ -61,7 +57,6 @@ pub(crate) struct DoctorRawMirrorLayoutReport {
     pub(crate) case_insensitive_collision_behavior: String,
     pub(crate) migration_contract: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRawMirrorPolicyReport {
@@ -90,7 +85,6 @@ pub(crate) struct DoctorRawMirrorPolicyReport {
     pub(crate) missing_upstream_semantics: String,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRawMirrorSensitiveOutputPolicyReport {
     pub(crate) default_includes_exact_paths: bool,
@@ -101,7 +95,6 @@ pub(crate) struct DoctorRawMirrorSensitiveOutputPolicyReport {
     pub(crate) redaction_marker_contract: String,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRawMirrorCodecPolicyReport {
     pub(crate) default_state: &'static str,
@@ -110,7 +103,6 @@ pub(crate) struct DoctorRawMirrorCodecPolicyReport {
     pub(crate) required_metadata_fields: Vec<&'static str>,
     pub(crate) raw_content_hash_scope: &'static str,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRawMirrorEncryptionPolicyReport {
@@ -122,7 +114,6 @@ pub(crate) struct DoctorRawMirrorEncryptionPolicyReport {
     pub(crate) integrity_contract: String,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRawMirrorBackupPolicyReport {
     pub(crate) included_in_default_backup: bool,
@@ -130,7 +121,6 @@ pub(crate) struct DoctorRawMirrorBackupPolicyReport {
     pub(crate) backup_contents: Vec<&'static str>,
     pub(crate) restore_precondition: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRawMirrorSupportBundlePolicyReport {
@@ -141,7 +131,6 @@ pub(crate) struct DoctorRawMirrorSupportBundlePolicyReport {
     pub(crate) sensitive_attachment_gate: &'static str,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRawMirrorPublicExportPolicyReport {
     pub(crate) pages_exports_include_raw_mirror: bool,
@@ -150,7 +139,6 @@ pub(crate) struct DoctorRawMirrorPublicExportPolicyReport {
     pub(crate) default_robot_json_includes_raw_content: bool,
     pub(crate) public_artifact_contract: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRawMirrorSummary {
@@ -183,7 +171,6 @@ pub(crate) struct DoctorRawMirrorSummary {
     pub(crate) listing_mode: &'static str,
 }
 
-
 impl Default for DoctorRawMirrorSummary {
     fn default() -> Self {
         Self {
@@ -210,7 +197,6 @@ impl Default for DoctorRawMirrorSummary {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct DoctorRawMirrorSourceAmplificationReport {
     pub(crate) evidence_kind: &'static str,
@@ -225,7 +211,6 @@ pub(crate) struct DoctorRawMirrorSourceAmplificationReport {
     pub(crate) amplification_ratio_milli: Option<u64>,
 }
 
-
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorRawMirrorSourceAmplificationVersion {
     pub(crate) provider: String,
@@ -238,7 +223,6 @@ pub(crate) struct DoctorRawMirrorSourceAmplificationVersion {
     pub(crate) snapshot_blake3: String,
     pub(crate) stored_blobs: Vec<(String, u64)>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorRawMirrorManifestReport {
@@ -285,7 +269,6 @@ pub(crate) struct DoctorRawMirrorManifestReport {
     pub(crate) invalid_reason: Option<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq, Hash)]
 pub(crate) struct DoctorRawMirrorDbLink {
     #[serde(default)]
@@ -298,7 +281,6 @@ pub(crate) struct DoctorRawMirrorDbLink {
     pub(crate) started_at_ms: Option<i64>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct DoctorRawMirrorCompressionEnvelope {
     #[serde(default = "doctor_raw_mirror_none_state")]
@@ -308,7 +290,6 @@ pub(crate) struct DoctorRawMirrorCompressionEnvelope {
     #[serde(default)]
     pub(crate) uncompressed_size_bytes: Option<u64>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct DoctorRawMirrorEncryptionEnvelope {
@@ -322,7 +303,6 @@ pub(crate) struct DoctorRawMirrorEncryptionEnvelope {
     pub(crate) envelope_version: Option<u32>,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct DoctorRawMirrorVerificationRecord {
     #[serde(default)]
@@ -334,7 +314,6 @@ pub(crate) struct DoctorRawMirrorVerificationRecord {
     #[serde(default)]
     pub(crate) verified_at_ms: Option<i64>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct DoctorRawMirrorManifestFile {
@@ -386,7 +365,6 @@ pub(crate) struct DoctorRawMirrorManifestFile {
     pub(crate) manifest_blake3: Option<String>,
 }
 
-
 pub(crate) fn doctor_raw_mirror_storage_metadata(
     manifest: &DoctorRawMirrorManifestFile,
 ) -> (String, String, usize) {
@@ -420,11 +398,9 @@ pub(crate) fn doctor_raw_mirror_storage_metadata(
     )
 }
 
-
 pub(crate) fn doctor_raw_mirror_none_state() -> String {
     "none".to_string()
 }
-
 
 pub(crate) fn doctor_raw_mirror_root(data_dir: &Path) -> PathBuf {
     data_dir
@@ -432,11 +408,9 @@ pub(crate) fn doctor_raw_mirror_root(data_dir: &Path) -> PathBuf {
         .join(DOCTOR_RAW_MIRROR_VERSION_DIR)
 }
 
-
 pub(crate) fn doctor_raw_mirror_root_relative_path() -> String {
     format!("{DOCTOR_RAW_MIRROR_ROOT_DIR}/{DOCTOR_RAW_MIRROR_VERSION_DIR}")
 }
-
 
 pub(crate) fn doctor_raw_mirror_layout_report() -> DoctorRawMirrorLayoutReport {
     DoctorRawMirrorLayoutReport {
@@ -454,7 +428,6 @@ pub(crate) fn doctor_raw_mirror_layout_report() -> DoctorRawMirrorLayoutReport {
         migration_contract: "schema_version and raw-mirror/vN keep future layouts side-by-side; v1 manifests without content_storage remain whole-blob captures, while new large-source manifests declare fixed_chunks_v1 metadata".to_string(),
     }
 }
-
 
 pub(crate) fn doctor_raw_mirror_policy_report() -> DoctorRawMirrorPolicyReport {
     DoctorRawMirrorPolicyReport {
@@ -586,7 +559,6 @@ pub(crate) fn doctor_raw_mirror_policy_report() -> DoctorRawMirrorPolicyReport {
     }
 }
 
-
 pub(crate) fn doctor_raw_mirror_blob_relative_path(blob_blake3: &str) -> Option<String> {
     if blob_blake3.len() != 64 || !blob_blake3.chars().all(|c| c.is_ascii_hexdigit()) {
         return None;
@@ -601,11 +573,9 @@ pub(crate) fn doctor_raw_mirror_blob_relative_path(blob_blake3: &str) -> Option<
     ))
 }
 
-
 pub(crate) fn doctor_raw_mirror_manifest_relative_path(manifest_id: &str) -> String {
     format!("manifests/{manifest_id}.json")
 }
-
 
 pub(crate) fn doctor_raw_mirror_original_path_blake3(original_path: &str) -> String {
     let mut hasher = blake3::Hasher::new();
@@ -614,7 +584,6 @@ pub(crate) fn doctor_raw_mirror_original_path_blake3(original_path: &str) -> Str
     hasher.update(original_path.as_bytes());
     hasher.finalize().to_hex().to_string()
 }
-
 
 pub(crate) fn doctor_raw_mirror_manifest_id(
     provider: &str,
@@ -637,7 +606,6 @@ pub(crate) fn doctor_raw_mirror_manifest_id(
     )
 }
 
-
 pub(crate) fn doctor_raw_mirror_manifest_blake3(manifest: &DoctorRawMirrorManifestFile) -> String {
     let mut value = serde_json::to_value(manifest).unwrap_or_default();
     if let serde_json::Value::Object(map) = &mut value {
@@ -645,7 +613,6 @@ pub(crate) fn doctor_raw_mirror_manifest_blake3(manifest: &DoctorRawMirrorManife
     }
     doctor_canonical_blake3("doctor-raw-mirror-manifest-v1", value)
 }
-
 
 pub(crate) fn doctor_raw_mirror_validate_relative_path(
     relative: &str,
@@ -676,7 +643,6 @@ pub(crate) fn doctor_raw_mirror_validate_relative_path(
     Ok(cleaned)
 }
 
-
 pub(crate) fn doctor_raw_mirror_unique_db_links(
     links: &[DoctorRawMirrorDbLink],
 ) -> Vec<DoctorRawMirrorDbLink> {
@@ -699,23 +665,26 @@ pub(crate) fn doctor_raw_mirror_unique_db_links(
     dedup
 }
 
-
 #[cfg(unix)]
-pub(crate) fn doctor_same_open_file_identity(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+pub(crate) fn doctor_same_open_file_identity(
+    left: &std::fs::Metadata,
+    right: &std::fs::Metadata,
+) -> bool {
     use std::os::unix::fs::MetadataExt as _;
 
     left.is_file() && right.is_file() && left.dev() == right.dev() && left.ino() == right.ino()
 }
 
-
 #[cfg(not(unix))]
-pub(crate) fn doctor_same_open_file_identity(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+pub(crate) fn doctor_same_open_file_identity(
+    left: &std::fs::Metadata,
+    right: &std::fs::Metadata,
+) -> bool {
     left.is_file()
         && right.is_file()
         && left.len() == right.len()
         && left.modified().ok() == right.modified().ok()
 }
-
 
 pub(crate) fn doctor_open_regular_file_for_read(path: &Path) -> io::Result<std::fs::File> {
     let expected_metadata = std::fs::symlink_metadata(path)?;
@@ -747,7 +716,6 @@ pub(crate) fn doctor_open_regular_file_for_read(path: &Path) -> io::Result<std::
     Ok(file)
 }
 
-
 pub(crate) fn doctor_file_blake3(path: &Path) -> io::Result<String> {
     let mut file = doctor_open_regular_file_for_read(path)?;
     let mut hasher = blake3::Hasher::new();
@@ -761,7 +729,6 @@ pub(crate) fn doctor_file_blake3(path: &Path) -> io::Result<String> {
     }
     Ok(hasher.finalize().to_hex().to_string())
 }
-
 
 pub(crate) fn doctor_raw_mirror_invalid_manifest_report(
     data_dir: &Path,
@@ -813,7 +780,6 @@ pub(crate) fn doctor_raw_mirror_invalid_manifest_report(
         invalid_reason: Some(reason),
     }
 }
-
 
 pub(crate) fn doctor_raw_mirror_loaded_invalid_manifest_report(
     data_dir: &Path,
@@ -868,7 +834,6 @@ pub(crate) fn doctor_raw_mirror_loaded_invalid_manifest_report(
         invalid_reason: Some(reason),
     }
 }
-
 
 pub(crate) fn doctor_verify_raw_mirror_manifest(
     data_dir: &Path,
@@ -1136,7 +1101,6 @@ pub(crate) fn doctor_verify_raw_mirror_manifest(
     }
 }
 
-
 pub(crate) fn doctor_raw_mirror_count_interrupted_captures(root: &Path) -> usize {
     let tmp_dir = root.join("tmp");
     walkdir::WalkDir::new(tmp_dir)
@@ -1148,7 +1112,6 @@ pub(crate) fn doctor_raw_mirror_count_interrupted_captures(root: &Path) -> usize
         .count()
 }
 
-
 pub(crate) fn doctor_raw_mirror_size_warn_threshold_bytes() -> u64 {
     dotenvy::var(CASS_RAW_MIRROR_SIZE_WARN_THRESHOLD_BYTES)
         .ok()
@@ -1156,15 +1119,16 @@ pub(crate) fn doctor_raw_mirror_size_warn_threshold_bytes() -> u64 {
         .unwrap_or(DOCTOR_RAW_MIRROR_SIZE_WARN_THRESHOLD_BYTES_DEFAULT)
 }
 
-
-pub(crate) fn doctor_raw_mirror_size_warning(total_blob_bytes: u64, threshold_bytes: u64) -> Option<String> {
+pub(crate) fn doctor_raw_mirror_size_warning(
+    total_blob_bytes: u64,
+    threshold_bytes: u64,
+) -> Option<String> {
     (threshold_bytes > 0 && total_blob_bytes >= threshold_bytes).then(|| {
         format!(
             "raw_mirror.size: verified raw-mirror blobs use {total_blob_bytes} bytes, at or above the warn threshold of {threshold_bytes} bytes; inspect `cass mirror prune --keep-latest 1 --json`, which retires superseded captures and keeps the newest capture of every source file, and apply only after reviewing the plan"
         )
     })
 }
-
 
 #[derive(Debug, Default)]
 pub(crate) struct DoctorRawMirrorSourceAmplificationAccumulator {
@@ -1177,14 +1141,12 @@ pub(crate) struct DoctorRawMirrorSourceAmplificationAccumulator {
     pub(crate) blobs: BTreeMap<String, u64>,
 }
 
-
 #[derive(Debug)]
 pub(crate) struct DoctorRawMirrorBoundedAmplificationScan {
     pub(crate) reports: Vec<DoctorRawMirrorSourceAmplificationReport>,
     pub(crate) scanned_manifest_count: usize,
     pub(crate) truncated: bool,
 }
-
 
 pub(crate) fn doctor_raw_mirror_source_amplification_reports(
     manifests: &[DoctorRawMirrorManifestReport],
@@ -1213,7 +1175,6 @@ pub(crate) fn doctor_raw_mirror_source_amplification_reports(
         excess_warn_threshold_bytes,
     )
 }
-
 
 pub(crate) fn doctor_raw_mirror_source_amplification_reports_from_versions(
     versions: &[DoctorRawMirrorSourceAmplificationVersion],
@@ -1315,7 +1276,6 @@ pub(crate) fn doctor_raw_mirror_source_amplification_reports_from_versions(
     });
     reports
 }
-
 
 /// Read the cheap, integrity-bound subset needed for a storage-amplification
 /// warning without hashing the entire raw blob. This is deliberately not a
@@ -1496,7 +1456,6 @@ pub(crate) fn doctor_raw_mirror_amplification_version_from_manifest_path(
     })
 }
 
-
 pub(crate) fn doctor_raw_mirror_bounded_amplification_reports(
     data_dir: &Path,
     root: &Path,
@@ -1519,13 +1478,11 @@ pub(crate) fn doctor_raw_mirror_bounded_amplification_reports(
     )
 }
 
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DoctorRawMirrorBoundedScanLimits {
     pub(crate) manifest_count: usize,
     pub(crate) byte_count: u64,
 }
-
 
 pub(crate) fn doctor_raw_mirror_bounded_amplification_reports_with_limits(
     data_dir: &Path,
@@ -1582,7 +1539,6 @@ pub(crate) fn doctor_raw_mirror_bounded_amplification_reports_with_limits(
     }
 }
 
-
 pub(crate) fn doctor_raw_mirror_apply_source_amplification_reports(
     report: &mut DoctorRawMirrorReport,
     amplified_sources: Vec<DoctorRawMirrorSourceAmplificationReport>,
@@ -1624,7 +1580,6 @@ pub(crate) fn doctor_raw_mirror_apply_source_amplification_reports(
     }
 }
 
-
 pub(crate) fn doctor_raw_mirror_full_verify_requested() -> bool {
     dotenvy::var(CASS_DOCTOR_RAW_MIRROR_FULL_VERIFY)
         .ok()
@@ -1636,7 +1591,6 @@ pub(crate) fn doctor_raw_mirror_full_verify_requested() -> bool {
         })
 }
 
-
 pub(crate) fn doctor_raw_mirror_full_verify_manifest_limit() -> usize {
     dotenvy::var(CASS_DOCTOR_RAW_MIRROR_FULL_VERIFY_MANIFEST_LIMIT)
         .ok()
@@ -1644,7 +1598,6 @@ pub(crate) fn doctor_raw_mirror_full_verify_manifest_limit() -> usize {
         .filter(|&limit| limit > 0)
         .unwrap_or(DOCTOR_RAW_MIRROR_DEFAULT_FULL_VERIFY_MANIFEST_LIMIT)
 }
-
 
 pub(crate) fn doctor_raw_mirror_full_verify_byte_limit() -> u64 {
     dotenvy::var(CASS_DOCTOR_RAW_MIRROR_FULL_VERIFY_BYTE_LIMIT)
@@ -1654,8 +1607,9 @@ pub(crate) fn doctor_raw_mirror_full_verify_byte_limit() -> u64 {
         .unwrap_or(DOCTOR_RAW_MIRROR_DEFAULT_FULL_VERIFY_BYTE_LIMIT)
 }
 
-
-pub(crate) fn doctor_raw_mirror_estimated_verification_bytes(manifest_entries: &[(PathBuf, bool)]) -> u64 {
+pub(crate) fn doctor_raw_mirror_estimated_verification_bytes(
+    manifest_entries: &[(PathBuf, bool)],
+) -> u64 {
     let mut estimated_bytes = 0_u64;
     for (path, is_symlink) in manifest_entries {
         if *is_symlink {
@@ -1689,7 +1643,6 @@ pub(crate) fn doctor_raw_mirror_estimated_verification_bytes(manifest_entries: &
     estimated_bytes
 }
 
-
 pub(crate) fn collect_doctor_raw_mirror_report_for_doctor(
     data_dir: &Path,
     mutating_repair_requested: bool,
@@ -1709,7 +1662,6 @@ pub(crate) fn collect_doctor_raw_mirror_report_for_doctor(
     )
 }
 
-
 pub(crate) fn collect_doctor_raw_mirror_report(data_dir: &Path) -> DoctorRawMirrorReport {
     collect_doctor_raw_mirror_report_with_threshold_and_mode(
         data_dir,
@@ -1717,7 +1669,6 @@ pub(crate) fn collect_doctor_raw_mirror_report(data_dir: &Path) -> DoctorRawMirr
         DoctorRawMirrorVerificationMode::Full,
     )
 }
-
 
 #[cfg(test)]
 pub(crate) fn collect_doctor_raw_mirror_report_with_threshold(
@@ -1730,7 +1681,6 @@ pub(crate) fn collect_doctor_raw_mirror_report_with_threshold(
         DoctorRawMirrorVerificationMode::Full,
     )
 }
-
 
 pub(crate) fn collect_doctor_raw_mirror_report_with_threshold_and_mode(
     data_dir: &Path,
@@ -1745,7 +1695,6 @@ pub(crate) fn collect_doctor_raw_mirror_report_with_threshold_and_mode(
         verification_mode,
     )
 }
-
 
 #[cfg(test)]
 pub(crate) fn collect_doctor_raw_mirror_report_with_amplification_thresholds(

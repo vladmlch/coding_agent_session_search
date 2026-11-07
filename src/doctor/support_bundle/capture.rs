@@ -5,20 +5,17 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
-
-
 pub(crate) fn doctor_support_bundle_relative_path_is_safe(relative_path: &str) -> bool {
     doctor_forensic_relative_path_is_safe(Path::new(relative_path))
 }
-
 
 pub(crate) fn doctor_support_bundle_artifact_path(
     bundle_dir: &Path,
@@ -31,7 +28,6 @@ pub(crate) fn doctor_support_bundle_artifact_path(
     }
     Ok(bundle_dir.join(relative_path))
 }
-
 
 pub(crate) fn doctor_support_bundle_existing_artifact_metadata(
     bundle_dir: &Path,
@@ -73,7 +69,6 @@ pub(crate) fn doctor_support_bundle_existing_artifact_metadata(
     }
 }
 
-
 pub(crate) fn doctor_support_bundle_file_artifact(
     bundle_dir: &Path,
     spec: DoctorSupportBundleArtifactSpec<'_>,
@@ -113,7 +108,6 @@ pub(crate) fn doctor_support_bundle_file_artifact(
     })
 }
 
-
 pub(crate) fn doctor_support_bundle_write_json_artifact(
     artifacts: &mut Vec<DoctorSupportBundleArtifact>,
     bundle_dir: &Path,
@@ -141,7 +135,6 @@ pub(crate) fn doctor_support_bundle_write_json_artifact(
     Ok(())
 }
 
-
 pub(crate) fn doctor_support_bundle_latest_failure_context(data_dir: &Path) -> Option<PathBuf> {
     let root = data_dir.join("doctor").join("failures");
     if !root.exists() {
@@ -165,7 +158,6 @@ pub(crate) fn doctor_support_bundle_latest_failure_context(data_dir: &Path) -> O
         .max_by_key(|(modified, _)| *modified)
         .map(|(_, path)| path)
 }
-
 
 pub(crate) fn doctor_support_bundle_artifact_summaries(
     data_dir: &Path,
@@ -203,7 +195,6 @@ pub(crate) fn doctor_support_bundle_artifact_summaries(
         "redaction_status": "redacted_metadata_only",
     })
 }
-
 
 pub(crate) fn doctor_support_bundle_excluded_artifacts() -> Vec<serde_json::Value> {
     [
@@ -256,7 +247,6 @@ pub(crate) fn doctor_support_bundle_excluded_artifacts() -> Vec<serde_json::Valu
     .collect()
 }
 
-
 pub(crate) fn doctor_support_bundle_redaction_summary(
     included_artifacts: &[DoctorSupportBundleArtifact],
     excluded_artifacts: &[serde_json::Value],
@@ -283,7 +273,6 @@ pub(crate) fn doctor_support_bundle_redaction_summary(
     })
 }
 
-
 pub(crate) fn doctor_support_bundle_manifest_path_from_input(path: &Path) -> PathBuf {
     if path.is_dir() {
         path.join("manifest.json")
@@ -291,7 +280,6 @@ pub(crate) fn doctor_support_bundle_manifest_path_from_input(path: &Path) -> Pat
         path.to_path_buf()
     }
 }
-
 
 pub(crate) fn doctor_support_bundle_failed_verify_status(
     manifest_path: &Path,
@@ -319,7 +307,6 @@ pub(crate) fn doctor_support_bundle_failed_verify_status(
         }],
     })
 }
-
 
 pub(crate) fn doctor_support_bundle_verify_path(
     manifest_or_bundle_path: &Path,
@@ -563,7 +550,6 @@ pub(crate) fn doctor_support_bundle_verify_path(
     })
 }
 
-
 pub(crate) fn doctor_support_bundle_include_sensitive_attachments(
     artifacts: &mut Vec<DoctorSupportBundleArtifact>,
     bundle_dir: &Path,
@@ -731,7 +717,6 @@ pub(crate) fn doctor_support_bundle_include_sensitive_attachments(
     Ok(opt_ins)
 }
 
-
 pub(crate) fn doctor_support_bundle_event_log(
     operation_id: &str,
     bundle_dir: &Path,
@@ -814,7 +799,6 @@ pub(crate) fn doctor_support_bundle_event_log(
     );
     doctor_event_log_from_events("embedded_support_bundle_events", events)
 }
-
 
 pub(crate) fn run_doctor_support_bundle_impl(
     request: DoctorSupportBundleRequest,

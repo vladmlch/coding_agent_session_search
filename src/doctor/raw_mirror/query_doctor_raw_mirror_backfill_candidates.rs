@@ -3,20 +3,18 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::franken_sync::compat::{
+        ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
+        open_with_flags as open_franken_with_flags,
+    };
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn query_doctor_raw_mirror_backfill_candidates(
     conn: &crate::franken_sync::Connection,
@@ -124,7 +122,6 @@ pub(crate) fn query_doctor_raw_mirror_backfill_candidates(
     Ok(candidates)
 }
 
-
 /// Visit every message's conversation id in one streaming pass, for callers
 /// that need per-conversation message counts across many conversations.
 /// FrankenSQLite runs a correlated or grouped COUNT over messages as a scan
@@ -163,14 +160,12 @@ pub(crate) fn for_each_message_conversation_id(
     )
 }
 
-
 pub(crate) fn doctor_raw_mirror_backfill_source_path_blake3(path: &str) -> String {
     doctor_canonical_blake3(
         "doctor-raw-mirror-backfill-source-path-v1",
         serde_json::json!({ "source_path": path }),
     )
 }
-
 
 pub(crate) fn doctor_raw_mirror_backfill_source_key(
     source_id: &str,
@@ -189,8 +184,9 @@ pub(crate) fn doctor_raw_mirror_backfill_source_key(
     )
 }
 
-
-pub(crate) fn doctor_raw_mirror_backfill_record_id(candidate: &DoctorRawMirrorBackfillCandidate) -> String {
+pub(crate) fn doctor_raw_mirror_backfill_record_id(
+    candidate: &DoctorRawMirrorBackfillCandidate,
+) -> String {
     doctor_canonical_blake3(
         "doctor-raw-mirror-backfill-record-v1",
         serde_json::json!({
@@ -203,7 +199,6 @@ pub(crate) fn doctor_raw_mirror_backfill_record_id(candidate: &DoctorRawMirrorBa
         }),
     )
 }
-
 
 pub(crate) fn doctor_raw_mirror_backfill_source_stat(
     path: &Path,
@@ -247,13 +242,13 @@ pub(crate) fn doctor_raw_mirror_backfill_source_stat(
     }
 }
 
-
-pub(crate) fn doctor_raw_mirror_manifest_is_verified(manifest: &DoctorRawMirrorManifestReport) -> bool {
+pub(crate) fn doctor_raw_mirror_manifest_is_verified(
+    manifest: &DoctorRawMirrorManifestReport,
+) -> bool {
     manifest.status == "verified"
         && manifest.blob_checksum_status == DoctorArtifactChecksumStatus::Matched
         && manifest.manifest_checksum_status == DoctorArtifactChecksumStatus::Matched
 }
-
 
 pub(crate) fn doctor_raw_mirror_existing_evidence(
     manifest: &DoctorRawMirrorManifestReport,
@@ -273,7 +268,6 @@ pub(crate) fn doctor_raw_mirror_existing_evidence(
         db_linked,
     }
 }
-
 
 /// Raw-mirror evidence for archive conversations, keyed by `(conversation_id,
 /// source path)`, and evidence by source key. A db link names a conversation
@@ -341,7 +335,6 @@ pub(crate) fn doctor_raw_mirror_existing_evidence_maps(
     (by_conversation_id, by_source_key)
 }
 
-
 pub(crate) fn doctor_raw_mirror_evidence_is_newer(
     candidate: &DoctorRawMirrorExistingEvidence,
     current: &DoctorRawMirrorExistingEvidence,
@@ -357,7 +350,6 @@ pub(crate) fn doctor_raw_mirror_evidence_is_newer(
     )
 }
 
-
 pub(crate) fn doctor_raw_mirror_backfill_db_link(
     candidate: &DoctorRawMirrorBackfillCandidate,
     source_path: Option<&str>,
@@ -369,7 +361,6 @@ pub(crate) fn doctor_raw_mirror_backfill_db_link(
         started_at_ms: candidate.started_at_ms,
     }
 }
-
 
 pub(crate) fn doctor_raw_mirror_backfill_receipt_base(
     data_dir: &Path,
@@ -398,7 +389,6 @@ pub(crate) fn doctor_raw_mirror_backfill_receipt_base(
     }
 }
 
-
 pub(crate) fn doctor_raw_mirror_backfill_mark_existing_evidence(
     receipt: &mut DoctorRawMirrorBackfillReceipt,
     evidence: &DoctorRawMirrorExistingEvidence,
@@ -419,7 +409,6 @@ pub(crate) fn doctor_raw_mirror_backfill_mark_existing_evidence(
             .push("existing raw mirror manifest has no source mtime snapshot".to_string());
     }
 }
-
 
 pub(crate) fn doctor_raw_mirror_backfill_live_source_changed(
     receipt: &mut DoctorRawMirrorBackfillReceipt,
@@ -450,7 +439,6 @@ pub(crate) fn doctor_raw_mirror_backfill_live_source_changed(
     }
     changed
 }
-
 
 pub(crate) fn doctor_raw_mirror_backfill_candidate_receipt(
     data_dir: &Path,
@@ -685,13 +673,11 @@ pub(crate) fn doctor_raw_mirror_backfill_candidate_receipt(
     receipt
 }
 
-
 pub(crate) fn doctor_raw_mirror_backfill_receipt_would_mutate(
     receipt: &DoctorRawMirrorBackfillReceipt,
 ) -> bool {
     receipt.action == "would_capture_live_source" || receipt.action.contains("_needs_db_link")
 }
-
 
 pub(crate) fn accumulate_doctor_raw_mirror_backfill_receipt(
     report: &mut DoctorRawMirrorBackfillReport,
@@ -740,7 +726,6 @@ pub(crate) fn accumulate_doctor_raw_mirror_backfill_receipt(
     }
     report.receipts.push(receipt);
 }
-
 
 pub(crate) fn collect_doctor_raw_mirror_backfill_report(
     data_dir: &Path,
@@ -923,7 +908,6 @@ pub(crate) fn collect_doctor_raw_mirror_backfill_report(
     report
 }
 
-
 pub(crate) fn doctor_raw_mirror_backfill_deferred(
     apply: bool,
     reason: &str,
@@ -953,7 +937,6 @@ pub(crate) fn doctor_raw_mirror_backfill_deferred(
     }
 }
 
-
 pub(crate) fn collect_doctor_raw_mirror_backfill_report_for_doctor(
     data_dir: &Path,
     db_path: &Path,
@@ -977,7 +960,6 @@ pub(crate) fn collect_doctor_raw_mirror_backfill_report_for_doctor(
     }
     collect_doctor_raw_mirror_backfill_report(data_dir, db_path, raw_mirror, apply)
 }
-
 
 pub(crate) fn doctor_coverage_confidence_tier(
     archive_conversation_count: usize,

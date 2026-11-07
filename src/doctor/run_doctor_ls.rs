@@ -5,14 +5,12 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 /// World-class-doctor pass-2: `cass doctor --ls`. Read-only; lists per-run
 /// artifact directories under `<data_dir>/doctor/runs/`. Output is JSON when
@@ -78,7 +76,6 @@ pub(crate) fn run_doctor_ls(
     }
     Ok(())
 }
-
 
 /// World-class-doctor pass-2: `cass doctor --undo <run-id>`. Walks
 /// `<run-dir>/actions.jsonl` in reverse and restores byte-identically. The
@@ -278,7 +275,6 @@ pub(crate) fn run_doctor_undo(
     Ok(())
 }
 
-
 /// World-class-doctor pass-3: `cass doctor --robot-triage`. Read-only
 /// mega-command that returns ONE envelope with everything an agent needs to
 /// make a decision in a single round-trip.
@@ -439,7 +435,6 @@ pub(crate) fn run_doctor_robot_triage(
     }
     Ok(())
 }
-
 
 /// World-class-doctor pass-3: `cass doctor --diff [<REF>]`. Read-only diff
 /// surface. Pass-3 ships a minimal implementation that surfaces the action
@@ -610,7 +605,6 @@ pub(crate) fn run_doctor_diff(
     Ok(())
 }
 
-
 /// Pass-9 helper: compare two runs by their actions.jsonl contents. Returns
 /// added/removed/changed mutations from `a_ref` to `b_ref`. Read-only.
 pub(crate) fn diff_run_to_run(
@@ -734,7 +728,6 @@ pub(crate) fn diff_run_to_run(
     Ok(())
 }
 
-
 /// Pass-9 helper: blake3 of a file by path. Returns None if the file is
 /// missing or unreadable. Used by --diff to detect post-run drift.
 pub(crate) fn doctor_diff_blake3_of_file(path: &std::path::Path) -> Option<String> {
@@ -743,7 +736,6 @@ pub(crate) fn doctor_diff_blake3_of_file(path: &std::path::Path) -> Option<Strin
     h.update(&bytes);
     Some(h.finalize().to_hex().to_string())
 }
-
 
 /// World-class-doctor pass-3: `cass doctor --gc-before <ISO8601> --yes`.
 /// Quarantines runs older than `before_iso` into
@@ -867,7 +859,6 @@ pub(crate) fn run_doctor_gc(
     Ok(())
 }
 
-
 pub(crate) fn current_unix_ms_for_gc() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -875,7 +866,6 @@ pub(crate) fn current_unix_ms_for_gc() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or_default()
 }
-
 
 /// World-class-doctor pass-6: `cass doctor --watch`. Long-running monitor
 /// that re-reads `<data_dir>/doctor/runs/` on a poll interval and emits one
@@ -969,7 +959,6 @@ pub(crate) fn run_doctor_watch(
     }
     Ok(())
 }
-
 
 /// World-class-doctor pass-8: `cass doctor --explain <run-id>`. Returns a
 /// single JSON envelope describing every recorded action in the run plus a
@@ -1103,13 +1092,14 @@ pub(crate) fn run_doctor_explain(
     Ok(())
 }
 
-
 /// World-class-doctor pass-8: `cass doctor --emit-capabilities`. Returns the
 /// extended capability surface (detectors[], fixers[], exit_codes[],
 /// data_paths[], env_vars[]) the agent surface promises. Pass-8 ships a
 /// stable enumeration of the canonical surface; future passes refine the
 /// per-detector / per-fixer metadata.
-pub(crate) fn run_doctor_emit_capabilities(structured_format: Option<RobotFormat>) -> CliResult<()> {
+pub(crate) fn run_doctor_emit_capabilities(
+    structured_format: Option<RobotFormat>,
+) -> CliResult<()> {
     let envelope = serde_json::json!({
         "schema_version": 2,
         "doctor_contract_version": 1,
@@ -1246,7 +1236,6 @@ pub(crate) fn run_doctor_emit_capabilities(structured_format: Option<RobotFormat
     Ok(())
 }
 
-
 /// Best-effort ISO8601 parser. Accepts `YYYY-MM-DDTHH:MM:SSZ` and
 /// `YYYY-MM-DD` (midnight-Z assumed). Returns ms since epoch.
 pub(crate) fn parse_iso8601_to_unix_ms(s: &str) -> Option<i64> {
@@ -1259,7 +1248,6 @@ pub(crate) fn parse_iso8601_to_unix_ms(s: &str) -> Option<i64> {
             Some(ndt.and_utc().timestamp_millis())
         })
 }
-
 
 pub(crate) fn run_doctor_archive_export_impl(
     request: DoctorArchiveExportRequest,

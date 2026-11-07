@@ -3,19 +3,17 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
-pub(crate) use anyhow::Result;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::franken_sync::compat::{
+        ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
+        open_with_flags as open_franken_with_flags,
+    };
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorBackupManifestRecord {
@@ -24,7 +22,6 @@ pub(crate) struct DoctorBackupManifestRecord {
     pub(crate) manifest: serde_json::Value,
     pub(crate) manifest_blake3: Option<String>,
 }
-
 
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorBackupArtifactVerification {
@@ -36,7 +33,6 @@ pub(crate) struct DoctorBackupArtifactVerification {
     pub(crate) status: String,
     pub(crate) error: Option<String>,
 }
-
 
 #[derive(Debug, Clone)]
 pub(crate) struct DoctorBackupVerification {
@@ -62,7 +58,6 @@ pub(crate) struct DoctorBackupVerification {
     pub(crate) blocked_reasons: Vec<String>,
 }
 
-
 pub(crate) fn doctor_backup_id_is_safe(backup_id: &str) -> bool {
     !backup_id.is_empty()
         && backup_id
@@ -70,14 +65,16 @@ pub(crate) fn doctor_backup_id_is_safe(backup_id: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
 }
 
-
 pub(crate) fn doctor_path_has_parent_component(path: &Path) -> bool {
     path.components()
         .any(|component| matches!(component, std::path::Component::ParentDir))
 }
 
-
-pub(crate) fn doctor_backup_artifact_path_is_safe(path: &Path, backup_dir: &Path, data_dir: &Path) -> bool {
+pub(crate) fn doctor_backup_artifact_path_is_safe(
+    path: &Path,
+    backup_dir: &Path,
+    data_dir: &Path,
+) -> bool {
     if path == backup_dir || !path.starts_with(backup_dir) || doctor_path_has_parent_component(path)
     {
         return false;
@@ -99,7 +96,6 @@ pub(crate) fn doctor_backup_artifact_path_is_safe(path: &Path, backup_dir: &Path
     };
     canonical_path.starts_with(canonical_backup_dir)
 }
-
 
 pub(crate) fn doctor_backup_manifest_record_from_path(
     data_dir: &Path,
@@ -143,8 +139,9 @@ pub(crate) fn doctor_backup_manifest_record_from_path(
     })
 }
 
-
-pub(crate) fn collect_doctor_backup_manifest_records(data_dir: &Path) -> Vec<DoctorBackupManifestRecord> {
+pub(crate) fn collect_doctor_backup_manifest_records(
+    data_dir: &Path,
+) -> Vec<DoctorBackupManifestRecord> {
     let root = doctor_candidate_promotion_root(data_dir);
     let mut records = Vec::new();
     let Ok(entries) = std::fs::read_dir(&root) else {
@@ -181,7 +178,6 @@ pub(crate) fn collect_doctor_backup_manifest_records(data_dir: &Path) -> Vec<Doc
     records
 }
 
-
 pub(crate) fn find_doctor_backup_manifest_record(
     data_dir: &Path,
     backup_id: &str,
@@ -204,7 +200,6 @@ pub(crate) fn find_doctor_backup_manifest_record(
         .ok_or_else(|| format!("backup id {backup_id:?} was not found"))
 }
 
-
 pub(crate) fn doctor_backup_artifact_verification_value(
     data_dir: &Path,
     artifact: &DoctorBackupArtifactVerification,
@@ -222,7 +217,6 @@ pub(crate) fn doctor_backup_artifact_verification_value(
         "error": artifact.error,
     })
 }
-
 
 pub(crate) fn doctor_backup_verification_value(
     data_dir: &Path,
@@ -256,7 +250,6 @@ pub(crate) fn doctor_backup_verification_value(
         "blocked_reasons": verification.blocked_reasons,
     })
 }
-
 
 /// The engine must inspect the same bundle that restore will copy. An adjacent
 /// WAL can contain committed rows even when the main database file is unchanged;
@@ -312,7 +305,6 @@ pub(crate) fn doctor_backup_source_bundle_is_complete(
     }
     Ok(())
 }
-
 
 pub(crate) fn verify_doctor_backup_record(
     data_dir: &Path,
@@ -596,7 +588,6 @@ pub(crate) fn verify_doctor_backup_record(
     verification
 }
 
-
 pub(crate) fn doctor_restore_fingerprint_inputs(
     backup_id: &str,
     verification: &DoctorBackupVerification,
@@ -613,7 +604,6 @@ pub(crate) fn doctor_restore_fingerprint_inputs(
         "current_live_inventory": live_inventory,
     })
 }
-
 
 pub(crate) fn doctor_restore_plan_payload(
     data_dir: &Path,
@@ -669,7 +659,6 @@ pub(crate) fn doctor_restore_plan_payload(
         plan_fingerprint,
     )
 }
-
 
 pub(crate) fn copy_doctor_backup_restore_bundle(
     verification: &DoctorBackupVerification,
@@ -753,7 +742,6 @@ pub(crate) fn copy_doctor_backup_restore_bundle(
     doctor_backup_source_bundle_is_complete(verification)?;
     Ok(checksum_set)
 }
-
 
 /// Read only the private, checksum-matched copy. The narrow engine constructor
 /// may rebuild its derived SHM; it cannot write database pages or WAL frames and
@@ -883,7 +871,6 @@ pub(crate) fn validate_doctor_backup_restore_candidate(
     Ok(())
 }
 
-
 pub(crate) fn write_doctor_restore_candidate_manifest(
     db_path: &Path,
     index_path: &Path,
@@ -917,7 +904,6 @@ pub(crate) fn write_doctor_restore_candidate_manifest(
         "doctor backup restore candidate manifest",
     )
 }
-
 
 pub(crate) fn run_doctor_backup_restore_rehearsal(
     data_dir: &Path,
@@ -1014,7 +1000,6 @@ pub(crate) fn run_doctor_backup_restore_rehearsal(
     })
 }
 
-
 pub(crate) fn doctor_restore_apply_payload_with_receipt(
     data_dir: &Path,
     backup_id: &str,
@@ -1035,7 +1020,6 @@ pub(crate) fn doctor_restore_apply_payload_with_receipt(
     );
     payload
 }
-
 
 pub(crate) fn doctor_backups_event_log(
     command: doctor::DoctorBackupCommand,
@@ -1101,7 +1085,6 @@ pub(crate) fn doctor_backups_event_log(
     );
     doctor_event_log_from_events("embedded_backup_events", events)
 }
-
 
 pub(crate) fn run_doctor_backup_restore_apply(
     data_dir: &Path,
@@ -1221,7 +1204,6 @@ pub(crate) fn run_doctor_backup_restore_apply(
         }),
     )
 }
-
 
 pub(crate) fn run_doctor_backups_impl(
     data_dir_override: &Option<PathBuf>,
@@ -1409,7 +1391,6 @@ pub(crate) fn run_doctor_backups_impl(
     }
     Ok(())
 }
-
 
 pub(crate) fn validate_doctor_diagnostic_read_only_controls(
     surface: &str,

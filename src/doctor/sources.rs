@@ -5,20 +5,18 @@ use super::*;
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
-pub(crate) use anyhow::Result;
-pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use crate::franken_sync::compat::{
+        ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
+        open_with_flags as open_franken_with_flags,
+    };
+    pub(crate) use crate::model::cli_error_kind::ErrorKind as CliErrorKind;
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn doctor_source_authority_policy(
     authority: DoctorSourceAuthorityKind,
@@ -28,7 +26,6 @@ pub(crate) fn doctor_source_authority_policy(
         .find(|policy| policy.authority == authority)
         .expect("doctor source authority policy table must cover every authority")
 }
-
 
 pub(crate) fn doctor_source_authority_matrix_report() -> Vec<DoctorSourceAuthorityMatrixEntry> {
     DOCTOR_SOURCE_AUTHORITY_POLICY_TABLE
@@ -43,7 +40,6 @@ pub(crate) fn doctor_source_authority_matrix_report() -> Vec<DoctorSourceAuthori
         })
         .collect()
 }
-
 
 pub(crate) fn doctor_source_inventory_stable_id(
     provider: &str,
@@ -64,8 +60,10 @@ pub(crate) fn doctor_source_inventory_stable_id(
     )
 }
 
-
-pub(crate) fn doctor_table_columns(conn: &crate::franken_sync::Connection, table: &str) -> HashSet<String> {
+pub(crate) fn doctor_table_columns(
+    conn: &crate::franken_sync::Connection,
+    table: &str,
+) -> HashSet<String> {
     if !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return HashSet::new();
     }
@@ -78,7 +76,6 @@ pub(crate) fn doctor_table_columns(conn: &crate::franken_sync::Connection, table
     .into_iter()
     .collect()
 }
-
 
 pub(crate) fn query_doctor_source_inventory_db_rows(
     conn: &crate::franken_sync::Connection,
@@ -155,7 +152,6 @@ pub(crate) fn query_doctor_source_inventory_db_rows(
         })
     })
 }
-
 
 pub(crate) fn build_doctor_source_inventory_report(
     data_dir: &Path,
@@ -338,8 +334,10 @@ pub(crate) fn build_doctor_source_inventory_report(
     report
 }
 
-
-pub(crate) fn collect_doctor_source_inventory(data_dir: &Path, db_path: &Path) -> DoctorSourceInventoryReport {
+pub(crate) fn collect_doctor_source_inventory(
+    data_dir: &Path,
+    db_path: &Path,
+) -> DoctorSourceInventoryReport {
     let home = dirs::home_dir().unwrap_or_default();
     let config_dir = dirs::config_dir().unwrap_or_else(|| data_dir.to_path_buf());
     let detected_roots: Vec<_> = diagnostics_connector_paths(&home, &config_dir)
@@ -400,7 +398,6 @@ pub(crate) fn collect_doctor_source_inventory(data_dir: &Path, db_path: &Path) -
     }
 }
 
-
 pub(crate) fn doctor_source_inventory_deferred(reason: &str) -> DoctorSourceInventoryReport {
     DoctorSourceInventoryReport {
         schema_version: 1,
@@ -414,14 +411,12 @@ pub(crate) fn doctor_source_inventory_deferred(reason: &str) -> DoctorSourceInve
     }
 }
 
-
 pub(crate) fn doctor_sources_config_path(data_dir: &Path) -> PathBuf {
     doctor_sources_config_path_from_config_result(
         data_dir,
         crate::sources::config::SourcesConfig::config_path(),
     )
 }
-
 
 pub(crate) fn doctor_sources_config_path_from_config_result(
     data_dir: &Path,
@@ -430,13 +425,11 @@ pub(crate) fn doctor_sources_config_path_from_config_result(
     config_path.unwrap_or_else(|_| data_dir.join("cass").join("sources.toml"))
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DoctorSourcesConfigCheck {
     pub(crate) status: &'static str,
     pub(crate) message: String,
 }
-
 
 pub(crate) fn doctor_sources_config_check(sources_path: &Path) -> DoctorSourcesConfigCheck {
     if !sources_path.exists() {

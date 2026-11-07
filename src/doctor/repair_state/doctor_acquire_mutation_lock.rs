@@ -3,15 +3,13 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use anyhow::Result;
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use anyhow::Result;
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn doctor_acquire_mutation_lock(
     data_dir: &Path,
@@ -93,7 +91,6 @@ pub(crate) fn doctor_acquire_mutation_lock(
     ))
 }
 
-
 pub(crate) fn doctor_acquire_existing_mutation_lock_without_metadata(
     data_dir: &Path,
 ) -> Result<(DoctorMutationLockGuard, DoctorMutationLockObservation), DoctorMutationLockObservation>
@@ -128,7 +125,6 @@ pub(crate) fn doctor_acquire_existing_mutation_lock_without_metadata(
         },
     ))
 }
-
 
 pub(crate) fn doctor_operation_owner_from_maintenance(
     data_dir: &Path,
@@ -212,7 +208,6 @@ pub(crate) fn doctor_operation_owner_from_maintenance(
         },
     })
 }
-
 
 pub(crate) fn doctor_operation_owner_from_doctor_lock(
     data_dir: &Path,
@@ -315,7 +310,6 @@ pub(crate) fn doctor_operation_owner_from_doctor_lock(
     })
 }
 
-
 pub(crate) fn doctor_interrupted_kind_for_path(path: &Path) -> DoctorInterruptedOperationKind {
     let text = path.to_string_lossy().to_ascii_lowercase();
     if text.contains("promot") {
@@ -340,7 +334,6 @@ pub(crate) fn doctor_interrupted_kind_for_path(path: &Path) -> DoctorInterrupted
         DoctorInterruptedOperationKind::Unknown
     }
 }
-
 
 pub(crate) fn doctor_interrupted_report_for_path(
     data_dir: &Path,
@@ -369,7 +362,6 @@ pub(crate) fn doctor_interrupted_report_for_path(
         next_action: next_action.to_string(),
     }
 }
-
 
 pub(crate) fn doctor_push_interrupted_scan_entries(
     reports: &mut Vec<DoctorInterruptedOperationReport>,
@@ -419,13 +411,11 @@ pub(crate) fn doctor_push_interrupted_scan_entries(
     }
 }
 
-
 /// The staging root `cass doctor --cleanup-interrupted-artifacts --yes`
 /// quarantines (every child, renamed under `doctor/quarantine/`, never deleted).
 pub(crate) fn doctor_raw_mirror_capture_staging_root(data_dir: &Path) -> PathBuf {
     data_dir.join("raw-mirror").join("v1").join("tmp")
 }
-
 
 /// GH #497: whether the supported cleanup command clears this interrupted
 /// artifact, so doctor can name that command instead of asking for manual
@@ -435,9 +425,7 @@ pub(crate) fn doctor_interrupted_artifact_is_quarantinable(data_dir: &Path, path
     path.starts_with(doctor_raw_mirror_capture_staging_root(data_dir))
 }
 
-
 pub(crate) const DOCTOR_CLEANUP_INTERRUPTED_ARTIFACTS_NEXT_ACTION: &str = "run cass doctor --cleanup-interrupted-artifacts --yes to quarantine interrupted raw-mirror capture staging (moved under doctor/quarantine/interrupted-artifacts, never deleted), then rerun cass doctor --json";
-
 
 pub(crate) fn doctor_lexical_publish_in_progress_backup_path(index_path: &Path) -> Option<PathBuf> {
     let file_name = index_path.file_name()?.to_string_lossy();

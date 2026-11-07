@@ -3,74 +3,67 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
 
-
-
-
-    #[allow(unused_imports)]
+#[allow(unused_imports)]
 use crate::doctor_baseline_resolve_path;
 #[allow(unused_imports)]
 use std::path::{Path, PathBuf};
 
+pub(crate) fn refused(data_dir: &Path, requested: &str) -> bool {
+    doctor_baseline_resolve_path(data_dir, "id", Some(&PathBuf::from(requested)), false)
+        .is_err_and(|error| error.kind == "usage")
+}
 
-    pub(crate) fn refused(data_dir: &Path, requested: &str) -> bool {
-        doctor_baseline_resolve_path(data_dir, "id", Some(&PathBuf::from(requested)), false)
-            .is_err_and(|error| error.kind == "usage")
-    }
+#[test]
+pub(crate) fn baseline_ids_and_plain_relative_paths_resolve_under_the_baselines_dir() {
+    let data_dir = std::env::temp_dir().join("cass-baseline-paths");
+    let baselines = data_dir.join("doctor").join("baselines");
+    assert_eq!(
+        doctor_baseline_resolve_path(&data_dir, "known-good", None, false).unwrap(),
+        baselines.join("known-good.json")
+    );
+    assert_eq!(
+        doctor_baseline_resolve_path(
+            &data_dir,
+            "id",
+            Some(&PathBuf::from("nested/known-good.json")),
+            false
+        )
+        .unwrap(),
+        baselines.join("nested").join("known-good.json")
+    );
+    assert!(refused(&data_dir, "../escape.json"));
+    assert!(refused(&data_dir, "nested/../../escape.json"));
+}
 
-
-    #[test]
-    pub(crate) fn baseline_ids_and_plain_relative_paths_resolve_under_the_baselines_dir() {
-        let data_dir = std::env::temp_dir().join("cass-baseline-paths");
-        let baselines = data_dir.join("doctor").join("baselines");
-        assert_eq!(
-            doctor_baseline_resolve_path(&data_dir, "known-good", None, false).unwrap(),
-            baselines.join("known-good.json")
-        );
-        assert_eq!(
-            doctor_baseline_resolve_path(
-                &data_dir,
-                "id",
-                Some(&PathBuf::from("nested/known-good.json")),
-                false
-            )
-            .unwrap(),
-            baselines.join("nested").join("known-good.json")
-        );
-        assert!(refused(&data_dir, "../escape.json"));
-        assert!(refused(&data_dir, "nested/../../escape.json"));
-    }
-
-
-    /// Every absolute Windows path has a drive prefix, the data dir's
-    /// included, so refusing any prefix refused every baseline on Windows
-    /// (coding_agent_session_search-if17v).
-    #[cfg(windows)]
-    #[test]
-    pub(crate) fn windows_baselines_keep_the_drive_and_refuse_drive_relative_requests() {
-        let data_dir = PathBuf::from(r"C:\Users\x\cass-data");
-        assert_eq!(
-            doctor_baseline_resolve_path(&data_dir, "known-good", None, false).unwrap(),
-            PathBuf::from(r"C:\Users\x\cass-data\doctor\baselines\known-good.json")
-        );
-        assert_eq!(
-            doctor_baseline_resolve_path(
-                &data_dir,
-                "id",
-                Some(&PathBuf::from(r"D:\exports\known-good.json")),
-                false
-            )
-            .unwrap(),
-            PathBuf::from(r"D:\exports\known-good.json")
-        );
-        // Not absolute on Windows, and `join` would let each replace the
-        // baselines directory.
-        assert!(refused(&data_dir, "D:escape.json"));
-        assert!(refused(&data_dir, r"\escape.json"));
-        assert!(refused(&data_dir, r"D:\exports\..\escape.json"));
-    }
-
+/// Every absolute Windows path has a drive prefix, the data dir's
+/// included, so refusing any prefix refused every baseline on Windows
+/// (coding_agent_session_search-if17v).
+#[cfg(windows)]
+#[test]
+pub(crate) fn windows_baselines_keep_the_drive_and_refuse_drive_relative_requests() {
+    let data_dir = PathBuf::from(r"C:\Users\x\cass-data");
+    assert_eq!(
+        doctor_baseline_resolve_path(&data_dir, "known-good", None, false).unwrap(),
+        PathBuf::from(r"C:\Users\x\cass-data\doctor\baselines\known-good.json")
+    );
+    assert_eq!(
+        doctor_baseline_resolve_path(
+            &data_dir,
+            "id",
+            Some(&PathBuf::from(r"D:\exports\known-good.json")),
+            false
+        )
+        .unwrap(),
+        PathBuf::from(r"D:\exports\known-good.json")
+    );
+    // Not absolute on Windows, and `join` would let each replace the
+    // baselines directory.
+    assert!(refused(&data_dir, "D:escape.json"));
+    assert!(refused(&data_dir, r"\escape.json"));
+    assert!(refused(&data_dir, r"D:\exports\..\escape.json"));
+}

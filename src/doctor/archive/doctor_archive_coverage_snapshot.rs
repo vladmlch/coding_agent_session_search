@@ -3,13 +3,11 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn doctor_archive_coverage_snapshot(
     source_inventory: &DoctorSourceInventoryReport,
@@ -33,7 +31,6 @@ pub(crate) fn doctor_archive_coverage_snapshot(
     }
 }
 
-
 pub(crate) fn doctor_archive_severity_rank(severity: &str) -> u8 {
     match severity {
         "critical" => 4,
@@ -43,7 +40,6 @@ pub(crate) fn doctor_archive_severity_rank(severity: &str) -> u8 {
         _ => 0,
     }
 }
-
 
 pub(crate) struct DoctorArchiveFindingInput<'a> {
     pub(crate) severity: &'a str,
@@ -57,7 +53,6 @@ pub(crate) struct DoctorArchiveFindingInput<'a> {
     pub(crate) safe_to_normalize: bool,
     pub(crate) normalization_kind: Option<&'a str>,
 }
-
 
 pub(crate) fn doctor_archive_finding(input: DoctorArchiveFindingInput<'_>) -> DoctorArchiveFinding {
     let dedupe_key = format!(
@@ -89,8 +84,10 @@ pub(crate) fn doctor_archive_finding(input: DoctorArchiveFindingInput<'_>) -> Do
     }
 }
 
-
-pub(crate) fn build_doctor_archive_scan_context(data_dir: &Path, db_path: &Path) -> DoctorArchiveScanContext {
+pub(crate) fn build_doctor_archive_scan_context(
+    data_dir: &Path,
+    db_path: &Path,
+) -> DoctorArchiveScanContext {
     let source_inventory = collect_doctor_source_inventory(data_dir, db_path);
     let raw_mirror = collect_doctor_raw_mirror_report(data_dir);
     let raw_mirror_backfill =
@@ -386,7 +383,6 @@ pub(crate) fn build_doctor_archive_scan_context(data_dir: &Path, db_path: &Path)
     }
 }
 
-
 pub(crate) fn doctor_archive_normalize_action_for_finding(
     data_dir: &Path,
     coverage: &DoctorArchiveCoverageSnapshot,
@@ -443,7 +439,6 @@ pub(crate) fn doctor_archive_normalize_action_for_finding(
     }
 }
 
-
 pub(crate) fn doctor_archive_normalize_apply_argv(
     data_dir: &Path,
     db_path: &Path,
@@ -474,7 +469,6 @@ pub(crate) fn doctor_archive_normalize_apply_argv(
     argv
 }
 
-
 pub(crate) fn doctor_path_identity_for_fingerprint(path: &Path) -> String {
     let identity_path = match std::fs::canonicalize(path) {
         Ok(canonical) => canonical,
@@ -492,8 +486,10 @@ pub(crate) fn doctor_path_identity_for_fingerprint(path: &Path) -> String {
     doctor_path_to_slash_string(&identity_path)
 }
 
-
-pub(crate) fn doctor_archive_normalize_root_binding(data_dir: &Path, db_path: &Path) -> serde_json::Value {
+pub(crate) fn doctor_archive_normalize_root_binding(
+    data_dir: &Path,
+    db_path: &Path,
+) -> serde_json::Value {
     serde_json::json!({
         "data_dir_path_blake3": doctor_canonical_blake3(
             "doctor-archive-normalize-data-dir-path-v1",
@@ -506,14 +502,15 @@ pub(crate) fn doctor_archive_normalize_root_binding(data_dir: &Path, db_path: &P
     })
 }
 
-
-pub(crate) fn doctor_archive_normalize_data_dir_root_ok(data_dir: &Path, action_count: usize) -> bool {
+pub(crate) fn doctor_archive_normalize_data_dir_root_ok(
+    data_dir: &Path,
+    action_count: usize,
+) -> bool {
     action_count == 0
         || std::fs::symlink_metadata(data_dir)
             .map(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
             .unwrap_or(false)
 }
-
 
 pub(crate) fn build_doctor_archive_normalize_plan(
     data_dir: &Path,
@@ -667,7 +664,6 @@ pub(crate) fn build_doctor_archive_normalize_plan(
     }
 }
 
-
 pub(crate) fn doctor_archive_normalize_blocked_receipt(
     plan: &DoctorArchiveNormalizePlan,
     status: &str,
@@ -697,7 +693,6 @@ pub(crate) fn doctor_archive_normalize_blocked_receipt(
         ],
     }
 }
-
 
 pub(crate) fn apply_doctor_archive_normalize_plan(
     data_dir: &Path,
@@ -897,7 +892,6 @@ pub(crate) fn apply_doctor_archive_normalize_plan(
     }
 }
 
-
 pub(crate) fn run_doctor_archive_scan_impl(
     data_dir_override: &Option<PathBuf>,
     db_override: Option<PathBuf>,
@@ -974,7 +968,6 @@ pub(crate) fn run_doctor_archive_scan_impl(
     }
     Ok(())
 }
-
 
 pub(crate) fn run_doctor_archive_normalize_impl(
     data_dir_override: &Option<PathBuf>,

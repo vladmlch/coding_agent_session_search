@@ -3,27 +3,24 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use crate::franken_sync::compat::{
-    ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
-    open_with_flags as open_franken_with_flags,
-};
-pub(crate) use anyhow::Result;
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use crate::franken_sync::compat::{
+        ConnectionExt, OpenFlags as FrankenOpenFlags, RowExt,
+        open_with_flags as open_franken_with_flags,
+    };
+    pub(crate) use anyhow::Result;
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DoctorArchiveExportWorkflow {
     Export,
     Relocate,
 }
-
 
 impl DoctorArchiveExportWorkflow {
     pub(crate) fn stable_name(self) -> &'static str {
@@ -41,14 +38,12 @@ impl DoctorArchiveExportWorkflow {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DoctorArchiveExportCommandMode {
     Plan,
     Apply,
     Verify,
 }
-
 
 impl DoctorArchiveExportCommandMode {
     pub(crate) fn stable_name(self) -> &'static str {
@@ -59,7 +54,6 @@ impl DoctorArchiveExportCommandMode {
         }
     }
 }
-
 
 pub(crate) struct DoctorArchiveExportRequest {
     pub(crate) data_dir_override: Option<PathBuf>,
@@ -76,7 +70,6 @@ pub(crate) struct DoctorArchiveExportRequest {
     pub(crate) allow_repeated_repair: bool,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorArchiveExportAsset {
     pub(crate) asset_id: String,
@@ -92,21 +85,17 @@ pub(crate) struct DoctorArchiveExportAsset {
     pub(crate) skip_reason: Option<String>,
 }
 
-
 pub(crate) fn doctor_archive_export_manifest_path(target_root: &Path) -> PathBuf {
     target_root.join("archive-export-manifest.json")
 }
-
 
 pub(crate) fn doctor_archive_export_receipt_path(target_root: &Path) -> PathBuf {
     target_root.join("archive-export-receipt.json")
 }
 
-
 pub(crate) fn doctor_archive_export_event_log_path(target_root: &Path) -> PathBuf {
     target_root.join("archive-export-event-log.json")
 }
-
 
 pub(crate) fn doctor_archive_export_target_available_bytes(target_root: &Path) -> io::Result<u64> {
     if let Ok(value) = dotenvy::var("CASS_TEST_DOCTOR_ARCHIVE_EXPORT_TARGET_AVAILABLE_BYTES")
@@ -117,7 +106,6 @@ pub(crate) fn doctor_archive_export_target_available_bytes(target_root: &Path) -
     let probe_path = target_root.parent().unwrap_or(target_root);
     doctor_available_space(probe_path)
 }
-
 
 pub(crate) fn doctor_archive_export_validate_target(
     target_root: &Path,
@@ -186,11 +174,9 @@ pub(crate) fn doctor_archive_export_validate_target(
     Ok(())
 }
 
-
 pub(crate) fn doctor_archive_export_relative_is_safe(relative_path: &str) -> bool {
     doctor_forensic_relative_path_is_safe(Path::new(relative_path))
 }
-
 
 pub(crate) fn doctor_archive_export_asset_id(
     relative_path: &str,
@@ -206,7 +192,6 @@ pub(crate) fn doctor_archive_export_asset_id(
         }),
     )
 }
-
 
 pub(crate) fn doctor_archive_export_push_asset(
     assets: &mut Vec<DoctorArchiveExportAsset>,
@@ -265,7 +250,6 @@ pub(crate) fn doctor_archive_export_push_asset(
         skip_reason,
     });
 }
-
 
 pub(crate) fn doctor_archive_export_collect_assets(
     data_dir: &Path,
@@ -355,7 +339,6 @@ pub(crate) fn doctor_archive_export_collect_assets(
     (assets, warnings)
 }
 
-
 pub(crate) fn doctor_archive_export_class_list<'a>(
     assets: impl Iterator<Item = &'a DoctorArchiveExportAsset>,
 ) -> Vec<String> {
@@ -367,7 +350,6 @@ pub(crate) fn doctor_archive_export_class_list<'a>(
     classes.sort();
     classes
 }
-
 
 pub(crate) fn doctor_archive_export_plan_fingerprint(
     workflow: DoctorArchiveExportWorkflow,
@@ -396,7 +378,6 @@ pub(crate) fn doctor_archive_export_plan_fingerprint(
         }),
     )
 }
-
 
 pub(crate) fn doctor_archive_export_plan_value(
     workflow: DoctorArchiveExportWorkflow,
@@ -450,7 +431,6 @@ pub(crate) fn doctor_archive_export_plan_value(
         "warnings": warnings,
     })
 }
-
 
 pub(crate) fn doctor_archive_export_copy_assets(
     target_root: &Path,
@@ -527,7 +507,6 @@ pub(crate) fn doctor_archive_export_copy_assets(
     (copied_bytes, receipts, blocked_reasons)
 }
 
-
 pub(crate) fn doctor_archive_export_target_artifact_safety(
     target_root: &Path,
     target_path: &Path,
@@ -583,8 +562,10 @@ pub(crate) fn doctor_archive_export_target_artifact_safety(
     }
 }
 
-
-pub(crate) fn doctor_archive_export_verify_target(target_root: &Path, data_dir: &Path) -> serde_json::Value {
+pub(crate) fn doctor_archive_export_verify_target(
+    target_root: &Path,
+    data_dir: &Path,
+) -> serde_json::Value {
     let manifest_path = doctor_archive_export_manifest_path(target_root);
     if let Ok(metadata) = std::fs::symlink_metadata(target_root)
         && (!metadata.is_dir() || metadata.file_type().is_symlink())
@@ -813,7 +794,6 @@ pub(crate) fn doctor_archive_export_verify_target(target_root: &Path, data_dir: 
         "backup_manifest_count": manifest.get("backup_manifest_count").cloned().unwrap_or(serde_json::Value::Null),
     })
 }
-
 
 pub(crate) fn doctor_archive_export_event_log(
     operation_id: &str,

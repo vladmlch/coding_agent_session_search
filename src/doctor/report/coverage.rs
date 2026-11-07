@@ -3,13 +3,11 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn build_doctor_sole_copy_warnings(
     backfill: &DoctorRawMirrorBackfillReport,
@@ -65,7 +63,6 @@ pub(crate) fn build_doctor_sole_copy_warnings(
         })
         .collect()
 }
-
 
 pub(crate) fn build_doctor_coverage_summary(
     source_inventory: &DoctorSourceInventoryReport,
@@ -214,16 +211,13 @@ pub(crate) fn build_doctor_coverage_summary(
     }
 }
 
-
 pub(crate) fn doctor_coverage_gate_delta(candidate: Option<usize>, baseline: usize) -> Option<i64> {
     candidate.map(|value| value as i64 - baseline as i64)
 }
 
-
 pub(crate) fn doctor_coverage_gate_test_fault() -> Option<String> {
     dotenvy::var("CASS_TEST_DOCTOR_COVERAGE_GATE_FAULT").ok()
 }
-
 
 pub(crate) fn build_doctor_coverage_comparison_gate(
     coverage_summary: &DoctorCoverageSummary,
@@ -384,7 +378,6 @@ pub(crate) fn build_doctor_coverage_comparison_gate(
     }
 }
 
-
 pub(crate) fn doctor_coverage_risk_summary(
     coverage_summary: &DoctorCoverageSummary,
     sole_copy_warning_count: usize,
@@ -421,7 +414,6 @@ pub(crate) fn doctor_coverage_risk_summary(
     }
 }
 
-
 pub(crate) fn doctor_fast_coverage_risk_unchecked(db_exists: bool) -> DoctorCoverageRiskSummary {
     DoctorCoverageRiskSummary {
         schema_version: 1,
@@ -440,7 +432,6 @@ pub(crate) fn doctor_fast_coverage_risk_unchecked(db_exists: bool) -> DoctorCove
         ..DoctorCoverageRiskSummary::default()
     }
 }
-
 
 pub(crate) fn doctor_coverage_summary_deferred(
     archive_conversation_count: Option<usize>,
@@ -467,7 +458,6 @@ pub(crate) fn doctor_coverage_summary_deferred(
     }
 }
 
-
 pub(crate) struct DoctorRuntimeSummaryInput<'a> {
     pub(crate) surface: &'static str,
     pub(crate) state: &'a serde_json::Value,
@@ -484,8 +474,9 @@ pub(crate) struct DoctorRuntimeSummaryInput<'a> {
     pub(crate) data_dir: &'a Path,
 }
 
-
-pub(crate) fn doctor_summary_coverage_state(coverage_risk: &DoctorCoverageRiskSummary) -> &'static str {
+pub(crate) fn doctor_summary_coverage_state(
+    coverage_risk: &DoctorCoverageRiskSummary,
+) -> &'static str {
     match coverage_risk.status.as_str() {
         "ok" => "ok",
         "not_initialized" => "not_initialized",
@@ -499,8 +490,9 @@ pub(crate) fn doctor_summary_coverage_state(coverage_risk: &DoctorCoverageRiskSu
     }
 }
 
-
-pub(crate) fn doctor_summary_source_mirror_state(coverage_risk: &DoctorCoverageRiskSummary) -> &'static str {
+pub(crate) fn doctor_summary_source_mirror_state(
+    coverage_risk: &DoctorCoverageRiskSummary,
+) -> &'static str {
     if coverage_risk.status == "not_initialized" {
         "not_initialized"
     } else if coverage_risk.confidence_tier == "unchecked" {
@@ -518,14 +510,12 @@ pub(crate) fn doctor_summary_source_mirror_state(coverage_risk: &DoctorCoverageR
     }
 }
 
-
 /// Archive rows lacking a raw copy that doctor could still capture. With
 /// capture switched off (GH #506) they are the operator's choice, reported as
 /// low risk rather than as a coverage gap.
 pub(crate) fn doctor_unmirrored_rows_are_a_gap(coverage_risk: &DoctorCoverageRiskSummary) -> bool {
     coverage_risk.db_without_raw_mirror_count > 0 && !coverage_risk.raw_mirror_capture_disabled
 }
-
 
 pub(crate) fn doctor_summary_risk_level(coverage_risk: &DoctorCoverageRiskSummary) -> &'static str {
     if coverage_risk.status == "sole_copy_risk" {
@@ -547,7 +537,6 @@ pub(crate) fn doctor_summary_risk_level(coverage_risk: &DoctorCoverageRiskSummar
     }
 }
 
-
 pub(crate) fn doctor_summary_health_class(
     coverage_risk: &DoctorCoverageRiskSummary,
     repair_blocked_reason: Option<&str>,
@@ -568,7 +557,6 @@ pub(crate) fn doctor_summary_health_class(
     }
 }
 
-
 pub(crate) fn doctor_summary_failure_marker_path(data_dir: &Path) -> Option<String> {
     ["repair_apply", "cleanup_apply", "restore_apply"]
         .into_iter()
@@ -577,8 +565,9 @@ pub(crate) fn doctor_summary_failure_marker_path(data_dir: &Path) -> Option<Stri
         .and_then(|marker| marker.path)
 }
 
-
-pub(crate) fn build_doctor_runtime_summary(input: DoctorRuntimeSummaryInput<'_>) -> serde_json::Value {
+pub(crate) fn build_doctor_runtime_summary(
+    input: DoctorRuntimeSummaryInput<'_>,
+) -> serde_json::Value {
     let fallback_mode = doctor_fallback_mode_from_state(input.state);
     let doctor_lock = doctor_probe_mutation_lock(input.data_dir);
     let active_doctor_repair = matches!(
@@ -780,7 +769,6 @@ pub(crate) fn build_doctor_runtime_summary(input: DoctorRuntimeSummaryInput<'_>)
     })
 }
 
-
 pub(crate) fn doctor_raw_mirror_summary_checksum_status(
     raw_mirror: &DoctorRawMirrorReport,
 ) -> DoctorArtifactChecksumStatus {
@@ -799,7 +787,6 @@ pub(crate) fn doctor_raw_mirror_summary_checksum_status(
         DoctorArtifactChecksumStatus::NotRecorded
     }
 }
-
 
 pub(crate) fn doctor_source_authority_candidate(
     authority: DoctorSourceAuthorityKind,
@@ -823,7 +810,6 @@ pub(crate) fn doctor_source_authority_candidate(
     }
 }
 
-
 pub(crate) fn doctor_source_authority_checksum_evidence(
     raw_mirror: &DoctorRawMirrorReport,
 ) -> DoctorSourceAuthorityChecksumEvidence {
@@ -843,7 +829,6 @@ pub(crate) fn doctor_source_authority_checksum_evidence(
         summary_status: doctor_raw_mirror_summary_checksum_status(raw_mirror),
     }
 }
-
 
 pub(crate) fn doctor_source_authority_coverage_delta(
     source_inventory: &DoctorSourceInventoryReport,
@@ -875,7 +860,6 @@ pub(crate) fn doctor_source_authority_coverage_delta(
             - source_inventory.total_indexed_conversations as i64,
     }
 }
-
 
 pub(crate) fn doctor_source_authority_freshness_delta(
     db_path: &Path,
@@ -912,7 +896,6 @@ pub(crate) fn doctor_source_authority_freshness_delta(
         freshness_state,
     }
 }
-
 
 pub(crate) fn build_doctor_source_authority_report(
     db_path: &Path,
@@ -1104,7 +1087,6 @@ pub(crate) fn build_doctor_source_authority_report(
     }
 }
 
-
 pub(crate) fn doctor_refuse_source_authority_when_collectors_deferred(
     mut report: DoctorSourceAuthorityReport,
     reason: &str,
@@ -1170,7 +1152,6 @@ pub(crate) fn doctor_refuse_source_authority_when_collectors_deferred(
     }
     report
 }
-
 
 pub(crate) const DOCTOR_CANDIDATE_SCHEMA_VERSION: u32 = 1;
 

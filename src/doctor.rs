@@ -1556,6 +1556,10 @@ mod tests {
 }
 
 // -- lib-split module declarations --
+pub(crate) mod archive;
+pub(crate) mod backup_restore;
+pub(crate) mod baseline;
+pub(crate) mod candidate;
 #[cfg(all(test, unix))]
 pub(crate) mod cleanup_target_safety_tests;
 #[cfg(all(test, unix))]
@@ -1582,13 +1586,9 @@ pub(crate) mod forensic;
 pub(crate) mod fs_safety;
 pub(crate) mod lexical_cleanup_disposition_label;
 pub(crate) mod policy;
+pub(crate) mod raw_mirror;
 pub(crate) mod repair_state;
 pub(crate) mod report;
-pub(crate) mod sources;
-pub(crate) mod raw_mirror;
-pub(crate) mod archive;
-pub(crate) mod backup_restore;
 pub(crate) mod run_doctor_ls;
+pub(crate) mod sources;
 pub(crate) mod support_bundle;
-pub(crate) mod baseline;
-pub(crate) mod candidate;

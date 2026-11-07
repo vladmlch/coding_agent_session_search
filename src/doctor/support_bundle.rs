@@ -3,22 +3,19 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DoctorSupportBundleCommandMode {
     Create,
     Verify,
 }
-
 
 impl DoctorSupportBundleCommandMode {
     pub(crate) fn stable_name(self) -> &'static str {
@@ -28,7 +25,6 @@ impl DoctorSupportBundleCommandMode {
         }
     }
 }
-
 
 pub(crate) struct DoctorSupportBundleRequest {
     pub(crate) data_dir_override: Option<PathBuf>,
@@ -42,7 +38,6 @@ pub(crate) struct DoctorSupportBundleRequest {
     pub(crate) sensitive_attachments: Vec<PathBuf>,
     pub(crate) sensitive_attachment_max_bytes: u64,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorSupportBundleArtifact {
@@ -59,7 +54,6 @@ pub(crate) struct DoctorSupportBundleArtifact {
     pub(crate) risk_copy: Option<String>,
 }
 
-
 pub(crate) struct DoctorSupportBundleArtifactSpec<'a> {
     pub(crate) relative_path: &'a str,
     pub(crate) artifact_kind: &'a str,
@@ -70,17 +64,14 @@ pub(crate) struct DoctorSupportBundleArtifactSpec<'a> {
     pub(crate) risk_copy: Option<String>,
 }
 
-
 pub(crate) fn doctor_support_bundle_root(data_dir: &Path) -> PathBuf {
     data_dir.join("doctor").join("support-bundles")
 }
-
 
 pub(crate) fn doctor_support_bundle_redact_text(text: &str, data_dir: &Path) -> String {
     let locally_redacted = doctor_support_bundle_redact_local_text(text, data_dir);
     crate::pages::redact::redact_swarm_text(&locally_redacted)
 }
-
 
 pub(crate) fn doctor_support_bundle_redact_local_text(text: &str, data_dir: &Path) -> String {
     let mut redacted = doctor_redacted_text(text, data_dir);
@@ -102,7 +93,6 @@ pub(crate) fn doctor_support_bundle_redact_local_text(text: &str, data_dir: &Pat
     redacted
 }
 
-
 pub(crate) fn doctor_support_bundle_redact_value(
     value: serde_json::Value,
     data_dir: &Path,
@@ -110,7 +100,6 @@ pub(crate) fn doctor_support_bundle_redact_value(
     let locally_redacted = doctor_support_bundle_redact_local_value(value, data_dir);
     crate::pages::redact::redact_swarm_json_value(&locally_redacted)
 }
-
 
 /// Apply support-bundle-specific path and sentinel substitutions before the
 /// canonical structured secret policy. Keys are serialized output too, and
@@ -148,6 +137,6 @@ pub(crate) fn doctor_support_bundle_redact_local_value(
 }
 
 // -- lib-split module declarations --
+pub(crate) mod capture;
 #[cfg(test)]
 pub(crate) mod doctor_support_bundle_redaction_tests;
-pub(crate) mod capture;

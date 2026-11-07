@@ -2,8 +2,6 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
 /// Keep every item flagged by `is_problem` (in original order) and at most
 /// `healthy_cap` of the rest. Returns the kept items and how many healthy
 /// items were omitted. Pure, so the elision policy is unit-testable without
@@ -29,13 +27,14 @@ pub(crate) fn doctor_bound_healthy_listing<T>(
     (kept, omitted)
 }
 
-
 /// A manifest is a "problem" (never elided from the bounded listing) when it
 /// is invalid, its blob is missing or mismatched, its manifest checksum
 /// drifted, or its upstream source is gone. `manifest_unverified` (a legacy
 /// manifest that never recorded a checksum) is a warning-class count, not a
 /// per-manifest problem, and is elided like a healthy entry.
-pub(crate) fn doctor_raw_mirror_manifest_is_problem(manifest: &DoctorRawMirrorManifestReport) -> bool {
+pub(crate) fn doctor_raw_mirror_manifest_is_problem(
+    manifest: &DoctorRawMirrorManifestReport,
+) -> bool {
     manifest.invalid_reason.is_some()
         || matches!(
             manifest.status.as_str(),
@@ -48,10 +47,12 @@ pub(crate) fn doctor_raw_mirror_manifest_is_problem(manifest: &DoctorRawMirrorMa
         )
 }
 
-
 /// Apply the ub29t bounded listing to a doctor raw-mirror report in place.
 /// `full` (from `--verbose`) keeps everything and only records the mode.
-pub(crate) fn doctor_apply_raw_mirror_listing_bound(report: &mut DoctorRawMirrorReport, full: bool) {
+pub(crate) fn doctor_apply_raw_mirror_listing_bound(
+    report: &mut DoctorRawMirrorReport,
+    full: bool,
+) {
     let total = report.manifests.len();
     if full {
         report.summary.listed_manifest_count = total;

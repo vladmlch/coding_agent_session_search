@@ -3,14 +3,12 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
-pub(crate) use std::time::{Duration, Instant};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::time::{Duration, Instant};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DoctorBaselineCommandMode {
@@ -18,7 +16,6 @@ pub(crate) enum DoctorBaselineCommandMode {
     Update,
     Diff,
 }
-
 
 impl DoctorBaselineCommandMode {
     pub(crate) fn stable_name(self) -> &'static str {
@@ -34,7 +31,6 @@ impl DoctorBaselineCommandMode {
     }
 }
 
-
 pub(crate) fn doctor_baseline_coverage_delta_value() -> serde_json::Value {
     serde_json::json!({
         "status": "unchanged",
@@ -49,7 +45,6 @@ pub(crate) fn doctor_baseline_coverage_delta_value() -> serde_json::Value {
         "derived_asset_delta": serde_json::Value::Null,
     })
 }
-
 
 pub(crate) fn doctor_baseline_operation_outcome(
     kind: DoctorOperationOutcomeKind,
@@ -71,7 +66,6 @@ pub(crate) fn doctor_baseline_operation_outcome(
     ))
     .unwrap_or(serde_json::Value::Null)
 }
-
 
 pub(crate) fn run_doctor_baseline_impl(
     data_dir_override: Option<PathBuf>,
@@ -278,7 +272,6 @@ pub(crate) fn run_doctor_baseline_impl(
     Ok(())
 }
 
-
 pub(crate) fn doctor_baseline_id_or_default(
     requested: Option<&str>,
     baseline_path: Option<&PathBuf>,
@@ -296,7 +289,6 @@ pub(crate) fn doctor_baseline_id_or_default(
     }
     "default".to_string()
 }
-
 
 pub(crate) fn doctor_safe_baseline_id(raw: &str) -> String {
     let mut safe = String::with_capacity(raw.len());
@@ -317,7 +309,6 @@ pub(crate) fn doctor_safe_baseline_id(raw: &str) -> String {
         safe
     }
 }
-
 
 pub(crate) fn doctor_baseline_resolve_path(
     data_dir: &Path,

@@ -3,15 +3,13 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::fs::{File, OpenOptions};
-pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::fs::{File, OpenOptions};
+    pub(crate) use std::io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn doctor_mutation_lock_path(data_dir: &Path) -> PathBuf {
     data_dir
@@ -19,7 +17,6 @@ pub(crate) fn doctor_mutation_lock_path(data_dir: &Path) -> PathBuf {
         .join("locks")
         .join("doctor-repair.lock")
 }
-
 
 pub(crate) fn doctor_parse_lock_metadata(raw: &str) -> BTreeMap<String, String> {
     raw.lines()
@@ -34,7 +31,6 @@ pub(crate) fn doctor_parse_lock_metadata(raw: &str) -> BTreeMap<String, String> 
         .collect()
 }
 
-
 pub(crate) fn doctor_read_lock_metadata(file: &std::fs::File) -> BTreeMap<String, String> {
     use std::io::Read as _;
 
@@ -44,18 +40,24 @@ pub(crate) fn doctor_read_lock_metadata(file: &std::fs::File) -> BTreeMap<String
     doctor_parse_lock_metadata(&raw)
 }
 
-
-pub(crate) fn doctor_lock_metadata_u32(metadata: &BTreeMap<String, String>, key: &str) -> Option<u32> {
+pub(crate) fn doctor_lock_metadata_u32(
+    metadata: &BTreeMap<String, String>,
+    key: &str,
+) -> Option<u32> {
     metadata.get(key).and_then(|value| value.parse().ok())
 }
 
-
-pub(crate) fn doctor_lock_metadata_i64(metadata: &BTreeMap<String, String>, key: &str) -> Option<i64> {
+pub(crate) fn doctor_lock_metadata_i64(
+    metadata: &BTreeMap<String, String>,
+    key: &str,
+) -> Option<i64> {
     metadata.get(key).and_then(|value| value.parse().ok())
 }
 
-
-pub(crate) fn doctor_redact_lock_command(command: Option<&String>, data_dir: &Path) -> Option<String> {
+pub(crate) fn doctor_redact_lock_command(
+    command: Option<&String>,
+    data_dir: &Path,
+) -> Option<String> {
     let command = command?;
     let data_dir_text = data_dir.display().to_string();
     if data_dir_text.is_empty() {
@@ -63,7 +65,6 @@ pub(crate) fn doctor_redact_lock_command(command: Option<&String>, data_dir: &Pa
     }
     Some(command.replace(&data_dir_text, "[cass-data]"))
 }
-
 
 pub(crate) fn doctor_probe_mutation_lock(data_dir: &Path) -> DoctorMutationLockObservation {
     let path = doctor_mutation_lock_path(data_dir);
@@ -95,7 +96,6 @@ pub(crate) fn doctor_probe_mutation_lock(data_dir: &Path) -> DoctorMutationLockO
         },
     }
 }
-
 
 /// fs2 reports a contended try-lock as its `lock_contended_error()`:
 /// EWOULDBLOCK on unix, but raw ERROR_LOCK_VIOLATION on Windows, which no

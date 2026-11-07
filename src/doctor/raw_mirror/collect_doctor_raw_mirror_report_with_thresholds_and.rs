@@ -3,14 +3,12 @@
 use crate::*;
 #[allow(unused_imports)]
 mod __lib_split_root_uses {
-pub(crate) use serde::{Deserialize, Serialize};
-pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-pub(crate) use std::path::{Path, PathBuf};
+    pub(crate) use serde::{Deserialize, Serialize};
+    pub(crate) use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+    pub(crate) use std::path::{Path, PathBuf};
 }
 #[allow(unused_imports)]
 use __lib_split_root_uses::*;
-
-
 
 pub(crate) fn collect_doctor_raw_mirror_report_with_thresholds_and_mode(
     data_dir: &Path,
@@ -296,7 +294,6 @@ pub(crate) fn collect_doctor_raw_mirror_report_with_thresholds_and_mode(
     report
 }
 
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub(crate) struct DoctorArchiveCoverageSnapshot {
     pub(crate) schema_version: u32,
@@ -314,7 +311,6 @@ pub(crate) struct DoctorArchiveCoverageSnapshot {
     pub(crate) precious_raw_mirror_bytes: u64,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorArchiveFinding {
     pub(crate) finding_id: String,
@@ -329,7 +325,6 @@ pub(crate) struct DoctorArchiveFinding {
     pub(crate) safe_to_normalize: bool,
     pub(crate) normalization_kind: Option<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorArchiveScanReport {
@@ -348,7 +343,6 @@ pub(crate) struct DoctorArchiveScanReport {
     pub(crate) recommendations: Vec<String>,
     pub(crate) notes: Vec<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorArchiveNormalizeAction {
@@ -369,7 +363,6 @@ pub(crate) struct DoctorArchiveNormalizeAction {
     pub(crate) annotation_content: serde_json::Value,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorArchiveNormalizeSkippedAction {
     pub(crate) finding_id: String,
@@ -381,14 +374,12 @@ pub(crate) struct DoctorArchiveNormalizeSkippedAction {
     pub(crate) recommendation: String,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorArchiveNormalizeSafetyGate {
     pub(crate) gate_id: String,
     pub(crate) status: String,
     pub(crate) message: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorArchiveNormalizePlan {
@@ -413,7 +404,6 @@ pub(crate) struct DoctorArchiveNormalizePlan {
     pub(crate) notes: Vec<String>,
 }
 
-
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorArchiveNormalizeEvent {
     pub(crate) event: String,
@@ -421,7 +411,6 @@ pub(crate) struct DoctorArchiveNormalizeEvent {
     pub(crate) target_relative_path: Option<String>,
     pub(crate) message: String,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorArchiveNormalizeReceipt {
@@ -439,7 +428,6 @@ pub(crate) struct DoctorArchiveNormalizeReceipt {
     pub(crate) event_log: Vec<DoctorArchiveNormalizeEvent>,
     pub(crate) notes: Vec<String>,
 }
-
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct DoctorArchiveScanContext {

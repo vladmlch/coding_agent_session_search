@@ -2,27 +2,21 @@
 #[allow(unused_imports)]
 use crate::*;
 
-
-
-
-    
-
-    /// fs2's own contended error must read as an active lock on every
-    /// platform (on Windows it is raw ERROR_LOCK_VIOLATION, not WouldBlock),
-    /// and unrelated failures must not (2l1b0.74).
-    #[test]
-    pub(crate) fn contended_lock_error_is_active_and_other_errors_are_not() {
-        assert!(doctor_lock_probe_error_is_active(
-            &fs2::lock_contended_error()
-        ));
-        assert!(doctor_lock_probe_error_is_active(&std::io::Error::from(
-            std::io::ErrorKind::WouldBlock
-        )));
-        assert!(!doctor_lock_probe_error_is_active(&std::io::Error::from(
-            std::io::ErrorKind::NotFound
-        )));
-        assert!(!doctor_lock_probe_error_is_active(&std::io::Error::other(
-            "permission denied"
-        )));
-    }
-
+/// fs2's own contended error must read as an active lock on every
+/// platform (on Windows it is raw ERROR_LOCK_VIOLATION, not WouldBlock),
+/// and unrelated failures must not (2l1b0.74).
+#[test]
+pub(crate) fn contended_lock_error_is_active_and_other_errors_are_not() {
+    assert!(doctor_lock_probe_error_is_active(
+        &fs2::lock_contended_error()
+    ));
+    assert!(doctor_lock_probe_error_is_active(&std::io::Error::from(
+        std::io::ErrorKind::WouldBlock
+    )));
+    assert!(!doctor_lock_probe_error_is_active(&std::io::Error::from(
+        std::io::ErrorKind::NotFound
+    )));
+    assert!(!doctor_lock_probe_error_is_active(&std::io::Error::other(
+        "permission denied"
+    )));
+}
