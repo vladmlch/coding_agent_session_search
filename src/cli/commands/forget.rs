@@ -52,7 +52,6 @@ pub(crate) fn forget_filter<'a>(
     })
 }
 
-// -- lib-split module declarations --
 pub(crate) mod command;
 #[cfg(test)]
 pub(crate) mod forget_selector_tests;

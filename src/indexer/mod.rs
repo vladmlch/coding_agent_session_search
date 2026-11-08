@@ -35473,14 +35473,15 @@ fn recover_absent_watch_roots(
             let path = crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
                 Path::new(&entry.source_path),
             );
-            path.starts_with(&selected_path) && debts.iter().any(|debt| {
-                !debt.discovery_only
+            path.starts_with(&selected_path)
+                && debts.iter().any(|debt| {
+                    !debt.discovery_only
                     && path.starts_with(
                         crate::cli::state::probe_state_db_strict_worker::normalize_path_identity(
                             &debt.path,
                         ),
                     )
-            })
+                })
         });
         if held {
             outcome.retry_sources.insert(root.path.clone());
@@ -80985,7 +80986,6 @@ c.close()
     }
 }
 
-// -- lib-split module declarations --
 #[cfg(test)]
 pub(crate) mod stall_diagnostics_tests;
 pub(crate) mod stall_watchdog;

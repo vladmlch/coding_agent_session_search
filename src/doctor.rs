@@ -1559,7 +1559,6 @@ mod tests {
     }
 }
 
-// -- lib-split module declarations --
 pub(crate) mod archive;
 pub(crate) mod backup_restore;
 #[cfg(test)]

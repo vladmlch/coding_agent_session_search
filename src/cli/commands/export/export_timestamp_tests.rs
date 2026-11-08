@@ -1,6 +1,7 @@
 use crate::cli::commands::expand::extract_message_timestamp;
 use crate::cli::commands::export::indexed_export_cli_error::{
-    format_export_duration, publish_unique_export_output_file, write_unique_export_output_file,
+    format_export_duration, publish_unique_export_output_file, write_clipboard_command,
+    write_unique_export_output_file,
 };
 use crate::cli::commands::export_html::run_export_html;
 use anyhow::Result;
@@ -30,7 +31,7 @@ pub(crate) fn ztlan_clipboard_stdin_survives_default_sigpipe_and_delivers_exact_
         let text = "clipboard 🦀\0\n".repeat(100_000);
         let mut exits_without_reading = Command::new("sh");
         exits_without_reading.args(["-c", "exit 23"]);
-        match crate::write_clipboard_command(exits_without_reading, &text) {
+        match write_clipboard_command(exits_without_reading, &text) {
             Ok(status) => assert_eq!(status.code(), Some(23)),
             Err(error) => assert!(
                 matches!(
@@ -48,7 +49,7 @@ pub(crate) fn ztlan_clipboard_stdin_survives_default_sigpipe_and_delivers_exact_
             .args(["-c", "cat > \"$1\"", "cass-clipboard-test"])
             .arg(&output_path);
         assert!(
-            crate::write_clipboard_command(reads_until_eof, &text)
+            write_clipboard_command(reads_until_eof, &text)
                 .expect("deliver clipboard bytes")
                 .success()
         );
@@ -56,10 +57,7 @@ pub(crate) fn ztlan_clipboard_stdin_survives_default_sigpipe_and_delivers_exact_
             fs::read(output_path).expect("receiver bytes"),
             text.as_bytes()
         );
-        assert!(
-            crate::write_clipboard_command(Command::new(temp.path().join("absent")), &text)
-                .is_err()
-        );
+        assert!(write_clipboard_command(Command::new(temp.path().join("absent")), &text).is_err());
         return;
     }
 

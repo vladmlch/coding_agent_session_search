@@ -83,7 +83,6 @@ pub(crate) fn default_data_dir_with_source() -> (PathBuf, &'static str) {
     (dir, "default")
 }
 
-// -- lib-split module declarations --
 #[cfg(test)]
 pub(crate) mod resolve_data_dir_tests;
 pub(crate) mod session_paths;
