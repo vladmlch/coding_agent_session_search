@@ -2517,3 +2517,128 @@ fn search_sessions_agy_realistic_marks_still_refuse_strict() -> Result<()> {
     );
     bridge.shutdown()
 }
+
+/// The fixture session for (ix): the real F10 shape the v3 report
+/// quantified as the archive's only not-read gap — a tool-step GENERIC
+/// record whose `error` passthrough failure text differs from the step
+/// narration, plus a system ERROR_MESSAGE announcing a different
+/// failure. The needles "gyrocopter" and "wobbledrive" appear ONLY in
+/// the error fields.
+fn antigravity_error_field_session() -> GoldSession {
+    GoldSession {
+        id: 8,
+        agent: "antigravity",
+        source_id: "local",
+        external_id: "s-8-agy-error",
+        source_path: "/sessions/s-8-agy-error.jsonl",
+        workspace: None,
+        title: "agy error passthrough",
+        started_at: Some(6_000),
+        ended_at: Some(9_500),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            (0, MessageRole::User, "assemble the widget", None),
+            (
+                1,
+                MessageRole::Tool,
+                "step narration content",
+                Some(json!({"agy_type":"GENERIC","status":"ERROR",
+                    "error":"step gyrocopter failure detail"})),
+            ),
+            (
+                2,
+                MessageRole::System,
+                "assembly failure summary",
+                Some(json!({"agy_type":"ERROR_MESSAGE","agy_source":"SYSTEM",
+                    "status":"ERROR",
+                    "error":"pipeline wobbledrive failure detail"})),
+            ),
+        ],
+    }
+}
+
+/// (ix) Owner follow-up (2026-11-08): the F10 `error` passthrough text is
+/// local and readable, so it INDEXES as a search region instead of
+/// keeping the `agy_error_field_not_indexed` not-read gap the v3 report
+/// quantified. A strict search for a word that appears only in the error
+/// text finds the session — the verified hit dominates the session's
+/// structural (envelope/identity) marks — and the session's facts carry
+/// no text gap from the error field. The facts row below is the REAL
+/// extractor manifest (the same generation path ingest runs), not a
+/// hand-written one, so the strict lane evaluates exactly what a real
+/// ingest would publish.
+#[test]
+fn search_sessions_agy_error_field_text_answers_strict_search() -> Result<()> {
+    let mut sessions = gold_fixture();
+    sessions.push(antigravity_error_field_session());
+    let mut bridge = gold_harness_full(&sessions, &[])?;
+
+    // Replace the seeded fixture-complete row with the real manifest.
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let agy = sessions.pop().expect("the antigravity session");
+    let generation =
+        coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+            &writer,
+            &gold_conversation(&agy),
+            agy.id,
+        )?;
+    drop(writer);
+    let facts = generation.facts;
+    let mut fields = serde_json::Map::new();
+    for entry in &facts.coverage {
+        fields.insert(
+            entry.field.clone(),
+            json!({"state": entry.state, "reasons": entry.reasons}),
+        );
+    }
+    let manifest = json!({
+        "extractor": facts.extractor,
+        "extractor_version": facts.extractor_version,
+        "provider": facts.provider,
+        "fields": fields,
+        "counts": {
+            "tool_calls": facts.tools.len(),
+            "paired_calls": facts.tools.iter().filter(|t| t.has_result).count(),
+        }
+    });
+    set_facts_coverage(&bridge, agy.id, facts.coverage_state.as_str(), manifest)?;
+
+    // A word that appears ONLY in the tool-step error text: the strict
+    // page answers exactly [8] — the error region is a verified hit.
+    let page = search(&mut bridge, json!({"query": "gyrocopter"}))?;
+    assert_members(&page, &[8])?;
+    // The tools scope and the recorded error flags address the failure
+    // text as tool error text, like every provider's erroring result.
+    let page = search(&mut bridge, json!({"query": "in:tools gyrocopter"}))?;
+    assert_members(&page, &[8])?;
+    let page = search(&mut bridge, json!({"query": "error:tool gyrocopter"}))?;
+    assert_members(&page, &[8])?;
+    // The system ERROR_MESSAGE's differing error text is chat-scope text.
+    let page = search(&mut bridge, json!({"query": "in:chat wobbledrive"}))?;
+    assert_members(&page, &[8])?;
+
+    // No source-absent gap is involved: the found session carries no
+    // annotation (its residual marks are structural, not text gaps).
+    let s8 = result_item(&page, 8)?;
+    ensure!(
+        s8["source_text_absent"] == json!([]),
+        "no source-absent annotation for an indexed-error session: {s8}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 0,
+        "no source-absent count: {page}"
+    );
+
+    // Coverage has no not-read gap from the error field: the real
+    // manifest carries no reason for it anywhere.
+    ensure!(
+        !facts
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_error_field_not_indexed")),
+        "the retired mark must be gone from the real manifest: {:?}",
+        facts.coverage
+    );
+    bridge.shutdown()
+}

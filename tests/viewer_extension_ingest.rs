@@ -1706,19 +1706,32 @@ fn antigravity_f10_error_only_and_history_text_reach_chat_regions() {
         assert_eq!(region.scope, "chat", "{region:?}");
         assert_eq!(region.message_idx, Some(idx), "{region:?}");
     }
+
+    // The error-only record carries the error text AS its content — the
+    // chat region IS its index. No separate error region may double-index
+    // the same text: the derivation emits an error region only when the
+    // string differs from the content.
+    assert!(
+        !regions.iter().any(|r| r.region_key == "m1:error"),
+        "error == content must not grow a second region: {regions:?}"
+    );
 }
 
 #[test]
-fn antigravity_f10_error_field_on_other_records_is_a_not_read_gap() {
+fn antigravity_f10_error_field_indexes_as_searchable_regions() {
     // The `error` passthrough on a record whose message content is NOT the
-    // same text: packet-visible failure text no region derivation indexes
-    // (extras are not region sources), so the text inventory keeps an
-    // honest not-read gap. Error-only ERROR_MESSAGE records carry the text
-    // AS their content (indexed chat text) and must mark nothing — the
-    // previous test pins that half.
-    let p = packet(
-        "antigravity",
-        json!({"source": "antigravity"}),
+    // same text: the failure text is packet-visible AND local, so it
+    // indexes as its own searchable region instead of keeping the retired
+    // `agy_error_field_not_indexed` not-read gap. Scope follows where the
+    // record's own text indexes for every provider: a tool-role MODEL
+    // step is an executed step, so its failure text is tool error text —
+    // tools scope with the recorded error flags, exactly like a
+    // tool_result carrying `is_error`; a system ERROR_MESSAGE is message
+    // text the connector itself emits as chat content for error-only
+    // records, so its differing error text stays chat. Error-only
+    // ERROR_MESSAGE records carry the text AS their content (the
+    // previous test pins that they never double-index).
+    let messages = || {
         vec![
             msg(0, "user", "made-up request", json!({"status": "DONE"})),
             msg(
@@ -1727,11 +1740,22 @@ fn antigravity_f10_error_field_on_other_records_is_a_not_read_gap() {
                 "made-up step narration content",
                 json!({
                     "agy_type": "GENERIC", "status": "ERROR",
-                    "error": "made-up step failure detail"
+                    "error": "made-up gyrocopter failure detail"
                 }),
             ),
-        ],
-    );
+            msg(
+                2,
+                "system",
+                "made-up widget failure summary",
+                json!({
+                    "agy_type": "ERROR_MESSAGE", "agy_source": "SYSTEM",
+                    "status": "ERROR",
+                    "error": "made-up wobbledrive failure detail"
+                }),
+            ),
+        ]
+    };
+    let p = packet("antigravity", json!({"source": "antigravity"}), messages());
     let publication = extract_session_facts(&p, "antigravity");
     assert!(
         !publication
@@ -1741,22 +1765,80 @@ fn antigravity_f10_error_field_on_other_records_is_a_not_read_gap() {
         "coverage: {:?}",
         publication.coverage
     );
-    let text_inventory = coverage(&publication, "text_inventory").expect("text_inventory");
-    assert_eq!(text_inventory.state, "partial", "{text_inventory:?}");
-    assert_eq!(
-        text_inventory.reasons,
-        vec!["agy_error_field_not_indexed".to_string()],
-        "{text_inventory:?}"
+    // The error text is indexed: no coverage entry keeps the retired
+    // reason, and the text scopes certify complete — no not-read gap
+    // from the error field.
+    assert!(
+        !publication
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_error_field_not_indexed")),
+        "the error-field mark is retired: {:?}",
+        publication.coverage
     );
-    // A not-read gap, never a source-absent one.
-    assert!(!is_source_absent_gap(
-        text_inventory.state.as_str(),
-        &text_inventory.reasons
-    ));
-    // The record's own content IS indexed chat text: chat stays complete.
-    let chat = coverage(&publication, "chat").expect("chat");
-    assert_eq!(chat.state, "complete", "{chat:?}");
-    assert!(chat.reasons.is_empty(), "{chat:?}");
+    for field in ["chat", "text_inventory"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+
+    // Region derivation: each differing error string becomes its own
+    // region — the tool-step failure text under the tools scope with the
+    // recorded error flags, the system announcement's detail as chat.
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+    let tool_error = regions
+        .iter()
+        .find(|r| r.region_key == "m1:error")
+        .unwrap_or_else(|| panic!("m1:error region missing: {regions:?}"));
+    assert_eq!(tool_error.scope, "tools", "{tool_error:?}");
+    assert_eq!(tool_error.message_idx, Some(1), "{tool_error:?}");
+    assert_eq!(tool_error.has_error, Some(true), "{tool_error:?}");
+    assert_eq!(
+        tool_error.error_type.as_deref(),
+        Some("tool"),
+        "{tool_error:?}"
+    );
+    assert!(
+        tool_error
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("gyrocopter")),
+        "{tool_error:?}"
+    );
+    let chat_error = regions
+        .iter()
+        .find(|r| r.region_key == "m2:error")
+        .unwrap_or_else(|| panic!("m2:error region missing: {regions:?}"));
+    assert_eq!(chat_error.scope, "chat", "{chat_error:?}");
+    assert_eq!(chat_error.has_error, None, "{chat_error:?}");
+    assert_eq!(chat_error.error_type, None, "{chat_error:?}");
+    assert!(
+        chat_error
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("wobbledrive")),
+        "{chat_error:?}"
+    );
+    // A record without an error field grows no error region.
+    assert!(
+        !regions.iter().any(|r| r.region_key == "m0:error"),
+        "no error field on the user record: {regions:?}"
+    );
+
+    // The provider gate: the same shapes under a foreign slug must not
+    // grow error regions (the F10 passthrough contract is
+    // antigravity's; other providers' `error` keys are not it).
+    let foreign = packet("pi_agent", json!({"source": "antigravity"}), messages());
+    let foreign_facts = extract_session_facts(&foreign, "pi_agent");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions
+            .iter()
+            .any(|r| r.region_key.ends_with(":error")),
+        "foreign slug must not derive error regions: {foreign_regions:?}"
+    );
 }
 
 #[test]
