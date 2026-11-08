@@ -54,7 +54,21 @@ pub use providers::classification::SessionQualityMetrics;
 /// dedup to the live record (providers/claude.rs, claude-facts-v2; the
 /// sidecar `initialMessage` and the compacted/normalized invocation
 /// arguments index as regions, search_regions.rs, REGION_VERSION 3).
-pub const FACTS_EXTRACTOR_VERSION: i64 = 6;
+/// v7: v6 plus the gemini extractor (raw-record extras: thoughts, toolCalls
+/// with inline results and recorded status verdicts; compacted extras
+/// partial) plus gemini regions — `thoughts` as `m{idx}:thinking` and
+/// tool args/results as tool regions (search_regions.rs, REGION_VERSION
+/// 4) — plus the pi_agent extractor (raw tree entries: toolCall blocks
+/// paired with toolResult records by toolCallId, thinking blocks,
+/// compaction/branch boundaries) and the opencode extractor (v2 row
+/// extras: "[Reasoning]"/"[Tool Output]" markers count delivered
+/// reasoning parts and prove tool parts whose identity/state the
+/// connector drops; authors carry the model alias), and the copilot
+/// extractor (connector-built extras: seam-archived invocations as the
+/// only call evidence, thinking parts dropped by the connector, no
+/// tool results archived — plus copilot tool regions from
+/// `cass.invocations`).
+pub const FACTS_EXTRACTOR_VERSION: i64 = 7;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)

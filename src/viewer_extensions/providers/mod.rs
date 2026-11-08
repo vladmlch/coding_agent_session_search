@@ -3,8 +3,8 @@
 //! Each provider module consumes the normalized packet's `extra_json`
 //! evidence (raw source records the connector preserved verbatim) and emits
 //! a [`ProviderExtraction`]. New providers land by adding a module and one
-//! dispatch arm below — antigravity/devin/cursor/junie/qoder are stubs
-//! returning `extractor_unavailable` until their wave ships.
+//! dispatch arm below — junie/qoder are stubs returning
+//! `extractor_unavailable` until their wave ships.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,8 +17,16 @@ use super::facts::{CoverageEntry, FACTS_EXTRACTOR_VERSION, FactPublication, Tool
 mod antigravity;
 mod claude;
 mod codex;
+mod copilot;
 mod cursor;
 mod devin;
+mod gemini;
+mod opencode;
+mod pi_agent;
+
+/// Gemini tool-result text + status verdict derivation, shared with the
+/// search-regions gemini arm so the facts and region lanes stay identical.
+pub(crate) use gemini::{gemini_call_result_text, gemini_status_verdict};
 
 pub(crate) mod classification;
 
@@ -654,6 +662,10 @@ pub(crate) fn extract(packet: &ConversationPacket, provider: &str) -> ProviderEx
         "antigravity" => antigravity::extract(packet),
         "devin" => devin::extract(packet),
         "cursor" => cursor::extract(packet),
+        "copilot" => copilot::extract(packet),
+        "gemini" => gemini::extract(packet),
+        "opencode" => opencode::extract(packet),
+        "pi_agent" => pi_agent::extract(packet),
         other => ProviderExtraction::unavailable(other),
     }
 }
