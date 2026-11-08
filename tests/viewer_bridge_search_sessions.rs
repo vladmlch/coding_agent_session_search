@@ -2213,3 +2213,162 @@ fn search_sessions_unknown_reason_code_still_blocks_strict() -> Result<()> {
     );
     bridge.shutdown()
 }
+
+/// The manifest the codex extractor publishes for a session whose ONLY
+/// inventory gap is a reasoning item carrying `encrypted_content` — the
+/// exact shape the encrypted arm of `fn reasoning()` in
+/// `src/viewer_extensions/providers/codex.rs` produces (the code is
+/// emitted only there, never for a parse failure): `thinking` and
+/// `text_inventory` unavailable with `reasoning_encrypted`, `chat`
+/// complete (the readable chat text is evidence), plus the fixed
+/// overlay/metrics/compaction entries. The provider hands the reasoning
+/// over already encrypted, so no plaintext ever existed locally.
+fn codex_reasoning_encrypted_manifest() -> Value {
+    json!({
+        "extractor": "codex-facts-v1",
+        "extractor_version": 2,
+        "provider": "codex",
+        "fields": {
+            "chat": {"state":"complete","reasons":[]},
+            "tools": {"state":"complete","reasons":[]},
+            "thinking": {"state":"unavailable","reasons":["reasoning_encrypted"]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"unavailable","reasons":["reasoning_encrypted"]},
+            "files": {"state":"complete","reasons":[]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// The manifest the claude extractor publishes for a session whose ONLY
+/// inventory gap is a `redacted_thinking` block — the exact shape the
+/// `redacted_thinking` arm of `fn part()` in
+/// `src/viewer_extensions/providers/claude.rs` produces (pinned by the
+/// details suite's thinking fixture; the code is emitted only for that
+/// explicit block type, never for an unknown shape): `thinking` and
+/// `text_inventory` unavailable with `thinking_redacted`, `chat`
+/// complete. Anthropic returns redacted thinking only encrypted, so no
+/// plaintext ever existed locally.
+fn claude_redacted_thinking_manifest() -> Value {
+    json!({
+        "extractor": "claude-facts-v1",
+        "extractor_version": 2,
+        "provider": "claude_code",
+        "fields": {
+            "chat": {"state":"complete","reasons":[]},
+            "tools": {"state":"complete","reasons":[]},
+            "thinking": {"state":"unavailable","reasons":["thinking_redacted"]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"unavailable","reasons":["thinking_redacted"]},
+            "files": {"state":"complete","reasons":[]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (v) Owner follow-up (2026-11-07): the source-absent class covers text
+/// the PROVIDER encrypted so no plaintext ever exists locally. A codex
+/// session whose only gap is `reasoning_encrypted` (a reasoning item
+/// carrying `encrypted_content`) must ANSWER strict search with the
+/// `source_text_absent` annotation, exactly like
+/// `agent_message_encrypted`.
+#[test]
+fn search_sessions_reasoning_encrypted_gap_answers_strict_with_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(
+        &bridge,
+        5,
+        "unavailable",
+        codex_reasoning_encrypted_manifest(),
+    )?;
+
+    // S5's chat text ("codex remote quux") still exists and matches: the
+    // strict page answers S3+S5 exactly, with the encrypted-reasoning gap
+    // annotated.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["reasoning_encrypted"]),
+        "the provider-encrypted reasoning gap must be annotated: {s5}"
+    );
+    let s3 = result_item(&page, 3)?;
+    ensure!(
+        s3["source_text_absent"] == json!([]),
+        "a session without gaps keeps an empty annotation: {s3}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // A term S5's existing text lacks is a PROVEN non-member: S5 drops
+    // out of the result set, the strict answer stays complete, and the
+    // gap keeps counting over the evaluated universe.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "S5 was evaluated (and excluded) under source-absence: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// (vi) Owner follow-up (2026-11-07), claude side: a session whose only
+/// gap is a `redacted_thinking` block (`thinking_redacted`) answers
+/// strict search with the annotation — same provider-encrypted class.
+#[test]
+fn search_sessions_thinking_redacted_gap_answers_strict_with_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(
+        &bridge,
+        4,
+        "unavailable",
+        claude_redacted_thinking_manifest(),
+    )?;
+
+    // S4's chat text ("answer follows") still exists and matches: the
+    // strict page answers exactly, with the redacted-thinking gap
+    // annotated.
+    let page = search(&mut bridge, json!({"query":"answer"}))?;
+    assert_members(&page, &[4])?;
+    let s4 = result_item(&page, 4)?;
+    ensure!(
+        s4["source_text_absent"] == json!(["thinking_redacted"]),
+        "the redacted-thinking gap must be annotated: {s4}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // A term S4's existing text lacks is a PROVEN non-member: S4 drops
+    // out, the strict answer stays complete, and the gap keeps counting.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "S4 was evaluated (and excluded) under source-absence: {page}"
+    );
+    bridge.shutdown()
+}

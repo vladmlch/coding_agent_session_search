@@ -196,15 +196,30 @@ pub struct CoverageEntry {
 ///   encrypted, so the rollout never held the plaintext — the sibling
 ///   `input_text` envelope header is the only readable part (pinned by
 ///   `codex_agent_message_encrypted_payload_is_known_unreadable`).
+/// - `reasoning_encrypted` (owner follow-up, 2026-11-07): a codex
+///   reasoning item carrying `encrypted_content`. `fn reasoning()` in
+///   `providers/codex.rs` emits the code only for that payload — never
+///   for a parse failure or unknown shape (those use
+///   `reasoning_not_recorded` / `reasoning_part_unknown`). The provider
+///   hands the reasoning over already encrypted, so no plaintext ever
+///   existed locally.
+/// - `thinking_redacted` (owner follow-up, 2026-11-07): a claude
+///   `redacted_thinking` block. `fn part()` in `providers/claude.rs`
+///   emits the code only for that explicit block type — never for an
+///   unknown or malformed shape (those use `claude_content_unknown` /
+///   `claude_content_malformed`). Anthropic returns redacted thinking
+///   only encrypted, so no plaintext ever existed locally.
 ///
 /// NOT here on purpose:
 /// - `agy_connector_drops_source_text`: the connector DROPS a marker, so
 ///   per-session absence is not provable yet — stays a NOT-READ gap.
-/// - `reasoning_encrypted`: same provider-encrypted class, but not
-///   owner-confirmed for this rule — stays a NOT-READ gap.
 /// - Any unknown/new reason code: defaults to NOT-READ. Adding a member
 ///   is an owner decision, never an inference from a state string.
-pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &["agent_message_encrypted"];
+pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &[
+    "agent_message_encrypted",
+    "reasoning_encrypted",
+    "thinking_redacted",
+];
 
 /// `true` when a coverage entry's gap is provably text absent at the
 /// source (owner decision, 2026-11-07): a `partial`/`unavailable` state
@@ -1178,6 +1193,27 @@ mod source_absent_tests {
             "unavailable",
             &reasons(&["agent_message_encrypted"])
         ));
+        // Owner follow-up (2026-11-07): provider-encrypted reasoning and
+        // redacted thinking never had local plaintext either. Both
+        // extractors mark `thinking` + `text_inventory` unavailable; a
+        // readable thinking sibling would degrade `thinking` to partial
+        // with the same reason.
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["reasoning_encrypted"])
+        ));
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["reasoning_encrypted"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["thinking_redacted"])
+        ));
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["thinking_redacted"])
+        ));
     }
 
     #[test]
@@ -1208,10 +1244,6 @@ mod source_absent_tests {
         assert!(!is_source_absent_gap(
             "partial",
             &reasons(&["agy_connector_drops_source_text"])
-        ));
-        assert!(!is_source_absent_gap(
-            "unavailable",
-            &reasons(&["reasoning_encrypted"])
         ));
         // A brand-new reason code is not-read by default.
         assert!(!is_source_absent_gap(
