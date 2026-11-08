@@ -2456,6 +2456,109 @@ fn search_sessions_agy_source_truncated_gap_answers_strict_with_annotation() -> 
     bridge.shutdown()
 }
 
+/// The manifest the v2 claude extractor publishes for a Desktop sidecar
+/// session whose ONLY inventory gap is the app's own body-cull marker —
+/// the exact shape `claude_desktop_sidecar_envelope_is_a_known_shape`
+/// pins in the ingest suite: `chat` complete (the metadata lines and the
+/// `raw.initialMessage` prompt region are the session's real, indexed
+/// text), `block_inventory`/`text_inventory` unavailable with
+/// `claude_sidecar_body_culled`. The sidecar's explicit
+/// `cass.body_available == false` envelope is the Desktop app stating
+/// the CLI conversation body was culled before the sidecar was written,
+/// so the missing body text never existed in any local record.
+fn claude_sidecar_culled_manifest() -> Value {
+    json!({
+        "extractor": "claude-facts-v2",
+        "extractor_version": 6,
+        "provider": "claude_code",
+        "fields": {
+            "chat": {"state":"complete","reasons":[]},
+            "tools": {"state":"complete","reasons":[]},
+            "thinking": {"state":"complete","reasons":[]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"unavailable","reasons":["claude_sidecar_body_culled"]},
+            "text_inventory": {"state":"unavailable","reasons":["claude_sidecar_body_culled"]},
+            "files": {"state":"complete","reasons":[]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (ix) Owner follow-up (2026-11-08), claude side: the Desktop sidecar's
+/// body-cull marker is a source-absent gap — the app's own
+/// `body_available: false` envelope proves the culled conversation body
+/// never existed in any local record. A session whose only gaps carry
+/// that marker answers strict search over its surviving text (the
+/// metadata lines plus the `initialMessage` prompt region), annotated
+/// exactly like the provider-encrypted class.
+#[test]
+fn search_sessions_claude_sidecar_culled_gap_answers_strict_with_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "unavailable", claude_sidecar_culled_manifest())?;
+
+    // S5's chat text ("codex remote quux") still exists and matches: the
+    // strict page answers S3+S5 exactly, with the body-cull gap annotated.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["claude_sidecar_body_culled"]),
+        "the sidecar body-cull gap must be annotated: {s5}"
+    );
+    let s3 = result_item(&page, 3)?;
+    ensure!(
+        s3["source_text_absent"] == json!([]),
+        "a session without gaps keeps an empty annotation: {s3}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // A term S5's existing text lacks is a PROVEN non-member: S5 drops
+    // out, the strict answer stays complete, and the gap keeps counting.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "S5 was evaluated (and excluded) under source-absence: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// (x) The new allowlist member never over-unlocks: a session whose
+/// inventory gap mixes the body-cull marker with an unknown-shape mark is
+/// NOT provably source-absent — matching regions could still hide behind
+/// the unknown shape — so strict search keeps its honest
+/// `data_unavailable` refusal.
+#[test]
+fn search_sessions_claude_sidecar_cull_mixed_with_unknown_still_refuses_strict() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    let mut manifest = claude_sidecar_culled_manifest();
+    manifest["fields"]["text_inventory"] = json!({"state":"unavailable","reasons":["claude_sidecar_body_culled","claude_shape_unknown"]});
+    set_facts_coverage(&bridge, 5, "unavailable", manifest)?;
+
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    ensure!(
+        page["ok"] == false,
+        "the mixed cull+unknown gap must keep strict search refused: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "expected data_unavailable, got {page}"
+    );
+    bridge.shutdown()
+}
+
 /// The manifest the v3 antigravity extractor publishes for a REALISTIC F10
 /// session that also carries truncation markers: the canonical `agy_type`
 /// envelope (block inventory), unrecorded call identities (tools) and the
