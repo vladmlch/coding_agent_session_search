@@ -2803,6 +2803,591 @@ fn antigravity_regions_index_planner_arguments_and_user_wrappers() {
 }
 
 // ---------------------------------------------------------------------------
+// Antigravity F15 shapes: the pinned FAD connector archives the full raw
+// transcript record per message under `extra.agy_raw` (alongside the
+// canonical `agy_type` envelope), so the extractor verifies the block
+// inventory from the record itself — block_inventory certifies complete
+// wherever every archived field is accounted for, keeps
+// `agy_canonical_envelope` when no record was archived, and degrades to a
+// precise NOT-READ reason when an archived field cannot be proven indexed.
+// Synthetic text only; real key/type structure only.
+// ---------------------------------------------------------------------------
+
+/// The archived record of one synthetic source line, exactly as FAD F15
+/// emits it: the canonical envelope keys plus `agy_raw` holding the whole
+/// raw record verbatim.
+fn agy_raw_envelope_msg(
+    idx: i64,
+    role: &str,
+    agy_type: &str,
+    content: &str,
+    raw: Value,
+    extra: Value,
+) -> NormalizedMessage {
+    let mut merged = extra;
+    merged["agy_type"] = json!(agy_type);
+    merged["agy_raw"] = raw;
+    msg(idx, role, content, merged)
+}
+
+/// The USER_INPUT/PLANNER_RESPONSE shapes the connector emits WITHOUT an
+/// `agy_type` envelope: `agy_raw` rides along the canonical key-set extras.
+fn agy_raw_keyset_msg(
+    idx: i64,
+    role: &str,
+    content: &str,
+    raw: Value,
+    extra: Value,
+) -> NormalizedMessage {
+    let mut merged = extra;
+    merged["agy_raw"] = raw;
+    msg(idx, role, content, merged)
+}
+
+#[test]
+fn antigravity_facts_raw_record_proves_block_inventory_complete() {
+    // Every record the pinned FAD shape emits carries its archived raw
+    // record, and every archived field is accounted for: message text
+    // (content), lifted reasoning (thinking), the passthrough failure
+    // text (error), lifted planner calls (tool_calls → cass.invocations
+    // regions), the truncation marker, media refs and the structural
+    // metadata. The block inventory certifies COMPLETE — the
+    // `agy_canonical_envelope` partial retires for verified records.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity", "model": "MadeUp Model"}),
+        vec![
+            agy_raw_keyset_msg(
+                0,
+                "user",
+                "made-up raw-record request body",
+                json!({
+                    "step_index": 0, "source": "USER_EXPLICIT",
+                    "type": "USER_INPUT", "status": "DONE",
+                    "created_at": "2026-06-11T20:14:42Z",
+                    "content": "<USER_REQUEST>\nmade-up raw-record request body\n</USER_REQUEST>",
+                    "input_tokens": 11, "output_tokens": 7, "cache_read_tokens": 3,
+                    "media": [{"mime_type": "image/png", "uri": "file:///tmp/made-up.png"}]
+                }),
+                json!({
+                    "status": "DONE",
+                    "media": [{"mime_type": "image/png", "uri": "file:///tmp/made-up.png"}]
+                }),
+            ),
+            agy_raw_keyset_msg(
+                1,
+                "assistant",
+                "made-up raw-record planner narration",
+                json!({
+                    "step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:43Z",
+                    "content": "made-up raw-record planner narration",
+                    "thinking": "made-up raw-record thinking",
+                    "tool_calls": [
+                        {"name": "view_file", "args": {"TargetFile": "/made/up/raw-target.rs"}}
+                    ]
+                }),
+                json!({
+                    "status": "DONE",
+                    "thinking": "made-up raw-record thinking",
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "view_file",
+                         "arguments": {"TargetFile": "/made/up/raw-target.rs"}}
+                    ]}
+                }),
+            ),
+            agy_raw_envelope_msg(
+                2,
+                "tool",
+                "GENERIC",
+                "made-up raw-record step output",
+                json!({
+                    "step_index": 2, "source": "MODEL", "type": "GENERIC",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:44Z",
+                    "content": "made-up raw-record step output",
+                    "truncated_fields": []
+                }),
+                json!({"status": "DONE", "truncated_fields": []}),
+            ),
+            agy_raw_envelope_msg(
+                3,
+                "system",
+                "SYSTEM_MESSAGE",
+                "made-up raw-record system notice",
+                json!({
+                    "step_index": 3, "source": "SYSTEM", "type": "SYSTEM_MESSAGE",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:45Z",
+                    "content": "made-up raw-record system notice"
+                }),
+                json!({"status": "DONE"}),
+            ),
+            // Error-only ERROR_MESSAGE: the synthesized content carries the
+            // raw `error` text; the archived record has no content at all.
+            agy_raw_envelope_msg(
+                4,
+                "system",
+                "ERROR_MESSAGE",
+                "made-up raw-record pipeline failure",
+                json!({
+                    "step_index": 4, "source": "SYSTEM", "type": "ERROR_MESSAGE",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:46Z",
+                    "error": "made-up raw-record pipeline failure"
+                }),
+                json!({
+                    "status": "DONE",
+                    "error": "made-up raw-record pipeline failure"
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+
+    // Every record classifies as a known shape — the `agy_raw` key is part
+    // of the connector's verified output contract, not drift.
+    assert!(
+        !publication
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_record_unknown")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+
+    // The verified block inventory: no envelope taint, no unaccounted
+    // field, nothing unverified.
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "complete", "{block:?}");
+    assert!(
+        block.reasons.is_empty(),
+        "the raw-verified block inventory must carry no reasons: {block:?}"
+    );
+    assert!(
+        !publication
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_canonical_envelope")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+
+    // The lifted thinking block is still counted. The planner call carries
+    // NO call_id at the source (the real archive shape: antigravity
+    // `tool_calls` items hold only name/args, and FAD lifts no identity),
+    // so the tools scope keeps its identity-missing partial and the call
+    // never enters the tool facts — yet the archived `tool_calls` still
+    // verified against the lifted invocation above, which is exactly what
+    // retired the envelope taint: block verification is independent of
+    // call identity.
+    assert_eq!(publication.thinking_block_count, Some(1));
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "partial", "{tools:?}");
+    assert!(
+        tools
+            .reasons
+            .iter()
+            .any(|r| r == "agy_tool_call_identity_missing"),
+        "{tools:?}"
+    );
+    assert!(
+        publication.tools.is_empty(),
+        "a call with no source identity must not enter the tool facts: {:?}",
+        publication.tools
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_record_absent_keeps_envelope_partial() {
+    // Old packets (pre-F15): no archived record, so the canonical
+    // `agy_type` envelope is all the packet holds — the block inventory
+    // stays honestly partial. The strict gate keeps refusing these.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            msg(
+                1,
+                "tool",
+                "made-up step output",
+                json!({"agy_type": "GENERIC", "status": "DONE"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block.reasons.iter().any(|r| r == "agy_canonical_envelope"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_record_unknown_field_keeps_block_inventory_partial() {
+    // An archived field outside the verified field census (the raw
+    // transcripts hold 14 distinct names) cannot be proven indexed, so it
+    // keeps the block inventory partial — with the precise unaccounted
+    // reason, never the retired blanket envelope mark.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            agy_raw_envelope_msg(
+                1,
+                "tool",
+                "GENERIC",
+                "made-up step output",
+                json!({
+                    "step_index": 1, "source": "MODEL", "type": "GENERIC",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:44Z",
+                    "content": "made-up step output",
+                    "future_field": {"nested": "made-up unaccounted text"}
+                }),
+                json!({"status": "DONE"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_raw_field_unaccounted"),
+        "{block:?}"
+    );
+    assert!(
+        !block.reasons.iter().any(|r| r == "agy_canonical_envelope"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_record_mismatch_stays_unverified() {
+    // An archived record that cannot be attributed to this message (wrong
+    // `type`, or not an object at all) proves nothing about the message's
+    // blocks — the unverified reason keeps the gap honest and blocking.
+    let mismatched = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            agy_raw_envelope_msg(
+                1,
+                "tool",
+                "GENERIC",
+                "made-up step output",
+                json!({
+                    "step_index": 1, "source": "SYSTEM", "type": "SYSTEM_MESSAGE",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:44Z",
+                    "content": "made-up step output"
+                }),
+                json!({"status": "DONE"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&mismatched, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block.reasons.iter().any(|r| r == "agy_raw_unverified"),
+        "{block:?}"
+    );
+
+    // A non-object archive cannot be enumerated at all — same verdict.
+    let malformed = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            msg(
+                1,
+                "tool",
+                "made-up step output",
+                json!({"agy_type": "GENERIC", "agy_raw": "not-a-record"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&malformed, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block.reasons.iter().any(|r| r == "agy_raw_unverified"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_user_wrapper_residual_keeps_block_inventory_partial() {
+    // USER_INPUT wrapper accounting (FAD `extract_user_request`
+    // semantics): the connector lifts the request body plus the FIRST
+    // settings/metadata block; any other text in the raw content —
+    // residual prose outside closed wrapper blocks, a second metadata
+    // block — reaches no region, so the record is not fully accounted
+    // for and keeps a precise partial. The two real archive sessions with
+    // this shape stay blocked by exactly this reason.
+    let residual = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "user",
+            "made-up request body",
+            json!({
+                "step_index": 0, "source": "USER_EXPLICIT",
+                "type": "USER_INPUT", "status": "DONE",
+                "created_at": "2026-06-11T20:14:42Z",
+                "content": "<USER_REQUEST>\nmade-up request body\n</USER_REQUEST>\nmade-up loose trailing note"
+            }),
+            json!({"status": "DONE"}),
+        )],
+    );
+    let publication = extract_session_facts(&residual, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_user_wrapper_unindexed"),
+        "{block:?}"
+    );
+
+    // A second ADDITIONAL_METADATA block: the connector lifts only the
+    // first, so the second block's text is unaccounted.
+    let second_metadata = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "user",
+            "made-up request body",
+            json!({
+                "step_index": 0, "source": "USER_EXPLICIT",
+                "type": "USER_INPUT", "status": "DONE",
+                "created_at": "2026-06-11T20:14:42Z",
+                "content": "<USER_REQUEST>\nmade-up request body\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nfirst note\n</ADDITIONAL_METADATA>\n<ADDITIONAL_METADATA>\nsecond note\n</ADDITIONAL_METADATA>"
+            }),
+            json!({"status": "DONE", "additional_metadata": "first note"}),
+        )],
+    );
+    let publication = extract_session_facts(&second_metadata, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_user_wrapper_unindexed"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_user_wrapper_unwrapped_content_is_fully_accounted() {
+    // The lossless USER_INPUT shapes: an unwrapped prompt (the connector
+    // falls back to the full raw content as the body) and a cleanly
+    // wrapped turn whose body/settings/metadata lifts reconstruct it —
+    // both certify the block inventory complete.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            agy_raw_keyset_msg(
+                0,
+                "user",
+                "made-up plain prompt without wrappers",
+                json!({
+                    "step_index": 0, "source": "USER_EXPLICIT",
+                    "type": "USER_INPUT", "status": "DONE",
+                    "created_at": "2026-06-11T20:14:42Z",
+                    "content": "made-up plain prompt without wrappers"
+                }),
+                json!({"status": "DONE"}),
+            ),
+            agy_raw_keyset_msg(
+                1,
+                "user",
+                "made-up wrapped request body",
+                json!({
+                    "step_index": 1, "source": "USER_EXPLICIT",
+                    "type": "USER_INPUT", "status": "DONE",
+                    "created_at": "2026-06-11T20:14:43Z",
+                    "content": "<USER_REQUEST>\nmade-up wrapped request body\n</USER_REQUEST>\n<USER_SETTINGS_CHANGE>\nmade-up settings note\n</USER_SETTINGS_CHANGE>\n<ADDITIONAL_METADATA>\nmade-up local time note\n</ADDITIONAL_METADATA>"
+                }),
+                json!({
+                    "status": "DONE",
+                    "additional_metadata": "made-up local time note",
+                    "settings_change": "made-up settings note"
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "complete", "{block:?}");
+    assert!(block.reasons.is_empty(), "{block:?}");
+}
+
+#[test]
+fn antigravity_facts_raw_tool_calls_on_tool_role_keep_block_inventory_partial() {
+    // Raw `tool_calls` on a role-`tool` record: the connector parses the
+    // calls, but the tool-args region lane excludes role-`tool` records,
+    // so the argument text would index nowhere — unaccounted, partial.
+    // (Zero such records exist in the real archive today; the mark keeps
+    // the gate honest if the source format ever grows one.)
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            agy_raw_envelope_msg(
+                1,
+                "tool",
+                "RUN_COMMAND",
+                "made-up command output",
+                json!({
+                    "step_index": 1, "source": "MODEL", "type": "RUN_COMMAND",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:44Z",
+                    "content": "made-up command output",
+                    "tool_calls": [
+                        {"name": "run_command", "args": {"command": "made-up --flag"}}
+                    ]
+                }),
+                json!({
+                    "status": "DONE",
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "run_command", "call_id": null,
+                         "arguments": {"command": "made-up --flag"}}
+                    ]}
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_raw_field_unaccounted"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_planner_calls_missing_lift_keep_block_inventory_partial() {
+    // PLANNER_RESPONSE whose archived `tool_calls` item never reached
+    // `cass.invocations` (a nameless item the connector drops, or a lift
+    // the ingest seam did not archive): the call's argument text would
+    // index nowhere — unaccounted, partial, never silently complete.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "assistant",
+            "made-up planner narration",
+            json!({
+                "step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE",
+                "status": "DONE", "created_at": "2026-06-11T20:14:43Z",
+                "content": "made-up planner narration",
+                "tool_calls": [
+                    {"args": {"command": "made-up nameless call args"}}
+                ]
+            }),
+            json!({"status": "DONE"}),
+        )],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_raw_field_unaccounted"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_diverged_text_fields_keep_block_inventory_partial() {
+    // A raw `thinking`/`error` whose packet copy (the lift that indexes as
+    // a region) diverged from the archived record, and a raw `content` the
+    // message text does not reproduce: the archived text cannot be proven
+    // indexed — unaccounted, partial.
+    let diverged = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            agy_raw_envelope_msg(
+                1,
+                "tool",
+                "GENERIC",
+                "made-up step output",
+                json!({
+                    "step_index": 1, "source": "MODEL", "type": "GENERIC",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:44Z",
+                    "content": "made-up step output",
+                    "thinking": "made-up archived thinking",
+                    "error": "made-up archived failure"
+                }),
+                json!({
+                    "status": "DONE",
+                    "thinking": "made-up DIVERGED thinking",
+                    "error": "made-up DIVERGED failure"
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&diverged, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_raw_field_unaccounted"),
+        "{block:?}"
+    );
+
+    let content_diverged = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            agy_raw_envelope_msg(
+                1,
+                "tool",
+                "GENERIC",
+                "made-up DIFFERENT step output",
+                json!({
+                    "step_index": 1, "source": "MODEL", "type": "GENERIC",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:44Z",
+                    "content": "made-up step output"
+                }),
+                json!({"status": "DONE"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&content_diverged, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_raw_field_unaccounted"),
+        "{block:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Devin fixture: FAD sparse extras ({message_id, thinking, tool_call_id}) plus
 // the oracle graph contract (kind/payload/node_id) — same raw call id under
 // two graph roots must yield devin-call:* composite ids, never merged.

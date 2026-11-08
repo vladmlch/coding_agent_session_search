@@ -103,7 +103,14 @@ pub use providers::classification::SessionQualityMetrics;
 /// copilot-facts-v2). An unknown part shape keeps its not-read marks
 /// (`copilot_part_unknown`); pre-F14 rows keep the drop marks and the
 /// seam-invocation fallback.
-pub const FACTS_EXTRACTOR_VERSION: i64 = 9;
+/// v10: v9 plus the antigravity raw-record archive (FAD F15) — the antigravity connector archives the full raw
+/// source record per message under `extra.agy_raw`, and the antigravity
+/// extractor VERIFIES the block inventory from it (agy_raw_unverified /
+/// agy_raw_field_unaccounted / agy_user_wrapper_unindexed) instead of
+/// tainting every `agy_type` envelope record with the unverifiable
+/// `agy_canonical_envelope` (providers/antigravity.rs,
+/// antigravity-facts-v5). Pre-F15 packets keep the v8 verdicts unchanged.
+pub const FACTS_EXTRACTOR_VERSION: i64 = 10;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
