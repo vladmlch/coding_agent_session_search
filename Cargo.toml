@@ -350,10 +350,12 @@ strip = false
 
 # ── fsqlite family: owner-fork resolution (2026-11-07 owner decision) ──────
 # Every fsqlite family crate resolves from the owner's frankensqlite fork,
-# github.com/vladmlch/frankensqlite (branch cass-local-fixes), at the exact
-# rev below. The rev is v0.4.12 (26aa19afcbd5afdb01658a10bb33417ad0b513be)
-# plus two vdbe range-seek commits, so every family crate still publishes
-# version 0.4.12 and satisfies the registry-shaped `=0.4.12` requirements:
+# github.com/vladmlch/frankensqlite (branch cass-local-fixes-dml since the
+# 2026-11-08 rev move), at the exact rev below. The rev is v0.4.12
+# (26aa19afcbd5afdb01658a10bb33417ad0b513be) plus two vdbe range-seek
+# commits and the DML equality-prefix index seeks (2026-11-08, bd-j9gub),
+# so every family crate still publishes version 0.4.12 and satisfies the
+# registry-shaped `=0.4.12` requirements:
 #   - 10eadc63 perf(vdbe): seek the index range when the WHERE carries
 #     residual conjuncts — `WHERE <indexed col> <range> AND <residual>` no
 #     longer falls back to a full table scan; the walk re-applies the whole
@@ -363,6 +365,16 @@ strip = false
 #     bounds — `WHERE id > ?1 AND ...` now uses the rowid range seek
 #     instead of a full scan, proven bit-identical to stock SQLite by the
 #     fork's differential e2e oracle (~160x on its fixture).
+#   - e8901664 perf(vdbe)+feat(core), bd-j9gub (f39c8eb0+e8901664,
+#     backported onto the 0.4.12 base from the 0.4.13 series): DML
+#     equality-prefix index seeks — a DELETE or UPDATE whose equality
+#     conjuncts pin a PREFIX of a composite index key (`DELETE FROM
+#     viewer_search_regions WHERE conversation_id = ?1`) SEARCHes the
+#     leading-column index instead of full-scanning, proven row-for-row
+#     against stock SQLite by the fork's differential oracle over affected
+#     rows, changes(), RETURNING, triggers and AUTOINCREMENT; removes
+#     cass's O(N^2) per-conversation viewer DELETEs
+#     (.scratch/glm/2026-11-08-fsq-dml-backport/report.md).
 # Patching crates.io (rather than rewriting the [dependencies] entries to
 # git) keeps one resolution per package across every consumer: FAD's own
 # `^0.4.1` requirement converges on the same fork source. build.rs
@@ -370,26 +382,26 @@ strip = false
 # exact URL+rev, any duplicate resolution, any version drift off 0.4.12, and
 # any lockfile entry that resolves from elsewhere.
 [patch.crates-io]
-fsqlite = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-ast = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-btree = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-core = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-error = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-ext-fts5 = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-ext-icu = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-ext-json = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-ext-misc = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-ext-rtree = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-func = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-mvcc = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-observability = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-pager = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-parser = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-planner = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-types = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-vdbe = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-vfs = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
-fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "d9414f972bf1fe004e1c991afc213e9be267a7cb" }
+fsqlite = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-ast = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-btree = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-core = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-error = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-ext-fts5 = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-ext-icu = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-ext-json = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-ext-misc = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-ext-rtree = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-func = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-mvcc = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-observability = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-pager = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-parser = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-planner = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-types = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-vdbe = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-vfs = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
+fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "e890166488fbfa355acb531d97040329c06eef0d" }
 
 # The dependency graph is pinned to the asupersync 0.5.x line (0.5.0). Keep
 # the frankensqlite (owner-fork), frankensearch, and franken-agent-detection
