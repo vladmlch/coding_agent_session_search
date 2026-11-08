@@ -4287,13 +4287,17 @@ fn pi_agent_regions_index_toolcall_blocks_and_results() {
 }
 
 // ---------------------------------------------------------------------------
-// OpenCode: the pinned connector renders every v2 session row into a flat
+// OpenCode: the pinned connector renders every session row into a flat
 // content string (reasoning parts as "[Reasoning]\n{reasoning}", tool
-// parts as "[Tool Output]\n{output}" — part identity, input and state
-// dropped) and archives the raw row identity keys
-// ({message_id, session_id, type, seq}). Message authors carry the model
-// alias: the connector lifts data.model.id into the author slot for
-// assistant and compaction rows.
+// parts as "[Tool Output]\n{output}" plus a failed run's
+// "[Tool Error]\n{error}") and archives the raw row identity keys
+// ({message_id, session_id, type, seq}) — and, since FAD F14, the raw part
+// records in extra["parts"] in delivery order (the v2 content items; the
+// 1.x part rows/files), verbatim, including every tool part's id, name,
+// input, status, results and error. Rows indexed before F14 keep their
+// stored extras (no parts key) and fall back to the v1 marker heuristics.
+// Message authors carry the model alias: the connector lifts data.model.id
+// into the author slot for assistant and compaction rows.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -4596,6 +4600,497 @@ fn opencode_facts_compaction_and_non_assistant_types() {
         entry.reasons.iter().any(|r| r == "opencode_extra_missing"),
         "chat: {entry:?}"
     );
+}
+
+#[test]
+fn opencode_facts_archived_parts_verified() {
+    // Post-F14 rows archive the raw parts in extra["parts"]: every part is
+    // checked against the render contract, each tool part verifies into a
+    // call+result fact pair (an opencode part is both sides of one call),
+    // and the inventories stay complete because the archive proves them —
+    // the shape of the ses_e863… blocker after a re-scan. The error part's
+    // state.error text now renders ("[Tool Error]") and counts as delivered
+    // source text.
+    let user_row = msg(
+        0,
+        "user",
+        "made-up opencode prompt",
+        json!({
+            "message_id": "om_u1", "session_id": "os_1", "type": "user", "seq": 1
+        }),
+    );
+    let mut tool_row = msg(
+        1,
+        "agent",
+        "[Reasoning]\nmade-up planning reasoning\n\nrunning it now\n\n\
+         [Tool Output]\nmade-up shell output\n\n[Tool Error]\nmade-up exit 1",
+        json!({
+            "message_id": "om_a1", "session_id": "os_1",
+            "type": "assistant", "seq": 2,
+            "parts": [
+                {"type": "reasoning", "text": "made-up planning reasoning"},
+                {"type": "text", "text": "running it now"},
+                {"type": "tool", "id": "prt_1", "name": "shell", "executed": false,
+                 "state": {"status": "completed", "input": {"command": "make check"},
+                           "content": [{"type": "text", "text": "made-up shell output"}]}},
+                {"type": "tool", "id": "prt_2", "name": "edit", "executed": false,
+                 "state": {"status": "error",
+                           "input": {"path": "b.rs", "oldString": "x", "newString": "y"},
+                           "error": "made-up exit 1"}}
+            ]
+        }),
+    );
+    tool_row.author = Some("made-up-opencode-beam".to_string());
+    let mut plain_row = msg(
+        2,
+        "agent",
+        "[Reasoning]\nmade-up wrap-up reasoning\n\nall done",
+        json!({
+            "message_id": "om_a2", "session_id": "os_1",
+            "type": "assistant", "seq": 3,
+            "parts": [
+                {"type": "reasoning", "text": "made-up wrap-up reasoning"},
+                {"type": "text", "text": "all done"}
+            ]
+        }),
+    );
+    plain_row.author = Some("made-up-opencode-beam".to_string());
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![user_row, tool_row, plain_row],
+        ),
+        "opencode",
+    );
+
+    assert_eq!(publication.extractor, "opencode-facts-v2");
+    assert_eq!(publication.extractor_version, 9);
+
+    // Every assistant row is verified: the inventory fields stay complete
+    // with no degradation reasons at all.
+    for field in [
+        "chat",
+        "thinking",
+        "tools",
+        "tool_error",
+        "block_inventory",
+        "text_inventory",
+        "files",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+    // opencode records no numeric exit codes — the state status is the only
+    // exit evidence, so tool_exit degrades with the shared reason.
+    let tool_exit = coverage(&publication, "tool_exit").expect("tool_exit");
+    assert_eq!(tool_exit.state, "unavailable", "tool_exit: {tool_exit:?}");
+    assert!(
+        tool_exit
+            .reasons
+            .iter()
+            .any(|r| r == "tool_exit_not_recorded"),
+        "tool_exit: {tool_exit:?}"
+    );
+
+    // Two tool parts -> two call+result facts, in call-id order.
+    assert_eq!(publication.tools.len(), 2);
+    assert_eq!(publication.tools[0].call_id, "prt_1");
+    assert_eq!(publication.tools[0].raw_call_id, "prt_1");
+    assert_eq!(publication.tools[0].name, "shell");
+    assert!(publication.tools[0].has_result);
+    assert_eq!(publication.tools[0].is_error, Some(false));
+    assert_eq!(publication.tools[0].exit_code, None);
+    assert_eq!(publication.tools[0].file_path, None);
+    assert_eq!(publication.tools[0].source_idx, 1);
+    assert_eq!(publication.tools[1].call_id, "prt_2");
+    assert_eq!(publication.tools[1].name, "edit");
+    assert!(publication.tools[1].has_result);
+    assert_eq!(publication.tools[1].is_error, Some(true));
+    assert_eq!(publication.tools[1].file_path.as_deref(), Some("b.rs"));
+    assert_eq!(publication.tools[1].source_idx, 1);
+
+    // Reasoning parts count exactly from the archive (no marker collisions).
+    assert_eq!(publication.thinking_block_count, Some(2));
+    // File facts are exact: one input.path across the verified rows.
+    assert_eq!(publication.file_fact_count, Some(1));
+    assert_eq!(publication.tool_error_count, Some(1));
+    assert_eq!(publication.tool_calls_with_exit_status, Some(0));
+}
+
+#[test]
+fn opencode_facts_error_object_message_verified() {
+    // The real failed-run shape: `state.error` is an OBJECT carrying the
+    // failure text under `message` (measured shape `{message, type}`,
+    // status `error`), not a plain string. The extractor verifies the
+    // message as delivered failure text, so the inventories stay
+    // complete instead of degrading on an unreadable error shape.
+    let user_row = msg(
+        0,
+        "user",
+        "made-up opencode prompt",
+        json!({
+            "message_id": "om_u1", "session_id": "os_1", "type": "user", "seq": 1
+        }),
+    );
+    let assistant = msg(
+        1,
+        "agent",
+        "trying now\n\n[Tool Error]\nmade-up boom: denied",
+        json!({
+            "message_id": "om_a1", "session_id": "os_1",
+            "type": "assistant", "seq": 2,
+            "parts": [
+                {"type": "text", "text": "trying now"},
+                {"type": "tool", "id": "prt_err", "name": "shell", "executed": false,
+                 "state": {"status": "error", "input": {"command": "make check"},
+                           "error": {"message": "made-up boom: denied", "type": "tool_error"}}}
+            ]
+        }),
+    );
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![user_row, assistant],
+        ),
+        "opencode",
+    );
+
+    assert_eq!(publication.extractor, "opencode-facts-v2");
+    for field in [
+        "chat",
+        "thinking",
+        "tools",
+        "tool_error",
+        "block_inventory",
+        "text_inventory",
+        "files",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+
+    // The error part verifies into one call+result fact with the failure
+    // recorded from the object's message and the status.
+    assert_eq!(publication.tools.len(), 1);
+    let tool = &publication.tools[0];
+    assert_eq!(tool.call_id, "prt_err");
+    assert_eq!(tool.raw_call_id, "prt_err");
+    assert_eq!(tool.name, "shell");
+    assert!(tool.has_result);
+    assert_eq!(tool.is_error, Some(true));
+    assert_eq!(tool.exit_code, None);
+    assert_eq!(tool.file_path, None);
+    assert_eq!(tool.source_idx, 1);
+    assert_eq!(publication.tool_error_count, Some(1));
+    assert_eq!(publication.file_fact_count, Some(0));
+}
+
+#[test]
+fn opencode_facts_error_object_drift_shapes() {
+    // An error object with no renderable message — the `message` key
+    // absent, or not a string — may hold text the render contract cannot
+    // read. That is drift on the text-bearing inventories, never a guess.
+    let user_row = msg(
+        0,
+        "user",
+        "made-up opencode prompt",
+        json!({
+            "message_id": "om_u1", "session_id": "os_1", "type": "user", "seq": 1
+        }),
+    );
+    let assistant = msg(
+        1,
+        "agent",
+        "trying now",
+        json!({
+            "message_id": "om_a1", "session_id": "os_1",
+            "type": "assistant", "seq": 2,
+            "parts": [
+                {"type": "text", "text": "trying now"},
+                {"type": "tool", "id": "prt_e1", "name": "shell", "executed": false,
+                 "state": {"status": "error", "input": {"command": "make check"},
+                           "error": {"type": "no_message"}}},
+                {"type": "tool", "id": "prt_e2", "name": "read", "executed": false,
+                 "state": {"status": "error", "input": {"path": "z.rs"},
+                           "error": {"message": 7}}}
+            ]
+        }),
+    );
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![user_row, assistant],
+        ),
+        "opencode",
+    );
+
+    assert_eq!(publication.extractor, "opencode-facts-v2");
+    for field in ["text_inventory", "block_inventory"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_error_text_unverifiable"),
+            "{field}: {entry:?}"
+        );
+    }
+    // The parts themselves verify: identity, name and state are intact and
+    // the failure status still records error-ness.
+    for field in ["tools", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+    assert_eq!(publication.tools.len(), 2);
+    assert_eq!(publication.tools[0].is_error, Some(true));
+    assert_eq!(publication.tools[1].is_error, Some(true));
+    assert_eq!(publication.tool_error_count, Some(2));
+}
+
+#[test]
+fn opencode_facts_archived_parts_prove_absence() {
+    // The ses_ebad… blocker shape: the single assistant row holds no tool
+    // part at all. With the parts archived the absence is provable, so the
+    // inventories complete with an empty tool inventory instead of
+    // degrading unavailable as unverifiable.
+    let mut assistant = msg(
+        1,
+        "agent",
+        "[Reasoning]\nmade-up planning reasoning\n\nthe answer",
+        json!({
+            "message_id": "om_a1", "session_id": "os_1",
+            "type": "assistant", "seq": 2,
+            "parts": [
+                {"type": "reasoning", "text": "made-up planning reasoning"},
+                {"type": "text", "text": "the answer"}
+            ]
+        }),
+    );
+    assistant.author = Some("made-up-opencode-beam".to_string());
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up opencode prompt",
+                    json!({
+                        "message_id": "om_u1", "session_id": "os_1",
+                        "type": "user", "seq": 1
+                    }),
+                ),
+                assistant,
+            ],
+        ),
+        "opencode",
+    );
+
+    for field in [
+        "chat",
+        "thinking",
+        "tools",
+        "tool_exit",
+        "tool_error",
+        "block_inventory",
+        "text_inventory",
+        "files",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+    assert!(publication.tools.is_empty());
+    // No tool calls -> no file facts derivable (shared publication rule).
+    assert_eq!(publication.file_fact_count, None);
+    assert_eq!(publication.thinking_block_count, Some(1));
+}
+
+#[test]
+fn opencode_facts_legacy_rows_verified_by_role() {
+    // 1.x rows carry no `type` key: they dispatch on the packet role here.
+    // The user row renders its whole text; the assistant row's archived
+    // parts follow the 1.x state shape (state.id/output/title/input), so
+    // the row verifies — no `opencode_record_unknown` drift on legacy
+    // data. A textless tool part keeps its message alive with empty
+    // content (F13's codex rule) and still verifies.
+    let user_row = msg(
+        0,
+        "user",
+        "made-up opencode prompt",
+        json!({"message_id": "om_u1", "session_id": "os_1"}),
+    );
+    let mut assistant = msg(
+        1,
+        "assistant",
+        "checking\n\n[Tool Output]\nmade-up read output",
+        json!({
+            "message_id": "om_a1", "session_id": "os_1",
+            "parts": [
+                {"id": "p-lt-1", "order": 0, "type": "text", "text": "checking"},
+                {"id": "p-lt-2", "order": 1, "type": "tool",
+                 "state": {"id": "toolu_01", "status": "completed",
+                           "input": {"path": "d.rs"},
+                           "output": "made-up read output", "title": "Read"}},
+                {"id": "p-lt-3", "order": 2, "type": "step-start"},
+                {"id": "p-lt-4", "order": 3, "type": "patch",
+                 "text": "made-up patch text"}
+            ]
+        }),
+    );
+    assistant.author = Some("made-up-opencode-beam".to_string());
+    let quiet = msg(
+        2,
+        "assistant",
+        "",
+        json!({
+            "message_id": "om_a2", "session_id": "os_1",
+            "parts": [
+                {"id": "p-lt-5", "order": 0, "type": "tool",
+                 "state": {"id": "toolu_02", "status": "completed",
+                           "input": {"command": "pwd"}, "title": "Bash"}}
+            ]
+        }),
+    );
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![user_row, assistant, quiet],
+        ),
+        "opencode",
+    );
+
+    // No unknown-record drift anywhere: legacy rows are known shapes.
+    for entry in &publication.coverage {
+        assert!(
+            !entry.reasons.iter().any(|r| r == "opencode_record_unknown"),
+            "coverage drift: {entry:?}"
+        );
+    }
+    for field in [
+        "chat",
+        "thinking",
+        "tools",
+        "tool_error",
+        "block_inventory",
+        "text_inventory",
+        "files",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+
+    // The 1.x state id anchors the fact; the part id is the raw id.
+    assert_eq!(publication.tools.len(), 2);
+    assert_eq!(publication.tools[0].call_id, "toolu_01");
+    assert_eq!(publication.tools[0].raw_call_id, "p-lt-2");
+    assert_eq!(publication.tools[0].name, "Read");
+    assert!(publication.tools[0].has_result);
+    assert_eq!(publication.tools[0].is_error, Some(false));
+    assert_eq!(publication.tools[0].file_path.as_deref(), Some("d.rs"));
+    // The textless part's fact survives on the empty-content row.
+    assert_eq!(publication.tools[1].call_id, "toolu_02");
+    assert_eq!(publication.tools[1].raw_call_id, "p-lt-5");
+    assert_eq!(publication.tools[1].name, "Bash");
+    assert_eq!(publication.tools[1].source_idx, 2);
+
+    assert_eq!(publication.thinking_block_count, Some(0));
+    assert_eq!(publication.file_fact_count, Some(1));
+}
+
+#[test]
+fn opencode_facts_archived_parts_drift() {
+    // Contract drift inside the parts archive: an unknown part type, a
+    // text part whose text is not a string, a control part carrying text,
+    // and tool parts missing their name or call identity — each degrades
+    // exactly the fields it leaves unverifiable, never a guess.
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![msg(
+                1,
+                "agent",
+                "made-up rendered text",
+                json!({
+                    "message_id": "om_a1", "session_id": "os_1",
+                    "type": "assistant", "seq": 2,
+                    "parts": [
+                        {"type": "text", "text": "made-up rendered text"},
+                        {"type": "futurePart"},
+                        {"type": "text", "text": 7},
+                        {"type": "step-finish", "text": "made-up step note"},
+                        {"type": "tool", "name": "shell",
+                         "state": {"status": "completed", "content": []}},
+                        {"type": "tool", "id": "prt_x",
+                         "state": {"status": "completed", "content": []}},
+                        {"type": "tool", "id": "prt_f", "name": "read",
+                         "state": {"status": "completed", "input": {},
+                                   "content": [
+                                       {"type": "file", "uri": "file:///made-up.png",
+                                        "mime": "image/png", "text": "made-up file caption"},
+                                       {"type": "futureResult",
+                                        "text": "made-up future result"}
+                                   ]}}
+                    ]
+                }),
+            )],
+        ),
+        "opencode",
+    );
+
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "block_inventory: {block:?}");
+    assert!(
+        block.reasons.iter().any(|r| r == "opencode_part_unknown"),
+        "block_inventory: {block:?}"
+    );
+    let text_inventory = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text_inventory.state, "partial", "text: {text_inventory:?}");
+    for reason in [
+        "opencode_part_unknown",
+        "opencode_part_text_malformed",
+        "opencode_control_part_text_dropped",
+        "opencode_result_text_dropped",
+        "opencode_result_unknown",
+    ] {
+        assert!(
+            text_inventory.reasons.iter().any(|r| r == reason),
+            "{reason}: {text_inventory:?}"
+        );
+    }
+    let tools_entry = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools_entry.state, "partial", "tools: {tools_entry:?}");
+    for reason in [
+        "opencode_tool_name_missing",
+        "opencode_tool_call_identity_missing",
+    ] {
+        assert!(
+            tools_entry.reasons.iter().any(|r| r == reason),
+            "{reason}: {tools_entry:?}"
+        );
+    }
+    // Only the fully-identified part yields a fact: its result is recorded
+    // (has_result true) with no text — the file item's caption is dropped
+    // and the unknown item is not collected. Nothing unverifiable is
+    // recorded, and no input path means no file facts.
+    assert_eq!(publication.tools.len(), 1);
+    assert_eq!(publication.tools[0].call_id, "prt_f");
+    assert_eq!(publication.tools[0].name, "read");
+    assert!(publication.tools[0].has_result);
+    assert_eq!(publication.tools[0].is_error, Some(false));
+    assert_eq!(publication.file_fact_count, Some(0));
+    assert_eq!(publication.thinking_block_count, Some(0));
 }
 
 // ---------------------------------------------------------------------------

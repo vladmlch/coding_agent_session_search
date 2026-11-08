@@ -89,7 +89,19 @@ pub use providers::classification::SessionQualityMetrics;
 /// no marks — never a `tool_output_not_recorded` claim about a record that
 /// exists (providers/mod.rs, mirrored in the viewer-bridge
 /// `get_tool_output` oracle).
-pub const FACTS_EXTRACTOR_VERSION: i64 = 8;
+/// v9: v8 plus the opencode parts archive (FAD F14) — opencode-facts-v2
+/// verifies every assistant row's raw parts from `extra["parts"]` (each
+/// tool part is both sides of one call, so it yields a call+result fact
+/// pair; a part that renders no text still verifies; 1.x rows without a
+/// row `type` dispatch on the packet role), completing the
+/// tools/text/block/files inventories from proven data — including the
+/// provably empty inventory — while pre-F14 rows keep the v1 marker
+/// heuristics (providers/opencode.rs). A failed run's error record
+/// verifies in both its shapes: a plain string, or the measured real
+/// object form `{message, type}` whose `message` is the delivered failure
+/// text (an error object with no readable message drifts
+/// `opencode_error_text_unverifiable` unless provably textless).
+pub const FACTS_EXTRACTOR_VERSION: i64 = 9;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
