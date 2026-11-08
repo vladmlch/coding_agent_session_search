@@ -2748,6 +2748,68 @@ fn search_sessions_agy_realistic_marks_still_refuse_strict() -> Result<()> {
     bridge.shutdown()
 }
 
+/// The manifest the post-F14 antigravity extractor publishes for the
+/// dominant real-archive shape once every emitted record archives its raw
+/// source: the block inventory is VERIFIED complete (the raw record is
+/// present and every field accounted for), so the last NOT-READ reason
+/// on the strict-gated fields is gone; only the allowlisted
+/// `agy_source_truncated` remains on the text scopes. Strict search may
+/// evaluate such a session.
+fn antigravity_raw_verified_manifest() -> Value {
+    json!({
+        "extractor": "antigravity-facts-v5",
+        "extractor_version": 9,
+        "provider": "antigravity",
+        "fields": {
+            "chat": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tools": {"state":"partial","reasons":[
+                "agy_tool_call_identity_missing",
+                "agy_tool_result_identity_missing",
+                "agy_source_truncated"
+            ]},
+            "thinking": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tool_exit": {"state":"partial","reasons":["agy_status_unpaired"]},
+            "tool_error": {"state":"partial","reasons":["agy_status_unpaired"]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"partial","reasons":["agy_source_truncated"]},
+            "files": {"state":"partial","reasons":["agy_source_truncated"]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (viii-b) The raw-verified shape is what the F14 extractor now
+/// publishes for the dominant archive session: the block inventory is
+/// complete, and the only text-scope gap is the allowlisted
+/// source-truncation marker — nothing that can hide a matching region —
+/// so strict search must NOT refuse the session. This pins the
+/// end-to-end outcome of the raw-record verification: with
+/// `agy_canonical_envelope` retired, the strict gate evaluates the
+/// session instead of degrading to `data_unavailable`.
+#[test]
+fn search_sessions_agy_raw_verified_no_longer_refuses_strict() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "partial", antigravity_raw_verified_manifest())?;
+
+    // The probe term is absent from S5's verified regions, so S5 is a
+    // proven non-member — but the search must RUN: no
+    // `data_unavailable` refusal from an inventory gap.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    ensure!(
+        page["ok"] == true,
+        "the raw-verified session must not refuse strict search: {page}"
+    );
+    bridge.shutdown()
+}
+
 /// The fixture session for (ix): the real F10 shape the v3 report
 /// quantified as the archive's only not-read gap — a tool-step GENERIC
 /// record whose `error` passthrough failure text differs from the step
