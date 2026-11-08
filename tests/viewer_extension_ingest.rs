@@ -853,6 +853,451 @@ fn claude_compacted_extra_stays_partial_not_unknown() {
 }
 
 // ---------------------------------------------------------------------------
+// Claude Desktop sidecar sessions, empty-`{}` compaction products and
+// audit-log replay pairs — the residual shapes of the 2026-11-08
+// residual-shapes pass. Fixtures replicate the pinned FAD connector's
+// output shapes with made-up text (the real archive is read-only and never
+// copied here).
+// ---------------------------------------------------------------------------
+
+/// The FAD Claude Desktop sidecar envelope (`claude-code-sessions` /
+/// `local-agent-mode-sessions` metadata stubs): ONE system message whose
+/// content is the metadata lines, extra = the `cass` sidecar provenance plus
+/// the whole raw metadata object. The conversation body is explicitly culled
+/// at the source (`body_available: false`); the user-typed first prompt
+/// rides unlifted in `raw.initialMessage`.
+fn claude_desktop_sidecar_packet_with_slug(slug: &str) -> ConversationPacket {
+    let content = [
+        "Claude Code Desktop session metadata",
+        "Title: made-up sidecar title",
+        "Workspace: /made/up/workspace",
+        "Model: claude-made-up",
+        "Permission mode: default",
+        "CLI session id: sidecar-cli-made-up",
+        "Conversation body unavailable in this Desktop sidecar; Claude Code may have culled the CLI JSONL body.",
+    ]
+    .join("\n");
+    packet(
+        slug,
+        json!({"source": "claude_code"}),
+        vec![msg(
+            0,
+            "system",
+            &content,
+            json!({
+                "cass": {
+                    "source": "claude_code_desktop_sidecar",
+                    "body_available": false,
+                    "body_cull_note": "Claude Code may auto-cull CLI JSONL bodies while Desktop sidecars retain title/workspace metadata."
+                },
+                "raw": {
+                    "title": "made-up sidecar title",
+                    "cwd": "/made/up/workspace",
+                    "model": "claude-made-up",
+                    "cliSessionId": "sidecar-cli-made-up",
+                    "initialMessage": "made-up sidecar first prompt"
+                }
+            }),
+        )],
+    )
+}
+
+fn claude_desktop_sidecar_packet() -> ConversationPacket {
+    claude_desktop_sidecar_packet_with_slug("claude_code")
+}
+
+#[test]
+fn claude_desktop_sidecar_envelope_is_a_known_shape() {
+    let publication = extract_session_facts(&claude_desktop_sidecar_packet(), "claude_code");
+
+    // The envelope is known: no scope may claim an unknown shape.
+    for entry in &publication.coverage {
+        assert!(
+            !entry.reasons.iter().any(|r| r == "claude_shape_unknown"),
+            "{} must not be shape-unknown: {:?}",
+            entry.field,
+            entry.reasons
+        );
+    }
+    // The culled conversation body never existed in any local record — the
+    // app's own `body_available: false` marker proves it — so the inventory
+    // gap is source-absent, never a not-read gap.
+    for field in ["block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert_eq!(
+            entry.reasons,
+            vec!["claude_sidecar_body_culled".to_string()],
+            "{field}: {entry:?}"
+        );
+        assert!(
+            is_source_absent_gap(&entry.state, &entry.reasons),
+            "{field} must be a source-absent gap: {entry:?}"
+        );
+    }
+    // The sidecar's own text (the metadata lines plus the initialMessage
+    // region) is the session's chat — fully present and indexed.
+    let chat = coverage(&publication, "chat").expect("chat");
+    assert_eq!(chat.state, "complete", "chat: {chat:?}");
+    // No tool records exist in the sidecar; nothing may claim a tool gap.
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "complete", "tools: {tools:?}");
+}
+
+#[test]
+fn claude_sidecar_cull_verdict_requires_the_explicit_marker() {
+    // Same envelope shape with `body_available: true` (or absent): without
+    // the app's explicit cull marker the extractor may not claim the body
+    // is source-absent — the conservative unknown-shape verdict survives.
+    for body_available in [json!(true), Value::Null] {
+        let extra = json!({
+            "cass": {"source": "claude_code_desktop_sidecar",
+                     "body_available": body_available},
+            "raw": {"title": "made-up title", "initialMessage": "made-up prompt"}
+        });
+        let p = packet(
+            "claude_code",
+            json!({"source": "claude_code"}),
+            vec![msg(
+                0,
+                "system",
+                "Claude Code Desktop session metadata\nTitle: made-up title",
+                extra,
+            )],
+        );
+        let publication = extract_session_facts(&p, "claude_code");
+        let entry = coverage(&publication, "text_inventory").expect("text_inventory");
+        assert_eq!(entry.state, "unavailable", "{entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "claude_shape_unknown"),
+            "no cull marker, no cull verdict: {entry:?}"
+        );
+        assert!(!is_source_absent_gap(&entry.state, &entry.reasons));
+    }
+}
+
+#[test]
+fn claude_empty_extra_object_is_the_compaction_product() {
+    // FAD's `compact_message_extra` returns `{}` for records with no
+    // model/message_id/request_id/token_usage/tool_call_count — the plain
+    // user/text turns of a >=32 MiB session; their text stays in `content`.
+    // The empty object IS the compaction product: the same partial
+    // `extra_compacted` verdict codex gives it, never an unknown shape.
+    let publication = extract_session_facts(
+        &packet(
+            "claude_code",
+            json!({"source": "claude_code"}),
+            vec![
+                msg(0, "user", "made-up compacted user turn", json!({})),
+                msg(
+                    1,
+                    "assistant",
+                    "made-up compacted reply",
+                    json!({"cass": {"model": "claude-made-up"}}),
+                ),
+            ],
+        ),
+        "claude_code",
+    );
+    for entry in &publication.coverage {
+        assert!(
+            !entry.reasons.iter().any(|r| r == "claude_shape_unknown"),
+            "{} must not be shape-unknown: {:?}",
+            entry.field,
+            entry.reasons
+        );
+    }
+    for field in ["text_inventory", "block_inventory", "chat"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "extra_compacted"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+    }
+}
+
+/// One Claude Desktop `audit.jsonl` replay pair: the live record and its
+/// `isReplay: true` re-emission under the same uuid, differing exactly in
+/// the transport/audit envelope keys (`client_platform`, `origin`,
+/// `session_id`, `timestamp`, `_audit_hmac`, `_audit_timestamp`).
+fn claude_audit_replay_packet(live_text: &str, replay_text: &str) -> ConversationPacket {
+    let live = json!({
+        "type": "user", "uuid": "u-replay", "session_id": "sess-made-up-1",
+        "timestamp": "2026-11-01T10:00:00.000Z", "client_platform": "darwinCLI",
+        "message": {"role": "user", "content": [{"type": "text", "text": live_text}]}
+    });
+    let replay = json!({
+        "type": "user", "uuid": "u-replay", "session_id": "sess-made-up-2",
+        "timestamp": "2026-11-01T11:00:00.000Z", "isReplay": true,
+        "origin": {"kind": "human"},
+        "_audit_hmac": "made-up-hmac", "_audit_timestamp": "2026-11-01T11:00:01.000Z",
+        "message": {"role": "user", "content": [{"type": "text", "text": replay_text}]}
+    });
+    packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![
+            msg(0, "user", live_text, live),
+            msg(1, "user", replay_text, replay),
+        ],
+    )
+}
+
+#[test]
+fn claude_audit_replay_pair_with_identical_content_dedups() {
+    // The Desktop audit log re-emits a live record under the same uuid with
+    // an explicit `isReplay: true` marker and fresh audit/transport
+    // bookkeeping. Identical recorded content makes the pair a transport
+    // copy, not a conflict: the live record survives, the text counts once
+    // and no scope claims conflicting evidence.
+    let p = claude_audit_replay_packet("made-up audit live prompt", "made-up audit live prompt");
+    let publication = extract_session_facts(&p, "claude_code");
+    for entry in &publication.coverage {
+        assert!(
+            !entry.reasons.iter().any(|r| r == "conflicting_event"),
+            "{} must not be conflicting: {:?}",
+            entry.field,
+            entry.reasons
+        );
+    }
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "complete", "{text:?}");
+    // The deduped session keeps exactly the live prompt as its first prompt.
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("made-up audit live prompt")
+    );
+}
+
+#[test]
+fn claude_audit_replay_pair_with_different_content_stays_conflicting() {
+    // A replay that REWRITES the record (the real audit shape: a short live
+    // first user message and a fuller replayed copy under the same uuid) is
+    // a genuine conflict — never merged, never relaxed by the marker.
+    let p = claude_audit_replay_packet(
+        "made-up short prompt",
+        "made-up short prompt with made-up appended context",
+    );
+    let publication = extract_session_facts(&p, "claude_code");
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "unavailable", "{text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "conflicting_event"),
+        "the rewritten replay stays a conflict: {:?}",
+        text.reasons
+    );
+}
+
+#[test]
+fn claude_compacted_invocation_arguments_reach_tools_regions() {
+    // Compacted claude extras (`{"cass":{…}}` skeleton): the raw tool_use
+    // blocks are gone, so `cass.invocations` (the post-compaction merge) is
+    // the only surviving record of the call arguments — they must index as
+    // tools regions.
+    let p = packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "made-up compacted sweep request",
+                json!({"type": "user", "uuid": "u1", "message": {"role": "user", "content": [
+                    {"type": "text", "text": "made-up compacted sweep request"}]}}),
+            ),
+            msg(
+                1,
+                "agent",
+                "[Tool: Bash]",
+                json!({"cass": {"invocations": [
+                    {"kind": "tool", "name": "Bash", "call_id": "toolu_made_up_9",
+                     "arguments": {"command": "made-up-compacted-sweep --all"}}]}}),
+            ),
+        ],
+    );
+    let facts = extract_session_facts(&p, "claude_code");
+    let structure = project_session_structure(&p, &facts);
+    let regions = derive_message_regions(1, &p, &structure);
+    let region = regions
+        .iter()
+        .find(|r| r.tool_name.as_deref() == Some("Bash"))
+        .unwrap_or_else(|| panic!("Bash invocation region missing: {regions:?}"));
+    assert_eq!(region.scope, "tools", "{region:?}");
+    assert!(
+        region
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up-compacted-sweep")),
+        "{region:?}"
+    );
+}
+
+#[test]
+fn codex_compacted_invocation_arguments_reach_tools_regions() {
+    // The codex compaction envelope keeps call arguments only in
+    // `cass.invocations`; they must index as tools regions.
+    let p = packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "run the made-up sweep",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "run the made-up sweep"}}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "[Tool: exec]",
+                json!({"cass": {"invocations": [
+                    {"kind": "tool", "name": "exec", "call_id": "call_made_up_1",
+                     "arguments": "{\"command\": \"made-up-codex-sweep --flag\"}"}]}}),
+            ),
+        ],
+    );
+    let facts = extract_session_facts(&p, "codex");
+    let structure = project_session_structure(&p, &facts);
+    let regions = derive_message_regions(1, &p, &structure);
+    let region = regions
+        .iter()
+        .find(|r| r.tool_name.as_deref() == Some("exec"))
+        .unwrap_or_else(|| panic!("exec invocation region missing: {regions:?}"));
+    assert_eq!(region.scope, "tools", "{region:?}");
+    assert!(
+        region
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up-codex-sweep")),
+        "{region:?}"
+    );
+}
+
+#[test]
+fn devin_invocation_arguments_reach_tools_regions() {
+    // FAD's devin connector normalizes `tool_calls` away from the extras;
+    // the canonical merge keeps them in `cass.invocations` — the only
+    // record of the call arguments (the rendered content lines carry just
+    // the tool name). They must index as tools regions for devin too.
+    let p = packet(
+        "devin",
+        json!({"source": "sqlite", "session_id": "made-up-devin"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "Fix the made-up devin fixture.",
+                json!({"message_id": "m1", "is_user_input": true}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "Reading it.\n[tool_call: read_file]",
+                json!({"message_id": "m2", "thinking": "read first",
+                       "cass": {"invocations": [
+                           {"kind": "tool", "name": "read_file", "call_id": "tc_made_up_1",
+                            "arguments": {"path": "/made/up/devin/target.rs"}}]}}),
+            ),
+        ],
+    );
+    let facts = extract_session_facts(&p, "devin");
+    let structure = project_session_structure(&p, &facts);
+    let regions = derive_message_regions(1, &p, &structure);
+    let region = regions
+        .iter()
+        .find(|r| r.tool_name.as_deref() == Some("read_file"))
+        .unwrap_or_else(|| panic!("read_file invocation region missing: {regions:?}"));
+    assert_eq!(region.scope, "tools", "{region:?}");
+    assert!(
+        region
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("/made/up/devin/target.rs")),
+        "{region:?}"
+    );
+}
+
+#[test]
+fn claude_raw_tool_blocks_are_not_double_indexed_from_invocations() {
+    // A non-compacted claude record carries the raw `message.content`
+    // tool_use blocks AND the merged `cass.invocations` copy. The
+    // invocations lane must stay off there: the raw block already indexes
+    // the arguments exactly once.
+    let p = packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![msg(
+            0,
+            "assistant",
+            "[Tool: Bash]",
+            json!({"type": "assistant", "uuid": "a1",
+                   "message": {"role": "assistant", "content": [
+                       {"type": "tool_use", "id": "toolu_raw_1", "name": "Bash",
+                        "input": {"command": "made-up-raw-block-command"}}]},
+                   "cass": {"invocations": [
+                       {"kind": "tool", "name": "Bash", "call_id": "toolu_raw_1",
+                        "arguments": {"command": "made-up-raw-block-command"}}]}}),
+        )],
+    );
+    let facts = extract_session_facts(&p, "claude_code");
+    let structure = project_session_structure(&p, &facts);
+    let regions = derive_message_regions(1, &p, &structure);
+    let hits = regions
+        .iter()
+        .filter(|r| {
+            r.indexed_text
+                .as_deref()
+                .is_some_and(|text| text.contains("made-up-raw-block-command"))
+        })
+        .count();
+    assert_eq!(hits, 1, "arguments must index exactly once: {regions:?}");
+}
+
+#[test]
+fn claude_desktop_sidecar_initial_message_indexes_as_chat_region() {
+    // The connector leaves the user-typed first prompt in
+    // `raw.initialMessage`; it is real conversation text the sidecar
+    // carries, so it must index as its own chat region.
+    let p = claude_desktop_sidecar_packet();
+    let facts = extract_session_facts(&p, "claude_code");
+    let structure = project_session_structure(&p, &facts);
+    let regions = derive_message_regions(1, &p, &structure);
+    let region = regions
+        .iter()
+        .find(|r| r.region_key == "m0:initial_prompt")
+        .unwrap_or_else(|| panic!("m0:initial_prompt missing: {regions:?}"));
+    assert_eq!(region.scope, "chat", "{region:?}");
+    assert!(
+        region
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up sidecar first prompt")),
+        "{region:?}"
+    );
+    // The metadata content itself stays the m0:chat region.
+    assert!(
+        regions.iter().any(|r| r.region_key == "m0:chat"),
+        "{regions:?}"
+    );
+
+    // The provider gate: the same envelope under a foreign slug must not
+    // grow the region.
+    let foreign = claude_desktop_sidecar_packet_with_slug("codex");
+    let foreign_facts = extract_session_facts(&foreign, "codex");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions
+            .iter()
+            .any(|r| r.region_key == "m0:initial_prompt"),
+        "foreign slug must not derive the sidecar region: {foreign_regions:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Antigravity fixture: `agy_type` envelopes, `cass.invocations` calls,
 // TOOL_OUTPUT/VIEW_FILE/RUN_COMMAND results, explicit exit codes only where
 // recorded, unlinked outputs, thinking hints, unknown-kind events.
