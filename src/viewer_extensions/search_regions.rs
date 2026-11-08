@@ -440,6 +440,10 @@ pub fn derive_message_regions(
     // types; pi's are camelCase). Slug-gated like the antigravity/gemini
     // arms — no other provider puts tool facts under these keys.
     let pi_agent = packet.payload.identity.agent_slug == "pi_agent";
+    // Copilot tool calls live only in the ingest seam's archived
+    // `extra.cass.invocations` — no other provider puts tool facts under
+    // this key without a raw record already consumed above.
+    let copilot = packet.payload.identity.agent_slug == "copilot";
     let mut regions: Vec<RegionRow> = Vec::new();
     let mut calls: Vec<PendingCall> = Vec::new();
     let mut results: Vec<PendingResult> = Vec::new();
@@ -886,11 +890,17 @@ pub fn derive_message_regions(
         // `toolCalls` array survives, so the ingest seam's archived
         // invocations are the remaining call evidence (a raw record's
         // invocations duplicate its `toolCalls`, already consumed above).
+        // Copilot's connector archives tool invocations only through the
+        // seam's `cass.invocations` — it drops the raw response parts
+        // and keeps no tool results, so the invocations are the only
+        // call evidence.
         // Model-step (role `tool`) records are excluded: their `cass` extras
         // carry name-only synthesized calls with no arguments, and the role
         // fallback above already keeps their content text in the tools
         // scope.
-        if (antigravity || (gemini && extra.get("toolCalls").and_then(Value::as_array).is_none()))
+        if (antigravity
+            || copilot
+            || (gemini && extra.get("toolCalls").and_then(Value::as_array).is_none()))
             && message.role != "tool"
             && let Some(items) = extra.pointer("/cass/invocations").and_then(Value::as_array)
         {

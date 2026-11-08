@@ -17,9 +17,11 @@ use super::facts::{CoverageEntry, FACTS_EXTRACTOR_VERSION, FactPublication, Tool
 mod antigravity;
 mod claude;
 mod codex;
+mod copilot;
 mod cursor;
 mod devin;
 mod gemini;
+mod opencode;
 mod pi_agent;
 
 /// Gemini tool-result text + status verdict derivation, shared with the
@@ -660,7 +662,9 @@ pub(crate) fn extract(packet: &ConversationPacket, provider: &str) -> ProviderEx
         "antigravity" => antigravity::extract(packet),
         "devin" => devin::extract(packet),
         "cursor" => cursor::extract(packet),
+        "copilot" => copilot::extract(packet),
         "gemini" => gemini::extract(packet),
+        "opencode" => opencode::extract(packet),
         "pi_agent" => pi_agent::extract(packet),
         other => ProviderExtraction::unavailable(other),
     }

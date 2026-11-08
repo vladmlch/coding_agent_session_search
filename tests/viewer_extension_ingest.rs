@@ -3314,6 +3314,528 @@ fn pi_agent_regions_index_toolcall_blocks_and_results() {
 }
 
 // ---------------------------------------------------------------------------
+// OpenCode: the pinned connector renders every v2 session row into a flat
+// content string (reasoning parts as "[Reasoning]\n{reasoning}", tool
+// parts as "[Tool Output]\n{output}" — part identity, input and state
+// dropped) and archives the raw row identity keys
+// ({message_id, session_id, type, seq}). Message authors carry the model
+// alias: the connector lifts data.model.id into the author slot for
+// assistant and compaction rows.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn opencode_facts_tool_markers_and_thinking() {
+    let mut user = msg(0, "user", "made-up opencode prompt", json!({
+        "message_id": "om_u1", "session_id": "os_1", "type": "user", "seq": 1
+    }));
+    user.author = Some("user".to_string());
+    let mut first = msg(
+        1,
+        "agent",
+        "[Reasoning]\nmade-up planning reasoning\n\n[Tool Output]\nmade-up tool output text",
+        json!({"message_id": "om_a1", "session_id": "os_1",
+               "type": "assistant", "seq": 2}),
+    );
+    first.author = Some("made-up-opencode-beam".to_string());
+    let mut second = msg(
+        2,
+        "agent",
+        "[Reasoning]\nmade-up follow-up reasoning",
+        json!({"message_id": "om_a2", "session_id": "os_1",
+               "type": "assistant", "seq": 3}),
+    );
+    second.author = Some("made-up-opencode-space".to_string());
+    let publication = extract_session_facts(
+        &packet("opencode", json!({"source": "opencode"}),
+                vec![user, first, second]),
+        "opencode",
+    );
+
+    // The "[Reasoning]" markers count the delivered reasoning parts, and
+    // the authors are the model aliases the connector preserved.
+    assert_eq!(publication.thinking_block_count, Some(2));
+    assert_eq!(
+        publication.model_set,
+        vec!["made-up-opencode-beam", "made-up-opencode-space"]
+    );
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("made-up opencode prompt")
+    );
+    assert_eq!(publication.turn_count, Some(1));
+    assert_eq!(publication.step_count, Some(2));
+    // No tool identity survives the connector, so no tool facts exist.
+    assert!(publication.tools.is_empty());
+    assert_eq!(publication.file_fact_count, None);
+
+    for field in ["chat", "thinking"] {
+        let entry = coverage(&publication, field)
+            .unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+
+    // Message 1 carries a "[Tool Output]" marker: a tool part provably
+    // existed and its output text is delivered inline, but the part's
+    // identity, input and state are dropped (partial). Message 2 has no
+    // marker, so its tool-part presence is unverifiable — the union is
+    // unavailable with both reasons.
+    for field in ["tools", "text_inventory", "block_inventory", "files"] {
+        let entry = coverage(&publication, field)
+            .unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_part_dropped"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_part_unverifiable"),
+            "{field}: {entry:?}"
+        );
+    }
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field)
+            .unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_state_dropped"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_part_unverifiable"),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // Zero observed compactions cannot certify the source had none: the
+    // connector drops non-completed compaction rows before the packet.
+    let compaction = coverage(&publication, "compaction").expect("compaction");
+    assert_eq!(compaction.state, "unavailable");
+    assert!(
+        compaction
+            .reasons
+            .iter()
+            .any(|r| r == "opencode_compaction_pending_dropped"),
+        "compaction: {compaction:?}"
+    );
+    assert_eq!(publication.compaction_count, None);
+}
+
+#[test]
+fn opencode_facts_marker_only_session_partial() {
+    // A session whose single assistant record DID render a tool part: the
+    // four inventory fields degrade to partial (output delivered, identity
+    // and state dropped) and the tool verdicts stay unavailable.
+    let mut first = msg(
+        1,
+        "agent",
+        "[Tool Output]\nmade-up tool output text",
+        json!({"message_id": "om_a1", "session_id": "os_1",
+               "type": "assistant", "seq": 2}),
+    );
+    first.author = Some("made-up-opencode-beam".to_string());
+    let p = packet(
+        "opencode",
+        json!({"source": "opencode"}),
+        vec![
+            msg(0, "user", "made-up opencode prompt", json!({
+                "message_id": "om_u1", "session_id": "os_1",
+                "type": "user", "seq": 1
+            })),
+            first,
+        ],
+    );
+    let publication = extract_session_facts(&p, "opencode");
+
+    assert_eq!(publication.thinking_block_count, Some(0));
+    for field in ["tools", "text_inventory", "block_inventory", "files"] {
+        let entry = coverage(&publication, field)
+            .unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_part_dropped"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_part_unverifiable"),
+            "{field}: {entry:?}"
+        );
+    }
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field)
+            .unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_state_dropped"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_part_unverifiable"),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // The delivered text — including the tool output — stays fully
+    // searchable through the generic chat arm: the non-noise chat region
+    // maps straight onto the message's own quill document (quill_idx ==
+    // message idx, indexed_text empty by design), and the connector
+    // archived no tool identity, so no tools-scope region exists.
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+    let chat = regions
+        .iter()
+        .find(|r| r.region_key == "m1:chat")
+        .unwrap_or_else(|| panic!("m1:chat region missing: {regions:?}"));
+    assert_eq!(chat.quill_idx, 1, "{chat:?}");
+    assert_eq!(chat.indexed_text, None, "{chat:?}");
+    assert!(
+        !regions.iter().any(|r| r.scope == "tools"),
+        "no tools-scope region may exist: {regions:?}"
+    );
+}
+
+#[test]
+fn opencode_facts_compaction_and_non_assistant_types() {
+    // Completed compactions render as assistant-role summary content
+    // ("[Compaction Summary]\n{summary}") — the count is observed, and per
+    // the claude precedent an observed count reports through
+    // compaction_count with no coverage entry. system rows deliver their
+    // whole data.text.
+    let mut compacted = msg(
+        1,
+        "agent",
+        "[Compaction Summary]\nmade-up compaction summary",
+        json!({"message_id": "om_c1", "session_id": "os_1",
+               "type": "compaction", "seq": 2}),
+    );
+    compacted.author = Some("made-up-opencode-beam".to_string());
+    let publication = extract_session_facts(
+        &packet("opencode", json!({"source": "opencode"}), vec![
+            msg(0, "user", "made-up opencode prompt", json!({
+                "message_id": "om_u1", "session_id": "os_1",
+                "type": "user", "seq": 1
+            })),
+            compacted,
+            msg(2, "system", "made-up system note", json!({
+                "message_id": "om_s1", "session_id": "os_1",
+                "type": "system", "seq": 3
+            })),
+        ]),
+        "opencode",
+    );
+    assert_eq!(publication.compaction_count, Some(1));
+    assert!(
+        coverage(&publication, "compaction").is_none(),
+        "observed compactions report through the count only"
+    );
+    assert_eq!(publication.model_set, vec!["made-up-opencode-beam"]);
+    let chat = coverage(&publication, "chat").expect("chat");
+    assert_eq!(chat.state, "complete", "chat: {chat:?}");
+
+    // An unknown row type is a contract change: drift on the core fields,
+    // never a shape guess.
+    let drift = extract_session_facts(
+        &packet("opencode", json!({"source": "opencode"}), vec![
+            msg(0, "agent", "made-up text from an unknown row type", json!({
+                "message_id": "om_x1", "session_id": "os_1",
+                "type": "futureWidget", "seq": 2
+            })),
+        ]),
+        "opencode",
+    );
+    let tools = coverage(&drift, "tools").expect("tools");
+    assert_eq!(tools.state, "partial");
+    assert!(
+        tools.reasons.iter().any(|r| r == "opencode_record_unknown"),
+        "tools: {tools:?}"
+    );
+
+    // A non-object extra is unknown entirely.
+    let missing = extract_session_facts(
+        &packet("opencode", json!({"source": "opencode"}), vec![
+            msg(0, "user", "made-up text beside a null extra", Value::Null),
+        ]),
+        "opencode",
+    );
+    let entry = coverage(&missing, "chat").expect("chat");
+    assert_eq!(entry.state, "unavailable");
+    assert!(
+        entry.reasons.iter().any(|r| r == "opencode_extra_missing"),
+        "chat: {entry:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Copilot (VS Code): the pinned FAD connector builds the extras itself —
+// {request_id} for user rows, {request_id, model_id, cass} for assistant
+// rows where cass carries token accounting plus the ingest seam's archived
+// invocations ({kind:"tool", name, call_id?, arguments}). The connector
+// explicitly drops thinking parts and archives no raw response parts and
+// no tool results.
+// ---------------------------------------------------------------------------
+
+fn copilot_messages() -> Vec<NormalizedMessage> {
+    vec![
+        msg(0, "user", "made-up copilot prompt", json!({"request_id": "cr1"})),
+        msg(1, "agent", "made-up copilot answer", json!({
+            "request_id": "cr1",
+            "model_id": "made-up-copilot-model",
+            "cass": {
+                "token_usage": {"input": 10, "output": 5},
+                "token_usage_scope": "turn",
+                "tool_call_count": 1,
+                "invocations": [
+                    {"kind": "tool", "name": "read_copilot_widget",
+                     "call_id": "cc1",
+                     "arguments": {"file_path": "/tmp/synthetic/copilot.txt"}}
+                ]
+            }
+        })),
+    ]
+}
+
+#[test]
+fn copilot_facts_invocations_thinking_and_coverage() {
+    let publication =
+        extract_session_facts(&packet("copilot", json!({"source": "copilot"}), copilot_messages()), "copilot");
+
+    // The archived invocation is the only call record: named, paired with
+    // nothing, its rawInput arguments carrying a file path.
+    let read = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "cc1")
+        .expect("cc1");
+    assert_eq!(read.name, "read_copilot_widget");
+    assert!(!read.has_result);
+    assert_eq!(
+        read.file_path.as_deref(),
+        Some("/tmp/synthetic/copilot.txt")
+    );
+    assert_eq!(read.exit_code, None);
+    assert_eq!(read.is_error, None);
+    assert_eq!(publication.file_fact_count, Some(1));
+    assert_eq!(publication.model_set, vec!["made-up-copilot-model"]);
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("made-up copilot prompt")
+    );
+    assert_eq!(publication.turn_count, Some(1));
+    assert_eq!(publication.step_count, Some(1));
+
+    // The delivered text certifies chat; the connector provably drops
+    // thinking parts (an explicit comment in the pinned source), so
+    // thinking is unavailable, and the raw response parts are not
+    // archived, so the block inventory is partial.
+    let chat = coverage(&publication, "chat").expect("chat");
+    assert_eq!(chat.state, "complete", "chat: {chat:?}");
+    let thinking = coverage(&publication, "thinking").expect("thinking");
+    assert_eq!(thinking.state, "unavailable");
+    assert!(
+        thinking
+            .reasons
+            .iter()
+            .any(|r| r == "copilot_thinking_dropped_by_connector"),
+        "thinking: {thinking:?}"
+    );
+    // Dropped thinking blocks cannot be counted.
+    assert_eq!(publication.thinking_block_count, None);
+    let inventory = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(inventory.state, "partial");
+    assert!(
+        inventory
+            .reasons
+            .iter()
+            .any(|r| r == "copilot_response_parts_dropped"),
+        "block_inventory: {inventory:?}"
+    );
+
+    // No tool result is ever archived, so every call is unpaired and the
+    // missing result is user-visible text the connector dropped — the
+    // default scopes keep text_inventory partial (never narrowed).
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "partial");
+    assert!(
+        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        "tools: {tools:?}"
+    );
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "partial", "text_inventory: {text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "text_inventory: {text:?}"
+    );
+    assert!(
+        text.reasons.iter().any(|r| r == "copilot_response_parts_dropped"),
+        "text_inventory: {text:?}"
+    );
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field)
+            .unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "tool_exit_not_recorded" || r == "tool_error_not_recorded"),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // Copilot records no compaction boundaries.
+    let compaction = coverage(&publication, "compaction").expect("compaction");
+    assert_eq!(compaction.state, "unavailable");
+    assert!(
+        compaction
+            .reasons
+            .iter()
+            .any(|r| r == "boundary_records_not_normalized"),
+        "compaction: {compaction:?}"
+    );
+    assert_eq!(publication.compaction_count, None);
+}
+
+#[test]
+fn copilot_facts_drift_and_missing_identity() {
+    // An invocation without a name and one without a call id: the same
+    // identity degradations the other providers record.
+    let publication = extract_session_facts(
+        &packet("copilot", json!({"source": "copilot"}), vec![
+            msg(0, "user", "made-up copilot prompt", json!({"request_id": "cr1"})),
+            msg(1, "agent", "made-up copilot answer", json!({
+                "cass": {"invocations": [
+                    {"kind": "tool", "call_id": "cc2",
+                     "arguments": {"query": "made-up query"}},
+                    {"kind": "tool", "name": "widget_without_id"}
+                ]}
+            })),
+        ]),
+        "copilot",
+    );
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert!(
+        tools.reasons.iter().any(|r| r == "copilot_tool_name_missing"),
+        "tools: {tools:?}"
+    );
+    assert!(
+        tools
+            .reasons
+            .iter()
+            .any(|r| r == "copilot_tool_call_identity_missing"),
+        "tools: {tools:?}"
+    );
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field)
+            .unwrap_or_else(|| panic!("{field}"));
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "copilot_tool_call_identity_missing"),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // Unknown top-level extra keys on either role are contract drift.
+    let drift = extract_session_facts(
+        &packet("copilot", json!({"source": "copilot"}), vec![
+            msg(0, "user", "made-up text", json!({
+                "request_id": "cr9", "futureKey": true
+            })),
+            msg(1, "agent", "made-up answer", json!({
+                "request_id": "cr9", "model_id": "made-up-copilot-model",
+                "futureKey": true
+            })),
+        ]),
+        "copilot",
+    );
+    for field in ["chat", "tools"] {
+        let entry = coverage(&drift, field)
+            .unwrap_or_else(|| panic!("{field}"));
+        assert!(
+            entry.reasons.iter().any(|r| r == "copilot_record_unknown"),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // A non-object extra is unknown entirely.
+    let missing = extract_session_facts(
+        &packet("copilot", json!({"source": "copilot"}), vec![
+            msg(0, "user", "made-up text beside a null extra", Value::Null),
+        ]),
+        "copilot",
+    );
+    let entry = coverage(&missing, "chat").expect("chat");
+    assert_eq!(entry.state, "unavailable");
+    assert!(
+        entry.reasons.iter().any(|r| r == "copilot_extra_missing"),
+        "chat: {entry:?}"
+    );
+}
+
+#[test]
+fn copilot_regions_index_archived_invocations() {
+    let p = packet("copilot", json!({"source": "copilot"}), copilot_messages());
+    let publication = extract_session_facts(&p, "copilot");
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+
+    let call = regions
+        .iter()
+        .find(|r| r.region_key == "tool:0:cc1")
+        .unwrap_or_else(|| panic!("cc1 tool region missing: {regions:?}"));
+    assert_eq!(call.scope, "tools");
+    assert_eq!(call.tool_name.as_deref(), Some("read_copilot_widget"));
+    assert_eq!(
+        call.file_path.as_deref(),
+        Some("/tmp/synthetic/copilot.txt")
+    );
+    assert!(
+        call.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("/tmp/synthetic/copilot.txt")),
+        "region text: {call:?}"
+    );
+
+    // The provider gate: the same shapes under a foreign slug must not
+    // grow copilot tool regions.
+    let foreign = packet("junie", json!({"source": "copilot"}), copilot_messages());
+    let foreign_facts = extract_session_facts(&foreign, "junie");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("read_copilot_widget")),
+        "foreign slug must not derive copilot tool regions: {foreign_regions:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Publication: idempotent upsert keyed on (extractor_version, source_revision)
 // inside the canonical archive.
 // ---------------------------------------------------------------------------

@@ -50,9 +50,16 @@ pub use providers::classification::SessionQualityMetrics;
 /// inline results and recorded status verdicts; compacted extras
 /// partial) plus gemini regions — `thoughts` as `m{idx}:thinking` and
 /// tool args/results as tool regions (search_regions.rs, REGION_VERSION
-/// 3) — and the pi_agent extractor (raw tree entries: toolCall blocks
+/// 3) — plus the pi_agent extractor (raw tree entries: toolCall blocks
 /// paired with toolResult records by toolCallId, thinking blocks,
-/// compaction/branch boundaries).
+/// compaction/branch boundaries) and the opencode extractor (v2 row
+/// extras: "[Reasoning]"/"[Tool Output]" markers count delivered
+/// reasoning parts and prove tool parts whose identity/state the
+/// connector drops; authors carry the model alias), and the copilot
+/// extractor (connector-built extras: seam-archived invocations as the
+/// only call evidence, thinking parts dropped by the connector, no
+/// tool results archived — plus copilot tool regions from
+/// `cass.invocations`).
 pub const FACTS_EXTRACTOR_VERSION: i64 = 6;
 
 // ---------------------------------------------------------------------------
