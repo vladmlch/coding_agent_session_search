@@ -1243,7 +1243,7 @@ mod source_absent_tests {
         ));
         assert!(!is_source_absent_gap(
             "partial",
-            &reasons(&["agy_connector_drops_source_text"])
+            &reasons(&["agy_status_dropped_by_connector"])
         ));
         // A brand-new reason code is not-read by default.
         assert!(!is_source_absent_gap(
@@ -1263,6 +1263,34 @@ mod source_absent_tests {
         assert!(!is_source_absent_gap(
             "partial",
             &reasons(&["agent_message_encrypted", "tool_output_not_recorded"])
+        ));
+    }
+
+    #[test]
+    fn agy_source_truncated_marker_is_source_absent() {
+        // The antigravity `truncated_fields` passthrough marker (owner
+        // decision, 2026-11-08): the source application cut the named
+        // fields before persisting, so the cut text never existed in any
+        // local record. The marker is emitted only for that explicit
+        // source signal — never for parse failures or unknown shapes
+        // (those keep `agy_truncated_fields_malformed`, a not-read gap).
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["agy_source_truncated"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["agy_source_truncated"])
+        ));
+        // Mixed with any not-read reason the proof breaks.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["agy_source_truncated", "agy_tool_call_identity_missing"])
+        ));
+        // The malformed-marker variant stays not-read.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["agy_truncated_fields_malformed"])
         ));
     }
 }

@@ -2372,3 +2372,148 @@ fn search_sessions_thinking_redacted_gap_answers_strict_with_annotation() -> Res
     );
     bridge.shutdown()
 }
+
+/// The manifest the v3 antigravity extractor publishes for a session whose
+/// ONLY text gap is the source-side truncation marker — the exact shape
+/// `antigravity_f10_truncated_fields_mark_scopes_source_absent` pins in
+/// the ingest suite: `chat`/`thinking`/`files` partial and `text_inventory`
+/// unavailable, every one with `agy_source_truncated` only. The F10
+/// passthrough marker proves the source application cut the named fields
+/// BEFORE persisting, so the cut text never existed in any local record.
+/// A session without MODEL-step envelopes keeps the block inventory
+/// complete, so strict search answers over the surviving text.
+fn antigravity_source_truncated_manifest() -> Value {
+    json!({
+        "extractor": "antigravity-facts-v3",
+        "extractor_version": 3,
+        "provider": "antigravity",
+        "fields": {
+            "chat": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tools": {"state":"complete","reasons":[]},
+            "thinking": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"unavailable","reasons":["agy_source_truncated"]},
+            "files": {"state":"partial","reasons":["agy_source_truncated"]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (vii) Owner follow-up (2026-11-08), antigravity side: the F10
+/// `truncated_fields` passthrough marker is a source-absent gap — the
+/// source app cut the named fields before persisting, so no read of any
+/// local artifact could recover them. A session whose only gaps carry
+/// that marker answers strict search over its surviving text, annotated
+/// exactly like the provider-encrypted class.
+#[test]
+fn search_sessions_agy_source_truncated_gap_answers_strict_with_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(
+        &bridge,
+        5,
+        "partial",
+        antigravity_source_truncated_manifest(),
+    )?;
+
+    // S5's chat text ("codex remote quux") still exists and matches: the
+    // strict page answers S3+S5 exactly, with the truncation gap
+    // annotated.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["agy_source_truncated"]),
+        "the source-truncation gap must be annotated: {s5}"
+    );
+    let s3 = result_item(&page, 3)?;
+    ensure!(
+        s3["source_text_absent"] == json!([]),
+        "a session without gaps keeps an empty annotation: {s3}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // A term S5's existing text lacks is a PROVEN non-member: S5 drops
+    // out, the strict answer stays complete, and the gap keeps counting.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "S5 was evaluated (and excluded) under source-absence: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The manifest the v3 antigravity extractor publishes for a REALISTIC F10
+/// session that also carries truncation markers: the canonical `agy_type`
+/// envelope (block inventory), unrecorded call identities (tools) and the
+/// F10 lifecycle-status verdicts (tool_exit/tool_error partial) sit
+/// alongside the truncation marker. The envelope and identity marks are
+/// honest NOT-READ gaps — structure the connector does not preserve, so
+/// matching regions could still hide behind them.
+fn antigravity_f10_realistic_manifest() -> Value {
+    json!({
+        "extractor": "antigravity-facts-v3",
+        "extractor_version": 3,
+        "provider": "antigravity",
+        "fields": {
+            "chat": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tools": {"state":"partial","reasons":[
+                "agy_tool_call_identity_missing",
+                "agy_tool_result_identity_missing",
+                "agy_source_truncated"
+            ]},
+            "thinking": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tool_exit": {"state":"partial","reasons":["agy_status_unpaired"]},
+            "tool_error": {"state":"partial","reasons":["agy_status_unpaired"]},
+            "block_inventory": {"state":"partial","reasons":["agy_canonical_envelope"]},
+            "text_inventory": {"state":"partial","reasons":["agy_source_truncated"]},
+            "files": {"state":"partial","reasons":["agy_source_truncated"]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (viii) The allowlist member never over-unlocks: a realistic agy session
+/// also carries the canonical-envelope and call-identity marks — NOT-READ
+/// gaps that can still hide matching regions — so strict search keeps its
+/// honest `data_unavailable` refusal even though `agy_source_truncated`
+/// itself is allowlisted. The probe uses `foo`, a term S5's verified text
+/// lacks: a verified positive match would dominate regardless, but S5's
+/// non-membership is exactly what the envelope gap leaves unprovable.
+#[test]
+fn search_sessions_agy_realistic_marks_still_refuse_strict() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "partial", antigravity_f10_realistic_manifest())?;
+
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    ensure!(
+        page["ok"] == false,
+        "the envelope/identity gaps must keep strict search refused: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "expected data_unavailable, got {page}"
+    );
+    bridge.shutdown()
+}
