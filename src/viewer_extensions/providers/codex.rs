@@ -18,7 +18,7 @@ use super::{
     text_id,
 };
 
-const EXTRACTOR_REVISION: &str = "codex-facts-v1";
+const EXTRACTOR_REVISION: &str = "codex-facts-v2";
 const CALLS: &[&str] = &["function_call", "custom_tool_call"];
 const RESULTS: &[&str] = &[
     "function_call_output",
@@ -525,6 +525,38 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
         } else {
             coverage.unknown("codex_payload_unknown");
         }
+    }
+
+    // Prove interruption for unpaired calls straight from the source
+    // (owner decision, 2026-11-08): the output record never existed in the
+    // append-only rollout when (a) the call is the packet's LAST event —
+    // the run was cut mid-call — or (b) a user-role message follows the
+    // call — codex never takes user input mid-turn, so the pending turn
+    // was cut. The proof runs over ALL packet events (not the deduped
+    // stream), so any later record, compacted or not, disqualifies it.
+    // Calls that pair only via FAD F13's textless image-output emission
+    // (branch cass-last-eight) never reach here — they have a result.
+    // Everything else keeps the honest not-read `tool_result_missing`.
+    let max_idx = input.iter().map(|event| event.idx).max();
+    let user_max_idx = input
+        .iter()
+        .filter(|event| event.role == "user")
+        .map(|event| event.idx)
+        .max();
+    let interrupted_calls: Vec<String> = tools
+        .calls
+        .iter()
+        .filter(|(call_id, calls)| {
+            !tools.results.contains_key(*call_id)
+                && calls.iter().any(|call| {
+                    Some(call.event_idx) == max_idx
+                        || user_max_idx.is_some_and(|user_idx| call.event_idx < user_idx)
+                })
+        })
+        .map(|(call_id, _)| call_id.clone())
+        .collect();
+    for call_id in interrupted_calls {
+        tools.note_interrupted(&call_id);
     }
 
     // Codex subagent evidence lives in `session_meta.payload.parent_thread_id`

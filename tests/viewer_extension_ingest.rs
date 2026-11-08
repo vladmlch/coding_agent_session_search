@@ -702,6 +702,11 @@ fn claude_unpaired_call_keeps_text_inventory_complete() {
     assert_eq!(blocks.state, "complete", "block_inventory: {blocks:?}");
 }
 
+/// The rollout's literal LAST event is the unpaired function_call: the run
+/// was cut mid-call. An append-only rollout that ends with the call proves
+/// no output record was ever written, so the missing result text is absent
+/// at the source (`tool_output_interrupted`, allowlisted) — not the
+/// not-read `tool_result_missing`.
 fn codex_unpaired_call_packet() -> ConversationPacket {
     packet(
         "codex",
@@ -714,8 +719,7 @@ fn codex_unpaired_call_packet() -> ConversationPacket {
                 json!({"type": "event_msg",
                        "payload": {"type": "user_message", "message": "run the probe"}}),
             ),
-            // No function_call_output follows: the result record is missing
-            // from storage, so its text really is lost.
+            // No function_call_output follows: the call is the last event.
             msg(
                 1,
                 "assistant",
@@ -731,25 +735,235 @@ fn codex_unpaired_call_packet() -> ConversationPacket {
 }
 
 #[test]
-fn codex_unpaired_call_still_marks_text_inventory_partial() {
+fn codex_unpaired_call_at_rollout_end_marks_source_absent_interrupted() {
     let publication = extract_session_facts(&codex_unpaired_call_packet(), "codex");
 
     let tools = coverage(&publication, "tools").expect("tools coverage");
     assert_eq!(tools.state, "partial", "tools: {tools:?}");
     assert!(
-        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        tools.reasons.iter().any(|r| r == "tool_output_interrupted"),
         "tools reasons: {:?}",
         tools.reasons
     );
 
-    // Codex storage really loses the output record: session text is missing.
+    // The rollout provably ends mid-call: the result text never existed in
+    // any local record, so the inventory gap is source-absent, not not-read.
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "partial", "text_inventory: {text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "tool_output_interrupted"),
+        "text_inventory reasons: {:?}",
+        text.reasons
+    );
+    assert!(
+        !text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "an interrupted call is not a not-read gap: {:?}",
+        text.reasons
+    );
+    assert!(
+        is_source_absent_gap(&text.state, &text.reasons),
+        "the interrupted proof must classify the gap source-absent"
+    );
+}
+
+/// An unpaired call mid-turn: reasoning and an assistant message follow the
+/// call, but no new user message does and the call is not the last event.
+/// Nothing proves the output record absent — it may exist in the file but
+/// be dropped by the pipeline — so the verdict stays the honest not-read
+/// `tool_result_missing`.
+fn codex_unpaired_call_mid_turn_packet() -> ConversationPacket {
+    packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "run the mid-turn probe",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message",
+                                   "message": "run the mid-turn probe"}}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "[Tool: shell]",
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_midturn",
+                                   "name": "shell",
+                                   "arguments": "{\"command\": \"probe\"}",
+                                   "id": "resp-1"}}),
+            ),
+            msg(
+                2,
+                "assistant",
+                "made-up reasoning text",
+                json!({"type": "response_item",
+                       "payload": {"type": "reasoning",
+                                   "content": [{"type": "reasoning_text",
+                                                "text": "made-up reasoning text"}]}}),
+            ),
+            msg(
+                3,
+                "assistant",
+                "made-up assistant follow-up",
+                json!({"type": "event_msg",
+                       "payload": {"type": "agent_message",
+                                   "message": "made-up assistant follow-up"}}),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn codex_unpaired_call_mid_turn_keeps_tool_result_missing() {
+    let publication = extract_session_facts(&codex_unpaired_call_mid_turn_packet(), "codex");
+
     let text = coverage(&publication, "text_inventory").expect("text_inventory");
     assert_eq!(text.state, "partial", "text_inventory: {text:?}");
     assert!(
         text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "a mid-turn unpaired call is an honest not-read gap: {:?}",
+        text.reasons
+    );
+    assert!(
+        !text.reasons.iter().any(|r| r == "tool_output_interrupted"),
+        "no interruption proof exists mid-turn: {:?}",
+        text.reasons
+    );
+    assert!(
+        !is_source_absent_gap(&text.state, &text.reasons),
+        "mid-turn unpaired calls keep blocking strict search"
+    );
+}
+
+/// An unpaired call followed by a NEW task's user message: codex never
+/// accepts user input mid-turn, so the pending turn was cut and the next
+/// task began — the complete rollout file holds no output record for the
+/// call id, and the missing result text never existed locally.
+fn codex_interrupted_call_next_task_packet() -> ConversationPacket {
+    packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "run the first task",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "run the first task"}}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "[Tool: shell]",
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_cut",
+                                   "name": "shell",
+                                   "arguments": "{\"command\": \"probe\"}",
+                                   "id": "resp-1"}}),
+            ),
+            msg(
+                2,
+                "user",
+                "start the made-up second task",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message",
+                                   "message": "start the made-up second task"}}),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn codex_interrupted_call_followed_by_next_task_marks_source_absent() {
+    let publication = extract_session_facts(&codex_interrupted_call_next_task_packet(), "codex");
+
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "partial", "text_inventory: {text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "tool_output_interrupted"),
         "text_inventory reasons: {:?}",
         text.reasons
     );
+    assert!(
+        !text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "the next-task cut is not a not-read gap: {:?}",
+        text.reasons
+    );
+    assert!(
+        is_source_absent_gap(&text.state, &text.reasons),
+        "a turn cut by the next task's user message proves the output text never existed"
+    );
+}
+
+/// The cass-side half of FAD F13 (branch cass-last-eight): a
+/// `function_call_output` whose captured output is an image-only part list
+/// carries no text, but the record still links to its call — `recorded_text`
+/// treats image parts as known non-text, so the result records with empty
+/// text, the call PAIRS, and no missing-result mark degrades the text
+/// inventory. Without the F13 emission these calls arrive unpaired
+/// (`tool_result_missing`); with it, the session's text verdicts stay
+/// complete (cid 2629's shape).
+#[test]
+fn codex_image_only_tool_output_pairs_without_text_marks() {
+    let p = packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "inspect the made-up screenshot",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message",
+                                   "message": "inspect the made-up screenshot"}}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "[Tool: view_image]",
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_img",
+                                   "name": "view_image",
+                                   "arguments": "{\"path\": \"/made-up.png\"}",
+                                   "id": "resp-1"}}),
+            ),
+            msg(
+                2,
+                "tool",
+                "",
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call_output", "call_id": "call_img",
+                                   "id": "resp-2",
+                                   "output": [{"type": "image_url",
+                                               "image_url": {"url": "data:image/png;base64,MADEUP"}}]}}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "codex");
+
+    for field in ["tools", "text_inventory"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(
+            !entry.reasons.iter().any(|r| r == "tool_result_missing"),
+            "the image-only output paired its call: {entry:?}"
+        );
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "tool_output_not_recorded"),
+            "image parts are known non-text, never a malformed output: {entry:?}"
+        );
+    }
+    let facts = publication
+        .tools
+        .iter()
+        .find(|fact| fact.raw_call_id == "call_img")
+        .expect("the call pairs with the image-only result");
+    assert!(facts.has_result, "tool fact: {facts:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1072,21 +1286,104 @@ fn claude_audit_replay_pair_with_identical_content_dedups() {
 }
 
 #[test]
-fn claude_audit_replay_pair_with_different_content_stays_conflicting() {
+fn claude_rewritten_replay_keeps_text_verdicts_and_records_the_conflict() {
     // A replay that REWRITES the record (the real audit shape: a short live
     // first user message and a fuller replayed copy under the same uuid) is
-    // a genuine conflict — never merged, never relaxed by the marker.
+    // still a conflict — but BOTH texts are local packet messages and the
+    // regions lane indexes every packet message, so no session text is
+    // missing. The live record survives the facts lane, the conflict lands
+    // on a dedicated `replay_conflict` scope (no strict gate consults it),
+    // and the core text verdicts stay complete.
     let p = claude_audit_replay_packet(
         "made-up short prompt",
         "made-up short prompt with made-up appended context",
     );
     let publication = extract_session_facts(&p, "claude_code");
-    let text = coverage(&publication, "text_inventory").expect("text_inventory");
-    assert_eq!(text.state, "unavailable", "{text:?}");
+    for entry in &publication.coverage {
+        assert!(
+            !entry.reasons.iter().any(|r| r == "conflicting_event"),
+            "{} must not be conflicting: {:?}",
+            entry.field,
+            entry.reasons
+        );
+    }
+    for field in ["chat", "block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+    }
+    let conflict = coverage(&publication, "replay_conflict").expect("replay_conflict scope");
+    assert_eq!(conflict.state, "partial", "{conflict:?}");
     assert!(
-        text.reasons.iter().any(|r| r == "conflicting_event"),
-        "the rewritten replay stays a conflict: {:?}",
-        text.reasons
+        conflict
+            .reasons
+            .iter()
+            .any(|r| r == "claude_rewritten_replay"),
+        "the rewritten replay records its conflict: {conflict:?}"
+    );
+    // The deduped session keeps the LIVE prompt as its first prompt.
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("made-up short prompt")
+    );
+    // Both versions stay region-indexed: the regions lane iterates every
+    // packet message (no uuid dedup), so each replay version keeps its own
+    // chat region and stays searchable.
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+    for idx in [0, 1] {
+        let region = regions
+            .iter()
+            .find(|r| r.region_key == format!("m{idx}:chat"))
+            .unwrap_or_else(|| panic!("both replay versions must index: {regions:?}"));
+        assert_eq!(
+            region.scope, "chat",
+            "user text indexes as chat: {region:?}"
+        );
+        assert_eq!(
+            region.message_idx,
+            Some(idx),
+            "the region anchors its own packet message: {region:?}"
+        );
+    }
+}
+
+#[test]
+fn claude_unmarked_uuid_conflict_stays_conflicting() {
+    // Without the explicit `isReplay` marker, two different-content records
+    // under one uuid are unexplained conflicting evidence: the text
+    // verdicts stay unavailable and conflicting — the rewritten-replay arm
+    // above is keyed on the marker, never on content similarity, so an
+    // unmarked pair (true corruption) fails closed.
+    let first = json!({
+        "type": "user", "uuid": "u-plain", "session_id": "sess-made-up-3",
+        "message": {"role": "user", "content": [{"type": "text", "text": "made-up plain one"}]}
+    });
+    let second = json!({
+        "type": "user", "uuid": "u-plain", "session_id": "sess-made-up-3",
+        "message": {"role": "user", "content": [{"type": "text", "text": "made-up plain two"}]}
+    });
+    let p = packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![
+            msg(0, "user", "made-up plain one", first),
+            msg(1, "user", "made-up plain two", second),
+        ],
+    );
+    let publication = extract_session_facts(&p, "claude_code");
+    for field in ["chat", "block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "conflicting_event"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+    }
+    assert!(
+        coverage(&publication, "replay_conflict").is_none(),
+        "no replay marker means no replay_conflict scope: {:?}",
+        publication.coverage
     );
 }
 
@@ -2659,6 +2956,144 @@ fn devin_facts_graph_linking_and_sparse_coverage() {
     assert_eq!(publication.task_category.as_deref(), Some("debugging"));
     assert_eq!(publication.model_set, vec!["swe-1-7"]);
     assert_eq!(publication.is_subagent, None);
+}
+
+/// Two sparse cli_tool results under one identifier with different content:
+/// the recorded evidence conflicts, so the pair never merges into one
+/// verified link. Every chat message is still a local, indexed packet
+/// message, so the conflict is a tool-verdict gap — the text verdicts stay
+/// complete and the conflict stays visible on the tool scopes.
+fn devin_conflicting_outputs_packet() -> ConversationPacket {
+    packet(
+        "devin",
+        json!({"source": "sqlite", "session_id": "bald-ketch", "model": "swe-1-7"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "Fix the broken checks.",
+                json!({"message_id": "m2", "is_user_input": true}),
+            ),
+            msg(
+                1,
+                "tool",
+                "first made-up output",
+                json!({"message_id": "m4", "tool_call_id": "call_dup_out"}),
+            ),
+            msg(
+                2,
+                "tool",
+                "second made-up output",
+                json!({"message_id": "m5", "tool_call_id": "call_dup_out"}),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn devin_conflicting_outputs_keep_text_verdicts_complete() {
+    let publication = extract_session_facts(&devin_conflicting_outputs_packet(), "devin");
+
+    // The conflicting pair is excluded from the verified tool facts.
+    assert!(
+        !publication
+            .tools
+            .iter()
+            .any(|t| t.raw_call_id == "call_dup_out"),
+        "conflicting outputs must never merge: {:?}",
+        publication.tools
+    );
+    // Tool verdicts keep the conflict.
+    for field in ["tools", "tool_exit", "tool_error", "files", "mcp"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert!(
+            entry.reasons.iter().any(|r| r == "conflicting_event"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+    }
+    // But both recorded outputs are local packet text: the session text is
+    // fully indexed, so the text verdicts stay complete — the conflict is
+    // visible on the tool scopes, never smuggled into a text claim.
+    for field in ["chat", "block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "conflicting_event" || r == "devin_source_or_graph_incomplete"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+    }
+}
+
+/// Two ACP tool_call records under one graph root with the same
+/// `toolCallId` but different `rawInput`: conflicting call evidence —
+/// never merged, tool scopes conflict, text verdicts stay complete.
+fn devin_conflicting_calls_packet() -> ConversationPacket {
+    packet(
+        "devin",
+        json!({"source": "sqlite", "session_id": "bald-ketch", "model": "swe-1-7"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "Fix the broken checks.",
+                json!({"message_id": "m2", "is_user_input": true}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "",
+                json!({"kind": "tool_call", "node_id": 20, "parent_node_id": null,
+                       "payload": {"content": {"kind": "execute", "title": "Ran ls",
+                            "toolCallId": "dup_in", "rawInput": {"cmd": "ls"},
+                            "rawOutput": "a.txt"}}}),
+            ),
+            msg(
+                2,
+                "assistant",
+                "",
+                json!({"kind": "tool_call", "node_id": 20, "parent_node_id": null,
+                       "payload": {"content": {"kind": "execute", "title": "Ran pwd",
+                            "toolCallId": "dup_in", "rawInput": {"cmd": "pwd"},
+                            "rawOutput": "a.txt"}}}),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn devin_conflicting_calls_keep_text_verdicts_complete() {
+    let publication = extract_session_facts(&devin_conflicting_calls_packet(), "devin");
+
+    assert!(
+        !publication.tools.iter().any(|t| t.raw_call_id == "dup_in"),
+        "conflicting calls must never merge: {:?}",
+        publication.tools
+    );
+    for field in ["tools", "tool_exit", "tool_error", "files", "mcp"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert!(
+            entry.reasons.iter().any(|r| r == "conflicting_event"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+    }
+    for field in ["chat", "block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "conflicting_event" || r == "devin_source_or_graph_incomplete"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

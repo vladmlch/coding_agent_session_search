@@ -15,7 +15,7 @@ use super::{
     events, explicit_status, is_compacted_extra, json_text, recorded_text, text_id,
 };
 
-const EXTRACTOR_REVISION: &str = "claude-facts-v2";
+const EXTRACTOR_REVISION: &str = "claude-facts-v3";
 const BLOCK_TYPES: &[&str] = &[
     "text",
     "thinking",
@@ -27,10 +27,12 @@ const BLOCK_TYPES: &[&str] = &[
 /// Desktop-audit transport/audit bookkeeping re-emitted with a replay
 /// record (`audit.jsonl` `isReplay: true` re-emissions under the same
 /// uuid): a fresh timestamp, session binding, delivery platform, origin
-/// tag and audit hmac — accounting, never a rewrite of the recorded
-/// content. Stripped ONLY to test content identity inside a
-/// replay-marked group ([`unique_events`]); a future key outside this
-/// list still conflicts (fails closed).
+/// tag and audit hmac — accounting. Stripped ONLY to test content
+/// identity inside a replay-marked group ([`unique_events`]); a
+/// replay-marked pair whose content still differs is an audit REWRITE
+/// (the live record is kept and the rewrite recorded on the dedicated
+/// `replay_conflict` scope), while an UNMARKED different-content uuid
+/// group still conflicts (fails closed).
 const REPLAY_ENVELOPE_KEYS: &[&str] = &[
     "isReplay",
     "origin",
@@ -117,6 +119,33 @@ fn unique_events<'a>(input: &'a [Event<'a>], coverage: &mut CoverageBuilder) -> 
                         .copied()
                         .unwrap_or(candidates[0]),
                 );
+                continue;
+            }
+            if replay_marked
+                && content_signatures.len() > 1
+                && candidates.iter().all(|event| event.extra.is_object())
+            {
+                // Desktop audit REWRITE: the audit log re-emitted the record
+                // under the same uuid with `isReplay: true` and a DIFFERENT
+                // recorded body. The `isReplay` marker is the audit's own
+                // proof of mediated re-emission, so this is a rewrite,
+                // never corruption: both versions are local packet-visible
+                // messages and the regions lane indexes every packet
+                // message, so no text is missing. Keep the LIVE record in
+                // the facts lane and record the rewrite on a dedicated
+                // custom scope no strict gate maps to. Unmarked
+                // different-content uuid groups (true corruption) keep the
+                // all-core conflict below.
+                result.push(
+                    candidates
+                        .iter()
+                        .find(|event| {
+                            event.extra.get("isReplay").and_then(Value::as_bool) != Some(true)
+                        })
+                        .copied()
+                        .unwrap_or(candidates[0]),
+                );
+                coverage.mark(&["replay_conflict"], "claude_rewritten_replay", "partial");
                 continue;
             }
             for _ in candidates {

@@ -54,7 +54,28 @@ pub use providers::classification::SessionQualityMetrics;
 /// dedup to the live record (providers/claude.rs, claude-facts-v2; the
 /// sidecar `initialMessage` and the compacted/normalized invocation
 /// arguments index as regions, search_regions.rs, REGION_VERSION 3).
-pub const FACTS_EXTRACTOR_VERSION: i64 = 6;
+/// v7: last-eight shapes — a replay-marked claude audit pair whose
+/// envelope-stripped content DIFFERS is an audit REWRITE, never corruption:
+/// both versions are local, region-indexed messages, so the live record
+/// stays in the facts lane and the rewrite is recorded on the dedicated
+/// `replay_conflict` scope (`claude_rewritten_replay`, partial; no strict
+/// gate maps to it) while text verdicts stay complete
+/// (providers/claude.rs, claude-facts-v3); unmarked different-content uuid
+/// groups keep the all-core `conflicting_event`. Devin conflicting
+/// call/output evidence narrows to the tool-verdict scopes and no longer
+/// flips the oracle `complete` flag (providers/devin.rs, devin-facts-v2),
+/// so chat/`block_inventory`/`text_inventory` stay complete. Codex calls
+/// whose missing result is PROVEN interrupted at the source (the call is
+/// the rollout's last record, or a later user message cuts the pending
+/// turn) mark `tool_output_interrupted` — a source-absent reason — instead
+/// of the not-read `tool_result_missing` (providers/codex.rs + mod.rs,
+/// codex-facts-v2). Codex `image_url` tool-output parts (the OpenAI image
+/// shape FAD emits with empty content for image-only outputs) are known
+/// non-text in `recorded_text`, so an image-only output pairs its call with
+/// no marks — never a `tool_output_not_recorded` claim about a record that
+/// exists (providers/mod.rs, mirrored in the viewer-bridge
+/// `get_tool_output` oracle).
+pub const FACTS_EXTRACTOR_VERSION: i64 = 7;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
@@ -236,6 +257,15 @@ pub struct CoverageEntry {
 ///   only for that explicit source marker — never for a parse failure or
 ///   unknown shape (a malformed marker keeps
 ///   `agy_truncated_fields_malformed`, a not-read gap).
+/// - `tool_output_interrupted` (owner decision, 2026-11-08): a codex call
+///   whose output record provably never existed in the append-only rollout.
+///   `extract()` in `providers/codex.rs` emits the code only under one of
+///   two proofs, evaluated over ALL packet events so any later record
+///   (compacted or not) disqualifies: (a) the call is the packet's LAST
+///   event — an append-only rollout ending on the call never wrote the
+///   output record; (b) a user-role message follows the call — codex never
+///   takes user input mid-turn, so the pending turn was cut. Any other
+///   unpaired call keeps the not-read `tool_result_missing`.
 /// - `claude_sidecar_body_culled` (owner follow-up, 2026-11-08): the Claude
 ///   Desktop sidecar envelope's explicit `cass.body_available == false`
 ///   marker (FAD `desktop_sidecar_metadata_message`). The Desktop app
@@ -259,6 +289,7 @@ pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &[
     "thinking_redacted",
     "agy_source_truncated",
     "claude_sidecar_body_culled",
+    "tool_output_interrupted",
 ];
 
 /// `true` when a coverage entry's gap is provably text absent at the
@@ -1360,6 +1391,41 @@ mod source_absent_tests {
         assert!(!is_source_absent_gap(
             "unavailable",
             &reasons(&["claude_shape_unknown"])
+        ));
+    }
+
+    #[test]
+    fn codex_interrupted_tool_output_marker_is_source_absent() {
+        // The codex interrupted-call proof (owner decision, 2026-11-08): the
+        // rollout provably ended mid-call (the call is the packet's last
+        // event) or the pending turn was cut by the next task's user
+        // message (codex never accepts user input mid-turn). Rollouts are
+        // append-only, so no output record for the call id was ever
+        // written — the result text never existed in any local record.
+        // `extract()` in `providers/codex.rs` emits the code only for
+        // those two packet-visible proof shapes; a mid-turn unpaired call
+        // keeps `tool_result_missing`, a not-read gap.
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["tool_output_interrupted"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["tool_output_interrupted"])
+        ));
+        // Mixed with any not-read reason the proof breaks.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["tool_output_interrupted", "tool_result_missing"])
+        ));
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["tool_output_interrupted", "tool_output_not_recorded"])
+        ));
+        // The unproven variant stays not-read.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["tool_result_missing"])
         ));
     }
 }
