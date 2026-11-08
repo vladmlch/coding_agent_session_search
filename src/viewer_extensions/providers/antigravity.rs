@@ -59,6 +59,7 @@
 //!     including error-only GENERIC records (their `error` text never
 //!     reaches the packet);
 //!   - PLANNER_RESPONSE records dropped the same way.
+//!
 //! A complete text-scope verdict therefore means "complete over every
 //! record the connector emitted", never over records it dropped silently.
 //!
@@ -209,6 +210,7 @@ fn agy_status(value: &Value) -> (Option<i64>, Option<bool>) {
 ///   - `media` → nothing: attachment references carry no text,
 ///   - any other name → text_inventory only (some field was cut; if it
 ///     held text, the inventory is where it would have lived).
+///
 /// A marker that is not a clean array of strings is not the verified
 /// contract shape and never earns the source-absent reason: the whole
 /// marker keeps `agy_truncated_fields_malformed` instead.
