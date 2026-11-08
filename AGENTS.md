@@ -244,12 +244,15 @@ owner-fork source (`https://github.com/vladmlch/frankensqlite` at rev
 
 ### Release Profile
 
-The release build optimizes for speed with LTO + single-codegen-unit + stripped binary:
+The release build optimizes for speed with thin LTO + a stripped binary (owner
+decision, 2026-11-08: fat LTO with one codegen unit compiled the cass crate on a
+single thread for 30–40+ min; thin LTO keeps cross-crate optimization and
+builds on every core):
 
 ```toml
 [profile.release]
-lto = true          # Link-time optimization
-codegen-units = 1   # Single codegen unit for better optimization
+lto = "thin"        # Parallel link-time optimization
+codegen-units = 16  # Codegen spread over every core
 strip = true        # Remove debug symbols
 panic = "abort"     # Abort on panic (smaller binary)
 opt-level = 3       # Maximum optimization for speed
@@ -289,8 +292,9 @@ lockf -k /tmp/cass-cargo.lock cargo test --test viewer_bridge_extensions
 
 Because only one compilation runs, it uses every core: plain `cargo` already
 defaults to one job per logical CPU, and `scripts/lib/run_cargo.sh` now does
-too. Do not cap jobs below the CPU count unless the user asks. The remaining
-single-thread phase is LTO with `codegen-units = 1` (see the next section).
+too. Do not cap jobs below the CPU count unless the user asks. The optimized
+profiles use thin LTO over 16 codegen units, so they build in parallel too;
+only an explicit fat-LTO build (next section) runs single-threaded.
 
 `lockf` (macOS `/usr/bin/lockf`) blocks until the lock is free, so a waiting
 command counts against the caller's tool timeout: run long cargo commands in
@@ -300,16 +304,16 @@ and tells every delegated agent to use the lock.
 
 ### Do not pay for LTO unless the result needs it (owner rule, 2026-11-07)
 
-All three optimized profiles above inherit `lto = true` + `codegen-units = 1`,
-which costs 20–40 min per build (far more on a loaded machine) versus roughly
-5–10 min without it. Build with LTO **only** when the measured number itself is
-the deliverable: a release binary, a bench-history ratchet, or the final
-same-session A/B behind a speed claim (RULE 0.5; both sides of the A/B use the
-same build settings).
+All three optimized profiles above inherit the release profile's thin LTO over
+16 codegen units, which builds on every core. Use them as they are for release
+binaries, bench-history ratchets and the final same-session A/B behind a speed
+claim (RULE 0.5; both sides of the A/B use the same build settings). Fat LTO
+(`CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1`) compiles
+the cass crate on one thread for 30–40+ min; build it only when the owner asks.
 
-Everything else uses an optimized build with LTO off, through Cargo's
-environment overrides (no Cargo.toml change, and a separate target dir so the
-LTO artifacts are not invalidated):
+Diagnosis work can skip LTO entirely through Cargo's environment overrides (no
+Cargo.toml change, and a separate target dir so the LTO artifacts are not
+invalidated):
 
 ```bash
 CARGO_PROFILE_PROFILING_LTO=false CARGO_PROFILE_PROFILING_CODEGEN_UNITS=16 \

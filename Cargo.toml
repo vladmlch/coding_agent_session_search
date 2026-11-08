@@ -324,9 +324,12 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 1
 
+# Thin LTO over 16 codegen units (owner decision, 2026-11-08): fat LTO with a
+# single codegen unit compiled the cass crate on one thread for 30-40+ min;
+# thin LTO keeps cross-crate optimization and builds on every core.
 [profile.release]
-lto = true
-codegen-units = 1
+lto = "thin"
+codegen-units = 16
 strip = true
 panic = "abort"
 opt-level = 3
