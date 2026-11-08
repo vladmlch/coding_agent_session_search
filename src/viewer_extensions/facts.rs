@@ -46,7 +46,15 @@ pub use providers::classification::SessionQualityMetrics;
 /// source), and `extra.error` text (distinct from the record content)
 /// indexed as an `m{idx}:error` region (search_regions.rs, REGION_VERSION
 /// 2), so the retired `agy_error_field_not_indexed` mark is gone.
-pub const FACTS_EXTRACTOR_VERSION: i64 = 5;
+/// v6: claude residual shapes — the Desktop sidecar metadata envelope is a
+/// known shape whose culled body carries the explicit
+/// `claude_sidecar_body_culled` source marker, the `{}` compaction product
+/// is `extra_compacted` (never `claude_shape_unknown`), and
+/// `isReplay`-marked audit pairs with envelope-stripped-identical content
+/// dedup to the live record (providers/claude.rs, claude-facts-v2; the
+/// sidecar `initialMessage` and the compacted/normalized invocation
+/// arguments index as regions, search_regions.rs, REGION_VERSION 3).
+pub const FACTS_EXTRACTOR_VERSION: i64 = 6;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
@@ -228,6 +236,17 @@ pub struct CoverageEntry {
 ///   only for that explicit source marker — never for a parse failure or
 ///   unknown shape (a malformed marker keeps
 ///   `agy_truncated_fields_malformed`, a not-read gap).
+/// - `claude_sidecar_body_culled` (owner follow-up, 2026-11-08): the Claude
+///   Desktop sidecar envelope's explicit `cass.body_available == false`
+///   marker (FAD `desktop_sidecar_metadata_message`). The Desktop app
+///   states the CLI conversation body was culled before the sidecar was
+///   written, so the missing body text never existed in any local record
+///   (the sidecar's own metadata lines and `raw.initialMessage` DO exist
+///   and index normally). `extract()` in `providers/claude.rs` emits the
+///   code only for that explicit envelope with
+///   `/cass/source == "claude_code_desktop_sidecar"` AND
+///   `body_available == false` — a sidecar without the marker, or any
+///   other unknown shape, keeps `claude_shape_unknown`, a not-read gap.
 ///
 /// NOT here on purpose:
 /// - `agy_status_dropped_by_connector` / `agy_status_unpaired`: tool
@@ -239,6 +258,7 @@ pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &[
     "reasoning_encrypted",
     "thinking_redacted",
     "agy_source_truncated",
+    "claude_sidecar_body_culled",
 ];
 
 /// `true` when a coverage entry's gap is provably text absent at the
@@ -1311,6 +1331,35 @@ mod source_absent_tests {
         assert!(!is_source_absent_gap(
             "partial",
             &reasons(&["agy_truncated_fields_malformed"])
+        ));
+    }
+
+    #[test]
+    fn claude_sidecar_cull_marker_is_source_absent() {
+        // The Claude Desktop sidecar body-cull marker (owner decision,
+        // 2026-11-08): the sidecar's own `cass.body_available == false`
+        // envelope is the Desktop app stating the CLI conversation body was
+        // culled before the sidecar was written, so the missing body text
+        // never existed in any local record. The claude extractor emits the
+        // code only for that explicit envelope — a sidecar without the
+        // marker keeps `claude_shape_unknown`, a not-read gap.
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["claude_sidecar_body_culled"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["claude_sidecar_body_culled"])
+        ));
+        // Mixed with any not-read reason the proof breaks.
+        assert!(!is_source_absent_gap(
+            "unavailable",
+            &reasons(&["claude_sidecar_body_culled", "claude_shape_unknown"])
+        ));
+        // The marker-less variant stays not-read.
+        assert!(!is_source_absent_gap(
+            "unavailable",
+            &reasons(&["claude_shape_unknown"])
         ));
     }
 }
