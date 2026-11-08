@@ -1,13 +1,70 @@
 //! Antigravity session facts: `agy_type` envelopes, `cass.invocations`
 //! normalized calls, `TOOL_OUTPUT`/`VIEW_FILE`/`RUN_COMMAND` results and
 //! recorded-only exit/error evidence. Behavioral port of the oracle
-//! `facts/antigravity.py` over the normalized CASS packet.
+//! `facts/antigravity.py` over the normalized CASS packet, with the record
+//! classification re-verified against the pinned connector's real output.
 //!
-//! The pinned FAD connector emits sparse extras — `agy_type`, `thinking`,
-//! `settings_change`, `cass.invocations` (PLANNER_RESPONSE calls) — while raw
-//! transcript `tool_calls`/`tool_outputs`/`call_id`/`exit_code` survive only
-//! where the connector recorded them. Unlinked outputs are never positionally
+//! The pinned FAD connector (rev 3851a3a) emits sparse extras — `agy_type`,
+//! `thinking`, `settings_change`, `cass.invocations` (PLANNER_RESPONSE
+//! calls) — and passes the source fields through into extras (F10):
+//! `truncated_fields` (the source-side truncation markers), `status`
+//! (the record lifecycle DONE/RUNNING/ERROR/INVALID), `error` (the failure
+//! text) and `media` ({mime_type, uri} attachment refs). It also emits
+//! error-only ERROR_MESSAGE records (the `error` text as the message
+//! content) and text-bearing CONVERSATION_HISTORY records. Raw transcript
+//! `tool_calls`/`tool_outputs`/`call_id`/`exit_code` survive only where the
+//! connector recorded them. Unlinked outputs are never positionally
 //! paired; missing identifiers stay partial, never fabricated.
+//!
+//! Record classification follows the connector's verified output contract
+//! (checked message-by-message against 96,722 persisted antigravity
+//! messages): every record maps to exactly one of
+//!   - role `user` with extra keys ⊆ {settings_change, additional_metadata}
+//!     plus the F10 passthrough keys (USER_INPUT; the wrapper blocks' text
+//!     is part of the user turn),
+//!   - role `agent` with extra keys ⊆ {cass, thinking} plus the F10
+//!     passthrough keys (PLANNER_RESPONSE),
+//!   - a role `tool`/`system` record carrying an `agy_type` envelope
+//!     (MODEL steps GENERIC/VIEW_FILE/…, SYSTEM_MESSAGE, ERROR_MESSAGE,
+//!     CONVERSATION_HISTORY, CHECKPOINT, EPHEMERAL_MESSAGE).
+//!
+//! Anything else is connector drift and stays `agy_record_unknown`.
+//!
+//! Text-scope coverage is per-session precise (the v2 blanket
+//! `agy_connector_drops_source_text` mark is retired):
+//!   - a `truncated_fields` marker proves the source cut the named fields
+//!     before persisting — `agy_source_truncated` on the affected scopes,
+//!     the source-absent allowlist reason, emitted only for that explicit
+//!     marker, never for parse failures (a malformed marker keeps
+//!     `agy_truncated_fields_malformed`);
+//!   - the lifecycle `status` is exit/error evidence: ERROR forces an
+//!     error verdict, DONE records success (an explicit flag — an exit
+//!     code is never fabricated); status evidence that no collected call
+//!     carries degrades the exit/error scopes to `agy_status_unpaired`
+//!     partial, and only a packet with no status at all keeps the
+//!     `agy_status_dropped_by_connector` unavailable verdict;
+//!   - `media` refs are attachment evidence that carries no text: they
+//!     mark nothing;
+//!   - an `error` string whose content differs from the record's message
+//!     text indexes as its own searchable region (search_regions.rs,
+//!     REGION_VERSION 2): tool-role MODEL steps carry it in the tools
+//!     scope with the recorded error flags, every other role in chat.
+//!     The retired `agy_error_field_not_indexed` mark is gone — the text
+//!     is read now. Error-only records carry the string as their content
+//!     and index it exactly once.
+//!
+//! Residual drops the packet cannot see — the connector's empty-body
+//! rules vanish whole records, so no per-session signal exists and no
+//! mark is possible (documented residual class, see the ingest report):
+//!   - USER_INPUT turns whose extracted request body is empty
+//!     (attachment-only turns with `media`/wrapper text);
+//!   - MODEL-step records with empty content, no thinking and no calls —
+//!     including error-only GENERIC records (their `error` text never
+//!     reaches the packet);
+//!   - PLANNER_RESPONSE records dropped the same way.
+//!
+//! A complete text-scope verdict therefore means "complete over every
+//! record the connector emitted", never over records it dropped silently.
 //!
 //! Note: `is_compacted_extra` is deliberately NOT used here — the
 //! `{"cass":{"invocations":[..]}}` envelope is real Antigravity evidence, and
@@ -25,7 +82,7 @@ use super::{
     ToolCollector, events, json_text, text_id,
 };
 
-const EXTRACTOR_REVISION: &str = "antigravity-facts-v1";
+const EXTRACTOR_REVISION: &str = "antigravity-facts-v4";
 const SUPPORTED_KINDS: &[&str] = &[
     "USER_INPUT",
     "PLANNER_RESPONSE",
@@ -36,9 +93,46 @@ const SUPPORTED_KINDS: &[&str] = &[
     "error",
     "SYSTEM_MESSAGE",
     "CONVERSATION_HISTORY",
+    // MODEL-step and lifecycle envelopes present in the connector's real
+    // output (the oracle fixture vocabulary predates them): GENERIC
+    // dominates the live transcripts; CHECKPOINT/EPHEMERAL_MESSAGE are
+    // lifecycle records; CODE_ACTION/LIST_DIRECTORY are MODEL-step tool
+    // kinds. The ephemeral label is EPHEMERAL_MESSAGE in the connector's
+    // verified output (11 persisted records) — bare "EPHEMERAL" never
+    // occurs in the packet.
+    "GENERIC",
+    "CHECKPOINT",
+    "EPHEMERAL_MESSAGE",
+    "CODE_ACTION",
+    "LIST_DIRECTORY",
 ];
 const TOOL_KINDS: &[&str] = &["TOOL_OUTPUT", "VIEW_FILE", "RUN_COMMAND"];
 const PARTIAL_TOOL_FIELDS: &[&str] = &["tools", "tool_exit", "tool_error"];
+/// USER_INPUT extra keys: the connector's wrapper lifts plus the F10
+/// passthrough keys (`truncated_fields`, `status`, `error`, `media` —
+/// FAD rev 3851a3a inserts each only when the source record carries it).
+const USER_KEYS: &[&str] = &[
+    "settings_change",
+    "additional_metadata",
+    "truncated_fields",
+    "status",
+    "error",
+    "media",
+];
+/// PLANNER_RESPONSE extra keys: the connector's lifts plus the F10
+/// passthrough keys.
+const PLANNER_KEYS: &[&str] = &[
+    "cass",
+    "thinking",
+    "truncated_fields",
+    "status",
+    "error",
+    "media",
+];
+/// A `truncated_fields` marker that is not a clean array of strings is
+/// not the verified contract shape: it can prove nothing about which text
+/// existed, so it keeps this not-read scope only.
+const TRUNCATION_MALFORMED_SCOPES: &[&str] = &["text_inventory"];
 
 /// Recorded record kind: `agy_type` (canonical envelope) or raw `type`/`kind`.
 fn agy_event_kind(extra: &Value) -> Option<&str> {
@@ -50,19 +144,134 @@ fn agy_event_kind(extra: &Value) -> Option<&str> {
     SUPPORTED_KINDS.contains(&kind).then_some(kind)
 }
 
+/// One classified record: the pinned connector's verified output shape, or
+/// connector drift. See the module header for the contract.
+enum RecordShape<'a> {
+    /// USER_INPUT: user turn text in the message content; wrapper blocks
+    /// lifted to `settings_change`/`additional_metadata` extras.
+    User,
+    /// PLANNER_RESPONSE: narration content plus `thinking`/`cass.invocations`
+    /// evidence consumed by [`cass_evidence`].
+    Planner,
+    /// Any record carrying a recognized `agy_type` (or legacy `type`/`kind`).
+    Envelope(&'a str),
+    /// Outside the verified contract: future connector output the
+    /// classification has not been taught. Keeps the unknown degradation.
+    Drift,
+}
+
+/// Classify one packet record against the connector's verified output
+/// contract (module header). Envelope evidence wins; role+extra-key-set
+/// shapes cover the records the connector emits without `agy_type`.
+fn classify_record<'a>(role: &str, extra: &'a Value) -> RecordShape<'a> {
+    if let Some(kind) = agy_event_kind(extra) {
+        return RecordShape::Envelope(kind);
+    }
+    let keys_known = |allowed: &[&str]| {
+        extra
+            .as_object()
+            .is_some_and(|map| map.keys().all(|key| allowed.contains(&key.as_str())))
+    };
+    if role == "user" && keys_known(USER_KEYS) {
+        return RecordShape::User;
+    }
+    if matches!(role, "agent" | "assistant") && keys_known(PLANNER_KEYS) {
+        return RecordShape::Planner;
+    }
+    RecordShape::Drift
+}
+
 /// Explicit recorded status (oracle `_error`): an integer exit code can
-/// establish an error; `status == "ERROR"` forces error; a missing flag never
-/// invents a code.
+/// establish an error; `status == "ERROR"` forces error; `status == "DONE"`
+/// is the recorded success verdict (F10 passthrough — an explicit flag; a
+/// non-final or unknown status never invents evidence, and an exit code is
+/// never fabricated).
 fn agy_status(value: &Value) -> (Option<i64>, Option<bool>) {
     let exit_code = value.get("exit_code").and_then(Value::as_i64);
     let mut is_error = value.get("is_error").and_then(Value::as_bool);
-    if value.get("status").and_then(Value::as_str) == Some("ERROR") {
-        is_error = Some(true);
+    match value.get("status").and_then(Value::as_str) {
+        Some("ERROR") => is_error = Some(true),
+        Some("DONE") if is_error.is_none() => is_error = Some(false),
+        _ => {}
     }
     if let Some(code) = exit_code {
         is_error = Some(is_error == Some(true) || code != 0);
     }
     (exit_code, is_error)
+}
+
+/// The F10 `truncated_fields` passthrough marker: the source application
+/// cut the named fields BEFORE persisting the record, so their text never
+/// existed in any local artifact — the cut is provable source absence
+/// (`agy_source_truncated`, the source-absent allowlist reason; owner
+/// decision, 2026-11-08). Scope mapping by field name:
+///   - `content` → chat + text_inventory (the record's message text),
+///   - `thinking` → thinking + text_inventory,
+///   - `tool_calls`/`tool_outputs` → tools + text_inventory + files
+///     (call arguments and result text are indexed region text, and file
+///     paths ride in those arguments),
+///   - `media` → nothing: attachment references carry no text,
+///   - any other name → text_inventory only (some field was cut; if it
+///     held text, the inventory is where it would have lived).
+///
+/// A marker that is not a clean array of strings is not the verified
+/// contract shape and never earns the source-absent reason: the whole
+/// marker keeps `agy_truncated_fields_malformed` instead.
+fn source_truncation(extra: &Value, coverage: &mut CoverageBuilder) {
+    let Some(fields) = extra.get("truncated_fields") else {
+        return;
+    };
+    let Some(items) = fields.as_array() else {
+        coverage.mark(
+            TRUNCATION_MALFORMED_SCOPES,
+            "agy_truncated_fields_malformed",
+            "partial",
+        );
+        return;
+    };
+    let mut scopes: BTreeSet<&'static str> = BTreeSet::new();
+    for item in items {
+        let Some(name) = item.as_str() else {
+            coverage.mark(
+                TRUNCATION_MALFORMED_SCOPES,
+                "agy_truncated_fields_malformed",
+                "partial",
+            );
+            return;
+        };
+        match name {
+            "content" => {
+                scopes.insert("chat");
+                scopes.insert("text_inventory");
+            }
+            "thinking" => {
+                scopes.insert("thinking");
+                scopes.insert("text_inventory");
+            }
+            "tool_calls" | "tool_outputs" => {
+                scopes.insert("tools");
+                scopes.insert("text_inventory");
+                scopes.insert("files");
+            }
+            // Attachment references carry no text.
+            "media" => {}
+            _ => {
+                scopes.insert("text_inventory");
+            }
+        }
+    }
+    if !scopes.is_empty() {
+        let scopes: Vec<&str> = scopes.into_iter().collect();
+        coverage.mark(&scopes, "agy_source_truncated", "partial");
+    }
+}
+
+/// A recorded call identity on an envelope record (`call_id`/`id`/`tool_use_id`).
+fn has_call_identity(extra: &Value) -> bool {
+    text_id(extra.get("call_id"))
+        .or_else(|| text_id(extra.get("id")))
+        .or_else(|| text_id(extra.get("tool_use_id")))
+        .is_some()
 }
 
 /// `output`/`content` as recorded text (oracle `_text`): strings verbatim,
@@ -153,13 +362,12 @@ fn structured_event(
     tools: &mut ToolCollector,
 ) {
     let extra = event.extra;
-    // The canonical `agy_type` envelope loses the raw record structure.
+    // The canonical `agy_type` envelope loses the raw record structure
+    // (field layout, `status`, raw `tool_calls` arrays). The record's TEXT
+    // survives as the message content and lands in chat regions, so this
+    // taints the block inventory only.
     if extra.get("agy_type").is_some() {
-        coverage.mark(
-            &["block_inventory", "text_inventory", "tools"],
-            "agy_canonical_envelope",
-            "partial",
-        );
+        coverage.mark(&["block_inventory"], "agy_canonical_envelope", "partial");
     }
     let content = extra
         .get("content")
@@ -202,6 +410,15 @@ fn structured_event(
                 "partial",
             ),
         }
+    }
+
+    // MODEL-step envelopes outside TOOL_KINDS (GENERIC, CODE_ACTION,
+    // LIST_DIRECTORY — the kinds the connector emits for executed steps):
+    // the step text is the message content and lands in chat regions, but
+    // without a recorded call identity the tools scope cannot verify the
+    // step against a call.
+    if event.role == "tool" && !TOOL_KINDS.contains(&kind) && !has_call_identity(extra) {
+        coverage.mark(&["tools"], "agy_tool_result_identity_missing", "partial");
     }
 
     // Raw-transcript arms: `tool_calls`/`tool_outputs` lists survive only
@@ -283,6 +500,12 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
     let mut models: BTreeSet<String> = BTreeSet::new();
     let mut deduped: Vec<(i64, &str, &str)> = Vec::new();
 
+    let mut saw_tool_step = false;
+    // Tool-step records carrying a lifecycle `status` (F10 passthrough):
+    // status evidence the packet can see, counted before correlation so
+    // the post-loop verdict can tell "status present but unpaired" from
+    // "no status in the packet at all".
+    let mut tool_status_records = 0_usize;
     for event in &input {
         deduped.push((event.idx, event.role, event.content));
         let extra = event.extra;
@@ -291,15 +514,35 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
             continue;
         }
         cass_evidence(event, extra, &mut coverage, &mut tools, &mut thinking);
-        let Some(kind) = agy_event_kind(extra) else {
-            // Unverifiable record: real message text but no structured
-            // evidence (oracle routes these to the generic fallback, which
-            // degrades every scope to partial). FAD USER_INPUT/PLANNER_RESPONSE
-            // records land here — their `cass.*` evidence was already consumed.
-            coverage.mark(CORE_FIELDS, "agy_record_unknown", "partial");
-            continue;
-        };
-        structured_event(event, kind, &mut coverage, &mut tools);
+        // F10 passthrough evidence is shape-independent: every emitted
+        // record can carry the truncation markers and the error text.
+        source_truncation(extra, &mut coverage);
+        match classify_record(event.role, extra) {
+            RecordShape::Envelope(kind) => {
+                if event.role == "tool" {
+                    saw_tool_step = true;
+                    if extra.get("status").is_some_and(|value| !value.is_null()) {
+                        tool_status_records += 1;
+                    }
+                }
+                structured_event(event, kind, &mut coverage, &mut tools);
+            }
+            // Known text-bearing records whose message content IS the
+            // record text (USER_INPUT request / planner narration): the
+            // content is indexed as the chat region; thinking/invocation
+            // evidence was already consumed by `cass_evidence`.
+            RecordShape::User | RecordShape::Planner => {
+                if !event.content.is_empty() {
+                    coverage.evidence("chat");
+                }
+            }
+            // Connector drift (unverifiable record: real message text with
+            // no verified shape — the oracle routes these to the generic
+            // fallback, which degrades every scope to partial).
+            RecordShape::Drift => {
+                coverage.mark(CORE_FIELDS, "agy_record_unknown", "partial");
+            }
+        }
     }
 
     // The connector lifts the detected model to conversation metadata.
@@ -341,6 +584,38 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
     let quality = classification::session_quality_metrics(&quality_events, &classify_calls);
 
     let (tools, file_facts) = tools.finish(&mut coverage);
+    // Source tool steps carry a lifecycle `status` on every record
+    // (verified against the raw transcripts: DONE/RUNNING/ERROR/INVALID).
+    // The F10 passthrough keeps it in the packet, so the exit/error
+    // verdicts are precise:
+    //  - status evidence exists but not every carrying record landed on a
+    //    collected call/result with a final verdict (the connector records
+    //    no call ids for planner invocations, so this is the dominant real
+    //    shape) → `agy_status_unpaired` partial: evidence present,
+    //    attribution unproven;
+    //  - a packet with tool steps but no status at all (pre-F10 shape:
+    //    the connector dropped the field) →
+    //    `agy_status_dropped_by_connector` unavailable;
+    //  - every status landed on a collected verdict → no session-level
+    //    mark; the per-call marks above already said exactly which calls
+    //    lack one.
+    let verdict_calls = tools
+        .iter()
+        .filter(|tool| tool.exit_code.is_some() || tool.is_error.is_some())
+        .count();
+    if saw_tool_step && tool_status_records == 0 && verdict_calls == 0 {
+        coverage.mark(
+            &["tool_exit", "tool_error"],
+            "agy_status_dropped_by_connector",
+            "unavailable",
+        );
+    } else if tool_status_records > verdict_calls {
+        coverage.mark(
+            &["tool_exit", "tool_error"],
+            "agy_status_unpaired",
+            "partial",
+        );
+    }
     coverage.mark(
         &["compaction"],
         "boundary_records_not_normalized",

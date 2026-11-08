@@ -171,7 +171,7 @@ b-tree, bd-obwsy; 0.4.9 and the shipped v0.10.0's 0.4.6 are affected),
 ROLLBACK returning reserved AUTOINCREMENT rowids (bd-gwoit), reading a WAL
 a stock writer truncated to zero bytes as empty (bd-yxqs9, GH#519), and
 explicit-rowid writes to a table holding the largest rowid (9308c4bb6).
-FAD `=0.3.10` (git rev `ad61098922cfbdf8f749425d60105105dab281f7` for GH#520 remote-mirror source identity, the Continue connector, Cursor scan progress ticks and the Cursor key-index seek) asks for fsqlite `^0.4.1`, so it accepts the family, and exposes early SQLite bridge shutdown
+FAD `=0.3.10` (git rev `ad5fb23b2bae70984042f1676f8137d7cbbef053` for GH#520 remote-mirror source identity, the Continue connector, Cursor scan progress ticks, the Cursor key-index seek, the SQLite snapshot fallback for crashed stores, the antigravity extras passthrough and the Cursor composer/transcript merge) asks for fsqlite `^0.4.1`, so it accepts the family, and exposes early SQLite bridge shutdown
 for Windows process teardown (GH#519).
 The lockfile resolves the 20 SQLite packages used by CASS at 0.4.12.
 CASS runtime qualification of 0.4.12 passed (gi7k7, 2026-10-19): a real
@@ -215,14 +215,28 @@ WAL index (0853f5e8e). 0.4.9 refuses that index promptly again (48c6cf6b2) and
 lets the first write after stock SQLite opened the archive read-only
 establish the WAL generation instead of failing `BusyRecovery` on every later
 commit (frankensqlite GH#443, 4b48c95d8; cass GH#509/#508).
+Dependency update (2026-11-08, owner decision): the family's fork rev moves to
+`e890166488fbfa355acb531d97040329c06eef0d` (branch cass-local-fixes-dml of
+`https://github.com/vladmlch/frankensqlite`, still v0.4.12-based —
+`d9414f97` plus the backported DML equality-prefix index seeks `f39c8eb0`
+and `e8901664`, bd-j9gub, proven against stock SQLite), so DELETEs and UPDATEs
+whose equality conjuncts pin an index prefix — every per-conversation viewer
+DELETE cass issues — SEARCH the leading-column index instead of scanning,
+removing the O(N^2) per-conversation delete pass measured at ~62% of the
+scan+persist stage at 300k rows (.scratch/glm/2026-11-07-index-speed; backport
+receipts in .scratch/glm/2026-11-08-fsq-dml-backport/report.md); versions stay
+`=0.4.12`, the 2026-11-07 branch `cass-local-fixes` stays as rollback, and the
+NOT EXISTS-residual sort orphan-cleanup DELETE still plans as a SCAN (pinned by
+tests/frankensqlite_compat_gates.rs so a later fork change fails by name).
+
 The strict family guard requires uniform 0.4.12 versions and the pinned
 owner-fork source (`https://github.com/vladmlch/frankensqlite` at rev
-`d9414f972bf1fe004e1c991afc213e9be267a7cb`) for every family member.
+`e890166488fbfa355acb531d97040329c06eef0d`) for every family member.
 
 | Dependency | Pinned source |
 |------------|-----------------|
-| `frankensqlite` (`fsqlite`) / `fsqlite-types` and the whole SQLite family | git fork `=0.4.12` at rev `d9414f972bf1fe004e1c991afc213e9be267a7cb` — the owner's frankensqlite fork `https://github.com/vladmlch/frankensqlite` (branch cass-local-fixes), resolved through the committed `[patch.crates-io]` table; `build.rs` refuses a mixed family, any family redirect that misses this exact git URL+rev, duplicate package resolution, wrong version, or a non-fork lockfile source. The rev is v0.4.12 (tag `26aa19afcbd5afdb01658a10bb33417ad0b513be`) plus two vdbe range-seek commits: `10eadc63` seeks the single-column index range when the WHERE carries residual conjuncts (`WHERE key >= ? AND key < ? AND value IS NOT NULL` no longer falls back to a full table scan; ~208x on the motivating UNIQUE-text-key shape) and `d9414f97` lets rowid range seeks take numbered-placeholder bounds (`WHERE id > ?1 AND ...`, proven bit-identical to stock SQLite by the fork's differential e2e oracle; ~160x on its fixture); both keep the row set byte-identical to the full scan, and the fork keeps every family crate at 0.4.12 so FAD's `^0.4.1` ask converges on the same single resolution. Carries 0.4.12's bd-obwsy (the 0.4.10 advisory), bd-gwoit, bd-yxqs9 and largest-rowid explicit-write (9308c4bb6) fixes, plus 0.4.1's GH#462 reserved-page WAL repair, 0.4.2's derived WAL-index recovery for read-only opens (GH#477), 0.4.4's durable pending-freelist repairs, 0.4.6's page-referenced-twice (bd-b5vmw) and lost-index-entry (bd-11sz4) fixes, 0.4.7's large multi-row INSERT index fix (bd-2eebi), serialized-DDL race fix (bd-4iaoi), GH#503 shadow-autoindex repair open, bounded published-page plane (5s1la) and first-`sqlite_master` full-file read fix (k2k20), and 0.4.9's prompt stale-WAL-index refusal (48c6cf6b2) and stock-empty-WAL-index first-write fix (4b48c95d8, cass GH#509). CASS runtime qualification of 0.4.12 passed (gi7k7). 0.4.6 included upstream's likely fix (fd8c16a94) for a long-lived connection left refusing every BEGIN (2l1b0.75, frankensqlite GH#429), not yet verified on the owner-archive scenario; the legacy OMP analytics phase keeps its own fresh writer regardless |
-| `franken-agent-detection` | `=0.3.10` at git rev `ad61098922cfbdf8f749425d60105105dab281f7` (GH#520 remote-mirror source identity, Cursor `state.vscdb` scan progress ticks so the stall watchdog sees the parse (local fork F7), Cursor key-range queries that seek the `cursorDiskKV` index instead of scanning the table per composer (F8), Continue `continue` and Kiro CLI `kiro` connectors, early SQLite connector runtime shutdown and full OpenCode read-error chains, GH#519), features `pi-durable` and `pi-sqlite` (the `pi_durable` connector for Pi's durable-harness stores, FAD#28; `pi_agent_rust` SQLite sessions; Pi compaction/branch provenance, FAD#27) and `codex-zstd` (reads Codex rollouts compressed to `rollout-*.jsonl.zst` by Codex's `local_thread_store_compression`, with the id of their plain form, GH#513; indexes native Codebuff transcripts, whose timestamps are a locale time of day, with each instant taken from the message ID, and keeps indexing a store's other chats when one transcript does not parse, FAD#28) |
+| `frankensqlite` (`fsqlite`) / `fsqlite-types` and the whole SQLite family | git fork `=0.4.12` at rev `e890166488fbfa355acb531d97040329c06eef0d` — the owner's frankensqlite fork `https://github.com/vladmlch/frankensqlite` (branch cass-local-fixes-dml), resolved through the committed `[patch.crates-io]` table; `build.rs` refuses a mixed family, any family redirect that misses this exact git URL+rev, duplicate package resolution, wrong version, or a non-fork lockfile source. The rev is v0.4.12 (tag `26aa19afcbd5afdb01658a10bb33417ad0b513be`) plus two vdbe range-seek commits — `10eadc63` seeks the single-column index range when the WHERE carries residual conjuncts (`WHERE key >= ? AND key < ? AND value IS NOT NULL` no longer falls back to a full table scan; ~208x on the motivating UNIQUE-text-key shape) and `d9414f97` lets rowid range seeks take numbered-placeholder bounds (`WHERE id > ?1 AND ...`, proven bit-identical to stock SQLite by the fork's differential e2e oracle; ~160x on its fixture) — and the DML equality-prefix index seeks (`f39c8eb0`+`e8901664`, bd-j9gub, backported onto the 0.4.12 base from the 0.4.13 series: a DELETE or UPDATE whose equality conjuncts pin an index prefix now SEARCHes the leading-column index instead of scanning, with `EXPLAIN QUERY PLAN` rendering the seek and a stock-SQLite differential oracle proving affected rows, `changes()`, RETURNING, triggers and AUTOINCREMENT row-for-row; removes cass's O(N^2) per-conversation viewer DELETEs — receipts in .scratch/glm/2026-11-08-fsq-dml-backport/report.md); all keep the row set byte-identical to the full scan, and the fork keeps every family crate at 0.4.12 so FAD's `^0.4.1` ask converges on the same single resolution. Carries 0.4.12's bd-obwsy (the 0.4.10 advisory), bd-gwoit, bd-yxqs9 and largest-rowid explicit-write (9308c4bb6) fixes, plus 0.4.1's GH#462 reserved-page WAL repair, 0.4.2's derived WAL-index recovery for read-only opens (GH#477), 0.4.4's durable pending-freelist repairs, 0.4.6's page-referenced-twice (bd-b5vmw) and lost-index-entry (bd-11sz4) fixes, 0.4.7's large multi-row INSERT index fix (bd-2eebi), serialized-DDL race fix (bd-4iaoi), GH#503 shadow-autoindex repair open, bounded published-page plane (5s1la) and first-`sqlite_master` full-file read fix (k2k20), and 0.4.9's prompt stale-WAL-index refusal (48c6cf6b2) and stock-empty-WAL-index first-write fix (4b48c95d8, cass GH#509). CASS runtime qualification of 0.4.12 passed (gi7k7). 0.4.6 included upstream's likely fix (fd8c16a94) for a long-lived connection left refusing every BEGIN (2l1b0.75, frankensqlite GH#429), not yet verified on the owner-archive scenario; the legacy OMP analytics phase keeps its own fresh writer regardless |
+| `franken-agent-detection` | `=0.3.10` at git rev `ad5fb23b2bae70984042f1676f8137d7cbbef053` (GH#520 remote-mirror source identity, Cursor `state.vscdb` scan progress ticks so the stall watchdog sees the parse (local fork F7), Cursor key-range queries that seek the `cursorDiskKV` index instead of scanning the table per composer (F8), crashed external SQLite stores read through a private snapshot copy, with unreadable stores failing store-style scans instead of returning zero sessions — a provably empty store (0-byte file with no `-wal` content, or a schema with no tables) still scans to Ok (F9) — antigravity `truncated_fields`/`status`/`error`/`media` source fields kept in message extras, with error-only ERROR_MESSAGE and text-bearing CONVERSATION_HISTORY records emitted (F10), a Cursor composer conversation and its same-id agent transcript merged into one conversation in transcript order with composer timestamps donated, so storage no longer drops the second fragment (F11), Continue `continue` and Kiro CLI `kiro` connectors, early SQLite connector runtime shutdown and full OpenCode read-error chains, GH#519), features `pi-durable` and `pi-sqlite` (the `pi_durable` connector for Pi's durable-harness stores, FAD#28; `pi_agent_rust` SQLite sessions; Pi compaction/branch provenance, FAD#27) and `codex-zstd` (reads Codex rollouts compressed to `rollout-*.jsonl.zst` by Codex's `local_thread_store_compression`, with the id of their plain form, GH#513; indexes native Codebuff transcripts, whose timestamps are a locale time of day, with each instant taken from the message ID, and keeps indexing a store's other chats when one transcript does not parse, FAD#28) |
 | `asupersync` | crates.io `=0.5.0` (the line fsqlite 0.4.x requires) |
 | `frankensearch` | crates.io `=0.7.1` (tag `crates-v0.7.1`), resolving `frankensearch-index 0.4.2` (hotfix, tag `frankensearch-index-v0.4.2`: files are installed with `std::fs::rename`, so on Windows an open reader no longer blocks an install, bead if17v; and the dumped HNSW sidecars are flushed through write handles, so an HNSW build works on Windows, bead ujxiq), `frankensearch-quill 0.4.1` (hotfix, tag `frankensearch-quill-v0.4.1`: opening a writer verifies each segment once instead of four times; bead hfosx), `frankensearch-rerank 0.5.0`, `frankenhnsw 0.3.5` and the `frankentorch-*` family; features `hash`, `cass-compat`, `quill`, `ann`, `native`. Quill 0.4.0 is the first main-branch release after the 0.3.4 hotfix and carries all three of its fixes: the GH#499 live-doc numeric scoring, the standard CASS Boolean grammar (NOT > AND > OR, parentheses; frankensearch#56) and the union seek_danger fix (a disjunction under a conjunction lost matches on concat-merged segments). It also verifies snapshot segments concurrently on open (GH#501; up to 8 threads, the same bytes are still hashed), builds snippets only for returned hits, and skips a read-only reopen when nothing was published. The CASS schema hash is unchanged (`v9-quill`), so the upgrade does not rebuild the lexical index |
 | `frankentui` (`ftui`, `ftui-runtime`, `ftui-tty`, `ftui-extras`) | crates.io `=0.5.0` (2026-08-21; previously git `5f78cfa0` / 0.3.1 — the 0.5 API compiled with zero call-site changes) |
@@ -260,6 +274,29 @@ debug = "line-tables-only"  # frame-pointer attribution without rebuild
 strip = false
 # Pair with: RUSTFLAGS="-C force-frame-pointers=yes" cargo bench --profile release-perf
 ```
+
+### One Rust compilation at a time on this machine (owner rule, 2026-11-07)
+
+Never run more than one Rust compilation (`cargo build`/`check`/`clippy`/`test`/
+`bench`/`run`, `rustc`) at a time on this machine, across all worktrees, target
+dirs and agents. Parallel agents may read, analyse and run already-built
+binaries concurrently, but their cargo invocations queue behind one
+machine-wide lock. Wrap every cargo command in it:
+
+```bash
+lockf -k /tmp/cass-cargo.lock cargo test --test viewer_bridge_extensions
+```
+
+Because only one compilation runs, it uses every core: plain `cargo` already
+defaults to one job per logical CPU, and `scripts/lib/run_cargo.sh` now does
+too. Do not cap jobs below the CPU count unless the user asks. The remaining
+single-thread phase is LTO with `codegen-units = 1` (see the next section).
+
+`lockf` (macOS `/usr/bin/lockf`) blocks until the lock is free, so a waiting
+command counts against the caller's tool timeout: run long cargo commands in
+the background or with a generous timeout instead of retrying in a loop. An
+orchestrator schedules delegated work so that at most one agent is compiling,
+and tells every delegated agent to use the lock.
 
 ### Do not pay for LTO unless the result needs it (owner rule, 2026-11-07)
 
@@ -357,7 +394,8 @@ Shared cargo defaults come from `scripts/lib/run_cargo.sh` (sourced by the dev s
 `CARGO_BUILD_JOBS`, `RUST_TEST_THREADS`/`NEXTEST_TEST_THREADS`) > the user's Cargo config
 (`build.target-dir`, `build.jobs`) > the project default**. Project defaults: the target
 dir is the main checkout's `target/` (worktrees share its dependency cache), build jobs
-and test threads are 2.
+are the logical CPU count (one compilation at a time gets the whole machine), test
+threads are 2.
 
 If you see errors, **carefully understand and resolve each issue**. Read sufficient context to fix them the RIGHT way.
 

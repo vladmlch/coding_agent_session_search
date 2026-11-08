@@ -50,7 +50,10 @@ use super::projection::{StepLink, StructuralPublication, ToolCallLink};
 
 /// Region schema revision; bumps when the derivation shape changes so the
 /// `(region_version, source_revision)` idempotence key republishes rows.
-pub const REGION_VERSION: i64 = 1;
+/// v2: the antigravity F10 `extra.error` text (distinct from the record
+/// content) indexes as an `m{idx}:error` region — tools scope on tool-role
+/// steps, chat scope on every other role.
+pub const REGION_VERSION: i64 = 2;
 
 /// Synthetic `msg_idx` space for region documents: `REGION_DOC_BASE +
 /// region_ordinal`. Below `i64::MAX` so `decode_hit` accepts them; far above
@@ -173,6 +176,45 @@ fn call_text(call: &Value) -> String {
         parts.push(args.to_owned());
     }
     parts.join(" ")
+}
+
+/// Antigravity planner-invocation arguments as searchable text: named
+/// command/path keys first, the canonical JSON otherwise (bounded). Not a
+/// `call_text` extension on purpose — its `arguments` arm reads strings
+/// only, and widening the shared helper would change other providers'
+/// region text. The antigravity connector emits argument OBJECTS.
+fn invocation_arguments_text(value: Option<&Value>) -> String {
+    let Some(value) = value else {
+        return String::new();
+    };
+    match value {
+        Value::Object(map) => {
+            let mut parts = Vec::new();
+            for key in [
+                "command",
+                "CommandLine",
+                "file_path",
+                "TargetFile",
+                "path",
+                "query",
+                "pattern",
+                "cmd",
+            ] {
+                if let Some(text) = map.get(key).and_then(Value::as_str) {
+                    parts.push(text.to_owned());
+                }
+            }
+            if parts.is_empty() {
+                let text = value.to_string();
+                if text.len() <= 8_192 {
+                    parts.push(text);
+                }
+            }
+            parts.join(" ")
+        }
+        Value::String(text) => text.clone(),
+        _ => String::new(),
+    }
 }
 
 fn result_text(result: &Value) -> String {
@@ -368,6 +410,14 @@ pub fn derive_message_regions(
 ) -> Vec<RegionRow> {
     let _ = conversation_id;
     let source_revision = structure.source_revision;
+    // Antigravity-scoped derivations below: the pinned FAD connector lifts
+    // planner invocations into `extra.cass.invocations` (FAD F3) and
+    // USER_INPUT wrapper blocks into `extra.settings_change` /
+    // `additional_metadata`. No other provider shape puts call arguments
+    // there (claude/codex record calls in content blocks or `type` records
+    // the generic readers already index — reading them unconditionally
+    // would double-index those providers), so both arms are slug-gated.
+    let antigravity = packet.payload.identity.agent_slug == "antigravity";
     let mut regions: Vec<RegionRow> = Vec::new();
     let mut calls: Vec<PendingCall> = Vec::new();
     let mut results: Vec<PendingResult> = Vec::new();
@@ -429,6 +479,78 @@ pub fn derive_message_regions(
                 turn_index,
                 text_source: TEXT_SOURCE_DERIVED.to_owned(),
                 indexed_text: Some(bounded(&text)),
+                source_revision,
+                ..RegionRow::default()
+            });
+        }
+        // Antigravity USER_INPUT wrapper blocks the connector lifted out of
+        // the raw content into extra — at the source they were part of the
+        // user turn's text, so they go back into the chat scope here.
+        if antigravity && message.role == "user" {
+            for (suffix, field) in [
+                ("user_settings_change", "settings_change"),
+                ("user_additional_metadata", "additional_metadata"),
+            ] {
+                let Some(text) = extra
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                else {
+                    continue;
+                };
+                regions.push(RegionRow {
+                    region_ordinal: regions.len() as i64,
+                    region_key: format!("m{idx}:{suffix}"),
+                    scope: "chat".to_owned(),
+                    scope_known: true,
+                    quill_idx: REGION_DOC_BASE as i64 + regions.len() as i64,
+                    message_idx: Some(idx),
+                    message_id,
+                    step_index,
+                    turn_index,
+                    text_source: TEXT_SOURCE_DERIVED.to_owned(),
+                    indexed_text: Some(bounded(text)),
+                    source_revision,
+                    ..RegionRow::default()
+                });
+            }
+        }
+        // Antigravity F10 `error` passthrough (FAD rev 3851a3a): the
+        // source record's failure text rides in `extra.error` while the
+        // message content carries the step narration or a summary — the
+        // two differ, and until REGION_VERSION 2 the distinct failure text
+        // was packet-visible but unindexed (the retired facts mark
+        // `agy_error_field_not_indexed` kept that gap honest). Index it
+        // where the record's own text indexes: a tool-role MODEL step is
+        // an executed step, so its failure text is tool error text and
+        // takes the tools scope plus the same has_error/error_type flags a
+        // tool_result carrying `is_error` gets; any other role with the
+        // field (system ERROR_MESSAGE announcements) is conversation text
+        // the connector itself emits as chat content for error-only
+        // records, so it stays in the chat scope without error flags.
+        // Records whose content IS the error text (error-only
+        // ERROR_MESSAGE) are excluded by the equality filter — never
+        // double-indexed.
+        if antigravity
+            && let Some(error) = extra.get("error").and_then(Value::as_str)
+            && !error.is_empty()
+            && error != content.as_str()
+        {
+            let tool_step = message.role == "tool";
+            regions.push(RegionRow {
+                region_ordinal: regions.len() as i64,
+                region_key: format!("m{idx}:error"),
+                scope: if tool_step { "tools" } else { "chat" }.to_owned(),
+                scope_known: true,
+                quill_idx: REGION_DOC_BASE as i64 + regions.len() as i64,
+                message_idx: Some(idx),
+                message_id,
+                step_index,
+                turn_index,
+                has_error: tool_step.then_some(true),
+                error_type: tool_step.then_some("tool".to_owned()),
+                text_source: TEXT_SOURCE_DERIVED.to_owned(),
+                indexed_text: Some(bounded(error)),
                 source_revision,
                 ..RegionRow::default()
             });
@@ -527,6 +649,66 @@ pub fn derive_message_regions(
                 message_id,
                 file_path: None,
             });
+        }
+        // Antigravity planner invocations: `extra.cass.invocations[]` items
+        // ({kind:"tool", name, call_id?, arguments}) are the only record of
+        // what the planner asked tools to do — the raw `tool_calls` arrays
+        // are normalized away by the connector, and the connector records
+        // no call ids. Mirror the projection's `kind == "tool"` filter.
+        // Model-step (role `tool`) records are excluded: their `cass` extras
+        // carry name-only synthesized calls with no arguments, and the role
+        // fallback above already keeps their content text in the tools
+        // scope.
+        if antigravity
+            && message.role != "tool"
+            && let Some(items) = extra.pointer("/cass/invocations").and_then(Value::as_array)
+        {
+            for item in items {
+                if item.get("kind").and_then(Value::as_str).unwrap_or("tool") != "tool"
+                    || !item.is_object()
+                {
+                    continue;
+                }
+                let name = item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_owned();
+                let call_id = item
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("anon:{idx}:{}", calls.len()));
+                let arguments = item
+                    .get("arguments")
+                    .or_else(|| item.get("args"))
+                    .or_else(|| item.get("input"));
+                let text = invocation_arguments_text(arguments);
+                let file_path = arguments
+                    .and_then(Value::as_object)
+                    .and_then(|map| {
+                        extra_string(
+                            map,
+                            &[
+                                "file_path",
+                                "path",
+                                "TargetFile",
+                                "file",
+                                "filename",
+                                "AbsolutePath",
+                            ],
+                        )
+                    })
+                    .map(str::to_owned);
+                calls.push(PendingCall {
+                    name,
+                    call_id,
+                    text,
+                    message_idx: idx,
+                    message_id,
+                    file_path,
+                });
+            }
         }
     }
 

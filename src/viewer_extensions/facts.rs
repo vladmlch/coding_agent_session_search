@@ -30,7 +30,23 @@ pub use providers::classification::SessionQualityMetrics;
 
 /// Bump when any provider extraction semantics change so persisted rows
 /// re-derive on the next ingest pass instead of silently going stale.
-pub const FACTS_EXTRACTOR_VERSION: i64 = 1;
+///
+/// v2: antigravity record classification re-verified against the pinned
+/// connector's real output (known USER_INPUT/PLANNER_RESPONSE/MODEL-step
+/// shapes, narrowed envelope taint, connector-contract marks for dropped
+/// source text and status).
+/// v3: cursor no-record shapes (`extra == {}` with delivered content) no
+/// longer mark `text_inventory`/`block_inventory` partial — the connector
+/// delivers their whole text into `content` and lifts tool_use blocks into
+/// invocations; only thinking stays unverifiable for them.
+/// v4 (branch-only, never on main): antigravity F10 verdicts without the
+/// cursor v3 change.
+/// v5: v3 plus antigravity F10 — precise per-session verdicts from the
+/// passthrough signals (`agy_source_truncated` is text absent at the
+/// source), and `extra.error` text (distinct from the record content)
+/// indexed as an `m{idx}:error` region (search_regions.rs, REGION_VERSION
+/// 2), so the retired `agy_error_field_not_indexed` mark is gone.
+pub const FACTS_EXTRACTOR_VERSION: i64 = 5;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
@@ -174,6 +190,69 @@ pub struct CoverageEntry {
     pub field: String,
     pub state: String,
     pub reasons: Vec<String>,
+}
+
+/// The closed allowlist of coverage `reason` codes that prove missing text
+/// is ABSENT AT THE SOURCE — it never existed in any local record, so no
+/// read of any local artifact could ever recover it (owner decision,
+/// 2026-11-07). A gap whose reasons are ALL on this list is exact
+/// evidence: strict search over the text that does exist stays strict.
+/// Everything else — unknown shapes, parser/connector gaps, facts
+/// pending, unrecorded tool output, dropped markers — is a NOT-READ gap
+/// and keeps blocking strict search exactly as before.
+///
+/// Members:
+/// - `agent_message_encrypted`: a provider-encrypted codex `agent_message`
+///   handoff. The model hands the inter-agent payload over already
+///   encrypted, so the rollout never held the plaintext — the sibling
+///   `input_text` envelope header is the only readable part (pinned by
+///   `codex_agent_message_encrypted_payload_is_known_unreadable`).
+/// - `reasoning_encrypted` (owner follow-up, 2026-11-07): a codex
+///   reasoning item carrying `encrypted_content`. `fn reasoning()` in
+///   `providers/codex.rs` emits the code only for that payload — never
+///   for a parse failure or unknown shape (those use
+///   `reasoning_not_recorded` / `reasoning_part_unknown`). The provider
+///   hands the reasoning over already encrypted, so no plaintext ever
+///   existed locally.
+/// - `thinking_redacted` (owner follow-up, 2026-11-07): a claude
+///   `redacted_thinking` block. `fn part()` in `providers/claude.rs`
+///   emits the code only for that explicit block type — never for an
+///   unknown or malformed shape (those use `claude_content_unknown` /
+///   `claude_content_malformed`). Anthropic returns redacted thinking
+///   only encrypted, so no plaintext ever existed locally.
+/// - `agy_source_truncated` (owner follow-up, 2026-11-08): the antigravity
+///   `truncated_fields` passthrough marker (FAD F10). The source
+///   application cut the named fields BEFORE persisting the record, so
+///   the cut text never existed in any local record. `fn
+///   source_truncation()` in `providers/antigravity.rs` emits the code
+///   only for that explicit source marker — never for a parse failure or
+///   unknown shape (a malformed marker keeps
+///   `agy_truncated_fields_malformed`, a not-read gap).
+///
+/// NOT here on purpose:
+/// - `agy_status_dropped_by_connector` / `agy_status_unpaired`: tool
+///   verdict gaps, not text gaps — text-absence semantics do not apply.
+/// - Any unknown/new reason code: defaults to NOT-READ. Adding a member
+///   is an owner decision, never an inference from a state string.
+pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &[
+    "agent_message_encrypted",
+    "reasoning_encrypted",
+    "thinking_redacted",
+    "agy_source_truncated",
+];
+
+/// `true` when a coverage entry's gap is provably text absent at the
+/// source (owner decision, 2026-11-07): a `partial`/`unavailable` state
+/// whose every reason is on the [`SOURCE_TEXT_ABSENT_REASONS`]
+/// allowlist. Empty reason lists, `complete`/`pending` states and any
+/// reason off the allowlist (alone or mixed in) are NOT source-absent —
+/// they are not-read gaps and keep their strict-blocking semantics.
+pub fn is_source_absent_gap(state: &str, reasons: &[String]) -> bool {
+    matches!(state, "partial" | "unavailable")
+        && !reasons.is_empty()
+        && reasons
+            .iter()
+            .all(|reason| SOURCE_TEXT_ABSENT_REASONS.contains(&reason.as_str()))
 }
 
 /// One verified call→result link. Persisted columns carry only the counts
@@ -1111,5 +1190,127 @@ pub fn publish_facts_for_canonical_batch_best_effort<'a>(
             error = %error,
             "viewer session facts batch publication failed; session facts remain unknown"
         );
+    }
+}
+
+#[cfg(test)]
+mod source_absent_tests {
+    use super::*;
+
+    fn reasons(codes: &[&str]) -> Vec<String> {
+        codes.iter().map(|code| code.to_string()).collect()
+    }
+
+    #[test]
+    fn allowlisted_gap_is_source_absent_in_both_partial_and_unavailable_states() {
+        // The real codex shape: `chat` degrades to partial (the readable
+        // envelope header is evidence), `text_inventory` stays unavailable.
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["agent_message_encrypted"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["agent_message_encrypted"])
+        ));
+        // Owner follow-up (2026-11-07): provider-encrypted reasoning and
+        // redacted thinking never had local plaintext either. Both
+        // extractors mark `thinking` + `text_inventory` unavailable; a
+        // readable thinking sibling would degrade `thinking` to partial
+        // with the same reason.
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["reasoning_encrypted"])
+        ));
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["reasoning_encrypted"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["thinking_redacted"])
+        ));
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["thinking_redacted"])
+        ));
+    }
+
+    #[test]
+    fn complete_and_pending_states_are_never_source_absent() {
+        // `complete` is not a gap at all; `pending` is query-time honest
+        // work-in-progress (docs not converged, facts not published) that
+        // a later read CAN settle — both keep blocking.
+        assert!(!is_source_absent_gap(
+            "complete",
+            &reasons(&["agent_message_encrypted"])
+        ));
+        assert!(!is_source_absent_gap("pending", &[]));
+        assert!(!is_source_absent_gap(
+            "pending",
+            &reasons(&["agent_message_encrypted"])
+        ));
+    }
+
+    #[test]
+    fn empty_or_unlisted_reasons_default_to_not_read() {
+        // A state without reasons cannot prove WHERE the text went.
+        assert!(!is_source_absent_gap("unavailable", &[]));
+        // Known not-read gaps stay not-read.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["tool_output_not_recorded"])
+        ));
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["agy_status_dropped_by_connector"])
+        ));
+        // A brand-new reason code is not-read by default.
+        assert!(!is_source_absent_gap(
+            "unavailable",
+            &reasons(&["brand_new_gap_code"])
+        ));
+    }
+
+    #[test]
+    fn mixed_reason_sets_are_never_source_absent() {
+        // One unlisted member alone breaks the proof: the session might
+        // still be missing text a read could recover.
+        assert!(!is_source_absent_gap(
+            "unavailable",
+            &reasons(&["agent_message_encrypted", "brand_new_gap_code"])
+        ));
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["agent_message_encrypted", "tool_output_not_recorded"])
+        ));
+    }
+
+    #[test]
+    fn agy_source_truncated_marker_is_source_absent() {
+        // The antigravity `truncated_fields` passthrough marker (owner
+        // decision, 2026-11-08): the source application cut the named
+        // fields before persisting, so the cut text never existed in any
+        // local record. The marker is emitted only for that explicit
+        // source signal — never for parse failures or unknown shapes
+        // (those keep `agy_truncated_fields_malformed`, a not-read gap).
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["agy_source_truncated"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["agy_source_truncated"])
+        ));
+        // Mixed with any not-read reason the proof breaks.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["agy_source_truncated", "agy_tool_call_identity_missing"])
+        ));
+        // The malformed-marker variant stays not-read.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["agy_truncated_fields_malformed"])
+        ));
     }
 }
