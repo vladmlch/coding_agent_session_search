@@ -4893,6 +4893,255 @@ fn copilot_regions_index_archived_invocations() {
     );
 }
 
+/// The F14 connector shape: the assistant extra carries the raw response
+/// part array verbatim under `copilot_response_parts` (plus the seam's
+/// archived invocations, which the parts supersede). Every part kind the
+/// census found in real sessions is represented — synthetic text.
+fn copilot_parts_messages() -> Vec<NormalizedMessage> {
+    vec![
+        msg(
+            0,
+            "user",
+            "made-up copilot prompt",
+            json!({"request_id": "cr1"}),
+        ),
+        msg(
+            1,
+            "agent",
+            "made-up copilot answer",
+            json!({
+                "request_id": "cr1",
+                "model_id": "made-up-copilot-model",
+                "copilot_response_parts": [
+                    {"kind": "mcpServersStarting", "didStartServerIds": ["madeup-server"]},
+                    {"kind": "thinking", "id": "m1", "value": "made-up reasoning",
+                     "generatedTitle": "made-up title",
+                     "metadata": {"stopReason": "done", "vscodeReasoningDone": true}},
+                    {"kind": "thinking", "id": "m2", "value": ""},
+                    {"kind": "toolInvocationSerialized", "toolId": "madeup_fetch",
+                     "toolCallId": "call-77", "isComplete": true,
+                     "invocationMessage": "Running made-up fetch",
+                     "isConfirmed": {"type": 1}, "presentation": "inline",
+                     "source": {"label": "made-up ext", "type": "extension"}},
+                    {"kind": "toolInvocationSerialized", "toolId": "madeup_fetch_internal",
+                     "toolCallId": "call-77", "isConfirmed": {"type": 1, "reason": "made-up approval"},
+                     "pastTenseMessage": {"value": "Ran made-up fetch", "isTrusted": false,
+                                           "supportAlertSyntax": true, "supportHtml": false,
+                                           "supportThemeIcons": false},
+                     "resultDetails": ["made-up result text",
+                                       {"$mid": 1, "scheme": "https", "path": "/made-up"}],
+                     "source": {"label": "made-up ext", "type": "extension"}},
+                    {"value": "made-up copilot answer", "baseUri": {"$mid": 1, "scheme": "file", "path": "/made-up"},
+                     "supportHtml": false, "supportThemeIcons": false}
+                ],
+                "cass": {
+                    "token_usage": {"input": 10, "output": 5},
+                    "token_usage_scope": "turn",
+                    "tool_call_count": 2,
+                    "invocations": [
+                        {"kind": "tool", "name": "read_copilot_widget", "call_id": "cc9"}
+                    ]
+                }
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn copilot_facts_archived_parts_complete_inventory() {
+    let publication = extract_session_facts(
+        &packet(
+            "copilot",
+            json!({"source": "copilot"}),
+            copilot_parts_messages(),
+        ),
+        "copilot",
+    );
+
+    // The archived parts supersede the seam's invocations: exactly one
+    // call for the delegation pair (both parts share one toolCallId), and
+    // the stale `cc9` invocation is never recorded beside it.
+    assert_eq!(publication.extractor, "copilot-facts-v2");
+    assert_eq!(publication.tools.len(), 1, "tools: {:?}", publication.tools);
+    let call = &publication.tools[0];
+    assert_eq!(call.call_id, "call-77");
+    // The group's name is the first part's toolId in source order.
+    assert_eq!(call.name, "madeup_fetch");
+    assert!(call.has_result, "call: {call:?}");
+    assert_eq!(call.exit_code, None);
+    assert_eq!(call.is_error, None);
+    assert_eq!(publication.file_fact_count, Some(0));
+
+    // Thinking parts are archived now: the text-bearing one counts, the
+    // empty-value one is a known empty block.
+    assert_eq!(publication.thinking_block_count, Some(1));
+    let thinking = coverage(&publication, "thinking").expect("thinking");
+    assert_eq!(thinking.state, "complete", "thinking: {thinking:?}");
+
+    // Every part is classified: the inventories stay complete and the
+    // connector-drop marks are gone.
+    for field in [
+        "chat",
+        "block_inventory",
+        "text_inventory",
+        "tools",
+        "files",
+        "mcp",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| { r.starts_with("copilot_") || r == "conflicting_event" }),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // The result carries no exit code or verdict at the source.
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "tool_exit_not_recorded" || r == "tool_error_not_recorded"),
+            "{field}: {entry:?}"
+        );
+    }
+}
+
+#[test]
+fn copilot_facts_parts_unknown_shape_and_content_mismatch() {
+    // A part kind outside the verified contract and a markdown value the
+    // connector did not join into the content: both are honest gaps, never
+    // shape guesses.
+    let publication = extract_session_facts(
+        &packet(
+            "copilot",
+            json!({"source": "copilot"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up copilot prompt",
+                    json!({"request_id": "cr1"}),
+                ),
+                msg(
+                    1,
+                    "agent",
+                    "made-up answer",
+                    json!({
+                        "request_id": "cr1",
+                        "copilot_response_parts": [
+                            {"kind": "futurePart", "payload": "made-up future text"},
+                            {"value": "made-up unjoined value"},
+                            {"kind": "thinking", "value": "made-up reasoning", "surprise": true}
+                        ]
+                    }),
+                ),
+            ],
+        ),
+        "copilot",
+    );
+    for field in ["block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "copilot_part_unknown"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "copilot_part_text_not_in_content"),
+            "{field}: {entry:?}"
+        );
+    }
+}
+
+#[test]
+fn copilot_regions_index_parts_thinking_tools_and_mcp() {
+    let p = packet(
+        "copilot",
+        json!({"source": "copilot"}),
+        copilot_parts_messages(),
+    );
+    let publication = extract_session_facts(&p, "copilot");
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+
+    // Thinking part text (value + generatedTitle) indexes as the message's
+    // thinking region.
+    let thinking = regions
+        .iter()
+        .find(|r| r.region_key == "m1:thinking")
+        .unwrap_or_else(|| panic!("m1:thinking missing: {regions:?}"));
+    assert_eq!(thinking.scope, "thinking");
+    let text = thinking.indexed_text.as_deref().expect("indexed");
+    assert!(text.contains("made-up reasoning"), "text: {text:?}");
+    assert!(text.contains("made-up title"), "text: {text:?}");
+
+    // One tool region for the delegation group: args + rendered call
+    // messages + the confirmation reason, and the recorded result text.
+    let call = regions
+        .iter()
+        .find(|r| r.region_key == "tool:0:call-77")
+        .unwrap_or_else(|| panic!("call-77 tool region missing: {regions:?}"));
+    assert_eq!(call.scope, "tools");
+    assert_eq!(call.tool_name.as_deref(), Some("madeup_fetch"));
+    let text = call.indexed_text.as_deref().expect("indexed");
+    for expected in [
+        "Running made-up fetch",
+        "Ran made-up fetch",
+        "made-up approval",
+        "made-up result text",
+    ] {
+        assert!(text.contains(expected), "region text: {text:?}");
+    }
+
+    // The mcpServersStarting server ids index in the tools scope.
+    let mcp = regions
+        .iter()
+        .find(|r| r.region_key == "m1:mcp")
+        .unwrap_or_else(|| panic!("m1:mcp missing: {regions:?}"));
+    assert_eq!(mcp.scope, "tools");
+    assert!(
+        mcp.indexed_text
+            .as_deref()
+            .is_some_and(|t| t.contains("madeup-server"))
+    );
+
+    // The seam's archived invocations must NOT add a second call region
+    // when the parts array is present.
+    assert!(
+        !regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("read_copilot_widget")),
+        "invocations fallback ran beside the parts: {regions:?}"
+    );
+
+    // The provider gate: the same shapes under a foreign slug must not grow
+    // copilot part regions.
+    let foreign = packet(
+        "junie",
+        json!({"source": "copilot"}),
+        copilot_parts_messages(),
+    );
+    let foreign_facts = extract_session_facts(&foreign, "junie");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions.iter().any(|r| r.region_key == "m1:thinking"
+            || r.region_key == "m1:mcp"
+            || r.tool_name.as_deref() == Some("madeup_fetch")),
+        "foreign slug must not derive copilot part regions: {foreign_regions:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Publication: idempotent upsert keyed on (extractor_version, source_revision)
 // inside the canonical archive.

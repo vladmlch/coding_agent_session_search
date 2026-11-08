@@ -89,7 +89,21 @@ pub use providers::classification::SessionQualityMetrics;
 /// no marks — never a `tool_output_not_recorded` claim about a record that
 /// exists (providers/mod.rs, mirrored in the viewer-bridge
 /// `get_tool_output` oracle).
-pub const FACTS_EXTRACTOR_VERSION: i64 = 8;
+/// v9: v8 plus copilot F14 — assistant rows whose extra carries the
+/// verbatim `copilot_response_parts` array classify every part against
+/// the verified VS Code shapes: joined markdown values are verified
+/// against the delivered content (`copilot_part_text_not_in_content` on
+/// a miss), `thinking` values plus `generatedTitle` count as thinking
+/// blocks and index as `m{idx}:thinking` regions,
+/// `toolInvocationSerialized` parts GROUP on `toolCallId` (one call per
+/// invocation identity, named by the first part's `toolId`, its
+/// `resultDetails` the recorded result) so delegation pairs can never
+/// taint `conflicting_event`, and `mcpServersStarting` parts are the MCP
+/// evidence (search_regions.rs, REGION_VERSION 5; providers/copilot.rs,
+/// copilot-facts-v2). An unknown part shape keeps its not-read marks
+/// (`copilot_part_unknown`); pre-F14 rows keep the drop marks and the
+/// seam-invocation fallback.
+pub const FACTS_EXTRACTOR_VERSION: i64 = 9;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)

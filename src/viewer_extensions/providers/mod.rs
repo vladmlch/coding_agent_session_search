@@ -24,6 +24,10 @@ mod gemini;
 mod opencode;
 mod pi_agent;
 
+/// Copilot archived-response-part classification, shared with the
+/// search-regions copilot arm so the completeness claims and the indexed
+/// surface stay identical.
+pub(crate) use copilot::scan_copilot_parts;
 /// Gemini tool-result text + status verdict derivation, shared with the
 /// search-regions gemini arm so the facts and region lanes stay identical.
 pub(crate) use gemini::{gemini_call_result_text, gemini_status_verdict};
