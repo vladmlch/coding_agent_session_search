@@ -2456,6 +2456,366 @@ fn cursor_facts_unknown_shapes_stay_fully_marked() {
 }
 
 // ---------------------------------------------------------------------------
+// Gemini facts: the pinned FAD connector archives the raw gemini record
+// verbatim in `extra` (content parts, `thoughts`, `toolCalls` with inline
+// results) and inlines every text-bearing field into the message content —
+// tool args are the one text class that stays out of `content`, and they
+// index as tool regions (search_regions.rs, REGION_VERSION 3). Real key
+// structure from the pinned connector; synthetic text only.
+// ---------------------------------------------------------------------------
+
+fn gemini_messages() -> Vec<NormalizedMessage> {
+    vec![
+            // User record: raw content parts, all text delivered.
+            msg(
+                0,
+                "user",
+                "made-up prompt about widget calibration",
+                json!({
+                    "type": "user", "id": "u1",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "content": [
+                        {"type": "text", "text": "made-up prompt about widget calibration"}
+                    ]
+                }),
+            ),
+            // Assistant record: thoughts + toolCalls with inline results
+            // (the connector renders `[Thinking] …`/`[Tool: …]`/
+            // `[Tool result: …]` into the content it delivers).
+            msg(
+                1,
+                "agent",
+                "[Thinking] made-up thought subject made-up thought description\n\
+                 [Tool: glob_widget_files]\n\
+                 [Tool result: glob_widget_files] made-up glob output\n\
+                 [Tool: write_widget]\n\
+                 [Tool result: write_widget] [Error] made-up write failure",
+                json!({
+                    "type": "gemini", "id": "m1",
+                    "timestamp": "2026-01-01T00:00:01Z",
+                    "model": "made-up-gemini-model",
+                    "tokens": {"input": 120, "output": 60},
+                    "thoughts": [
+                        {"subject": "made-up thought subject",
+                         "description": "made-up thought description",
+                         "timestamp": "2026-01-01T00:00:01Z"}
+                    ],
+                    "toolCalls": [
+                        {"id": "tc1", "name": "glob_widget_files",
+                         "args": {"pattern": "**/*.widget"},
+                         "status": "success",
+                         "timestamp": "2026-01-01T00:00:01Z",
+                         "description": "made-up description template",
+                         "displayName": "made-up display name",
+                         "resultDisplay": "made-up rendered display",
+                         "renderOutputAsMarkdown": true,
+                         "result": [
+                             {"functionResponse": {"name": "glob_widget_files",
+                                                   "response": {"output": "made-up glob output"}}}
+                         ]},
+                        {"id": "tc2", "name": "write_widget",
+                         "args": {"file_path": "/tmp/synthetic/widget.md",
+                                  "content": "made-up file body"},
+                         "status": "error",
+                         "timestamp": "2026-01-01T00:00:02Z",
+                         "result": [
+                             {"functionResponse": {"response":
+                                 {"error": "made-up write failure"}}}
+                         ]}
+                    ],
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "glob_widget_files", "call_id": "tc1",
+                         "arguments": {"pattern": "**/*.widget"}},
+                        {"kind": "tool", "name": "write_widget", "call_id": "tc2",
+                         "arguments": {"file_path": "/tmp/synthetic/widget.md",
+                                        "content": "made-up file body"}}
+                    ]}
+                }),
+            ),
+    ]
+}
+
+fn gemini_packet() -> ConversationPacket {
+    packet("gemini", json!({"source": "gemini"}), gemini_messages())
+}
+
+#[test]
+fn gemini_facts_raw_records_tools_thinking_and_coverage() {
+    let publication = extract_session_facts(&gemini_packet(), "gemini");
+
+    // Recorded calls pair with their inline results by call id.
+    let glob = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "tc1")
+        .expect("tc1");
+    assert_eq!(glob.name, "glob_widget_files");
+    assert!(glob.has_result);
+    // status == "success" is the recorded success verdict; never an exit code.
+    assert_eq!(glob.is_error, Some(false));
+    assert_eq!(glob.exit_code, None);
+    assert_eq!(glob.file_path, None);
+
+    let write = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "tc2")
+        .expect("tc2");
+    assert_eq!(write.name, "write_widget");
+    assert!(write.has_result);
+    // response.error forces the error verdict.
+    assert_eq!(write.is_error, Some(true));
+    assert_eq!(
+        write.file_path.as_deref(),
+        Some("/tmp/synthetic/widget.md")
+    );
+
+    assert_eq!(publication.tools.len(), 2);
+    assert_eq!(publication.tool_error_count, Some(1));
+    assert_eq!(publication.tool_calls_with_exit_status, Some(0));
+    assert_eq!(publication.file_fact_count, Some(1));
+    assert_eq!(publication.thinking_block_count, Some(1));
+    assert_eq!(publication.model_set, vec!["made-up-gemini-model"]);
+    assert_eq!(publication.first_prompt.as_deref(),
+               Some("made-up prompt about widget calibration"));
+    assert_eq!(publication.turn_count, Some(1));
+    assert_eq!(publication.step_count, Some(1));
+    // The pinned gemini connector normalizes no compaction boundary records.
+    assert_eq!(publication.compaction_count, None);
+
+    // The raw record is archived verbatim, so the delivered text scopes
+    // certify complete: content parts, thoughts and tool results are all
+    // recorded, and the tool args index as regions (test below).
+    for field in ["chat", "tools", "thinking", "tool_error", "files",
+                  "block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field)
+            .unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+    // Gemini records explicit status/error verdicts but never exit codes.
+    let exit = coverage(&publication, "tool_exit").expect("tool_exit");
+    assert_eq!(exit.state, "unavailable");
+    assert!(
+        exit.reasons.iter().any(|r| r == "tool_exit_not_recorded"),
+        "tool_exit: {exit:?}"
+    );
+    // Boundary records are not normalized by this connector.
+    let compaction = coverage(&publication, "compaction").expect("compaction");
+    assert_eq!(compaction.state, "unavailable");
+    assert!(
+        compaction
+            .reasons
+            .iter()
+            .any(|r| r == "boundary_records_not_normalized"),
+        "compaction: {compaction:?}"
+    );
+}
+
+#[test]
+fn gemini_facts_unpaired_call_keeps_text_inventory_complete() {
+    // A raw toolCalls entry with no `result` key: the record is archived
+    // verbatim, so the absence proves no result ever existed at the source
+    // (an interrupted call) — no session text is missing.
+    let publication = extract_session_facts(
+        &packet(
+            "gemini",
+            json!({"source": "gemini"}),
+            vec![
+                msg(0, "user", "made-up prompt", json!({
+                    "type": "user", "id": "u1", "timestamp": "t0",
+                    "content": [{"type": "text", "text": "made-up prompt"}]
+                })),
+                msg(1, "agent", "[Tool: read_widget]", json!({
+                    "type": "gemini", "id": "m1", "timestamp": "t1",
+                    "toolCalls": [
+                        {"id": "tc9", "name": "read_widget",
+                         "args": {"file_path": "/tmp/synthetic/w.txt"},
+                         "status": "success", "timestamp": "t1"}
+                    ]
+                })),
+            ],
+        ),
+        "gemini",
+    );
+    let read = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "tc9")
+        .expect("tc9");
+    assert!(!read.has_result);
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "partial");
+    assert!(
+        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        "tools: {tools:?}"
+    );
+    let text = coverage(&publication, "text_inventory")
+        .expect("text_inventory");
+    assert_eq!(text.state, "complete", "text_inventory: {text:?}");
+}
+
+#[test]
+fn gemini_facts_compacted_extra_and_drift_shapes() {
+    // compact_message_extra (>=32 MiB session files) replaces the raw record
+    // with {model, tokens, attachments} before the ingest seam archives the
+    // connector's invocations under cass.invocations: evidence survives,
+    // the raw record does not — partial, not unknown.
+    let compacted = extract_session_facts(
+        &packet(
+            "gemini",
+            json!({"source": "gemini"}),
+            vec![
+                msg(0, "agent", "[Tool: read_widget]", json!({
+                    "model": "made-up-gemini-model",
+                    "tokens": {"input": 10, "output": 5},
+                    "attachments": [{"path": "/tmp/synthetic/attach.bin"}],
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "read_widget", "call_id": "tc7",
+                         "arguments": {"file_path": "/tmp/synthetic/w.txt"}}
+                    ]}
+                })),
+            ],
+        ),
+        "gemini",
+    );
+    let call = compacted
+        .tools
+        .iter()
+        .find(|t| t.call_id == "tc7")
+        .expect("tc7 from the archived invocation");
+    assert_eq!(call.name, "read_widget");
+    let tools = coverage(&compacted, "tools").expect("tools");
+    assert_eq!(tools.state, "partial");
+    assert!(
+        tools.reasons.iter().any(|r| r == "extra_compacted"),
+        "tools: {tools:?}"
+    );
+    assert!(
+        compacted.model_set == vec!["made-up-gemini-model"],
+        "models: {:?}",
+        compacted.model_set
+    );
+
+    // A record with keys outside the connector's verified contract is
+    // drift, never an unknown-shape guess.
+    let drift = extract_session_facts(
+        &packet(
+            "gemini",
+            json!({"source": "gemini"}),
+            vec![
+                msg(0, "user", "made-up prompt", json!({
+                    "type": "user", "id": "u1", "timestamp": "t0",
+                    "futureField": {"opaque": true},
+                    "content": [{"type": "text", "text": "made-up prompt"}]
+                })),
+            ],
+        ),
+        "gemini",
+    );
+    let entry = coverage(&drift, "text_inventory").expect("text_inventory");
+    assert_eq!(entry.state, "partial");
+    assert!(
+        entry.reasons.iter().any(|r| r == "gemini_record_unknown"),
+        "text_inventory: {entry:?}"
+    );
+
+    // A non-object extra is unknown entirely.
+    let missing = extract_session_facts(
+        &packet(
+            "gemini",
+            json!({"source": "gemini"}),
+            vec![msg(0, "user", "made-up text beside a null extra", Value::Null)],
+        ),
+        "gemini",
+    );
+    let entry = coverage(&missing, "chat").expect("chat");
+    assert_eq!(entry.state, "unavailable");
+    assert!(
+        entry.reasons.iter().any(|r| r == "gemini_extra_missing"),
+        "chat: {entry:?}"
+    );
+}
+
+#[test]
+fn gemini_regions_index_toolcall_args_and_thoughts() {
+    let p = gemini_packet();
+    let publication = extract_session_facts(&p, "gemini");
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+
+    // Tool args are the one text class the connector keeps out of content:
+    // each raw toolCall indexes as a tools region carrying its args and its
+    // inline result text, with the recorded error verdicts.
+    let glob = regions
+        .iter()
+        .find(|r| r.region_key == "tool:0:tc1")
+        .unwrap_or_else(|| panic!("tc1 tool region missing: {regions:?}"));
+    assert_eq!(glob.scope, "tools");
+    assert_eq!(glob.tool_name.as_deref(), Some("glob_widget_files"));
+    assert_eq!(glob.has_error, Some(false), "{glob:?}");
+    assert!(
+        glob.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("**/*.widget")),
+        "call args text: {glob:?}"
+    );
+    assert!(
+        glob.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up glob output")),
+        "result text: {glob:?}"
+    );
+
+    let write = regions
+        .iter()
+        .find(|r| r.region_key == "tool:1:tc2")
+        .unwrap_or_else(|| panic!("tc2 tool region missing: {regions:?}"));
+    assert_eq!(write.tool_name.as_deref(), Some("write_widget"));
+    assert_eq!(write.has_error, Some(true), "{write:?}");
+    assert_eq!(
+        write.file_path.as_deref(),
+        Some("/tmp/synthetic/widget.md")
+    );
+    assert!(
+        write.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up write failure")),
+        "error text: {write:?}"
+    );
+
+    // Thoughts index as a thinking region (the generic reader cannot see
+    // them: they are neither content blocks nor an extra string).
+    let thinking = regions
+        .iter()
+        .find(|r| r.region_key == "m1:thinking")
+        .unwrap_or_else(|| panic!("m1:thinking region missing: {regions:?}"));
+    assert_eq!(thinking.scope, "thinking");
+    assert!(
+        thinking.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up thought subject")
+                && text.contains("made-up thought description")),
+        "{thinking:?}"
+    );
+
+    // The provider gate: the same shapes under a foreign slug must not
+    // grow gemini tool regions (the raw-toolCalls contract is gemini's).
+    // `junie` stays a stub extractor, so this exercises the region gate
+    // alone.
+    let foreign = packet("junie", json!({"source": "gemini"}), gemini_messages());
+    let foreign_facts = extract_session_facts(&foreign, "junie");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("glob_widget_files")),
+        "foreign slug must not derive gemini tool regions: {foreign_regions:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Publication: idempotent upsert keyed on (extractor_version, source_revision)
 // inside the canonical archive.
 // ---------------------------------------------------------------------------

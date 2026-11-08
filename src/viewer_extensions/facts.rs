@@ -46,7 +46,12 @@ pub use providers::classification::SessionQualityMetrics;
 /// source), and `extra.error` text (distinct from the record content)
 /// indexed as an `m{idx}:error` region (search_regions.rs, REGION_VERSION
 /// 2), so the retired `agy_error_field_not_indexed` mark is gone.
-pub const FACTS_EXTRACTOR_VERSION: i64 = 5;
+/// v6: gemini extractor (raw-record extras: thoughts, toolCalls with
+/// inline results and recorded status verdicts; compacted extras
+/// partial) plus gemini regions — `thoughts` as `m{idx}:thinking` and
+/// tool args/results as tool regions (search_regions.rs, REGION_VERSION
+/// 3).
+pub const FACTS_EXTRACTOR_VERSION: i64 = 6;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
