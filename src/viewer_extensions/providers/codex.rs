@@ -473,8 +473,9 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
         }
         if !wrapped {
             // An unwrappable codex record is the extra-compaction envelope:
-            // past the thresholds (cass ≥16 MiB, FAD ≥32 MiB) per-message
-            // extras are reduced to the `{"cass":{…}}` skeleton or its empty
+            // archives indexed while the compaction layers were live (cass
+            // ≥16 MiB / FAD ≥32 MiB, removed 2026-11-08) carry per-message
+            // extras reduced to the `{"cass":{…}}` skeleton or its empty
             // `{}` product — the connector only ever emits
             // `response_item`/`event_msg` records, and both require a payload
             // object to become messages, so a record without that shape IS

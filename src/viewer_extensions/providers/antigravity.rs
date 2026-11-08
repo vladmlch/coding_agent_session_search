@@ -68,7 +68,8 @@
 //!
 //! Note: `is_compacted_extra` is deliberately NOT used here — the
 //! `{"cass":{"invocations":[..]}}` envelope is real Antigravity evidence, and
-//! ingest extra-compaction is codex-only (`should_compact_connector_extra`).
+//! the ingest extra-compaction that produced skeleton extras was codex-only
+//! (`should_compact_connector_extra`, removed 2026-11-08).
 
 use std::collections::BTreeSet;
 
