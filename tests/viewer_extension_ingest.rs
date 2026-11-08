@@ -3232,6 +3232,164 @@ fn antigravity_facts_raw_user_wrapper_unwrapped_content_is_fully_accounted() {
 }
 
 #[test]
+fn antigravity_facts_raw_user_wrapper_overlapping_blocks_mirror_connector_extraction() {
+    // The connector extracts wrapper blocks PER TAG (FAD
+    // `extract_tagged_blocks` scans each tag independently across the
+    // whole content), so a block whose OPEN tag sits inside another
+    // block's inner text is still that tag's FIRST block. The archived
+    // real-record shape: a USER_REQUEST whose inner text mentions
+    // `<ADDITIONAL_METADATA>` literally, a second open right after the
+    // request close, one shared close tag, then the settings block. The
+    // connector lifts the straddling first metadata block verbatim, and
+    // every byte reaches an indexed surface (request body + the two
+    // lifted wrapper regions) — the record is fully accounted. A
+    // sequential earliest-open scan sees the SECOND open instead, derives
+    // a different first-block text and taints the record with a false
+    // `agy_user_wrapper_unindexed` even though the connector dropped
+    // nothing.
+    let raw_content = "<USER_REQUEST>\nplease review the <ADDITIONAL_METADATA> mention\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nmade-up metadata note\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nmade-up settings note\n</USER_SETTINGS_CHANGE>";
+    // The connector's per-tag first ADDITIONAL_METADATA block opens at
+    // the tag inside the request body and runs to the shared close: its
+    // lifted text carries the request tail, the request close tag and
+    // the second open tag as literal content.
+    let metadata_lift = "mention\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nmade-up metadata note";
+    let settings_lift = "made-up settings note";
+    let overlapping = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "user",
+            "please review the <ADDITIONAL_METADATA> mention",
+            json!({
+                "step_index": 0, "source": "USER_EXPLICIT",
+                "type": "USER_INPUT", "status": "DONE",
+                "created_at": "2026-06-11T20:14:42Z",
+                "content": raw_content
+            }),
+            json!({
+                "status": "DONE",
+                "additional_metadata": metadata_lift,
+                "settings_change": settings_lift
+            }),
+        )],
+    );
+    let publication = extract_session_facts(&overlapping, "antigravity");
+    // The receipt names the per-tag mirror so pre-v6 rows re-extract.
+    assert_eq!(publication.extractor, "antigravity-facts-v6");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "complete", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .all(|r| r != "agy_user_wrapper_unindexed"),
+        "the straddling metadata lift is accounted text, not a drop: {block:?}"
+    );
+
+    // The same shape with a metadata copy that diverges from the
+    // connector's per-tag extraction (the text a sequential scan would
+    // derive): the straddling block's full text reached no surface, so
+    // the record stays partial — the lift verification is not weakened.
+    let mislifted = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "user",
+            "please review the <ADDITIONAL_METADATA> mention",
+            json!({
+                "step_index": 0, "source": "USER_EXPLICIT",
+                "type": "USER_INPUT", "status": "DONE",
+                "created_at": "2026-06-11T20:14:42Z",
+                "content": raw_content
+            }),
+            json!({
+                "status": "DONE",
+                "additional_metadata": "made-up metadata note",
+                "settings_change": settings_lift
+            }),
+        )],
+    );
+    let publication = extract_session_facts(&mislifted, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_user_wrapper_unindexed"),
+        "a metadata copy diverging from the per-tag extraction is a real drop: {block:?}"
+    );
+
+    // The same shape without the metadata lift at all: the connector
+    // lifted the straddling block, so its absence leaves the block's
+    // text unindexed — still partial.
+    let unlifted = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "user",
+            "please review the <ADDITIONAL_METADATA> mention",
+            json!({
+                "step_index": 0, "source": "USER_EXPLICIT",
+                "type": "USER_INPUT", "status": "DONE",
+                "created_at": "2026-06-11T20:14:42Z",
+                "content": raw_content
+            }),
+            json!({
+                "status": "DONE",
+                "settings_change": settings_lift
+            }),
+        )],
+    );
+    let publication = extract_session_facts(&unlifted, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_user_wrapper_unindexed"),
+        "an absent metadata lift leaves the straddling block unindexed: {block:?}"
+    );
+
+    // The same overlapping shape plus loose residual text outside every
+    // wrapper block: the residual reaches no surface — still partial.
+    let residual = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "user",
+            "please review the <ADDITIONAL_METADATA> mention",
+            json!({
+                "step_index": 0, "source": "USER_EXPLICIT",
+                "type": "USER_INPUT", "status": "DONE",
+                "created_at": "2026-06-11T20:14:42Z",
+                "content": format!("{raw_content}\nmade-up loose trailing note"),
+            }),
+            json!({
+                "status": "DONE",
+                "additional_metadata": metadata_lift,
+                "settings_change": settings_lift
+            }),
+        )],
+    );
+    let publication = extract_session_facts(&residual, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_user_wrapper_unindexed"),
+        "loose residual text outside the wrapper blocks is a real drop: {block:?}"
+    );
+}
+
+#[test]
 fn antigravity_facts_raw_tool_calls_on_tool_role_keep_block_inventory_partial() {
     // Raw `tool_calls` on a role-`tool` record: the connector parses the
     // calls, but the tool-args region lane excludes role-`tool` records,

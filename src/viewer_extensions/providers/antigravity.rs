@@ -98,12 +98,18 @@
 //! source-side truncation marker; `media` refs carry no text; `tool_calls`
 //! must have lifted into `extra.cass.invocations` with arguments intact,
 //! and never on a role `tool` record (the region lane excludes role-tool
-//! args). Wrapper markup (`<USER_REQUEST>`/`<USER_SETTINGS_CHANGE>`/
-//! `<ADDITIONAL_METADATA>`) is structural vocabulary, same as the
-//! connector's own body extraction — but text OUTSIDE the accounted
-//! wrapper blocks (loose residual text, a second settings/metadata block,
-//! an unterminated wrapper after a closed one) is dropped by the
-//! connector's extraction and stays unaccounted.
+//! args). Wrapper extraction is PER TAG — the connector's own
+//! `extract_tagged_blocks` scans each tag independently, so a block whose
+//! open tag sits inside another block's inner text is still its tag's
+//! first block, and the accounting mirrors that scan exactly. Wrapper
+//! markup (`<USER_REQUEST>`/`<USER_SETTINGS_CHANGE>`/
+//! `<ADDITIONAL_METADATA>`, open or close, matched or not) is structural
+//! vocabulary, same as the connector's own body extraction — but text
+//! OUTSIDE the connector's keep set (the joined request blocks plus the
+//! first settings/metadata block of each kind) that is not markup —
+//! loose residual text, a second settings/metadata block's inner text, an
+//! unterminated wrapper's remainder — is dropped by the connector's
+//! extraction and stays unaccounted.
 //!
 //! Note: `is_compacted_extra` is deliberately NOT used here — the
 //! `{"cass":{"invocations":[..]}}` envelope is real Antigravity evidence, and
@@ -123,12 +129,21 @@ use super::{
 };
 
 // v5 (2026-11-08): FAD F15 archives the full raw source record under
-// `extra.agy_raw`; the extractor now VERIFIES the block inventory from it
+// `extra.agy_raw`; the extractor VERIFIES the block inventory from it
 // (agy_raw_unverified / agy_raw_field_unaccounted /
 // agy_user_wrapper_unindexed) instead of tainting every `agy_type`
 // envelope record with `agy_canonical_envelope`. Pre-F15 packets keep the
 // old verdict.
-const EXTRACTOR_REVISION: &str = "antigravity-facts-v5";
+// v6 (2026-11-08): the USER_INPUT wrapper accounting scans blocks PER
+// TAG, mirroring the connector's `extract_tagged_blocks` exactly — a
+// block whose open tag sits inside another block's inner text is still
+// its tag's first block. The global earliest-open scan this replaces
+// derived a different first-block text for the real archive's
+// overlapping-wrapper record and marked it `agy_user_wrapper_unindexed`
+// although the connector lifted every byte (an over-strict false
+// partial, never an under-strict miss: text the connector actually
+// drops keeps the partial).
+const EXTRACTOR_REVISION: &str = "antigravity-facts-v6";
 const SUPPORTED_KINDS: &[&str] = &[
     "USER_INPUT",
     "PLANNER_RESPONSE",
@@ -533,24 +548,20 @@ const RAW_USER_WRAPPER_TAGS: &[&str] = &[
     "ADDITIONAL_METADATA",
 ];
 
-/// Scan the closed wrapper spans, earliest open tag first (the connector's
-/// per-tag block scan, for the real grammar — no nested wrappers occur in
-/// the transcripts). An unterminated wrapper stops the scan: its remainder
-/// falls to the residual check.
-fn raw_wrapper_spans(content: &str) -> Vec<RawWrapperSpan> {
+/// Scan the closed wrapper spans of ONE tag, earliest open first — a
+/// direct mirror of the connector's `extract_tagged_blocks`, which scans
+/// each tag independently across the whole content. Overlapping shapes
+/// occur in the real transcripts (a block's open tag inside another
+/// block's inner text), so a global earliest-open scan would derive the
+/// wrong first block for the inner tag. An unterminated wrapper of this
+/// tag stops ITS scan: the remainder falls to the residual check.
+fn raw_wrapper_spans_tag(content: &str, tag: &'static str) -> Vec<RawWrapperSpan> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
     let mut spans = Vec::new();
     let mut from = 0;
-    while let Some((at, tag)) = RAW_USER_WRAPPER_TAGS
-        .iter()
-        .filter_map(|tag| {
-            content[from..]
-                .find(&format!("<{tag}>"))
-                .map(|offset| (from + offset, *tag))
-        })
-        .min_by_key(|(at, _)| *at)
-    {
-        let open = format!("<{tag}>");
-        let close = format!("</{tag}>");
+    while let Some(offset) = content[from..].find(&open) {
+        let at = from + offset;
         let after = &content[at + open.len()..];
         let Some(rel) = after.find(&close) else {
             break;
@@ -567,13 +578,26 @@ fn raw_wrapper_spans(content: &str) -> Vec<RawWrapperSpan> {
     spans
 }
 
+/// All closed wrapper spans, earliest start first across tags. Same-tag
+/// spans are disjoint and ordered, so the sort keeps each tag's
+/// first-block position queryable — `wrapper_lift_accounted` and
+/// `wrapper_residual_blank` both key on "the FIRST block of a kind".
+fn raw_wrapper_spans(content: &str) -> Vec<RawWrapperSpan> {
+    let mut spans = Vec::new();
+    for tag in RAW_USER_WRAPPER_TAGS {
+        spans.extend(raw_wrapper_spans_tag(content, tag));
+    }
+    spans.sort_by_key(|span| span.start);
+    spans
+}
+
 /// USER_INPUT `content` accounting — a mirror of the connector's
 /// `extract_user_request`: with no closed `<USER_REQUEST>` block the whole
 /// record text is the body (everything indexes in chat); otherwise the
 /// body is the joined request blocks, the FIRST settings/metadata block
-/// lifts to extras, and anything else — loose residual text, further
-/// settings/metadata blocks, an unterminated wrapper's remainder — never
-/// reaches the packet.
+/// of each kind lifts to extras, and any other non-markup text — loose
+/// residual text, further settings/metadata blocks, an unterminated
+/// wrapper's remainder — never reaches the packet.
 fn user_content_accounted(value: &Value, event: &Event, extra: &Value) -> bool {
     let Some(text) = value.as_str() else {
         return value.is_null();
@@ -597,15 +621,11 @@ fn user_content_accounted(value: &Value, event: &Event, extra: &Value) -> bool {
         // Whole-record fallback body: everything indexes in chat.
         return true;
     }
-    // Residual: any text outside the closed wrapper spans is dropped text.
-    let mut residual = String::new();
-    let mut at = 0;
-    for span in &spans {
-        residual.push_str(&text[at..span.start]);
-        at = span.end;
-    }
-    residual.push_str(&text[at..]);
-    if !residual.trim().is_empty() {
+    // Residual: text outside the connector's keep set that is not
+    // wrapper markup is dropped text. Byte classification, not a
+    // sequential cut — per-tag spans overlap on the real shapes, so
+    // "between spans" is not well-defined.
+    if !wrapper_residual_blank(text, &spans) {
         return false;
     }
     wrapper_lift_accounted("USER_SETTINGS_CHANGE", &spans, extra.get("settings_change"))
@@ -614,6 +634,47 @@ fn user_content_accounted(value: &Value, event: &Event, extra: &Value) -> bool {
             &spans,
             extra.get("additional_metadata"),
         )
+}
+
+/// The connector's USER_INPUT keep set is the joined request blocks plus
+/// the FIRST settings/metadata block of each kind; everything else in
+/// the record is wrapper markup (structural vocabulary, never indexed
+/// text) or text the connector's extraction drops. Byte classification:
+/// kept spans account their whole extent, every wrapper tag occurrence —
+/// open or close, matched or not, even one sitting inside another block's
+/// inner text — is markup, and what is left marked is exactly the text
+/// the connector never lifted. Blank means no text dropped.
+fn wrapper_residual_blank(text: &str, spans: &[RawWrapperSpan]) -> bool {
+    let mut dropped = vec![true; text.len()];
+    for span in spans {
+        let first_of_tag = spans
+            .iter()
+            .find(|other| other.tag == span.tag)
+            .is_some_and(|first| first.start == span.start);
+        // Every request block and the first block of each lift tag are
+        // kept — their markup is structural, their inner text lifted.
+        if span.tag == "USER_REQUEST" || first_of_tag {
+            dropped[span.start..span.end].fill(false);
+        }
+    }
+    for tag in RAW_USER_WRAPPER_TAGS {
+        for needle in [format!("<{tag}>"), format!("</{tag}>")] {
+            let mut from = 0;
+            while let Some(offset) = text[from..].find(needle.as_str()) {
+                let at = from + offset;
+                let to = at + needle.len();
+                dropped[at..to].fill(false);
+                from = to;
+            }
+        }
+    }
+    let residual: Vec<u8> = dropped
+        .iter()
+        .zip(text.as_bytes())
+        .filter(|(dropped, _)| **dropped)
+        .map(|(_, byte)| *byte)
+        .collect();
+    String::from_utf8_lossy(&residual).trim().is_empty()
 }
 
 /// The connector lifts only the FIRST wrapper block of each kind; the
