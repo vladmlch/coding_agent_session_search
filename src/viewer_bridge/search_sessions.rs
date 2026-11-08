@@ -2347,6 +2347,7 @@ fn eval_literal(
     // as a proven negative and silently false-negative every session.
     // `quill_possible = None` evaluates every persisted region through the
     // matcher — still bounded by the region inventory, never a corpus read.
+    let mut gated_unreproduced = false;
     for region in &session.regions {
         // Indexed membership gate: only regions whose Quill document slot
         // produced a hit for this literal can be members. Everything else
@@ -2388,17 +2389,34 @@ fn eval_literal(
             }
             // A Quill-verified hit whose bounded fragment no longer
             // reproduces the match (analyzer drift, canonical rewrite
-            // after publication) is POSSIBLE membership — honest
-            // uncertainty, never silently dropped or admitted. Only a
-            // gated candidate earns `possible`: under the ungated
+            // after publication, a hit landing past the hydration bound)
+            // is POSSIBLE membership — honest uncertainty, never
+            // silently dropped or admitted, and always REASONED: an
+            // Unknown without a reason would make the strict refusal
+            // below report `facts_pending` over an EMPTY reason list (a
+            // vacuous all()), claiming reindexable facts where the
+            // evidence says the archived text could not verify the hit.
+            // Only a gated candidate earns `possible`: under the ungated
             // non-ASCII evaluation a non-matching region is a plain
-            // non-member, not uncertainty.
+            // non-member, not uncertainty. The reason itself is
+            // session-scoped — one String per session, built once after
+            // the loop: the reason set is identical either way (the set
+            // deduplicates), so per-region formatting would only add
+            // allocations to this hot loop.
             _ => {
                 if quill_possible.is_some() {
                     out.possible.insert(region.key.clone());
+                    gated_unreproduced = true;
                 }
             }
         }
+    }
+    if gated_unreproduced {
+        out.reasons.insert(missing_reason(
+            session,
+            "text_inventory",
+            "quill_hit_not_reproduced",
+        ));
     }
     // Unseen: an inventory gap that could still hide a matching region.
     // Source-absent gaps (text provably non-existent in any local record,
@@ -3002,14 +3020,30 @@ pub fn search_sessions(
                 for reason in &result.reasons {
                     *unknown_reasons.entry(reason.clone()).or_default() += 1;
                 }
+                // A session must never be Unknown with zero reasons: the
+                // refusal below reads `all()` over the reason list, and
+                // an empty list is vacuously true — it would report
+                // `facts_pending` with an empty evidence list, claiming
+                // reindexable facts the evidence never says. Internal-
+                // inconsistency backstop: every Unknown arm carries its
+                // reason, and this one names the violation.
+                if result.reasons.is_empty() {
+                    *unknown_reasons
+                        .entry("internal:inconsistency:unknown_without_reason".to_owned())
+                        .or_default() += 1;
+                }
             }
             Truth::False => {}
         }
     }
     if unknown_sessions > 0 && !allow_partial {
-        let pending = unknown_reasons
-            .keys()
-            .all(|reason| reason.contains(":pending:"));
+        // `facts_pending` (a reindex converges the evidence) needs a
+        // non-empty reason list whose every entry is pending. An empty
+        // list is data_unavailable — never a vacuous facts_pending.
+        let pending = !unknown_reasons.is_empty()
+            && unknown_reasons
+                .keys()
+                .all(|reason| reason.contains(":pending:"));
         return Err(refuse(
             if pending {
                 "facts_pending"

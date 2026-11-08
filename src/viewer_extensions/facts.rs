@@ -122,7 +122,17 @@ pub use providers::classification::SessionQualityMetrics;
 /// object form `{message, type}` whose `message` is the delivered failure
 /// text (an error object with no readable message drifts
 /// `opencode_error_text_unverifiable` unless provably textless).
-pub const FACTS_EXTRACTOR_VERSION: i64 = 11;
+/// v12: v11 plus the antigravity wrapper-scan mirror — the antigravity
+/// extractor's USER_INPUT raw-record accounting scans wrapper blocks PER
+/// TAG, exactly as the connector's `extract_tagged_blocks` does, so a
+/// settings/metadata block whose open tag sits inside another block's
+/// inner text is still its tag's first block and its lifted text
+/// verifies; the false `agy_user_wrapper_unindexed` partial on the real
+/// archive's overlapping-wrapper record retires, while text the
+/// connector actually drops keeps the partial
+/// (providers/antigravity.rs, antigravity-facts-v6). Pre-v12 rows keep
+/// the v5 verdicts unchanged.
+pub const FACTS_EXTRACTOR_VERSION: i64 = 12;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
