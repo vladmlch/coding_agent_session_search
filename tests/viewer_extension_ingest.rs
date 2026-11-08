@@ -549,8 +549,9 @@ fn codex_agent_message_encrypted_payload_is_known_unreadable() {
 }
 
 // ---------------------------------------------------------------------------
-// Codex extra-compaction envelopes. Past the compaction threshold (cass
-// ≥16 MiB, FAD ≥32 MiB) per-message extras are reduced to the `{"cass":{…}}`
+// Codex extra-compaction envelopes. The compaction layers that produced
+// them (cass ≥16 MiB, FAD ≥32 MiB) were removed 2026-11-08, but archives
+// indexed before that carry per-message extras reduced to the `{"cass":{…}}`
 // skeleton or its empty `{}` product; the message text itself stays in
 // `content`. The connector only ever emits `response_item`/`event_msg`
 // records, so an unwrappable codex record IS the envelope: the honest
@@ -978,11 +979,13 @@ fn claude_sidecar_cull_verdict_requires_the_explicit_marker() {
 
 #[test]
 fn claude_empty_extra_object_is_the_compaction_product() {
-    // FAD's `compact_message_extra` returns `{}` for records with no
-    // model/message_id/request_id/token_usage/tool_call_count — the plain
+    // FAD's former `compact_message_extra` returned `{}` for records with
+    // no model/message_id/request_id/token_usage/tool_call_count — the plain
     // user/text turns of a >=32 MiB session; their text stays in `content`.
-    // The empty object IS the compaction product: the same partial
-    // `extra_compacted` verdict codex gives it, never an unknown shape.
+    // The layer is gone (2026-11-08) but archives indexed before it carry
+    // the product, and the empty object IS that compaction product: the same
+    // partial `extra_compacted` verdict codex gives it, never an unknown
+    // shape.
     let publication = extract_session_facts(
         &packet(
             "claude_code",

@@ -58,10 +58,12 @@ use super::providers::{events, is_compacted_extra, json_text, text_id};
 /// `viewer_session_projection` marker) instead of silently going stale.
 ///
 /// v2: the `{"cass":{…}}` single-key skeleton no longer degrades cursor
-/// records to flattened text — ingest extra-compaction is codex-only
-/// (`should_compact_connector_extra`), so for every other provider that
-/// shape is the ingest merge envelope carrying lifted `invocations`, and
-/// the block inventory now derives one tool_call part per recorded call.
+/// records to flattened text — the ingest extra-compaction that wrote it
+/// was codex-only (`should_compact_connector_extra`, removed 2026-11-08;
+/// codex rows indexed before that still carry the skeleton), so for every
+/// other provider that shape is the ingest merge envelope carrying lifted
+/// `invocations`, and the block inventory now derives one tool_call part
+/// per recorded call.
 pub const PROJECTION_VERSION: i64 = 2;
 
 // ---------------------------------------------------------------------------
@@ -730,9 +732,10 @@ fn record_parts(
         let message = &msgs[pos];
         let extra = &message.extra_json;
         // `{"cass":{…}}` single-key skeleton — the recorded structure was
-        // compacted by normalization; only the flattened text remains. The
-        // compaction writer is codex-only (`should_compact_connector_extra`),
-        // so the same shape is NOT a compaction marker for any other
+        // compacted by the former ingest layer (codex-only
+        // `should_compact_connector_extra`, removed 2026-11-08; rows
+        // indexed before that still carry it); only the flattened text
+        // remains. The shape is NOT a compaction marker for any other
         // provider: there it is the ingest merge envelope archiving lifted
         // `invocations` (see `merge_invocations_into_extra`), whose
         // harvesting arm below derives the tool_call parts.
