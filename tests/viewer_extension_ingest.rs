@@ -2816,6 +2816,504 @@ fn gemini_regions_index_toolcall_args_and_thoughts() {
 }
 
 // ---------------------------------------------------------------------------
+// Pi Agent facts: the pinned FAD connector archives every emitted tree
+// entry verbatim in `extra` and inserts a `cass` provenance object
+// ({entry_kind, source_role, entry_id, parent_id, source_line,
+// on_active_branch, in_active_context, model?, provider?, invocations?}).
+// Message content blocks are flattened into the delivered content
+// (`[Thinking] …`/`[Tool: name] key=value…`; tool args stay out of the
+// block facts and index as regions). Real key structure from the pinned
+// connector; synthetic text only.
+// ---------------------------------------------------------------------------
+
+fn pi_messages() -> Vec<NormalizedMessage> {
+    vec![
+        // User entry: bare-string message content (simple user messages).
+        msg(
+            0,
+            "user",
+            "made-up pi prompt about widget calibration",
+            json!({
+                "type": "message", "id": "e1", "parentId": null,
+                "timestamp": "2026-01-02T00:00:00Z",
+                "message": {
+                    "role": "user", "timestamp": "2026-01-02T00:00:00Z",
+                    "content": "made-up pi prompt about widget calibration"
+                },
+                "cass": {
+                    "entry_kind": "message", "source_role": "user",
+                    "entry_id": "e1", "parent_id": null, "source_line": 1,
+                    "on_active_branch": true, "in_active_context": true
+                }
+            }),
+        ),
+        // Assistant entry: text + thinking + toolCall blocks (the connector
+        // flattens all three into the delivered content and lifts the
+        // toolCall into cass.invocations).
+        msg(
+            1,
+            "agent",
+            "made-up pi answer\n[Thinking] made-up pi reasoning\n\
+             [Tool: read_pi_widget] file_path=/tmp/synthetic/pi.txt",
+            json!({
+                "type": "message", "id": "e2", "parentId": "e1",
+                "timestamp": "2026-01-02T00:00:01Z",
+                "message": {
+                    "role": "assistant", "model": "made-up-pi-model",
+                    "provider": "made-up-pi-provider",
+                    "timestamp": "2026-01-02T00:00:01Z",
+                    "api": "made-up-api", "responseId": "made-up-resp-1",
+                    "stopReason": "made-up-stop", "rawStopReason": "made-up-raw-stop",
+                    "usage": {"input": 30, "output": 12},
+                    "content": [
+                        {"type": "text", "text": "made-up pi answer"},
+                        {"type": "thinking", "thinking": "made-up pi reasoning",
+                         "thinkingSignature": "made-up-signature"},
+                        {"type": "toolCall", "id": "pc1", "name": "read_pi_widget",
+                         "arguments": {"file_path": "/tmp/synthetic/pi.txt"}}
+                    ]
+                },
+                "cass": {
+                    "entry_kind": "message", "source_role": "assistant",
+                    "entry_id": "e2", "parent_id": "e1", "source_line": 2,
+                    "on_active_branch": true, "in_active_context": true,
+                    "model": "made-up-pi-model", "provider": "made-up-pi-provider",
+                    "invocations": [
+                        {"kind": "tool", "name": "read_pi_widget", "call_id": "pc1",
+                         "arguments": {"file_path": "/tmp/synthetic/pi.txt"}}
+                    ]
+                }
+            }),
+        ),
+        // Tool result entry: raw role `toolResult` maps to packet role
+        // `tool`; the message carries the correlation id and error flag.
+        msg(
+            2,
+            "tool",
+            "made-up pi tool output",
+            json!({
+                "type": "message", "id": "e3", "parentId": "e2",
+                "timestamp": "2026-01-02T00:00:02Z",
+                "message": {
+                    "role": "toolResult", "timestamp": "2026-01-02T00:00:02Z",
+                    "content": "made-up pi tool output",
+                    "isError": false,
+                    "toolCallId": "pc1", "toolName": "read_pi_widget"
+                },
+                "cass": {
+                    "entry_kind": "message", "source_role": "toolResult",
+                    "entry_id": "e3", "parent_id": "e2", "source_line": 3,
+                    "on_active_branch": true, "in_active_context": true
+                }
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn pi_agent_facts_raw_entries_tools_thinking_and_coverage() {
+    let publication = extract_session_facts(
+        &packet("pi_agent", json!({"source": "pi_agent"}), pi_messages()),
+        "pi_agent",
+    );
+
+    // The toolCall block pairs with its toolResult entry by toolCallId.
+    let read = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "pc1")
+        .expect("pc1");
+    assert_eq!(read.name, "read_pi_widget");
+    assert!(read.has_result);
+    // `isError` is the recorded verdict; pi records no exit codes.
+    assert_eq!(read.is_error, Some(false));
+    assert_eq!(read.exit_code, None);
+    assert_eq!(
+        read.file_path.as_deref(),
+        Some("/tmp/synthetic/pi.txt")
+    );
+
+    assert_eq!(publication.tools.len(), 1);
+    assert_eq!(publication.tool_error_count, Some(0));
+    assert_eq!(publication.tool_calls_with_exit_status, Some(0));
+    assert_eq!(publication.file_fact_count, Some(1));
+    assert_eq!(publication.thinking_block_count, Some(1));
+    assert_eq!(publication.model_set, vec!["made-up-pi-model"]);
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("made-up pi prompt about widget calibration")
+    );
+    assert_eq!(publication.turn_count, Some(1));
+    assert_eq!(publication.step_count, Some(2));
+    // This session has no compaction entries, and a zero count cannot
+    // certify absence (the connector drops empty-summary compactions).
+    assert_eq!(publication.compaction_count, None);
+
+    // Every emitted entry is archived verbatim with enumerable blocks, so
+    // the delivered-text scopes certify complete.
+    for field in ["chat", "tools", "thinking", "tool_error", "files",
+                  "block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field)
+            .unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+    // Pi records error verdicts (isError) but never exit codes.
+    let exit = coverage(&publication, "tool_exit").expect("tool_exit");
+    assert_eq!(exit.state, "unavailable");
+    assert!(
+        exit.reasons.iter().any(|r| r == "tool_exit_not_recorded"),
+        "tool_exit: {exit:?}"
+    );
+    let compaction = coverage(&publication, "compaction").expect("compaction");
+    assert_eq!(compaction.state, "unavailable");
+    assert!(
+        compaction
+            .reasons
+            .iter()
+            .any(|r| r == "pi_compaction_count_unverifiable"),
+        "compaction: {compaction:?}"
+    );
+}
+
+#[test]
+fn pi_agent_facts_error_result_and_unpaired_call() {
+    // `isError: true` records the error verdict on the paired call.
+    let publication = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![
+                msg(0, "user", "made-up pi prompt", json!({
+                    "type": "message", "id": "e1", "parentId": null,
+                    "timestamp": "t0",
+                    "message": {"role": "user", "timestamp": "t0",
+                                "content": "made-up pi prompt"},
+                    "cass": {"entry_kind": "message", "source_role": "user",
+                             "entry_id": "e1", "parent_id": null, "source_line": 1,
+                             "on_active_branch": true, "in_active_context": true}
+                })),
+                msg(1, "agent", "[Tool: write_pi_widget] file_path=/tmp/synthetic/pi.txt", json!({
+                    "type": "message", "id": "e2", "parentId": "e1",
+                    "timestamp": "t1",
+                    "message": {
+                        "role": "assistant", "model": "made-up-pi-model",
+                        "timestamp": "t1",
+                        "content": [
+                            {"type": "toolCall", "id": "pc2",
+                             "name": "write_pi_widget",
+                             "arguments": {"file_path": "/tmp/synthetic/pi.txt"}}
+                        ]
+                    },
+                    "cass": {"entry_kind": "message", "source_role": "assistant",
+                             "entry_id": "e2", "parent_id": "e1", "source_line": 2,
+                             "on_active_branch": true, "in_active_context": true,
+                             "model": "made-up-pi-model"}
+                })),
+                msg(2, "tool", "made-up pi failure output", json!({
+                    "type": "message", "id": "e3", "parentId": "e2",
+                    "timestamp": "t2",
+                    "message": {"role": "toolResult", "timestamp": "t2",
+                                "content": "made-up pi failure output",
+                                "isError": true,
+                                "toolCallId": "pc2",
+                                "toolName": "write_pi_widget"},
+                    "cass": {"entry_kind": "message", "source_role": "toolResult",
+                             "entry_id": "e3", "parent_id": "e2", "source_line": 3,
+                             "on_active_branch": true, "in_active_context": true}
+                })),
+            ],
+        ),
+        "pi_agent",
+    );
+    let write = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "pc2")
+        .expect("pc2");
+    assert_eq!(write.is_error, Some(true));
+    assert_eq!(publication.tool_error_count, Some(1));
+
+    // An unpaired call keeps the text inventory complete: the connector
+    // drops empty-content entries, so the missing result entry carried no
+    // text (either it never existed or it was dropped for being empty).
+    let unpaired = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![
+                msg(0, "user", "made-up pi prompt", json!({
+                    "type": "message", "id": "e1", "parentId": null,
+                    "timestamp": "t0",
+                    "message": {"role": "user", "timestamp": "t0",
+                                "content": "made-up pi prompt"},
+                    "cass": {"entry_kind": "message", "source_role": "user",
+                             "entry_id": "e1", "parent_id": null, "source_line": 1,
+                             "on_active_branch": true, "in_active_context": true}
+                })),
+                msg(1, "agent", "[Tool: read_pi_widget] file_path=/tmp/synthetic/pi.txt", json!({
+                    "type": "message", "id": "e2", "parentId": "e1",
+                    "timestamp": "t1",
+                    "message": {
+                        "role": "assistant", "timestamp": "t1",
+                        "content": [
+                            {"type": "toolCall", "id": "pc3",
+                             "name": "read_pi_widget",
+                             "arguments": {"file_path": "/tmp/synthetic/pi.txt"}}
+                        ]
+                    },
+                    "cass": {"entry_kind": "message", "source_role": "assistant",
+                             "entry_id": "e2", "parent_id": "e1", "source_line": 2,
+                             "on_active_branch": true, "in_active_context": true}
+                })),
+            ],
+        ),
+        "pi_agent",
+    );
+    let read = unpaired
+        .tools
+        .iter()
+        .find(|t| t.call_id == "pc3")
+        .expect("pc3");
+    assert!(!read.has_result);
+    let tools = coverage(&unpaired, "tools").expect("tools");
+    assert_eq!(tools.state, "partial");
+    assert!(
+        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        "tools: {tools:?}"
+    );
+    let text = coverage(&unpaired, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "complete", "text_inventory: {text:?}");
+}
+
+#[test]
+fn pi_agent_facts_compaction_branch_and_drift() {
+    // Compaction entries are normalized (system role, "[compaction] …"
+    // content, systemMessage stripped) and count; branch summaries are
+    // boundary records that do not.
+    let publication = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![
+                msg(0, "user", "made-up pi prompt", json!({
+                    "type": "message", "id": "e1", "parentId": null,
+                    "timestamp": "t0",
+                    "message": {"role": "user", "timestamp": "t0",
+                                "content": "made-up pi prompt"},
+                    "cass": {"entry_kind": "message", "source_role": "user",
+                             "entry_id": "e1", "parent_id": null, "source_line": 1,
+                             "on_active_branch": true, "in_active_context": true}
+                })),
+                msg(1, "system", "[compaction] made-up compaction summary", json!({
+                    "type": "compaction", "id": "e2", "parentId": "e1",
+                    "timestamp": "t1",
+                    "summary": "made-up compaction summary",
+                    "firstKeptEntryId": "e3", "tokensBefore": 50000,
+                    "fromHook": false,
+                    "cass": {"entry_kind": "compaction",
+                             "source_role": "compaction",
+                             "entry_id": "e2", "parent_id": "e1", "source_line": 2,
+                             "on_active_branch": true, "in_active_context": true,
+                             "first_kept_entry_id": "e3",
+                             "tokens_before": 50000, "from_hook": false,
+                             "system_checkpoint": true}
+                })),
+                msg(2, "system", "[branch summary] made-up branch summary", json!({
+                    "type": "branch_summary", "id": "e3", "parentId": "e1",
+                    "timestamp": "t2",
+                    "summary": "made-up branch summary",
+                    "fromId": "e0", "fromHook": true,
+                    "cass": {"entry_kind": "branch_summary",
+                             "source_role": "branch_summary",
+                             "entry_id": "e3", "parent_id": "e1", "source_line": 3,
+                             "on_active_branch": false, "in_active_context": false,
+                             "from_id": "e0", "from_hook": true}
+                })),
+            ],
+        ),
+        "pi_agent",
+    );
+    assert_eq!(publication.compaction_count, Some(1));
+    // Like claude, an observed compaction reports through the count; the
+    // coverage entry exists only when the field is degraded (the
+    // zero-count case asserts the `pi_compaction_count_unverifiable`
+    // unavailable entry in the first test).
+    assert!(
+        coverage(&publication, "compaction").is_none(),
+        "compaction: {:?}",
+        coverage(&publication, "compaction")
+    );
+    // Both boundary summaries are delivered as system-role content.
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "complete", "text_inventory: {text:?}");
+
+    // pi's role union is open (extensions may add roles via declaration
+    // merging): an unmapped role keeps its raw role and is drift, never a
+    // shape guess.
+    let drift = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![msg(0, "extensionWidget", "made-up extension text", json!({
+                "type": "message", "id": "e1", "parentId": null,
+                "timestamp": "t0",
+                "message": {"role": "extensionWidget", "timestamp": "t0",
+                            "content": [
+                                {"type": "text", "text": "made-up extension text"}
+                            ]},
+                "cass": {"entry_kind": "message", "source_role": "extensionWidget",
+                         "entry_id": "e1", "parent_id": null, "source_line": 1,
+                         "on_active_branch": true, "in_active_context": true}
+            }))],
+        ),
+        "pi_agent",
+    );
+    let entry = coverage(&drift, "text_inventory").expect("text_inventory");
+    assert_eq!(entry.state, "partial");
+    assert!(
+        entry.reasons.iter().any(|r| r == "pi_record_unknown"),
+        "text_inventory: {entry:?}"
+    );
+
+    // An unknown content block type is block-inventory drift; image blocks
+    // are known no-text blocks (the connector skips them when flattening).
+    let blocks = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![msg(0, "agent", "made-up pi answer", json!({
+                "type": "message", "id": "e1", "parentId": null,
+                "timestamp": "t0",
+                "message": {"role": "assistant", "timestamp": "t0",
+                            "content": [
+                                {"type": "futureBlock", "opaque": true},
+                                {"type": "text", "text": "made-up pi answer"}
+                            ]},
+                "cass": {"entry_kind": "message", "source_role": "assistant",
+                         "entry_id": "e1", "parent_id": null, "source_line": 1,
+                         "on_active_branch": true, "in_active_context": true}
+            }))],
+        ),
+        "pi_agent",
+    );
+    let inventory = coverage(&blocks, "block_inventory").expect("block_inventory");
+    assert_eq!(inventory.state, "partial");
+    assert!(
+        inventory.reasons.iter().any(|r| r == "pi_block_unknown"),
+        "block_inventory: {inventory:?}"
+    );
+
+    let image = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![msg(0, "agent", "made-up pi answer", json!({
+                "type": "message", "id": "e1", "parentId": null,
+                "timestamp": "t0",
+                "message": {"role": "assistant", "timestamp": "t0",
+                            "content": [
+                                {"type": "image", "source": "made-up-image"},
+                                {"type": "text", "text": "made-up pi answer"}
+                            ]},
+                "cass": {"entry_kind": "message", "source_role": "assistant",
+                         "entry_id": "e1", "parent_id": null, "source_line": 1,
+                         "on_active_branch": true, "in_active_context": true}
+            }))],
+        ),
+        "pi_agent",
+    );
+    let inventory = coverage(&image, "block_inventory").expect("block_inventory");
+    assert_eq!(inventory.state, "complete", "block_inventory: {inventory:?}");
+
+    // A non-object extra is unknown entirely.
+    let missing = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![msg(0, "user", "made-up text beside a null extra", Value::Null)],
+        ),
+        "pi_agent",
+    );
+    let entry = coverage(&missing, "chat").expect("chat");
+    assert_eq!(entry.state, "unavailable");
+    assert!(
+        entry.reasons.iter().any(|r| r == "pi_extra_missing"),
+        "chat: {entry:?}"
+    );
+}
+
+#[test]
+fn pi_agent_regions_index_toolcall_blocks_and_results() {
+    let p = packet("pi_agent", json!({"source": "pi_agent"}), pi_messages());
+    let publication = extract_session_facts(&p, "pi_agent");
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+
+    // The toolCall block indexes as a tool region carrying its arguments
+    // and the paired toolResult content, with the recorded error verdict.
+    let call = regions
+        .iter()
+        .find(|r| r.region_key == "tool:0:pc1")
+        .unwrap_or_else(|| panic!("pc1 tool region missing: {regions:?}"));
+    assert_eq!(call.scope, "tools");
+    assert_eq!(call.tool_name.as_deref(), Some("read_pi_widget"));
+    assert_eq!(
+        call.file_path.as_deref(),
+        Some("/tmp/synthetic/pi.txt")
+    );
+    assert_eq!(call.has_error, Some(false), "{call:?}");
+    assert!(
+        call.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("/tmp/synthetic/pi.txt")
+                && text.contains("made-up pi tool output")),
+        "region text: {call:?}"
+    );
+
+    // The generic thinking reader sees pi thinking blocks
+    // (/message/content, type "thinking" with a "thinking" string).
+    let thinking = regions
+        .iter()
+        .find(|r| r.region_key == "m1:thinking")
+        .unwrap_or_else(|| panic!("m1:thinking region missing: {regions:?}"));
+    assert_eq!(thinking.scope, "thinking");
+    assert!(
+        thinking.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up pi reasoning")),
+        "{thinking:?}"
+    );
+
+    // The paired toolResult record must not ALSO grow the role-fallback
+    // name:"unknown" call region (its result is correlated with pc1).
+    assert!(
+        !regions.iter().any(|r| r.tool_name.as_deref() == Some("unknown")),
+        "role fallback must stay suppressed: {regions:?}"
+    );
+
+    // The provider gate: the same shapes under a foreign slug must not
+    // grow pi tool regions — and the generic role fallback keeps the
+    // tool-role content searchable there.
+    let foreign = packet("junie", json!({"source": "pi_agent"}), pi_messages());
+    let foreign_facts = extract_session_facts(&foreign, "junie");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("read_pi_widget")),
+        "foreign slug must not derive pi tool regions: {foreign_regions:?}"
+    );
+    assert!(
+        foreign_regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("unknown")),
+        "generic role fallback must keep the tool-role text: {foreign_regions:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Publication: idempotent upsert keyed on (extractor_version, source_revision)
 // inside the canonical archive.
 // ---------------------------------------------------------------------------

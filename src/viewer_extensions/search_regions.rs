@@ -58,7 +58,10 @@ use super::providers::{gemini_call_result_text, gemini_status_verdict};
 /// `m{idx}:thinking` regions and raw `toolCalls[]` (call args + inline
 /// result text, recorded status verdicts) index as tool regions, with
 /// `cass.invocations` as the post-compaction fallback; the pinned
-/// connector keeps tool arguments out of the delivered content.
+/// connector keeps tool arguments out of the delivered content — and
+/// pi_agent derivations: `toolCall` content blocks index as tool regions
+/// paired with their `toolResult` records by toolCallId (the generic
+/// role fallback stays suppressed for those messages).
 pub const REGION_VERSION: i64 = 3;
 
 /// Synthetic `msg_idx` space for region documents: `REGION_DOC_BASE +
@@ -431,6 +434,12 @@ pub fn derive_message_regions(
     // the same reason as the antigravity arms: no other provider puts raw
     // tool calls in extra under these keys.
     let gemini = packet.payload.identity.agent_slug == "gemini";
+    // Pi Agent-scoped derivation below: the connector archives every tree
+    // entry verbatim, so `toolCall`/`toolResult` message blocks ride in
+    // extra (the generic readers only see `tool_call`/`tool_result` block
+    // types; pi's are camelCase). Slug-gated like the antigravity/gemini
+    // arms — no other provider puts tool facts under these keys.
+    let pi_agent = packet.payload.identity.agent_slug == "pi_agent";
     let mut regions: Vec<RegionRow> = Vec::new();
     let mut calls: Vec<PendingCall> = Vec::new();
     let mut results: Vec<PendingResult> = Vec::new();
@@ -775,7 +784,88 @@ pub fn derive_message_regions(
                 message_id,
             });
         }
-        if message.role == "tool" && call_records.is_empty() && result_records.is_empty() {
+        // Pi Agent raw-entry derivations: assistant `toolCall` content
+        // blocks are the only record of the call arguments (the connector
+        // flattens "[Tool: name] k=v…" into content, but the block facts
+        // live in extra), and `toolResult` messages are the result records
+        // (raw role toolResult, packet role tool) carrying the correlation
+        // id and the recorded `isError` verdict. Recording the result as a
+        // PendingResult pairs it with its call in the join below, so the
+        // role fallback must not ALSO wrap the same content in a
+        // name:"unknown" pseudo-call — hence the flag.
+        let mut pi_result_recorded = false;
+        if pi_agent {
+            if let Some(blocks) = extra.pointer("/message/content").and_then(Value::as_array) {
+                for block in blocks {
+                    if block.get("type").and_then(Value::as_str) != Some("toolCall")
+                        || !block.is_object()
+                    {
+                        continue;
+                    }
+                    let call_id = block
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("anon:{idx}:{}", calls.len()));
+                    let name = block
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| "unknown".to_owned());
+                    let arguments = block.get("arguments");
+                    let file_path = arguments
+                        .and_then(Value::as_object)
+                        .and_then(|map| {
+                            extra_string(
+                                map,
+                                &[
+                                    "file_path",
+                                    "path",
+                                    "TargetFile",
+                                    "file",
+                                    "filename",
+                                    "AbsolutePath",
+                                ],
+                            )
+                        })
+                        .map(str::to_owned);
+                    calls.push(PendingCall {
+                        name,
+                        call_id,
+                        text: invocation_arguments_text(arguments),
+                        message_idx: idx,
+                        message_id,
+                        file_path,
+                    });
+                }
+            }
+            if extra.pointer("/message/role").and_then(Value::as_str) == Some("toolResult")
+                && !content.is_empty()
+            {
+                pi_result_recorded = true;
+                results.push(PendingResult {
+                    call_id: extra
+                        .pointer("/message/toolCallId")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_owned),
+                    text: content.clone(),
+                    exit_code: None,
+                    is_error: extra
+                        .pointer("/message/isError")
+                        .and_then(Value::as_bool),
+                    message_idx: idx,
+                    message_id,
+                });
+            }
+        }
+        if message.role == "tool"
+            && call_records.is_empty()
+            && result_records.is_empty()
+            && !pi_result_recorded
+        {
             calls.push(PendingCall {
                 name: "unknown".to_owned(),
                 call_id: format!("role:{idx}"),

@@ -20,6 +20,7 @@ mod codex;
 mod cursor;
 mod devin;
 mod gemini;
+mod pi_agent;
 
 /// Gemini tool-result text + status verdict derivation, shared with the
 /// search-regions gemini arm so the facts and region lanes stay identical.
@@ -660,6 +661,7 @@ pub(crate) fn extract(packet: &ConversationPacket, provider: &str) -> ProviderEx
         "devin" => devin::extract(packet),
         "cursor" => cursor::extract(packet),
         "gemini" => gemini::extract(packet),
+        "pi_agent" => pi_agent::extract(packet),
         other => ProviderExtraction::unavailable(other),
     }
 }

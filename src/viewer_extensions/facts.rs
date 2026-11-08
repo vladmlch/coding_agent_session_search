@@ -50,7 +50,9 @@ pub use providers::classification::SessionQualityMetrics;
 /// inline results and recorded status verdicts; compacted extras
 /// partial) plus gemini regions — `thoughts` as `m{idx}:thinking` and
 /// tool args/results as tool regions (search_regions.rs, REGION_VERSION
-/// 3).
+/// 3) — and the pi_agent extractor (raw tree entries: toolCall blocks
+/// paired with toolResult records by toolCallId, thinking blocks,
+/// compaction/branch boundaries).
 pub const FACTS_EXTRACTOR_VERSION: i64 = 6;
 
 // ---------------------------------------------------------------------------
