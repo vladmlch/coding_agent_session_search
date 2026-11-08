@@ -1825,7 +1825,7 @@ dependencies = [
 [[package]]
 name = "franken-agent-detection"
 version = "0.3.10"
-source = "git+file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection?rev=bca17f7c62b7d3791569e1b9c3399a83286426bc#bca17f7c62b7d3791569e1b9c3399a83286426bc"
+source = "git+file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection?rev=2b8ddec9f726073680243d88bd19264ba5ffc5d3#2b8ddec9f726073680243d88bd19264ba5ffc5d3"
 dependencies = [
  "aes-gcm",
  "anyhow",
