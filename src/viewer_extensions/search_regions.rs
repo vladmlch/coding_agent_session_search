@@ -50,7 +50,10 @@ use super::projection::{StepLink, StructuralPublication, ToolCallLink};
 
 /// Region schema revision; bumps when the derivation shape changes so the
 /// `(region_version, source_revision)` idempotence key republishes rows.
-pub const REGION_VERSION: i64 = 1;
+/// v2: the antigravity F10 `extra.error` text (distinct from the record
+/// content) indexes as an `m{idx}:error` region — tools scope on tool-role
+/// steps, chat scope on every other role.
+pub const REGION_VERSION: i64 = 2;
 
 /// Synthetic `msg_idx` space for region documents: `REGION_DOC_BASE +
 /// region_ordinal`. Below `i64::MAX` so `decode_hit` accepts them; far above
@@ -511,6 +514,46 @@ pub fn derive_message_regions(
                     ..RegionRow::default()
                 });
             }
+        }
+        // Antigravity F10 `error` passthrough (FAD rev 3851a3a): the
+        // source record's failure text rides in `extra.error` while the
+        // message content carries the step narration or a summary — the
+        // two differ, and until REGION_VERSION 2 the distinct failure text
+        // was packet-visible but unindexed (the retired facts mark
+        // `agy_error_field_not_indexed` kept that gap honest). Index it
+        // where the record's own text indexes: a tool-role MODEL step is
+        // an executed step, so its failure text is tool error text and
+        // takes the tools scope plus the same has_error/error_type flags a
+        // tool_result carrying `is_error` gets; any other role with the
+        // field (system ERROR_MESSAGE announcements) is conversation text
+        // the connector itself emits as chat content for error-only
+        // records, so it stays in the chat scope without error flags.
+        // Records whose content IS the error text (error-only
+        // ERROR_MESSAGE) are excluded by the equality filter — never
+        // double-indexed.
+        if antigravity
+            && let Some(error) = extra.get("error").and_then(Value::as_str)
+            && !error.is_empty()
+            && error != content.as_str()
+        {
+            let tool_step = message.role == "tool";
+            regions.push(RegionRow {
+                region_ordinal: regions.len() as i64,
+                region_key: format!("m{idx}:error"),
+                scope: if tool_step { "tools" } else { "chat" }.to_owned(),
+                scope_known: true,
+                quill_idx: REGION_DOC_BASE as i64 + regions.len() as i64,
+                message_idx: Some(idx),
+                message_id,
+                step_index,
+                turn_index,
+                has_error: tool_step.then_some(true),
+                error_type: tool_step.then_some("tool".to_owned()),
+                text_source: TEXT_SOURCE_DERIVED.to_owned(),
+                indexed_text: Some(bounded(error)),
+                source_revision,
+                ..RegionRow::default()
+            });
         }
         for (ordinal, path) in attachment_paths(extra).into_iter().enumerate() {
             regions.push(RegionRow {

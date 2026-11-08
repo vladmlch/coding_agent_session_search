@@ -2577,12 +2577,11 @@ fn search_sessions_agy_error_field_text_answers_strict_search() -> Result<()> {
     // Replace the seeded fixture-complete row with the real manifest.
     let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
     let agy = sessions.pop().expect("the antigravity session");
-    let generation =
-        coding_agent_search::viewer_extensions::projection::generation_for_canonical(
-            &writer,
-            &gold_conversation(&agy),
-            agy.id,
-        )?;
+    let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+        &writer,
+        &gold_conversation(&agy),
+        agy.id,
+    )?;
     drop(writer);
     let facts = generation.facts;
     let mut fields = serde_json::Map::new();
@@ -2633,10 +2632,10 @@ fn search_sessions_agy_error_field_text_answers_strict_search() -> Result<()> {
     // Coverage has no not-read gap from the error field: the real
     // manifest carries no reason for it anywhere.
     ensure!(
-        !facts
-            .coverage
+        !facts.coverage.iter().any(|entry| entry
+            .reasons
             .iter()
-            .any(|entry| entry.reasons.iter().any(|r| r == "agy_error_field_not_indexed")),
+            .any(|r| r == "agy_error_field_not_indexed")),
         "the retired mark must be gone from the real manifest: {:?}",
         facts.coverage
     );

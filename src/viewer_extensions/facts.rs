@@ -35,7 +35,12 @@ pub use providers::classification::SessionQualityMetrics;
 /// connector's real output (known USER_INPUT/PLANNER_RESPONSE/MODEL-step
 /// shapes, narrowed envelope taint, connector-contract marks for dropped
 /// source text and status).
-pub const FACTS_EXTRACTOR_VERSION: i64 = 3;
+///
+/// v4: antigravity F10 `extra.error` text (distinct from the record
+/// content) indexes as an `m{idx}:error` region (search_regions.rs,
+/// REGION_VERSION 2), so the retired `agy_error_field_not_indexed`
+/// text-inventory mark is gone.
+pub const FACTS_EXTRACTOR_VERSION: i64 = 4;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)

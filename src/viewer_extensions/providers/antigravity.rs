@@ -46,9 +46,12 @@
 //!   - `media` refs are attachment evidence that carries no text: they
 //!     mark nothing;
 //!   - an `error` string whose content differs from the record's message
-//!     text is packet-visible but unindexed (no region derivation reads
-//!     extra fields): `agy_error_field_not_indexed` keeps an honest
-//!     not-read gap on the text inventory.
+//!     text indexes as its own searchable region (search_regions.rs,
+//!     REGION_VERSION 2): tool-role MODEL steps carry it in the tools
+//!     scope with the recorded error flags, every other role in chat.
+//!     The retired `agy_error_field_not_indexed` mark is gone — the text
+//!     is read now. Error-only records carry the string as their content
+//!     and index it exactly once.
 //!
 //! Residual drops the packet cannot see — the connector's empty-body
 //! rules vanish whole records, so no per-session signal exists and no
@@ -79,7 +82,7 @@ use super::{
     ToolCollector, events, json_text, text_id,
 };
 
-const EXTRACTOR_REVISION: &str = "antigravity-facts-v3";
+const EXTRACTOR_REVISION: &str = "antigravity-facts-v4";
 const SUPPORTED_KINDS: &[&str] = &[
     "USER_INPUT",
     "PLANNER_RESPONSE",
@@ -260,25 +263,6 @@ fn source_truncation(extra: &Value, coverage: &mut CoverageBuilder) {
     if !scopes.is_empty() {
         let scopes: Vec<&str> = scopes.into_iter().collect();
         coverage.mark(&scopes, "agy_source_truncated", "partial");
-    }
-}
-
-/// The F10 `error` passthrough on a record whose message content is not
-/// that same text: the failure text is packet-visible but no region
-/// derivation indexes extra fields, so the text inventory honestly keeps
-/// a not-read gap (`agy_error_field_not_indexed`). Error-only
-/// ERROR_MESSAGE records carry the text AS their content (indexed chat
-/// text), so they mark nothing.
-fn error_field_gap(event: &Event, extra: &Value, coverage: &mut CoverageBuilder) {
-    let Some(error) = extra.get("error").and_then(Value::as_str) else {
-        return;
-    };
-    if !error.is_empty() && error != event.content {
-        coverage.mark(
-            &["text_inventory"],
-            "agy_error_field_not_indexed",
-            "partial",
-        );
     }
 }
 
@@ -533,7 +517,6 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
         // F10 passthrough evidence is shape-independent: every emitted
         // record can carry the truncation markers and the error text.
         source_truncation(extra, &mut coverage);
-        error_field_gap(event, extra, &mut coverage);
         match classify_record(event.role, extra) {
             RecordShape::Envelope(kind) => {
                 if event.role == "tool" {

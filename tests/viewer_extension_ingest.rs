@@ -1769,10 +1769,10 @@ fn antigravity_f10_error_field_indexes_as_searchable_regions() {
     // reason, and the text scopes certify complete — no not-read gap
     // from the error field.
     assert!(
-        !publication
-            .coverage
+        !publication.coverage.iter().any(|entry| entry
+            .reasons
             .iter()
-            .any(|entry| entry.reasons.iter().any(|r| r == "agy_error_field_not_indexed")),
+            .any(|r| r == "agy_error_field_not_indexed")),
         "the error-field mark is retired: {:?}",
         publication.coverage
     );
