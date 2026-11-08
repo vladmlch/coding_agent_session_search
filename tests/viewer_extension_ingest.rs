@@ -5250,7 +5250,7 @@ fn opencode_facts_archived_parts_verified() {
     );
 
     assert_eq!(publication.extractor, "opencode-facts-v2");
-    assert_eq!(publication.extractor_version, 9);
+    assert_eq!(publication.extractor_version, FACTS_EXTRACTOR_VERSION);
 
     // Every assistant row is verified: the inventory fields stay complete
     // with no degradation reasons at all.
