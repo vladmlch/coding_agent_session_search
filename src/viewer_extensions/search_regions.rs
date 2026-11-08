@@ -47,13 +47,20 @@ use crate::search::quill_bridge::QuillCassIndex;
 
 use super::facts::FactsDb;
 use super::projection::{StepLink, StructuralPublication, ToolCallLink};
+use super::providers::is_compacted_extra;
 
 /// Region schema revision; bumps when the derivation shape changes so the
 /// `(region_version, source_revision)` idempotence key republishes rows.
 /// v2: the antigravity F10 `extra.error` text (distinct from the record
 /// content) indexes as an `m{idx}:error` region — tools scope on tool-role
 /// steps, chat scope on every other role.
-pub const REGION_VERSION: i64 = 2;
+/// v3: compacted claude/codex extras and every devin record gain their
+/// `cass.invocations` call arguments as tools regions (for compacted
+/// records the invocations merge is the ONLY surviving copy of the
+/// arguments; the devin connector normalizes `tool_calls` away), and the
+/// claude Desktop sidecar's user-typed `raw.initialMessage` indexes as an
+/// `m{idx}:initial_prompt` chat region.
+pub const REGION_VERSION: i64 = 3;
 
 /// Synthetic `msg_idx` space for region documents: `REGION_DOC_BASE +
 /// region_ordinal`. Below `i64::MAX` so `decode_hit` accepts them; far above
@@ -413,11 +420,17 @@ pub fn derive_message_regions(
     // Antigravity-scoped derivations below: the pinned FAD connector lifts
     // planner invocations into `extra.cass.invocations` (FAD F3) and
     // USER_INPUT wrapper blocks into `extra.settings_change` /
-    // `additional_metadata`. No other provider shape puts call arguments
-    // there (claude/codex record calls in content blocks or `type` records
-    // the generic readers already index — reading them unconditionally
-    // would double-index those providers), so both arms are slug-gated.
+    // `additional_metadata`. Claude/codex put call arguments there only
+    // AFTER extra compaction (non-compacted records keep the raw content
+    // blocks AND the merged invocations copy — reading those
+    // unconditionally would double-index them), so that lane is gated on
+    // the compaction envelope; devin's connector normalizes `tool_calls`
+    // away for every record, so its lane is unconditional like
+    // antigravity's. The USER_INPUT and sidecar arms stay slug-gated.
     let antigravity = packet.payload.identity.agent_slug == "antigravity";
+    let devin = packet.payload.identity.agent_slug == "devin";
+    let claude = packet.payload.identity.agent_slug == "claude_code";
+    let codex = packet.payload.identity.agent_slug == "codex";
     let mut regions: Vec<RegionRow> = Vec::new();
     let mut calls: Vec<PendingCall> = Vec::new();
     let mut results: Vec<PendingResult> = Vec::new();
@@ -479,6 +492,37 @@ pub fn derive_message_regions(
                 turn_index,
                 text_source: TEXT_SOURCE_DERIVED.to_owned(),
                 indexed_text: Some(bounded(&text)),
+                source_revision,
+                ..RegionRow::default()
+            });
+        }
+        // Claude Desktop sidecar stubs (FAD
+        // `desktop_sidecar_metadata_message`): the connector lifts the
+        // metadata lines into the system message content but leaves the
+        // user-typed first prompt in `raw.initialMessage` — real
+        // conversation text the sidecar carries, so it indexes as its own
+        // chat region (the conversation BODY itself is culled at the source
+        // per `cass.body_available: false`; nothing else of it exists).
+        if claude
+            && extra.pointer("/cass/source").and_then(Value::as_str)
+                == Some("claude_code_desktop_sidecar")
+            && let Some(prompt) = extra
+                .pointer("/raw/initialMessage")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+        {
+            regions.push(RegionRow {
+                region_ordinal: regions.len() as i64,
+                region_key: format!("m{idx}:initial_prompt"),
+                scope: "chat".to_owned(),
+                scope_known: true,
+                quill_idx: REGION_DOC_BASE as i64 + regions.len() as i64,
+                message_idx: Some(idx),
+                message_id,
+                step_index,
+                turn_index,
+                text_source: TEXT_SOURCE_DERIVED.to_owned(),
+                indexed_text: Some(bounded(prompt)),
                 source_revision,
                 ..RegionRow::default()
             });
@@ -650,16 +694,23 @@ pub fn derive_message_regions(
                 file_path: None,
             });
         }
-        // Antigravity planner invocations: `extra.cass.invocations[]` items
+        // Planner/agent invocations: `extra.cass.invocations[]` items
         // ({kind:"tool", name, call_id?, arguments}) are the only record of
         // what the planner asked tools to do — the raw `tool_calls` arrays
         // are normalized away by the connector, and the connector records
-        // no call ids. Mirror the projection's `kind == "tool"` filter.
-        // Model-step (role `tool`) records are excluded: their `cass` extras
-        // carry name-only synthesized calls with no arguments, and the role
-        // fallback above already keeps their content text in the tools
-        // scope.
-        if antigravity
+        // no call ids. The same holds for devin (connector-normalized
+        // calls; the rendered content lines carry just the tool name) and
+        // for compacted claude/codex extras (the raw tool_use/function_call
+        // blocks are gone from the canonical record, so the post-compaction
+        // invocations merge is the only surviving copy of the arguments).
+        // Non-compacted claude/codex records keep their raw blocks AND the
+        // merged invocations copy — the compaction gate keeps those off
+        // this lane, so no argument ever indexes twice. Mirror the
+        // projection's `kind == "tool"` filter. Model-step (role `tool`)
+        // records are excluded: their `cass` extras carry name-only
+        // synthesized calls with no arguments, and the role fallback above
+        // already keeps their content text in the tools scope.
+        if (antigravity || devin || ((claude || codex) && is_compacted_extra(extra)))
             && message.role != "tool"
             && let Some(items) = extra.pointer("/cass/invocations").and_then(Value::as_array)
         {
