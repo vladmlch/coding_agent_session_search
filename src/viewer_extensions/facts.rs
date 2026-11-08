@@ -35,7 +35,7 @@ pub use providers::classification::SessionQualityMetrics;
 /// connector's real output (known USER_INPUT/PLANNER_RESPONSE/MODEL-step
 /// shapes, narrowed envelope taint, connector-contract marks for dropped
 /// source text and status).
-pub const FACTS_EXTRACTOR_VERSION: i64 = 2;
+pub const FACTS_EXTRACTOR_VERSION: i64 = 3;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
@@ -209,16 +209,25 @@ pub struct CoverageEntry {
 ///   unknown or malformed shape (those use `claude_content_unknown` /
 ///   `claude_content_malformed`). Anthropic returns redacted thinking
 ///   only encrypted, so no plaintext ever existed locally.
+/// - `agy_source_truncated` (owner follow-up, 2026-11-08): the antigravity
+///   `truncated_fields` passthrough marker (FAD F10). The source
+///   application cut the named fields BEFORE persisting the record, so
+///   the cut text never existed in any local record. `fn
+///   source_truncation()` in `providers/antigravity.rs` emits the code
+///   only for that explicit source marker — never for a parse failure or
+///   unknown shape (a malformed marker keeps
+///   `agy_truncated_fields_malformed`, a not-read gap).
 ///
 /// NOT here on purpose:
-/// - `agy_connector_drops_source_text`: the connector DROPS a marker, so
-///   per-session absence is not provable yet — stays a NOT-READ gap.
+/// - `agy_status_dropped_by_connector` / `agy_status_unpaired`: tool
+///   verdict gaps, not text gaps — text-absence semantics do not apply.
 /// - Any unknown/new reason code: defaults to NOT-READ. Adding a member
 ///   is an owner decision, never an inference from a state string.
 pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &[
     "agent_message_encrypted",
     "reasoning_encrypted",
     "thinking_redacted",
+    "agy_source_truncated",
 ];
 
 /// `true` when a coverage entry's gap is provably text absent at the

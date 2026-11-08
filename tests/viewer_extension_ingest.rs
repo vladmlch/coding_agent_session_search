@@ -1160,10 +1160,7 @@ fn antigravity_facts_pre_f10_packet_text_scopes_complete_status_unavailable() {
             "{field}: {entry:?}"
         );
         assert!(
-            !entry
-                .reasons
-                .iter()
-                .any(|r| r == "agy_status_unpaired"),
+            !entry.reasons.iter().any(|r| r == "agy_status_unpaired"),
             "{field}: {entry:?}"
         );
     }
@@ -1324,21 +1321,36 @@ fn antigravity_f10_clean_packet() -> ConversationPacket {
         "antigravity",
         json!({"source": "antigravity", "model": "MadeUp Model"}),
         vec![
-            msg(0, "user", "made-up clean request text", json!({
-                "additional_metadata": "made-up local time note",
-                "status": "DONE"
-            })),
-            msg(1, "assistant", "made-up clean planner narration", json!({
-                "thinking": "made-up clean thinking text",
-                "cass": {"invocations": [
-                    {"kind": "tool", "name": "view_file", "call_id": null,
-                     "arguments": {"TargetFile": "/made/up/clean/target.rs"}}
-                ]},
-                "status": "DONE"
-            })),
-            msg(2, "tool", "made-up clean step output", json!({
-                "agy_type": "GENERIC", "status": "DONE"
-            })),
+            msg(
+                0,
+                "user",
+                "made-up clean request text",
+                json!({
+                    "additional_metadata": "made-up local time note",
+                    "status": "DONE"
+                }),
+            ),
+            msg(
+                1,
+                "assistant",
+                "made-up clean planner narration",
+                json!({
+                    "thinking": "made-up clean thinking text",
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "view_file", "call_id": null,
+                         "arguments": {"TargetFile": "/made/up/clean/target.rs"}}
+                    ]},
+                    "status": "DONE"
+                }),
+            ),
+            msg(
+                2,
+                "tool",
+                "made-up clean step output",
+                json!({
+                    "agy_type": "GENERIC", "status": "DONE"
+                }),
+            ),
         ],
     )
 }
@@ -1350,10 +1362,10 @@ fn antigravity_f10_clean_session_text_scopes_complete() {
     // The blanket connector-drop mark is retired: a session whose records
     // carry no truncation markers certifies its text scopes complete.
     assert!(
-        !publication
-            .coverage
+        !publication.coverage.iter().any(|entry| entry
+            .reasons
             .iter()
-            .any(|entry| entry.reasons.iter().any(|r| r == "agy_connector_drops_source_text")),
+            .any(|r| r == "agy_connector_drops_source_text")),
         "coverage: {:?}",
         publication.coverage
     );
@@ -1432,23 +1444,38 @@ fn antigravity_f10_truncated_fields_mark_scopes_source_absent() {
         json!({"source": "antigravity"}),
         vec![
             // USER_INPUT with the request body truncated at the source.
-            msg(0, "user", "made-up shortened request", json!({
-                "status": "DONE",
-                "truncated_fields": ["content"]
-            })),
+            msg(
+                0,
+                "user",
+                "made-up shortened request",
+                json!({
+                    "status": "DONE",
+                    "truncated_fields": ["content"]
+                }),
+            ),
             // PLANNER_RESPONSE with thinking and tool_calls truncated.
-            msg(1, "assistant", "made-up planner narration", json!({
-                "thinking": "made-up partial thinking",
-                "cass": {"invocations": [
-                    {"kind": "tool", "name": "view_file", "call_id": null,
-                     "arguments": {"TargetFile": "/made/up/truncated-target.rs"}}
-                ]},
-                "status": "DONE",
-                "truncated_fields": ["thinking", "tool_calls"]
-            })),
-            msg(2, "tool", "made-up step output", json!({
-                "agy_type": "GENERIC", "status": "DONE"
-            })),
+            msg(
+                1,
+                "assistant",
+                "made-up planner narration",
+                json!({
+                    "thinking": "made-up partial thinking",
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "view_file", "call_id": null,
+                         "arguments": {"TargetFile": "/made/up/truncated-target.rs"}}
+                    ]},
+                    "status": "DONE",
+                    "truncated_fields": ["thinking", "tool_calls"]
+                }),
+            ),
+            msg(
+                2,
+                "tool",
+                "made-up step output",
+                json!({
+                    "agy_type": "GENERIC", "status": "DONE"
+                }),
+            ),
         ],
     );
     let publication = extract_session_facts(&truncated, "antigravity");
@@ -1457,7 +1484,11 @@ fn antigravity_f10_truncated_fields_mark_scopes_source_absent() {
     // else piles onto those scopes.
     let chat = coverage(&publication, "chat").expect("chat");
     assert_eq!(chat.state, "partial", "{chat:?}");
-    assert_eq!(chat.reasons, vec!["agy_source_truncated".to_string()], "{chat:?}");
+    assert_eq!(
+        chat.reasons,
+        vec!["agy_source_truncated".to_string()],
+        "{chat:?}"
+    );
     let thinking = coverage(&publication, "thinking").expect("thinking");
     assert_eq!(thinking.state, "partial", "{thinking:?}");
     assert_eq!(
@@ -1468,7 +1499,10 @@ fn antigravity_f10_truncated_fields_mark_scopes_source_absent() {
     let text_inventory = coverage(&publication, "text_inventory").expect("text_inventory");
     assert_eq!(text_inventory.state, "partial", "{text_inventory:?}");
     assert!(
-        text_inventory.reasons.iter().all(|r| r == "agy_source_truncated"),
+        text_inventory
+            .reasons
+            .iter()
+            .all(|r| r == "agy_source_truncated"),
         "{text_inventory:?}"
     );
 
@@ -1519,12 +1553,15 @@ fn antigravity_f10_truncated_fields_unknown_media_and_malformed() {
     let unknown_field = packet(
         "antigravity",
         json!({"source": "antigravity"}),
-        vec![
-            msg(0, "user", "made-up request", json!({
+        vec![msg(
+            0,
+            "user",
+            "made-up request",
+            json!({
                 "status": "DONE",
                 "truncated_fields": ["made_up_future_field"]
-            })),
-        ],
+            }),
+        )],
     );
     let publication = extract_session_facts(&unknown_field, "antigravity");
     let text_inventory = coverage(&publication, "text_inventory").expect("text_inventory");
@@ -1541,12 +1578,15 @@ fn antigravity_f10_truncated_fields_unknown_media_and_malformed() {
     let media_only = packet(
         "antigravity",
         json!({"source": "antigravity"}),
-        vec![
-            msg(0, "user", "made-up request", json!({
+        vec![msg(
+            0,
+            "user",
+            "made-up request",
+            json!({
                 "status": "DONE",
                 "truncated_fields": ["media"]
-            })),
-        ],
+            }),
+        )],
     );
     let publication = extract_session_facts(&media_only, "antigravity");
     for field in ["chat", "text_inventory", "thinking", "files"] {
@@ -1561,14 +1601,24 @@ fn antigravity_f10_truncated_fields_unknown_media_and_malformed() {
         "antigravity",
         json!({"source": "antigravity"}),
         vec![
-            msg(0, "user", "made-up request", json!({
-                "status": "DONE",
-                "truncated_fields": "content"
-            })),
-            msg(1, "assistant", "made-up narration", json!({
-                "status": "DONE",
-                "truncated_fields": ["content", 7]
-            })),
+            msg(
+                0,
+                "user",
+                "made-up request",
+                json!({
+                    "status": "DONE",
+                    "truncated_fields": "content"
+                }),
+            ),
+            msg(
+                1,
+                "assistant",
+                "made-up narration",
+                json!({
+                    "status": "DONE",
+                    "truncated_fields": ["content", 7]
+                }),
+            ),
         ],
     );
     let publication = extract_session_facts(&malformed, "antigravity");
@@ -1582,7 +1632,10 @@ fn antigravity_f10_truncated_fields_unknown_media_and_malformed() {
         "{text_inventory:?}"
     );
     assert!(
-        !text_inventory.reasons.iter().any(|r| r == "agy_source_truncated"),
+        !text_inventory
+            .reasons
+            .iter()
+            .any(|r| r == "agy_source_truncated"),
         "{text_inventory:?}"
     );
     assert!(!is_source_absent_gap(
@@ -1602,14 +1655,24 @@ fn antigravity_f10_error_only_and_history_text_reach_chat_regions() {
         json!({"source": "antigravity"}),
         vec![
             msg(0, "user", "made-up request", json!({"status": "DONE"})),
-            msg(1, "system", "made-up widget pipeline failure", json!({
-                "agy_type": "ERROR_MESSAGE", "agy_source": "SYSTEM",
-                "error": "made-up widget pipeline failure", "status": "DONE"
-            })),
-            msg(2, "system", "made-up folded history note", json!({
-                "agy_type": "CONVERSATION_HISTORY", "agy_source": "SYSTEM",
-                "status": "DONE"
-            })),
+            msg(
+                1,
+                "system",
+                "made-up widget pipeline failure",
+                json!({
+                    "agy_type": "ERROR_MESSAGE", "agy_source": "SYSTEM",
+                    "error": "made-up widget pipeline failure", "status": "DONE"
+                }),
+            ),
+            msg(
+                2,
+                "system",
+                "made-up folded history note",
+                json!({
+                    "agy_type": "CONVERSATION_HISTORY", "agy_source": "SYSTEM",
+                    "status": "DONE"
+                }),
+            ),
         ],
     );
     let facts = extract_session_facts(&p, "antigravity");
@@ -1646,6 +1709,57 @@ fn antigravity_f10_error_only_and_history_text_reach_chat_regions() {
 }
 
 #[test]
+fn antigravity_f10_error_field_on_other_records_is_a_not_read_gap() {
+    // The `error` passthrough on a record whose message content is NOT the
+    // same text: packet-visible failure text no region derivation indexes
+    // (extras are not region sources), so the text inventory keeps an
+    // honest not-read gap. Error-only ERROR_MESSAGE records carry the text
+    // AS their content (indexed chat text) and must mark nothing — the
+    // previous test pins that half.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({"status": "DONE"})),
+            msg(
+                1,
+                "tool",
+                "made-up step narration content",
+                json!({
+                    "agy_type": "GENERIC", "status": "ERROR",
+                    "error": "made-up step failure detail"
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+    assert!(
+        !publication
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_record_unknown")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+    let text_inventory = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text_inventory.state, "partial", "{text_inventory:?}");
+    assert_eq!(
+        text_inventory.reasons,
+        vec!["agy_error_field_not_indexed".to_string()],
+        "{text_inventory:?}"
+    );
+    // A not-read gap, never a source-absent one.
+    assert!(!is_source_absent_gap(
+        text_inventory.state.as_str(),
+        &text_inventory.reasons
+    ));
+    // The record's own content IS indexed chat text: chat stays complete.
+    let chat = coverage(&publication, "chat").expect("chat");
+    assert_eq!(chat.state, "complete", "{chat:?}");
+    assert!(chat.reasons.is_empty(), "{chat:?}");
+}
+
+#[test]
 fn antigravity_f10_media_refs_stay_known_without_text_marks() {
     // `media` attachment references ({mime_type, uri}) ride on USER_INPUT
     // and MODEL-step records. Attachments carry no text: media must not
@@ -1655,18 +1769,28 @@ fn antigravity_f10_media_refs_stay_known_without_text_marks() {
         "antigravity",
         json!({"source": "antigravity"}),
         vec![
-            msg(0, "user", "made-up request with attachment", json!({
-                "status": "DONE",
-                "media": [
-                    {"mime_type": "image/png", "uri": "file:///tmp/made-up-doodle.png"}
-                ]
-            })),
-            msg(1, "tool", "made-up step output", json!({
-                "agy_type": "GENERIC", "status": "DONE",
-                "media": [
-                    {"mime_type": "image/png", "uri": "file:///tmp/made-up-render.png"}
-                ]
-            })),
+            msg(
+                0,
+                "user",
+                "made-up request with attachment",
+                json!({
+                    "status": "DONE",
+                    "media": [
+                        {"mime_type": "image/png", "uri": "file:///tmp/made-up-doodle.png"}
+                    ]
+                }),
+            ),
+            msg(
+                1,
+                "tool",
+                "made-up step output",
+                json!({
+                    "agy_type": "GENERIC", "status": "DONE",
+                    "media": [
+                        {"mime_type": "image/png", "uri": "file:///tmp/made-up-render.png"}
+                    ]
+                }),
+            ),
         ],
     );
     let publication = extract_session_facts(&p, "antigravity");
@@ -1701,17 +1825,27 @@ fn antigravity_f10_status_done_records_success_for_paired_results() {
         json!({"source": "antigravity"}),
         vec![
             msg(0, "user", "made-up request", json!({"status": "DONE"})),
-            msg(1, "assistant", "made-up narration", json!({
-                "cass": {"invocations": [
-                    {"kind": "tool", "name": "view_file", "call_id": "call_made_up_1",
-                     "arguments": {"TargetFile": "/made/up/status-target.rs"}}
-                ]},
-                "status": "DONE"
-            })),
-            msg(2, "tool", "made-up file body", json!({
-                "agy_type": "VIEW_FILE", "call_id": "call_made_up_1",
-                "content": "made-up file body", "status": "DONE"
-            })),
+            msg(
+                1,
+                "assistant",
+                "made-up narration",
+                json!({
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "view_file", "call_id": "call_made_up_1",
+                         "arguments": {"TargetFile": "/made/up/status-target.rs"}}
+                    ]},
+                    "status": "DONE"
+                }),
+            ),
+            msg(
+                2,
+                "tool",
+                "made-up file body",
+                json!({
+                    "agy_type": "VIEW_FILE", "call_id": "call_made_up_1",
+                    "content": "made-up file body", "status": "DONE"
+                }),
+            ),
         ],
     );
     let publication = extract_session_facts(&p, "antigravity");
