@@ -3382,16 +3382,17 @@ The release profile is aggressively optimized for binary size and performance:
 
 ```toml
 [profile.release]
-lto = true              # Link-time optimization across all crates
-codegen-units = 1       # Single codegen unit for better optimization
+lto = "thin"            # Parallel link-time optimization across all crates
+codegen-units = 16      # Codegen spread over every core
 strip = true            # Remove debug symbols from binary
 panic = "abort"         # Smaller panic handling (no unwinding)
 opt-level = 3           # Maximum runtime optimization
 ```
 
 **Trade-offs**:
-- Build time is significantly longer (~3-5x)
-- LTO and a single codegen unit prioritize runtime optimization at the cost of build time
+- Thin LTO keeps cross-crate optimization while building in parallel; fat LTO with
+  one codegen unit can be a few percent faster at runtime but compiles the cass
+  crate on a single thread for 30–40+ minutes
 - No stack traces on panic (use debug builds for development)
 
 ### Verification Pipeline
