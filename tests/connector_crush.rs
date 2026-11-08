@@ -35,10 +35,16 @@ fn create_crush_db(path: &Path) -> Connection {
     conn
 }
 
-fn scan_db(path: &Path) -> Vec<coding_agent_search::connectors::NormalizedConversation> {
+fn scan_db_result(
+    path: &Path,
+) -> anyhow::Result<Vec<coding_agent_search::connectors::NormalizedConversation>> {
     let connector = CrushConnector::new();
     let ctx = ScanContext::local_default(path.to_path_buf(), None);
-    connector.scan(&ctx).expect("crush scan should not panic")
+    connector.scan(&ctx)
+}
+
+fn scan_db(path: &Path) -> Vec<coding_agent_search::connectors::NormalizedConversation> {
+    scan_db_result(path).expect("crush scan should not panic")
 }
 
 fn insert_crush_session(
@@ -242,7 +248,7 @@ fn crush_empty_zero_byte_db_returns_empty_result() {
 }
 
 #[test]
-fn crush_malformed_schema_returns_empty_result_without_panic() {
+fn crush_malformed_schema_fails_the_scan_naming_the_store() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("malformed.db");
     let conn = Connection::open(db_path.to_string_lossy().as_ref()).expect("open db");
@@ -250,20 +256,35 @@ fn crush_malformed_schema_returns_empty_result_without_panic() {
         .expect("create incomplete sessions table");
     drop(conn);
 
-    assert!(scan_db(&db_path).is_empty());
+    // F9 checked-scan contract: a store with tables but none of Crush's is
+    // unreadable, so the scan fails naming the store instead of hiding as
+    // zero sessions.
+    let error = scan_db_result(&db_path).expect_err("a db without crush tables must fail the scan");
+    let chain = format!("{error:#}");
+    assert!(
+        chain.contains(db_path.to_string_lossy().as_ref()),
+        "the scan error must name the failing store: {chain}"
+    );
 }
 
 #[test]
-fn crush_non_utf8_bytes_return_empty_result_without_panic() {
+fn crush_non_utf8_bytes_fail_the_scan_naming_the_store() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("non_utf8.db");
     fs::write(&db_path, [0xff, 0xfe, 0xfd, 0x00, 0x80]).unwrap();
 
-    assert!(scan_db(&db_path).is_empty());
+    // F9 checked-scan contract: garbage bytes are not a database, so the
+    // scan fails naming the store instead of hiding as zero sessions.
+    let error = scan_db_result(&db_path).expect_err("a non-database file must fail the scan");
+    let chain = format!("{error:#}");
+    assert!(
+        chain.contains(db_path.to_string_lossy().as_ref()),
+        "the scan error must name the failing store: {chain}"
+    );
 }
 
 #[test]
-fn crush_oversized_sparse_db_returns_empty_result_without_panic() {
+fn crush_oversized_sparse_db_fails_the_scan_naming_the_store() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("huge.db");
     let file = OpenOptions::new()
@@ -274,5 +295,13 @@ fn crush_oversized_sparse_db_returns_empty_result_without_panic() {
     file.set_len(101 * 1024 * 1024).unwrap();
     drop(file);
 
-    assert!(scan_db(&db_path).is_empty());
+    // F9 checked-scan contract: a large file without the SQLite header magic
+    // is not a database, so the scan fails naming the store instead of hiding
+    // as zero sessions.
+    let error = scan_db_result(&db_path).expect_err("a headerless sparse file must fail the scan");
+    let chain = format!("{error:#}");
+    assert!(
+        chain.contains(db_path.to_string_lossy().as_ref()),
+        "the scan error must name the failing store: {chain}"
+    );
 }

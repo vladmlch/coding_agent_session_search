@@ -98,10 +98,14 @@ fn insert_message(conn: &Connection, session_id: &str, role: &str, content: &str
     .expect("insert hermes message");
 }
 
-fn scan_db(path: &Path) -> Vec<NormalizedConversation> {
+fn scan_db_result(path: &Path) -> anyhow::Result<Vec<NormalizedConversation>> {
     let connector = HermesConnector::new();
     let ctx = ScanContext::local_default(path.to_path_buf(), None);
-    connector.scan(&ctx).expect("hermes scan should not panic")
+    connector.scan(&ctx)
+}
+
+fn scan_db(path: &Path) -> Vec<NormalizedConversation> {
+    scan_db_result(path).expect("hermes scan should not panic")
 }
 
 #[test]
@@ -256,23 +260,39 @@ fn hermes_empty_zero_byte_db_returns_empty_result() {
 }
 
 #[test]
-fn hermes_malformed_schema_returns_empty_result_without_panic() {
+fn hermes_malformed_schema_fails_the_scan_naming_the_store() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("malformed.db");
     let conn = Connection::open(db_path.to_string_lossy().as_ref()).expect("open db");
-    // `sessions` exists but `messages` is missing — scan must degrade to empty.
+    // `sessions` exists but `messages` is missing — an unreadable store.
     conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY)")
         .expect("create incomplete sessions table");
     drop(conn);
 
-    assert!(scan_db(&db_path).is_empty());
+    // F9 checked-scan contract: a store with tables but none of Hermes's is
+    // unreadable, so the scan fails naming the store instead of hiding as
+    // zero sessions.
+    let error =
+        scan_db_result(&db_path).expect_err("a db without hermes tables must fail the scan");
+    let chain = format!("{error:#}");
+    assert!(
+        chain.contains(db_path.to_string_lossy().as_ref()),
+        "the scan error must name the failing store: {chain}"
+    );
 }
 
 #[test]
-fn hermes_non_utf8_bytes_return_empty_result_without_panic() {
+fn hermes_non_utf8_bytes_fail_the_scan_naming_the_store() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("non_utf8.db");
     fs::write(&db_path, [0xff, 0xfe, 0xfd, 0x00, 0x80]).unwrap();
 
-    assert!(scan_db(&db_path).is_empty());
+    // F9 checked-scan contract: garbage bytes are not a database, so the
+    // scan fails naming the store instead of hiding as zero sessions.
+    let error = scan_db_result(&db_path).expect_err("a non-database file must fail the scan");
+    let chain = format!("{error:#}");
+    assert!(
+        chain.contains(db_path.to_string_lossy().as_ref()),
+        "the scan error must name the failing store: {chain}"
+    );
 }
