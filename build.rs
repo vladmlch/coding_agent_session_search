@@ -209,13 +209,22 @@ const CONTRACTS: &[DependencyContract] = &[
         // process teardown (cass#519) and preserves the full read-error chain.
         // GH#520 needs the post-0.3.10 mirror-root metadata API. Keep the
         // source contract exact until a registry release carries this fix.
-        // LOCAL FORK (review 2026-11-02): cass-local-fixes branch of
-        // ../franken_agent_detection, based on upstream
-        // 6b337ba434b72c65c6c5a748b7ec47885f840ac0. See that repo's
-        // LOCAL_FIXES.md. Return to the upstream URL/rev once upstream carries
-        // every row there.
+        // LOCAL FORK (review 2026-11-08): cass-agy-passthrough branch of
+        // ../franken_agent_detection (the F9 cass-sqlite-snapshot-fallback
+        // branch merged with F10, on top of the cass-local-fixes F7+F8 tip),
+        // based on upstream 6b337ba434b72c65c6c5a748b7ec47885f840ac0. F9
+        // reads an external SQLite store whose WAL-index is unusable (the
+        // app crashed) through a private snapshot copy; store-style scans
+        // fail on an unreadable store instead of hiding it as zero sessions,
+        // while a provably empty store (0-byte file with no -wal content, or
+        // a schema with no tables) scans to Ok with no sessions. F10 keeps
+        // the antigravity truncated_fields/status/error/media source fields
+        // in message extras and emits error-only ERROR_MESSAGE and
+        // text-bearing CONVERSATION_HISTORY records. See that repo's
+        // LOCAL_FIXES.md. Return to the upstream URL/rev once upstream
+        // carries every row there.
         expected_git: "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection",
-        expected_rev: "ad61098922cfbdf8f749425d60105105dab281f7",
+        expected_rev: "3851a3a1fa65421b594f906ef23435a99096f27f",
         expected_version: "0.3.10",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.

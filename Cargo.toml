@@ -162,10 +162,18 @@ frankensearch = { version = "=0.7.1", default-features = false, features = ["has
 # pi_agent_rust SQLite sessions.
 # GH#520 needs remote-mirror source identity, added after crates.io 0.3.10.
 # Pin the exact fix until it is included in a published registry release.
-# ad61098 (local fork F7+F8) ticks scan progress inside Cursor's state.vscdb
-# parse, so the stall watchdog sees it, and seeks the cursorDiskKV key index
-# instead of scanning the table per composer (a ~25 min scan now takes ~18 s).
-franken-agent-detection = { version = "=0.3.10", git = "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection", rev = "ad61098922cfbdf8f749425d60105105dab281f7", features = ["connectors", "cursor", "chatgpt", "opencode", "crush", "goose", "hermes", "devin", "shelley", "grok-bot", "openclaw-sqlite", "copilot-vscdb", "codebuff", "codex-zstd", "pi-durable", "pi-sqlite"] }
+# 3851a3a (local fork F7+F8+F9+F10) ticks scan progress inside Cursor's
+# state.vscdb parse, so the stall watchdog sees it, seeks the cursorDiskKV key
+# index instead of scanning the table per composer (a ~25 min scan now takes
+# ~18 s), and reads an external SQLite store left with an unusable WAL-index
+# (the app crashed) through a private snapshot copy, failing store-style scans
+# on an unreadable store instead of hiding it as zero sessions — except a
+# provably empty store (0-byte file with no -wal content, or a schema with no
+# tables), which scans to Ok with no sessions — and keeps the antigravity
+# truncated_fields, status, error and media source fields in message extras,
+# emitting error-only ERROR_MESSAGE and text-bearing CONVERSATION_HISTORY
+# records (F10).
+franken-agent-detection = { version = "=0.3.10", git = "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection", rev = "3851a3a1fa65421b594f906ef23435a99096f27f", features = ["connectors", "cursor", "chatgpt", "opencode", "crush", "goose", "hermes", "devin", "shelley", "grok-bot", "openclaw-sqlite", "copilot-vscdb", "codebuff", "codex-zstd", "pi-durable", "pi-sqlite"] }
 wide = "1.4.0"  # Portable SIMD for P0 Opt 2: SIMD dot product
 arrayvec = "0.7.6"  # Stack-based arrays for P1 Opt 1.4: Edge N-gram optimization
 bloomfilter = "3.0.1"  # Probabilistic membership testing for P2 Opt 3.3: Workspace Cache
