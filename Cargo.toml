@@ -162,7 +162,7 @@ frankensearch = { version = "=0.7.1", default-features = false, features = ["has
 # pi_agent_rust SQLite sessions.
 # GH#520 needs remote-mirror source identity, added after crates.io 0.3.10.
 # Pin the exact fix until it is included in a published registry release.
-# 3851a3a (local fork F7+F8+F9+F10) ticks scan progress inside Cursor's
+# ad5fb23 (local fork F7+F8+F9+F10+F11) ticks scan progress inside Cursor's
 # state.vscdb parse, so the stall watchdog sees it, seeks the cursorDiskKV key
 # index instead of scanning the table per composer (a ~25 min scan now takes
 # ~18 s), and reads an external SQLite store left with an unusable WAL-index
@@ -172,8 +172,10 @@ frankensearch = { version = "=0.7.1", default-features = false, features = ["has
 # tables), which scans to Ok with no sessions — and keeps the antigravity
 # truncated_fields, status, error and media source fields in message extras,
 # emitting error-only ERROR_MESSAGE and text-bearing CONVERSATION_HISTORY
-# records (F10).
-franken-agent-detection = { version = "=0.3.10", git = "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection", rev = "3851a3a1fa65421b594f906ef23435a99096f27f", features = ["connectors", "cursor", "chatgpt", "opencode", "crush", "goose", "hermes", "devin", "shelley", "grok-bot", "openclaw-sqlite", "copilot-vscdb", "codebuff", "codex-zstd", "pi-durable", "pi-sqlite"] }
+# records (F10), and merges a Cursor composer conversation with its same-id
+# agent transcript into one conversation instead of two colliding fragments
+# (F11).
+franken-agent-detection = { version = "=0.3.10", git = "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection", rev = "ad5fb23b2bae70984042f1676f8137d7cbbef053", features = ["connectors", "cursor", "chatgpt", "opencode", "crush", "goose", "hermes", "devin", "shelley", "grok-bot", "openclaw-sqlite", "copilot-vscdb", "codebuff", "codex-zstd", "pi-durable", "pi-sqlite"] }
 wide = "1.4.0"  # Portable SIMD for P0 Opt 2: SIMD dot product
 arrayvec = "0.7.6"  # Stack-based arrays for P1 Opt 1.4: Edge N-gram optimization
 bloomfilter = "3.0.1"  # Probabilistic membership testing for P2 Opt 3.3: Workspace Cache

@@ -220,11 +220,14 @@ const CONTRACTS: &[DependencyContract] = &[
         // a schema with no tables) scans to Ok with no sessions. F10 keeps
         // the antigravity truncated_fields/status/error/media source fields
         // in message extras and emits error-only ERROR_MESSAGE and
-        // text-bearing CONVERSATION_HISTORY records. See that repo's
+        // text-bearing CONVERSATION_HISTORY records. F11 merges a Cursor
+        // composer conversation with its same-id agent transcript into one
+        // conversation (transcript order, composer timestamps donated), so
+        // storage no longer drops the second fragment. See that repo's
         // LOCAL_FIXES.md. Return to the upstream URL/rev once upstream
         // carries every row there.
         expected_git: "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection",
-        expected_rev: "3851a3a1fa65421b594f906ef23435a99096f27f",
+        expected_rev: "ad5fb23b2bae70984042f1676f8137d7cbbef053",
         expected_version: "0.3.10",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.
