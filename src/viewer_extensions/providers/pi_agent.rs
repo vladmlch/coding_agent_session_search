@@ -113,7 +113,11 @@ fn record_blocks(
                     *thinking += 1;
                     coverage.evidence("thinking");
                 } else {
-                    coverage.mark(&["thinking", "text_inventory"], "pi_block_malformed", "partial");
+                    coverage.mark(
+                        &["thinking", "text_inventory"],
+                        "pi_block_malformed",
+                        "partial",
+                    );
                 }
             }
             "toolCall" => record_tool_call(event, block, coverage, tools),
@@ -171,8 +175,7 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
                     // verdict; the delivered content is the result text.
                     // A missing toolCallId keeps the result orphaned
                     // (honest `orphan_tool_result` partial).
-                    let call_id =
-                        text_id(message.get("toolCallId")).unwrap_or_default();
+                    let call_id = text_id(message.get("toolCallId")).unwrap_or_default();
                     let is_error = message.get("isError").and_then(Value::as_bool);
                     tools.result(RecordedResult {
                         event_idx: event.idx,

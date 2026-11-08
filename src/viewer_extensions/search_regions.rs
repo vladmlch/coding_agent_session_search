@@ -857,9 +857,7 @@ pub fn derive_message_regions(
                         .map(str::to_owned),
                     text: content.clone(),
                     exit_code: None,
-                    is_error: extra
-                        .pointer("/message/isError")
-                        .and_then(Value::as_bool),
+                    is_error: extra.pointer("/message/isError").and_then(Value::as_bool),
                     message_idx: idx,
                     message_id,
                 });

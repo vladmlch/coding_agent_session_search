@@ -36,8 +36,8 @@ use crate::model::conversation_packet::ConversationPacket;
 
 use super::classification::{self, ClassifyCall};
 use super::{
-    CORE_FIELDS, CoverageBuilder, Event, ProviderExtraction, RecordedCall, ToolCollector,
-    events, text_id,
+    CORE_FIELDS, CoverageBuilder, Event, ProviderExtraction, RecordedCall, ToolCollector, events,
+    text_id,
 };
 
 const EXTRACTOR_REVISION: &str = "copilot-facts-v1";
@@ -63,9 +63,7 @@ fn record_invocation(
     coverage: &mut CoverageBuilder,
     tools: &mut ToolCollector,
 ) {
-    if !item.is_object()
-        || item.get("kind").and_then(Value::as_str).unwrap_or("tool") != "tool"
-    {
+    if !item.is_object() || item.get("kind").and_then(Value::as_str).unwrap_or("tool") != "tool" {
         return;
     }
     let Some(name) = text_id(item.get("name")) else {

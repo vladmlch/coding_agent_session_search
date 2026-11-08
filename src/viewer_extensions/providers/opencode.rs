@@ -99,11 +99,7 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
                     // A tool part provably existed and its output text is
                     // delivered inline; the part identity, input and state
                     // are dropped by the connector.
-                    coverage.mark(
-                        TOOL_PART_SCOPES,
-                        "opencode_tool_part_dropped",
-                        "partial",
-                    );
+                    coverage.mark(TOOL_PART_SCOPES, "opencode_tool_part_dropped", "partial");
                     coverage.mark(
                         TOOL_STATE_SCOPES,
                         "opencode_tool_state_dropped",

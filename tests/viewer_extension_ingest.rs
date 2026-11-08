@@ -2466,72 +2466,72 @@ fn cursor_facts_unknown_shapes_stay_fully_marked() {
 
 fn gemini_messages() -> Vec<NormalizedMessage> {
     vec![
-            // User record: raw content parts, all text delivered.
-            msg(
-                0,
-                "user",
-                "made-up prompt about widget calibration",
-                json!({
-                    "type": "user", "id": "u1",
-                    "timestamp": "2026-01-01T00:00:00Z",
-                    "content": [
-                        {"type": "text", "text": "made-up prompt about widget calibration"}
-                    ]
-                }),
-            ),
-            // Assistant record: thoughts + toolCalls with inline results
-            // (the connector renders `[Thinking] …`/`[Tool: …]`/
-            // `[Tool result: …]` into the content it delivers).
-            msg(
-                1,
-                "agent",
-                "[Thinking] made-up thought subject made-up thought description\n\
+        // User record: raw content parts, all text delivered.
+        msg(
+            0,
+            "user",
+            "made-up prompt about widget calibration",
+            json!({
+                "type": "user", "id": "u1",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "content": [
+                    {"type": "text", "text": "made-up prompt about widget calibration"}
+                ]
+            }),
+        ),
+        // Assistant record: thoughts + toolCalls with inline results
+        // (the connector renders `[Thinking] …`/`[Tool: …]`/
+        // `[Tool result: …]` into the content it delivers).
+        msg(
+            1,
+            "agent",
+            "[Thinking] made-up thought subject made-up thought description\n\
                  [Tool: glob_widget_files]\n\
                  [Tool result: glob_widget_files] made-up glob output\n\
                  [Tool: write_widget]\n\
                  [Tool result: write_widget] [Error] made-up write failure",
-                json!({
-                    "type": "gemini", "id": "m1",
-                    "timestamp": "2026-01-01T00:00:01Z",
-                    "model": "made-up-gemini-model",
-                    "tokens": {"input": 120, "output": 60},
-                    "thoughts": [
-                        {"subject": "made-up thought subject",
-                         "description": "made-up thought description",
-                         "timestamp": "2026-01-01T00:00:01Z"}
-                    ],
-                    "toolCalls": [
-                        {"id": "tc1", "name": "glob_widget_files",
-                         "args": {"pattern": "**/*.widget"},
-                         "status": "success",
-                         "timestamp": "2026-01-01T00:00:01Z",
-                         "description": "made-up description template",
-                         "displayName": "made-up display name",
-                         "resultDisplay": "made-up rendered display",
-                         "renderOutputAsMarkdown": true,
-                         "result": [
-                             {"functionResponse": {"name": "glob_widget_files",
-                                                   "response": {"output": "made-up glob output"}}}
-                         ]},
-                        {"id": "tc2", "name": "write_widget",
-                         "args": {"file_path": "/tmp/synthetic/widget.md",
-                                  "content": "made-up file body"},
-                         "status": "error",
-                         "timestamp": "2026-01-01T00:00:02Z",
-                         "result": [
-                             {"functionResponse": {"response":
-                                 {"error": "made-up write failure"}}}
-                         ]}
-                    ],
-                    "cass": {"invocations": [
-                        {"kind": "tool", "name": "glob_widget_files", "call_id": "tc1",
-                         "arguments": {"pattern": "**/*.widget"}},
-                        {"kind": "tool", "name": "write_widget", "call_id": "tc2",
-                         "arguments": {"file_path": "/tmp/synthetic/widget.md",
-                                        "content": "made-up file body"}}
-                    ]}
-                }),
-            ),
+            json!({
+                "type": "gemini", "id": "m1",
+                "timestamp": "2026-01-01T00:00:01Z",
+                "model": "made-up-gemini-model",
+                "tokens": {"input": 120, "output": 60},
+                "thoughts": [
+                    {"subject": "made-up thought subject",
+                     "description": "made-up thought description",
+                     "timestamp": "2026-01-01T00:00:01Z"}
+                ],
+                "toolCalls": [
+                    {"id": "tc1", "name": "glob_widget_files",
+                     "args": {"pattern": "**/*.widget"},
+                     "status": "success",
+                     "timestamp": "2026-01-01T00:00:01Z",
+                     "description": "made-up description template",
+                     "displayName": "made-up display name",
+                     "resultDisplay": "made-up rendered display",
+                     "renderOutputAsMarkdown": true,
+                     "result": [
+                         {"functionResponse": {"name": "glob_widget_files",
+                                               "response": {"output": "made-up glob output"}}}
+                     ]},
+                    {"id": "tc2", "name": "write_widget",
+                     "args": {"file_path": "/tmp/synthetic/widget.md",
+                              "content": "made-up file body"},
+                     "status": "error",
+                     "timestamp": "2026-01-01T00:00:02Z",
+                     "result": [
+                         {"functionResponse": {"response":
+                             {"error": "made-up write failure"}}}
+                     ]}
+                ],
+                "cass": {"invocations": [
+                    {"kind": "tool", "name": "glob_widget_files", "call_id": "tc1",
+                     "arguments": {"pattern": "**/*.widget"}},
+                    {"kind": "tool", "name": "write_widget", "call_id": "tc2",
+                     "arguments": {"file_path": "/tmp/synthetic/widget.md",
+                                    "content": "made-up file body"}}
+                ]}
+            }),
+        ),
     ]
 }
 
@@ -2565,10 +2565,7 @@ fn gemini_facts_raw_records_tools_thinking_and_coverage() {
     assert!(write.has_result);
     // response.error forces the error verdict.
     assert_eq!(write.is_error, Some(true));
-    assert_eq!(
-        write.file_path.as_deref(),
-        Some("/tmp/synthetic/widget.md")
-    );
+    assert_eq!(write.file_path.as_deref(), Some("/tmp/synthetic/widget.md"));
 
     assert_eq!(publication.tools.len(), 2);
     assert_eq!(publication.tool_error_count, Some(1));
@@ -2576,8 +2573,10 @@ fn gemini_facts_raw_records_tools_thinking_and_coverage() {
     assert_eq!(publication.file_fact_count, Some(1));
     assert_eq!(publication.thinking_block_count, Some(1));
     assert_eq!(publication.model_set, vec!["made-up-gemini-model"]);
-    assert_eq!(publication.first_prompt.as_deref(),
-               Some("made-up prompt about widget calibration"));
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("made-up prompt about widget calibration")
+    );
     assert_eq!(publication.turn_count, Some(1));
     assert_eq!(publication.step_count, Some(1));
     // The pinned gemini connector normalizes no compaction boundary records.
@@ -2586,10 +2585,16 @@ fn gemini_facts_raw_records_tools_thinking_and_coverage() {
     // The raw record is archived verbatim, so the delivered text scopes
     // certify complete: content parts, thoughts and tool results are all
     // recorded, and the tool args index as regions (test below).
-    for field in ["chat", "tools", "thinking", "tool_error", "files",
-                  "block_inventory", "text_inventory"] {
-        let entry = coverage(&publication, field)
-            .unwrap_or_else(|| panic!("{field}"));
+    for field in [
+        "chat",
+        "tools",
+        "thinking",
+        "tool_error",
+        "files",
+        "block_inventory",
+        "text_inventory",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
         assert_eq!(entry.state, "complete", "{field}: {entry:?}");
         assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
     }
@@ -2622,18 +2627,28 @@ fn gemini_facts_unpaired_call_keeps_text_inventory_complete() {
             "gemini",
             json!({"source": "gemini"}),
             vec![
-                msg(0, "user", "made-up prompt", json!({
-                    "type": "user", "id": "u1", "timestamp": "t0",
-                    "content": [{"type": "text", "text": "made-up prompt"}]
-                })),
-                msg(1, "agent", "[Tool: read_widget]", json!({
-                    "type": "gemini", "id": "m1", "timestamp": "t1",
-                    "toolCalls": [
-                        {"id": "tc9", "name": "read_widget",
-                         "args": {"file_path": "/tmp/synthetic/w.txt"},
-                         "status": "success", "timestamp": "t1"}
-                    ]
-                })),
+                msg(
+                    0,
+                    "user",
+                    "made-up prompt",
+                    json!({
+                        "type": "user", "id": "u1", "timestamp": "t0",
+                        "content": [{"type": "text", "text": "made-up prompt"}]
+                    }),
+                ),
+                msg(
+                    1,
+                    "agent",
+                    "[Tool: read_widget]",
+                    json!({
+                        "type": "gemini", "id": "m1", "timestamp": "t1",
+                        "toolCalls": [
+                            {"id": "tc9", "name": "read_widget",
+                             "args": {"file_path": "/tmp/synthetic/w.txt"},
+                             "status": "success", "timestamp": "t1"}
+                        ]
+                    }),
+                ),
             ],
         ),
         "gemini",
@@ -2650,8 +2665,7 @@ fn gemini_facts_unpaired_call_keeps_text_inventory_complete() {
         tools.reasons.iter().any(|r| r == "tool_result_missing"),
         "tools: {tools:?}"
     );
-    let text = coverage(&publication, "text_inventory")
-        .expect("text_inventory");
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
     assert_eq!(text.state, "complete", "text_inventory: {text:?}");
 }
 
@@ -2665,8 +2679,11 @@ fn gemini_facts_compacted_extra_and_drift_shapes() {
         &packet(
             "gemini",
             json!({"source": "gemini"}),
-            vec![
-                msg(0, "agent", "[Tool: read_widget]", json!({
+            vec![msg(
+                0,
+                "agent",
+                "[Tool: read_widget]",
+                json!({
                     "model": "made-up-gemini-model",
                     "tokens": {"input": 10, "output": 5},
                     "attachments": [{"path": "/tmp/synthetic/attach.bin"}],
@@ -2674,8 +2691,8 @@ fn gemini_facts_compacted_extra_and_drift_shapes() {
                         {"kind": "tool", "name": "read_widget", "call_id": "tc7",
                          "arguments": {"file_path": "/tmp/synthetic/w.txt"}}
                     ]}
-                })),
-            ],
+                }),
+            )],
         ),
         "gemini",
     );
@@ -2703,13 +2720,16 @@ fn gemini_facts_compacted_extra_and_drift_shapes() {
         &packet(
             "gemini",
             json!({"source": "gemini"}),
-            vec![
-                msg(0, "user", "made-up prompt", json!({
+            vec![msg(
+                0,
+                "user",
+                "made-up prompt",
+                json!({
                     "type": "user", "id": "u1", "timestamp": "t0",
                     "futureField": {"opaque": true},
                     "content": [{"type": "text", "text": "made-up prompt"}]
-                })),
-            ],
+                }),
+            )],
         ),
         "gemini",
     );
@@ -2725,7 +2745,12 @@ fn gemini_facts_compacted_extra_and_drift_shapes() {
         &packet(
             "gemini",
             json!({"source": "gemini"}),
-            vec![msg(0, "user", "made-up text beside a null extra", Value::Null)],
+            vec![msg(
+                0,
+                "user",
+                "made-up text beside a null extra",
+                Value::Null,
+            )],
         ),
         "gemini",
     );
@@ -2773,12 +2798,10 @@ fn gemini_regions_index_toolcall_args_and_thoughts() {
         .unwrap_or_else(|| panic!("tc2 tool region missing: {regions:?}"));
     assert_eq!(write.tool_name.as_deref(), Some("write_widget"));
     assert_eq!(write.has_error, Some(true), "{write:?}");
-    assert_eq!(
-        write.file_path.as_deref(),
-        Some("/tmp/synthetic/widget.md")
-    );
+    assert_eq!(write.file_path.as_deref(), Some("/tmp/synthetic/widget.md"));
     assert!(
-        write.indexed_text
+        write
+            .indexed_text
             .as_deref()
             .is_some_and(|text| text.contains("made-up write failure")),
         "error text: {write:?}"
@@ -2792,7 +2815,8 @@ fn gemini_regions_index_toolcall_args_and_thoughts() {
         .unwrap_or_else(|| panic!("m1:thinking region missing: {regions:?}"));
     assert_eq!(thinking.scope, "thinking");
     assert!(
-        thinking.indexed_text
+        thinking
+            .indexed_text
             .as_deref()
             .is_some_and(|text| text.contains("made-up thought subject")
                 && text.contains("made-up thought description")),
@@ -2928,10 +2952,7 @@ fn pi_agent_facts_raw_entries_tools_thinking_and_coverage() {
     // `isError` is the recorded verdict; pi records no exit codes.
     assert_eq!(read.is_error, Some(false));
     assert_eq!(read.exit_code, None);
-    assert_eq!(
-        read.file_path.as_deref(),
-        Some("/tmp/synthetic/pi.txt")
-    );
+    assert_eq!(read.file_path.as_deref(), Some("/tmp/synthetic/pi.txt"));
 
     assert_eq!(publication.tools.len(), 1);
     assert_eq!(publication.tool_error_count, Some(0));
@@ -2951,10 +2972,16 @@ fn pi_agent_facts_raw_entries_tools_thinking_and_coverage() {
 
     // Every emitted entry is archived verbatim with enumerable blocks, so
     // the delivered-text scopes certify complete.
-    for field in ["chat", "tools", "thinking", "tool_error", "files",
-                  "block_inventory", "text_inventory"] {
-        let entry = coverage(&publication, field)
-            .unwrap_or_else(|| panic!("{field}"));
+    for field in [
+        "chat",
+        "tools",
+        "thinking",
+        "tool_error",
+        "files",
+        "block_inventory",
+        "text_inventory",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
         assert_eq!(entry.state, "complete", "{field}: {entry:?}");
         assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
     }
@@ -2984,44 +3011,59 @@ fn pi_agent_facts_error_result_and_unpaired_call() {
             "pi_agent",
             json!({"source": "pi_agent"}),
             vec![
-                msg(0, "user", "made-up pi prompt", json!({
-                    "type": "message", "id": "e1", "parentId": null,
-                    "timestamp": "t0",
-                    "message": {"role": "user", "timestamp": "t0",
-                                "content": "made-up pi prompt"},
-                    "cass": {"entry_kind": "message", "source_role": "user",
-                             "entry_id": "e1", "parent_id": null, "source_line": 1,
-                             "on_active_branch": true, "in_active_context": true}
-                })),
-                msg(1, "agent", "[Tool: write_pi_widget] file_path=/tmp/synthetic/pi.txt", json!({
-                    "type": "message", "id": "e2", "parentId": "e1",
-                    "timestamp": "t1",
-                    "message": {
-                        "role": "assistant", "model": "made-up-pi-model",
+                msg(
+                    0,
+                    "user",
+                    "made-up pi prompt",
+                    json!({
+                        "type": "message", "id": "e1", "parentId": null,
+                        "timestamp": "t0",
+                        "message": {"role": "user", "timestamp": "t0",
+                                    "content": "made-up pi prompt"},
+                        "cass": {"entry_kind": "message", "source_role": "user",
+                                 "entry_id": "e1", "parent_id": null, "source_line": 1,
+                                 "on_active_branch": true, "in_active_context": true}
+                    }),
+                ),
+                msg(
+                    1,
+                    "agent",
+                    "[Tool: write_pi_widget] file_path=/tmp/synthetic/pi.txt",
+                    json!({
+                        "type": "message", "id": "e2", "parentId": "e1",
                         "timestamp": "t1",
-                        "content": [
-                            {"type": "toolCall", "id": "pc2",
-                             "name": "write_pi_widget",
-                             "arguments": {"file_path": "/tmp/synthetic/pi.txt"}}
-                        ]
-                    },
-                    "cass": {"entry_kind": "message", "source_role": "assistant",
-                             "entry_id": "e2", "parent_id": "e1", "source_line": 2,
-                             "on_active_branch": true, "in_active_context": true,
-                             "model": "made-up-pi-model"}
-                })),
-                msg(2, "tool", "made-up pi failure output", json!({
-                    "type": "message", "id": "e3", "parentId": "e2",
-                    "timestamp": "t2",
-                    "message": {"role": "toolResult", "timestamp": "t2",
-                                "content": "made-up pi failure output",
-                                "isError": true,
-                                "toolCallId": "pc2",
-                                "toolName": "write_pi_widget"},
-                    "cass": {"entry_kind": "message", "source_role": "toolResult",
-                             "entry_id": "e3", "parent_id": "e2", "source_line": 3,
-                             "on_active_branch": true, "in_active_context": true}
-                })),
+                        "message": {
+                            "role": "assistant", "model": "made-up-pi-model",
+                            "timestamp": "t1",
+                            "content": [
+                                {"type": "toolCall", "id": "pc2",
+                                 "name": "write_pi_widget",
+                                 "arguments": {"file_path": "/tmp/synthetic/pi.txt"}}
+                            ]
+                        },
+                        "cass": {"entry_kind": "message", "source_role": "assistant",
+                                 "entry_id": "e2", "parent_id": "e1", "source_line": 2,
+                                 "on_active_branch": true, "in_active_context": true,
+                                 "model": "made-up-pi-model"}
+                    }),
+                ),
+                msg(
+                    2,
+                    "tool",
+                    "made-up pi failure output",
+                    json!({
+                        "type": "message", "id": "e3", "parentId": "e2",
+                        "timestamp": "t2",
+                        "message": {"role": "toolResult", "timestamp": "t2",
+                                    "content": "made-up pi failure output",
+                                    "isError": true,
+                                    "toolCallId": "pc2",
+                                    "toolName": "write_pi_widget"},
+                        "cass": {"entry_kind": "message", "source_role": "toolResult",
+                                 "entry_id": "e3", "parent_id": "e2", "source_line": 3,
+                                 "on_active_branch": true, "in_active_context": true}
+                    }),
+                ),
             ],
         ),
         "pi_agent",
@@ -3042,30 +3084,40 @@ fn pi_agent_facts_error_result_and_unpaired_call() {
             "pi_agent",
             json!({"source": "pi_agent"}),
             vec![
-                msg(0, "user", "made-up pi prompt", json!({
-                    "type": "message", "id": "e1", "parentId": null,
-                    "timestamp": "t0",
-                    "message": {"role": "user", "timestamp": "t0",
-                                "content": "made-up pi prompt"},
-                    "cass": {"entry_kind": "message", "source_role": "user",
-                             "entry_id": "e1", "parent_id": null, "source_line": 1,
-                             "on_active_branch": true, "in_active_context": true}
-                })),
-                msg(1, "agent", "[Tool: read_pi_widget] file_path=/tmp/synthetic/pi.txt", json!({
-                    "type": "message", "id": "e2", "parentId": "e1",
-                    "timestamp": "t1",
-                    "message": {
-                        "role": "assistant", "timestamp": "t1",
-                        "content": [
-                            {"type": "toolCall", "id": "pc3",
-                             "name": "read_pi_widget",
-                             "arguments": {"file_path": "/tmp/synthetic/pi.txt"}}
-                        ]
-                    },
-                    "cass": {"entry_kind": "message", "source_role": "assistant",
-                             "entry_id": "e2", "parent_id": "e1", "source_line": 2,
-                             "on_active_branch": true, "in_active_context": true}
-                })),
+                msg(
+                    0,
+                    "user",
+                    "made-up pi prompt",
+                    json!({
+                        "type": "message", "id": "e1", "parentId": null,
+                        "timestamp": "t0",
+                        "message": {"role": "user", "timestamp": "t0",
+                                    "content": "made-up pi prompt"},
+                        "cass": {"entry_kind": "message", "source_role": "user",
+                                 "entry_id": "e1", "parent_id": null, "source_line": 1,
+                                 "on_active_branch": true, "in_active_context": true}
+                    }),
+                ),
+                msg(
+                    1,
+                    "agent",
+                    "[Tool: read_pi_widget] file_path=/tmp/synthetic/pi.txt",
+                    json!({
+                        "type": "message", "id": "e2", "parentId": "e1",
+                        "timestamp": "t1",
+                        "message": {
+                            "role": "assistant", "timestamp": "t1",
+                            "content": [
+                                {"type": "toolCall", "id": "pc3",
+                                 "name": "read_pi_widget",
+                                 "arguments": {"file_path": "/tmp/synthetic/pi.txt"}}
+                            ]
+                        },
+                        "cass": {"entry_kind": "message", "source_role": "assistant",
+                                 "entry_id": "e2", "parent_id": "e1", "source_line": 2,
+                                 "on_active_branch": true, "in_active_context": true}
+                    }),
+                ),
             ],
         ),
         "pi_agent",
@@ -3096,40 +3148,55 @@ fn pi_agent_facts_compaction_branch_and_drift() {
             "pi_agent",
             json!({"source": "pi_agent"}),
             vec![
-                msg(0, "user", "made-up pi prompt", json!({
-                    "type": "message", "id": "e1", "parentId": null,
-                    "timestamp": "t0",
-                    "message": {"role": "user", "timestamp": "t0",
-                                "content": "made-up pi prompt"},
-                    "cass": {"entry_kind": "message", "source_role": "user",
-                             "entry_id": "e1", "parent_id": null, "source_line": 1,
-                             "on_active_branch": true, "in_active_context": true}
-                })),
-                msg(1, "system", "[compaction] made-up compaction summary", json!({
-                    "type": "compaction", "id": "e2", "parentId": "e1",
-                    "timestamp": "t1",
-                    "summary": "made-up compaction summary",
-                    "firstKeptEntryId": "e3", "tokensBefore": 50000,
-                    "fromHook": false,
-                    "cass": {"entry_kind": "compaction",
-                             "source_role": "compaction",
-                             "entry_id": "e2", "parent_id": "e1", "source_line": 2,
-                             "on_active_branch": true, "in_active_context": true,
-                             "first_kept_entry_id": "e3",
-                             "tokens_before": 50000, "from_hook": false,
-                             "system_checkpoint": true}
-                })),
-                msg(2, "system", "[branch summary] made-up branch summary", json!({
-                    "type": "branch_summary", "id": "e3", "parentId": "e1",
-                    "timestamp": "t2",
-                    "summary": "made-up branch summary",
-                    "fromId": "e0", "fromHook": true,
-                    "cass": {"entry_kind": "branch_summary",
-                             "source_role": "branch_summary",
-                             "entry_id": "e3", "parent_id": "e1", "source_line": 3,
-                             "on_active_branch": false, "in_active_context": false,
-                             "from_id": "e0", "from_hook": true}
-                })),
+                msg(
+                    0,
+                    "user",
+                    "made-up pi prompt",
+                    json!({
+                        "type": "message", "id": "e1", "parentId": null,
+                        "timestamp": "t0",
+                        "message": {"role": "user", "timestamp": "t0",
+                                    "content": "made-up pi prompt"},
+                        "cass": {"entry_kind": "message", "source_role": "user",
+                                 "entry_id": "e1", "parent_id": null, "source_line": 1,
+                                 "on_active_branch": true, "in_active_context": true}
+                    }),
+                ),
+                msg(
+                    1,
+                    "system",
+                    "[compaction] made-up compaction summary",
+                    json!({
+                        "type": "compaction", "id": "e2", "parentId": "e1",
+                        "timestamp": "t1",
+                        "summary": "made-up compaction summary",
+                        "firstKeptEntryId": "e3", "tokensBefore": 50000,
+                        "fromHook": false,
+                        "cass": {"entry_kind": "compaction",
+                                 "source_role": "compaction",
+                                 "entry_id": "e2", "parent_id": "e1", "source_line": 2,
+                                 "on_active_branch": true, "in_active_context": true,
+                                 "first_kept_entry_id": "e3",
+                                 "tokens_before": 50000, "from_hook": false,
+                                 "system_checkpoint": true}
+                    }),
+                ),
+                msg(
+                    2,
+                    "system",
+                    "[branch summary] made-up branch summary",
+                    json!({
+                        "type": "branch_summary", "id": "e3", "parentId": "e1",
+                        "timestamp": "t2",
+                        "summary": "made-up branch summary",
+                        "fromId": "e0", "fromHook": true,
+                        "cass": {"entry_kind": "branch_summary",
+                                 "source_role": "branch_summary",
+                                 "entry_id": "e3", "parent_id": "e1", "source_line": 3,
+                                 "on_active_branch": false, "in_active_context": false,
+                                 "from_id": "e0", "from_hook": true}
+                    }),
+                ),
             ],
         ),
         "pi_agent",
@@ -3155,17 +3222,22 @@ fn pi_agent_facts_compaction_branch_and_drift() {
         &packet(
             "pi_agent",
             json!({"source": "pi_agent"}),
-            vec![msg(0, "extensionWidget", "made-up extension text", json!({
-                "type": "message", "id": "e1", "parentId": null,
-                "timestamp": "t0",
-                "message": {"role": "extensionWidget", "timestamp": "t0",
-                            "content": [
-                                {"type": "text", "text": "made-up extension text"}
-                            ]},
-                "cass": {"entry_kind": "message", "source_role": "extensionWidget",
-                         "entry_id": "e1", "parent_id": null, "source_line": 1,
-                         "on_active_branch": true, "in_active_context": true}
-            }))],
+            vec![msg(
+                0,
+                "extensionWidget",
+                "made-up extension text",
+                json!({
+                    "type": "message", "id": "e1", "parentId": null,
+                    "timestamp": "t0",
+                    "message": {"role": "extensionWidget", "timestamp": "t0",
+                                "content": [
+                                    {"type": "text", "text": "made-up extension text"}
+                                ]},
+                    "cass": {"entry_kind": "message", "source_role": "extensionWidget",
+                             "entry_id": "e1", "parent_id": null, "source_line": 1,
+                             "on_active_branch": true, "in_active_context": true}
+                }),
+            )],
         ),
         "pi_agent",
     );
@@ -3182,18 +3254,23 @@ fn pi_agent_facts_compaction_branch_and_drift() {
         &packet(
             "pi_agent",
             json!({"source": "pi_agent"}),
-            vec![msg(0, "agent", "made-up pi answer", json!({
-                "type": "message", "id": "e1", "parentId": null,
-                "timestamp": "t0",
-                "message": {"role": "assistant", "timestamp": "t0",
-                            "content": [
-                                {"type": "futureBlock", "opaque": true},
-                                {"type": "text", "text": "made-up pi answer"}
-                            ]},
-                "cass": {"entry_kind": "message", "source_role": "assistant",
-                         "entry_id": "e1", "parent_id": null, "source_line": 1,
-                         "on_active_branch": true, "in_active_context": true}
-            }))],
+            vec![msg(
+                0,
+                "agent",
+                "made-up pi answer",
+                json!({
+                    "type": "message", "id": "e1", "parentId": null,
+                    "timestamp": "t0",
+                    "message": {"role": "assistant", "timestamp": "t0",
+                                "content": [
+                                    {"type": "futureBlock", "opaque": true},
+                                    {"type": "text", "text": "made-up pi answer"}
+                                ]},
+                    "cass": {"entry_kind": "message", "source_role": "assistant",
+                             "entry_id": "e1", "parent_id": null, "source_line": 1,
+                             "on_active_branch": true, "in_active_context": true}
+                }),
+            )],
         ),
         "pi_agent",
     );
@@ -3208,30 +3285,43 @@ fn pi_agent_facts_compaction_branch_and_drift() {
         &packet(
             "pi_agent",
             json!({"source": "pi_agent"}),
-            vec![msg(0, "agent", "made-up pi answer", json!({
-                "type": "message", "id": "e1", "parentId": null,
-                "timestamp": "t0",
-                "message": {"role": "assistant", "timestamp": "t0",
-                            "content": [
-                                {"type": "image", "source": "made-up-image"},
-                                {"type": "text", "text": "made-up pi answer"}
-                            ]},
-                "cass": {"entry_kind": "message", "source_role": "assistant",
-                         "entry_id": "e1", "parent_id": null, "source_line": 1,
-                         "on_active_branch": true, "in_active_context": true}
-            }))],
+            vec![msg(
+                0,
+                "agent",
+                "made-up pi answer",
+                json!({
+                    "type": "message", "id": "e1", "parentId": null,
+                    "timestamp": "t0",
+                    "message": {"role": "assistant", "timestamp": "t0",
+                                "content": [
+                                    {"type": "image", "source": "made-up-image"},
+                                    {"type": "text", "text": "made-up pi answer"}
+                                ]},
+                    "cass": {"entry_kind": "message", "source_role": "assistant",
+                             "entry_id": "e1", "parent_id": null, "source_line": 1,
+                             "on_active_branch": true, "in_active_context": true}
+                }),
+            )],
         ),
         "pi_agent",
     );
     let inventory = coverage(&image, "block_inventory").expect("block_inventory");
-    assert_eq!(inventory.state, "complete", "block_inventory: {inventory:?}");
+    assert_eq!(
+        inventory.state, "complete",
+        "block_inventory: {inventory:?}"
+    );
 
     // A non-object extra is unknown entirely.
     let missing = extract_session_facts(
         &packet(
             "pi_agent",
             json!({"source": "pi_agent"}),
-            vec![msg(0, "user", "made-up text beside a null extra", Value::Null)],
+            vec![msg(
+                0,
+                "user",
+                "made-up text beside a null extra",
+                Value::Null,
+            )],
         ),
         "pi_agent",
     );
@@ -3258,10 +3348,7 @@ fn pi_agent_regions_index_toolcall_blocks_and_results() {
         .unwrap_or_else(|| panic!("pc1 tool region missing: {regions:?}"));
     assert_eq!(call.scope, "tools");
     assert_eq!(call.tool_name.as_deref(), Some("read_pi_widget"));
-    assert_eq!(
-        call.file_path.as_deref(),
-        Some("/tmp/synthetic/pi.txt")
-    );
+    assert_eq!(call.file_path.as_deref(), Some("/tmp/synthetic/pi.txt"));
     assert_eq!(call.has_error, Some(false), "{call:?}");
     assert!(
         call.indexed_text
@@ -3279,7 +3366,8 @@ fn pi_agent_regions_index_toolcall_blocks_and_results() {
         .unwrap_or_else(|| panic!("m1:thinking region missing: {regions:?}"));
     assert_eq!(thinking.scope, "thinking");
     assert!(
-        thinking.indexed_text
+        thinking
+            .indexed_text
             .as_deref()
             .is_some_and(|text| text.contains("made-up pi reasoning")),
         "{thinking:?}"
@@ -3288,7 +3376,9 @@ fn pi_agent_regions_index_toolcall_blocks_and_results() {
     // The paired toolResult record must not ALSO grow the role-fallback
     // name:"unknown" call region (its result is correlated with pc1).
     assert!(
-        !regions.iter().any(|r| r.tool_name.as_deref() == Some("unknown")),
+        !regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("unknown")),
         "role fallback must stay suppressed: {regions:?}"
     );
 
@@ -3325,9 +3415,14 @@ fn pi_agent_regions_index_toolcall_blocks_and_results() {
 
 #[test]
 fn opencode_facts_tool_markers_and_thinking() {
-    let mut user = msg(0, "user", "made-up opencode prompt", json!({
-        "message_id": "om_u1", "session_id": "os_1", "type": "user", "seq": 1
-    }));
+    let mut user = msg(
+        0,
+        "user",
+        "made-up opencode prompt",
+        json!({
+            "message_id": "om_u1", "session_id": "os_1", "type": "user", "seq": 1
+        }),
+    );
     user.author = Some("user".to_string());
     let mut first = msg(
         1,
@@ -3346,8 +3441,11 @@ fn opencode_facts_tool_markers_and_thinking() {
     );
     second.author = Some("made-up-opencode-space".to_string());
     let publication = extract_session_facts(
-        &packet("opencode", json!({"source": "opencode"}),
-                vec![user, first, second]),
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![user, first, second],
+        ),
         "opencode",
     );
 
@@ -3369,8 +3467,7 @@ fn opencode_facts_tool_markers_and_thinking() {
     assert_eq!(publication.file_fact_count, None);
 
     for field in ["chat", "thinking"] {
-        let entry = coverage(&publication, field)
-            .unwrap_or_else(|| panic!("{field}"));
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
         assert_eq!(entry.state, "complete", "{field}: {entry:?}");
         assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
     }
@@ -3381,8 +3478,7 @@ fn opencode_facts_tool_markers_and_thinking() {
     // marker, so its tool-part presence is unverifiable — the union is
     // unavailable with both reasons.
     for field in ["tools", "text_inventory", "block_inventory", "files"] {
-        let entry = coverage(&publication, field)
-            .unwrap_or_else(|| panic!("{field}"));
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
         assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
         assert!(
             entry
@@ -3400,8 +3496,7 @@ fn opencode_facts_tool_markers_and_thinking() {
         );
     }
     for field in ["tool_exit", "tool_error"] {
-        let entry = coverage(&publication, field)
-            .unwrap_or_else(|| panic!("{field}"));
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
         assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
         assert!(
             entry
@@ -3450,10 +3545,15 @@ fn opencode_facts_marker_only_session_partial() {
         "opencode",
         json!({"source": "opencode"}),
         vec![
-            msg(0, "user", "made-up opencode prompt", json!({
-                "message_id": "om_u1", "session_id": "os_1",
-                "type": "user", "seq": 1
-            })),
+            msg(
+                0,
+                "user",
+                "made-up opencode prompt",
+                json!({
+                    "message_id": "om_u1", "session_id": "os_1",
+                    "type": "user", "seq": 1
+                }),
+            ),
             first,
         ],
     );
@@ -3461,8 +3561,7 @@ fn opencode_facts_marker_only_session_partial() {
 
     assert_eq!(publication.thinking_block_count, Some(0));
     for field in ["tools", "text_inventory", "block_inventory", "files"] {
-        let entry = coverage(&publication, field)
-            .unwrap_or_else(|| panic!("{field}"));
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
         assert_eq!(entry.state, "partial", "{field}: {entry:?}");
         assert!(
             entry
@@ -3480,8 +3579,7 @@ fn opencode_facts_marker_only_session_partial() {
         );
     }
     for field in ["tool_exit", "tool_error"] {
-        let entry = coverage(&publication, field)
-            .unwrap_or_else(|| panic!("{field}"));
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
         assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
         assert!(
             entry
@@ -3534,17 +3632,31 @@ fn opencode_facts_compaction_and_non_assistant_types() {
     );
     compacted.author = Some("made-up-opencode-beam".to_string());
     let publication = extract_session_facts(
-        &packet("opencode", json!({"source": "opencode"}), vec![
-            msg(0, "user", "made-up opencode prompt", json!({
-                "message_id": "om_u1", "session_id": "os_1",
-                "type": "user", "seq": 1
-            })),
-            compacted,
-            msg(2, "system", "made-up system note", json!({
-                "message_id": "om_s1", "session_id": "os_1",
-                "type": "system", "seq": 3
-            })),
-        ]),
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up opencode prompt",
+                    json!({
+                        "message_id": "om_u1", "session_id": "os_1",
+                        "type": "user", "seq": 1
+                    }),
+                ),
+                compacted,
+                msg(
+                    2,
+                    "system",
+                    "made-up system note",
+                    json!({
+                        "message_id": "om_s1", "session_id": "os_1",
+                        "type": "system", "seq": 3
+                    }),
+                ),
+            ],
+        ),
         "opencode",
     );
     assert_eq!(publication.compaction_count, Some(1));
@@ -3559,12 +3671,19 @@ fn opencode_facts_compaction_and_non_assistant_types() {
     // An unknown row type is a contract change: drift on the core fields,
     // never a shape guess.
     let drift = extract_session_facts(
-        &packet("opencode", json!({"source": "opencode"}), vec![
-            msg(0, "agent", "made-up text from an unknown row type", json!({
-                "message_id": "om_x1", "session_id": "os_1",
-                "type": "futureWidget", "seq": 2
-            })),
-        ]),
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![msg(
+                0,
+                "agent",
+                "made-up text from an unknown row type",
+                json!({
+                    "message_id": "om_x1", "session_id": "os_1",
+                    "type": "futureWidget", "seq": 2
+                }),
+            )],
+        ),
         "opencode",
     );
     let tools = coverage(&drift, "tools").expect("tools");
@@ -3576,9 +3695,16 @@ fn opencode_facts_compaction_and_non_assistant_types() {
 
     // A non-object extra is unknown entirely.
     let missing = extract_session_facts(
-        &packet("opencode", json!({"source": "opencode"}), vec![
-            msg(0, "user", "made-up text beside a null extra", Value::Null),
-        ]),
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![msg(
+                0,
+                "user",
+                "made-up text beside a null extra",
+                Value::Null,
+            )],
+        ),
         "opencode",
     );
     let entry = coverage(&missing, "chat").expect("chat");
@@ -3600,28 +3726,40 @@ fn opencode_facts_compaction_and_non_assistant_types() {
 
 fn copilot_messages() -> Vec<NormalizedMessage> {
     vec![
-        msg(0, "user", "made-up copilot prompt", json!({"request_id": "cr1"})),
-        msg(1, "agent", "made-up copilot answer", json!({
-            "request_id": "cr1",
-            "model_id": "made-up-copilot-model",
-            "cass": {
-                "token_usage": {"input": 10, "output": 5},
-                "token_usage_scope": "turn",
-                "tool_call_count": 1,
-                "invocations": [
-                    {"kind": "tool", "name": "read_copilot_widget",
-                     "call_id": "cc1",
-                     "arguments": {"file_path": "/tmp/synthetic/copilot.txt"}}
-                ]
-            }
-        })),
+        msg(
+            0,
+            "user",
+            "made-up copilot prompt",
+            json!({"request_id": "cr1"}),
+        ),
+        msg(
+            1,
+            "agent",
+            "made-up copilot answer",
+            json!({
+                "request_id": "cr1",
+                "model_id": "made-up-copilot-model",
+                "cass": {
+                    "token_usage": {"input": 10, "output": 5},
+                    "token_usage_scope": "turn",
+                    "tool_call_count": 1,
+                    "invocations": [
+                        {"kind": "tool", "name": "read_copilot_widget",
+                         "call_id": "cc1",
+                         "arguments": {"file_path": "/tmp/synthetic/copilot.txt"}}
+                    ]
+                }
+            }),
+        ),
     ]
 }
 
 #[test]
 fn copilot_facts_invocations_thinking_and_coverage() {
-    let publication =
-        extract_session_facts(&packet("copilot", json!({"source": "copilot"}), copilot_messages()), "copilot");
+    let publication = extract_session_facts(
+        &packet("copilot", json!({"source": "copilot"}), copilot_messages()),
+        "copilot",
+    );
 
     // The archived invocation is the only call record: named, paired with
     // nothing, its rawInput arguments carrying a file path.
@@ -3690,12 +3828,13 @@ fn copilot_facts_invocations_thinking_and_coverage() {
         "text_inventory: {text:?}"
     );
     assert!(
-        text.reasons.iter().any(|r| r == "copilot_response_parts_dropped"),
+        text.reasons
+            .iter()
+            .any(|r| r == "copilot_response_parts_dropped"),
         "text_inventory: {text:?}"
     );
     for field in ["tool_exit", "tool_error"] {
-        let entry = coverage(&publication, field)
-            .unwrap_or_else(|| panic!("{field}"));
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
         assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
         assert!(
             entry
@@ -3724,21 +3863,38 @@ fn copilot_facts_drift_and_missing_identity() {
     // An invocation without a name and one without a call id: the same
     // identity degradations the other providers record.
     let publication = extract_session_facts(
-        &packet("copilot", json!({"source": "copilot"}), vec![
-            msg(0, "user", "made-up copilot prompt", json!({"request_id": "cr1"})),
-            msg(1, "agent", "made-up copilot answer", json!({
-                "cass": {"invocations": [
-                    {"kind": "tool", "call_id": "cc2",
-                     "arguments": {"query": "made-up query"}},
-                    {"kind": "tool", "name": "widget_without_id"}
-                ]}
-            })),
-        ]),
+        &packet(
+            "copilot",
+            json!({"source": "copilot"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up copilot prompt",
+                    json!({"request_id": "cr1"}),
+                ),
+                msg(
+                    1,
+                    "agent",
+                    "made-up copilot answer",
+                    json!({
+                        "cass": {"invocations": [
+                            {"kind": "tool", "call_id": "cc2",
+                             "arguments": {"query": "made-up query"}},
+                            {"kind": "tool", "name": "widget_without_id"}
+                        ]}
+                    }),
+                ),
+            ],
+        ),
         "copilot",
     );
     let tools = coverage(&publication, "tools").expect("tools");
     assert!(
-        tools.reasons.iter().any(|r| r == "copilot_tool_name_missing"),
+        tools
+            .reasons
+            .iter()
+            .any(|r| r == "copilot_tool_name_missing"),
         "tools: {tools:?}"
     );
     assert!(
@@ -3749,8 +3905,7 @@ fn copilot_facts_drift_and_missing_identity() {
         "tools: {tools:?}"
     );
     for field in ["tool_exit", "tool_error"] {
-        let entry = coverage(&publication, field)
-            .unwrap_or_else(|| panic!("{field}"));
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
         assert!(
             entry
                 .reasons
@@ -3762,20 +3917,33 @@ fn copilot_facts_drift_and_missing_identity() {
 
     // Unknown top-level extra keys on either role are contract drift.
     let drift = extract_session_facts(
-        &packet("copilot", json!({"source": "copilot"}), vec![
-            msg(0, "user", "made-up text", json!({
-                "request_id": "cr9", "futureKey": true
-            })),
-            msg(1, "agent", "made-up answer", json!({
-                "request_id": "cr9", "model_id": "made-up-copilot-model",
-                "futureKey": true
-            })),
-        ]),
+        &packet(
+            "copilot",
+            json!({"source": "copilot"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up text",
+                    json!({
+                        "request_id": "cr9", "futureKey": true
+                    }),
+                ),
+                msg(
+                    1,
+                    "agent",
+                    "made-up answer",
+                    json!({
+                        "request_id": "cr9", "model_id": "made-up-copilot-model",
+                        "futureKey": true
+                    }),
+                ),
+            ],
+        ),
         "copilot",
     );
     for field in ["chat", "tools"] {
-        let entry = coverage(&drift, field)
-            .unwrap_or_else(|| panic!("{field}"));
+        let entry = coverage(&drift, field).unwrap_or_else(|| panic!("{field}"));
         assert!(
             entry.reasons.iter().any(|r| r == "copilot_record_unknown"),
             "{field}: {entry:?}"
@@ -3784,9 +3952,16 @@ fn copilot_facts_drift_and_missing_identity() {
 
     // A non-object extra is unknown entirely.
     let missing = extract_session_facts(
-        &packet("copilot", json!({"source": "copilot"}), vec![
-            msg(0, "user", "made-up text beside a null extra", Value::Null),
-        ]),
+        &packet(
+            "copilot",
+            json!({"source": "copilot"}),
+            vec![msg(
+                0,
+                "user",
+                "made-up text beside a null extra",
+                Value::Null,
+            )],
+        ),
         "copilot",
     );
     let entry = coverage(&missing, "chat").expect("chat");

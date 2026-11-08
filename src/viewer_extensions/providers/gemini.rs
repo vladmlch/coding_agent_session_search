@@ -58,7 +58,15 @@ const RAW_USER_KEYS: &[&str] = &["content", "id", "timestamp", "type"];
 /// Extra keys of a raw assistant record, plus `cass` (the ingest seam's
 /// invocation merge).
 const RAW_ASSISTANT_KEYS: &[&str] = &[
-    "content", "id", "model", "thoughts", "timestamp", "tokens", "toolCalls", "type", "cass",
+    "content",
+    "id",
+    "model",
+    "thoughts",
+    "timestamp",
+    "tokens",
+    "toolCalls",
+    "type",
+    "cass",
 ];
 /// Extra keys after `compact_message_extra` replaced the raw record
 /// (>=32 MiB session files); the ingest seam may add `cass.invocations`.
@@ -225,8 +233,8 @@ fn content_parts(extra: &Value, coverage: &mut CoverageBuilder) {
         Some(Value::String(_)) | None => {}
         Some(Value::Array(parts)) => {
             for part in parts {
-                let known = part.as_str().is_some()
-                    || part.get("text").and_then(Value::as_str).is_some();
+                let known =
+                    part.as_str().is_some() || part.get("text").and_then(Value::as_str).is_some();
                 if !known {
                     coverage.mark(&["block_inventory"], "gemini_part_unknown", "partial");
                 }
@@ -274,10 +282,7 @@ fn invocation_evidence(
                     raw_call_id: call_id.clone(),
                     call_id,
                     name,
-                    arguments: item
-                        .get("arguments")
-                        .or_else(|| item.get("args"))
-                        .cloned(),
+                    arguments: item.get("arguments").or_else(|| item.get("args")).cloned(),
                 });
             }
         }
@@ -336,8 +341,7 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
                         if item.is_object() {
                             record_call(event, item, &mut coverage, &mut tools);
                         } else {
-                            coverage
-                                .mark(&["tools"], "gemini_tool_field_malformed", "partial");
+                            coverage.mark(&["tools"], "gemini_tool_field_malformed", "partial");
                         }
                     }
                 }
