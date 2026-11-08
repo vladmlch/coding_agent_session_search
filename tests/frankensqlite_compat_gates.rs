@@ -43,10 +43,12 @@ fn rusqlite_is_dev_dependency_only() {
 
 /// The fsqlite engine family resolves exclusively from the owner's
 /// frankensqlite fork through the committed [patch.crates-io] table (owner
-/// decision, 2026-11-07): every member is redirected to
-/// `https://github.com/vladmlch/frankensqlite` at rev
-/// `d9414f972bf1fe004e1c991afc213e9be267a7cb` (v0.4.12 plus the two vdbe
-/// range-seek commits), while [dependencies] keep registry-shaped `=0.4.12`
+/// decision, 2026-11-07; rev moved to the DML-seek tip 2026-11-08): every
+/// member is redirected to `https://github.com/vladmlch/frankensqlite`
+/// (branch cass-local-fixes-dml) at rev
+/// `e890166488fbfa355acb531d97040329c06eef0d` (v0.4.12 plus the two vdbe
+/// range-seek commits and the DML equality-prefix index seeks, bd-j9gub),
+/// while [dependencies] keep registry-shaped `=0.4.12`
 /// requirements so every consumer — including franken-agent-detection's
 /// `^0.4.1` ask — converges on that one fork resolution per package.
 /// build.rs `validate_fsqlite_source_pin` rejects any family redirect that
@@ -60,8 +62,8 @@ fn frankensqlite_fork_source_identity_is_exact_and_coherent() {
     const FACADE_REQUIREMENT: &str = "=0.4.12";
     const TYPES_REQUIREMENT: &str = "=0.4.12";
     const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensqlite";
-    const EXPECTED_FORK_REV: &str = "d9414f972bf1fe004e1c991afc213e9be267a7cb";
-    const EXPECTED_FORK_LOCK_SOURCE: &str = "git+https://github.com/vladmlch/frankensqlite?rev=d9414f972bf1fe004e1c991afc213e9be267a7cb#d9414f972bf1fe004e1c991afc213e9be267a7cb";
+    const EXPECTED_FORK_REV: &str = "e890166488fbfa355acb531d97040329c06eef0d";
+    const EXPECTED_FORK_LOCK_SOURCE: &str = "git+https://github.com/vladmlch/frankensqlite?rev=e890166488fbfa355acb531d97040329c06eef0d#e890166488fbfa355acb531d97040329c06eef0d";
     const EXPECTED_FACADE_FEATURES: &[&str] = &["fts5", "async-api"];
 
     let manifest: toml::Table =
