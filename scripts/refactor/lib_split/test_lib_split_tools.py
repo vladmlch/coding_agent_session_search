@@ -36,7 +36,7 @@ MANIFEST = HERE / "manifest.toml"
 
 # --- immutable original-monolith fixture -------------------------------------
 #
-# The live src/lib.rs is the reduced post-split remainder (334 items), and the
+# The live src/lib.rs is the reduced post-split thin-shim remainder, and the
 # live manifest.toml has since gained stage-5 retargets. The partition /
 # coverage / anchor / body / cfg tests below therefore bind the immutable
 # pre-split inputs by full commit and blob SHA-256. A missing or diverging
@@ -1231,6 +1231,44 @@ class ScannerParityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             sp.diff_counts({"s": ["src/lib.rs"]}, {"s": ["src/lib.rs"]})
 
+    def test_diff_counts_rejects_arbitrary_status(self):
+        # contract hole: any string used to pass as a status; only the
+        # status the producer actually emits is shaped input.
+        good = {"s": {"p": 1}}
+        for bad_status in ("unsupported", "unsupported:other",
+                           "ok", "skipped"):
+            with self.assertRaises(ValueError, msg=f"before {bad_status!r}"):
+                sp.diff_counts({"s": bad_status}, good)
+            with self.assertRaises(ValueError, msg=f"after {bad_status!r}"):
+                sp.diff_counts(good, {"s": bad_status})
+
+    def test_diff_counts_rejects_empty_maps(self):
+        # contract hole: {} passed as both outer snapshot and inner
+        # per-pattern map; neither is a real `counts` output.
+        good = {"s": {"p": 1}}
+        for empty in ({},):
+            with self.assertRaises(ValueError, msg="empty before"):
+                sp.diff_counts(empty, good)
+            with self.assertRaises(ValueError, msg="empty after"):
+                sp.diff_counts(good, empty)
+        for side in ("before", "after"):
+            bad = {"s": {}}
+            args = (bad, good) if side == "before" else (good, bad)
+            with self.assertRaises(ValueError, msg=f"empty inner {side}"):
+                sp.diff_counts(*args)
+
+    def test_diff_counts_keeps_valid_zero_and_unsupported(self):
+        # win/lose split: only malformed shapes lose; zero counts and the
+        # emitted "unsupported:no-patterns" status stay valid inputs.
+        zero = {"s": {"p": 0}}
+        unsupported = {"s": "unsupported:no-patterns"}
+        self.assertEqual(sp.diff_counts(zero, zero), [])
+        self.assertEqual(sp.diff_counts(unsupported, unsupported), [])
+        # status -> map and map -> status transitions are real problems,
+        # not validation errors.
+        self.assertTrue(sp.diff_counts(zero, unsupported))
+        self.assertTrue(sp.diff_counts(unsupported, zero))
+
     def test_diff_counts_cli_compare_and_reject(self):
         import subprocess
         tool = HERE / "scan_parity.py"
@@ -1354,18 +1392,140 @@ class StaleRefTests(unittest.TestCase):
 
     def test_indexer_fixture_allow_is_exact_line(self):
         # Controller ruling: the TempDir snippet-metadata fixture at
-        # src/indexer/mod.rs:42480 (repinned from 41996 after upstream
-        # indexer drift; still the same single
+        # src/indexer/mod.rs:42569 (repinned from 42480 after the final
+        # fmt pass moved it; still the same single
         # `dir.path().join("src/lib.rs")` NormalizedSnippet file_path in
         # backfill_lane_agrees_with_ingest_revision) is the only admitted
-        # reference; the former range and every adjacent line stay
+        # reference; both prior pins and every adjacent line stay
         # findings.
         import stale_refs as sr
         rel = "src/indexer/mod.rs"
-        self.assertTrue(sr.allowed(rel, 42480, sr.BUILTIN_ALLOW))
-        for line in (41996, 42479, 42481):
+        self.assertTrue(sr.allowed(rel, 42569, sr.BUILTIN_ALLOW))
+        for line in (41996, 42479, 42480, 42481, 42568, 42570):
             self.assertFalse(sr.allowed(rel, line, sr.BUILTIN_ALLOW),
                              f"line {line} must not be exempt")
+
+
+class ManifestRetargetBoundaryTests(unittest.TestCase):
+    """Live 3c pass4 retarget must consume the original trailing
+    `.expect("lib.rs readable")` together with the read expression.
+
+    Controller RED (controller-manifest-actual-red.json, rustc E0599):
+    `find` covering only `fs::read_to_string(...)` left the original
+    `.expect("lib.rs readable")` suffix in place, so the approved
+    two-read/expect `with` produced
+    `.expect("run_doctor_ls.rs readable").expect("lib.rs readable")` —
+    a method call on String. The live-suite pinned historical manifest
+    misses this; this regression binds the live rows in memory.
+    """
+
+    AUDITOR = "tests/doctor_mutate_auditor.rs"
+    # git object id of the immutable original external test (the blob was
+    # never sha256-catalogued; rev-parse binds it just as loudly).
+    AUDITOR_BLOB = "11ffc63f7b07b173667e48c2a01ea5a8066113e2"
+    TEST = "pass4_lib_dispatch_routes_through_doctor_chokepoint_apis"
+
+    def _original_auditor(self) -> bytes:
+        rev = subprocess.run(
+            ["git", "-C", str(REPO), "rev-parse",
+             f"{ORIGINAL_COMMIT}:{self.AUDITOR}"],
+            capture_output=True)
+        self.assertEqual(rev.returncode, 0)
+        self.assertEqual(
+            rev.stdout.decode().strip(), self.AUDITOR_BLOB,
+            "immutable auditor fixture identity drifted")
+        proc = subprocess.run(
+            ["git", "-C", str(REPO), "show",
+             f"{ORIGINAL_COMMIT}:{self.AUDITOR}"],
+            capture_output=True)
+        self.assertEqual(proc.returncode, 0)
+        return proc.stdout
+
+    @staticmethod
+    def _apply_in_memory(text: bytes, rt: dict):
+        fn, hits = split._retarget_hits(text, rt)
+        assert fn is not None and len(hits) == 1
+        s, e = hits[0]
+        with_b = rt["with"].encode()
+        out = (text[:fn.start + s] + with_b + text[fn.start + e:])
+        # fn grows/shrinks by the replacement delta — return the new end.
+        return out, fn.end + len(with_b) - (e - s)
+
+    def test_pass4_3c_find_consumes_expect_suffix(self):
+        man = tomllib.loads(MANIFEST.read_text())
+        rows = [rt for rt in man["retarget"]
+                if rt["test"] == self.TEST
+                and rt["test_file"] == self.AUDITOR]
+        by_stage = {rt["stage"]: rt for rt in rows}
+        rt3c, rt4 = by_stage["3c"], by_stage["4"]
+
+        text = self._original_auditor()
+        fn, hits = split._retarget_hits(text, rt3c)
+        self.assertIsNotNone(fn, "named test fn must resolve")
+        self.assertEqual(len(hits), 1,
+                         "exactly one named-syntax find hit required")
+
+        out, end = self._apply_in_memory(text, rt3c)
+        seg = out[fn.start:end].decode()
+        # The union must own the trailing expect — a second .expect on the
+        # produced String is the E0599 defect.
+        self.assertNotIn(
+            '.expect("run_doctor_ls.rs readable").expect(', seg,
+            "trailing .expect on String — E0599 defect")
+        self.assertIn(rt3c["with"], seg)
+        for needle in ('format!("{manifest}/src/lib.rs")',
+                       'format!("{manifest}/src/doctor/run_doctor_ls.rs")',
+                       '.expect("lib.rs readable")',
+                       '.expect("run_doctor_ls.rs readable")'):
+            self.assertIn(needle, seg, f"reader path/predicate lost: {needle}")
+
+        # Stage-4 then retargets the first format! path; the result must
+        # equal the approved live read union modulo whitespace only.
+        out2, end2 = self._apply_in_memory(out, rt4)
+        seg2 = out2[fn.start:end2].decode()
+        self.assertIn(
+            'format!("{manifest}/src/cli/output/extract_search_terms.rs")',
+            seg2, "first owner path must be extract_search_terms.rs")
+        self.assertIn(
+            'format!("{manifest}/src/doctor/run_doctor_ls.rs")', seg2,
+            "second union path must stay run_doctor_ls.rs")
+        import re
+        rx = re.compile(
+            r"let lib = (fs::read_to_string\(.*?run_doctor_ls\.rs "
+            r"readable\"\))", re.S)
+        applied, live = rx.search(seg2), rx.search(
+            (REPO / self.AUDITOR).read_text())
+        self.assertIsNotNone(applied)
+        self.assertIsNotNone(live)
+        self.assertEqual(
+            re.sub(r"\s+", "", applied.group(1)),
+            re.sub(r"\s+", "", live.group(1)),
+            "applied 3c+4 union must equal the approved live read union "
+            "modulo whitespace")
+
+    def test_generator_row_matches_live_3c_retarget(self):
+        # The manifest_build.py recipe for this exact row must pin the
+        # same find and the explicit approved `with`, or regeneration
+        # resurrects the Ok(..)/dangling-expect defect.
+        import manifest_build as mb
+        gen = [rt for rt in mb.RETARGETS
+               if rt["test"] == self.TEST
+               and rt["test_file"] == self.AUDITOR
+               and rt["stage"] == "3c"]
+        self.assertEqual(len(gen), 1, "exactly one 3c generator row")
+        man = tomllib.loads(MANIFEST.read_text())
+        live = [rt for rt in man["retarget"]
+                if rt["test"] == self.TEST
+                and rt["test_file"] == self.AUDITOR
+                and rt["stage"] == "3c"]
+        self.assertEqual(len(live), 1, "exactly one 3c live row")
+        self.assertEqual(gen[0]["find"], live[0]["find"],
+                         "generator find must match the live find")
+        self.assertIn("with", gen[0],
+                      "generator row must pin an explicit `with` — the "
+                      "generic branch would re-emit the Ok(..) union")
+        self.assertEqual(gen[0]["with"], live[0]["with"],
+                         "generator `with` must be the approved union")
 
 
 class StaleRefRetargetTests(unittest.TestCase):

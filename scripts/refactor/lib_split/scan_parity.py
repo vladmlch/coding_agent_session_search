@@ -327,20 +327,31 @@ def _validate_source_snapshot(obj, label: str) -> None:
 
 
 def _validate_counts_snapshot(obj, label: str) -> None:
-    """`diff-counts` input must map scanner -> {pattern: int} or a
-    "unsupported:<why>" status string (counts output shape)."""
+    """`diff-counts` input must map scanner -> {pattern: int} or the
+    "unsupported:no-patterns" status string (counts output shape)."""
     if not isinstance(obj, dict):
         raise ValueError(
             f"{label}: expected a map of scanner -> counts, "
             f"got {type(obj).__name__}")
+    if not obj:
+        raise ValueError(f"{label}: counts snapshot must not be empty")
     for name, val in obj.items():
         if isinstance(val, str):
+            if val != "unsupported:no-patterns":
+                raise ValueError(
+                    f"{label}: {name}: unknown status {val!r} — the "
+                    f"counts snapshot only emits "
+                    f"'unsupported:no-patterns'")
             continue
         if not isinstance(val, dict):
             raise ValueError(
                 f"{label}: {name}: expected a per-pattern count map or "
                 f"status string, got {type(val).__name__} — a source-list "
                 f"snapshot belongs to `diff`")
+        if not val:
+            raise ValueError(
+                f"{label}: {name}: per-pattern count map must not be "
+                f"empty")
         for pat, c in val.items():
             if not isinstance(c, int):
                 raise ValueError(

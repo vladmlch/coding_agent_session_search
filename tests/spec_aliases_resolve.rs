@@ -20,7 +20,8 @@ use assert_cmd::Command;
 use serde_json::Value;
 
 /// Extract `(alias, target)` pairs from the `SUBCOMMAND_ALIASES` table in
-/// `src/lib.rs`. Scoped to the const block so unrelated `("x", "y")` tuples
+/// `src/cli/argv/normalize.rs` (moved out of `src/lib.rs` by the split).
+/// Scoped to the const block so unrelated `("x", "y")` tuples
 /// elsewhere in the file are ignored.
 fn alias_targets_from_source() -> BTreeSet<String> {
     const SRC: &str = include_str!("../src/cli/argv/normalize.rs");

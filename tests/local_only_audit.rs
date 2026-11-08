@@ -34,7 +34,8 @@
 //!   profile and no `test-threads = "num-cpus"` unbound parallelism.
 //! * The removed-command matrix stays fully active: every row in
 //!   `tests/cli_dispatch_coverage.rs` has `pending: false` and the
-//!   `REMOVED_COMMANDS`/`REMOVED_FLAGS` tables live in `src/lib.rs`.
+//!   `REMOVED_COMMANDS`/`REMOVED_FLAGS` tables live in
+//!   `src/cli/argv/normalize.rs` (moved out of `src/lib.rs` by the split).
 //!
 //! Exceptions are named and narrow: `docs/LOCAL_ONLY.md` is the audit
 //! journal itself; the planning doc listed below is a banner-marked

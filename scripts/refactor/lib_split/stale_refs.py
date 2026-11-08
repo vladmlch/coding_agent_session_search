@@ -106,13 +106,13 @@ SKIP_DIRS = {".git", "target", ".scratch", "node_modules", ".venv"}
 
 # Scanner tests listed in scanner_lists.toml legitimately read src/lib.rs;
 # the splitter's own docs/scripts may name it too.
-# src/indexer/mod.rs:42480 assigns `file_path: Some(dir.path().join(
+# src/indexer/mod.rs:42569 assigns `file_path: Some(dir.path().join(
 # "src/lib.rs"))` — snippet metadata for a TempDir fixture (evidence:
 # `dir` is a tempfile::TempDir; the test maps snippets to fixture paths).
 # Data, not a source read — allowed at that exact line only.
 BUILTIN_ALLOW = [
     "scripts/refactor/lib_split/*",
-    "src/indexer/mod.rs:42480",
+    "src/indexer/mod.rs:42569",
 ]
 
 
