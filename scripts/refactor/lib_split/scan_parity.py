@@ -437,22 +437,22 @@ def main(argv):
         print(json.dumps(snapshot(spec, repo=REPO), indent=1, sort_keys=True))
         return 0
     if cmd == "diff":
-        before = json.loads(Path(argv[2]).read_text())
-        after = json.loads(Path(argv[3]).read_text())
         try:
+            before = json.loads(Path(argv[2]).read_text())
+            after = json.loads(Path(argv[3]).read_text())
             problems = diff(before, after)
-        except ValueError as e:
+        except (OSError, ValueError) as e:
             print(f"PARITY: {e}", file=sys.stderr)
             return 2
         for p in problems:
             print(f"PARITY: {p}")
         return 1 if problems else 0
     if cmd == "diff-counts":
-        before = json.loads(Path(argv[2]).read_text())
-        after = json.loads(Path(argv[3]).read_text())
         try:
+            before = json.loads(Path(argv[2]).read_text())
+            after = json.loads(Path(argv[3]).read_text())
             problems = diff_counts(before, after)
-        except ValueError as e:
+        except (OSError, ValueError) as e:
             print(f"PARITY: {e}", file=sys.stderr)
             return 2
         for p in problems:

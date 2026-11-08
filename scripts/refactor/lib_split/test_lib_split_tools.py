@@ -75,7 +75,7 @@ def _original_blob(repo_rel: str, expected_sha256: str) -> bytes:
     try:
         proc = subprocess.run(
             ["git", "-C", str(REPO), "show", f"{ORIGINAL_COMMIT}:{repo_rel}"],
-            capture_output=True)
+            capture_output=True, timeout=60, check=False)
     except FileNotFoundError as exc:
         raise RuntimeError(
             f"git is unavailable to read the pinned original fixture "
@@ -1285,13 +1285,13 @@ class ScannerParityTests(unittest.TestCase):
             rc = subprocess.run(
                 [sys.executable, str(tool), "diff-counts",
                  w("a.json", good), w("b.json", good)],
-                capture_output=True, text=True)
+                capture_output=True, text=True, timeout=60, check=False)
             self.assertEqual(rc.returncode, 0, rc.stderr)
             # valid comparison, count dropped -> 1
             rc = subprocess.run(
                 [sys.executable, str(tool), "diff-counts",
                  w("c.json", good), w("d.json", bad)],
-                capture_output=True, text=True)
+                capture_output=True, text=True, timeout=60, check=False)
             self.assertEqual(rc.returncode, 1)
             self.assertIn("p", rc.stdout)
             # wrong-mode both ways -> nonzero with a type diagnostic
@@ -1300,16 +1300,62 @@ class ScannerParityTests(unittest.TestCase):
             rc = subprocess.run(
                 [sys.executable, str(tool), "diff",
                  w("e.json", good), w("f.json", bad)],
-                capture_output=True, text=True)
+                capture_output=True, text=True, timeout=60, check=False)
             self.assertNotEqual(rc.returncode, 0)
             self.assertIn("belongs to `diff-counts`", rc.stderr)
             rc = subprocess.run(
                 [sys.executable, str(tool), "diff-counts",
                  w("g.json", sources), w("h.json", sources)],
-                capture_output=True, text=True)
+                capture_output=True, text=True, timeout=60, check=False)
             self.assertNotEqual(rc.returncode, 0)
             self.assertIn("belongs to `diff`", rc.stderr)
             self.assertNotIn("diff-counts", rc.stderr)
+
+    def _diff_cli(self, tool, cmd, before, after):
+        return subprocess.run(
+            [sys.executable, str(tool), cmd, str(before), str(after)],
+            capture_output=True, text=True, timeout=60, check=False)
+
+    def test_malformed_json_inputs_typed_error(self):
+        # UBS finding: bad JSON or a missing file used to crash with a
+        # traceback + exit 1. Now it must be the typed input-error exit 2
+        # with a PARITY:/INVENTORY: diagnostic and no traceback — on each
+        # side, for all three diff commands. Invalid input must never
+        # turn into a pass.
+        import tempfile
+        parity = HERE / "scan_parity.py"
+        inv_tool = HERE / "test_inventory.py"
+        good_sources = {"s": ["src/lib.rs"]}
+        good_counts = {"s": {"p": 1}}
+        good_inv = {"t::a": {"cfg": ["test"], "sha256": "x"}}
+        cases = [
+            (parity, "diff", good_sources, "PARITY:"),
+            (parity, "diff-counts", good_counts, "PARITY:"),
+            (inv_tool, "diff", good_inv, "INVENTORY:"),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            bad = td / "bad.json"
+            bad.write_text("{not json")
+            missing = td / "missing.json"
+            for tool, cmd, good, prefix in cases:
+                ok = td / f"ok-{cmd}.json"
+                ok.write_text(json.dumps(good))
+                for side, args in (
+                        ("before", (bad, ok)),
+                        ("after", (ok, bad)),
+                        ("missing-before", (missing, ok)),
+                        ("missing-after", (ok, missing))):
+                    rc = self._diff_cli(tool, cmd, *args)
+                    self.assertEqual(
+                        rc.returncode, 2,
+                        f"{tool.name} {cmd} {side}: expected typed "
+                        f"input-error exit 2, got {rc.returncode} "
+                        f"stderr={rc.stderr!r}")
+                    self.assertIn(prefix, rc.stderr,
+                                  f"{tool.name} {cmd} {side}")
+                    self.assertNotIn("Traceback", rc.stderr,
+                                     f"{tool.name} {cmd} {side}")
 
     def test_malformed_patterns_rejected(self):
         # a malformed/ambiguous pattern must raise, never default to 0.
@@ -1429,7 +1475,7 @@ class ManifestRetargetBoundaryTests(unittest.TestCase):
         rev = subprocess.run(
             ["git", "-C", str(REPO), "rev-parse",
              f"{ORIGINAL_COMMIT}:{self.AUDITOR}"],
-            capture_output=True)
+            capture_output=True, timeout=60, check=False)
         self.assertEqual(rev.returncode, 0)
         self.assertEqual(
             rev.stdout.decode().strip(), self.AUDITOR_BLOB,
@@ -1437,7 +1483,7 @@ class ManifestRetargetBoundaryTests(unittest.TestCase):
         proc = subprocess.run(
             ["git", "-C", str(REPO), "show",
              f"{ORIGINAL_COMMIT}:{self.AUDITOR}"],
-            capture_output=True)
+            capture_output=True, timeout=60, check=False)
         self.assertEqual(proc.returncode, 0)
         return proc.stdout
 
@@ -2258,9 +2304,7 @@ class BudgetSpecTests(unittest.TestCase):
         budget = (REPO / "tests" / "source_file_size_budget.rs").read_text()
         man = tomllib.loads(MANIFEST.read_text())
         import re as _re
-        files = set(re.findall(r'"((?:src|tests)/[^"]+)"', budget)) if False else set()
-        roots = set(_re.findall(r'ROOTS: &\[&str\] = &\[([^\]]*)\]', budget))
-        # simpler: extract quoted src paths from the FILES/GLOBS/ROOTS arrays
+        # extract quoted src paths from the FILES/GLOBS/ROOTS arrays
         covered = set()
         for arr in ("ROOTS", "FILES", "GLOBS"):
             m = _re.search(arr + r'[^=]*= &\[([^\]]*)\]', budget, _re.S)

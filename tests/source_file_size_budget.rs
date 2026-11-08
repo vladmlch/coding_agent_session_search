@@ -180,7 +180,10 @@ fn temporary_exceptions_are_exactly_the_plan_authorized() {
 fn budget_rejects_oversized_unexempt_file() {
     // Negative proof: the guard must flag an oversized file that has no
     // exemption covering it — a scoped temp tree, not the real repo.
-    let tmp = std::env::temp_dir().join(format!("cass_size_budget_neg_{}", std::process::id()));
+    // tempfile::tempdir gives a privately-owned directory (no predictable
+    // world-writable path to precreate/symlink) and cleans up on drop.
+    let tmp_guard = tempfile::tempdir().unwrap();
+    let tmp = tmp_guard.path();
     let cli = tmp.join("src/cli");
     fs::create_dir_all(&cli).unwrap();
     let big = cli.join("oversized_probe.rs");
@@ -190,7 +193,7 @@ fn budget_rejects_oversized_unexempt_file() {
     // must be flagged at every stage now.
     fs::write(tmp.join("src/lib.rs"), &blob).unwrap();
 
-    let at_4 = oversized_in_scope(&tmp, "4");
+    let at_4 = oversized_in_scope(tmp, "4");
     assert!(
         at_4.iter().any(|l| l.contains("oversized_probe.rs")),
         "oversized unexempt file must be flagged: {at_4:?}"
@@ -202,7 +205,7 @@ fn budget_rejects_oversized_unexempt_file() {
 
     // The current stage ("6") must flag an oversized lib.rs too — the
     // thin-shim cover ended when stage 6 landed.
-    let at_current = oversized_in_scope(&tmp, SPLIT_STAGE);
+    let at_current = oversized_in_scope(tmp, SPLIT_STAGE);
     assert!(
         at_current.iter().any(|l| l.contains("src/lib.rs")),
         "src/lib.rs exemption expired at stage 6: {at_current:?}"
@@ -212,17 +215,14 @@ fn budget_rejects_oversized_unexempt_file() {
     let run = tmp.join("src/doctor/run.rs");
     fs::create_dir_all(run.parent().unwrap()).unwrap();
     fs::write(&run, &blob).unwrap();
-    let at_5 = oversized_in_scope(&tmp, "5");
+    let at_5 = oversized_in_scope(tmp, "5");
     assert!(
         at_5.iter().any(|l| l.contains("run.rs")),
         "doctor/run.rs exemption removed in stage 5: {at_5:?}"
     );
-    let at_6 = oversized_in_scope(&tmp, "6");
+    let at_6 = oversized_in_scope(tmp, "6");
     assert!(
         at_6.iter().any(|l| l.contains("run.rs")),
         "doctor/run.rs stays budget-checked past stage 5: {at_6:?}"
     );
-
-    // cleanup is best-effort in a test; failure is not fatal.
-    let _ = fs::remove_dir_all(&tmp);
 }
