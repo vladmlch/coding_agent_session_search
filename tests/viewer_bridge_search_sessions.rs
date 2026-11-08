@@ -2372,3 +2372,272 @@ fn search_sessions_thinking_redacted_gap_answers_strict_with_annotation() -> Res
     );
     bridge.shutdown()
 }
+
+/// The manifest the v3 antigravity extractor publishes for a session whose
+/// ONLY text gap is the source-side truncation marker — the exact shape
+/// `antigravity_f10_truncated_fields_mark_scopes_source_absent` pins in
+/// the ingest suite: `chat`/`thinking`/`files` partial and `text_inventory`
+/// unavailable, every one with `agy_source_truncated` only. The F10
+/// passthrough marker proves the source application cut the named fields
+/// BEFORE persisting, so the cut text never existed in any local record.
+/// A session without MODEL-step envelopes keeps the block inventory
+/// complete, so strict search answers over the surviving text.
+fn antigravity_source_truncated_manifest() -> Value {
+    json!({
+        "extractor": "antigravity-facts-v3",
+        "extractor_version": 3,
+        "provider": "antigravity",
+        "fields": {
+            "chat": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tools": {"state":"complete","reasons":[]},
+            "thinking": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"unavailable","reasons":["agy_source_truncated"]},
+            "files": {"state":"partial","reasons":["agy_source_truncated"]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (vii) Owner follow-up (2026-11-08), antigravity side: the F10
+/// `truncated_fields` passthrough marker is a source-absent gap — the
+/// source app cut the named fields before persisting, so no read of any
+/// local artifact could recover them. A session whose only gaps carry
+/// that marker answers strict search over its surviving text, annotated
+/// exactly like the provider-encrypted class.
+#[test]
+fn search_sessions_agy_source_truncated_gap_answers_strict_with_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(
+        &bridge,
+        5,
+        "partial",
+        antigravity_source_truncated_manifest(),
+    )?;
+
+    // S5's chat text ("codex remote quux") still exists and matches: the
+    // strict page answers S3+S5 exactly, with the truncation gap
+    // annotated.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["agy_source_truncated"]),
+        "the source-truncation gap must be annotated: {s5}"
+    );
+    let s3 = result_item(&page, 3)?;
+    ensure!(
+        s3["source_text_absent"] == json!([]),
+        "a session without gaps keeps an empty annotation: {s3}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // A term S5's existing text lacks is a PROVEN non-member: S5 drops
+    // out, the strict answer stays complete, and the gap keeps counting.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "S5 was evaluated (and excluded) under source-absence: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The manifest the v3 antigravity extractor publishes for a REALISTIC F10
+/// session that also carries truncation markers: the canonical `agy_type`
+/// envelope (block inventory), unrecorded call identities (tools) and the
+/// F10 lifecycle-status verdicts (tool_exit/tool_error partial) sit
+/// alongside the truncation marker. The envelope and identity marks are
+/// honest NOT-READ gaps — structure the connector does not preserve, so
+/// matching regions could still hide behind them.
+fn antigravity_f10_realistic_manifest() -> Value {
+    json!({
+        "extractor": "antigravity-facts-v3",
+        "extractor_version": 3,
+        "provider": "antigravity",
+        "fields": {
+            "chat": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tools": {"state":"partial","reasons":[
+                "agy_tool_call_identity_missing",
+                "agy_tool_result_identity_missing",
+                "agy_source_truncated"
+            ]},
+            "thinking": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tool_exit": {"state":"partial","reasons":["agy_status_unpaired"]},
+            "tool_error": {"state":"partial","reasons":["agy_status_unpaired"]},
+            "block_inventory": {"state":"partial","reasons":["agy_canonical_envelope"]},
+            "text_inventory": {"state":"partial","reasons":["agy_source_truncated"]},
+            "files": {"state":"partial","reasons":["agy_source_truncated"]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (viii) The allowlist member never over-unlocks: a realistic agy session
+/// also carries the canonical-envelope and call-identity marks — NOT-READ
+/// gaps that can still hide matching regions — so strict search keeps its
+/// honest `data_unavailable` refusal even though `agy_source_truncated`
+/// itself is allowlisted. The probe uses `foo`, a term S5's verified text
+/// lacks: a verified positive match would dominate regardless, but S5's
+/// non-membership is exactly what the envelope gap leaves unprovable.
+#[test]
+fn search_sessions_agy_realistic_marks_still_refuse_strict() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "partial", antigravity_f10_realistic_manifest())?;
+
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    ensure!(
+        page["ok"] == false,
+        "the envelope/identity gaps must keep strict search refused: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "expected data_unavailable, got {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The fixture session for (ix): the real F10 shape the v3 report
+/// quantified as the archive's only not-read gap — a tool-step GENERIC
+/// record whose `error` passthrough failure text differs from the step
+/// narration, plus a system ERROR_MESSAGE announcing a different
+/// failure. The needles "gyrocopter" and "wobbledrive" appear ONLY in
+/// the error fields.
+fn antigravity_error_field_session() -> GoldSession {
+    GoldSession {
+        id: 8,
+        agent: "antigravity",
+        source_id: "local",
+        external_id: "s-8-agy-error",
+        source_path: "/sessions/s-8-agy-error.jsonl",
+        workspace: None,
+        title: "agy error passthrough",
+        started_at: Some(6_000),
+        ended_at: Some(9_500),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            (0, MessageRole::User, "assemble the widget", None),
+            (
+                1,
+                MessageRole::Tool,
+                "step narration content",
+                Some(json!({"agy_type":"GENERIC","status":"ERROR",
+                    "error":"step gyrocopter failure detail"})),
+            ),
+            (
+                2,
+                MessageRole::System,
+                "assembly failure summary",
+                Some(json!({"agy_type":"ERROR_MESSAGE","agy_source":"SYSTEM",
+                    "status":"ERROR",
+                    "error":"pipeline wobbledrive failure detail"})),
+            ),
+        ],
+    }
+}
+
+/// (ix) Owner follow-up (2026-11-08): the F10 `error` passthrough text is
+/// local and readable, so it INDEXES as a search region instead of
+/// keeping the `agy_error_field_not_indexed` not-read gap the v3 report
+/// quantified. A strict search for a word that appears only in the error
+/// text finds the session — the verified hit dominates the session's
+/// structural (envelope/identity) marks — and the session's facts carry
+/// no text gap from the error field. The facts row below is the REAL
+/// extractor manifest (the same generation path ingest runs), not a
+/// hand-written one, so the strict lane evaluates exactly what a real
+/// ingest would publish.
+#[test]
+fn search_sessions_agy_error_field_text_answers_strict_search() -> Result<()> {
+    let mut sessions = gold_fixture();
+    sessions.push(antigravity_error_field_session());
+    let mut bridge = gold_harness_full(&sessions, &[])?;
+
+    // Replace the seeded fixture-complete row with the real manifest.
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let agy = sessions.pop().expect("the antigravity session");
+    let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+        &writer,
+        &gold_conversation(&agy),
+        agy.id,
+    )?;
+    drop(writer);
+    let facts = generation.facts;
+    let mut fields = serde_json::Map::new();
+    for entry in &facts.coverage {
+        fields.insert(
+            entry.field.clone(),
+            json!({"state": entry.state, "reasons": entry.reasons}),
+        );
+    }
+    let manifest = json!({
+        "extractor": facts.extractor,
+        "extractor_version": facts.extractor_version,
+        "provider": facts.provider,
+        "fields": fields,
+        "counts": {
+            "tool_calls": facts.tools.len(),
+            "paired_calls": facts.tools.iter().filter(|t| t.has_result).count(),
+        }
+    });
+    set_facts_coverage(&bridge, agy.id, facts.coverage_state.as_str(), manifest)?;
+
+    // A word that appears ONLY in the tool-step error text: the strict
+    // page answers exactly [8] — the error region is a verified hit.
+    let page = search(&mut bridge, json!({"query": "gyrocopter"}))?;
+    assert_members(&page, &[8])?;
+    // The tools scope and the recorded error flags address the failure
+    // text as tool error text, like every provider's erroring result.
+    let page = search(&mut bridge, json!({"query": "in:tools gyrocopter"}))?;
+    assert_members(&page, &[8])?;
+    let page = search(&mut bridge, json!({"query": "error:tool gyrocopter"}))?;
+    assert_members(&page, &[8])?;
+    // The system ERROR_MESSAGE's differing error text is chat-scope text.
+    let page = search(&mut bridge, json!({"query": "in:chat wobbledrive"}))?;
+    assert_members(&page, &[8])?;
+
+    // No source-absent gap is involved: the found session carries no
+    // annotation (its residual marks are structural, not text gaps).
+    let s8 = result_item(&page, 8)?;
+    ensure!(
+        s8["source_text_absent"] == json!([]),
+        "no source-absent annotation for an indexed-error session: {s8}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 0,
+        "no source-absent count: {page}"
+    );
+
+    // Coverage has no not-read gap from the error field: the real
+    // manifest carries no reason for it anywhere.
+    ensure!(
+        !facts.coverage.iter().any(|entry| entry
+            .reasons
+            .iter()
+            .any(|r| r == "agy_error_field_not_indexed")),
+        "the retired mark must be gone from the real manifest: {:?}",
+        facts.coverage
+    );
+    bridge.shutdown()
+}

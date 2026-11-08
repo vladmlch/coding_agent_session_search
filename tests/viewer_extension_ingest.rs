@@ -19,7 +19,8 @@ use coding_agent_search::model::conversation_packet::{
 use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use coding_agent_search::storage::sqlite::FrankenStorage;
 use coding_agent_search::viewer_extensions::facts::{
-    FACTS_EXTRACTOR_VERSION, FactPublishOutcome, extract_session_facts, publish_session_facts,
+    FACTS_EXTRACTOR_VERSION, FactPublishOutcome, extract_session_facts, is_source_absent_gap,
+    publish_session_facts,
 };
 use coding_agent_search::viewer_extensions::schema;
 use coding_agent_search::viewer_extensions::search_regions::derive_message_regions;
@@ -1076,7 +1077,14 @@ fn antigravity_real_shape_packet() -> ConversationPacket {
 }
 
 #[test]
-fn antigravity_facts_real_shapes_known_with_connector_contract_marks() {
+fn antigravity_facts_pre_f10_packet_text_scopes_complete_status_unavailable() {
+    // The pre-F10 connector shape (no `truncated_fields`/`status`/`error`/
+    // `media` extras — the packet the v2 extractor was written against).
+    // The blanket connector-drop mark is gone, so the text scopes certify
+    // complete for a session with no truncation markers, and with no
+    // lifecycle `status` in the packet the exit/error verdicts stay
+    // unavailable-by-connector-drop (the pre-F10 branch of the status
+    // gate).
     let publication = extract_session_facts(&antigravity_real_shape_packet(), "antigravity");
 
     // Every real FAD output shape classifies as known: no unknown-record
@@ -1090,21 +1098,13 @@ fn antigravity_facts_real_shapes_known_with_connector_contract_marks() {
         publication.coverage
     );
 
-    // The pinned connector structurally drops source text with no
-    // packet-visible signal (source `truncated_fields` markers, whole
-    // ERROR_MESSAGE records whose only text is the `error` field, the
-    // `error` field itself, `media` references), so text-bearing scopes
-    // cannot be certified complete from the packet.
+    // No truncation markers and no dropped-record signal in the packet:
+    // the text scopes are complete — the v2 blanket mark
+    // (`agy_connector_drops_source_text`) is retired.
     for field in ["chat", "thinking", "text_inventory", "files"] {
         let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
-        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
-        assert!(
-            entry
-                .reasons
-                .iter()
-                .any(|r| r == "agy_connector_drops_source_text"),
-            "{field}: {entry:?}"
-        );
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
     }
 
     // The canonical envelope loses raw record structure — block inventory
@@ -1145,9 +1145,10 @@ fn antigravity_facts_real_shapes_known_with_connector_contract_marks() {
         "{tools:?}"
     );
 
-    // Source tool steps record `status` on every record; the connector
-    // drops the field, so exit/error evidence is unavailable — never
-    // silently complete.
+    // Pre-F10 packet: the connector dropped the lifecycle `status`, so
+    // exit/error evidence is unavailable — never silently complete, and
+    // never the v3 `agy_status_unpaired` verdict (that one requires a
+    // status the packet can actually see).
     for field in ["tool_exit", "tool_error"] {
         let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
         assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
@@ -1156,6 +1157,10 @@ fn antigravity_facts_real_shapes_known_with_connector_contract_marks() {
                 .reasons
                 .iter()
                 .any(|r| r == "agy_status_dropped_by_connector"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            !entry.reasons.iter().any(|r| r == "agy_status_unpaired"),
             "{field}: {entry:?}"
         );
     }
@@ -1272,27 +1277,693 @@ fn antigravity_facts_zero_thinking_session_proves_thinking_complete() {
 
     let thinking = coverage(&publication, "thinking").expect("thinking coverage");
     assert_eq!(thinking.state, "complete", "{thinking:?}");
-    assert!(
-        !thinking
-            .reasons
-            .iter()
-            .any(|r| r == "agy_connector_drops_source_text"),
-        "{thinking:?}"
-    );
+    assert!(thinking.reasons.is_empty(), "{thinking:?}");
 
-    // The unconditional members of the connector-contract mark stay
-    // partial — only `thinking` is provable-empty.
+    // No truncation markers anywhere in this packet: the whole text
+    // inventory certifies complete — the blanket mark that kept chat/
+    // text_inventory/files partial for every antigravity session is gone.
     for field in ["chat", "text_inventory", "files"] {
         let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
-        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+
+    // This pre-F10 packet has no lifecycle `status` in the extras, so the
+    // exit/error scopes keep the connector-drop verdict.
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
         assert!(
             entry
                 .reasons
                 .iter()
-                .any(|r| r == "agy_connector_drops_source_text"),
+                .any(|r| r == "agy_status_dropped_by_connector"),
             "{field}: {entry:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Antigravity F10 shapes: the pinned FAD connector (rev 3851a3a) passes the
+// source fields through into message extras — `truncated_fields` (the
+// source-side truncation markers), `status` (the record lifecycle
+// DONE/RUNNING/ERROR/INVALID), `error` (the failure text), `media`
+// ({mime_type, uri} attachment refs) — and emits error-only ERROR_MESSAGE
+// records (the `error` text as content) plus text-bearing
+// CONVERSATION_HISTORY records. Synthetic text only; real key/type
+// structure only.
+// ---------------------------------------------------------------------------
+
+/// A clean F10 session: every record carries its lifecycle `status`, no
+/// truncation markers, no media — the dominant real-archive shape.
+fn antigravity_f10_clean_packet() -> ConversationPacket {
+    packet(
+        "antigravity",
+        json!({"source": "antigravity", "model": "MadeUp Model"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "made-up clean request text",
+                json!({
+                    "additional_metadata": "made-up local time note",
+                    "status": "DONE"
+                }),
+            ),
+            msg(
+                1,
+                "assistant",
+                "made-up clean planner narration",
+                json!({
+                    "thinking": "made-up clean thinking text",
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "view_file", "call_id": null,
+                         "arguments": {"TargetFile": "/made/up/clean/target.rs"}}
+                    ]},
+                    "status": "DONE"
+                }),
+            ),
+            msg(
+                2,
+                "tool",
+                "made-up clean step output",
+                json!({
+                    "agy_type": "GENERIC", "status": "DONE"
+                }),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn antigravity_f10_clean_session_text_scopes_complete() {
+    let publication = extract_session_facts(&antigravity_f10_clean_packet(), "antigravity");
+
+    // The blanket connector-drop mark is retired: a session whose records
+    // carry no truncation markers certifies its text scopes complete.
+    assert!(
+        !publication.coverage.iter().any(|entry| entry
+            .reasons
+            .iter()
+            .any(|r| r == "agy_connector_drops_source_text")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+    // The F10 passthrough keys are part of the connector's verified output
+    // contract: every record classifies as a known shape, no drift.
+    assert!(
+        !publication
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_record_unknown")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+    for field in ["chat", "thinking", "text_inventory", "files", "mcp"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+
+    // Tool scopes keep their honest marks: the connector records no call
+    // ids (identity), and the F10 lifecycle `status` — now visible in the
+    // packet — never pairs with the planner call it belongs to, so
+    // per-call exit/error stays unprovable: partial, never silently
+    // complete, and never the retired connector-drop verdict.
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "agy_status_unpaired"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "agy_status_dropped_by_connector"),
+            "{field}: {entry:?}"
+        );
+    }
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "partial", "{tools:?}");
+    assert!(
+        tools
+            .reasons
+            .iter()
+            .any(|r| r == "agy_tool_call_identity_missing"),
+        "{tools:?}"
+    );
+    assert!(
+        tools
+            .reasons
+            .iter()
+            .any(|r| r == "agy_tool_result_identity_missing"),
+        "{tools:?}"
+    );
+
+    // The canonical envelope still loses raw record structure — block
+    // inventory only.
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block.reasons.iter().any(|r| r == "agy_canonical_envelope"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_f10_truncated_fields_mark_scopes_source_absent() {
+    // A session whose records carry the source-side truncation markers:
+    // the app cut the named fields before persisting, so the cut text
+    // never existed in any local record — the affected scopes are partial
+    // with `agy_source_truncated` only, the source-absent reason the
+    // strict-search allowlist names.
+    let truncated = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            // USER_INPUT with the request body truncated at the source.
+            msg(
+                0,
+                "user",
+                "made-up shortened request",
+                json!({
+                    "status": "DONE",
+                    "truncated_fields": ["content"]
+                }),
+            ),
+            // PLANNER_RESPONSE with thinking and tool_calls truncated.
+            msg(
+                1,
+                "assistant",
+                "made-up planner narration",
+                json!({
+                    "thinking": "made-up partial thinking",
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "view_file", "call_id": null,
+                         "arguments": {"TargetFile": "/made/up/truncated-target.rs"}}
+                    ]},
+                    "status": "DONE",
+                    "truncated_fields": ["thinking", "tool_calls"]
+                }),
+            ),
+            msg(
+                2,
+                "tool",
+                "made-up step output",
+                json!({
+                    "agy_type": "GENERIC", "status": "DONE"
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&truncated, "antigravity");
+
+    // Content truncation degrades chat + the text inventory, and nothing
+    // else piles onto those scopes.
+    let chat = coverage(&publication, "chat").expect("chat");
+    assert_eq!(chat.state, "partial", "{chat:?}");
+    assert_eq!(
+        chat.reasons,
+        vec!["agy_source_truncated".to_string()],
+        "{chat:?}"
+    );
+    let thinking = coverage(&publication, "thinking").expect("thinking");
+    assert_eq!(thinking.state, "partial", "{thinking:?}");
+    assert_eq!(
+        thinking.reasons,
+        vec!["agy_source_truncated".to_string()],
+        "{thinking:?}"
+    );
+    let text_inventory = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text_inventory.state, "partial", "{text_inventory:?}");
+    assert!(
+        text_inventory
+            .reasons
+            .iter()
+            .all(|r| r == "agy_source_truncated"),
+        "{text_inventory:?}"
+    );
+
+    // The marker reason is on the source-absent allowlist: pure marker
+    // gaps do not block strict search (the bridge suite pins the
+    // end-to-end annotation).
+    assert!(is_source_absent_gap(chat.state.as_str(), &chat.reasons));
+    assert!(is_source_absent_gap(
+        text_inventory.state.as_str(),
+        &text_inventory.reasons
+    ));
+
+    // tool_calls truncation marks the tools scope, but the unrecorded call
+    // identities keep their own not-read reason there — a mixed reason
+    // set stays a NOT-READ gap exactly as before.
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "partial", "{tools:?}");
+    assert!(
+        tools.reasons.iter().any(|r| r == "agy_source_truncated"),
+        "{tools:?}"
+    );
+    assert!(
+        tools
+            .reasons
+            .iter()
+            .any(|r| r == "agy_tool_call_identity_missing"),
+        "{tools:?}"
+    );
+    assert!(!is_source_absent_gap(tools.state.as_str(), &tools.reasons));
+
+    // tool_calls truncation also cuts call arguments — file paths ride in
+    // those arguments, so the files scope degrades with the same marker-
+    // only reason (a pure source-absent gap).
+    let files = coverage(&publication, "files").expect("files");
+    assert_eq!(files.state, "partial", "{files:?}");
+    assert_eq!(
+        files.reasons,
+        vec!["agy_source_truncated".to_string()],
+        "{files:?}"
+    );
+}
+
+#[test]
+fn antigravity_f10_truncated_fields_unknown_media_and_malformed() {
+    // An unrecognized marker field name is still a real source-side
+    // truncation: some field was cut, and if it held text that text is
+    // absent at the source — text_inventory only, conservatively.
+    let unknown_field = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![msg(
+            0,
+            "user",
+            "made-up request",
+            json!({
+                "status": "DONE",
+                "truncated_fields": ["made_up_future_field"]
+            }),
+        )],
+    );
+    let publication = extract_session_facts(&unknown_field, "antigravity");
+    let text_inventory = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text_inventory.state, "partial", "{text_inventory:?}");
+    assert_eq!(
+        text_inventory.reasons,
+        vec!["agy_source_truncated".to_string()],
+        "{text_inventory:?}"
+    );
+    let chat = coverage(&publication, "chat").expect("chat");
+    assert_eq!(chat.state, "complete", "{chat:?}");
+
+    // `media` carries no text: a media truncation marker marks nothing.
+    let media_only = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![msg(
+            0,
+            "user",
+            "made-up request",
+            json!({
+                "status": "DONE",
+                "truncated_fields": ["media"]
+            }),
+        )],
+    );
+    let publication = extract_session_facts(&media_only, "antigravity");
+    for field in ["chat", "text_inventory", "thinking", "files"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+
+    // A marker that fails to parse is NOT provable source truncation: a
+    // separate not-read reason, never the allowlisted one.
+    let malformed = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "made-up request",
+                json!({
+                    "status": "DONE",
+                    "truncated_fields": "content"
+                }),
+            ),
+            msg(
+                1,
+                "assistant",
+                "made-up narration",
+                json!({
+                    "status": "DONE",
+                    "truncated_fields": ["content", 7]
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&malformed, "antigravity");
+    let text_inventory = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text_inventory.state, "partial", "{text_inventory:?}");
+    assert!(
+        text_inventory
+            .reasons
+            .iter()
+            .any(|r| r == "agy_truncated_fields_malformed"),
+        "{text_inventory:?}"
+    );
+    assert!(
+        !text_inventory
+            .reasons
+            .iter()
+            .any(|r| r == "agy_source_truncated"),
+        "{text_inventory:?}"
+    );
+    assert!(!is_source_absent_gap(
+        text_inventory.state.as_str(),
+        &["agy_truncated_fields_malformed".to_string()]
+    ));
+}
+
+#[test]
+fn antigravity_f10_error_only_and_history_text_reach_chat_regions() {
+    // F10 emits error-only ERROR_MESSAGE records (the `error` text as the
+    // message content) and text-bearing CONVERSATION_HISTORY records: both
+    // are known shapes, and their content is indexed as chat-scope region
+    // text instead of vanishing with the record.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({"status": "DONE"})),
+            msg(
+                1,
+                "system",
+                "made-up widget pipeline failure",
+                json!({
+                    "agy_type": "ERROR_MESSAGE", "agy_source": "SYSTEM",
+                    "error": "made-up widget pipeline failure", "status": "DONE"
+                }),
+            ),
+            msg(
+                2,
+                "system",
+                "made-up folded history note",
+                json!({
+                    "agy_type": "CONVERSATION_HISTORY", "agy_source": "SYSTEM",
+                    "status": "DONE"
+                }),
+            ),
+        ],
+    );
+    let facts = extract_session_facts(&p, "antigravity");
+    assert!(
+        !facts
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_record_unknown")),
+        "coverage: {:?}",
+        facts.coverage
+    );
+    // The two records carry text the packet can fully account for: no
+    // text-scope mark at all.
+    for field in ["chat", "text_inventory"] {
+        let entry = coverage(&facts, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+
+    // Region derivation: each record's content lands as a chat-scope
+    // region bound to its message (the m{idx}:chat region's document IS
+    // the message), so the error text and the history text are searchable
+    // chat text.
+    let structure = project_session_structure(&p, &facts);
+    let regions = derive_message_regions(1, &p, &structure);
+    for idx in [1, 2] {
+        let region = regions
+            .iter()
+            .find(|r| r.region_key == format!("m{idx}:chat"))
+            .unwrap_or_else(|| panic!("m{idx}:chat region missing: {regions:?}"));
+        assert_eq!(region.scope, "chat", "{region:?}");
+        assert_eq!(region.message_idx, Some(idx), "{region:?}");
+    }
+
+    // The error-only record carries the error text AS its content — the
+    // chat region IS its index. No separate error region may double-index
+    // the same text: the derivation emits an error region only when the
+    // string differs from the content.
+    assert!(
+        !regions.iter().any(|r| r.region_key == "m1:error"),
+        "error == content must not grow a second region: {regions:?}"
+    );
+}
+
+#[test]
+fn antigravity_f10_error_field_indexes_as_searchable_regions() {
+    // The `error` passthrough on a record whose message content is NOT the
+    // same text: the failure text is packet-visible AND local, so it
+    // indexes as its own searchable region instead of keeping the retired
+    // `agy_error_field_not_indexed` not-read gap. Scope follows where the
+    // record's own text indexes for every provider: a tool-role MODEL
+    // step is an executed step, so its failure text is tool error text —
+    // tools scope with the recorded error flags, exactly like a
+    // tool_result carrying `is_error`; a system ERROR_MESSAGE is message
+    // text the connector itself emits as chat content for error-only
+    // records, so its differing error text stays chat. Error-only
+    // ERROR_MESSAGE records carry the text AS their content (the
+    // previous test pins that they never double-index).
+    let messages = || {
+        vec![
+            msg(0, "user", "made-up request", json!({"status": "DONE"})),
+            msg(
+                1,
+                "tool",
+                "made-up step narration content",
+                json!({
+                    "agy_type": "GENERIC", "status": "ERROR",
+                    "error": "made-up gyrocopter failure detail"
+                }),
+            ),
+            msg(
+                2,
+                "system",
+                "made-up widget failure summary",
+                json!({
+                    "agy_type": "ERROR_MESSAGE", "agy_source": "SYSTEM",
+                    "status": "ERROR",
+                    "error": "made-up wobbledrive failure detail"
+                }),
+            ),
+        ]
+    };
+    let p = packet("antigravity", json!({"source": "antigravity"}), messages());
+    let publication = extract_session_facts(&p, "antigravity");
+    assert!(
+        !publication
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_record_unknown")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+    // The error text is indexed: no coverage entry keeps the retired
+    // reason, and the text scopes certify complete — no not-read gap
+    // from the error field.
+    assert!(
+        !publication.coverage.iter().any(|entry| entry
+            .reasons
+            .iter()
+            .any(|r| r == "agy_error_field_not_indexed")),
+        "the error-field mark is retired: {:?}",
+        publication.coverage
+    );
+    for field in ["chat", "text_inventory"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+
+    // Region derivation: each differing error string becomes its own
+    // region — the tool-step failure text under the tools scope with the
+    // recorded error flags, the system announcement's detail as chat.
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+    let tool_error = regions
+        .iter()
+        .find(|r| r.region_key == "m1:error")
+        .unwrap_or_else(|| panic!("m1:error region missing: {regions:?}"));
+    assert_eq!(tool_error.scope, "tools", "{tool_error:?}");
+    assert_eq!(tool_error.message_idx, Some(1), "{tool_error:?}");
+    assert_eq!(tool_error.has_error, Some(true), "{tool_error:?}");
+    assert_eq!(
+        tool_error.error_type.as_deref(),
+        Some("tool"),
+        "{tool_error:?}"
+    );
+    assert!(
+        tool_error
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("gyrocopter")),
+        "{tool_error:?}"
+    );
+    let chat_error = regions
+        .iter()
+        .find(|r| r.region_key == "m2:error")
+        .unwrap_or_else(|| panic!("m2:error region missing: {regions:?}"));
+    assert_eq!(chat_error.scope, "chat", "{chat_error:?}");
+    assert_eq!(chat_error.has_error, None, "{chat_error:?}");
+    assert_eq!(chat_error.error_type, None, "{chat_error:?}");
+    assert!(
+        chat_error
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("wobbledrive")),
+        "{chat_error:?}"
+    );
+    // A record without an error field grows no error region.
+    assert!(
+        !regions.iter().any(|r| r.region_key == "m0:error"),
+        "no error field on the user record: {regions:?}"
+    );
+
+    // The provider gate: the same shapes under a foreign slug must not
+    // grow error regions (the F10 passthrough contract is
+    // antigravity's; other providers' `error` keys are not it).
+    let foreign = packet("pi_agent", json!({"source": "antigravity"}), messages());
+    let foreign_facts = extract_session_facts(&foreign, "pi_agent");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions
+            .iter()
+            .any(|r| r.region_key.ends_with(":error")),
+        "foreign slug must not derive error regions: {foreign_regions:?}"
+    );
+}
+
+#[test]
+fn antigravity_f10_media_refs_stay_known_without_text_marks() {
+    // `media` attachment references ({mime_type, uri}) ride on USER_INPUT
+    // and MODEL-step records. Attachments carry no text: media must not
+    // degrade any text scope, and the records must classify as known
+    // shapes (the key is part of the F10 contract, not drift).
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "made-up request with attachment",
+                json!({
+                    "status": "DONE",
+                    "media": [
+                        {"mime_type": "image/png", "uri": "file:///tmp/made-up-doodle.png"}
+                    ]
+                }),
+            ),
+            msg(
+                1,
+                "tool",
+                "made-up step output",
+                json!({
+                    "agy_type": "GENERIC", "status": "DONE",
+                    "media": [
+                        {"mime_type": "image/png", "uri": "file:///tmp/made-up-render.png"}
+                    ]
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+    assert!(
+        !publication
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_record_unknown")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+    for field in ["chat", "thinking", "text_inventory", "files"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+}
+
+#[test]
+fn antigravity_f10_status_done_records_success_for_paired_results() {
+    // A raw-shape packet whose TOOL_KINDS record carries call identity
+    // (the oracle-port arm the extractor keeps for raw extras; the pinned
+    // connector itself never records call ids, so real packets stay
+    // unpaired — the clean test above pins that verdict). Paired with its
+    // planner call, the lifecycle status becomes recorded exit/error
+    // evidence: DONE is the recorded success verdict — an explicit error
+    // flag, never a fabricated exit code — so the error scope certifies
+    // complete while the exit-code scope honestly reports nothing
+    // recorded.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({"status": "DONE"})),
+            msg(
+                1,
+                "assistant",
+                "made-up narration",
+                json!({
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "view_file", "call_id": "call_made_up_1",
+                         "arguments": {"TargetFile": "/made/up/status-target.rs"}}
+                    ]},
+                    "status": "DONE"
+                }),
+            ),
+            msg(
+                2,
+                "tool",
+                "made-up file body",
+                json!({
+                    "agy_type": "VIEW_FILE", "call_id": "call_made_up_1",
+                    "content": "made-up file body", "status": "DONE"
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+
+    let view = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "call_made_up_1")
+        .expect("call_made_up_1");
+    assert!(view.has_result);
+    assert_eq!(view.is_error, Some(false));
+    assert_eq!(view.exit_code, None, "no exit code is ever invented");
+    assert_eq!(view.file_path.as_deref(), Some("/made/up/status-target.rs"));
+
+    // Paired status is recorded error evidence: the error scope completes
+    // and neither connector-drop nor unpaired verdict appears.
+    let error = coverage(&publication, "tool_error").expect("tool_error");
+    assert_eq!(error.state, "complete", "{error:?}");
+    assert!(
+        !error
+            .reasons
+            .iter()
+            .any(|r| r == "agy_status_unpaired" || r == "agy_status_dropped_by_connector"),
+        "{error:?}"
+    );
+    // The format records no numeric exit codes for the step: the exit
+    // scope honestly stays not-recorded (collector convention).
+    let exit = coverage(&publication, "tool_exit").expect("tool_exit");
+    assert_eq!(exit.state, "unavailable", "{exit:?}");
+    assert!(
+        exit.reasons.iter().any(|r| r == "tool_exit_not_recorded"),
+        "{exit:?}"
+    );
+    // The fully paired call set certifies the tools scope.
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "complete", "{tools:?}");
 }
 
 #[test]

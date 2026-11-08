@@ -39,7 +39,14 @@ pub use providers::classification::SessionQualityMetrics;
 /// longer mark `text_inventory`/`block_inventory` partial — the connector
 /// delivers their whole text into `content` and lifts tool_use blocks into
 /// invocations; only thinking stays unverifiable for them.
-pub const FACTS_EXTRACTOR_VERSION: i64 = 3;
+/// v4 (branch-only, never on main): antigravity F10 verdicts without the
+/// cursor v3 change.
+/// v5: v3 plus antigravity F10 — precise per-session verdicts from the
+/// passthrough signals (`agy_source_truncated` is text absent at the
+/// source), and `extra.error` text (distinct from the record content)
+/// indexed as an `m{idx}:error` region (search_regions.rs, REGION_VERSION
+/// 2), so the retired `agy_error_field_not_indexed` mark is gone.
+pub const FACTS_EXTRACTOR_VERSION: i64 = 5;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
@@ -213,16 +220,25 @@ pub struct CoverageEntry {
 ///   unknown or malformed shape (those use `claude_content_unknown` /
 ///   `claude_content_malformed`). Anthropic returns redacted thinking
 ///   only encrypted, so no plaintext ever existed locally.
+/// - `agy_source_truncated` (owner follow-up, 2026-11-08): the antigravity
+///   `truncated_fields` passthrough marker (FAD F10). The source
+///   application cut the named fields BEFORE persisting the record, so
+///   the cut text never existed in any local record. `fn
+///   source_truncation()` in `providers/antigravity.rs` emits the code
+///   only for that explicit source marker — never for a parse failure or
+///   unknown shape (a malformed marker keeps
+///   `agy_truncated_fields_malformed`, a not-read gap).
 ///
 /// NOT here on purpose:
-/// - `agy_connector_drops_source_text`: the connector DROPS a marker, so
-///   per-session absence is not provable yet — stays a NOT-READ gap.
+/// - `agy_status_dropped_by_connector` / `agy_status_unpaired`: tool
+///   verdict gaps, not text gaps — text-absence semantics do not apply.
 /// - Any unknown/new reason code: defaults to NOT-READ. Adding a member
 ///   is an owner decision, never an inference from a state string.
 pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &[
     "agent_message_encrypted",
     "reasoning_encrypted",
     "thinking_redacted",
+    "agy_source_truncated",
 ];
 
 /// `true` when a coverage entry's gap is provably text absent at the
@@ -1247,7 +1263,7 @@ mod source_absent_tests {
         ));
         assert!(!is_source_absent_gap(
             "partial",
-            &reasons(&["agy_connector_drops_source_text"])
+            &reasons(&["agy_status_dropped_by_connector"])
         ));
         // A brand-new reason code is not-read by default.
         assert!(!is_source_absent_gap(
@@ -1267,6 +1283,34 @@ mod source_absent_tests {
         assert!(!is_source_absent_gap(
             "partial",
             &reasons(&["agent_message_encrypted", "tool_output_not_recorded"])
+        ));
+    }
+
+    #[test]
+    fn agy_source_truncated_marker_is_source_absent() {
+        // The antigravity `truncated_fields` passthrough marker (owner
+        // decision, 2026-11-08): the source application cut the named
+        // fields before persisting, so the cut text never existed in any
+        // local record. The marker is emitted only for that explicit
+        // source signal — never for parse failures or unknown shapes
+        // (those keep `agy_truncated_fields_malformed`, a not-read gap).
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["agy_source_truncated"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["agy_source_truncated"])
+        ));
+        // Mixed with any not-read reason the proof breaks.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["agy_source_truncated", "agy_tool_call_identity_missing"])
+        ));
+        // The malformed-marker variant stays not-read.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["agy_truncated_fields_malformed"])
         ));
     }
 }
