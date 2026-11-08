@@ -35,7 +35,11 @@ pub use providers::classification::SessionQualityMetrics;
 /// connector's real output (known USER_INPUT/PLANNER_RESPONSE/MODEL-step
 /// shapes, narrowed envelope taint, connector-contract marks for dropped
 /// source text and status).
-pub const FACTS_EXTRACTOR_VERSION: i64 = 2;
+/// v3: cursor no-record shapes (`extra == {}` with delivered content) no
+/// longer mark `text_inventory`/`block_inventory` partial — the connector
+/// delivers their whole text into `content` and lifts tool_use blocks into
+/// invocations; only thinking stays unverifiable for them.
+pub const FACTS_EXTRACTOR_VERSION: i64 = 3;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)

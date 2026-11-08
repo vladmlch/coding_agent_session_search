@@ -21,6 +21,7 @@ use coding_agent_search::model::types::{
     Agent, AgentKind, Conversation, Message, MessageRole, Snippet,
 };
 use coding_agent_search::storage::sqlite::{CURRENT_SCHEMA_VERSION, FrankenStorage};
+use coding_agent_search::viewer_extensions::projection;
 use coding_agent_search::viewer_extensions::{backfill, facts, schema};
 use serde_json::{Value, json};
 use support::{BridgeHarness, FixtureConversation, SeedConversation, SeedMessage};
@@ -5958,7 +5959,10 @@ fn backfill_replays_committed_canonical_into_extension_tables() -> Result<()> {
          step_count, turn_count, tool_call_count \
          FROM viewer_session_projection WHERE conversation_id = 1",
     )?;
-    ensure!(projection.get_typed::<i64>(0)? == 1, "projection_version");
+    ensure!(
+        projection.get_typed::<i64>(0)? == projection::PROJECTION_VERSION,
+        "projection_version"
+    );
     ensure!(projection.get_typed::<i64>(1)? == facts::FACTS_EXTRACTOR_VERSION);
     ensure!(
         projection.get_typed::<i64>(2)? == expected_facts.source_revision,

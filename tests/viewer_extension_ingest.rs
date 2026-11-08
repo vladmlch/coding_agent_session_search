@@ -1548,7 +1548,8 @@ fn devin_facts_graph_linking_and_sparse_coverage() {
 // ---------------------------------------------------------------------------
 // Cursor fixture: harvested bubble extras — toolFormerCalls with recorded
 // callIds and inline outputs, allThinkingBlocks, no exit statuses ever,
-// conflicting callIds never merged, empty-extra message stays partial.
+// conflicting callIds never merged; the trailing empty-extra message is a
+// no-record shape (see the no-record tests below).
 // ---------------------------------------------------------------------------
 
 fn cursor_packet() -> ConversationPacket {
@@ -1676,6 +1677,111 @@ fn cursor_facts_bubble_tools_thinking_and_coverage() {
     );
     let exit = coverage(&publication, "tool_exit").expect("tool_exit");
     assert_eq!(exit.state, "unavailable");
+}
+
+// ---------------------------------------------------------------------------
+// Cursor no-record shapes: the pinned connector persists `extra = {}` for
+// agent-transcript messages and composer draft fallback messages — no raw
+// record — while delivering every text-bearing field into `content` and
+// lifting every tool_use block into `invocations` (archived by the ingest
+// merge under `cass.invocations`). Those events' text/block inventories
+// are complete by construction; only thinking stays unverifiable (a
+// dropped thinking block leaves no archive evidence). Unknown shapes — an
+// empty extra WITHOUT content, or a non-object extra — keep the full
+// four-scope mark.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cursor_facts_no_record_shapes_text_inventory_complete() {
+    let publication = extract_session_facts(
+        &packet(
+            "cursor",
+            json!({"source": "cursor"}),
+            vec![
+                // Composer draft fallback: one user message, no bubble record.
+                msg(
+                    0,
+                    "user",
+                    "synthetic draft prompt about wiring tests",
+                    json!({}),
+                ),
+                // Agent-transcript text message: flattened record text, no raw record.
+                msg(1, "assistant", "synthetic transcript reply", json!({})),
+                // Agent-transcript tool message: invocation archived under
+                // cass.invocations, flattened rendering in content.
+                msg(
+                    2,
+                    "assistant",
+                    "[Tool: read_file - /tmp/synthetic.txt]",
+                    json!({"cass": {"invocations": [
+                        {"kind": "tool", "call_id": "call_synth_1", "name": "read_file",
+                         "input": {"file_path": "/tmp/synthetic.txt"}}
+                    ]}}),
+                ),
+            ],
+        ),
+        "cursor",
+    );
+
+    // The delivered text of every no-record event is fully in `content`,
+    // and the projection derives its block inventory from content: the
+    // text and block inventories are complete.
+    for field in ["text_inventory", "block_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+    }
+
+    // Thinking stays honestly unverifiable: the absent record could have
+    // carried thinking blocks — per-event partial, session-level
+    // unavailable, reason naming the absent record.
+    let thinking = coverage(&publication, "thinking").expect("thinking");
+    assert_eq!(thinking.state, "unavailable");
+    assert!(
+        thinking.reasons.iter().any(|r| r == "cursor_extra_absent"),
+        "thinking reasons: {:?}",
+        thinking.reasons
+    );
+
+    // No recorded tool records exist for these events (a `{}` extra means
+    // the connector lifted no invocations; the cass-merged invocation is
+    // archived structure, not recorded call/result evidence): tools is
+    // complete the way a session without tools is.
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "complete", "tools: {tools:?}");
+}
+
+#[test]
+fn cursor_facts_unknown_shapes_stay_fully_marked() {
+    let publication = extract_session_facts(
+        &packet(
+            "cursor",
+            json!({"source": "cursor"}),
+            vec![
+                // Not a known connector shape: every `{}` producer the
+                // pinned connector has delivers non-empty content.
+                msg(0, "assistant", "", json!({})),
+                // Non-object extra: unknown entirely.
+                msg(1, "assistant", "text beside a null extra", Value::Null),
+            ],
+        ),
+        "cursor",
+    );
+    for field in ["tools", "block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "cursor_extra_absent"),
+            "{field}: {entry:?}"
+        );
+    }
+    // Thinking still carries the per-event absent-record mark (visible in
+    // the reason set) under the session-level unverifiable-thinking state.
+    let thinking = coverage(&publication, "thinking").expect("thinking");
+    assert_eq!(thinking.state, "unavailable", "thinking: {thinking:?}");
+    assert!(
+        thinking.reasons.iter().any(|r| r == "cursor_extra_absent"),
+        "thinking: {thinking:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1898,8 +2004,8 @@ fn publish_reports_missing_extension_profile() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 use coding_agent_search::viewer_extensions::projection::{
-    ProjectionPublishOutcome, project_session_structure, publish_session_structure,
-    publish_structure_for_canonical_best_effort,
+    PROJECTION_VERSION, ProjectionPublishOutcome, project_session_structure,
+    publish_session_structure, publish_structure_for_canonical_best_effort,
 };
 
 fn members(
@@ -2027,6 +2133,81 @@ fn projection_claude_merges_stream_and_splits_blocks() {
     assert_eq!(structure.steps, again.steps);
     assert_eq!(structure.turns, again.turns);
     assert_eq!(structure.tool_calls, again.tool_calls);
+}
+
+#[test]
+fn cursor_projection_cass_invocations_are_tool_call_parts() {
+    // Cursor transcript tool messages archive their tool_use blocks under
+    // `cass.invocations` (the connector lifts every block; the ingest merge
+    // writes the envelope). For cursor that single-cass-key envelope is
+    // NOT a compaction skeleton — the invocations are the recorded calls —
+    // so the derived block inventory carries one tool_call part per
+    // invocation, call ids preserved, instead of degrading the record to
+    // its flattened text.
+    let packet = packet(
+        "cursor",
+        json!({"source": "cursor"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "synthetic prompt",
+                json!({"type": 1, "rawText": "synthetic prompt", "bubbleId": "b1"}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "[Tool: read_file - /tmp/synthetic.txt] [Tool: bash - ls /tmp]",
+                json!({"cass": {"invocations": [
+                    {"kind": "tool", "call_id": "call_synth_1", "name": "read_file",
+                     "input": {"file_path": "/tmp/synthetic.txt"}},
+                    {"kind": "tool", "call_id": "call_synth_2", "name": "bash",
+                     "input": {"command": "ls /tmp"}},
+                ]}}),
+            ),
+        ],
+    );
+    let facts = extract_session_facts(&packet, "cursor");
+    let structure = project_session_structure(&packet, &facts);
+
+    // Step 2 is the assistant turn: exactly one tool_call part per
+    // invocation, in recorded order; the flattened content is not
+    // double-counted as a text part beside them.
+    assert_eq!(
+        parts(&structure, 2),
+        vec![
+            ("tool_call", Some("call_synth_1"), 1),
+            ("tool_call", Some("call_synth_2"), 1),
+        ],
+        "{:?}",
+        structure.steps
+    );
+}
+
+#[test]
+fn codex_projection_compacted_skeleton_stays_text_only() {
+    // Codex compaction skeletons keep the flattened-text-only projection:
+    // for codex the single-cass-key envelope means the raw response record
+    // was compacted away, so only the flattened text remains projectable.
+    let packet = packet(
+        "codex",
+        json!({"source": "codex"}),
+        vec![msg(
+            0,
+            "assistant",
+            "synthetic compacted codex reply",
+            json!({"cass": {"model": "synthetic-model"}}),
+        )],
+    );
+    let facts = extract_session_facts(&packet, "codex");
+    let structure = project_session_structure(&packet, &facts);
+
+    assert_eq!(
+        parts(&structure, 1),
+        vec![("text", None, 0)],
+        "{:?}",
+        structure.steps
+    );
 }
 
 #[test]
@@ -2280,7 +2461,10 @@ fn projection_publish_is_idempotent_replace_with_anchors() -> Result<()> {
         "SELECT projection_version, source_revision FROM viewer_session_projection \
          WHERE conversation_id = 1",
     )?;
-    ensure!(marker.get_typed::<i64>(0)? == 1, "projection_version");
+    ensure!(
+        marker.get_typed::<i64>(0)? == PROJECTION_VERSION,
+        "projection_version"
+    );
     let revision: i64 = db
         .storage
         .raw()
