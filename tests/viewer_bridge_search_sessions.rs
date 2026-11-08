@@ -1026,6 +1026,78 @@ fn search_sessions_unicode_deep_and_byte_budget() -> Result<()> {
     bridge.shutdown()
 }
 
+/// An index hit the archived region text cannot reproduce must refuse
+/// strict search WITH a truthful reason — never a reasonless
+/// `facts_pending`. S8's marker term is published in the canonical
+/// document (the lexical lane indexes the full message body) but lies
+/// past the 64 KiB hydration bound, so bounded verification can neither
+/// confirm nor deny the hit: honest `possible` membership whose Unknown
+/// must carry evidence. Before the truthful reason existed, the refusal
+/// picked `facts_pending` through a vacuous "every reason is pending"
+/// check over an EMPTY reason set — an evidence-free retryable verdict.
+#[test]
+fn search_sessions_unverifiable_hit_refuses_with_truthful_reason() -> Result<()> {
+    let mut fixture = gold_fixture();
+    // A >64 KiB chat body whose only occurrence of the marker term sits
+    // far past the bound (the real archive shape: an indexed long message
+    // whose hit lands beyond every hydrated fragment).
+    let long_body = format!("{} farbeyondterm", "a".repeat(70_000));
+    let long_body: &'static str = Box::leak(long_body.into_boxed_str());
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-far",
+        source_path: "/sessions/s-8-far.jsonl",
+        workspace: None,
+        title: "far out-of-budget session",
+        started_at: Some(6_200),
+        ended_at: Some(9_300),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![(0, MessageRole::User, long_body, None)],
+    });
+    let mut bridge = gold_harness_full(&fixture, &[])?;
+
+    // Strict: the unverifiable hit is unavailable evidence — a truthful,
+    // non-retryable refusal that NAMES what could not be verified.
+    let page = search(&mut bridge, json!({"query":"farbeyondterm"}))?;
+    ensure!(
+        page["ok"] == false,
+        "an unverifiable index hit must not silently miss: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "an unreproducible hit is unavailable evidence, not pending facts: {page}"
+    );
+    let message = page["error"]["message"].as_str().unwrap_or_default();
+    ensure!(
+        message.contains("quill_hit_not_reproduced"),
+        "the refusal must name the unreproducible hit: {page}"
+    );
+
+    // allow_partial still answers, with the honest incomplete-membership
+    // warning for the unknown session.
+    let page = search(
+        &mut bridge,
+        json!({"query":"farbeyondterm", "allow_partial": true}),
+    )?;
+    ensure!(page["ok"] == true, "partial mode must answer: {page}");
+    let warnings = page["result"]["warnings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure!(
+        warnings.iter().any(|w| w == "membership_incomplete"),
+        "the unknown session must keep its warning: {page}"
+    );
+    ensure!(
+        !ids(&page).contains(&8),
+        "the unverifiable session is not a member: {page}"
+    );
+    bridge.shutdown()
+}
+
 /// Phrase (quoted, contiguous-token), prefix (non-exact), and code
 /// punctuation semantics through the persisted regions — the same
 /// semantics the query-time lane produced.
