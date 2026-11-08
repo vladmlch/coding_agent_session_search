@@ -1325,7 +1325,11 @@ fn recorded_text(value: &Value) -> (Option<String>, bool) {
                         texts.push(text.to_string());
                         continue;
                     }
-                    if !matches!(kind, Some("image" | "input_image")) {
+                    // Keep in lockstep with the facts-lane rule in
+                    // `viewer_extensions/providers/mod.rs`: `image_url` is
+                    // the codex tool-output image part (OpenAI shape) —
+                    // known non-text, never a "not recorded" claim.
+                    if !matches!(kind, Some("image" | "input_image" | "image_url")) {
                         complete = false;
                     }
                 } else {

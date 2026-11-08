@@ -2215,6 +2215,133 @@ fn search_sessions_unknown_reason_code_still_blocks_strict() -> Result<()> {
 }
 
 /// The manifest the codex extractor publishes for a session whose ONLY
+/// inventory gap is an interrupted call (codex-facts-v2): the rollout
+/// provably ended mid-call — the call is the packet's last event, or the
+/// next task's user message cut the pending turn (codex never accepts user
+/// input mid-turn) — so the result text never existed in any local record.
+/// `tools` and `text_inventory` go partial with `tool_output_interrupted`
+/// (on the source-absent allowlist); the tool-verdict scopes keep their
+/// honest unrecorded gaps, which are not text claims.
+fn codex_interrupted_call_manifest() -> Value {
+    json!({
+        "extractor": "codex-facts-v2",
+        "extractor_version": 2,
+        "provider": "codex",
+        "fields": {
+            "chat": {"state":"complete","reasons":[]},
+            "tools": {"state":"partial","reasons":["tool_output_interrupted"]},
+            "thinking": {"state":"complete","reasons":[]},
+            "tool_exit": {"state":"unavailable","reasons":["tool_exit_not_recorded"]},
+            "tool_error": {"state":"unavailable","reasons":["tool_error_not_recorded"]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"partial","reasons":["tool_output_interrupted"]},
+            "files": {"state":"complete","reasons":[]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 1, "paired_calls": 0}
+    })
+}
+
+/// (v) The interrupted-call proof joins the source-absent allowlist: the
+/// rollout provably holds no output record for the call, so membership
+/// over the text that does exist stays exact. The session ANSWERS strict
+/// search with the `tool_output_interrupted` annotation.
+#[test]
+fn search_sessions_interrupted_tool_output_answers_strict_with_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "partial", codex_interrupted_call_manifest())?;
+
+    // S5's chat text ("codex remote quux") still exists and matches: the
+    // strict page answers S3+S5 exactly as if the facts were complete.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["tool_output_interrupted"]),
+        "the interrupted session must be annotated with its reason: {s5}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // A term S5's existing text lacks is a PROVEN non-member.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    bridge.shutdown()
+}
+
+/// The manifest the claude extractor publishes for a rewritten-replay pair
+/// (claude-facts-v3): the live record survives the facts lane, BOTH texts
+/// index as packet messages, and the conflict is recorded on the dedicated
+/// `replay_conflict` scope — a custom scope no strict gate consults — so
+/// every core text verdict stays complete.
+fn claude_rewritten_replay_manifest() -> Value {
+    json!({
+        "extractor": "claude-facts-v3",
+        "extractor_version": 2,
+        "provider": "claude_code",
+        "fields": {
+            "chat": {"state":"complete","reasons":[]},
+            "tools": {"state":"complete","reasons":[]},
+            "thinking": {"state":"complete","reasons":[]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"complete","reasons":[]},
+            "files": {"state":"complete","reasons":[]},
+            "mcp": {"state":"complete","reasons":[]},
+            "replay_conflict": {"state":"partial","reasons":["claude_rewritten_replay"]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (vi) A rewritten-replay conflict rides a custom `replay_conflict` scope:
+/// both versions of the record are local indexed packet messages, so the
+/// conflict never demotes a text verdict, never blocks strict search and
+/// never claims a source-absent annotation (the rewritten text EXISTS —
+/// twice).
+#[test]
+fn search_sessions_replay_conflict_scope_never_blocks_strict() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 4, "partial", claude_rewritten_replay_manifest())?;
+
+    // S4's text still matches, and the conflict scope does not exclude it.
+    let page = search(&mut bridge, json!({"query":"answer"}))?;
+    assert_members(&page, &[4])?;
+    let s4 = result_item(&page, 4)?;
+    ensure!(
+        s4["source_text_absent"] == json!([]),
+        "a replay conflict is not a source-absent annotation: {s4}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 0,
+        "no source-absent count for a replay conflict: {page}"
+    );
+
+    // A term S4 lacks is a proven non-member; the evaluated conflict scope
+    // keeps the strict answer complete.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    bridge.shutdown()
+}
+
+/// The manifest the codex extractor publishes for a session whose ONLY
 /// inventory gap is a reasoning item carrying `encrypted_content` — the
 /// exact shape the encrypted arm of `fn reasoning()` in
 /// `src/viewer_extensions/providers/codex.rs` produces (the code is

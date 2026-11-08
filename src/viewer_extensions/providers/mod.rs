@@ -328,7 +328,11 @@ pub(crate) fn recorded_text(value: &Value) -> (Option<String>, bool) {
                         texts.push(text.to_string());
                         continue;
                     }
-                    if !matches!(kind, Some("image" | "input_image")) {
+                    // `image_url` is the codex tool-output image part
+                    // (`{"type":"image_url","image_url":{…}}`, OpenAI
+                    // shape): an image carries no text, so it is known
+                    // non-text — never a "not recorded" claim.
+                    if !matches!(kind, Some("image" | "input_image" | "image_url")) {
                         complete = false;
                     }
                 } else {
@@ -401,6 +405,12 @@ pub(crate) struct ToolCollector {
     /// default is text-bearing loss (the result record is missing from
     /// storage); claude_code narrows it to `tools` only.
     result_missing_scopes: &'static [&'static str],
+    /// Call ids whose missing result record is PROVEN interrupted at the
+    /// source (the rollout ends mid-call, or a later user message cuts the
+    /// pending turn): the output text never existed in any local record, so
+    /// `finish()` marks them `tool_output_interrupted` (source-absent,
+    /// allowlisted) instead of the not-read `tool_result_missing`.
+    interrupted: BTreeSet<String>,
 }
 
 impl ToolCollector {
@@ -409,7 +419,16 @@ impl ToolCollector {
             calls: BTreeMap::new(),
             results: BTreeMap::new(),
             result_missing_scopes: &["tools", "text_inventory"],
+            interrupted: BTreeSet::new(),
         }
+    }
+
+    /// Codex only: record that an unpaired call's result text is absent at
+    /// the SOURCE (`providers/codex.rs` proves it — never a parse failure or
+    /// unknown shape), which is what makes the gap source-absent rather
+    /// than a not-read gap.
+    pub fn note_interrupted(&mut self, call_id: &str) {
+        self.interrupted.insert(call_id.to_string());
     }
 
     /// claude_code only: its connector drops `tool_result` content with no
@@ -512,7 +531,12 @@ impl ToolCollector {
                 None
             };
             if results.is_empty() {
-                coverage.mark(self.result_missing_scopes, "tool_result_missing", "partial");
+                let reason = if self.interrupted.contains(call_id) {
+                    "tool_output_interrupted"
+                } else {
+                    "tool_result_missing"
+                };
+                coverage.mark(self.result_missing_scopes, reason, "partial");
             }
             let exit_code = result.and_then(|r| r.exit_code);
             let is_error = result.and_then(|r| r.is_error);
