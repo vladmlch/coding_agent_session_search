@@ -936,12 +936,14 @@ fn search_sessions_indexed_hydration_is_bounded() -> Result<()> {
     bridge.shutdown()
 }
 
-/// Unicode + deep coordinates + the 64 KiB region-text byte budget. S8
+/// Unicode + deep coordinates + the returned-text byte bound. S8
 /// parks a Cyrillic marker at message idx 1100 (deep-link coordinate);
-/// S9 holds a >64 KiB chat body whose terms straddle the hydration bound —
-/// in-budget terms verify, out-of-budget hits degrade to honest
-/// `unknown` (never a silent false negative and never a slice panic on a
-/// multibyte boundary).
+/// S9 holds a >64 KiB chat body whose terms straddle the old hydration
+/// bound — in-window terms verify from the bounded preview, and hits
+/// past the window verify over the WHOLE body (strict members, never a
+/// silent false negative). The 64 KiB cap survives only on text
+/// RETURNED to the client; the multibyte 'ж' straddling the bound must
+/// never panic the lane.
 #[test]
 fn search_sessions_unicode_deep_and_byte_budget() -> Result<()> {
     let mut fixture = gold_fixture();
@@ -1007,36 +1009,33 @@ fn search_sessions_unicode_deep_and_byte_budget() -> Result<()> {
         "deep witness must carry message idx 1100: {matches:?}"
     );
 
-    // In-budget term verifies normally.
+    // In-window term verifies from the bounded preview.
     let page = search(&mut bridge, json!({"query":"boundaryterm"}))?;
     assert_members(&page, &[9])?;
 
-    // `beyondterm` is indexed in the canonical document but lies past the
-    // 64 KiB hydration bound: the hit cannot be verified, so the session
-    // is honestly `unknown` — the page refuses instead of answering a
-    // silently incomplete membership.
+    // `beyondterm` is indexed in the canonical document and lies past the
+    // 64 KiB window: verification escalates to the whole body, finds the
+    // hit and answers STRICTLY — an exact member, not the old
+    // bounded-prefix honest-unknown refusal.
     let page = search(&mut bridge, json!({"query":"beyondterm"}))?;
-    ensure!(
-        page["ok"] == false,
-        "an unverifiable out-of-budget hit must not silently miss: {page}"
-    );
+    assert_members(&page, &[9])?;
 
     // The boundary-safe truncation did not panic the lane — the bridge is
     // still serving (the searches above already proved it).
     bridge.shutdown()
 }
 
-/// An index hit the archived region text cannot reproduce must refuse
-/// strict search WITH a truthful reason — never a reasonless
-/// `facts_pending`. S8's marker term is published in the canonical
-/// document (the lexical lane indexes the full message body) but lies
-/// past the 64 KiB hydration bound, so bounded verification can neither
-/// confirm nor deny the hit: honest `possible` membership whose Unknown
-/// must carry evidence. Before the truthful reason existed, the refusal
-/// picked `facts_pending` through a vacuous "every reason is pending"
-/// check over an EMPTY reason set — an evidence-free retryable verdict.
+/// A gated index hit past the 64 KiB window is an EXACT strict member:
+/// verification sees the whole canonical body, so the hit reproduces
+/// wherever it lives. The 64 KiB cap survives only on text RETURNED to
+/// the client (snippets/payload); the bounded window stays the first
+/// chance because the common in-window hit costs no escalation. The
+/// unreproducible-hit arm (`quill_hit_not_reproduced`) remains in the
+/// evaluator for genuine drift — an index hit the archived text cannot
+/// reproduce at all — but the past-bound placement that used to reach it
+/// is fixed here.
 #[test]
-fn search_sessions_unverifiable_hit_refuses_with_truthful_reason() -> Result<()> {
+fn search_sessions_past_bound_hit_is_a_strict_member() -> Result<()> {
     let mut fixture = gold_fixture();
     // A >64 KiB chat body whose only occurrence of the marker term sits
     // far past the bound (the real archive shape: an indexed long message
@@ -1059,41 +1058,344 @@ fn search_sessions_unverifiable_hit_refuses_with_truthful_reason() -> Result<()>
     });
     let mut bridge = gold_harness_full(&fixture, &[])?;
 
-    // Strict: the unverifiable hit is unavailable evidence — a truthful,
-    // non-retryable refusal that NAMES what could not be verified.
+    // Strict: the past-bound hit verifies over the whole body — an exact
+    // member, answered without allow_partial.
     let page = search(&mut bridge, json!({"query":"farbeyondterm"}))?;
+    assert_members(&page, &[8])?;
+    // The witness deep-links the canonical message, and the snippet is
+    // the bounded RETURNED window: verification saw the whole body, but
+    // the payload never carries more than the 64 KiB cap.
+    let matches = page["result"]["matches"]["8"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     ensure!(
-        page["ok"] == false,
-        "an unverifiable index hit must not silently miss: {page}"
+        matches.len() == 1,
+        "the member carries exactly one witness: {page}"
     );
     ensure!(
-        page["error"]["kind"] == "data_unavailable",
-        "an unreproducible hit is unavailable evidence, not pending facts: {page}"
+        matches[0]["message_idx"].as_i64() == Some(0),
+        "the witness anchors message idx 0: {page}"
     );
-    let message = page["error"]["message"].as_str().unwrap_or_default();
+    let snippet = matches[0]["snippet"].as_str().unwrap_or_default();
     ensure!(
-        message.contains("quill_hit_not_reproduced"),
-        "the refusal must name the unreproducible hit: {page}"
+        !snippet.contains("farbeyondterm"),
+        "the returned snippet is the bounded window, not the whole body: {page}"
     );
 
-    // allow_partial still answers, with the honest incomplete-membership
-    // warning for the unknown session.
+    // allow_partial answers identically — the session is now KNOWN, so
+    // the page is complete with no membership warning.
     let page = search(
         &mut bridge,
         json!({"query":"farbeyondterm", "allow_partial": true}),
     )?;
-    ensure!(page["ok"] == true, "partial mode must answer: {page}");
+    assert_members(&page, &[8])?;
+    ensure!(
+        page["result"]["complete"] == true,
+        "a verified past-bound member leaves the page complete: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// Whole-body verification shapes: every hit the 64 KiB window cannot see
+/// still decides EXACTLY. The window's edge cuts the first marker token
+/// mid-token (`o` of `omega` at byte 65,535) — the truncated window token
+/// must neither satisfy the query nor crash the matcher, while the whole
+/// body finds the phrase, the bare term, the ungated non-ASCII term past
+/// the window and the term at the very END of the body. An absent term
+/// over the same huge body is a DEFINITE non-member (strict, no Unknown)
+/// — for a gated literal (the index proves no hit) and for an ungated
+/// non-ASCII literal (the whole body was scanned and the term is absent).
+#[test]
+fn search_sessions_past_bound_shapes_verify_over_the_whole_body() -> Result<()> {
+    let mut fixture = gold_fixture();
+    // 16,383 * "pad " = 65,532 B, then "xy " lands the separator at byte
+    // 65,534 and `omega` starts AT byte 65,535 — inside the 64 KiB
+    // window ([0, 65_536)) by exactly one byte, so the window holds the
+    // truncated token "o" while the full body holds "omega".
+    let mut body = String::with_capacity(70_000);
+    for _ in 0..16_383 {
+        body.push_str("pad ");
+    }
+    body.push_str("xy omega zero endpoint past the window");
+    body.push_str(" middlefiller");
+    // Ungated-lane marker (non-ASCII) past the window.
+    body.push_str(" хвостовой");
+    // …and a term at the very END of the body.
+    body.push_str(" trailingfiller finaltail");
+    let body: &'static str = Box::leak(body.into_boxed_str());
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-shapes",
+        source_path: "/sessions/s-8-shapes.jsonl",
+        workspace: None,
+        title: "past-bound shapes session",
+        started_at: Some(6_200),
+        ended_at: Some(9_300),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![(0, MessageRole::User, body, None)],
+    });
+    let mut bridge = gold_harness_full(&fixture, &[])?;
+
+    // Exact phrase past the window, its first token cut mid-token by the
+    // window edge — the truncated "o" must not satisfy the phrase.
+    let page = search(&mut bridge, json!({"query":"\"omega zero endpoint\""}))?;
+    assert_members(&page, &[8])?;
+
+    // Bare term whose token the window cut to "o" — the whole body finds
+    // the full token.
+    let page = search(&mut bridge, json!({"query":"omega"}))?;
+    assert_members(&page, &[8])?;
+
+    // Non-ASCII term past the window — the ungated lane scans the whole
+    // body and finds it (an exact member, not honest-unknown).
+    let page = search(&mut bridge, json!({"query":"хвостовой"}))?;
+    assert_members(&page, &[8])?;
+
+    // A term at the very END of the body — no trailing context at all.
+    let page = search(&mut bridge, json!({"query":"finaltail"}))?;
+    assert_members(&page, &[8])?;
+
+    // Absent term over the huge body: gated (the index proves no hit) —
+    // a DEFINITE non-member, strict page answering OK with no members.
+    let page = search(&mut bridge, json!({"query":"absentmarker"}))?;
+    assert_members(&page, &[])?;
+    ensure!(
+        page["result"]["complete"] == true,
+        "a proven absence leaves the strict page complete: {page}"
+    );
+
+    // Absent non-ASCII term: the whole body was scanned (definite
+    // absence), so the page is again an exact empty answer — never an
+    // Unknown refusal.
+    let page = search(&mut bridge, json!({"query":"отсутствует"}))?;
+    assert_members(&page, &[])?;
+    ensure!(
+        page["result"]["complete"] == true,
+        "a scanned-and-absent term is a definite non-member: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The verifier must read region text with the INDEX ANALYZER's token
+/// boundaries, or an index-proven hit cannot reproduce even over the
+/// whole body. quill indexes `title`/`content` with the CASS hyphen
+/// pipeline (ASCII-alphanumeric runs; `_` and `$` are separators;
+/// hyphen-joined runs additionally emit their parts), so `readme` is a
+/// real TOKEN of `G5_MODE_SEARCH_README.md` to the index — while the old
+/// `\w\-$`-joining verifier saw one `g5_mode_search_readme` token and
+/// degraded the session to `quill_hit_not_reproduced`. 27 sessions
+/// exactly like this kept strict `README` search refusing on the owner
+/// archive even after whole-body hydration landed. The literal tokenizer
+/// now splits on every non-alphanumeric scalar, mirroring the analyzer
+/// (and its edge-prefix fields, which split the same way), so every
+/// gated hit on `_`/`$`-glued or hyphen-joined text reproduces.
+#[test]
+fn search_sessions_verifier_reads_index_analyzer_token_boundaries() -> Result<()> {
+    let mut fixture = gold_fixture();
+    // The real-archive shape: a directory-listing message whose marker
+    // terms are glued by `_`, `-` and `$`.
+    let body: &'static str =
+        "listing of G5_MODE_SEARCH_README.md MUJOCO_LOG.TXT then mcp-server hookup cost$total";
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-analyzer",
+        source_path: "/sessions/s-8-analyzer.jsonl",
+        workspace: None,
+        title: "analyzer boundary session",
+        started_at: Some(6_200),
+        ended_at: Some(9_300),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![(0, MessageRole::User, body, None)],
+    });
+    let mut bridge = gold_harness_full(&fixture, &[])?;
+
+    // `_`-glued text: the index tokenizes G5_MODE_SEARCH_README.md into
+    // [g5, mode, search, readme, md], so bare `readme` is an
+    // index-proven hit the verifier must reproduce.
+    let page = search(&mut bridge, json!({"query":"readme"}))?;
+    assert_members(&page, &[8])?;
+
+    // Exact phrase across the `_` join: [mode, search] are adjacent
+    // analyzer tokens.
+    let page = search(&mut bridge, json!({"query":"\"mode search\""}))?;
+    assert_members(&page, &[8])?;
+
+    // Hyphen-joined text: the analyzer emits the parts of `mcp-server`,
+    // so bare `server` is an index-proven hit — in the glued message AND
+    // in S1's `meta:tags` region (the fixture's `mcp-server` tag). The
+    // old `\w\-$`-joining verifier saw one `mcp-server` token in both
+    // places and degraded BOTH sessions to `quill_hit_not_reproduced`
+    // for `server`; the aligned verifier reproduces the index on both.
+    let page = search(&mut bridge, json!({"query":"server"}))?;
+    assert_members(&page, &[1, 8])?;
+    let s1_witness = page["result"]["matches"]["1"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure!(
+        s1_witness.iter().any(|m| m["block_key"] == "meta:tags"),
+        "S1's `server` witness anchors its mcp-server tag region: {page}"
+    );
+
+    // `$`-glued text splits the same way.
+    let page = search(&mut bridge, json!({"query":"total"}))?;
+    assert_members(&page, &[8])?;
+
+    // A hyphen-bearing QUERY gates on the analyzer's joined token
+    // (`g5-mode` — the run the CASS tokenizer keeps), and `_`-glued text
+    // carries only the PARTS — so the index proves NO hit anywhere: a
+    // definite, complete absence, the same verdict as `absentmarker`.
+    // (The verifier's [g5, mode] reading is broader than this gate but
+    // never diverges: every doc the gate CAN prove carries the joined
+    // run, hence both parts, and verifies as a member.)
+    let page = search(&mut bridge, json!({"query":"g5-mode"}))?;
+    assert_members(&page, &[])?;
+    ensure!(
+        page["result"]["complete"] == true,
+        "a joiner-bearing query with no joined token anywhere is a proven absence: {page}"
+    );
+
+    // The spaced counterpart: two ANDed part terms gate on the indexed
+    // parts, so `_`-glued text IS a candidate — and a member.
+    let page = search(&mut bridge, json!({"query":"g5 mode"}))?;
+    assert_members(&page, &[8])?;
+
+    // A pure-joiner ASCII literal sanitizes to an empty lexical query,
+    // and the engine REFUSES the whole op with a typed `invalid_request`
+    // — pre-existing gate behavior, unchanged by the alignment: the
+    // no-silent-substitution contract, not an empty lie. The verifier's
+    // never-matcher serves joiner-only literals that SKIP the gate
+    // (non-ASCII — the analyzer emits no tokens for them), pinned next.
+    let page = search(&mut bridge, json!({"query":"___"}))?;
+    ensure!(
+        page["ok"] == false && page["error"]["kind"] == "invalid_request",
+        "a pure-joiner ASCII literal refuses with a typed error: {page}"
+    );
+
+    // A joiner-only non-ASCII literal skips the gate and evaluates
+    // through the never-matcher: a complete, definite absence.
+    let page = search(&mut bridge, json!({"query":"。。。"}))?;
+    assert_members(&page, &[])?;
+    ensure!(
+        page["result"]["complete"] == true,
+        "a joiner-only non-ASCII literal is a proven absence: {page}"
+    );
+
+    // The never-matcher arm above needs no scan to find nothing, and the
+    // other arms come from reproduced gated hits: a member witness
+    // anchors the glued message.
+    let page = search(&mut bridge, json!({"query":"readme"}))?;
+    let matches = page["result"]["matches"]["8"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure!(
+        matches.len() == 1 && matches[0]["message_idx"].as_i64() == Some(0),
+        "the glued-text member carries one witness on message 0: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The whole-body verification budget refuses with a TYPED reason, never
+/// a silent cap. Past the request's byte ceiling the affected sessions
+/// degrade to honest uncertainty naming
+/// `verification_bytes_budget_exceeded` — gated candidates through
+/// `text_inventory:<state>:…` (the index-proven hit stays possible
+/// membership), ungated evaluation through `literal:…` — and
+/// `allow_partial` still serves the verified membership with the
+/// `membership_incomplete` warning.
+#[test]
+fn search_sessions_verification_budget_refusal_is_typed() -> Result<()> {
+    let mut fixture = gold_fixture();
+    // A body far past the 64 KiB window whose marker only the whole-body
+    // escalation can verify.
+    let long_body = format!("{} budgetmarker past the window", "b".repeat(100_000));
+    let long_body: &'static str = Box::leak(long_body.into_boxed_str());
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-budget",
+        source_path: "/sessions/s-8-budget.jsonl",
+        workspace: None,
+        title: "budget ceiling session",
+        started_at: Some(6_200),
+        ended_at: Some(9_300),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![(0, MessageRole::User, long_body, None)],
+    });
+    // Budget 1 byte: the first whole-body scan overdrafts by design (the
+    // ceiling gates every scan AFTER the running total reaches it), so
+    // every later region — session 8's gated escalation included —
+    // refuses with the typed reason.
+    let mut bridge = gold_harness_full(&fixture, &["--text-verification-budget-bytes", "1"])?;
+
+    // Ungated (non-ASCII) evaluation: budget exhaustion is honest
+    // `unseen` — the strict page refuses naming the typed reason.
+    let page = search(&mut bridge, json!({"query":"маркер"}))?;
+    ensure!(
+        page["ok"] == false,
+        "budget exhaustion must refuse strict search: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "budget exhaustion is honest-unavailable, never pending: {page}"
+    );
+    let message = page["error"]["message"].as_str().unwrap_or_default();
+    ensure!(
+        message.contains("literal:verification_bytes_budget_exceeded"),
+        "the ungated refusal must name the typed budget reason: {page}"
+    );
+
+    // Gated escalation past the budget: the index-proven hit is possible
+    // membership whose whole-body verification the budget refused — the
+    // strict page names the inventory-scoped reason.
+    let page = search(
+        &mut bridge,
+        json!({"ast":{"type":"or","children":[
+        {"type":"term","value":"кириллица"},
+        {"type":"term","value":"budgetmarker"}]}}),
+    )?;
+    ensure!(
+        page["ok"] == false,
+        "a gated hit the budget cannot verify must refuse: {page}"
+    );
+    let message = page["error"]["message"].as_str().unwrap_or_default();
+    ensure!(
+        message.contains("text_inventory:complete:verification_bytes_budget_exceeded"),
+        "the gated refusal must name the inventory-scoped budget reason: {page}"
+    );
+
+    // allow_partial serves the verified membership: nothing verified to
+    // a member, the page is incomplete with the honest warning.
+    let page = search(
+        &mut bridge,
+        json!({"query":"маркер", "allow_partial": true}),
+    )?;
+    ensure!(page["ok"] == true, "partial opt-in must serve: {page}");
+    ensure!(
+        page["result"]["complete"] == false,
+        "the budget-refused sessions keep the page incomplete: {page}"
+    );
+    ensure!(
+        ids(&page).is_empty(),
+        "no session verifies the marker: {page}"
+    );
     let warnings = page["result"]["warnings"]
         .as_array()
         .cloned()
         .unwrap_or_default();
     ensure!(
         warnings.iter().any(|w| w == "membership_incomplete"),
-        "the unknown session must keep its warning: {page}"
-    );
-    ensure!(
-        !ids(&page).contains(&8),
-        "the unverifiable session is not a member: {page}"
+        "the budget-refused sessions must keep their warning: {page}"
     );
     bridge.shutdown()
 }
