@@ -41864,11 +41864,54 @@ pub mod persist {
                 .expect("ingest receipt for conversation 1")
         }
 
+        /// The region-publication fixtures below promise the
+        /// `IncrementalInline` lane end to end: canonical upserts plus the
+        /// post-commit marks stamp. The operator opt-in
+        /// `CASS_DEFER_LEXICAL_UPDATES` process flag legitimately switches
+        /// production off that lane, and sibling tests set it under their own
+        /// private env mutexes, so an ambient `=1` leaks into these fixtures
+        /// and leaves the marks `pending` (the fd9e1d95 baseline failure at
+        /// `changed_session_republishes_and_restages_region_docs`). Re-run the
+        /// fixture body in a child process with the flag pinned to `0` at
+        /// spawn so the fixture exercises the lane it names regardless of
+        /// parent env; the parent process env is never mutated. Returns true
+        /// inside the child, where the real body must still run.
+        fn run_in_inline_lane_child(test_name: &'static str) -> bool {
+            const CHILD: &str = "CASS_TEST_REGION_INLINE_LANE_CHILD";
+            if dotenvy::var(CHILD).is_ok() {
+                return true;
+            }
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", test_name, "--nocapture"])
+                .env(CHILD, "1")
+                .env("CASS_DEFER_LEXICAL_UPDATES", "0")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "{test_name} child failed:\n{stdout}\n{stderr}"
+            );
+            // A filter that selects zero tests — or any child that skipped
+            // the real fixture — must not count as a pass.
+            assert!(
+                stdout.contains("test result: ok. 1 passed; 0 failed"),
+                "{test_name} child must execute exactly one passing test:\n{stdout}\n{stderr}"
+            );
+            false
+        }
+
         /// Unchanged session on the incremental lane: the generation skips
         /// (`SkippedUnchanged`, receipt untouched) and the region documents are
         /// neither re-upserted nor re-stamped.
         #[test]
         fn unchanged_session_skips_generation_and_region_upsert() {
+            if !run_in_inline_lane_child(
+                "indexer::persist::persist_internal_tests::unchanged_session_skips_generation_and_region_upsert",
+            ) {
+                return;
+            }
             let dir = tempfile::TempDir::new().unwrap();
             let storage = create_franken_db(&dir.path().join("unchanged.db"));
             let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
@@ -41914,6 +41957,11 @@ pub mod persist {
         /// the region documents restage and re-stamp `published` at that revision.
         #[test]
         fn changed_session_republishes_and_restages_region_docs() {
+            if !run_in_inline_lane_child(
+                "indexer::persist::persist_internal_tests::changed_session_republishes_and_restages_region_docs",
+            ) {
+                return;
+            }
             let dir = tempfile::TempDir::new().unwrap();
             let storage = create_franken_db(&dir.path().join("changed.db"));
             let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
