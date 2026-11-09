@@ -1041,8 +1041,10 @@ mod tests {
             let mut canonical = modern_codex_message(raw).expect("canonical call");
             canonical.idx = idx as i64;
             canonical.content = "[Tool: apply_patch]".to_string();
-            // FAD deliberately compacts extra on large rollouts, so raw-record
-            // matching cannot be the only way to find this canonical message.
+            // Extras can diverge from the raw record (archives indexed while
+            // the former FAD/cass large-rollout extra compaction was live
+            // still carry its skeletons), so raw-record matching cannot be
+            // the only way to find this canonical message.
             canonical.extra = serde_json::json!({"compacted": true, "slot": idx});
             conversation.messages.push(canonical);
         }

@@ -35,7 +35,7 @@ use super::{
     decode_json_str, events, json_text, text_id,
 };
 
-const EXTRACTOR_REVISION: &str = "devin-facts-v1";
+const EXTRACTOR_REVISION: &str = "devin-facts-v2";
 const MAX_ARGUMENT_BYTES: usize = 1_000_000;
 /// `cli_system` content prefixes that are compaction boundaries, not chat.
 const BOUNDARY_PREFIXES: &[&str] = &[
@@ -293,19 +293,13 @@ struct DevinOutput {
     event_idx: i64,
 }
 
-/// Conflicting recorded evidence marks the same scopes
-/// `ToolCollector::ambiguous` does.
+/// Conflicting recorded call/output evidence is a tool-verdict gap, never
+/// a text gap: every chat message is still a local indexed packet record,
+/// so the marks land on the tool-verdict scopes only and
+/// `chat`/`block_inventory`/`text_inventory` stay complete.
 fn mark_conflicting(coverage: &mut CoverageBuilder) {
     coverage.mark(
-        &[
-            "tools",
-            "tool_exit",
-            "tool_error",
-            "files",
-            "mcp",
-            "block_inventory",
-            "text_inventory",
-        ],
+        &["tools", "tool_exit", "tool_error", "files", "mcp"],
         "conflicting_event",
         "unavailable",
     );
@@ -331,8 +325,11 @@ impl Extraction {
             Entry::Occupied(entry) => {
                 let previous = entry.get();
                 if previous.name != name || previous.value != decoded {
+                    // A conflicting call is a tool-verdict gap
+                    // (mark_conflicting narrows the marks to the tool
+                    // scopes); it must not degrade chat/text scopes, so
+                    // the oracle `complete` flag stays as-is.
                     self.conflicts.insert(key);
-                    self.complete = false;
                 }
             }
             Entry::Vacant(entry) => {
@@ -364,8 +361,11 @@ impl Extraction {
         match self.outputs.entry(key.clone()) {
             Entry::Occupied(entry) => {
                 if *entry.get() != value {
+                    // A conflicting output is a tool-verdict gap, never a
+                    // text gap — the `complete` flag stays as-is (the
+                    // arguments-decode failure and the untyped `tool_call`
+                    // shape still flip it).
                     self.conflicts.insert(key);
-                    self.complete = false;
                 }
             }
             Entry::Vacant(entry) => {

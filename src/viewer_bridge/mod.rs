@@ -82,6 +82,14 @@ struct Args {
     /// IPC wakeup (`{"op":"notify"}`) is the primary low-latency path.
     #[arg(long, default_value_t = 250)]
     event_poll_ms: u64,
+    /// Request-total byte ceiling on whole-body text verification in
+    /// `search_sessions` (the full `messages.content` bytes one search may
+    /// match against). Past the ceiling the affected sessions degrade to
+    /// honest uncertainty with a typed reason, never a silent cap.
+    /// Testing and operator control on large archives; the default covers
+    /// the owner's archive with headroom.
+    #[arg(long)]
+    text_verification_budget_bytes: Option<u64>,
 }
 
 /// Run the one-shot extension-schema writer against `db`, then report.
@@ -394,6 +402,10 @@ struct Session {
     /// fully independent of this serialized request/response FIFO.
     events: Option<event_stream::EventStreamHandle>,
     event_poll: std::time::Duration,
+    /// Request-total whole-body verification byte ceiling for
+    /// `search_sessions` (`--text-verification-budget-bytes`, default
+    /// [`search_sessions::MAX_TEXT_VERIFICATION_BYTES`]).
+    verification_budget_bytes: usize,
 }
 
 impl Session {
@@ -1104,6 +1116,7 @@ impl Session {
                         cursor.as_deref(),
                         limit,
                         max_matches,
+                        self.verification_budget_bytes,
                     )
                 })?;
                 page["archive_stamp"] = serde_json::to_value(&archive.stamp)?;
@@ -1358,6 +1371,10 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
         pending_rebind: false,
         events,
         event_poll,
+        verification_budget_bytes: args
+            .text_verification_budget_bytes
+            .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+            .unwrap_or(search_sessions::MAX_TEXT_VERIFICATION_BYTES),
     };
     let result = serve(
         &mut session,

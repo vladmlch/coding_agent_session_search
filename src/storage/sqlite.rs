@@ -8465,12 +8465,19 @@ struct MessageReplayCore {
 /// stored (or pending in the same transaction), each with the native record
 /// ids seen for that core.
 ///
-/// A `None` id means "this copy carried no native identity" — unknown, not
-/// absent. Unknown ids match every id: connectors that surface no native id
-/// keep the legacy four-tuple replay semantics, and codex records archived
-/// after franken-agent-detection compacts their extras (>=32 MiB sessions)
-/// still replay against the full copies stored earlier instead of
-/// duplicating them.
+/// A replay match needs an identity anchor: either a known `created_at` or a
+/// shared native record id. A `None` id means "this copy carried no native
+/// identity" — unknown, not absent. For timestamp-anchored cores an unknown id
+/// on either side is a wildcard: connectors that surface no native id keep the
+/// legacy four-tuple replay semantics, and codex records archived after
+/// franken-agent-detection compacts their extras (>=32 MiB sessions) still
+/// replay against the full copies stored earlier instead of duplicating them.
+/// An untimestamped core has no anchor of its own, so a message without
+/// `created_at` replays only through its native id: two unknown-id,
+/// untimestamped messages sharing text are distinct records (Cursor
+/// tool-call placeholders and repeated replies recur with equal flattened
+/// text and different arguments), and an unknown stored id cannot anchor
+/// another copy either.
 #[derive(Debug, Clone, Default)]
 struct MessageReplayFingerprintSet {
     cores: HashMap<MessageReplayCore, HashSet<Option<String>>>,
@@ -8481,7 +8488,17 @@ impl MessageReplayFingerprintSet {
         let Some(native_ids) = self.cores.get(core) else {
             return false;
         };
-        native_id.is_none() || native_ids.contains(native_id) || native_ids.contains(&None)
+        match (&core.created_at, native_id) {
+            // No anchor at all: never a replay.
+            (None, None) => false,
+            // Anchored only by a native id: the same id on both sides is a
+            // replay; anything else is a distinct record.
+            (None, Some(_)) => native_ids.contains(native_id),
+            // Timestamp-anchored: legacy wildcard semantics for unknown ids.
+            (Some(_), _) => {
+                native_id.is_none() || native_ids.contains(native_id) || native_ids.contains(&None)
+            }
+        }
     }
 
     fn insert_parts(&mut self, core: MessageReplayCore, native_id: Option<String>) {
@@ -8614,8 +8631,10 @@ fn message_replay_core(msg: &Message) -> MessageReplayCore {
 /// franken-agent-detection applies to tool calls. Tool and skill call
 /// messages additionally archive `cass.invocations[0].call_id` (indexer
 /// invocation merge). Any connector that exposes one of these shapes
-/// participates in native-id replay disambiguation; messages without a
-/// native id keep the legacy four-tuple replay semantics.
+/// participates in native-id replay disambiguation; timestamped messages
+/// without a native id keep the legacy four-tuple replay semantics, while
+/// untimestamped ones (see [`MessageReplayFingerprintSet`]) replay only
+/// through a shared id.
 fn message_native_id(msg: &Message) -> Option<String> {
     native_id_from_extra(&msg.extra_json)
 }
@@ -34831,6 +34850,286 @@ sys.exit('stock writer does not own WAL_WRITE_LOCK')
             .unwrap();
         assert!(fourth.inserted_indices.is_empty());
         assert_eq!(stored_message_count(&storage, first.conversation_id), 2);
+    }
+
+    #[test]
+    fn insert_conversation_tree_keeps_distinct_untimestamped_messages_sharing_text() {
+        use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+        use std::path::PathBuf;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = SqliteStorage::open(&db_path).unwrap();
+
+        let agent = Agent {
+            id: None,
+            slug: "cursor".into(),
+            name: "Cursor".into(),
+            version: None,
+            kind: AgentKind::VsCode,
+        };
+        let agent_id = storage.ensure_agent(&agent).unwrap();
+
+        // Cursor transcript rows carry no per-message timestamp (created_at
+        // NULL), and distinct tool calls flatten to the same placeholder text:
+        // only the archived `cass.invocations` arguments distinguish them.
+        // Plain assistant texts repeat as well. Every row below is a distinct
+        // record of one merged Cursor conversation (dense idx).
+        let cursor_row = |idx: i64, content: &str, path: Option<&str>| Message {
+            id: None,
+            idx,
+            role: MessageRole::Agent,
+            author: None,
+            created_at: None,
+            content: content.into(),
+            extra_json: match path {
+                Some(path) => serde_json::json!({
+                    "cass": {"invocations": [{
+                        "kind": "tool", "name": "Read",
+                        "arguments": {"path": path}
+                    }]}
+                }),
+                None => serde_json::json!({}),
+            },
+            snippets: Vec::new(),
+        };
+
+        let conv = Conversation {
+            id: None,
+            agent_slug: "cursor".into(),
+            workspace: Some(PathBuf::from("/tmp/workspace")),
+            external_id: Some("a8831300-8e86-46af-851a-b6b2080466f1".into()),
+            title: Some("Cursor twin tool calls".into()),
+            source_path: PathBuf::from("/tmp/cursor-state.vscdb"),
+            started_at: None,
+            ended_at: None,
+            approx_tokens: None,
+            metadata_json: serde_json::Value::Null,
+            messages: vec![
+                cursor_row(0, "[Tool: Read]", Some("/repo/src/lib.rs")),
+                cursor_row(1, "[Tool: Read]", Some("/repo/src/main.rs")),
+                cursor_row(2, "Working on it", None),
+                cursor_row(3, "Working on it", None),
+            ],
+            source_id: "local".into(),
+            origin_host: None,
+        };
+
+        let outcome = storage
+            .insert_conversation_tree(agent_id, None, &conv)
+            .unwrap();
+        assert_eq!(outcome.inserted_indices, vec![0, 1, 2, 3]);
+
+        let rows: Vec<(i64, String)> = storage
+            .conn
+            .query_map_collect(
+                "SELECT idx, content FROM messages WHERE conversation_id = ?1 ORDER BY idx",
+                fparams![outcome.conversation_id],
+                |row| Ok((row.get_typed(0)?, row.get_typed(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (0, "[Tool: Read]".to_string()),
+                (1, "[Tool: Read]".to_string()),
+                (2, "Working on it".to_string()),
+                (3, "Working on it".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn insert_conversation_tree_appends_distinct_untimestamped_messages_matching_stored_text() {
+        use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+        use std::path::PathBuf;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = SqliteStorage::open(&db_path).unwrap();
+
+        let agent = Agent {
+            id: None,
+            slug: "cursor".into(),
+            name: "Cursor".into(),
+            version: None,
+            kind: AgentKind::VsCode,
+        };
+        let agent_id = storage.ensure_agent(&agent).unwrap();
+
+        let make_conv = |messages: Vec<Message>| Conversation {
+            id: None,
+            agent_slug: "cursor".into(),
+            workspace: Some(PathBuf::from("/tmp/workspace")),
+            external_id: Some("a8831300-8e86-46af-851a-b6b2080466f1".into()),
+            title: Some("Cursor twin tool calls".into()),
+            source_path: PathBuf::from("/tmp/cursor-state.vscdb"),
+            started_at: None,
+            ended_at: None,
+            approx_tokens: None,
+            metadata_json: serde_json::Value::Null,
+            messages,
+            source_id: "local".into(),
+            origin_host: None,
+        };
+
+        let cursor_row = |idx: i64, content: &str, path: &str| Message {
+            id: None,
+            idx,
+            role: MessageRole::Agent,
+            author: None,
+            created_at: None,
+            content: content.into(),
+            extra_json: serde_json::json!({
+                "cass": {"invocations": [{
+                    "kind": "tool", "name": "Read",
+                    "arguments": {"path": path}
+                }]}
+            }),
+            snippets: Vec::new(),
+        };
+
+        let first = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![
+                    cursor_row(0, "[Tool: Read]", "/repo/src/lib.rs"),
+                    cursor_row(1, "Reviewing the diff", "/repo/src/main.rs"),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(first.inserted_indices, vec![0, 1]);
+
+        // A later scan of the same conversation appends a new tool call that
+        // flattens to the same "[Tool: Read]" placeholder text as the stored
+        // row; its arguments are distinct, so it is a new record.
+        let second = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![
+                    cursor_row(0, "[Tool: Read]", "/repo/src/lib.rs"),
+                    cursor_row(1, "Reviewing the diff", "/repo/src/main.rs"),
+                    cursor_row(2, "[Tool: Read]", "/repo/tests/api.rs"),
+                ]),
+            )
+            .unwrap();
+
+        assert_eq!(first.conversation_id, second.conversation_id);
+        assert_eq!(second.inserted_indices, vec![2]);
+        let count: i64 = storage
+            .conn
+            .query_row_map(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                fparams![first.conversation_id],
+                |row| row.get_typed(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn insert_conversation_tree_replays_untimestamped_messages_only_through_shared_native_ids() {
+        use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+        use std::path::PathBuf;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = SqliteStorage::open(&db_path).unwrap();
+
+        let agent = Agent {
+            id: None,
+            slug: "cursor".into(),
+            name: "Cursor".into(),
+            version: None,
+            kind: AgentKind::VsCode,
+        };
+        let agent_id = storage.ensure_agent(&agent).unwrap();
+
+        let make_conv = |messages: Vec<Message>| Conversation {
+            id: None,
+            agent_slug: "cursor".into(),
+            workspace: Some(PathBuf::from("/tmp/workspace")),
+            external_id: Some("a8831300-8e86-46af-851a-b6b2080466f1".into()),
+            title: Some("Cursor twin tool calls".into()),
+            source_path: PathBuf::from("/tmp/cursor-state.vscdb"),
+            started_at: None,
+            ended_at: None,
+            approx_tokens: None,
+            metadata_json: serde_json::Value::Null,
+            messages,
+            source_id: "local".into(),
+            origin_host: None,
+        };
+
+        // Untimestamped rows that do carry a native record id keep native-id
+        // replay semantics: the same id re-emitted at a shifted idx is a
+        // replay, a different id is a distinct record.
+        let cursor_row = |idx: i64, call_id: &str| Message {
+            id: None,
+            idx,
+            role: MessageRole::Agent,
+            author: None,
+            created_at: None,
+            content: "[Tool: Read]".into(),
+            extra_json: serde_json::json!({
+                "cass": {"invocations": [{
+                    "kind": "tool", "name": "Read", "call_id": call_id,
+                    "arguments": {"path": "/repo/src/lib.rs"}
+                }]}
+            }),
+            snippets: Vec::new(),
+        };
+
+        fn stored_message_count(storage: &SqliteStorage, conversation_id: i64) -> i64 {
+            storage
+                .conn
+                .query_row_map(
+                    "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                    fparams![conversation_id],
+                    |row| row.get_typed(0),
+                )
+                .unwrap()
+        }
+
+        let first = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![
+                    cursor_row(0, "call_read_lib"),
+                    cursor_row(1, "call_read_main"),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(first.inserted_indices, vec![0, 1]);
+
+        // Re-emission of both records at shifted idx: same native ids, so both
+        // are replays and nothing is re-inserted.
+        let second = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![
+                    cursor_row(10, "call_read_lib"),
+                    cursor_row(11, "call_read_main"),
+                ]),
+            )
+            .unwrap();
+        assert!(second.inserted_indices.is_empty());
+        assert_eq!(stored_message_count(&storage, first.conversation_id), 2);
+
+        // A distinct native id is a distinct record even at shifted idx.
+        let third = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![cursor_row(12, "call_read_tests")]),
+            )
+            .unwrap();
+        assert_eq!(third.inserted_indices, vec![12]);
+        assert_eq!(stored_message_count(&storage, first.conversation_id), 3);
     }
 
     #[test]

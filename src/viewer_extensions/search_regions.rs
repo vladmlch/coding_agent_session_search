@@ -47,13 +47,39 @@ use crate::search::quill_bridge::QuillCassIndex;
 
 use super::facts::FactsDb;
 use super::projection::{StepLink, StructuralPublication, ToolCallLink};
+use super::providers::is_compacted_extra;
+use super::providers::{gemini_call_result_text, gemini_status_verdict, scan_copilot_parts};
 
 /// Region schema revision; bumps when the derivation shape changes so the
 /// `(region_version, source_revision)` idempotence key republishes rows.
 /// v2: the antigravity F10 `extra.error` text (distinct from the record
 /// content) indexes as an `m{idx}:error` region — tools scope on tool-role
 /// steps, chat scope on every other role.
-pub const REGION_VERSION: i64 = 2;
+/// v3: compacted claude/codex extras and every devin record gain their
+/// `cass.invocations` call arguments as tools regions (for compacted
+/// records the invocations merge is the ONLY surviving copy of the
+/// arguments; the devin connector normalizes `tool_calls` away), and the
+/// claude Desktop sidecar's user-typed `raw.initialMessage` indexes as an
+/// `m{idx}:initial_prompt` chat region.
+/// v4: v3 plus gemini raw-record derivations — `thoughts[]` index as
+/// `m{idx}:thinking` regions and raw `toolCalls[]` (call args + inline
+/// result text, recorded status verdicts) index as tool regions, with
+/// `cass.invocations` as the post-compaction fallback; the pinned
+/// connector keeps tool arguments out of the delivered content — and
+/// pi_agent derivations: `toolCall` content blocks index as tool regions
+/// paired with their `toolResult` records by toolCallId (the generic
+/// role fallback stays suppressed for those messages).
+/// v5: v4 plus copilot F14 derivations — the connector archives the raw
+/// `response` part array verbatim in `extra.copilot_response_parts`, so
+/// `thinking` part text (values + `generatedTitle`) indexes as
+/// `m{idx}:thinking` regions, `mcpServersStarting` server ids index as
+/// `m{idx}:mcp` tools regions, and `toolInvocationSerialized` groups
+/// (arguments + rendered call messages + `resultDetails` strings, paired
+/// by `toolCallId`) index as tool regions; the `cass.invocations`
+/// fallback stays suppressed when the parts array is present (the facts
+/// lane classifies the same shapes — providers/copilot.rs,
+/// `scan_copilot_parts`).
+pub const REGION_VERSION: i64 = 5;
 
 /// Synthetic `msg_idx` space for region documents: `REGION_DOC_BASE +
 /// region_ordinal`. Below `i64::MAX` so `decode_hit` accepts them; far above
@@ -413,11 +439,37 @@ pub fn derive_message_regions(
     // Antigravity-scoped derivations below: the pinned FAD connector lifts
     // planner invocations into `extra.cass.invocations` (FAD F3) and
     // USER_INPUT wrapper blocks into `extra.settings_change` /
-    // `additional_metadata`. No other provider shape puts call arguments
-    // there (claude/codex record calls in content blocks or `type` records
-    // the generic readers already index — reading them unconditionally
-    // would double-index those providers), so both arms are slug-gated.
+    // `additional_metadata`. Claude/codex put call arguments there only
+    // AFTER extra compaction (non-compacted records keep the raw content
+    // blocks AND the merged invocations copy — reading those
+    // unconditionally would double-index them), so that lane is gated on
+    // the compaction envelope; devin's connector normalizes `tool_calls`
+    // away for every record, so its lane is unconditional like
+    // antigravity's. The USER_INPUT and sidecar arms stay slug-gated.
     let antigravity = packet.payload.identity.agent_slug == "antigravity";
+    let devin = packet.payload.identity.agent_slug == "devin";
+    let claude = packet.payload.identity.agent_slug == "claude_code";
+    let codex = packet.payload.identity.agent_slug == "codex";
+    // Gemini-scoped derivations below: the pinned FAD connector archives
+    // the raw gemini record verbatim (FAD gemini connector), so `thoughts[]`
+    // and `toolCalls[]` ride in extra — the one text class the connector
+    // keeps out of the delivered content is tool arguments. Slug-gated for
+    // the same reason as the antigravity arms: no other provider puts raw
+    // tool calls in extra under these keys.
+    let gemini = packet.payload.identity.agent_slug == "gemini";
+    // Pi Agent-scoped derivation below: the connector archives every tree
+    // entry verbatim, so `toolCall`/`toolResult` message blocks ride in
+    // extra (the generic readers only see `tool_call`/`tool_result` block
+    // types; pi's are camelCase). Slug-gated like the antigravity/gemini
+    // arms — no other provider puts tool facts under these keys.
+    let pi_agent = packet.payload.identity.agent_slug == "pi_agent";
+    // Copilot derivations below: the F14 connector archives the raw
+    // `response` part array verbatim in `extra.copilot_response_parts`
+    // (thinking, tool calls with their results, MCP server starts); on
+    // pre-F14 rows only the ingest seam's archived
+    // `extra.cass.invocations` survives. Slug-gated like the arms above —
+    // no other provider puts these keys in extra.
+    let copilot = packet.payload.identity.agent_slug == "copilot";
     let mut regions: Vec<RegionRow> = Vec::new();
     let mut calls: Vec<PendingCall> = Vec::new();
     let mut results: Vec<PendingResult> = Vec::new();
@@ -479,6 +531,37 @@ pub fn derive_message_regions(
                 turn_index,
                 text_source: TEXT_SOURCE_DERIVED.to_owned(),
                 indexed_text: Some(bounded(&text)),
+                source_revision,
+                ..RegionRow::default()
+            });
+        }
+        // Claude Desktop sidecar stubs (FAD
+        // `desktop_sidecar_metadata_message`): the connector lifts the
+        // metadata lines into the system message content but leaves the
+        // user-typed first prompt in `raw.initialMessage` — real
+        // conversation text the sidecar carries, so it indexes as its own
+        // chat region (the conversation BODY itself is culled at the source
+        // per `cass.body_available: false`; nothing else of it exists).
+        if claude
+            && extra.pointer("/cass/source").and_then(Value::as_str)
+                == Some("claude_code_desktop_sidecar")
+            && let Some(prompt) = extra
+                .pointer("/raw/initialMessage")
+                .and_then(Value::as_str)
+                .filter(|text| !text.is_empty())
+        {
+            regions.push(RegionRow {
+                region_ordinal: regions.len() as i64,
+                region_key: format!("m{idx}:initial_prompt"),
+                scope: "chat".to_owned(),
+                scope_known: true,
+                quill_idx: REGION_DOC_BASE as i64 + regions.len() as i64,
+                message_idx: Some(idx),
+                message_id,
+                step_index,
+                turn_index,
+                text_source: TEXT_SOURCE_DERIVED.to_owned(),
+                indexed_text: Some(bounded(prompt)),
                 source_revision,
                 ..RegionRow::default()
             });
@@ -554,6 +637,257 @@ pub fn derive_message_regions(
                 source_revision,
                 ..RegionRow::default()
             });
+        }
+        // Gemini raw-record derivations (REGION_VERSION 3). The pinned
+        // connector archives the raw record verbatim in extra and renders
+        // its text into the delivered content — with two exceptions:
+        //  - `thoughts[]` entries (subject/description) are thinking text
+        //    the generic readers cannot see (neither content blocks nor
+        //    an extra string), so they index as a `m{idx}:thinking`
+        //    region. The `thinking_text(extra).is_none()` guard keeps the
+        //    generic arm authoritative and prevents a duplicate region
+        //    key if a record ever carried both shapes.
+        //  - `toolCalls[]` carry the call arguments the connector keeps
+        //    out of content (names and results are inlined, args never
+        //    are), plus the inline `result[]` and the recorded lifecycle
+        //    status — each indexes as a tool region carrying its args and
+        //    result text with the recorded verdict. An absent/null
+        //    `result` proves no result ever existed at the source (the
+        //    record is archived verbatim) and stays unpaired.
+        // Role `tool` never occurs on gemini records (the connector maps
+        // model/gemini→assistant, info/error→system, everything else
+        // as-is); the guard keeps the generic role fallback authoritative
+        // if one ever appears.
+        if gemini && message.role != "tool" {
+            if thinking_text(extra).is_none() {
+                let mut thoughts = Vec::new();
+                for thought in extra
+                    .get("thoughts")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    for key in ["subject", "description"] {
+                        if let Some(text) = thought
+                            .get(key)
+                            .and_then(Value::as_str)
+                            .filter(|text| !text.is_empty())
+                        {
+                            thoughts.push(text.to_owned());
+                        }
+                    }
+                }
+                if !thoughts.is_empty() {
+                    let text = thoughts.join("\n");
+                    regions.push(RegionRow {
+                        region_ordinal: regions.len() as i64,
+                        region_key: format!("m{idx}:thinking"),
+                        scope: "thinking".to_owned(),
+                        scope_known: true,
+                        quill_idx: REGION_DOC_BASE as i64 + regions.len() as i64,
+                        message_idx: Some(idx),
+                        message_id,
+                        step_index,
+                        turn_index,
+                        text_source: TEXT_SOURCE_DERIVED.to_owned(),
+                        indexed_text: Some(bounded(&text)),
+                        source_revision,
+                        ..RegionRow::default()
+                    });
+                }
+            }
+            for tool_call in extra
+                .get("toolCalls")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if !tool_call.is_object() {
+                    continue;
+                }
+                let call_id = tool_call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("anon:{idx}:{}", calls.len()));
+                let name = tool_call
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| "unknown".to_owned());
+                let arguments = tool_call.get("args");
+                let file_path = arguments
+                    .and_then(Value::as_object)
+                    .and_then(|map| {
+                        extra_string(
+                            map,
+                            &[
+                                "file_path",
+                                "path",
+                                "TargetFile",
+                                "file",
+                                "filename",
+                                "AbsolutePath",
+                            ],
+                        )
+                    })
+                    .map(str::to_owned);
+                calls.push(PendingCall {
+                    name,
+                    call_id: call_id.clone(),
+                    text: invocation_arguments_text(arguments),
+                    message_idx: idx,
+                    message_id,
+                    file_path,
+                });
+                if let Some(result) = tool_call.get("result").filter(|value| !value.is_null()) {
+                    let (text, explicit_error) = gemini_call_result_text(result);
+                    let is_error = if explicit_error {
+                        Some(true)
+                    } else {
+                        gemini_status_verdict(tool_call.get("status").and_then(Value::as_str))
+                    };
+                    results.push(PendingResult {
+                        call_id: Some(call_id),
+                        text,
+                        exit_code: None,
+                        is_error,
+                        message_idx: idx,
+                        message_id,
+                    });
+                }
+            }
+        }
+        // Copilot F14 raw-parts derivations (REGION_VERSION 5). The
+        // connector archives the serialized `response` array verbatim in
+        // `extra.copilot_response_parts` and joins only the markdown
+        // values into the delivered content, so the region set mirrors
+        // what the facts lane proves (providers/copilot.rs,
+        // `scan_copilot_parts` — the SAME classification, so a claim here
+        // is never wider than the indexed text):
+        //  - `thinking` part text (value strings + `generatedTitle`)
+        //    indexes as the message's `m{idx}:thinking` region (guarded
+        //    against the generic arm for uniformity);
+        //  - `mcpServersStarting` server ids index as an `m{idx}:mcp`
+        //    tools region;
+        //  - `toolInvocationSerialized` groups (keyed by `toolCallId`,
+        //    VS Code's own invocation identity) index as tool regions
+        //    carrying the call arguments, the rendered call messages
+        //    and the `isConfirmed.reason`, paired with their
+        //    `resultDetails` strings; a group without `resultDetails`
+        //    stays unpaired (the parts array is the verbatim record —
+        //    the result never existed at the source).
+        // Role `tool` never occurs on copilot records (the connector
+        // emits user/assistant only); the guard keeps the generic role
+        // fallback authoritative if one ever appears.
+        if copilot
+            && message.role != "tool"
+            && let Some(parts) = extra
+                .get("copilot_response_parts")
+                .and_then(Value::as_array)
+        {
+            let scan = scan_copilot_parts(parts);
+            if thinking_text(extra).is_none() {
+                let mut texts = Vec::new();
+                for part_texts in &scan.thinking_texts {
+                    texts.extend(part_texts.iter().cloned());
+                }
+                if !texts.is_empty() {
+                    let text = texts.join("\n");
+                    regions.push(RegionRow {
+                        region_ordinal: regions.len() as i64,
+                        region_key: format!("m{idx}:thinking"),
+                        scope: "thinking".to_owned(),
+                        scope_known: true,
+                        quill_idx: REGION_DOC_BASE as i64 + regions.len() as i64,
+                        message_idx: Some(idx),
+                        message_id,
+                        step_index,
+                        turn_index,
+                        text_source: TEXT_SOURCE_DERIVED.to_owned(),
+                        indexed_text: Some(bounded(&text)),
+                        source_revision,
+                        ..RegionRow::default()
+                    });
+                }
+            }
+            if !scan.mcp_ids.is_empty() {
+                let text = scan.mcp_ids.join("\n");
+                regions.push(RegionRow {
+                    region_ordinal: regions.len() as i64,
+                    region_key: format!("m{idx}:mcp"),
+                    scope: "tools".to_owned(),
+                    scope_known: true,
+                    quill_idx: REGION_DOC_BASE as i64 + regions.len() as i64,
+                    message_idx: Some(idx),
+                    message_id,
+                    step_index,
+                    turn_index,
+                    text_source: TEXT_SOURCE_DERIVED.to_owned(),
+                    indexed_text: Some(bounded(&text)),
+                    source_revision,
+                    ..RegionRow::default()
+                });
+            }
+            for group in &scan.tool_groups {
+                // Nameless groups are unrecordable in the facts lane too
+                // (`copilot_tool_name_missing`) — their text is marked,
+                // never silently indexed here.
+                let Some(name) = group
+                    .name
+                    .as_deref()
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_owned)
+                else {
+                    continue;
+                };
+                let mut text_parts = Vec::new();
+                if let Some(arguments) = &group.arguments {
+                    let args_text = invocation_arguments_text(Some(arguments));
+                    if !args_text.is_empty() {
+                        text_parts.push(args_text);
+                    }
+                }
+                text_parts.extend(group.message_texts.iter().cloned());
+                let file_path = group
+                    .arguments
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|map| {
+                        extra_string(
+                            map,
+                            &[
+                                "file_path",
+                                "path",
+                                "TargetFile",
+                                "file",
+                                "filename",
+                                "AbsolutePath",
+                            ],
+                        )
+                    })
+                    .map(str::to_owned);
+                calls.push(PendingCall {
+                    name,
+                    call_id: group.call_id.clone(),
+                    text: text_parts.join("\n"),
+                    message_idx: idx,
+                    message_id,
+                    file_path,
+                });
+                if let Some(result_texts) = &group.result_texts {
+                    results.push(PendingResult {
+                        call_id: Some(group.call_id.clone()),
+                        text: result_texts.join("\n"),
+                        exit_code: None,
+                        is_error: None,
+                        message_idx: idx,
+                        message_id,
+                    });
+                }
+            }
         }
         for (ordinal, path) in attachment_paths(extra).into_iter().enumerate() {
             regions.push(RegionRow {
@@ -640,7 +974,86 @@ pub fn derive_message_regions(
                 message_id,
             });
         }
-        if message.role == "tool" && call_records.is_empty() && result_records.is_empty() {
+        // Pi Agent raw-entry derivations: assistant `toolCall` content
+        // blocks are the only record of the call arguments (the connector
+        // flattens "[Tool: name] k=v…" into content, but the block facts
+        // live in extra), and `toolResult` messages are the result records
+        // (raw role toolResult, packet role tool) carrying the correlation
+        // id and the recorded `isError` verdict. Recording the result as a
+        // PendingResult pairs it with its call in the join below, so the
+        // role fallback must not ALSO wrap the same content in a
+        // name:"unknown" pseudo-call — hence the flag.
+        let mut pi_result_recorded = false;
+        if pi_agent {
+            if let Some(blocks) = extra.pointer("/message/content").and_then(Value::as_array) {
+                for block in blocks {
+                    if block.get("type").and_then(Value::as_str) != Some("toolCall")
+                        || !block.is_object()
+                    {
+                        continue;
+                    }
+                    let call_id = block
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| format!("anon:{idx}:{}", calls.len()));
+                    let name = block
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| "unknown".to_owned());
+                    let arguments = block.get("arguments");
+                    let file_path = arguments
+                        .and_then(Value::as_object)
+                        .and_then(|map| {
+                            extra_string(
+                                map,
+                                &[
+                                    "file_path",
+                                    "path",
+                                    "TargetFile",
+                                    "file",
+                                    "filename",
+                                    "AbsolutePath",
+                                ],
+                            )
+                        })
+                        .map(str::to_owned);
+                    calls.push(PendingCall {
+                        name,
+                        call_id,
+                        text: invocation_arguments_text(arguments),
+                        message_idx: idx,
+                        message_id,
+                        file_path,
+                    });
+                }
+            }
+            if extra.pointer("/message/role").and_then(Value::as_str) == Some("toolResult")
+                && !content.is_empty()
+            {
+                pi_result_recorded = true;
+                results.push(PendingResult {
+                    call_id: extra
+                        .pointer("/message/toolCallId")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_owned),
+                    text: content.clone(),
+                    exit_code: None,
+                    is_error: extra.pointer("/message/isError").and_then(Value::as_bool),
+                    message_idx: idx,
+                    message_id,
+                });
+            }
+        }
+        if message.role == "tool"
+            && call_records.is_empty()
+            && result_records.is_empty()
+            && !pi_result_recorded
+        {
             calls.push(PendingCall {
                 name: "unknown".to_owned(),
                 call_id: format!("role:{idx}"),
@@ -650,16 +1063,38 @@ pub fn derive_message_regions(
                 file_path: None,
             });
         }
-        // Antigravity planner invocations: `extra.cass.invocations[]` items
+        // Planner/agent invocations: `extra.cass.invocations[]` items
         // ({kind:"tool", name, call_id?, arguments}) are the only record of
         // what the planner asked tools to do — the raw `tool_calls` arrays
         // are normalized away by the connector, and the connector records
-        // no call ids. Mirror the projection's `kind == "tool"` filter.
-        // Model-step (role `tool`) records are excluded: their `cass` extras
-        // carry name-only synthesized calls with no arguments, and the role
+        // no call ids. The same holds for devin (connector-normalized
+        // calls; the rendered content lines carry just the tool name) and
+        // for compacted claude/codex extras (the raw tool_use/function_call
+        // blocks are gone from the canonical record, so the post-compaction
+        // invocations merge is the only surviving copy of the arguments).
+        // Non-compacted claude/codex records keep their raw blocks AND the
+        // merged invocations copy — the compaction gate keeps those off
+        // this lane, so no argument ever indexes twice. Gemini reads the
+        // same shape ONLY when `compact_message_extra` (>=32 MiB session
+        // files) replaced the raw record — no `toolCalls` array survives,
+        // so the ingest seam's archived invocations are the remaining call
+        // evidence (a raw record's invocations duplicate its `toolCalls`,
+        // already consumed above). Copilot's connector archives tool
+        // invocations only through the seam's `cass.invocations` on
+        // pre-F14 rows — the F14 `copilot_response_parts` arm above
+        // consumed the archived parts already, so this fallback stays
+        // suppressed when the parts array is present (reading both would
+        // double-record the same call id and taint `conflicting_event`).
+        // Mirror the projection's `kind == "tool"` filter. Model-step
+        // (role `tool`) records are excluded: their `cass` extras carry
+        // name-only synthesized calls with no arguments, and the role
         // fallback above already keeps their content text in the tools
         // scope.
-        if antigravity
+        if (antigravity
+            || devin
+            || (copilot && extra.get("copilot_response_parts").is_none())
+            || ((claude || codex) && is_compacted_extra(extra))
+            || (gemini && extra.get("toolCalls").and_then(Value::as_array).is_none()))
             && message.role != "tool"
             && let Some(items) = extra.pointer("/cass/invocations").and_then(Value::as_array)
         {

@@ -46,7 +46,93 @@ pub use providers::classification::SessionQualityMetrics;
 /// source), and `extra.error` text (distinct from the record content)
 /// indexed as an `m{idx}:error` region (search_regions.rs, REGION_VERSION
 /// 2), so the retired `agy_error_field_not_indexed` mark is gone.
-pub const FACTS_EXTRACTOR_VERSION: i64 = 5;
+/// v6: claude residual shapes — the Desktop sidecar metadata envelope is a
+/// known shape whose culled body carries the explicit
+/// `claude_sidecar_body_culled` source marker, the `{}` compaction product
+/// is `extra_compacted` (never `claude_shape_unknown`), and
+/// `isReplay`-marked audit pairs with envelope-stripped-identical content
+/// dedup to the live record (providers/claude.rs, claude-facts-v2; the
+/// sidecar `initialMessage` and the compacted/normalized invocation
+/// arguments index as regions, search_regions.rs, REGION_VERSION 3).
+/// v7: v6 plus the gemini extractor (raw-record extras: thoughts, toolCalls
+/// with inline results and recorded status verdicts; compacted extras
+/// partial) plus gemini regions — `thoughts` as `m{idx}:thinking` and
+/// tool args/results as tool regions (search_regions.rs, REGION_VERSION
+/// 4) — plus the pi_agent extractor (raw tree entries: toolCall blocks
+/// paired with toolResult records by toolCallId, thinking blocks,
+/// compaction/branch boundaries) and the opencode extractor (v2 row
+/// extras: "[Reasoning]"/"[Tool Output]" markers count delivered
+/// reasoning parts and prove tool parts whose identity/state the
+/// connector drops; authors carry the model alias), and the copilot
+/// extractor (connector-built extras: seam-archived invocations as the
+/// only call evidence, thinking parts dropped by the connector, no
+/// tool results archived — plus copilot tool regions from
+/// `cass.invocations`).
+/// v8: v7 plus the last-eight shapes — a replay-marked claude audit pair whose
+/// envelope-stripped content DIFFERS is an audit REWRITE, never corruption:
+/// both versions are local, region-indexed messages, so the live record
+/// stays in the facts lane and the rewrite is recorded on the dedicated
+/// `replay_conflict` scope (`claude_rewritten_replay`, partial; no strict
+/// gate maps to it) while text verdicts stay complete
+/// (providers/claude.rs, claude-facts-v3); unmarked different-content uuid
+/// groups keep the all-core `conflicting_event`. Devin conflicting
+/// call/output evidence narrows to the tool-verdict scopes and no longer
+/// flips the oracle `complete` flag (providers/devin.rs, devin-facts-v2),
+/// so chat/`block_inventory`/`text_inventory` stay complete. Codex calls
+/// whose missing result is PROVEN interrupted at the source (the call is
+/// the rollout's last record, or a later user message cuts the pending
+/// turn) mark `tool_output_interrupted` — a source-absent reason — instead
+/// of the not-read `tool_result_missing` (providers/codex.rs + mod.rs,
+/// codex-facts-v2). Codex `image_url` tool-output parts (the OpenAI image
+/// shape FAD emits with empty content for image-only outputs) are known
+/// non-text in `recorded_text`, so an image-only output pairs its call with
+/// no marks — never a `tool_output_not_recorded` claim about a record that
+/// exists (providers/mod.rs, mirrored in the viewer-bridge
+/// `get_tool_output` oracle).
+/// v9: v8 plus copilot F14 — assistant rows whose extra carries the
+/// verbatim `copilot_response_parts` array classify every part against
+/// the verified VS Code shapes: joined markdown values are verified
+/// against the delivered content (`copilot_part_text_not_in_content` on
+/// a miss), `thinking` values plus `generatedTitle` count as thinking
+/// blocks and index as `m{idx}:thinking` regions,
+/// `toolInvocationSerialized` parts GROUP on `toolCallId` (one call per
+/// invocation identity, named by the first part's `toolId`, its
+/// `resultDetails` the recorded result) so delegation pairs can never
+/// taint `conflicting_event`, and `mcpServersStarting` parts are the MCP
+/// evidence (search_regions.rs, REGION_VERSION 5; providers/copilot.rs,
+/// copilot-facts-v2). An unknown part shape keeps its not-read marks
+/// (`copilot_part_unknown`); pre-F14 rows keep the drop marks and the
+/// seam-invocation fallback.
+/// v10: v9 plus the antigravity raw-record archive (FAD F15) — the antigravity connector archives the full raw
+/// source record per message under `extra.agy_raw`, and the antigravity
+/// extractor VERIFIES the block inventory from it (agy_raw_unverified /
+/// agy_raw_field_unaccounted / agy_user_wrapper_unindexed) instead of
+/// tainting every `agy_type` envelope record with the unverifiable
+/// `agy_canonical_envelope` (providers/antigravity.rs,
+/// antigravity-facts-v5). Pre-F15 packets keep the v8 verdicts unchanged.
+/// v11: v10 plus the opencode parts archive (FAD F16) — opencode-facts-v2
+/// verifies every assistant row's raw parts from `extra["parts"]` (each
+/// tool part is both sides of one call, so it yields a call+result fact
+/// pair; a part that renders no text still verifies; 1.x rows without a
+/// row `type` dispatch on the packet role), completing the
+/// tools/text/block/files inventories from proven data — including the
+/// provably empty inventory — while pre-F16 rows keep the v1 marker
+/// heuristics (providers/opencode.rs). A failed run's error record
+/// verifies in both its shapes: a plain string, or the measured real
+/// object form `{message, type}` whose `message` is the delivered failure
+/// text (an error object with no readable message drifts
+/// `opencode_error_text_unverifiable` unless provably textless).
+/// v12: v11 plus the antigravity wrapper-scan mirror — the antigravity
+/// extractor's USER_INPUT raw-record accounting scans wrapper blocks PER
+/// TAG, exactly as the connector's `extract_tagged_blocks` does, so a
+/// settings/metadata block whose open tag sits inside another block's
+/// inner text is still its tag's first block and its lifted text
+/// verifies; the false `agy_user_wrapper_unindexed` partial on the real
+/// archive's overlapping-wrapper record retires, while text the
+/// connector actually drops keeps the partial
+/// (providers/antigravity.rs, antigravity-facts-v6). Pre-v12 rows keep
+/// the v5 verdicts unchanged.
+pub const FACTS_EXTRACTOR_VERSION: i64 = 12;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
@@ -228,6 +314,26 @@ pub struct CoverageEntry {
 ///   only for that explicit source marker — never for a parse failure or
 ///   unknown shape (a malformed marker keeps
 ///   `agy_truncated_fields_malformed`, a not-read gap).
+/// - `tool_output_interrupted` (owner decision, 2026-11-08): a codex call
+///   whose output record provably never existed in the append-only rollout.
+///   `extract()` in `providers/codex.rs` emits the code only under one of
+///   two proofs, evaluated over ALL packet events so any later record
+///   (compacted or not) disqualifies: (a) the call is the packet's LAST
+///   event — an append-only rollout ending on the call never wrote the
+///   output record; (b) a user-role message follows the call — codex never
+///   takes user input mid-turn, so the pending turn was cut. Any other
+///   unpaired call keeps the not-read `tool_result_missing`.
+/// - `claude_sidecar_body_culled` (owner follow-up, 2026-11-08): the Claude
+///   Desktop sidecar envelope's explicit `cass.body_available == false`
+///   marker (FAD `desktop_sidecar_metadata_message`). The Desktop app
+///   states the CLI conversation body was culled before the sidecar was
+///   written, so the missing body text never existed in any local record
+///   (the sidecar's own metadata lines and `raw.initialMessage` DO exist
+///   and index normally). `extract()` in `providers/claude.rs` emits the
+///   code only for that explicit envelope with
+///   `/cass/source == "claude_code_desktop_sidecar"` AND
+///   `body_available == false` — a sidecar without the marker, or any
+///   other unknown shape, keeps `claude_shape_unknown`, a not-read gap.
 ///
 /// NOT here on purpose:
 /// - `agy_status_dropped_by_connector` / `agy_status_unpaired`: tool
@@ -239,6 +345,8 @@ pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &[
     "reasoning_encrypted",
     "thinking_redacted",
     "agy_source_truncated",
+    "claude_sidecar_body_culled",
+    "tool_output_interrupted",
 ];
 
 /// `true` when a coverage entry's gap is provably text absent at the
@@ -1311,6 +1419,70 @@ mod source_absent_tests {
         assert!(!is_source_absent_gap(
             "partial",
             &reasons(&["agy_truncated_fields_malformed"])
+        ));
+    }
+
+    #[test]
+    fn claude_sidecar_cull_marker_is_source_absent() {
+        // The Claude Desktop sidecar body-cull marker (owner decision,
+        // 2026-11-08): the sidecar's own `cass.body_available == false`
+        // envelope is the Desktop app stating the CLI conversation body was
+        // culled before the sidecar was written, so the missing body text
+        // never existed in any local record. The claude extractor emits the
+        // code only for that explicit envelope — a sidecar without the
+        // marker keeps `claude_shape_unknown`, a not-read gap.
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["claude_sidecar_body_culled"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["claude_sidecar_body_culled"])
+        ));
+        // Mixed with any not-read reason the proof breaks.
+        assert!(!is_source_absent_gap(
+            "unavailable",
+            &reasons(&["claude_sidecar_body_culled", "claude_shape_unknown"])
+        ));
+        // The marker-less variant stays not-read.
+        assert!(!is_source_absent_gap(
+            "unavailable",
+            &reasons(&["claude_shape_unknown"])
+        ));
+    }
+
+    #[test]
+    fn codex_interrupted_tool_output_marker_is_source_absent() {
+        // The codex interrupted-call proof (owner decision, 2026-11-08): the
+        // rollout provably ended mid-call (the call is the packet's last
+        // event) or the pending turn was cut by the next task's user
+        // message (codex never accepts user input mid-turn). Rollouts are
+        // append-only, so no output record for the call id was ever
+        // written — the result text never existed in any local record.
+        // `extract()` in `providers/codex.rs` emits the code only for
+        // those two packet-visible proof shapes; a mid-turn unpaired call
+        // keeps `tool_result_missing`, a not-read gap.
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["tool_output_interrupted"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["tool_output_interrupted"])
+        ));
+        // Mixed with any not-read reason the proof breaks.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["tool_output_interrupted", "tool_result_missing"])
+        ));
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["tool_output_interrupted", "tool_output_not_recorded"])
+        ));
+        // The unproven variant stays not-read.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&["tool_result_missing"])
         ));
     }
 }

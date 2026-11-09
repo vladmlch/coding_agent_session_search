@@ -66,9 +66,55 @@
 //! A complete text-scope verdict therefore means "complete over every
 //! record the connector emitted", never over records it dropped silently.
 //!
+//! ## F15 raw-record block verification
+//!
+//! FAD F15 (owner direction 2026-11-08: keep the full source record rather
+//! than lossy normalization, the F12 precedent applied to the whole record)
+//! archives the complete raw transcript record verbatim under
+//! `extra.agy_raw` on every emitted message. When it is present this
+//! extractor VERIFIES the block inventory from that record instead of
+//! tainting every canonicalized record as structurally unverifiable:
+//!   - raw present and every archived field accounted for → the record's
+//!     block inventory stays complete (the blanket
+//!     `agy_canonical_envelope` mark retires for it);
+//!   - raw present but unattributable (not an object, or `type` does not
+//!     match the classified record kind) → `agy_raw_unverified` partial;
+//!   - raw present with a field the accounting cannot prove indexed — an
+//!     unmapped field name, a text field whose packet copy diverged, raw
+//!     `tool_calls` that lifted nowhere, USER_INPUT wrapper text the
+//!     connector's extraction drops → `agy_raw_field_unaccounted` /
+//!     `agy_user_wrapper_unindexed` partial;
+//!   - raw absent (pre-F15 packets) → `agy_canonical_envelope` partial on
+//!     envelope records, exactly as before: verification is additive and
+//!     never loosens a packet the archive already holds.
+//!
+//! The accounting mirrors the connector's own mapping (census of the real
+//! transcripts: exactly 14 field names — `step_index`, `source`, `type`,
+//! `status`, `created_at`, `content`, `tool_calls`, `input_tokens`,
+//! `cache_read_tokens`, `output_tokens`, `truncated_fields`, `thinking`,
+//! `error`, `media`): record identity/lifecycle/tokens are structural
+//! provenance that never carries text; `content`/`thinking`/`error` must
+//! equal the packet text they became; `truncated_fields` is the allowlisted
+//! source-side truncation marker; `media` refs carry no text; `tool_calls`
+//! must have lifted into `extra.cass.invocations` with arguments intact,
+//! and never on a role `tool` record (the region lane excludes role-tool
+//! args). Wrapper extraction is PER TAG — the connector's own
+//! `extract_tagged_blocks` scans each tag independently, so a block whose
+//! open tag sits inside another block's inner text is still its tag's
+//! first block, and the accounting mirrors that scan exactly. Wrapper
+//! markup (`<USER_REQUEST>`/`<USER_SETTINGS_CHANGE>`/
+//! `<ADDITIONAL_METADATA>`, open or close, matched or not) is structural
+//! vocabulary, same as the connector's own body extraction — but text
+//! OUTSIDE the connector's keep set (the joined request blocks plus the
+//! first settings/metadata block of each kind) that is not markup —
+//! loose residual text, a second settings/metadata block's inner text, an
+//! unterminated wrapper's remainder — is dropped by the connector's
+//! extraction and stays unaccounted.
+//!
 //! Note: `is_compacted_extra` is deliberately NOT used here — the
 //! `{"cass":{"invocations":[..]}}` envelope is real Antigravity evidence, and
-//! ingest extra-compaction is codex-only (`should_compact_connector_extra`).
+//! the ingest extra-compaction that produced skeleton extras was codex-only
+//! (`should_compact_connector_extra`, removed 2026-11-08).
 
 use std::collections::BTreeSet;
 
@@ -82,7 +128,22 @@ use super::{
     ToolCollector, events, json_text, text_id,
 };
 
-const EXTRACTOR_REVISION: &str = "antigravity-facts-v4";
+// v5 (2026-11-08): FAD F15 archives the full raw source record under
+// `extra.agy_raw`; the extractor VERIFIES the block inventory from it
+// (agy_raw_unverified / agy_raw_field_unaccounted /
+// agy_user_wrapper_unindexed) instead of tainting every `agy_type`
+// envelope record with `agy_canonical_envelope`. Pre-F15 packets keep the
+// old verdict.
+// v6 (2026-11-08): the USER_INPUT wrapper accounting scans blocks PER
+// TAG, mirroring the connector's `extract_tagged_blocks` exactly — a
+// block whose open tag sits inside another block's inner text is still
+// its tag's first block. The global earliest-open scan this replaces
+// derived a different first-block text for the real archive's
+// overlapping-wrapper record and marked it `agy_user_wrapper_unindexed`
+// although the connector lifted every byte (an over-strict false
+// partial, never an under-strict miss: text the connector actually
+// drops keeps the partial).
+const EXTRACTOR_REVISION: &str = "antigravity-facts-v6";
 const SUPPORTED_KINDS: &[&str] = &[
     "USER_INPUT",
     "PLANNER_RESPONSE",
@@ -108,9 +169,10 @@ const SUPPORTED_KINDS: &[&str] = &[
 ];
 const TOOL_KINDS: &[&str] = &["TOOL_OUTPUT", "VIEW_FILE", "RUN_COMMAND"];
 const PARTIAL_TOOL_FIELDS: &[&str] = &["tools", "tool_exit", "tool_error"];
-/// USER_INPUT extra keys: the connector's wrapper lifts plus the F10
+/// USER_INPUT extra keys: the connector's wrapper lifts, the F10
 /// passthrough keys (`truncated_fields`, `status`, `error`, `media` —
-/// FAD rev 3851a3a inserts each only when the source record carries it).
+/// FAD rev 3851a3a inserts each only when the source record carries it)
+/// and the F15 archived raw record (`agy_raw`).
 const USER_KEYS: &[&str] = &[
     "settings_change",
     "additional_metadata",
@@ -118,9 +180,10 @@ const USER_KEYS: &[&str] = &[
     "status",
     "error",
     "media",
+    "agy_raw",
 ];
-/// PLANNER_RESPONSE extra keys: the connector's lifts plus the F10
-/// passthrough keys.
+/// PLANNER_RESPONSE extra keys: the connector's lifts, the F10
+/// passthrough keys and the F15 archived raw record (`agy_raw`).
 const PLANNER_KEYS: &[&str] = &[
     "cass",
     "thinking",
@@ -128,6 +191,7 @@ const PLANNER_KEYS: &[&str] = &[
     "status",
     "error",
     "media",
+    "agy_raw",
 ];
 /// A `truncated_fields` marker that is not a clean array of strings is
 /// not the verified contract shape: it can prove nothing about which text
@@ -352,6 +416,396 @@ fn record_output(
     });
 }
 
+/// Raw-record fields that never index as text: record identity
+/// (`type`/`source`/`step_index`), lifecycle (`status`/`created_at`), token
+/// counts and recorded exit/error codes. They ride in `extra.agy_raw` as
+/// provenance; the census of the real transcripts shows these plus exactly
+/// the accounted fields below (14 names in the archive).
+const RAW_STRUCTURAL_FIELDS: &[&str] = &[
+    "type",
+    "source",
+    "status",
+    "created_at",
+    "step_index",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "exit_code",
+    "error_code",
+];
+
+/// F15 raw-record verification: prove every field of the archived source
+/// record (`extra.agy_raw`, FAD's verbatim clone of the transcript record)
+/// either indexes somewhere in the packet or provably carries no text. The
+/// first field that cannot be accounted taints the block inventory — the
+/// gate stays strict; a fully verified record retires the blanket
+/// `agy_canonical_envelope` taint for itself.
+fn verify_raw_blocks(
+    event: &Event,
+    raw: &Value,
+    extra: &Value,
+    expected_type: &str,
+    coverage: &mut CoverageBuilder,
+) {
+    let Some(record) = raw.as_object() else {
+        // The archived record must be the transcript object itself.
+        coverage.mark(&["block_inventory"], "agy_raw_unverified", "partial");
+        return;
+    };
+    if raw.get("type").and_then(Value::as_str) != Some(expected_type) {
+        // The archived record does not attribute to the classified record
+        // kind — never verify on a guess.
+        coverage.mark(&["block_inventory"], "agy_raw_unverified", "partial");
+        return;
+    }
+    let is_user_input = expected_type == "USER_INPUT";
+    // Deterministic field order regardless of the map's iteration order.
+    let mut keys: Vec<&str> = record.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    for key in keys {
+        let Some(value) = record.get(key) else {
+            continue;
+        };
+        let accounted = if RAW_STRUCTURAL_FIELDS.contains(&key) {
+            true
+        } else {
+            match key {
+                // The allowlisted source-side truncation marker: the text
+                // scopes carry `agy_source_truncated` for it; the marker
+                // list itself is metadata.
+                "truncated_fields" => true,
+                // Attachment refs ({mime_type, uri}): evidence with no text.
+                "media" => true,
+                "content" => {
+                    if is_user_input {
+                        user_content_accounted(value, event, extra)
+                    } else {
+                        record_content_accounted(value, event)
+                    }
+                }
+                "thinking" | "error" => raw_text_field_accounted(value, extra.get(key)),
+                "tool_calls" => raw_tool_calls_accounted(event, value, extra),
+                // Any field outside the verified contract might carry
+                // text; unknown names stay unaccounted (never a silent
+                // pass).
+                _ => false,
+            }
+        };
+        if !accounted {
+            let reason = if is_user_input && key == "content" {
+                "agy_user_wrapper_unindexed"
+            } else {
+                "agy_raw_field_unaccounted"
+            };
+            coverage.mark(&["block_inventory"], reason, "partial");
+            return;
+        }
+    }
+}
+
+/// Record `content` accounting outside USER_INPUT: the connector copies
+/// the string byte-for-byte into the message content (every arm except
+/// the USER_INPUT wrapper extraction and the empty-content error
+/// fallbacks, whose raw `content` is empty). Absent/null or blank content
+/// carries no text; a non-string value never reached the packet.
+fn record_content_accounted(value: &Value, event: &Event) -> bool {
+    let Value::String(text) = value else {
+        return value.is_null();
+    };
+    text.trim().is_empty() || event.content == text.as_str()
+}
+
+/// `thinking`/`error` accounting: the connector lifts `thinking` trimmed
+/// (a blank lift drops the key) and passes `error` through verbatim (F10);
+/// either way the packet copy under the same extra key must equal the raw
+/// text. Absent/null or blank text carries nothing.
+fn raw_text_field_accounted(value: &Value, packet_copy: Option<&Value>) -> bool {
+    let Value::String(text) = value else {
+        return value.is_null();
+    };
+    if text.trim().is_empty() {
+        return true;
+    }
+    match packet_copy {
+        Some(Value::String(copy)) => copy.as_str() == text || copy.as_str() == text.trim(),
+        _ => false,
+    }
+}
+
+/// One closed `<TAG>…</TAG>` wrapper span in a raw USER_INPUT record.
+struct RawWrapperSpan {
+    tag: &'static str,
+    start: usize,
+    end: usize,
+    inner: String,
+}
+
+/// The wrapper vocabulary of raw USER_INPUT records — fixed structural
+/// markup, the same tags the connector's own body extraction strips.
+const RAW_USER_WRAPPER_TAGS: &[&str] = &[
+    "USER_REQUEST",
+    "USER_SETTINGS_CHANGE",
+    "ADDITIONAL_METADATA",
+];
+
+/// Scan the closed wrapper spans of ONE tag, earliest open first — a
+/// direct mirror of the connector's `extract_tagged_blocks`, which scans
+/// each tag independently across the whole content. Overlapping shapes
+/// occur in the real transcripts (a block's open tag inside another
+/// block's inner text), so a global earliest-open scan would derive the
+/// wrong first block for the inner tag. An unterminated wrapper of this
+/// tag stops ITS scan: the remainder falls to the residual check.
+fn raw_wrapper_spans_tag(content: &str, tag: &'static str) -> Vec<RawWrapperSpan> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut spans = Vec::new();
+    let mut from = 0;
+    while let Some(offset) = content[from..].find(&open) {
+        let at = from + offset;
+        let after = &content[at + open.len()..];
+        let Some(rel) = after.find(&close) else {
+            break;
+        };
+        let end = at + open.len() + rel + close.len();
+        spans.push(RawWrapperSpan {
+            tag,
+            start: at,
+            end,
+            inner: after[..rel].trim().to_string(),
+        });
+        from = end;
+    }
+    spans
+}
+
+/// All closed wrapper spans, earliest start first across tags. Same-tag
+/// spans are disjoint and ordered, so the sort keeps each tag's
+/// first-block position queryable — `wrapper_lift_accounted` and
+/// `wrapper_residual_blank` both key on "the FIRST block of a kind".
+fn raw_wrapper_spans(content: &str) -> Vec<RawWrapperSpan> {
+    let mut spans = Vec::new();
+    for tag in RAW_USER_WRAPPER_TAGS {
+        spans.extend(raw_wrapper_spans_tag(content, tag));
+    }
+    spans.sort_by_key(|span| span.start);
+    spans
+}
+
+/// USER_INPUT `content` accounting — a mirror of the connector's
+/// `extract_user_request`: with no closed `<USER_REQUEST>` block the whole
+/// record text is the body (everything indexes in chat); otherwise the
+/// body is the joined request blocks, the FIRST settings/metadata block
+/// of each kind lifts to extras, and any other non-markup text — loose
+/// residual text, further settings/metadata blocks, an unterminated
+/// wrapper's remainder — never reaches the packet.
+fn user_content_accounted(value: &Value, event: &Event, extra: &Value) -> bool {
+    let Some(text) = value.as_str() else {
+        return value.is_null();
+    };
+    let spans = raw_wrapper_spans(text);
+    let requests: Vec<&str> = spans
+        .iter()
+        .filter(|span| span.tag == "USER_REQUEST")
+        .map(|span| span.inner.as_str())
+        .collect();
+    let body_matches = if requests.is_empty() {
+        event.content == text.trim()
+    } else {
+        // Mirror of the connector's `requests.join("\n\n")`.
+        event.content == requests.join("\n\n")
+    };
+    if !body_matches {
+        return false;
+    }
+    if requests.is_empty() {
+        // Whole-record fallback body: everything indexes in chat.
+        return true;
+    }
+    // Residual: text outside the connector's keep set that is not
+    // wrapper markup is dropped text. Byte classification, not a
+    // sequential cut — per-tag spans overlap on the real shapes, so
+    // "between spans" is not well-defined.
+    if !wrapper_residual_blank(text, &spans) {
+        return false;
+    }
+    wrapper_lift_accounted("USER_SETTINGS_CHANGE", &spans, extra.get("settings_change"))
+        && wrapper_lift_accounted(
+            "ADDITIONAL_METADATA",
+            &spans,
+            extra.get("additional_metadata"),
+        )
+}
+
+/// The connector's USER_INPUT keep set is the joined request blocks plus
+/// the FIRST settings/metadata block of each kind; everything else in
+/// the record is wrapper markup (structural vocabulary, never indexed
+/// text) or text the connector's extraction drops. Byte classification:
+/// kept spans account their whole extent, every wrapper tag occurrence —
+/// open or close, matched or not, even one sitting inside another block's
+/// inner text — is markup, and what is left marked is exactly the text
+/// the connector never lifted. Blank means no text dropped.
+fn wrapper_residual_blank(text: &str, spans: &[RawWrapperSpan]) -> bool {
+    let mut dropped = vec![true; text.len()];
+    for span in spans {
+        let first_of_tag = spans
+            .iter()
+            .find(|other| other.tag == span.tag)
+            .is_some_and(|first| first.start == span.start);
+        // Every request block and the first block of each lift tag are
+        // kept — their markup is structural, their inner text lifted.
+        if span.tag == "USER_REQUEST" || first_of_tag {
+            dropped[span.start..span.end].fill(false);
+        }
+    }
+    for tag in RAW_USER_WRAPPER_TAGS {
+        for needle in [format!("<{tag}>"), format!("</{tag}>")] {
+            let mut from = 0;
+            while let Some(offset) = text[from..].find(needle.as_str()) {
+                let at = from + offset;
+                let to = at + needle.len();
+                dropped[at..to].fill(false);
+                from = to;
+            }
+        }
+    }
+    let residual: Vec<u8> = dropped
+        .iter()
+        .zip(text.as_bytes())
+        .filter(|(dropped, _)| **dropped)
+        .map(|(_, byte)| *byte)
+        .collect();
+    String::from_utf8_lossy(&residual).trim().is_empty()
+}
+
+/// The connector lifts only the FIRST wrapper block of each kind; the
+/// packet copy must equal it, and any further block must be blank (its
+/// text would otherwise drop).
+fn wrapper_lift_accounted(
+    tag: &str,
+    spans: &[RawWrapperSpan],
+    packet_copy: Option<&Value>,
+) -> bool {
+    let blocks: Vec<&str> = spans
+        .iter()
+        .filter(|span| span.tag == tag)
+        .map(|span| span.inner.as_str())
+        .collect();
+    let Some((first, rest)) = blocks.split_first() else {
+        // No block of this kind: nothing lifts (a packet copy without a
+        // source block is extra evidence, not a loss).
+        return true;
+    };
+    rest.iter().all(|block| block.trim().is_empty())
+        && (first.trim().is_empty()
+            || matches!(packet_copy, Some(Value::String(copy)) if copy.as_str() == *first))
+}
+
+/// Raw `tool_calls` accounting: every call the archived record held must
+/// have lifted into `extra.cass.invocations` (the `NormalizedInvocation`
+/// serde shape both FAD's planner dual-write and the ingest merge
+/// produce) with its arguments intact — and the record must not be role
+/// `tool`, whose args the region lane never indexes. A nameless item
+/// lifts nowhere; it is accounted only when it carries no argument text
+/// either (a mirror of the connector's nameless-call drop).
+fn raw_tool_calls_accounted(event: &Event, raw: &Value, extra: &Value) -> bool {
+    let Some(items) = raw.as_array() else {
+        return raw.is_null();
+    };
+    if event.role == "tool" {
+        // Role-tool args never index: search_regions.rs gates the
+        // `cass.invocations` args lane on role != tool.
+        return false;
+    }
+    // Lifted calls: [{kind, name, arguments?}] — `arguments` serializes
+    // only when present (an explicit `null` stays explicit).
+    let mut lifted: Vec<(String, Option<Value>)> = extra
+        .pointer("/cass/invocations")
+        .and_then(Value::as_array)
+        .map(|invocations| {
+            invocations
+                .iter()
+                .map(|inv| {
+                    (
+                        inv.get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        inv.get("arguments").cloned(),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for item in items {
+        let Some(call) = item.as_object() else {
+            return false;
+        };
+        let name = call
+            .get("name")
+            .or_else(|| call.get("tool_name"))
+            .or_else(|| item.pointer("/function/name"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty());
+        // The planner lift takes the first present arguments spelling, in
+        // this order, cloned verbatim (planner_calls.rs).
+        let args = call
+            .get("args")
+            .or_else(|| call.get("arguments"))
+            .or_else(|| call.get("input"))
+            .or_else(|| item.pointer("/function/arguments"))
+            .cloned();
+        match name {
+            Some(name) => {
+                let found = lifted.iter().position(|(lifted_name, lifted_args)| {
+                    lifted_name.as_str() == name && args_equivalent(&args, lifted_args)
+                });
+                match found {
+                    Some(at) => {
+                        lifted.remove(at);
+                    }
+                    None => return false,
+                }
+            }
+            None => {
+                // Nameless calls drop whole; accounted only when no
+                // argument text drops with them.
+                if args
+                    .as_ref()
+                    .is_some_and(|value| !args_textually_empty(value))
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Raw vs lifted arguments equivalence: absent ≡ explicit `null`; values
+/// compared canonically (sorted keys) so object order cannot fake a match.
+fn args_equivalent(raw: &Option<Value>, lifted: &Option<Value>) -> bool {
+    let normalize = |value: &Option<Value>| {
+        value
+            .as_ref()
+            .filter(|value| !value.is_null())
+            .map(json_text)
+    };
+    normalize(raw) == normalize(lifted)
+}
+
+/// True when the value holds no text (null, blank string, empty
+/// object/array — numbers and booleans carry none either).
+fn args_textually_empty(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::String(text) => text.trim().is_empty(),
+        Value::Array(items) => items.is_empty(),
+        Value::Object(map) => map.is_empty(),
+        Value::Number(_) | Value::Bool(_) => true,
+    }
+}
+
 /// One verified agy event (oracle `_structured_event`). Thinking and
 /// `cass.invocations` evidence are handled by [`cass_evidence`] — the FAD
 /// records carrying them have no `agy_type` to verify.
@@ -362,12 +816,20 @@ fn structured_event(
     tools: &mut ToolCollector,
 ) {
     let extra = event.extra;
-    // The canonical `agy_type` envelope loses the raw record structure
-    // (field layout, `status`, raw `tool_calls` arrays). The record's TEXT
-    // survives as the message content and lands in chat regions, so this
-    // taints the block inventory only.
-    if extra.get("agy_type").is_some() {
-        coverage.mark(&["block_inventory"], "agy_canonical_envelope", "partial");
+    // F15 raw-record verification: with the archived source record the
+    // block inventory is proven from it; the pre-F15 canonical-envelope
+    // taint applies only when the raw record is absent.
+    match extra.get("agy_raw") {
+        Some(raw) => verify_raw_blocks(event, raw, extra, kind, coverage),
+        None => {
+            // The canonical `agy_type` envelope loses the raw record
+            // structure (field layout, `status`, raw `tool_calls` arrays).
+            // The record's TEXT survives as the message content and lands
+            // in chat regions, so this taints the block inventory only.
+            if extra.get("agy_type").is_some() {
+                coverage.mark(&["block_inventory"], "agy_canonical_envelope", "partial");
+            }
+        }
     }
     let content = extra
         .get("content")
@@ -534,6 +996,19 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
             RecordShape::User | RecordShape::Planner => {
                 if !event.content.is_empty() {
                     coverage.evidence("chat");
+                }
+                // F15: the key-set shapes the connector emits without an
+                // `agy_type` envelope verify from the archived raw record
+                // the same way. Without it these records carry no block
+                // taint (unchanged pre-F15 behavior — verification is
+                // additive, never a new blanket mark).
+                if let Some(raw) = extra.get("agy_raw") {
+                    let expected = if event.role == "user" {
+                        "USER_INPUT"
+                    } else {
+                        "PLANNER_RESPONSE"
+                    };
+                    verify_raw_blocks(event, raw, extra, expected, &mut coverage);
                 }
             }
             // Connector drift (unverifiable record: real message text with

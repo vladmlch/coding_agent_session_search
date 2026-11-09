@@ -549,8 +549,9 @@ fn codex_agent_message_encrypted_payload_is_known_unreadable() {
 }
 
 // ---------------------------------------------------------------------------
-// Codex extra-compaction envelopes. Past the compaction threshold (cass
-// ≥16 MiB, FAD ≥32 MiB) per-message extras are reduced to the `{"cass":{…}}`
+// Codex extra-compaction envelopes. The compaction layers that produced
+// them (cass ≥16 MiB, FAD ≥32 MiB) were removed 2026-11-08, but archives
+// indexed before that carry per-message extras reduced to the `{"cass":{…}}`
 // skeleton or its empty `{}` product; the message text itself stays in
 // `content`. The connector only ever emits `response_item`/`event_msg`
 // records, so an unwrappable codex record IS the envelope: the honest
@@ -702,6 +703,11 @@ fn claude_unpaired_call_keeps_text_inventory_complete() {
     assert_eq!(blocks.state, "complete", "block_inventory: {blocks:?}");
 }
 
+/// The rollout's literal LAST event is the unpaired function_call: the run
+/// was cut mid-call. An append-only rollout that ends with the call proves
+/// no output record was ever written, so the missing result text is absent
+/// at the source (`tool_output_interrupted`, allowlisted) — not the
+/// not-read `tool_result_missing`.
 fn codex_unpaired_call_packet() -> ConversationPacket {
     packet(
         "codex",
@@ -714,8 +720,7 @@ fn codex_unpaired_call_packet() -> ConversationPacket {
                 json!({"type": "event_msg",
                        "payload": {"type": "user_message", "message": "run the probe"}}),
             ),
-            // No function_call_output follows: the result record is missing
-            // from storage, so its text really is lost.
+            // No function_call_output follows: the call is the last event.
             msg(
                 1,
                 "assistant",
@@ -731,25 +736,235 @@ fn codex_unpaired_call_packet() -> ConversationPacket {
 }
 
 #[test]
-fn codex_unpaired_call_still_marks_text_inventory_partial() {
+fn codex_unpaired_call_at_rollout_end_marks_source_absent_interrupted() {
     let publication = extract_session_facts(&codex_unpaired_call_packet(), "codex");
 
     let tools = coverage(&publication, "tools").expect("tools coverage");
     assert_eq!(tools.state, "partial", "tools: {tools:?}");
     assert!(
-        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        tools.reasons.iter().any(|r| r == "tool_output_interrupted"),
         "tools reasons: {:?}",
         tools.reasons
     );
 
-    // Codex storage really loses the output record: session text is missing.
+    // The rollout provably ends mid-call: the result text never existed in
+    // any local record, so the inventory gap is source-absent, not not-read.
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "partial", "text_inventory: {text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "tool_output_interrupted"),
+        "text_inventory reasons: {:?}",
+        text.reasons
+    );
+    assert!(
+        !text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "an interrupted call is not a not-read gap: {:?}",
+        text.reasons
+    );
+    assert!(
+        is_source_absent_gap(&text.state, &text.reasons),
+        "the interrupted proof must classify the gap source-absent"
+    );
+}
+
+/// An unpaired call mid-turn: reasoning and an assistant message follow the
+/// call, but no new user message does and the call is not the last event.
+/// Nothing proves the output record absent — it may exist in the file but
+/// be dropped by the pipeline — so the verdict stays the honest not-read
+/// `tool_result_missing`.
+fn codex_unpaired_call_mid_turn_packet() -> ConversationPacket {
+    packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "run the mid-turn probe",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message",
+                                   "message": "run the mid-turn probe"}}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "[Tool: shell]",
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_midturn",
+                                   "name": "shell",
+                                   "arguments": "{\"command\": \"probe\"}",
+                                   "id": "resp-1"}}),
+            ),
+            msg(
+                2,
+                "assistant",
+                "made-up reasoning text",
+                json!({"type": "response_item",
+                       "payload": {"type": "reasoning",
+                                   "content": [{"type": "reasoning_text",
+                                                "text": "made-up reasoning text"}]}}),
+            ),
+            msg(
+                3,
+                "assistant",
+                "made-up assistant follow-up",
+                json!({"type": "event_msg",
+                       "payload": {"type": "agent_message",
+                                   "message": "made-up assistant follow-up"}}),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn codex_unpaired_call_mid_turn_keeps_tool_result_missing() {
+    let publication = extract_session_facts(&codex_unpaired_call_mid_turn_packet(), "codex");
+
     let text = coverage(&publication, "text_inventory").expect("text_inventory");
     assert_eq!(text.state, "partial", "text_inventory: {text:?}");
     assert!(
         text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "a mid-turn unpaired call is an honest not-read gap: {:?}",
+        text.reasons
+    );
+    assert!(
+        !text.reasons.iter().any(|r| r == "tool_output_interrupted"),
+        "no interruption proof exists mid-turn: {:?}",
+        text.reasons
+    );
+    assert!(
+        !is_source_absent_gap(&text.state, &text.reasons),
+        "mid-turn unpaired calls keep blocking strict search"
+    );
+}
+
+/// An unpaired call followed by a NEW task's user message: codex never
+/// accepts user input mid-turn, so the pending turn was cut and the next
+/// task began — the complete rollout file holds no output record for the
+/// call id, and the missing result text never existed locally.
+fn codex_interrupted_call_next_task_packet() -> ConversationPacket {
+    packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "run the first task",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "run the first task"}}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "[Tool: shell]",
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_cut",
+                                   "name": "shell",
+                                   "arguments": "{\"command\": \"probe\"}",
+                                   "id": "resp-1"}}),
+            ),
+            msg(
+                2,
+                "user",
+                "start the made-up second task",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message",
+                                   "message": "start the made-up second task"}}),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn codex_interrupted_call_followed_by_next_task_marks_source_absent() {
+    let publication = extract_session_facts(&codex_interrupted_call_next_task_packet(), "codex");
+
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "partial", "text_inventory: {text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "tool_output_interrupted"),
         "text_inventory reasons: {:?}",
         text.reasons
     );
+    assert!(
+        !text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "the next-task cut is not a not-read gap: {:?}",
+        text.reasons
+    );
+    assert!(
+        is_source_absent_gap(&text.state, &text.reasons),
+        "a turn cut by the next task's user message proves the output text never existed"
+    );
+}
+
+/// The cass-side half of FAD F13 (branch cass-last-eight): a
+/// `function_call_output` whose captured output is an image-only part list
+/// carries no text, but the record still links to its call — `recorded_text`
+/// treats image parts as known non-text, so the result records with empty
+/// text, the call PAIRS, and no missing-result mark degrades the text
+/// inventory. Without the F13 emission these calls arrive unpaired
+/// (`tool_result_missing`); with it, the session's text verdicts stay
+/// complete (cid 2629's shape).
+#[test]
+fn codex_image_only_tool_output_pairs_without_text_marks() {
+    let p = packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "inspect the made-up screenshot",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message",
+                                   "message": "inspect the made-up screenshot"}}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "[Tool: view_image]",
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_img",
+                                   "name": "view_image",
+                                   "arguments": "{\"path\": \"/made-up.png\"}",
+                                   "id": "resp-1"}}),
+            ),
+            msg(
+                2,
+                "tool",
+                "",
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call_output", "call_id": "call_img",
+                                   "id": "resp-2",
+                                   "output": [{"type": "image_url",
+                                               "image_url": {"url": "data:image/png;base64,MADEUP"}}]}}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "codex");
+
+    for field in ["tools", "text_inventory"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(
+            !entry.reasons.iter().any(|r| r == "tool_result_missing"),
+            "the image-only output paired its call: {entry:?}"
+        );
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "tool_output_not_recorded"),
+            "image parts are known non-text, never a malformed output: {entry:?}"
+        );
+    }
+    let facts = publication
+        .tools
+        .iter()
+        .find(|fact| fact.raw_call_id == "call_img")
+        .expect("the call pairs with the image-only result");
+    assert!(facts.has_result, "tool fact: {facts:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -850,6 +1065,536 @@ fn claude_compacted_extra_stays_partial_not_unknown() {
             entry.reasons
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Claude Desktop sidecar sessions, empty-`{}` compaction products and
+// audit-log replay pairs — the residual shapes of the 2026-11-08
+// residual-shapes pass. Fixtures replicate the pinned FAD connector's
+// output shapes with made-up text (the real archive is read-only and never
+// copied here).
+// ---------------------------------------------------------------------------
+
+/// The FAD Claude Desktop sidecar envelope (`claude-code-sessions` /
+/// `local-agent-mode-sessions` metadata stubs): ONE system message whose
+/// content is the metadata lines, extra = the `cass` sidecar provenance plus
+/// the whole raw metadata object. The conversation body is explicitly culled
+/// at the source (`body_available: false`); the user-typed first prompt
+/// rides unlifted in `raw.initialMessage`.
+fn claude_desktop_sidecar_packet_with_slug(slug: &str) -> ConversationPacket {
+    let content = [
+        "Claude Code Desktop session metadata",
+        "Title: made-up sidecar title",
+        "Workspace: /made/up/workspace",
+        "Model: claude-made-up",
+        "Permission mode: default",
+        "CLI session id: sidecar-cli-made-up",
+        "Conversation body unavailable in this Desktop sidecar; Claude Code may have culled the CLI JSONL body.",
+    ]
+    .join("\n");
+    packet(
+        slug,
+        json!({"source": "claude_code"}),
+        vec![msg(
+            0,
+            "system",
+            &content,
+            json!({
+                "cass": {
+                    "source": "claude_code_desktop_sidecar",
+                    "body_available": false,
+                    "body_cull_note": "Claude Code may auto-cull CLI JSONL bodies while Desktop sidecars retain title/workspace metadata."
+                },
+                "raw": {
+                    "title": "made-up sidecar title",
+                    "cwd": "/made/up/workspace",
+                    "model": "claude-made-up",
+                    "cliSessionId": "sidecar-cli-made-up",
+                    "initialMessage": "made-up sidecar first prompt"
+                }
+            }),
+        )],
+    )
+}
+
+fn claude_desktop_sidecar_packet() -> ConversationPacket {
+    claude_desktop_sidecar_packet_with_slug("claude_code")
+}
+
+#[test]
+fn claude_desktop_sidecar_envelope_is_a_known_shape() {
+    let publication = extract_session_facts(&claude_desktop_sidecar_packet(), "claude_code");
+
+    // The envelope is known: no scope may claim an unknown shape.
+    for entry in &publication.coverage {
+        assert!(
+            !entry.reasons.iter().any(|r| r == "claude_shape_unknown"),
+            "{} must not be shape-unknown: {:?}",
+            entry.field,
+            entry.reasons
+        );
+    }
+    // The culled conversation body never existed in any local record — the
+    // app's own `body_available: false` marker proves it — so the inventory
+    // gap is source-absent, never a not-read gap.
+    for field in ["block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert_eq!(
+            entry.reasons,
+            vec!["claude_sidecar_body_culled".to_string()],
+            "{field}: {entry:?}"
+        );
+        assert!(
+            is_source_absent_gap(&entry.state, &entry.reasons),
+            "{field} must be a source-absent gap: {entry:?}"
+        );
+    }
+    // The sidecar's own text (the metadata lines plus the initialMessage
+    // region) is the session's chat — fully present and indexed.
+    let chat = coverage(&publication, "chat").expect("chat");
+    assert_eq!(chat.state, "complete", "chat: {chat:?}");
+    // No tool records exist in the sidecar; nothing may claim a tool gap.
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "complete", "tools: {tools:?}");
+}
+
+#[test]
+fn claude_sidecar_cull_verdict_requires_the_explicit_marker() {
+    // Same envelope shape with `body_available: true` (or absent): without
+    // the app's explicit cull marker the extractor may not claim the body
+    // is source-absent — the conservative unknown-shape verdict survives.
+    for body_available in [json!(true), Value::Null] {
+        let extra = json!({
+            "cass": {"source": "claude_code_desktop_sidecar",
+                     "body_available": body_available},
+            "raw": {"title": "made-up title", "initialMessage": "made-up prompt"}
+        });
+        let p = packet(
+            "claude_code",
+            json!({"source": "claude_code"}),
+            vec![msg(
+                0,
+                "system",
+                "Claude Code Desktop session metadata\nTitle: made-up title",
+                extra,
+            )],
+        );
+        let publication = extract_session_facts(&p, "claude_code");
+        let entry = coverage(&publication, "text_inventory").expect("text_inventory");
+        assert_eq!(entry.state, "unavailable", "{entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "claude_shape_unknown"),
+            "no cull marker, no cull verdict: {entry:?}"
+        );
+        assert!(!is_source_absent_gap(&entry.state, &entry.reasons));
+    }
+}
+
+#[test]
+fn claude_empty_extra_object_is_the_compaction_product() {
+    // FAD's former `compact_message_extra` returned `{}` for records with
+    // no model/message_id/request_id/token_usage/tool_call_count — the plain
+    // user/text turns of a >=32 MiB session; their text stays in `content`.
+    // The layer is gone (2026-11-08) but archives indexed before it carry
+    // the product, and the empty object IS that compaction product: the same
+    // partial `extra_compacted` verdict codex gives it, never an unknown
+    // shape.
+    let publication = extract_session_facts(
+        &packet(
+            "claude_code",
+            json!({"source": "claude_code"}),
+            vec![
+                msg(0, "user", "made-up compacted user turn", json!({})),
+                msg(
+                    1,
+                    "assistant",
+                    "made-up compacted reply",
+                    json!({"cass": {"model": "claude-made-up"}}),
+                ),
+            ],
+        ),
+        "claude_code",
+    );
+    for entry in &publication.coverage {
+        assert!(
+            !entry.reasons.iter().any(|r| r == "claude_shape_unknown"),
+            "{} must not be shape-unknown: {:?}",
+            entry.field,
+            entry.reasons
+        );
+    }
+    for field in ["text_inventory", "block_inventory", "chat"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "extra_compacted"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+    }
+}
+
+/// One Claude Desktop `audit.jsonl` replay pair: the live record and its
+/// `isReplay: true` re-emission under the same uuid, differing exactly in
+/// the transport/audit envelope keys (`client_platform`, `origin`,
+/// `session_id`, `timestamp`, `_audit_hmac`, `_audit_timestamp`).
+fn claude_audit_replay_packet(live_text: &str, replay_text: &str) -> ConversationPacket {
+    let live = json!({
+        "type": "user", "uuid": "u-replay", "session_id": "sess-made-up-1",
+        "timestamp": "2026-11-01T10:00:00.000Z", "client_platform": "darwinCLI",
+        "message": {"role": "user", "content": [{"type": "text", "text": live_text}]}
+    });
+    let replay = json!({
+        "type": "user", "uuid": "u-replay", "session_id": "sess-made-up-2",
+        "timestamp": "2026-11-01T11:00:00.000Z", "isReplay": true,
+        "origin": {"kind": "human"},
+        "_audit_hmac": "made-up-hmac", "_audit_timestamp": "2026-11-01T11:00:01.000Z",
+        "message": {"role": "user", "content": [{"type": "text", "text": replay_text}]}
+    });
+    packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![
+            msg(0, "user", live_text, live),
+            msg(1, "user", replay_text, replay),
+        ],
+    )
+}
+
+#[test]
+fn claude_audit_replay_pair_with_identical_content_dedups() {
+    // The Desktop audit log re-emits a live record under the same uuid with
+    // an explicit `isReplay: true` marker and fresh audit/transport
+    // bookkeeping. Identical recorded content makes the pair a transport
+    // copy, not a conflict: the live record survives, the text counts once
+    // and no scope claims conflicting evidence.
+    let p = claude_audit_replay_packet("made-up audit live prompt", "made-up audit live prompt");
+    let publication = extract_session_facts(&p, "claude_code");
+    for entry in &publication.coverage {
+        assert!(
+            !entry.reasons.iter().any(|r| r == "conflicting_event"),
+            "{} must not be conflicting: {:?}",
+            entry.field,
+            entry.reasons
+        );
+    }
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "complete", "{text:?}");
+    // The deduped session keeps exactly the live prompt as its first prompt.
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("made-up audit live prompt")
+    );
+}
+
+#[test]
+fn claude_rewritten_replay_keeps_text_verdicts_and_records_the_conflict() {
+    // A replay that REWRITES the record (the real audit shape: a short live
+    // first user message and a fuller replayed copy under the same uuid) is
+    // still a conflict — but BOTH texts are local packet messages and the
+    // regions lane indexes every packet message, so no session text is
+    // missing. The live record survives the facts lane, the conflict lands
+    // on a dedicated `replay_conflict` scope (no strict gate consults it),
+    // and the core text verdicts stay complete.
+    let p = claude_audit_replay_packet(
+        "made-up short prompt",
+        "made-up short prompt with made-up appended context",
+    );
+    let publication = extract_session_facts(&p, "claude_code");
+    for entry in &publication.coverage {
+        assert!(
+            !entry.reasons.iter().any(|r| r == "conflicting_event"),
+            "{} must not be conflicting: {:?}",
+            entry.field,
+            entry.reasons
+        );
+    }
+    for field in ["chat", "block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+    }
+    let conflict = coverage(&publication, "replay_conflict").expect("replay_conflict scope");
+    assert_eq!(conflict.state, "partial", "{conflict:?}");
+    assert!(
+        conflict
+            .reasons
+            .iter()
+            .any(|r| r == "claude_rewritten_replay"),
+        "the rewritten replay records its conflict: {conflict:?}"
+    );
+    // The deduped session keeps the LIVE prompt as its first prompt.
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("made-up short prompt")
+    );
+    // Both versions stay region-indexed: the regions lane iterates every
+    // packet message (no uuid dedup), so each replay version keeps its own
+    // chat region and stays searchable.
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+    for idx in [0, 1] {
+        let region = regions
+            .iter()
+            .find(|r| r.region_key == format!("m{idx}:chat"))
+            .unwrap_or_else(|| panic!("both replay versions must index: {regions:?}"));
+        assert_eq!(
+            region.scope, "chat",
+            "user text indexes as chat: {region:?}"
+        );
+        assert_eq!(
+            region.message_idx,
+            Some(idx),
+            "the region anchors its own packet message: {region:?}"
+        );
+    }
+}
+
+#[test]
+fn claude_unmarked_uuid_conflict_stays_conflicting() {
+    // Without the explicit `isReplay` marker, two different-content records
+    // under one uuid are unexplained conflicting evidence: the text
+    // verdicts stay unavailable and conflicting — the rewritten-replay arm
+    // above is keyed on the marker, never on content similarity, so an
+    // unmarked pair (true corruption) fails closed.
+    let first = json!({
+        "type": "user", "uuid": "u-plain", "session_id": "sess-made-up-3",
+        "message": {"role": "user", "content": [{"type": "text", "text": "made-up plain one"}]}
+    });
+    let second = json!({
+        "type": "user", "uuid": "u-plain", "session_id": "sess-made-up-3",
+        "message": {"role": "user", "content": [{"type": "text", "text": "made-up plain two"}]}
+    });
+    let p = packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![
+            msg(0, "user", "made-up plain one", first),
+            msg(1, "user", "made-up plain two", second),
+        ],
+    );
+    let publication = extract_session_facts(&p, "claude_code");
+    for field in ["chat", "block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "conflicting_event"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+    }
+    assert!(
+        coverage(&publication, "replay_conflict").is_none(),
+        "no replay marker means no replay_conflict scope: {:?}",
+        publication.coverage
+    );
+}
+
+#[test]
+fn claude_compacted_invocation_arguments_reach_tools_regions() {
+    // Compacted claude extras (`{"cass":{…}}` skeleton): the raw tool_use
+    // blocks are gone, so `cass.invocations` (the post-compaction merge) is
+    // the only surviving record of the call arguments — they must index as
+    // tools regions.
+    let p = packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "made-up compacted sweep request",
+                json!({"type": "user", "uuid": "u1", "message": {"role": "user", "content": [
+                    {"type": "text", "text": "made-up compacted sweep request"}]}}),
+            ),
+            msg(
+                1,
+                "agent",
+                "[Tool: Bash]",
+                json!({"cass": {"invocations": [
+                    {"kind": "tool", "name": "Bash", "call_id": "toolu_made_up_9",
+                     "arguments": {"command": "made-up-compacted-sweep --all"}}]}}),
+            ),
+        ],
+    );
+    let facts = extract_session_facts(&p, "claude_code");
+    let structure = project_session_structure(&p, &facts);
+    let regions = derive_message_regions(1, &p, &structure);
+    let region = regions
+        .iter()
+        .find(|r| r.tool_name.as_deref() == Some("Bash"))
+        .unwrap_or_else(|| panic!("Bash invocation region missing: {regions:?}"));
+    assert_eq!(region.scope, "tools", "{region:?}");
+    assert!(
+        region
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up-compacted-sweep")),
+        "{region:?}"
+    );
+}
+
+#[test]
+fn codex_compacted_invocation_arguments_reach_tools_regions() {
+    // The codex compaction envelope keeps call arguments only in
+    // `cass.invocations`; they must index as tools regions.
+    let p = packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "run the made-up sweep",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "run the made-up sweep"}}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "[Tool: exec]",
+                json!({"cass": {"invocations": [
+                    {"kind": "tool", "name": "exec", "call_id": "call_made_up_1",
+                     "arguments": "{\"command\": \"made-up-codex-sweep --flag\"}"}]}}),
+            ),
+        ],
+    );
+    let facts = extract_session_facts(&p, "codex");
+    let structure = project_session_structure(&p, &facts);
+    let regions = derive_message_regions(1, &p, &structure);
+    let region = regions
+        .iter()
+        .find(|r| r.tool_name.as_deref() == Some("exec"))
+        .unwrap_or_else(|| panic!("exec invocation region missing: {regions:?}"));
+    assert_eq!(region.scope, "tools", "{region:?}");
+    assert!(
+        region
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up-codex-sweep")),
+        "{region:?}"
+    );
+}
+
+#[test]
+fn devin_invocation_arguments_reach_tools_regions() {
+    // FAD's devin connector normalizes `tool_calls` away from the extras;
+    // the canonical merge keeps them in `cass.invocations` — the only
+    // record of the call arguments (the rendered content lines carry just
+    // the tool name). They must index as tools regions for devin too.
+    let p = packet(
+        "devin",
+        json!({"source": "sqlite", "session_id": "made-up-devin"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "Fix the made-up devin fixture.",
+                json!({"message_id": "m1", "is_user_input": true}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "Reading it.\n[tool_call: read_file]",
+                json!({"message_id": "m2", "thinking": "read first",
+                       "cass": {"invocations": [
+                           {"kind": "tool", "name": "read_file", "call_id": "tc_made_up_1",
+                            "arguments": {"path": "/made/up/devin/target.rs"}}]}}),
+            ),
+        ],
+    );
+    let facts = extract_session_facts(&p, "devin");
+    let structure = project_session_structure(&p, &facts);
+    let regions = derive_message_regions(1, &p, &structure);
+    let region = regions
+        .iter()
+        .find(|r| r.tool_name.as_deref() == Some("read_file"))
+        .unwrap_or_else(|| panic!("read_file invocation region missing: {regions:?}"));
+    assert_eq!(region.scope, "tools", "{region:?}");
+    assert!(
+        region
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("/made/up/devin/target.rs")),
+        "{region:?}"
+    );
+}
+
+#[test]
+fn claude_raw_tool_blocks_are_not_double_indexed_from_invocations() {
+    // A non-compacted claude record carries the raw `message.content`
+    // tool_use blocks AND the merged `cass.invocations` copy. The
+    // invocations lane must stay off there: the raw block already indexes
+    // the arguments exactly once.
+    let p = packet(
+        "claude_code",
+        json!({"source": "claude_code"}),
+        vec![msg(
+            0,
+            "assistant",
+            "[Tool: Bash]",
+            json!({"type": "assistant", "uuid": "a1",
+                   "message": {"role": "assistant", "content": [
+                       {"type": "tool_use", "id": "toolu_raw_1", "name": "Bash",
+                        "input": {"command": "made-up-raw-block-command"}}]},
+                   "cass": {"invocations": [
+                       {"kind": "tool", "name": "Bash", "call_id": "toolu_raw_1",
+                        "arguments": {"command": "made-up-raw-block-command"}}]}}),
+        )],
+    );
+    let facts = extract_session_facts(&p, "claude_code");
+    let structure = project_session_structure(&p, &facts);
+    let regions = derive_message_regions(1, &p, &structure);
+    let hits = regions
+        .iter()
+        .filter(|r| {
+            r.indexed_text
+                .as_deref()
+                .is_some_and(|text| text.contains("made-up-raw-block-command"))
+        })
+        .count();
+    assert_eq!(hits, 1, "arguments must index exactly once: {regions:?}");
+}
+
+#[test]
+fn claude_desktop_sidecar_initial_message_indexes_as_chat_region() {
+    // The connector leaves the user-typed first prompt in
+    // `raw.initialMessage`; it is real conversation text the sidecar
+    // carries, so it must index as its own chat region.
+    let p = claude_desktop_sidecar_packet();
+    let facts = extract_session_facts(&p, "claude_code");
+    let structure = project_session_structure(&p, &facts);
+    let regions = derive_message_regions(1, &p, &structure);
+    let region = regions
+        .iter()
+        .find(|r| r.region_key == "m0:initial_prompt")
+        .unwrap_or_else(|| panic!("m0:initial_prompt missing: {regions:?}"));
+    assert_eq!(region.scope, "chat", "{region:?}");
+    assert!(
+        region
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up sidecar first prompt")),
+        "{region:?}"
+    );
+    // The metadata content itself stays the m0:chat region.
+    assert!(
+        regions.iter().any(|r| r.region_key == "m0:chat"),
+        "{regions:?}"
+    );
+
+    // The provider gate: the same envelope under a foreign slug must not
+    // grow the region.
+    let foreign = claude_desktop_sidecar_packet_with_slug("codex");
+    let foreign_facts = extract_session_facts(&foreign, "codex");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions
+            .iter()
+            .any(|r| r.region_key == "m0:initial_prompt"),
+        "foreign slug must not derive the sidecar region: {foreign_regions:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2058,6 +2803,749 @@ fn antigravity_regions_index_planner_arguments_and_user_wrappers() {
 }
 
 // ---------------------------------------------------------------------------
+// Antigravity F15 shapes: the pinned FAD connector archives the full raw
+// transcript record per message under `extra.agy_raw` (alongside the
+// canonical `agy_type` envelope), so the extractor verifies the block
+// inventory from the record itself — block_inventory certifies complete
+// wherever every archived field is accounted for, keeps
+// `agy_canonical_envelope` when no record was archived, and degrades to a
+// precise NOT-READ reason when an archived field cannot be proven indexed.
+// Synthetic text only; real key/type structure only.
+// ---------------------------------------------------------------------------
+
+/// The archived record of one synthetic source line, exactly as FAD F15
+/// emits it: the canonical envelope keys plus `agy_raw` holding the whole
+/// raw record verbatim.
+fn agy_raw_envelope_msg(
+    idx: i64,
+    role: &str,
+    agy_type: &str,
+    content: &str,
+    raw: Value,
+    extra: Value,
+) -> NormalizedMessage {
+    let mut merged = extra;
+    merged["agy_type"] = json!(agy_type);
+    merged["agy_raw"] = raw;
+    msg(idx, role, content, merged)
+}
+
+/// The USER_INPUT/PLANNER_RESPONSE shapes the connector emits WITHOUT an
+/// `agy_type` envelope: `agy_raw` rides along the canonical key-set extras.
+fn agy_raw_keyset_msg(
+    idx: i64,
+    role: &str,
+    content: &str,
+    raw: Value,
+    extra: Value,
+) -> NormalizedMessage {
+    let mut merged = extra;
+    merged["agy_raw"] = raw;
+    msg(idx, role, content, merged)
+}
+
+#[test]
+fn antigravity_facts_raw_record_proves_block_inventory_complete() {
+    // Every record the pinned FAD shape emits carries its archived raw
+    // record, and every archived field is accounted for: message text
+    // (content), lifted reasoning (thinking), the passthrough failure
+    // text (error), lifted planner calls (tool_calls → cass.invocations
+    // regions), the truncation marker, media refs and the structural
+    // metadata. The block inventory certifies COMPLETE — the
+    // `agy_canonical_envelope` partial retires for verified records.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity", "model": "MadeUp Model"}),
+        vec![
+            agy_raw_keyset_msg(
+                0,
+                "user",
+                "made-up raw-record request body",
+                json!({
+                    "step_index": 0, "source": "USER_EXPLICIT",
+                    "type": "USER_INPUT", "status": "DONE",
+                    "created_at": "2026-06-11T20:14:42Z",
+                    "content": "<USER_REQUEST>\nmade-up raw-record request body\n</USER_REQUEST>",
+                    "input_tokens": 11, "output_tokens": 7, "cache_read_tokens": 3,
+                    "media": [{"mime_type": "image/png", "uri": "file:///tmp/made-up.png"}]
+                }),
+                json!({
+                    "status": "DONE",
+                    "media": [{"mime_type": "image/png", "uri": "file:///tmp/made-up.png"}]
+                }),
+            ),
+            agy_raw_keyset_msg(
+                1,
+                "assistant",
+                "made-up raw-record planner narration",
+                json!({
+                    "step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:43Z",
+                    "content": "made-up raw-record planner narration",
+                    "thinking": "made-up raw-record thinking",
+                    "tool_calls": [
+                        {"name": "view_file", "args": {"TargetFile": "/made/up/raw-target.rs"}}
+                    ]
+                }),
+                json!({
+                    "status": "DONE",
+                    "thinking": "made-up raw-record thinking",
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "view_file",
+                         "arguments": {"TargetFile": "/made/up/raw-target.rs"}}
+                    ]}
+                }),
+            ),
+            agy_raw_envelope_msg(
+                2,
+                "tool",
+                "GENERIC",
+                "made-up raw-record step output",
+                json!({
+                    "step_index": 2, "source": "MODEL", "type": "GENERIC",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:44Z",
+                    "content": "made-up raw-record step output",
+                    "truncated_fields": []
+                }),
+                json!({"status": "DONE", "truncated_fields": []}),
+            ),
+            agy_raw_envelope_msg(
+                3,
+                "system",
+                "SYSTEM_MESSAGE",
+                "made-up raw-record system notice",
+                json!({
+                    "step_index": 3, "source": "SYSTEM", "type": "SYSTEM_MESSAGE",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:45Z",
+                    "content": "made-up raw-record system notice"
+                }),
+                json!({"status": "DONE"}),
+            ),
+            // Error-only ERROR_MESSAGE: the synthesized content carries the
+            // raw `error` text; the archived record has no content at all.
+            agy_raw_envelope_msg(
+                4,
+                "system",
+                "ERROR_MESSAGE",
+                "made-up raw-record pipeline failure",
+                json!({
+                    "step_index": 4, "source": "SYSTEM", "type": "ERROR_MESSAGE",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:46Z",
+                    "error": "made-up raw-record pipeline failure"
+                }),
+                json!({
+                    "status": "DONE",
+                    "error": "made-up raw-record pipeline failure"
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+
+    // Every record classifies as a known shape — the `agy_raw` key is part
+    // of the connector's verified output contract, not drift.
+    assert!(
+        !publication
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_record_unknown")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+
+    // The verified block inventory: no envelope taint, no unaccounted
+    // field, nothing unverified.
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "complete", "{block:?}");
+    assert!(
+        block.reasons.is_empty(),
+        "the raw-verified block inventory must carry no reasons: {block:?}"
+    );
+    assert!(
+        !publication
+            .coverage
+            .iter()
+            .any(|entry| entry.reasons.iter().any(|r| r == "agy_canonical_envelope")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+
+    // The lifted thinking block is still counted. The planner call carries
+    // NO call_id at the source (the real archive shape: antigravity
+    // `tool_calls` items hold only name/args, and FAD lifts no identity),
+    // so the tools scope keeps its identity-missing partial and the call
+    // never enters the tool facts — yet the archived `tool_calls` still
+    // verified against the lifted invocation above, which is exactly what
+    // retired the envelope taint: block verification is independent of
+    // call identity.
+    assert_eq!(publication.thinking_block_count, Some(1));
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "partial", "{tools:?}");
+    assert!(
+        tools
+            .reasons
+            .iter()
+            .any(|r| r == "agy_tool_call_identity_missing"),
+        "{tools:?}"
+    );
+    assert!(
+        publication.tools.is_empty(),
+        "a call with no source identity must not enter the tool facts: {:?}",
+        publication.tools
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_record_absent_keeps_envelope_partial() {
+    // Old packets (pre-F15): no archived record, so the canonical
+    // `agy_type` envelope is all the packet holds — the block inventory
+    // stays honestly partial. The strict gate keeps refusing these.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            msg(
+                1,
+                "tool",
+                "made-up step output",
+                json!({"agy_type": "GENERIC", "status": "DONE"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block.reasons.iter().any(|r| r == "agy_canonical_envelope"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_record_unknown_field_keeps_block_inventory_partial() {
+    // An archived field outside the verified field census (the raw
+    // transcripts hold 14 distinct names) cannot be proven indexed, so it
+    // keeps the block inventory partial — with the precise unaccounted
+    // reason, never the retired blanket envelope mark.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            agy_raw_envelope_msg(
+                1,
+                "tool",
+                "GENERIC",
+                "made-up step output",
+                json!({
+                    "step_index": 1, "source": "MODEL", "type": "GENERIC",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:44Z",
+                    "content": "made-up step output",
+                    "future_field": {"nested": "made-up unaccounted text"}
+                }),
+                json!({"status": "DONE"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_raw_field_unaccounted"),
+        "{block:?}"
+    );
+    assert!(
+        !block.reasons.iter().any(|r| r == "agy_canonical_envelope"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_record_mismatch_stays_unverified() {
+    // An archived record that cannot be attributed to this message (wrong
+    // `type`, or not an object at all) proves nothing about the message's
+    // blocks — the unverified reason keeps the gap honest and blocking.
+    let mismatched = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            agy_raw_envelope_msg(
+                1,
+                "tool",
+                "GENERIC",
+                "made-up step output",
+                json!({
+                    "step_index": 1, "source": "SYSTEM", "type": "SYSTEM_MESSAGE",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:44Z",
+                    "content": "made-up step output"
+                }),
+                json!({"status": "DONE"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&mismatched, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block.reasons.iter().any(|r| r == "agy_raw_unverified"),
+        "{block:?}"
+    );
+
+    // A non-object archive cannot be enumerated at all — same verdict.
+    let malformed = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            msg(
+                1,
+                "tool",
+                "made-up step output",
+                json!({"agy_type": "GENERIC", "agy_raw": "not-a-record"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&malformed, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block.reasons.iter().any(|r| r == "agy_raw_unverified"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_user_wrapper_residual_keeps_block_inventory_partial() {
+    // USER_INPUT wrapper accounting (FAD `extract_user_request`
+    // semantics): the connector lifts the request body plus the FIRST
+    // settings/metadata block; any other text in the raw content —
+    // residual prose outside closed wrapper blocks, a second metadata
+    // block — reaches no region, so the record is not fully accounted
+    // for and keeps a precise partial. The two real archive sessions with
+    // this shape stay blocked by exactly this reason.
+    let residual = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "user",
+            "made-up request body",
+            json!({
+                "step_index": 0, "source": "USER_EXPLICIT",
+                "type": "USER_INPUT", "status": "DONE",
+                "created_at": "2026-06-11T20:14:42Z",
+                "content": "<USER_REQUEST>\nmade-up request body\n</USER_REQUEST>\nmade-up loose trailing note"
+            }),
+            json!({"status": "DONE"}),
+        )],
+    );
+    let publication = extract_session_facts(&residual, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_user_wrapper_unindexed"),
+        "{block:?}"
+    );
+
+    // A second ADDITIONAL_METADATA block: the connector lifts only the
+    // first, so the second block's text is unaccounted.
+    let second_metadata = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "user",
+            "made-up request body",
+            json!({
+                "step_index": 0, "source": "USER_EXPLICIT",
+                "type": "USER_INPUT", "status": "DONE",
+                "created_at": "2026-06-11T20:14:42Z",
+                "content": "<USER_REQUEST>\nmade-up request body\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nfirst note\n</ADDITIONAL_METADATA>\n<ADDITIONAL_METADATA>\nsecond note\n</ADDITIONAL_METADATA>"
+            }),
+            json!({"status": "DONE", "additional_metadata": "first note"}),
+        )],
+    );
+    let publication = extract_session_facts(&second_metadata, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_user_wrapper_unindexed"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_user_wrapper_unwrapped_content_is_fully_accounted() {
+    // The lossless USER_INPUT shapes: an unwrapped prompt (the connector
+    // falls back to the full raw content as the body) and a cleanly
+    // wrapped turn whose body/settings/metadata lifts reconstruct it —
+    // both certify the block inventory complete.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            agy_raw_keyset_msg(
+                0,
+                "user",
+                "made-up plain prompt without wrappers",
+                json!({
+                    "step_index": 0, "source": "USER_EXPLICIT",
+                    "type": "USER_INPUT", "status": "DONE",
+                    "created_at": "2026-06-11T20:14:42Z",
+                    "content": "made-up plain prompt without wrappers"
+                }),
+                json!({"status": "DONE"}),
+            ),
+            agy_raw_keyset_msg(
+                1,
+                "user",
+                "made-up wrapped request body",
+                json!({
+                    "step_index": 1, "source": "USER_EXPLICIT",
+                    "type": "USER_INPUT", "status": "DONE",
+                    "created_at": "2026-06-11T20:14:43Z",
+                    "content": "<USER_REQUEST>\nmade-up wrapped request body\n</USER_REQUEST>\n<USER_SETTINGS_CHANGE>\nmade-up settings note\n</USER_SETTINGS_CHANGE>\n<ADDITIONAL_METADATA>\nmade-up local time note\n</ADDITIONAL_METADATA>"
+                }),
+                json!({
+                    "status": "DONE",
+                    "additional_metadata": "made-up local time note",
+                    "settings_change": "made-up settings note"
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "complete", "{block:?}");
+    assert!(block.reasons.is_empty(), "{block:?}");
+}
+
+#[test]
+fn antigravity_facts_raw_user_wrapper_overlapping_blocks_mirror_connector_extraction() {
+    // The connector extracts wrapper blocks PER TAG (FAD
+    // `extract_tagged_blocks` scans each tag independently across the
+    // whole content), so a block whose OPEN tag sits inside another
+    // block's inner text is still that tag's FIRST block. The archived
+    // real-record shape: a USER_REQUEST whose inner text mentions
+    // `<ADDITIONAL_METADATA>` literally, a second open right after the
+    // request close, one shared close tag, then the settings block. The
+    // connector lifts the straddling first metadata block verbatim, and
+    // every byte reaches an indexed surface (request body + the two
+    // lifted wrapper regions) — the record is fully accounted. A
+    // sequential earliest-open scan sees the SECOND open instead, derives
+    // a different first-block text and taints the record with a false
+    // `agy_user_wrapper_unindexed` even though the connector dropped
+    // nothing.
+    let raw_content = "<USER_REQUEST>\nplease review the <ADDITIONAL_METADATA> mention\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nmade-up metadata note\n</ADDITIONAL_METADATA>\n<USER_SETTINGS_CHANGE>\nmade-up settings note\n</USER_SETTINGS_CHANGE>";
+    // The connector's per-tag first ADDITIONAL_METADATA block opens at
+    // the tag inside the request body and runs to the shared close: its
+    // lifted text carries the request tail, the request close tag and
+    // the second open tag as literal content.
+    let metadata_lift = "mention\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nmade-up metadata note";
+    let settings_lift = "made-up settings note";
+    let overlapping = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "user",
+            "please review the <ADDITIONAL_METADATA> mention",
+            json!({
+                "step_index": 0, "source": "USER_EXPLICIT",
+                "type": "USER_INPUT", "status": "DONE",
+                "created_at": "2026-06-11T20:14:42Z",
+                "content": raw_content
+            }),
+            json!({
+                "status": "DONE",
+                "additional_metadata": metadata_lift,
+                "settings_change": settings_lift
+            }),
+        )],
+    );
+    let publication = extract_session_facts(&overlapping, "antigravity");
+    // The receipt names the per-tag mirror so pre-v6 rows re-extract.
+    assert_eq!(publication.extractor, "antigravity-facts-v6");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "complete", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .all(|r| r != "agy_user_wrapper_unindexed"),
+        "the straddling metadata lift is accounted text, not a drop: {block:?}"
+    );
+
+    // The same shape with a metadata copy that diverges from the
+    // connector's per-tag extraction (the text a sequential scan would
+    // derive): the straddling block's full text reached no surface, so
+    // the record stays partial — the lift verification is not weakened.
+    let mislifted = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "user",
+            "please review the <ADDITIONAL_METADATA> mention",
+            json!({
+                "step_index": 0, "source": "USER_EXPLICIT",
+                "type": "USER_INPUT", "status": "DONE",
+                "created_at": "2026-06-11T20:14:42Z",
+                "content": raw_content
+            }),
+            json!({
+                "status": "DONE",
+                "additional_metadata": "made-up metadata note",
+                "settings_change": settings_lift
+            }),
+        )],
+    );
+    let publication = extract_session_facts(&mislifted, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_user_wrapper_unindexed"),
+        "a metadata copy diverging from the per-tag extraction is a real drop: {block:?}"
+    );
+
+    // The same shape without the metadata lift at all: the connector
+    // lifted the straddling block, so its absence leaves the block's
+    // text unindexed — still partial.
+    let unlifted = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "user",
+            "please review the <ADDITIONAL_METADATA> mention",
+            json!({
+                "step_index": 0, "source": "USER_EXPLICIT",
+                "type": "USER_INPUT", "status": "DONE",
+                "created_at": "2026-06-11T20:14:42Z",
+                "content": raw_content
+            }),
+            json!({
+                "status": "DONE",
+                "settings_change": settings_lift
+            }),
+        )],
+    );
+    let publication = extract_session_facts(&unlifted, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_user_wrapper_unindexed"),
+        "an absent metadata lift leaves the straddling block unindexed: {block:?}"
+    );
+
+    // The same overlapping shape plus loose residual text outside every
+    // wrapper block: the residual reaches no surface — still partial.
+    let residual = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "user",
+            "please review the <ADDITIONAL_METADATA> mention",
+            json!({
+                "step_index": 0, "source": "USER_EXPLICIT",
+                "type": "USER_INPUT", "status": "DONE",
+                "created_at": "2026-06-11T20:14:42Z",
+                "content": format!("{raw_content}\nmade-up loose trailing note"),
+            }),
+            json!({
+                "status": "DONE",
+                "additional_metadata": metadata_lift,
+                "settings_change": settings_lift
+            }),
+        )],
+    );
+    let publication = extract_session_facts(&residual, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_user_wrapper_unindexed"),
+        "loose residual text outside the wrapper blocks is a real drop: {block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_tool_calls_on_tool_role_keep_block_inventory_partial() {
+    // Raw `tool_calls` on a role-`tool` record: the connector parses the
+    // calls, but the tool-args region lane excludes role-`tool` records,
+    // so the argument text would index nowhere — unaccounted, partial.
+    // (Zero such records exist in the real archive today; the mark keeps
+    // the gate honest if the source format ever grows one.)
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            agy_raw_envelope_msg(
+                1,
+                "tool",
+                "RUN_COMMAND",
+                "made-up command output",
+                json!({
+                    "step_index": 1, "source": "MODEL", "type": "RUN_COMMAND",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:44Z",
+                    "content": "made-up command output",
+                    "tool_calls": [
+                        {"name": "run_command", "args": {"command": "made-up --flag"}}
+                    ]
+                }),
+                json!({
+                    "status": "DONE",
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "run_command", "call_id": null,
+                         "arguments": {"command": "made-up --flag"}}
+                    ]}
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_raw_field_unaccounted"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_planner_calls_missing_lift_keep_block_inventory_partial() {
+    // PLANNER_RESPONSE whose archived `tool_calls` item never reached
+    // `cass.invocations` (a nameless item the connector drops, or a lift
+    // the ingest seam did not archive): the call's argument text would
+    // index nowhere — unaccounted, partial, never silently complete.
+    let p = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![agy_raw_keyset_msg(
+            0,
+            "assistant",
+            "made-up planner narration",
+            json!({
+                "step_index": 0, "source": "MODEL", "type": "PLANNER_RESPONSE",
+                "status": "DONE", "created_at": "2026-06-11T20:14:43Z",
+                "content": "made-up planner narration",
+                "tool_calls": [
+                    {"args": {"command": "made-up nameless call args"}}
+                ]
+            }),
+            json!({"status": "DONE"}),
+        )],
+    );
+    let publication = extract_session_facts(&p, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_raw_field_unaccounted"),
+        "{block:?}"
+    );
+}
+
+#[test]
+fn antigravity_facts_raw_diverged_text_fields_keep_block_inventory_partial() {
+    // A raw `thinking`/`error` whose packet copy (the lift that indexes as
+    // a region) diverged from the archived record, and a raw `content` the
+    // message text does not reproduce: the archived text cannot be proven
+    // indexed — unaccounted, partial.
+    let diverged = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            agy_raw_envelope_msg(
+                1,
+                "tool",
+                "GENERIC",
+                "made-up step output",
+                json!({
+                    "step_index": 1, "source": "MODEL", "type": "GENERIC",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:44Z",
+                    "content": "made-up step output",
+                    "thinking": "made-up archived thinking",
+                    "error": "made-up archived failure"
+                }),
+                json!({
+                    "status": "DONE",
+                    "thinking": "made-up DIVERGED thinking",
+                    "error": "made-up DIVERGED failure"
+                }),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&diverged, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_raw_field_unaccounted"),
+        "{block:?}"
+    );
+
+    let content_diverged = packet(
+        "antigravity",
+        json!({"source": "antigravity"}),
+        vec![
+            msg(0, "user", "made-up request", json!({})),
+            agy_raw_envelope_msg(
+                1,
+                "tool",
+                "GENERIC",
+                "made-up DIFFERENT step output",
+                json!({
+                    "step_index": 1, "source": "MODEL", "type": "GENERIC",
+                    "status": "DONE", "created_at": "2026-06-11T20:14:44Z",
+                    "content": "made-up step output"
+                }),
+                json!({"status": "DONE"}),
+            ),
+        ],
+    );
+    let publication = extract_session_facts(&content_diverged, "antigravity");
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "{block:?}");
+    assert!(
+        block
+            .reasons
+            .iter()
+            .any(|r| r == "agy_raw_field_unaccounted"),
+        "{block:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Devin fixture: FAD sparse extras ({message_id, thinking, tool_call_id}) plus
 // the oracle graph contract (kind/payload/node_id) — same raw call id under
 // two graph roots must yield devin-call:* composite ids, never merged.
@@ -2214,6 +3702,144 @@ fn devin_facts_graph_linking_and_sparse_coverage() {
     assert_eq!(publication.task_category.as_deref(), Some("debugging"));
     assert_eq!(publication.model_set, vec!["swe-1-7"]);
     assert_eq!(publication.is_subagent, None);
+}
+
+/// Two sparse cli_tool results under one identifier with different content:
+/// the recorded evidence conflicts, so the pair never merges into one
+/// verified link. Every chat message is still a local, indexed packet
+/// message, so the conflict is a tool-verdict gap — the text verdicts stay
+/// complete and the conflict stays visible on the tool scopes.
+fn devin_conflicting_outputs_packet() -> ConversationPacket {
+    packet(
+        "devin",
+        json!({"source": "sqlite", "session_id": "bald-ketch", "model": "swe-1-7"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "Fix the broken checks.",
+                json!({"message_id": "m2", "is_user_input": true}),
+            ),
+            msg(
+                1,
+                "tool",
+                "first made-up output",
+                json!({"message_id": "m4", "tool_call_id": "call_dup_out"}),
+            ),
+            msg(
+                2,
+                "tool",
+                "second made-up output",
+                json!({"message_id": "m5", "tool_call_id": "call_dup_out"}),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn devin_conflicting_outputs_keep_text_verdicts_complete() {
+    let publication = extract_session_facts(&devin_conflicting_outputs_packet(), "devin");
+
+    // The conflicting pair is excluded from the verified tool facts.
+    assert!(
+        !publication
+            .tools
+            .iter()
+            .any(|t| t.raw_call_id == "call_dup_out"),
+        "conflicting outputs must never merge: {:?}",
+        publication.tools
+    );
+    // Tool verdicts keep the conflict.
+    for field in ["tools", "tool_exit", "tool_error", "files", "mcp"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert!(
+            entry.reasons.iter().any(|r| r == "conflicting_event"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+    }
+    // But both recorded outputs are local packet text: the session text is
+    // fully indexed, so the text verdicts stay complete — the conflict is
+    // visible on the tool scopes, never smuggled into a text claim.
+    for field in ["chat", "block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "conflicting_event" || r == "devin_source_or_graph_incomplete"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+    }
+}
+
+/// Two ACP tool_call records under one graph root with the same
+/// `toolCallId` but different `rawInput`: conflicting call evidence —
+/// never merged, tool scopes conflict, text verdicts stay complete.
+fn devin_conflicting_calls_packet() -> ConversationPacket {
+    packet(
+        "devin",
+        json!({"source": "sqlite", "session_id": "bald-ketch", "model": "swe-1-7"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "Fix the broken checks.",
+                json!({"message_id": "m2", "is_user_input": true}),
+            ),
+            msg(
+                1,
+                "assistant",
+                "",
+                json!({"kind": "tool_call", "node_id": 20, "parent_node_id": null,
+                       "payload": {"content": {"kind": "execute", "title": "Ran ls",
+                            "toolCallId": "dup_in", "rawInput": {"cmd": "ls"},
+                            "rawOutput": "a.txt"}}}),
+            ),
+            msg(
+                2,
+                "assistant",
+                "",
+                json!({"kind": "tool_call", "node_id": 20, "parent_node_id": null,
+                       "payload": {"content": {"kind": "execute", "title": "Ran pwd",
+                            "toolCallId": "dup_in", "rawInput": {"cmd": "pwd"},
+                            "rawOutput": "a.txt"}}}),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn devin_conflicting_calls_keep_text_verdicts_complete() {
+    let publication = extract_session_facts(&devin_conflicting_calls_packet(), "devin");
+
+    assert!(
+        !publication.tools.iter().any(|t| t.raw_call_id == "dup_in"),
+        "conflicting calls must never merge: {:?}",
+        publication.tools
+    );
+    for field in ["tools", "tool_exit", "tool_error", "files", "mcp"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert!(
+            entry.reasons.iter().any(|r| r == "conflicting_event"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+    }
+    for field in ["chat", "block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).expect(field);
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "conflicting_event" || r == "devin_source_or_graph_incomplete"),
+            "{field} reasons: {:?}",
+            entry.reasons
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2452,6 +4078,2305 @@ fn cursor_facts_unknown_shapes_stay_fully_marked() {
     assert!(
         thinking.reasons.iter().any(|r| r == "cursor_extra_absent"),
         "thinking: {thinking:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Gemini facts: the pinned FAD connector archives the raw gemini record
+// verbatim in `extra` (content parts, `thoughts`, `toolCalls` with inline
+// results) and inlines every text-bearing field into the message content —
+// tool args are the one text class that stays out of `content`, and they
+// index as tool regions (search_regions.rs, REGION_VERSION 3). Real key
+// structure from the pinned connector; synthetic text only.
+// ---------------------------------------------------------------------------
+
+fn gemini_messages() -> Vec<NormalizedMessage> {
+    vec![
+        // User record: raw content parts, all text delivered.
+        msg(
+            0,
+            "user",
+            "made-up prompt about widget calibration",
+            json!({
+                "type": "user", "id": "u1",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "content": [
+                    {"type": "text", "text": "made-up prompt about widget calibration"}
+                ]
+            }),
+        ),
+        // Assistant record: thoughts + toolCalls with inline results
+        // (the connector renders `[Thinking] …`/`[Tool: …]`/
+        // `[Tool result: …]` into the content it delivers).
+        msg(
+            1,
+            "agent",
+            "[Thinking] made-up thought subject made-up thought description\n\
+                 [Tool: glob_widget_files]\n\
+                 [Tool result: glob_widget_files] made-up glob output\n\
+                 [Tool: write_widget]\n\
+                 [Tool result: write_widget] [Error] made-up write failure",
+            json!({
+                "type": "gemini", "id": "m1",
+                "timestamp": "2026-01-01T00:00:01Z",
+                "model": "made-up-gemini-model",
+                "tokens": {"input": 120, "output": 60},
+                "thoughts": [
+                    {"subject": "made-up thought subject",
+                     "description": "made-up thought description",
+                     "timestamp": "2026-01-01T00:00:01Z"}
+                ],
+                "toolCalls": [
+                    {"id": "tc1", "name": "glob_widget_files",
+                     "args": {"pattern": "**/*.widget"},
+                     "status": "success",
+                     "timestamp": "2026-01-01T00:00:01Z",
+                     "description": "made-up description template",
+                     "displayName": "made-up display name",
+                     "resultDisplay": "made-up rendered display",
+                     "renderOutputAsMarkdown": true,
+                     "result": [
+                         {"functionResponse": {"name": "glob_widget_files",
+                                               "response": {"output": "made-up glob output"}}}
+                     ]},
+                    {"id": "tc2", "name": "write_widget",
+                     "args": {"file_path": "/tmp/synthetic/widget.md",
+                              "content": "made-up file body"},
+                     "status": "error",
+                     "timestamp": "2026-01-01T00:00:02Z",
+                     "result": [
+                         {"functionResponse": {"response":
+                             {"error": "made-up write failure"}}}
+                     ]}
+                ],
+                "cass": {"invocations": [
+                    {"kind": "tool", "name": "glob_widget_files", "call_id": "tc1",
+                     "arguments": {"pattern": "**/*.widget"}},
+                    {"kind": "tool", "name": "write_widget", "call_id": "tc2",
+                     "arguments": {"file_path": "/tmp/synthetic/widget.md",
+                                    "content": "made-up file body"}}
+                ]}
+            }),
+        ),
+    ]
+}
+
+fn gemini_packet() -> ConversationPacket {
+    packet("gemini", json!({"source": "gemini"}), gemini_messages())
+}
+
+#[test]
+fn gemini_facts_raw_records_tools_thinking_and_coverage() {
+    let publication = extract_session_facts(&gemini_packet(), "gemini");
+
+    // Recorded calls pair with their inline results by call id.
+    let glob = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "tc1")
+        .expect("tc1");
+    assert_eq!(glob.name, "glob_widget_files");
+    assert!(glob.has_result);
+    // status == "success" is the recorded success verdict; never an exit code.
+    assert_eq!(glob.is_error, Some(false));
+    assert_eq!(glob.exit_code, None);
+    assert_eq!(glob.file_path, None);
+
+    let write = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "tc2")
+        .expect("tc2");
+    assert_eq!(write.name, "write_widget");
+    assert!(write.has_result);
+    // response.error forces the error verdict.
+    assert_eq!(write.is_error, Some(true));
+    assert_eq!(write.file_path.as_deref(), Some("/tmp/synthetic/widget.md"));
+
+    assert_eq!(publication.tools.len(), 2);
+    assert_eq!(publication.tool_error_count, Some(1));
+    assert_eq!(publication.tool_calls_with_exit_status, Some(0));
+    assert_eq!(publication.file_fact_count, Some(1));
+    assert_eq!(publication.thinking_block_count, Some(1));
+    assert_eq!(publication.model_set, vec!["made-up-gemini-model"]);
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("made-up prompt about widget calibration")
+    );
+    assert_eq!(publication.turn_count, Some(1));
+    assert_eq!(publication.step_count, Some(1));
+    // The pinned gemini connector normalizes no compaction boundary records.
+    assert_eq!(publication.compaction_count, None);
+
+    // The raw record is archived verbatim, so the delivered text scopes
+    // certify complete: content parts, thoughts and tool results are all
+    // recorded, and the tool args index as regions (test below).
+    for field in [
+        "chat",
+        "tools",
+        "thinking",
+        "tool_error",
+        "files",
+        "block_inventory",
+        "text_inventory",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+    // Gemini records explicit status/error verdicts but never exit codes.
+    let exit = coverage(&publication, "tool_exit").expect("tool_exit");
+    assert_eq!(exit.state, "unavailable");
+    assert!(
+        exit.reasons.iter().any(|r| r == "tool_exit_not_recorded"),
+        "tool_exit: {exit:?}"
+    );
+    // Boundary records are not normalized by this connector.
+    let compaction = coverage(&publication, "compaction").expect("compaction");
+    assert_eq!(compaction.state, "unavailable");
+    assert!(
+        compaction
+            .reasons
+            .iter()
+            .any(|r| r == "boundary_records_not_normalized"),
+        "compaction: {compaction:?}"
+    );
+}
+
+#[test]
+fn gemini_facts_unpaired_call_keeps_text_inventory_complete() {
+    // A raw toolCalls entry with no `result` key: the record is archived
+    // verbatim, so the absence proves no result ever existed at the source
+    // (an interrupted call) — no session text is missing.
+    let publication = extract_session_facts(
+        &packet(
+            "gemini",
+            json!({"source": "gemini"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up prompt",
+                    json!({
+                        "type": "user", "id": "u1", "timestamp": "t0",
+                        "content": [{"type": "text", "text": "made-up prompt"}]
+                    }),
+                ),
+                msg(
+                    1,
+                    "agent",
+                    "[Tool: read_widget]",
+                    json!({
+                        "type": "gemini", "id": "m1", "timestamp": "t1",
+                        "toolCalls": [
+                            {"id": "tc9", "name": "read_widget",
+                             "args": {"file_path": "/tmp/synthetic/w.txt"},
+                             "status": "success", "timestamp": "t1"}
+                        ]
+                    }),
+                ),
+            ],
+        ),
+        "gemini",
+    );
+    let read = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "tc9")
+        .expect("tc9");
+    assert!(!read.has_result);
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "partial");
+    assert!(
+        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        "tools: {tools:?}"
+    );
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "complete", "text_inventory: {text:?}");
+}
+
+#[test]
+fn gemini_facts_compacted_extra_and_drift_shapes() {
+    // compact_message_extra (>=32 MiB session files) replaces the raw record
+    // with {model, tokens, attachments} before the ingest seam archives the
+    // connector's invocations under cass.invocations: evidence survives,
+    // the raw record does not — partial, not unknown.
+    let compacted = extract_session_facts(
+        &packet(
+            "gemini",
+            json!({"source": "gemini"}),
+            vec![msg(
+                0,
+                "agent",
+                "[Tool: read_widget]",
+                json!({
+                    "model": "made-up-gemini-model",
+                    "tokens": {"input": 10, "output": 5},
+                    "attachments": [{"path": "/tmp/synthetic/attach.bin"}],
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "read_widget", "call_id": "tc7",
+                         "arguments": {"file_path": "/tmp/synthetic/w.txt"}}
+                    ]}
+                }),
+            )],
+        ),
+        "gemini",
+    );
+    let call = compacted
+        .tools
+        .iter()
+        .find(|t| t.call_id == "tc7")
+        .expect("tc7 from the archived invocation");
+    assert_eq!(call.name, "read_widget");
+    let tools = coverage(&compacted, "tools").expect("tools");
+    assert_eq!(tools.state, "partial");
+    assert!(
+        tools.reasons.iter().any(|r| r == "extra_compacted"),
+        "tools: {tools:?}"
+    );
+    assert!(
+        compacted.model_set == vec!["made-up-gemini-model"],
+        "models: {:?}",
+        compacted.model_set
+    );
+
+    // A record with keys outside the connector's verified contract is
+    // drift, never an unknown-shape guess.
+    let drift = extract_session_facts(
+        &packet(
+            "gemini",
+            json!({"source": "gemini"}),
+            vec![msg(
+                0,
+                "user",
+                "made-up prompt",
+                json!({
+                    "type": "user", "id": "u1", "timestamp": "t0",
+                    "futureField": {"opaque": true},
+                    "content": [{"type": "text", "text": "made-up prompt"}]
+                }),
+            )],
+        ),
+        "gemini",
+    );
+    let entry = coverage(&drift, "text_inventory").expect("text_inventory");
+    assert_eq!(entry.state, "partial");
+    assert!(
+        entry.reasons.iter().any(|r| r == "gemini_record_unknown"),
+        "text_inventory: {entry:?}"
+    );
+
+    // A non-object extra is unknown entirely.
+    let missing = extract_session_facts(
+        &packet(
+            "gemini",
+            json!({"source": "gemini"}),
+            vec![msg(
+                0,
+                "user",
+                "made-up text beside a null extra",
+                Value::Null,
+            )],
+        ),
+        "gemini",
+    );
+    let entry = coverage(&missing, "chat").expect("chat");
+    assert_eq!(entry.state, "unavailable");
+    assert!(
+        entry.reasons.iter().any(|r| r == "gemini_extra_missing"),
+        "chat: {entry:?}"
+    );
+}
+
+#[test]
+fn gemini_regions_index_toolcall_args_and_thoughts() {
+    let p = gemini_packet();
+    let publication = extract_session_facts(&p, "gemini");
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+
+    // Tool args are the one text class the connector keeps out of content:
+    // each raw toolCall indexes as a tools region carrying its args and its
+    // inline result text, with the recorded error verdicts.
+    let glob = regions
+        .iter()
+        .find(|r| r.region_key == "tool:0:tc1")
+        .unwrap_or_else(|| panic!("tc1 tool region missing: {regions:?}"));
+    assert_eq!(glob.scope, "tools");
+    assert_eq!(glob.tool_name.as_deref(), Some("glob_widget_files"));
+    assert_eq!(glob.has_error, Some(false), "{glob:?}");
+    assert!(
+        glob.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("**/*.widget")),
+        "call args text: {glob:?}"
+    );
+    assert!(
+        glob.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up glob output")),
+        "result text: {glob:?}"
+    );
+
+    let write = regions
+        .iter()
+        .find(|r| r.region_key == "tool:1:tc2")
+        .unwrap_or_else(|| panic!("tc2 tool region missing: {regions:?}"));
+    assert_eq!(write.tool_name.as_deref(), Some("write_widget"));
+    assert_eq!(write.has_error, Some(true), "{write:?}");
+    assert_eq!(write.file_path.as_deref(), Some("/tmp/synthetic/widget.md"));
+    assert!(
+        write
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up write failure")),
+        "error text: {write:?}"
+    );
+
+    // Thoughts index as a thinking region (the generic reader cannot see
+    // them: they are neither content blocks nor an extra string).
+    let thinking = regions
+        .iter()
+        .find(|r| r.region_key == "m1:thinking")
+        .unwrap_or_else(|| panic!("m1:thinking region missing: {regions:?}"));
+    assert_eq!(thinking.scope, "thinking");
+    assert!(
+        thinking
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up thought subject")
+                && text.contains("made-up thought description")),
+        "{thinking:?}"
+    );
+
+    // The provider gate: the same shapes under a foreign slug must not
+    // grow gemini tool regions (the raw-toolCalls contract is gemini's).
+    // `junie` stays a stub extractor, so this exercises the region gate
+    // alone.
+    let foreign = packet("junie", json!({"source": "gemini"}), gemini_messages());
+    let foreign_facts = extract_session_facts(&foreign, "junie");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("glob_widget_files")),
+        "foreign slug must not derive gemini tool regions: {foreign_regions:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Pi Agent facts: the pinned FAD connector archives every emitted tree
+// entry verbatim in `extra` and inserts a `cass` provenance object
+// ({entry_kind, source_role, entry_id, parent_id, source_line,
+// on_active_branch, in_active_context, model?, provider?, invocations?}).
+// Message content blocks are flattened into the delivered content
+// (`[Thinking] …`/`[Tool: name] key=value…`; tool args stay out of the
+// block facts and index as regions). Real key structure from the pinned
+// connector; synthetic text only.
+// ---------------------------------------------------------------------------
+
+fn pi_messages() -> Vec<NormalizedMessage> {
+    vec![
+        // User entry: bare-string message content (simple user messages).
+        msg(
+            0,
+            "user",
+            "made-up pi prompt about widget calibration",
+            json!({
+                "type": "message", "id": "e1", "parentId": null,
+                "timestamp": "2026-01-02T00:00:00Z",
+                "message": {
+                    "role": "user", "timestamp": "2026-01-02T00:00:00Z",
+                    "content": "made-up pi prompt about widget calibration"
+                },
+                "cass": {
+                    "entry_kind": "message", "source_role": "user",
+                    "entry_id": "e1", "parent_id": null, "source_line": 1,
+                    "on_active_branch": true, "in_active_context": true
+                }
+            }),
+        ),
+        // Assistant entry: text + thinking + toolCall blocks (the connector
+        // flattens all three into the delivered content and lifts the
+        // toolCall into cass.invocations).
+        msg(
+            1,
+            "agent",
+            "made-up pi answer\n[Thinking] made-up pi reasoning\n\
+             [Tool: read_pi_widget] file_path=/tmp/synthetic/pi.txt",
+            json!({
+                "type": "message", "id": "e2", "parentId": "e1",
+                "timestamp": "2026-01-02T00:00:01Z",
+                "message": {
+                    "role": "assistant", "model": "made-up-pi-model",
+                    "provider": "made-up-pi-provider",
+                    "timestamp": "2026-01-02T00:00:01Z",
+                    "api": "made-up-api", "responseId": "made-up-resp-1",
+                    "stopReason": "made-up-stop", "rawStopReason": "made-up-raw-stop",
+                    "usage": {"input": 30, "output": 12},
+                    "content": [
+                        {"type": "text", "text": "made-up pi answer"},
+                        {"type": "thinking", "thinking": "made-up pi reasoning",
+                         "thinkingSignature": "made-up-signature"},
+                        {"type": "toolCall", "id": "pc1", "name": "read_pi_widget",
+                         "arguments": {"file_path": "/tmp/synthetic/pi.txt"}}
+                    ]
+                },
+                "cass": {
+                    "entry_kind": "message", "source_role": "assistant",
+                    "entry_id": "e2", "parent_id": "e1", "source_line": 2,
+                    "on_active_branch": true, "in_active_context": true,
+                    "model": "made-up-pi-model", "provider": "made-up-pi-provider",
+                    "invocations": [
+                        {"kind": "tool", "name": "read_pi_widget", "call_id": "pc1",
+                         "arguments": {"file_path": "/tmp/synthetic/pi.txt"}}
+                    ]
+                }
+            }),
+        ),
+        // Tool result entry: raw role `toolResult` maps to packet role
+        // `tool`; the message carries the correlation id and error flag.
+        msg(
+            2,
+            "tool",
+            "made-up pi tool output",
+            json!({
+                "type": "message", "id": "e3", "parentId": "e2",
+                "timestamp": "2026-01-02T00:00:02Z",
+                "message": {
+                    "role": "toolResult", "timestamp": "2026-01-02T00:00:02Z",
+                    "content": "made-up pi tool output",
+                    "isError": false,
+                    "toolCallId": "pc1", "toolName": "read_pi_widget"
+                },
+                "cass": {
+                    "entry_kind": "message", "source_role": "toolResult",
+                    "entry_id": "e3", "parent_id": "e2", "source_line": 3,
+                    "on_active_branch": true, "in_active_context": true
+                }
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn pi_agent_facts_raw_entries_tools_thinking_and_coverage() {
+    let publication = extract_session_facts(
+        &packet("pi_agent", json!({"source": "pi_agent"}), pi_messages()),
+        "pi_agent",
+    );
+
+    // The toolCall block pairs with its toolResult entry by toolCallId.
+    let read = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "pc1")
+        .expect("pc1");
+    assert_eq!(read.name, "read_pi_widget");
+    assert!(read.has_result);
+    // `isError` is the recorded verdict; pi records no exit codes.
+    assert_eq!(read.is_error, Some(false));
+    assert_eq!(read.exit_code, None);
+    assert_eq!(read.file_path.as_deref(), Some("/tmp/synthetic/pi.txt"));
+
+    assert_eq!(publication.tools.len(), 1);
+    assert_eq!(publication.tool_error_count, Some(0));
+    assert_eq!(publication.tool_calls_with_exit_status, Some(0));
+    assert_eq!(publication.file_fact_count, Some(1));
+    assert_eq!(publication.thinking_block_count, Some(1));
+    assert_eq!(publication.model_set, vec!["made-up-pi-model"]);
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("made-up pi prompt about widget calibration")
+    );
+    assert_eq!(publication.turn_count, Some(1));
+    assert_eq!(publication.step_count, Some(2));
+    // This session has no compaction entries, and a zero count cannot
+    // certify absence (the connector drops empty-summary compactions).
+    assert_eq!(publication.compaction_count, None);
+
+    // Every emitted entry is archived verbatim with enumerable blocks, so
+    // the delivered-text scopes certify complete.
+    for field in [
+        "chat",
+        "tools",
+        "thinking",
+        "tool_error",
+        "files",
+        "block_inventory",
+        "text_inventory",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+    // Pi records error verdicts (isError) but never exit codes.
+    let exit = coverage(&publication, "tool_exit").expect("tool_exit");
+    assert_eq!(exit.state, "unavailable");
+    assert!(
+        exit.reasons.iter().any(|r| r == "tool_exit_not_recorded"),
+        "tool_exit: {exit:?}"
+    );
+    let compaction = coverage(&publication, "compaction").expect("compaction");
+    assert_eq!(compaction.state, "unavailable");
+    assert!(
+        compaction
+            .reasons
+            .iter()
+            .any(|r| r == "pi_compaction_count_unverifiable"),
+        "compaction: {compaction:?}"
+    );
+}
+
+#[test]
+fn pi_agent_facts_error_result_and_unpaired_call() {
+    // `isError: true` records the error verdict on the paired call.
+    let publication = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up pi prompt",
+                    json!({
+                        "type": "message", "id": "e1", "parentId": null,
+                        "timestamp": "t0",
+                        "message": {"role": "user", "timestamp": "t0",
+                                    "content": "made-up pi prompt"},
+                        "cass": {"entry_kind": "message", "source_role": "user",
+                                 "entry_id": "e1", "parent_id": null, "source_line": 1,
+                                 "on_active_branch": true, "in_active_context": true}
+                    }),
+                ),
+                msg(
+                    1,
+                    "agent",
+                    "[Tool: write_pi_widget] file_path=/tmp/synthetic/pi.txt",
+                    json!({
+                        "type": "message", "id": "e2", "parentId": "e1",
+                        "timestamp": "t1",
+                        "message": {
+                            "role": "assistant", "model": "made-up-pi-model",
+                            "timestamp": "t1",
+                            "content": [
+                                {"type": "toolCall", "id": "pc2",
+                                 "name": "write_pi_widget",
+                                 "arguments": {"file_path": "/tmp/synthetic/pi.txt"}}
+                            ]
+                        },
+                        "cass": {"entry_kind": "message", "source_role": "assistant",
+                                 "entry_id": "e2", "parent_id": "e1", "source_line": 2,
+                                 "on_active_branch": true, "in_active_context": true,
+                                 "model": "made-up-pi-model"}
+                    }),
+                ),
+                msg(
+                    2,
+                    "tool",
+                    "made-up pi failure output",
+                    json!({
+                        "type": "message", "id": "e3", "parentId": "e2",
+                        "timestamp": "t2",
+                        "message": {"role": "toolResult", "timestamp": "t2",
+                                    "content": "made-up pi failure output",
+                                    "isError": true,
+                                    "toolCallId": "pc2",
+                                    "toolName": "write_pi_widget"},
+                        "cass": {"entry_kind": "message", "source_role": "toolResult",
+                                 "entry_id": "e3", "parent_id": "e2", "source_line": 3,
+                                 "on_active_branch": true, "in_active_context": true}
+                    }),
+                ),
+            ],
+        ),
+        "pi_agent",
+    );
+    let write = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "pc2")
+        .expect("pc2");
+    assert_eq!(write.is_error, Some(true));
+    assert_eq!(publication.tool_error_count, Some(1));
+
+    // An unpaired call keeps the text inventory complete: the connector
+    // drops empty-content entries, so the missing result entry carried no
+    // text (either it never existed or it was dropped for being empty).
+    let unpaired = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up pi prompt",
+                    json!({
+                        "type": "message", "id": "e1", "parentId": null,
+                        "timestamp": "t0",
+                        "message": {"role": "user", "timestamp": "t0",
+                                    "content": "made-up pi prompt"},
+                        "cass": {"entry_kind": "message", "source_role": "user",
+                                 "entry_id": "e1", "parent_id": null, "source_line": 1,
+                                 "on_active_branch": true, "in_active_context": true}
+                    }),
+                ),
+                msg(
+                    1,
+                    "agent",
+                    "[Tool: read_pi_widget] file_path=/tmp/synthetic/pi.txt",
+                    json!({
+                        "type": "message", "id": "e2", "parentId": "e1",
+                        "timestamp": "t1",
+                        "message": {
+                            "role": "assistant", "timestamp": "t1",
+                            "content": [
+                                {"type": "toolCall", "id": "pc3",
+                                 "name": "read_pi_widget",
+                                 "arguments": {"file_path": "/tmp/synthetic/pi.txt"}}
+                            ]
+                        },
+                        "cass": {"entry_kind": "message", "source_role": "assistant",
+                                 "entry_id": "e2", "parent_id": "e1", "source_line": 2,
+                                 "on_active_branch": true, "in_active_context": true}
+                    }),
+                ),
+            ],
+        ),
+        "pi_agent",
+    );
+    let read = unpaired
+        .tools
+        .iter()
+        .find(|t| t.call_id == "pc3")
+        .expect("pc3");
+    assert!(!read.has_result);
+    let tools = coverage(&unpaired, "tools").expect("tools");
+    assert_eq!(tools.state, "partial");
+    assert!(
+        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        "tools: {tools:?}"
+    );
+    let text = coverage(&unpaired, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "complete", "text_inventory: {text:?}");
+}
+
+#[test]
+fn pi_agent_facts_compaction_branch_and_drift() {
+    // Compaction entries are normalized (system role, "[compaction] …"
+    // content, systemMessage stripped) and count; branch summaries are
+    // boundary records that do not.
+    let publication = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up pi prompt",
+                    json!({
+                        "type": "message", "id": "e1", "parentId": null,
+                        "timestamp": "t0",
+                        "message": {"role": "user", "timestamp": "t0",
+                                    "content": "made-up pi prompt"},
+                        "cass": {"entry_kind": "message", "source_role": "user",
+                                 "entry_id": "e1", "parent_id": null, "source_line": 1,
+                                 "on_active_branch": true, "in_active_context": true}
+                    }),
+                ),
+                msg(
+                    1,
+                    "system",
+                    "[compaction] made-up compaction summary",
+                    json!({
+                        "type": "compaction", "id": "e2", "parentId": "e1",
+                        "timestamp": "t1",
+                        "summary": "made-up compaction summary",
+                        "firstKeptEntryId": "e3", "tokensBefore": 50000,
+                        "fromHook": false,
+                        "cass": {"entry_kind": "compaction",
+                                 "source_role": "compaction",
+                                 "entry_id": "e2", "parent_id": "e1", "source_line": 2,
+                                 "on_active_branch": true, "in_active_context": true,
+                                 "first_kept_entry_id": "e3",
+                                 "tokens_before": 50000, "from_hook": false,
+                                 "system_checkpoint": true}
+                    }),
+                ),
+                msg(
+                    2,
+                    "system",
+                    "[branch summary] made-up branch summary",
+                    json!({
+                        "type": "branch_summary", "id": "e3", "parentId": "e1",
+                        "timestamp": "t2",
+                        "summary": "made-up branch summary",
+                        "fromId": "e0", "fromHook": true,
+                        "cass": {"entry_kind": "branch_summary",
+                                 "source_role": "branch_summary",
+                                 "entry_id": "e3", "parent_id": "e1", "source_line": 3,
+                                 "on_active_branch": false, "in_active_context": false,
+                                 "from_id": "e0", "from_hook": true}
+                    }),
+                ),
+            ],
+        ),
+        "pi_agent",
+    );
+    assert_eq!(publication.compaction_count, Some(1));
+    // Like claude, an observed compaction reports through the count; the
+    // coverage entry exists only when the field is degraded (the
+    // zero-count case asserts the `pi_compaction_count_unverifiable`
+    // unavailable entry in the first test).
+    assert!(
+        coverage(&publication, "compaction").is_none(),
+        "compaction: {:?}",
+        coverage(&publication, "compaction")
+    );
+    // Both boundary summaries are delivered as system-role content.
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "complete", "text_inventory: {text:?}");
+
+    // pi's role union is open (extensions may add roles via declaration
+    // merging): an unmapped role keeps its raw role and is drift, never a
+    // shape guess.
+    let drift = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![msg(
+                0,
+                "extensionWidget",
+                "made-up extension text",
+                json!({
+                    "type": "message", "id": "e1", "parentId": null,
+                    "timestamp": "t0",
+                    "message": {"role": "extensionWidget", "timestamp": "t0",
+                                "content": [
+                                    {"type": "text", "text": "made-up extension text"}
+                                ]},
+                    "cass": {"entry_kind": "message", "source_role": "extensionWidget",
+                             "entry_id": "e1", "parent_id": null, "source_line": 1,
+                             "on_active_branch": true, "in_active_context": true}
+                }),
+            )],
+        ),
+        "pi_agent",
+    );
+    let entry = coverage(&drift, "text_inventory").expect("text_inventory");
+    assert_eq!(entry.state, "partial");
+    assert!(
+        entry.reasons.iter().any(|r| r == "pi_record_unknown"),
+        "text_inventory: {entry:?}"
+    );
+
+    // An unknown content block type is block-inventory drift; image blocks
+    // are known no-text blocks (the connector skips them when flattening).
+    let blocks = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![msg(
+                0,
+                "agent",
+                "made-up pi answer",
+                json!({
+                    "type": "message", "id": "e1", "parentId": null,
+                    "timestamp": "t0",
+                    "message": {"role": "assistant", "timestamp": "t0",
+                                "content": [
+                                    {"type": "futureBlock", "opaque": true},
+                                    {"type": "text", "text": "made-up pi answer"}
+                                ]},
+                    "cass": {"entry_kind": "message", "source_role": "assistant",
+                             "entry_id": "e1", "parent_id": null, "source_line": 1,
+                             "on_active_branch": true, "in_active_context": true}
+                }),
+            )],
+        ),
+        "pi_agent",
+    );
+    let inventory = coverage(&blocks, "block_inventory").expect("block_inventory");
+    assert_eq!(inventory.state, "partial");
+    assert!(
+        inventory.reasons.iter().any(|r| r == "pi_block_unknown"),
+        "block_inventory: {inventory:?}"
+    );
+
+    let image = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![msg(
+                0,
+                "agent",
+                "made-up pi answer",
+                json!({
+                    "type": "message", "id": "e1", "parentId": null,
+                    "timestamp": "t0",
+                    "message": {"role": "assistant", "timestamp": "t0",
+                                "content": [
+                                    {"type": "image", "source": "made-up-image"},
+                                    {"type": "text", "text": "made-up pi answer"}
+                                ]},
+                    "cass": {"entry_kind": "message", "source_role": "assistant",
+                             "entry_id": "e1", "parent_id": null, "source_line": 1,
+                             "on_active_branch": true, "in_active_context": true}
+                }),
+            )],
+        ),
+        "pi_agent",
+    );
+    let inventory = coverage(&image, "block_inventory").expect("block_inventory");
+    assert_eq!(
+        inventory.state, "complete",
+        "block_inventory: {inventory:?}"
+    );
+
+    // A non-object extra is unknown entirely.
+    let missing = extract_session_facts(
+        &packet(
+            "pi_agent",
+            json!({"source": "pi_agent"}),
+            vec![msg(
+                0,
+                "user",
+                "made-up text beside a null extra",
+                Value::Null,
+            )],
+        ),
+        "pi_agent",
+    );
+    let entry = coverage(&missing, "chat").expect("chat");
+    assert_eq!(entry.state, "unavailable");
+    assert!(
+        entry.reasons.iter().any(|r| r == "pi_extra_missing"),
+        "chat: {entry:?}"
+    );
+}
+
+#[test]
+fn pi_agent_regions_index_toolcall_blocks_and_results() {
+    let p = packet("pi_agent", json!({"source": "pi_agent"}), pi_messages());
+    let publication = extract_session_facts(&p, "pi_agent");
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+
+    // The toolCall block indexes as a tool region carrying its arguments
+    // and the paired toolResult content, with the recorded error verdict.
+    let call = regions
+        .iter()
+        .find(|r| r.region_key == "tool:0:pc1")
+        .unwrap_or_else(|| panic!("pc1 tool region missing: {regions:?}"));
+    assert_eq!(call.scope, "tools");
+    assert_eq!(call.tool_name.as_deref(), Some("read_pi_widget"));
+    assert_eq!(call.file_path.as_deref(), Some("/tmp/synthetic/pi.txt"));
+    assert_eq!(call.has_error, Some(false), "{call:?}");
+    assert!(
+        call.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("/tmp/synthetic/pi.txt")
+                && text.contains("made-up pi tool output")),
+        "region text: {call:?}"
+    );
+
+    // The generic thinking reader sees pi thinking blocks
+    // (/message/content, type "thinking" with a "thinking" string).
+    let thinking = regions
+        .iter()
+        .find(|r| r.region_key == "m1:thinking")
+        .unwrap_or_else(|| panic!("m1:thinking region missing: {regions:?}"));
+    assert_eq!(thinking.scope, "thinking");
+    assert!(
+        thinking
+            .indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("made-up pi reasoning")),
+        "{thinking:?}"
+    );
+
+    // The paired toolResult record must not ALSO grow the role-fallback
+    // name:"unknown" call region (its result is correlated with pc1).
+    assert!(
+        !regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("unknown")),
+        "role fallback must stay suppressed: {regions:?}"
+    );
+
+    // The provider gate: the same shapes under a foreign slug must not
+    // grow pi tool regions — and the generic role fallback keeps the
+    // tool-role content searchable there.
+    let foreign = packet("junie", json!({"source": "pi_agent"}), pi_messages());
+    let foreign_facts = extract_session_facts(&foreign, "junie");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("read_pi_widget")),
+        "foreign slug must not derive pi tool regions: {foreign_regions:?}"
+    );
+    assert!(
+        foreign_regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("unknown")),
+        "generic role fallback must keep the tool-role text: {foreign_regions:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// OpenCode: the pinned connector renders every session row into a flat
+// content string (reasoning parts as "[Reasoning]\n{reasoning}", tool
+// parts as "[Tool Output]\n{output}" plus a failed run's
+// "[Tool Error]\n{error}") and archives the raw row identity keys
+// ({message_id, session_id, type, seq}) — and, since FAD F14, the raw part
+// records in extra["parts"] in delivery order (the v2 content items; the
+// 1.x part rows/files), verbatim, including every tool part's id, name,
+// input, status, results and error. Rows indexed before F14 keep their
+// stored extras (no parts key) and fall back to the v1 marker heuristics.
+// Message authors carry the model alias: the connector lifts data.model.id
+// into the author slot for assistant and compaction rows.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn opencode_facts_tool_markers_and_thinking() {
+    let mut user = msg(
+        0,
+        "user",
+        "made-up opencode prompt",
+        json!({
+            "message_id": "om_u1", "session_id": "os_1", "type": "user", "seq": 1
+        }),
+    );
+    user.author = Some("user".to_string());
+    let mut first = msg(
+        1,
+        "agent",
+        "[Reasoning]\nmade-up planning reasoning\n\n[Tool Output]\nmade-up tool output text",
+        json!({"message_id": "om_a1", "session_id": "os_1",
+               "type": "assistant", "seq": 2}),
+    );
+    first.author = Some("made-up-opencode-beam".to_string());
+    let mut second = msg(
+        2,
+        "agent",
+        "[Reasoning]\nmade-up follow-up reasoning",
+        json!({"message_id": "om_a2", "session_id": "os_1",
+               "type": "assistant", "seq": 3}),
+    );
+    second.author = Some("made-up-opencode-space".to_string());
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![user, first, second],
+        ),
+        "opencode",
+    );
+
+    // The "[Reasoning]" markers count the delivered reasoning parts, and
+    // the authors are the model aliases the connector preserved.
+    assert_eq!(publication.thinking_block_count, Some(2));
+    assert_eq!(
+        publication.model_set,
+        vec!["made-up-opencode-beam", "made-up-opencode-space"]
+    );
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("made-up opencode prompt")
+    );
+    assert_eq!(publication.turn_count, Some(1));
+    assert_eq!(publication.step_count, Some(2));
+    // No tool identity survives the connector, so no tool facts exist.
+    assert!(publication.tools.is_empty());
+    assert_eq!(publication.file_fact_count, None);
+
+    for field in ["chat", "thinking"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+
+    // Message 1 carries a "[Tool Output]" marker: a tool part provably
+    // existed and its output text is delivered inline, but the part's
+    // identity, input and state are dropped (partial). Message 2 has no
+    // marker, so its tool-part presence is unverifiable — the union is
+    // unavailable with both reasons.
+    for field in ["tools", "text_inventory", "block_inventory", "files"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_part_dropped"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_part_unverifiable"),
+            "{field}: {entry:?}"
+        );
+    }
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_state_dropped"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_part_unverifiable"),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // Zero observed compactions cannot certify the source had none: the
+    // connector drops non-completed compaction rows before the packet.
+    let compaction = coverage(&publication, "compaction").expect("compaction");
+    assert_eq!(compaction.state, "unavailable");
+    assert!(
+        compaction
+            .reasons
+            .iter()
+            .any(|r| r == "opencode_compaction_pending_dropped"),
+        "compaction: {compaction:?}"
+    );
+    assert_eq!(publication.compaction_count, None);
+}
+
+#[test]
+fn opencode_facts_marker_only_session_partial() {
+    // A session whose single assistant record DID render a tool part: the
+    // four inventory fields degrade to partial (output delivered, identity
+    // and state dropped) and the tool verdicts stay unavailable.
+    let mut first = msg(
+        1,
+        "agent",
+        "[Tool Output]\nmade-up tool output text",
+        json!({"message_id": "om_a1", "session_id": "os_1",
+               "type": "assistant", "seq": 2}),
+    );
+    first.author = Some("made-up-opencode-beam".to_string());
+    let p = packet(
+        "opencode",
+        json!({"source": "opencode"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "made-up opencode prompt",
+                json!({
+                    "message_id": "om_u1", "session_id": "os_1",
+                    "type": "user", "seq": 1
+                }),
+            ),
+            first,
+        ],
+    );
+    let publication = extract_session_facts(&p, "opencode");
+
+    assert_eq!(publication.thinking_block_count, Some(0));
+    for field in ["tools", "text_inventory", "block_inventory", "files"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_part_dropped"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_part_unverifiable"),
+            "{field}: {entry:?}"
+        );
+    }
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_state_dropped"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_tool_part_unverifiable"),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // The delivered text — including the tool output — stays fully
+    // searchable through the generic chat arm: the non-noise chat region
+    // maps straight onto the message's own quill document (quill_idx ==
+    // message idx, indexed_text empty by design), and the connector
+    // archived no tool identity, so no tools-scope region exists.
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+    let chat = regions
+        .iter()
+        .find(|r| r.region_key == "m1:chat")
+        .unwrap_or_else(|| panic!("m1:chat region missing: {regions:?}"));
+    assert_eq!(chat.quill_idx, 1, "{chat:?}");
+    assert_eq!(chat.indexed_text, None, "{chat:?}");
+    assert!(
+        !regions.iter().any(|r| r.scope == "tools"),
+        "no tools-scope region may exist: {regions:?}"
+    );
+}
+
+#[test]
+fn opencode_facts_compaction_and_non_assistant_types() {
+    // Completed compactions render as assistant-role summary content
+    // ("[Compaction Summary]\n{summary}") — the count is observed, and per
+    // the claude precedent an observed count reports through
+    // compaction_count with no coverage entry. system rows deliver their
+    // whole data.text.
+    let mut compacted = msg(
+        1,
+        "agent",
+        "[Compaction Summary]\nmade-up compaction summary",
+        json!({"message_id": "om_c1", "session_id": "os_1",
+               "type": "compaction", "seq": 2}),
+    );
+    compacted.author = Some("made-up-opencode-beam".to_string());
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up opencode prompt",
+                    json!({
+                        "message_id": "om_u1", "session_id": "os_1",
+                        "type": "user", "seq": 1
+                    }),
+                ),
+                compacted,
+                msg(
+                    2,
+                    "system",
+                    "made-up system note",
+                    json!({
+                        "message_id": "om_s1", "session_id": "os_1",
+                        "type": "system", "seq": 3
+                    }),
+                ),
+            ],
+        ),
+        "opencode",
+    );
+    assert_eq!(publication.compaction_count, Some(1));
+    assert!(
+        coverage(&publication, "compaction").is_none(),
+        "observed compactions report through the count only"
+    );
+    assert_eq!(publication.model_set, vec!["made-up-opencode-beam"]);
+    let chat = coverage(&publication, "chat").expect("chat");
+    assert_eq!(chat.state, "complete", "chat: {chat:?}");
+
+    // An unknown row type is a contract change: drift on the core fields,
+    // never a shape guess.
+    let drift = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![msg(
+                0,
+                "agent",
+                "made-up text from an unknown row type",
+                json!({
+                    "message_id": "om_x1", "session_id": "os_1",
+                    "type": "futureWidget", "seq": 2
+                }),
+            )],
+        ),
+        "opencode",
+    );
+    let tools = coverage(&drift, "tools").expect("tools");
+    assert_eq!(tools.state, "partial");
+    assert!(
+        tools.reasons.iter().any(|r| r == "opencode_record_unknown"),
+        "tools: {tools:?}"
+    );
+
+    // A non-object extra is unknown entirely.
+    let missing = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![msg(
+                0,
+                "user",
+                "made-up text beside a null extra",
+                Value::Null,
+            )],
+        ),
+        "opencode",
+    );
+    let entry = coverage(&missing, "chat").expect("chat");
+    assert_eq!(entry.state, "unavailable");
+    assert!(
+        entry.reasons.iter().any(|r| r == "opencode_extra_missing"),
+        "chat: {entry:?}"
+    );
+}
+
+#[test]
+fn opencode_facts_archived_parts_verified() {
+    // Post-F16 rows archive the raw parts in extra["parts"]: every part is
+    // checked against the render contract, each tool part verifies into a
+    // call+result fact pair (an opencode part is both sides of one call),
+    // and the inventories stay complete because the archive proves them —
+    // the shape of the ses_e863… blocker after a re-scan. The error part's
+    // state.error text now renders ("[Tool Error]") and counts as delivered
+    // source text.
+    let user_row = msg(
+        0,
+        "user",
+        "made-up opencode prompt",
+        json!({
+            "message_id": "om_u1", "session_id": "os_1", "type": "user", "seq": 1
+        }),
+    );
+    let mut tool_row = msg(
+        1,
+        "agent",
+        "[Reasoning]\nmade-up planning reasoning\n\nrunning it now\n\n\
+         [Tool Output]\nmade-up shell output\n\n[Tool Error]\nmade-up exit 1",
+        json!({
+            "message_id": "om_a1", "session_id": "os_1",
+            "type": "assistant", "seq": 2,
+            "parts": [
+                {"type": "reasoning", "text": "made-up planning reasoning"},
+                {"type": "text", "text": "running it now"},
+                {"type": "tool", "id": "prt_1", "name": "shell", "executed": false,
+                 "state": {"status": "completed", "input": {"command": "make check"},
+                           "content": [{"type": "text", "text": "made-up shell output"}]}},
+                {"type": "tool", "id": "prt_2", "name": "edit", "executed": false,
+                 "state": {"status": "error",
+                           "input": {"path": "b.rs", "oldString": "x", "newString": "y"},
+                           "error": "made-up exit 1"}}
+            ]
+        }),
+    );
+    tool_row.author = Some("made-up-opencode-beam".to_string());
+    let mut plain_row = msg(
+        2,
+        "agent",
+        "[Reasoning]\nmade-up wrap-up reasoning\n\nall done",
+        json!({
+            "message_id": "om_a2", "session_id": "os_1",
+            "type": "assistant", "seq": 3,
+            "parts": [
+                {"type": "reasoning", "text": "made-up wrap-up reasoning"},
+                {"type": "text", "text": "all done"}
+            ]
+        }),
+    );
+    plain_row.author = Some("made-up-opencode-beam".to_string());
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![user_row, tool_row, plain_row],
+        ),
+        "opencode",
+    );
+
+    assert_eq!(publication.extractor, "opencode-facts-v2");
+    assert_eq!(publication.extractor_version, FACTS_EXTRACTOR_VERSION);
+
+    // Every assistant row is verified: the inventory fields stay complete
+    // with no degradation reasons at all.
+    for field in [
+        "chat",
+        "thinking",
+        "tools",
+        "tool_error",
+        "block_inventory",
+        "text_inventory",
+        "files",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+    // opencode records no numeric exit codes — the state status is the only
+    // exit evidence, so tool_exit degrades with the shared reason.
+    let tool_exit = coverage(&publication, "tool_exit").expect("tool_exit");
+    assert_eq!(tool_exit.state, "unavailable", "tool_exit: {tool_exit:?}");
+    assert!(
+        tool_exit
+            .reasons
+            .iter()
+            .any(|r| r == "tool_exit_not_recorded"),
+        "tool_exit: {tool_exit:?}"
+    );
+
+    // Two tool parts -> two call+result facts, in call-id order.
+    assert_eq!(publication.tools.len(), 2);
+    assert_eq!(publication.tools[0].call_id, "prt_1");
+    assert_eq!(publication.tools[0].raw_call_id, "prt_1");
+    assert_eq!(publication.tools[0].name, "shell");
+    assert!(publication.tools[0].has_result);
+    assert_eq!(publication.tools[0].is_error, Some(false));
+    assert_eq!(publication.tools[0].exit_code, None);
+    assert_eq!(publication.tools[0].file_path, None);
+    assert_eq!(publication.tools[0].source_idx, 1);
+    assert_eq!(publication.tools[1].call_id, "prt_2");
+    assert_eq!(publication.tools[1].name, "edit");
+    assert!(publication.tools[1].has_result);
+    assert_eq!(publication.tools[1].is_error, Some(true));
+    assert_eq!(publication.tools[1].file_path.as_deref(), Some("b.rs"));
+    assert_eq!(publication.tools[1].source_idx, 1);
+
+    // Reasoning parts count exactly from the archive (no marker collisions).
+    assert_eq!(publication.thinking_block_count, Some(2));
+    // File facts are exact: one input.path across the verified rows.
+    assert_eq!(publication.file_fact_count, Some(1));
+    assert_eq!(publication.tool_error_count, Some(1));
+    assert_eq!(publication.tool_calls_with_exit_status, Some(0));
+}
+
+#[test]
+fn opencode_facts_error_object_message_verified() {
+    // The real failed-run shape: `state.error` is an OBJECT carrying the
+    // failure text under `message` (measured shape `{message, type}`,
+    // status `error`), not a plain string. The extractor verifies the
+    // message as delivered failure text, so the inventories stay
+    // complete instead of degrading on an unreadable error shape.
+    let user_row = msg(
+        0,
+        "user",
+        "made-up opencode prompt",
+        json!({
+            "message_id": "om_u1", "session_id": "os_1", "type": "user", "seq": 1
+        }),
+    );
+    let assistant = msg(
+        1,
+        "agent",
+        "trying now\n\n[Tool Error]\nmade-up boom: denied",
+        json!({
+            "message_id": "om_a1", "session_id": "os_1",
+            "type": "assistant", "seq": 2,
+            "parts": [
+                {"type": "text", "text": "trying now"},
+                {"type": "tool", "id": "prt_err", "name": "shell", "executed": false,
+                 "state": {"status": "error", "input": {"command": "make check"},
+                           "error": {"message": "made-up boom: denied", "type": "tool_error"}}}
+            ]
+        }),
+    );
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![user_row, assistant],
+        ),
+        "opencode",
+    );
+
+    assert_eq!(publication.extractor, "opencode-facts-v2");
+    for field in [
+        "chat",
+        "thinking",
+        "tools",
+        "tool_error",
+        "block_inventory",
+        "text_inventory",
+        "files",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+
+    // The error part verifies into one call+result fact with the failure
+    // recorded from the object's message and the status.
+    assert_eq!(publication.tools.len(), 1);
+    let tool = &publication.tools[0];
+    assert_eq!(tool.call_id, "prt_err");
+    assert_eq!(tool.raw_call_id, "prt_err");
+    assert_eq!(tool.name, "shell");
+    assert!(tool.has_result);
+    assert_eq!(tool.is_error, Some(true));
+    assert_eq!(tool.exit_code, None);
+    assert_eq!(tool.file_path, None);
+    assert_eq!(tool.source_idx, 1);
+    assert_eq!(publication.tool_error_count, Some(1));
+    assert_eq!(publication.file_fact_count, Some(0));
+}
+
+#[test]
+fn opencode_facts_error_object_drift_shapes() {
+    // An error object with no renderable message — the `message` key
+    // absent, or not a string — may hold text the render contract cannot
+    // read. That is drift on the text-bearing inventories, never a guess.
+    let user_row = msg(
+        0,
+        "user",
+        "made-up opencode prompt",
+        json!({
+            "message_id": "om_u1", "session_id": "os_1", "type": "user", "seq": 1
+        }),
+    );
+    let assistant = msg(
+        1,
+        "agent",
+        "trying now",
+        json!({
+            "message_id": "om_a1", "session_id": "os_1",
+            "type": "assistant", "seq": 2,
+            "parts": [
+                {"type": "text", "text": "trying now"},
+                {"type": "tool", "id": "prt_e1", "name": "shell", "executed": false,
+                 "state": {"status": "error", "input": {"command": "make check"},
+                           "error": {"type": "no_message"}}},
+                {"type": "tool", "id": "prt_e2", "name": "read", "executed": false,
+                 "state": {"status": "error", "input": {"path": "z.rs"},
+                           "error": {"message": 7}}}
+            ]
+        }),
+    );
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![user_row, assistant],
+        ),
+        "opencode",
+    );
+
+    assert_eq!(publication.extractor, "opencode-facts-v2");
+    for field in ["text_inventory", "block_inventory"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "opencode_error_text_unverifiable"),
+            "{field}: {entry:?}"
+        );
+    }
+    // The parts themselves verify: identity, name and state are intact and
+    // the failure status still records error-ness.
+    for field in ["tools", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+    assert_eq!(publication.tools.len(), 2);
+    assert_eq!(publication.tools[0].is_error, Some(true));
+    assert_eq!(publication.tools[1].is_error, Some(true));
+    assert_eq!(publication.tool_error_count, Some(2));
+}
+
+#[test]
+fn opencode_facts_archived_parts_prove_absence() {
+    // The ses_ebad… blocker shape: the single assistant row holds no tool
+    // part at all. With the parts archived the absence is provable, so the
+    // inventories complete with an empty tool inventory instead of
+    // degrading unavailable as unverifiable.
+    let mut assistant = msg(
+        1,
+        "agent",
+        "[Reasoning]\nmade-up planning reasoning\n\nthe answer",
+        json!({
+            "message_id": "om_a1", "session_id": "os_1",
+            "type": "assistant", "seq": 2,
+            "parts": [
+                {"type": "reasoning", "text": "made-up planning reasoning"},
+                {"type": "text", "text": "the answer"}
+            ]
+        }),
+    );
+    assistant.author = Some("made-up-opencode-beam".to_string());
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up opencode prompt",
+                    json!({
+                        "message_id": "om_u1", "session_id": "os_1",
+                        "type": "user", "seq": 1
+                    }),
+                ),
+                assistant,
+            ],
+        ),
+        "opencode",
+    );
+
+    for field in [
+        "chat",
+        "thinking",
+        "tools",
+        "tool_exit",
+        "tool_error",
+        "block_inventory",
+        "text_inventory",
+        "files",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+    assert!(publication.tools.is_empty());
+    // No tool calls -> no file facts derivable (shared publication rule).
+    assert_eq!(publication.file_fact_count, None);
+    assert_eq!(publication.thinking_block_count, Some(1));
+}
+
+#[test]
+fn opencode_facts_legacy_rows_verified_by_role() {
+    // 1.x rows carry no `type` key: they dispatch on the packet role here.
+    // The user row renders its whole text; the assistant row's archived
+    // parts follow the 1.x state shape (state.id/output/title/input), so
+    // the row verifies — no `opencode_record_unknown` drift on legacy
+    // data. A textless tool part keeps its message alive with empty
+    // content (F13's codex rule) and still verifies.
+    let user_row = msg(
+        0,
+        "user",
+        "made-up opencode prompt",
+        json!({"message_id": "om_u1", "session_id": "os_1"}),
+    );
+    let mut assistant = msg(
+        1,
+        "assistant",
+        "checking\n\n[Tool Output]\nmade-up read output",
+        json!({
+            "message_id": "om_a1", "session_id": "os_1",
+            "parts": [
+                {"id": "p-lt-1", "order": 0, "type": "text", "text": "checking"},
+                {"id": "p-lt-2", "order": 1, "type": "tool",
+                 "state": {"id": "toolu_01", "status": "completed",
+                           "input": {"path": "d.rs"},
+                           "output": "made-up read output", "title": "Read"}},
+                {"id": "p-lt-3", "order": 2, "type": "step-start"},
+                {"id": "p-lt-4", "order": 3, "type": "patch",
+                 "text": "made-up patch text"}
+            ]
+        }),
+    );
+    assistant.author = Some("made-up-opencode-beam".to_string());
+    let quiet = msg(
+        2,
+        "assistant",
+        "",
+        json!({
+            "message_id": "om_a2", "session_id": "os_1",
+            "parts": [
+                {"id": "p-lt-5", "order": 0, "type": "tool",
+                 "state": {"id": "toolu_02", "status": "completed",
+                           "input": {"command": "pwd"}, "title": "Bash"}}
+            ]
+        }),
+    );
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![user_row, assistant, quiet],
+        ),
+        "opencode",
+    );
+
+    // No unknown-record drift anywhere: legacy rows are known shapes.
+    for entry in &publication.coverage {
+        assert!(
+            !entry.reasons.iter().any(|r| r == "opencode_record_unknown"),
+            "coverage drift: {entry:?}"
+        );
+    }
+    for field in [
+        "chat",
+        "thinking",
+        "tools",
+        "tool_error",
+        "block_inventory",
+        "text_inventory",
+        "files",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+
+    // The 1.x state id anchors the fact; the part id is the raw id.
+    assert_eq!(publication.tools.len(), 2);
+    assert_eq!(publication.tools[0].call_id, "toolu_01");
+    assert_eq!(publication.tools[0].raw_call_id, "p-lt-2");
+    assert_eq!(publication.tools[0].name, "Read");
+    assert!(publication.tools[0].has_result);
+    assert_eq!(publication.tools[0].is_error, Some(false));
+    assert_eq!(publication.tools[0].file_path.as_deref(), Some("d.rs"));
+    // The textless part's fact survives on the empty-content row.
+    assert_eq!(publication.tools[1].call_id, "toolu_02");
+    assert_eq!(publication.tools[1].raw_call_id, "p-lt-5");
+    assert_eq!(publication.tools[1].name, "Bash");
+    assert_eq!(publication.tools[1].source_idx, 2);
+
+    assert_eq!(publication.thinking_block_count, Some(0));
+    assert_eq!(publication.file_fact_count, Some(1));
+}
+
+#[test]
+fn opencode_facts_archived_parts_drift() {
+    // Contract drift inside the parts archive: an unknown part type, a
+    // text part whose text is not a string, a control part carrying text,
+    // and tool parts missing their name or call identity — each degrades
+    // exactly the fields it leaves unverifiable, never a guess.
+    let publication = extract_session_facts(
+        &packet(
+            "opencode",
+            json!({"source": "opencode"}),
+            vec![msg(
+                1,
+                "agent",
+                "made-up rendered text",
+                json!({
+                    "message_id": "om_a1", "session_id": "os_1",
+                    "type": "assistant", "seq": 2,
+                    "parts": [
+                        {"type": "text", "text": "made-up rendered text"},
+                        {"type": "futurePart"},
+                        {"type": "text", "text": 7},
+                        {"type": "step-finish", "text": "made-up step note"},
+                        {"type": "tool", "name": "shell",
+                         "state": {"status": "completed", "content": []}},
+                        {"type": "tool", "id": "prt_x",
+                         "state": {"status": "completed", "content": []}},
+                        {"type": "tool", "id": "prt_f", "name": "read",
+                         "state": {"status": "completed", "input": {},
+                                   "content": [
+                                       {"type": "file", "uri": "file:///made-up.png",
+                                        "mime": "image/png", "text": "made-up file caption"},
+                                       {"type": "futureResult",
+                                        "text": "made-up future result"}
+                                   ]}}
+                    ]
+                }),
+            )],
+        ),
+        "opencode",
+    );
+
+    let block = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(block.state, "partial", "block_inventory: {block:?}");
+    assert!(
+        block.reasons.iter().any(|r| r == "opencode_part_unknown"),
+        "block_inventory: {block:?}"
+    );
+    let text_inventory = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text_inventory.state, "partial", "text: {text_inventory:?}");
+    for reason in [
+        "opencode_part_unknown",
+        "opencode_part_text_malformed",
+        "opencode_control_part_text_dropped",
+        "opencode_result_text_dropped",
+        "opencode_result_unknown",
+    ] {
+        assert!(
+            text_inventory.reasons.iter().any(|r| r == reason),
+            "{reason}: {text_inventory:?}"
+        );
+    }
+    let tools_entry = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools_entry.state, "partial", "tools: {tools_entry:?}");
+    for reason in [
+        "opencode_tool_name_missing",
+        "opencode_tool_call_identity_missing",
+    ] {
+        assert!(
+            tools_entry.reasons.iter().any(|r| r == reason),
+            "{reason}: {tools_entry:?}"
+        );
+    }
+    // Only the fully-identified part yields a fact: its result is recorded
+    // (has_result true) with no text — the file item's caption is dropped
+    // and the unknown item is not collected. Nothing unverifiable is
+    // recorded, and no input path means no file facts.
+    assert_eq!(publication.tools.len(), 1);
+    assert_eq!(publication.tools[0].call_id, "prt_f");
+    assert_eq!(publication.tools[0].name, "read");
+    assert!(publication.tools[0].has_result);
+    assert_eq!(publication.tools[0].is_error, Some(false));
+    assert_eq!(publication.file_fact_count, Some(0));
+    assert_eq!(publication.thinking_block_count, Some(0));
+}
+
+// ---------------------------------------------------------------------------
+// Copilot (VS Code): the pinned FAD connector builds the extras itself —
+// {request_id} for user rows, {request_id, model_id, cass} for assistant
+// rows where cass carries token accounting plus the ingest seam's archived
+// invocations ({kind:"tool", name, call_id?, arguments}). The connector
+// explicitly drops thinking parts and archives no raw response parts and
+// no tool results.
+// ---------------------------------------------------------------------------
+
+fn copilot_messages() -> Vec<NormalizedMessage> {
+    vec![
+        msg(
+            0,
+            "user",
+            "made-up copilot prompt",
+            json!({"request_id": "cr1"}),
+        ),
+        msg(
+            1,
+            "agent",
+            "made-up copilot answer",
+            json!({
+                "request_id": "cr1",
+                "model_id": "made-up-copilot-model",
+                "cass": {
+                    "token_usage": {"input": 10, "output": 5},
+                    "token_usage_scope": "turn",
+                    "tool_call_count": 1,
+                    "invocations": [
+                        {"kind": "tool", "name": "read_copilot_widget",
+                         "call_id": "cc1",
+                         "arguments": {"file_path": "/tmp/synthetic/copilot.txt"}}
+                    ]
+                }
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn copilot_facts_invocations_thinking_and_coverage() {
+    let publication = extract_session_facts(
+        &packet("copilot", json!({"source": "copilot"}), copilot_messages()),
+        "copilot",
+    );
+
+    // The archived invocation is the only call record: named, paired with
+    // nothing, its rawInput arguments carrying a file path.
+    let read = publication
+        .tools
+        .iter()
+        .find(|t| t.call_id == "cc1")
+        .expect("cc1");
+    assert_eq!(read.name, "read_copilot_widget");
+    assert!(!read.has_result);
+    assert_eq!(
+        read.file_path.as_deref(),
+        Some("/tmp/synthetic/copilot.txt")
+    );
+    assert_eq!(read.exit_code, None);
+    assert_eq!(read.is_error, None);
+    assert_eq!(publication.file_fact_count, Some(1));
+    assert_eq!(publication.model_set, vec!["made-up-copilot-model"]);
+    assert_eq!(
+        publication.first_prompt.as_deref(),
+        Some("made-up copilot prompt")
+    );
+    assert_eq!(publication.turn_count, Some(1));
+    assert_eq!(publication.step_count, Some(1));
+
+    // The delivered text certifies chat; the connector provably drops
+    // thinking parts (an explicit comment in the pinned source), so
+    // thinking is unavailable, and the raw response parts are not
+    // archived, so the block inventory is partial.
+    let chat = coverage(&publication, "chat").expect("chat");
+    assert_eq!(chat.state, "complete", "chat: {chat:?}");
+    let thinking = coverage(&publication, "thinking").expect("thinking");
+    assert_eq!(thinking.state, "unavailable");
+    assert!(
+        thinking
+            .reasons
+            .iter()
+            .any(|r| r == "copilot_thinking_dropped_by_connector"),
+        "thinking: {thinking:?}"
+    );
+    // Dropped thinking blocks cannot be counted.
+    assert_eq!(publication.thinking_block_count, None);
+    let inventory = coverage(&publication, "block_inventory").expect("block_inventory");
+    assert_eq!(inventory.state, "partial");
+    assert!(
+        inventory
+            .reasons
+            .iter()
+            .any(|r| r == "copilot_response_parts_dropped"),
+        "block_inventory: {inventory:?}"
+    );
+
+    // No tool result is ever archived, so every call is unpaired and the
+    // missing result is user-visible text the connector dropped — the
+    // default scopes keep text_inventory partial (never narrowed).
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "partial");
+    assert!(
+        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        "tools: {tools:?}"
+    );
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "partial", "text_inventory: {text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "text_inventory: {text:?}"
+    );
+    assert!(
+        text.reasons
+            .iter()
+            .any(|r| r == "copilot_response_parts_dropped"),
+        "text_inventory: {text:?}"
+    );
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "tool_exit_not_recorded" || r == "tool_error_not_recorded"),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // Copilot records no compaction boundaries.
+    let compaction = coverage(&publication, "compaction").expect("compaction");
+    assert_eq!(compaction.state, "unavailable");
+    assert!(
+        compaction
+            .reasons
+            .iter()
+            .any(|r| r == "boundary_records_not_normalized"),
+        "compaction: {compaction:?}"
+    );
+    assert_eq!(publication.compaction_count, None);
+}
+
+#[test]
+fn copilot_facts_drift_and_missing_identity() {
+    // An invocation without a name and one without a call id: the same
+    // identity degradations the other providers record.
+    let publication = extract_session_facts(
+        &packet(
+            "copilot",
+            json!({"source": "copilot"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up copilot prompt",
+                    json!({"request_id": "cr1"}),
+                ),
+                msg(
+                    1,
+                    "agent",
+                    "made-up copilot answer",
+                    json!({
+                        "cass": {"invocations": [
+                            {"kind": "tool", "call_id": "cc2",
+                             "arguments": {"query": "made-up query"}},
+                            {"kind": "tool", "name": "widget_without_id"}
+                        ]}
+                    }),
+                ),
+            ],
+        ),
+        "copilot",
+    );
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert!(
+        tools
+            .reasons
+            .iter()
+            .any(|r| r == "copilot_tool_name_missing"),
+        "tools: {tools:?}"
+    );
+    assert!(
+        tools
+            .reasons
+            .iter()
+            .any(|r| r == "copilot_tool_call_identity_missing"),
+        "tools: {tools:?}"
+    );
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "copilot_tool_call_identity_missing"),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // Unknown top-level extra keys on either role are contract drift.
+    let drift = extract_session_facts(
+        &packet(
+            "copilot",
+            json!({"source": "copilot"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up text",
+                    json!({
+                        "request_id": "cr9", "futureKey": true
+                    }),
+                ),
+                msg(
+                    1,
+                    "agent",
+                    "made-up answer",
+                    json!({
+                        "request_id": "cr9", "model_id": "made-up-copilot-model",
+                        "futureKey": true
+                    }),
+                ),
+            ],
+        ),
+        "copilot",
+    );
+    for field in ["chat", "tools"] {
+        let entry = coverage(&drift, field).unwrap_or_else(|| panic!("{field}"));
+        assert!(
+            entry.reasons.iter().any(|r| r == "copilot_record_unknown"),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // A non-object extra is unknown entirely.
+    let missing = extract_session_facts(
+        &packet(
+            "copilot",
+            json!({"source": "copilot"}),
+            vec![msg(
+                0,
+                "user",
+                "made-up text beside a null extra",
+                Value::Null,
+            )],
+        ),
+        "copilot",
+    );
+    let entry = coverage(&missing, "chat").expect("chat");
+    assert_eq!(entry.state, "unavailable");
+    assert!(
+        entry.reasons.iter().any(|r| r == "copilot_extra_missing"),
+        "chat: {entry:?}"
+    );
+}
+
+#[test]
+fn copilot_regions_index_archived_invocations() {
+    let p = packet("copilot", json!({"source": "copilot"}), copilot_messages());
+    let publication = extract_session_facts(&p, "copilot");
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+
+    let call = regions
+        .iter()
+        .find(|r| r.region_key == "tool:0:cc1")
+        .unwrap_or_else(|| panic!("cc1 tool region missing: {regions:?}"));
+    assert_eq!(call.scope, "tools");
+    assert_eq!(call.tool_name.as_deref(), Some("read_copilot_widget"));
+    assert_eq!(
+        call.file_path.as_deref(),
+        Some("/tmp/synthetic/copilot.txt")
+    );
+    assert!(
+        call.indexed_text
+            .as_deref()
+            .is_some_and(|text| text.contains("/tmp/synthetic/copilot.txt")),
+        "region text: {call:?}"
+    );
+
+    // The provider gate: the same shapes under a foreign slug must not
+    // grow copilot tool regions.
+    let foreign = packet("junie", json!({"source": "copilot"}), copilot_messages());
+    let foreign_facts = extract_session_facts(&foreign, "junie");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("read_copilot_widget")),
+        "foreign slug must not derive copilot tool regions: {foreign_regions:?}"
+    );
+}
+
+/// The F14 connector shape: the assistant extra carries the raw response
+/// part array verbatim under `copilot_response_parts` (plus the seam's
+/// archived invocations, which the parts supersede). Every part kind the
+/// census found in real sessions is represented — synthetic text.
+fn copilot_parts_messages() -> Vec<NormalizedMessage> {
+    vec![
+        msg(
+            0,
+            "user",
+            "made-up copilot prompt",
+            json!({"request_id": "cr1"}),
+        ),
+        msg(
+            1,
+            "agent",
+            "made-up copilot answer",
+            json!({
+                "request_id": "cr1",
+                "model_id": "made-up-copilot-model",
+                "copilot_response_parts": [
+                    {"kind": "mcpServersStarting", "didStartServerIds": ["madeup-server"]},
+                    {"kind": "thinking", "id": "m1", "value": "made-up reasoning",
+                     "generatedTitle": "made-up title",
+                     "metadata": {"stopReason": "done", "vscodeReasoningDone": true}},
+                    {"kind": "thinking", "id": "m2", "value": ""},
+                    {"kind": "toolInvocationSerialized", "toolId": "madeup_fetch",
+                     "toolCallId": "call-77", "isComplete": true,
+                     "invocationMessage": "Running made-up fetch",
+                     "isConfirmed": {"type": 1}, "presentation": "inline",
+                     "source": {"label": "made-up ext", "type": "extension"}},
+                    {"kind": "toolInvocationSerialized", "toolId": "madeup_fetch_internal",
+                     "toolCallId": "call-77", "isConfirmed": {"type": 1, "reason": "made-up approval"},
+                     "pastTenseMessage": {"value": "Ran made-up fetch", "isTrusted": false,
+                                           "supportAlertSyntax": true, "supportHtml": false,
+                                           "supportThemeIcons": false},
+                     "resultDetails": ["made-up result text",
+                                       {"$mid": 1, "scheme": "https", "path": "/made-up"}],
+                     "source": {"label": "made-up ext", "type": "extension"}},
+                    {"value": "made-up copilot answer", "baseUri": {"$mid": 1, "scheme": "file", "path": "/made-up"},
+                     "supportHtml": false, "supportThemeIcons": false}
+                ],
+                "cass": {
+                    "token_usage": {"input": 10, "output": 5},
+                    "token_usage_scope": "turn",
+                    "tool_call_count": 2,
+                    "invocations": [
+                        {"kind": "tool", "name": "read_copilot_widget", "call_id": "cc9"}
+                    ]
+                }
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn copilot_facts_archived_parts_complete_inventory() {
+    let publication = extract_session_facts(
+        &packet(
+            "copilot",
+            json!({"source": "copilot"}),
+            copilot_parts_messages(),
+        ),
+        "copilot",
+    );
+
+    // The archived parts supersede the seam's invocations: exactly one
+    // call for the delegation pair (both parts share one toolCallId), and
+    // the stale `cc9` invocation is never recorded beside it.
+    assert_eq!(publication.extractor, "copilot-facts-v2");
+    assert_eq!(publication.tools.len(), 1, "tools: {:?}", publication.tools);
+    let call = &publication.tools[0];
+    assert_eq!(call.call_id, "call-77");
+    // The group's name is the first part's toolId in source order.
+    assert_eq!(call.name, "madeup_fetch");
+    assert!(call.has_result, "call: {call:?}");
+    assert_eq!(call.exit_code, None);
+    assert_eq!(call.is_error, None);
+    assert_eq!(publication.file_fact_count, Some(0));
+
+    // Thinking parts are archived now: the text-bearing one counts, the
+    // empty-value one is a known empty block.
+    assert_eq!(publication.thinking_block_count, Some(1));
+    let thinking = coverage(&publication, "thinking").expect("thinking");
+    assert_eq!(thinking.state, "complete", "thinking: {thinking:?}");
+
+    // Every part is classified: the inventories stay complete and the
+    // connector-drop marks are gone.
+    for field in [
+        "chat",
+        "block_inventory",
+        "text_inventory",
+        "tools",
+        "files",
+        "mcp",
+    ] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| { r.starts_with("copilot_") || r == "conflicting_event" }),
+            "{field}: {entry:?}"
+        );
+    }
+
+    // The result carries no exit code or verdict at the source.
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "unavailable", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "tool_exit_not_recorded" || r == "tool_error_not_recorded"),
+            "{field}: {entry:?}"
+        );
+    }
+}
+
+#[test]
+fn copilot_facts_parts_unknown_shape_and_content_mismatch() {
+    // A part kind outside the verified contract and a markdown value the
+    // connector did not join into the content: both are honest gaps, never
+    // shape guesses.
+    let publication = extract_session_facts(
+        &packet(
+            "copilot",
+            json!({"source": "copilot"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "made-up copilot prompt",
+                    json!({"request_id": "cr1"}),
+                ),
+                msg(
+                    1,
+                    "agent",
+                    "made-up answer",
+                    json!({
+                        "request_id": "cr1",
+                        "copilot_response_parts": [
+                            {"kind": "futurePart", "payload": "made-up future text"},
+                            {"value": "made-up unjoined value"},
+                            {"kind": "thinking", "value": "made-up reasoning", "surprise": true}
+                        ]
+                    }),
+                ),
+            ],
+        ),
+        "copilot",
+    );
+    for field in ["block_inventory", "text_inventory"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "partial", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == "copilot_part_unknown"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "copilot_part_text_not_in_content"),
+            "{field}: {entry:?}"
+        );
+    }
+}
+
+#[test]
+fn copilot_regions_index_parts_thinking_tools_and_mcp() {
+    let p = packet(
+        "copilot",
+        json!({"source": "copilot"}),
+        copilot_parts_messages(),
+    );
+    let publication = extract_session_facts(&p, "copilot");
+    let structure = project_session_structure(&p, &publication);
+    let regions = derive_message_regions(1, &p, &structure);
+
+    // Thinking part text (value + generatedTitle) indexes as the message's
+    // thinking region.
+    let thinking = regions
+        .iter()
+        .find(|r| r.region_key == "m1:thinking")
+        .unwrap_or_else(|| panic!("m1:thinking missing: {regions:?}"));
+    assert_eq!(thinking.scope, "thinking");
+    let text = thinking.indexed_text.as_deref().expect("indexed");
+    assert!(text.contains("made-up reasoning"), "text: {text:?}");
+    assert!(text.contains("made-up title"), "text: {text:?}");
+
+    // One tool region for the delegation group: args + rendered call
+    // messages + the confirmation reason, and the recorded result text.
+    let call = regions
+        .iter()
+        .find(|r| r.region_key == "tool:0:call-77")
+        .unwrap_or_else(|| panic!("call-77 tool region missing: {regions:?}"));
+    assert_eq!(call.scope, "tools");
+    assert_eq!(call.tool_name.as_deref(), Some("madeup_fetch"));
+    let text = call.indexed_text.as_deref().expect("indexed");
+    for expected in [
+        "Running made-up fetch",
+        "Ran made-up fetch",
+        "made-up approval",
+        "made-up result text",
+    ] {
+        assert!(text.contains(expected), "region text: {text:?}");
+    }
+
+    // The mcpServersStarting server ids index in the tools scope.
+    let mcp = regions
+        .iter()
+        .find(|r| r.region_key == "m1:mcp")
+        .unwrap_or_else(|| panic!("m1:mcp missing: {regions:?}"));
+    assert_eq!(mcp.scope, "tools");
+    assert!(
+        mcp.indexed_text
+            .as_deref()
+            .is_some_and(|t| t.contains("madeup-server"))
+    );
+
+    // The seam's archived invocations must NOT add a second call region
+    // when the parts array is present.
+    assert!(
+        !regions
+            .iter()
+            .any(|r| r.tool_name.as_deref() == Some("read_copilot_widget")),
+        "invocations fallback ran beside the parts: {regions:?}"
+    );
+
+    // The provider gate: the same shapes under a foreign slug must not grow
+    // copilot part regions.
+    let foreign = packet(
+        "junie",
+        json!({"source": "copilot"}),
+        copilot_parts_messages(),
+    );
+    let foreign_facts = extract_session_facts(&foreign, "junie");
+    let foreign_structure = project_session_structure(&foreign, &foreign_facts);
+    let foreign_regions = derive_message_regions(1, &foreign, &foreign_structure);
+    assert!(
+        !foreign_regions.iter().any(|r| r.region_key == "m1:thinking"
+            || r.region_key == "m1:mcp"
+            || r.tool_name.as_deref() == Some("madeup_fetch")),
+        "foreign slug must not derive copilot part regions: {foreign_regions:?}"
     );
 }
 

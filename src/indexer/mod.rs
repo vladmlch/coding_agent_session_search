@@ -129,7 +129,6 @@ type BatchClassificationMap = HashMap<
 >;
 
 const LEXICAL_REBUILD_PACKET_VERSION: u32 = CONVERSATION_PACKET_VERSION;
-const CODEX_INDEXER_EXTRA_COMPACT_THRESHOLD_BYTES: u64 = 16 * 1024 * 1024;
 const PREPARSE_PRIMARY_SOURCE_CAPTURE_LIMIT: usize = 256;
 const WATCH_INGEST_DEFAULT_CHUNK_SIZE: usize = 32;
 const WATCH_INGEST_CHUNK_SIZE_MAX: usize = 512;
@@ -37280,7 +37279,6 @@ fn prepare_conversation_metadata_for_ingest(
     if let Some(root) = workspace_rewrite_root {
         apply_workspace_rewrite(conv, root);
     }
-    compact_large_connector_extras(connector_name, conv);
 }
 
 fn capture_prepared_conversation(
@@ -37803,80 +37801,6 @@ fn attach_raw_mirror_metadata(
             "source_mtime_ms": record.source_mtime_ms,
         }),
     );
-}
-
-fn compact_large_connector_extras(connector_name: &str, conv: &mut NormalizedConversation) {
-    let source_size = fs::metadata(&conv.source_path)
-        .ok()
-        .map(|metadata| metadata.len());
-    compact_large_connector_extras_for_size(connector_name, conv, source_size);
-}
-
-fn compact_large_connector_extras_for_size(
-    connector_name: &str,
-    conv: &mut NormalizedConversation,
-    source_size: Option<u64>,
-) {
-    if !should_compact_connector_extra(connector_name, conv, source_size) {
-        return;
-    }
-
-    for message in &mut conv.messages {
-        message.extra = compact_indexer_message_extra(&message.extra);
-    }
-}
-
-fn should_compact_connector_extra(
-    connector_name: &str,
-    conv: &NormalizedConversation,
-    source_size: Option<u64>,
-) -> bool {
-    let Some(source_size) = source_size else {
-        return false;
-    };
-    if source_size < CODEX_INDEXER_EXTRA_COMPACT_THRESHOLD_BYTES {
-        return false;
-    }
-
-    connector_name.eq_ignore_ascii_case("codex") || conv.agent_slug.eq_ignore_ascii_case("codex")
-}
-
-fn compact_indexer_message_extra(raw: &serde_json::Value) -> serde_json::Value {
-    let mut cass = raw
-        .get("cass")
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-
-    if !cass.contains_key("model")
-        && let Some(model) = raw
-            .get("model")
-            .or_else(|| raw.pointer("/response/model"))
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-    {
-        cass.insert(
-            "model".to_string(),
-            serde_json::Value::String(model.to_string()),
-        );
-    }
-
-    if !cass.contains_key("attachments")
-        && let Some(attachments) = raw
-            .get("attachment_refs")
-            .or_else(|| raw.get("attachments"))
-            .cloned()
-    {
-        cass.insert("attachments".to_string(), attachments);
-    }
-
-    if cass.is_empty() {
-        serde_json::json!({})
-    } else {
-        let mut out = serde_json::Map::new();
-        out.insert("cass".to_string(), serde_json::Value::Object(cass));
-        serde_json::Value::Object(out)
-    }
 }
 
 /// Apply workspace path rewriting to a conversation.
@@ -39868,12 +39792,9 @@ pub mod persist {
     /// was never archived
     /// (FAD's `planner_calls.rs` notes "CASS keeps `extra` but not
     /// `NormalizedMessage.invocations`"). Merging here — the single seam
-    /// every persisted message crosses, *after* index-time extra
-    /// compaction (`compact_large_connector_extras` / FAD's own ≥32 MiB
-    /// compaction both reduce `extra` to `{cass:{..}}` without touching
-    /// `invocations`) and *before* redaction — makes tool calls durable
-    /// for every provider under one extraction shape without resurrecting
-    /// payloads the connectors or ingest compaction dropped: only what
+    /// every persisted message crosses, *before* redaction — makes tool
+    /// calls durable for every provider under one extraction shape
+    /// without resurrecting payloads the connectors dropped: only what
     /// `invocations` still carries is stored, and arguments flow through
     /// the same `redact_json` pass as the rest of `extra`.
     ///
@@ -75668,124 +75589,58 @@ c.close()
     }
 
     #[test]
-    fn large_codex_extra_compaction_preserves_cass_metadata() {
-        let mut conv = norm_conv(Some("codex-large"), vec![norm_msg(0, 100)]);
-        conv.agent_slug = "codex".to_string();
-        conv.messages[0].extra = serde_json::json!({
-            "payload": {
-                "delta": "duplicated raw codex event payload"
-            },
-            "response": {
-                "model": "gpt-5.4"
-            },
-            "attachment_refs": [
-                "file:src/lib.rs"
-            ],
-            "cass": {
-                "token_usage": {
-                    "input_tokens": 11,
-                    "output_tokens": 7
-                },
-                "event_line": 42
-            }
-        });
+    fn large_codex_session_keeps_full_extras_end_to_end_and_is_not_extra_compacted() {
+        // Owner decision 2026-11-08: the 16 MiB codex extra-compaction layer
+        // is gone. A session past the former threshold keeps full per-message
+        // extras through ingest, and its viewer facts must not carry the
+        // `extra_compacted` partial verdict.
+        const FORMER_COMPACT_THRESHOLD_BYTES: usize = 16 * 1024 * 1024;
 
-        compact_large_connector_extras_for_size(
-            "codex",
-            &mut conv,
-            Some(CODEX_INDEXER_EXTRA_COMPACT_THRESHOLD_BYTES),
-        );
-
-        let extra = &conv.messages[0].extra;
-        assert_eq!(
-            extra.pointer("/cass/token_usage/input_tokens"),
-            Some(&serde_json::json!(11))
-        );
-        assert_eq!(
-            extra.pointer("/cass/token_usage/output_tokens"),
-            Some(&serde_json::json!(7))
-        );
-        assert_eq!(
-            extra.pointer("/cass/event_line"),
-            Some(&serde_json::json!(42))
-        );
-        assert_eq!(
-            extra
-                .pointer("/cass/model")
-                .and_then(serde_json::Value::as_str),
-            Some("gpt-5.4")
-        );
-        assert_eq!(
-            extra.pointer("/cass/attachments"),
-            Some(&serde_json::json!(["file:src/lib.rs"]))
-        );
-        assert!(extra.get("payload").is_none());
-        assert!(extra.get("response").is_none());
-        assert!(extra.get("attachment_refs").is_none());
-    }
-
-    #[test]
-    fn large_extra_compaction_skips_small_or_non_codex_sources() {
-        let raw_extra = serde_json::json!({
-            "payload": {
-                "delta": "keep me"
-            },
-            "response": {
-                "model": "gpt-5.4"
-            },
-            "cass": {
-                "token_usage": {
-                    "input_tokens": 3
-                }
-            }
-        });
-
-        let mut small_codex = norm_conv(Some("codex-small"), vec![norm_msg(0, 100)]);
-        small_codex.agent_slug = "codex".to_string();
-        small_codex.messages[0].extra = raw_extra.clone();
-        compact_large_connector_extras_for_size(
-            "codex",
-            &mut small_codex,
-            Some(CODEX_INDEXER_EXTRA_COMPACT_THRESHOLD_BYTES - 1),
-        );
-        assert_eq!(small_codex.messages[0].extra, raw_extra);
-
-        let mut large_claude = norm_conv(Some("claude-large"), vec![norm_msg(0, 100)]);
-        large_claude.agent_slug = "claude-code".to_string();
-        large_claude.messages[0].extra = raw_extra.clone();
-        compact_large_connector_extras_for_size(
-            "claude_code",
-            &mut large_claude,
-            Some(CODEX_INDEXER_EXTRA_COMPACT_THRESHOLD_BYTES),
-        );
-        assert_eq!(large_claude.messages[0].extra, raw_extra);
-    }
-
-    #[test]
-    fn prepare_conversation_for_ingest_compacts_large_codex_batch_extras() {
         let temp = TempDir::new().expect("tempdir");
         let data_dir = temp.path().join("cass-data");
         std::fs::create_dir_all(&data_dir).expect("create data dir");
-        let source_path = temp.path().join("rollout-large.jsonl");
-        std::fs::File::create(&source_path)
-            .expect("create sparse source")
-            .set_len(CODEX_INDEXER_EXTRA_COMPACT_THRESHOLD_BYTES)
-            .expect("size sparse source");
+        let sessions = temp.path().join("sessions/2026/11/08");
+        std::fs::create_dir_all(&sessions).expect("create sessions dir");
+        let source_path = sessions.join("rollout-large.jsonl");
 
-        let mut conv = norm_conv(Some("codex-large-batch"), vec![norm_msg(0, 100)]);
-        conv.agent_slug = "codex".to_string();
-        conv.source_path = source_path;
-        conv.messages[0].extra = serde_json::json!({
-            "payload": {
-                "delta": "duplicated raw codex event payload"
-            },
-            "response": {
-                "model": "gpt-5.4"
-            },
-            "cass": {
-                "event_line": 42
-            }
-        });
+        let records = concat!(
+            "{\"timestamp\":\"2026-11-08T10:00:00.000Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"large-extra-id\",\"cwd\":\"/fixture/large\",\"cli_version\":\"0.49.0\"}}\n",
+            "{\"timestamp\":\"2026-11-08T10:00:01.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"run the large sweep\"}}\n",
+            "{\"timestamp\":\"2026-11-08T10:00:02.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call\",\"name\":\"exec_command\",\"call_id\":\"call_1\",\"arguments\":\"{\\\"command\\\":[\\\"ls\\\",\\\"-la\\\"]}\"}}\n",
+            "{\"timestamp\":\"2026-11-08T10:00:03.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"call_1\",\"output\":\"file-a\\nfile-b\"}}\n",
+            "{\"timestamp\":\"2026-11-08T10:00:04.000Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"sweep complete\"}]}}\n",
+            "{\"timestamp\":\"2026-11-08T10:00:05.000Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_reasoning\",\"text\":\"planning the sweep\"}}\n",
+        );
+        // Whitespace-only padding grows the source past the former threshold
+        // without adding records the connector must parse.
+        let padding = (FORMER_COMPACT_THRESHOLD_BYTES + 1).saturating_sub(records.len());
+        let mut body = String::with_capacity(records.len() + padding + 1);
+        body.push_str(records);
+        body.push_str(&" ".repeat(padding));
+        body.push('\n');
+        std::fs::write(&source_path, body).expect("write large rollout");
+        let source_len = std::fs::metadata(&source_path)
+            .expect("stat large rollout")
+            .len();
+        assert!(
+            source_len as usize > FORMER_COMPACT_THRESHOLD_BYTES,
+            "fixture must exceed the former threshold (got {source_len})"
+        );
+
+        let connector = crate::connectors::codex::CodexConnector::new();
+        let ctx = ScanContext::with_roots(
+            temp.path().to_path_buf(),
+            vec![crate::connectors::ScanRoot::local(
+                temp.path().to_path_buf(),
+            )],
+            None,
+        );
+        let conversations = connector.scan(&ctx).expect("scan large rollout");
+        assert_eq!(conversations.len(), 1);
+        let mut conv = conversations
+            .into_iter()
+            .next()
+            .expect("one conversation from the large rollout");
 
         prepare_conversation_for_ingest(
             &data_dir,
@@ -75796,39 +75651,61 @@ c.close()
             &RawSourceExclusions::default(),
         );
 
-        let extra = &conv.messages[0].extra;
-        assert_eq!(
-            extra
-                .pointer("/cass/model")
-                .and_then(serde_json::Value::as_str),
-            Some("gpt-5.4")
-        );
-        assert_eq!(
-            extra.pointer("/cass/event_line"),
-            Some(&serde_json::json!(42))
-        );
-        assert!(extra.get("payload").is_none());
-        assert!(extra.get("response").is_none());
-        assert_eq!(
-            conv.metadata.pointer("/cass/origin/source_id"),
-            Some(&serde_json::json!("local"))
-        );
+        // End-to-end half: every message keeps the raw record (its `payload`)
+        // instead of a `{"cass":{…}}` skeleton.
+        assert!(!conv.messages.is_empty());
+        for message in &conv.messages {
+            assert!(
+                message.extra.get("payload").is_some(),
+                "message {} must keep its raw record payload after ingest; extra: {}",
+                message.idx,
+                message.extra
+            );
+        }
+
+        // The raw mirror still sizes and captures the whole padded source.
         assert_eq!(
             conv.metadata.pointer("/cass/raw_mirror/source_size_bytes"),
-            Some(&serde_json::json!(
-                CODEX_INDEXER_EXTRA_COMPACT_THRESHOLD_BYTES
-            ))
+            Some(&serde_json::json!(source_len))
         );
-        assert_eq!(
-            conv.metadata.pointer("/cass/raw_mirror/storage_kind"),
-            Some(&serde_json::json!("fixed_chunks_v1"))
+
+        // Viewer-facts half: the session must not be classified as
+        // `extra_compacted`, the text inventory must be complete and the
+        // tool call must pair with its recorded result.
+        let packet =
+            crate::model::conversation_packet::ConversationPacket::from_normalized_conversation(
+                &conv,
+                crate::model::conversation_packet::ConversationPacketProvenance::local(),
+            );
+        let publication = crate::viewer_extensions::facts::extract_session_facts(&packet, "codex");
+        assert!(
+            !publication.coverage.iter().any(|entry| entry
+                .reasons
+                .iter()
+                .any(|reason| reason == "extra_compacted")),
+            "no scope may report the extra_compacted verdict: {:?}",
+            publication.coverage
         );
-        // A .jsonl transcript is captured in 256 KiB chunks (4c10a2a1).
-        assert_eq!(
-            conv.metadata.pointer("/cass/raw_mirror/chunk_count"),
-            Some(&serde_json::json!(
-                CODEX_INDEXER_EXTRA_COMPACT_THRESHOLD_BYTES / (256 * 1024)
-            ))
+        let text = publication
+            .coverage
+            .iter()
+            .find(|entry| entry.field == "text_inventory")
+            .expect("text_inventory coverage");
+        assert_eq!(text.state, "complete", "text_inventory: {text:?}");
+        let tools = publication
+            .coverage
+            .iter()
+            .find(|entry| entry.field == "tools")
+            .expect("tools coverage");
+        assert_eq!(tools.state, "complete", "tools: {tools:?}");
+        let exec = publication
+            .tools
+            .iter()
+            .find(|fact| fact.raw_call_id == "call_1")
+            .expect("exec_command tool fact");
+        assert!(
+            exec.has_result,
+            "the tool call must pair with its recorded result: {exec:?}"
         );
     }
 

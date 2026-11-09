@@ -230,11 +230,17 @@ const CONTRACTS: &[DependencyContract] = &[
         // text-bearing CONVERSATION_HISTORY records. F11 merges a Cursor
         // composer conversation with its same-id agent transcript into one
         // conversation (transcript order, composer timestamps donated), so
-        // storage no longer drops the second fragment. See that repo's
-        // LOCAL_FIXES.md. Return to the upstream URL/rev once upstream
-        // carries every row there.
+        // storage no longer drops the second fragment. F12 keeps full
+        // message extras at every session size (no large-session
+        // compaction). F13 emits textless identity-bearing Codex tool
+        // outputs (image-only results) as linked empty-content messages.
+        // F14/F15/F16 archive the raw source records/parts for Copilot
+        // (response parts), Antigravity (`agy_raw`) and OpenCode (tool parts)
+        // so cass proves completeness from the source instead of guessing.
+        // See that repo's LOCAL_FIXES.md. Return to the upstream URL/rev
+        // once upstream carries every row there.
         expected_git: "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection",
-        expected_rev: "ad5fb23b2bae70984042f1676f8137d7cbbef053",
+        expected_rev: "2b8ddec9f726073680243d88bd19264ba5ffc5d3",
         expected_version: "0.3.10",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.
