@@ -13403,25 +13403,42 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
     allow_full_expected_doc_scan: bool,
 ) -> Result<bool> {
     let total_conversations = db_state.total_conversations;
-    let observed_tantivy_docs = match observed_tantivy_docs {
-        Some(observed_tantivy_docs) => observed_tantivy_docs,
-        None => {
-            let Some(observed_tantivy_docs) = live_tantivy_doc_count(index_path)? else {
-                return Ok(false);
-            };
-            observed_tantivy_docs
+    // The coverage gate and the persisted region share must both be exact.
+    // `live_region_doc_bound` is only an UPPER bound — it also counts queued
+    // `pending_doc_deletes` identities whose documents are already
+    // physically absent — so the old `observed - bound` subtraction skipped
+    // honest refreshes whenever the bound over-counted, and certified a
+    // surplus canonical index whenever over-counting coincidentally matched
+    // the expectation. Observe the canonical/region partition through one
+    // native reader generation instead; the fingerprint bracket proves the
+    // stamped receipt names the same generation that was counted.
+    let fingerprint_before_partition = index_meta_fingerprint(index_path)?;
+    let partition = match crate::search::tantivy::searchable_index_live_partition(index_path) {
+        Ok(Some(partition)) => partition,
+        Ok(None) => return Ok(false),
+        Err(err) => {
+            tracing::debug!(
+                path = %index_path.display(),
+                error = %format!("{err:#}"),
+                "skipping lexical checkpoint refresh because the live index partition is unreadable"
+            );
+            return Ok(false);
         }
     };
-    // Task 5: live documents include converged search-region documents
-    // alongside canonical message documents. Subtract the persisted marks
-    // bound (region rows + queued stale deletes) so the coverage gate below
-    // compares the canonical-message share exactly like it did before
-    // region documents existed. A pending or partial region publication
-    // under-counts live region docs against the bound, which only makes
-    // this refresh skip — conservative, never a false certification.
-    let region_doc_bound =
-        crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw()).unwrap_or(0);
-    let observed_message_docs = observed_tantivy_docs.saturating_sub(region_doc_bound as usize);
+    // A caller-supplied observation certifies only the generation it
+    // measured; if the published index no longer serves that total, defer
+    // rather than mix counts from two generations.
+    if observed_tantivy_docs.is_some_and(|supplied| supplied != partition.docs) {
+        tracing::debug!(
+            path = %index_path.display(),
+            supplied = observed_tantivy_docs,
+            observed = partition.docs,
+            "deferring lexical checkpoint refresh because the supplied doc count names an older generation"
+        );
+        return Ok(false);
+    }
+    let observed_tantivy_docs = partition.docs;
+    let observed_message_docs = partition.canonical_docs;
     // GH #435: the lexical sink intentionally drops hard-noise messages
     // (empty content / tool-acks via `is_hard_message_noise`), so on such
     // corpora a HEALTHY live index always has fewer docs than the raw
@@ -13463,6 +13480,13 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
     }
 
     let committed_meta_fingerprint = index_meta_fingerprint(index_path)?;
+    if committed_meta_fingerprint != fingerprint_before_partition {
+        tracing::debug!(
+            path = %index_path.display(),
+            "deferring lexical checkpoint refresh because the index republished mid-observation"
+        );
+        return Ok(false);
+    }
     let db_path_string = db_state.db_path.clone();
     let mut state = match load_lexical_rebuild_state(index_path)? {
         Some(state)
@@ -13498,7 +13522,7 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
         && state.committed_conversation_id == max_conversation_id
         && state.processed_conversations == total_conversations
         && state.indexed_docs == observed_tantivy_docs
-        && state.indexed_region_docs == region_doc_bound as usize
+        && state.indexed_region_docs == partition.region_docs
         && state.committed_meta_fingerprint == committed_meta_fingerprint
         && state.pending.is_none()
         && state.completed
@@ -13524,7 +13548,7 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
     // like `should_skip_post_full_scan_authoritative_rebuild` compare the
     // checkpoint's indexed_docs against live Tantivy observations.
     state.indexed_docs = observed_tantivy_docs;
-    state.indexed_region_docs = region_doc_bound as usize;
+    state.indexed_region_docs = partition.region_docs;
     state.pending = None;
     state.completed = true;
     state.committed_meta_fingerprint = committed_meta_fingerprint;
@@ -13596,9 +13620,11 @@ fn refresh_completed_watch_lexical_checkpoint(
         total_conversations,
         total_messages,
     )?;
-    // Use the committed writer's verified count rather than opening a new
-    // reader and hashing every lexical segment on each watch callback. The
-    // existing independent, noise-adjusted coverage check still applies.
+    // Pass the committed writer's verified count as a generation
+    // cross-check: the refresh still opens one native reader for the exact
+    // canonical/region partition, and defers when the supplied total names
+    // an older generation than the published index serves. The existing
+    // independent, noise-adjusted coverage check still applies.
     persist_completed_lexical_rebuild_checkpoint_from_observations(
         storage,
         index_path,
@@ -78635,6 +78661,274 @@ c.close()
                 .unwrap()
                 .is_none(),
             "sparse live Tantivy should not bootstrap a completed lexical checkpoint"
+        );
+    }
+
+    /// Task 5 / native-count repair: a queued `pending_doc_deletes` identity
+    /// can name a search-region document that is ALREADY physically absent
+    /// from the index (a CAS-refused stamp keeps the identity queued after
+    /// the delete replayed). The persisted `live_region_doc_bound` then
+    /// counts live region documents PLUS the absent identity — an upper
+    /// bound, not an exact count. The refresh must observe the live
+    /// canonical/region partition through a native reader instead of
+    /// subtracting that bound.
+    fn queue_absent_pending_doc_delete(storage: &FrankenStorage, conversation_id: i64) {
+        storage
+            .raw()
+            .execute_with_params(
+                "UPDATE viewer_search_region_marks \
+                 SET pending_doc_deletes = '[\"cass-doc-absent-region-0\"]' \
+                 WHERE conversation_id = ?1",
+                &[SqliteValue::Integer(conversation_id)],
+            )
+            .unwrap();
+    }
+
+    /// A healthy index whose pending-delete queue names an already-absent
+    /// document must still certify: the bound over-counts by the phantom
+    /// identity, so the old subtraction refused the refresh forever.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_counts_exact_region_docs_with_absent_pending_deletes()
+     {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-phantom"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        ingest_batch(
+            &storage,
+            Some(&mut index),
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+        )
+        .unwrap();
+        index.commit().unwrap();
+        drop(index);
+
+        queue_absent_pending_doc_delete(&storage, 1);
+        let live_docs = live_tantivy_doc_count(&index_path).unwrap().unwrap();
+        assert!(live_docs >= 2, "fixture must hold the two canonical docs");
+        let live_region_docs = live_docs - 2;
+        let region_doc_bound =
+            crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw()).unwrap()
+                as usize;
+        assert_eq!(
+            region_doc_bound,
+            live_region_docs + 1,
+            "the bound must carry exactly one phantom identity"
+        );
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+
+        let checkpoint = load_lexical_rebuild_checkpoint(&index_path)
+            .unwrap()
+            .expect("the honest index must certify despite the inflated bound");
+        assert_eq!(checkpoint.indexed_docs, live_docs);
+        assert_eq!(
+            checkpoint.indexed_region_docs, live_region_docs,
+            "the recorded region share must be the exact live count, not the bound"
+        );
+        assert_eq!(checkpoint.indexed_docs - checkpoint.indexed_region_docs, 2);
+    }
+
+    /// The same phantom-delete state that makes the bound over-count can
+    /// also make it under-count the canonical share required to expose a
+    /// SURPLUS: with `live - bound == expected`, the old subtraction
+    /// wrongly certified an index carrying an extra canonical document.
+    /// The refusal must also preserve a previously written checkpoint.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_refuses_surplus_canonical_docs() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-surplus"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        ingest_batch(
+            &storage,
+            Some(&mut index),
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+        )
+        .unwrap();
+        index.commit().unwrap();
+        drop(index);
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        let preserved = fs::read(lexical_rebuild_state_path(&index_path))
+            .expect("honest index must have been certified first");
+
+        // A surplus canonical document: a canonical identity the DB never
+        // recorded, landed by a stale/crashed ingest.
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        index
+            .add_messages_with_conversation_id(
+                &convs[0],
+                &[norm_msg(9, 1_700_000_000_900)],
+                Some(1),
+            )
+            .unwrap();
+        index.commit().unwrap();
+        drop(index);
+        queue_absent_pending_doc_delete(&storage, 1);
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        assert_eq!(
+            fs::read(lexical_rebuild_state_path(&index_path)).unwrap(),
+            preserved,
+            "a surplus canonical doc must not be certified away by the bound"
+        );
+    }
+
+    /// A live index missing a canonical document must still be refused —
+    /// exactness must not weaken the refusal the old subtraction already
+    /// provided.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_refuses_missing_canonical_docs() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-missing"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        ingest_batch(
+            &storage,
+            Some(&mut index),
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+        )
+        .unwrap();
+        index.commit().unwrap();
+        drop(index);
+
+        // Move the complete index aside and rebuild a sparse one missing
+        // the second canonical document: the live index is now genuinely
+        // behind the canonical archive (same fixture shape as the sparse
+        // checkpoint test above).
+        let full_backup = data_dir.join("index-full-backup");
+        fs::rename(&index_path, &full_backup).unwrap();
+        fs::create_dir_all(&index_path).unwrap();
+        let mut sparse_index = TantivyIndex::open_or_create(&index_path).unwrap();
+        sparse_index
+            .add_messages_with_conversation_id(&convs[0], &convs[0].messages[..1], Some(1))
+            .unwrap();
+        sparse_index.commit().unwrap();
+        drop(sparse_index);
+        queue_absent_pending_doc_delete(&storage, 1);
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        assert!(
+            load_lexical_rebuild_checkpoint(&index_path)
+                .unwrap()
+                .is_none(),
+            "an index missing a canonical doc must never be certified"
+        );
+    }
+
+    /// A caller-supplied observation that names a different live total than
+    /// the published index is evidence of a generation change mid-flight —
+    /// defer rather than mix counts from two generations.
+    #[test]
+    #[serial]
+    fn persist_completed_lexical_rebuild_checkpoint_defers_on_supplied_count_from_older_generation()
+    {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-generation"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        ingest_batch(
+            &storage,
+            Some(&mut index),
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+        )
+        .unwrap();
+        index.commit().unwrap();
+        drop(index);
+
+        let live_docs = live_tantivy_doc_count(&index_path).unwrap().unwrap();
+        let db_state = lexical_rebuild_db_state_with_exact_totals(
+            &storage,
+            &db_path,
+            count_total_conversations_exact(&storage).unwrap(),
+            count_total_messages_exact(&storage).unwrap(),
+        )
+        .unwrap();
+        let certified = persist_completed_lexical_rebuild_checkpoint_from_observations(
+            &storage,
+            &index_path,
+            db_state,
+            count_total_messages_exact(&storage).unwrap(),
+            max_conversation_id_exact(&storage).unwrap(),
+            Some(live_docs + 1),
+            true,
+        )
+        .unwrap();
+        assert!(
+            !certified,
+            "a supplied count from an older generation must defer the refresh"
+        );
+        assert!(
+            load_lexical_rebuild_state(&index_path).unwrap().is_none(),
+            "a deferred refresh must not write checkpoint state"
         );
     }
 

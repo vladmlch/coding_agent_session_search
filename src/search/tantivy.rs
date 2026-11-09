@@ -1163,6 +1163,124 @@ pub fn searchable_index_live_docs(index_path: &Path) -> Option<SearchableLiveDoc
     })
 }
 
+/// Exact live partition of one searchable lexical generation: total
+/// documents, canonical-message documents (`msg_idx < REGION_DOC_BASE`)
+/// and persisted search-region documents (`msg_idx >= REGION_DOC_BASE`),
+/// all observed through a single reader-bound snapshot so a mid-observation
+/// republish cannot mix numbers from different generations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchableIndexPartition {
+    /// Live documents in the observed generation.
+    pub docs: usize,
+    /// Canonical-message documents in the same generation.
+    pub canonical_docs: usize,
+    /// Persisted search-region documents in the same generation.
+    pub region_docs: usize,
+}
+
+/// Exact live partition of the published lexical index at `index_path`.
+///
+/// `Ok(None)` when no searchable index exists. A Quill index opens ONE
+/// reader and takes `doc_count` plus an exact-count canonical
+/// `msg_idx < REGION_DOC_BASE` query from that reader's bound snapshot —
+/// the three numbers can never disagree about which generation they saw,
+/// and region membership is read from the index itself rather than from
+/// `viewer_search_region_marks` bookkeeping, which is only an upper bound
+/// (a queued `pending_doc_deletes` identity can name a document already
+/// physically absent). A federated bundle sums per-shard partitions under
+/// the manifest's pinned per-shard doc counts and refuses a shard that
+/// republished mid-observation. A Tantivy-era directory predates persisted
+/// region documents, so every live document there is canonical.
+///
+/// Callers certifying the observed generation should hash
+/// [`searchable_index_fingerprint`] before and after: equal hashes prove
+/// the counted and stamped generations are the same one.
+///
+/// # Errors
+///
+/// Returns an error when a published index cannot be opened or counted, or
+/// when a federated shard moved past the manifest mid-observation; callers
+/// that only need an estimate should treat the error as "unknown" rather
+/// than substituting bookkeeping bounds.
+pub fn searchable_index_live_partition(
+    index_path: &Path,
+) -> Result<Option<SearchableIndexPartition>> {
+    if let Some(manifest) = load_federated_search_manifest_internal(index_path)? {
+        return searchable_federated_live_partition(index_path, &manifest).map(Some);
+    }
+    if index_path
+        .join(crate::search::quill_bridge::QUILL_INDEX_MARKER)
+        .exists()
+    {
+        let reader = crate::search::quill_bridge::open_cass_reader(index_path)?;
+        return quill_reader_live_partition(&reader).map(Some);
+    }
+    let Some(summary) = searchable_index_summary(index_path)? else {
+        return Ok(None);
+    };
+    Ok(Some(SearchableIndexPartition {
+        docs: summary.docs,
+        canonical_docs: summary.docs,
+        region_docs: 0,
+    }))
+}
+
+/// Partition one already-open Quill reader's bound snapshot: `doc_count`
+/// reports the live total of the generation this reader opened and the
+/// exact-count canonical query scans that same snapshot. The reader is
+/// deliberately never reopened here — a second open could observe a
+/// republished generation and mix the two.
+fn quill_reader_live_partition(
+    reader: &frankensearch::quill::QuillSearchIndex,
+) -> Result<SearchableIndexPartition> {
+    let page = crate::search::quill_bridge::search_paginated(
+        reader,
+        &crate::search::quill_bridge::canonical_message_query(
+            frankensearch::quill::query::Query::all(),
+        ),
+        1,
+        0,
+        true,
+    )?;
+    let canonical_docs = page
+        .total_count
+        .context("Quill canonical partition count returned no exact total")?;
+    Ok(SearchableIndexPartition {
+        docs: page.doc_count,
+        canonical_docs,
+        region_docs: page.doc_count.saturating_sub(canonical_docs),
+    })
+}
+
+fn searchable_federated_live_partition(
+    index_path: &Path,
+    manifest: &FederatedSearchManifest,
+) -> Result<SearchableIndexPartition> {
+    let mut partition = SearchableIndexPartition {
+        docs: 0,
+        canonical_docs: 0,
+        region_docs: 0,
+    };
+    for shard in &manifest.shards {
+        let shard_path = index_path.join(&shard.relative_path);
+        let reader = crate::search::quill_bridge::open_cass_reader(&shard_path)
+            .with_context(|| format!("opening federated shard {}", shard_path.display()))?;
+        let shard_partition = quill_reader_live_partition(&reader)?;
+        // The manifest pins each shard's published doc count; a shard that
+        // republished mid-observation would mix generations into the sum.
+        if shard_partition.docs != shard.docs {
+            anyhow::bail!(
+                "federated shard {} republished during partition observation",
+                shard.relative_path
+            );
+        }
+        partition.docs += shard_partition.docs;
+        partition.canonical_docs += shard_partition.canonical_docs;
+        partition.region_docs += shard_partition.region_docs;
+    }
+    Ok(partition)
+}
+
 fn searchable_index_summary_from_tantivy_meta(
     index_path: &Path,
 ) -> Result<Option<SearchableIndexSummary>> {
