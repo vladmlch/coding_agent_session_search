@@ -43,12 +43,14 @@ fn rusqlite_is_dev_dependency_only() {
 
 /// The fsqlite engine family resolves exclusively from the owner's
 /// frankensqlite fork through the committed [patch.crates-io] table (owner
-/// decision, 2026-11-07; rev moved to the DML-seek tip 2026-11-08): every
+/// decision, 2026-11-07; rev moved to the DML-seek tip 2026-11-08, then to
+/// the 0.4.13 strict-read-only tip 2026-11-09): every
 /// member is redirected to `https://github.com/vladmlch/frankensqlite`
-/// (branch cass-local-fixes-dml) at rev
-/// `e890166488fbfa355acb531d97040329c06eef0d` (v0.4.12 plus the two vdbe
-/// range-seek commits and the DML equality-prefix index seeks, bd-j9gub),
-/// while [dependencies] keep registry-shaped `=0.4.12`
+/// (branch cass-local-fixes-0413-ro) at rev
+/// `898c43612b36301168b97644a89df2fb933ca457` (v0.4.13 plus the two vdbe
+/// range-seek commits, the DML equality-prefix index seeks bd-j9gub, and
+/// the strict read-only open mode SQLITE_OPEN_STRICT_READ_ONLY),
+/// while [dependencies] keep registry-shaped `=0.4.13`
 /// requirements so every consumer — including franken-agent-detection's
 /// `^0.4.1` ask — converges on that one fork resolution per package.
 /// build.rs `validate_fsqlite_source_pin` rejects any family redirect that
@@ -59,11 +61,11 @@ fn rusqlite_is_dev_dependency_only() {
 /// engine family.
 #[test]
 fn frankensqlite_fork_source_identity_is_exact_and_coherent() {
-    const FACADE_REQUIREMENT: &str = "=0.4.12";
-    const TYPES_REQUIREMENT: &str = "=0.4.12";
+    const FACADE_REQUIREMENT: &str = "=0.4.13";
+    const TYPES_REQUIREMENT: &str = "=0.4.13";
     const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensqlite";
-    const EXPECTED_FORK_REV: &str = "e890166488fbfa355acb531d97040329c06eef0d";
-    const EXPECTED_FORK_LOCK_SOURCE: &str = "git+https://github.com/vladmlch/frankensqlite?rev=e890166488fbfa355acb531d97040329c06eef0d#e890166488fbfa355acb531d97040329c06eef0d";
+    const EXPECTED_FORK_REV: &str = "898c43612b36301168b97644a89df2fb933ca457";
+    const EXPECTED_FORK_LOCK_SOURCE: &str = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457";
     const EXPECTED_FACADE_FEATURES: &[&str] = &["fts5", "async-api"];
 
     let manifest: toml::Table =
@@ -111,7 +113,7 @@ fn frankensqlite_fork_source_identity_is_exact_and_coherent() {
                 && dependency.get("branch").is_none()
                 && dependency.get("tag").is_none(),
             "{dependency_name} in [{table_name}] must keep its registry-shaped \
-             `=0.4.12` requirement; the owner-fork redirect lives in \
+             `=0.4.13` requirement; the owner-fork redirect lives in \
              [patch.crates-io], not on the dependency entry"
         );
     }
@@ -202,7 +204,7 @@ fn frankensqlite_fork_source_identity_is_exact_and_coherent() {
     let mut seen_names = std::collections::BTreeSet::new();
     for package in resolved_fsqlite {
         let name = package["name"].as_str().expect("locked package name");
-        let expected_version = "0.4.12";
+        let expected_version = "0.4.13";
         assert!(
             seen_names.insert(name.to_string()),
             "Cargo.lock resolves more than one version of {name}"
@@ -210,7 +212,7 @@ fn frankensqlite_fork_source_identity_is_exact_and_coherent() {
         assert_eq!(
             package.get("version").and_then(toml::Value::as_str),
             Some(expected_version),
-            "{name} resolved at a different version than the published 0.4.12 family contract"
+            "{name} resolved at a different version than the published 0.4.13 family contract"
         );
         let source = package
             .get("source")
@@ -224,7 +226,8 @@ fn frankensqlite_fork_source_identity_is_exact_and_coherent() {
 
     let build_contract = include_str!("../build.rs");
     assert!(
-        build_contract.contains("expected_version: \"0.4.12\"")
+        build_contract.contains("expected_version: \"0.4.13\"")
+            && !build_contract.contains("expected_version: \"0.4.12\"")
             && !build_contract.contains("expected_version: \"0.4.9\"")
             && !build_contract.contains("expected_version: \"0.4.7\"")
             && !build_contract.contains("expected_version: \"0.4.6\"")

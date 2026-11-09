@@ -51,7 +51,7 @@ const CONTRACTS: &[DependencyContract] = &[
         crate_package_name: "fsqlite",
         manifest_package_field: Some("fsqlite"),
         // Exact upstream source pin (established with the fsqlite 0.2.1
-        // migration, bead bo000; now at 0.4.12. 0.3.15 was evaluated on
+        // migration, bead bo000; now at 0.4.13. 0.3.15 was evaluated on
         // 2026-09-02 (bead gh382-fsqlite-pin) and NOT adopted: cass's own
         // writable open still looped on a large archive with a large WAL
         // (reclaim sweep x per-page WAL rescan, cass GH #382 / bead g3zyo).
@@ -95,29 +95,39 @@ const CONTRACTS: &[DependencyContract] = &[
         // explicit-transaction inserts, bd-obwsy), ROLLBACK returning
         // reserved AUTOINCREMENT rowids (bd-gwoit) and reading a WAL a stock
         // writer truncated to zero bytes as empty (bd-yxqs9, cass GH#519).
+        // 0.4.13 (upstream tag e4137af3) adds the GH#507
+        // duplicate-implicit-rowid fix (the silent-PK corruption class on
+        // CASS's parallel BEGIN CONCURRENT ingest path) and the close/io-Cx,
+        // read-only-open (GH#515/#528) and savepoint/WAL fixes; a plain
+        // read-only open rebuilds a never-initialized `-shm` in place, which
+        // is why the fork's strict read-only mode and the doctor snapshot
+        // doctrine exist.
         // Since the 2026-11-07 owner decision the whole family resolves
         // from the owner's fork github.com/vladmlch/frankensqlite (branch
-        // cass-local-fixes-dml since the 2026-11-08 rev move) at rev
-        // e890166488fbfa355acb531d97040329c06eef0d — v0.4.12
-        // (26aa19afcbd5afdb01658a10bb33417ad0b513be) plus two vdbe
-        // range-seek commits (10eadc63 seeks the single-column index range
-        // when the WHERE carries residual conjuncts; d9414f97 lets rowid
-        // range seeks take numbered-placeholder bounds) and the DML
-        // equality-prefix index seeks (f39c8eb0+e8901664, bd-j9gub,
-        // backported onto the 0.4.12 base: a DELETE or UPDATE whose
-        // equality conjuncts pin an index prefix SEARCHes the
-        // leading-column index instead of scanning, proven against stock
-        // SQLite; removes cass's O(N^2) per-conversation viewer DELETEs) —
-        // so the manifest keeps registry-shaped `=0.4.12` requirements and
-        // the committed [patch.crates-io] table redirects every family
-        // crate (including FAD's `^0.4.1` ask) to that rev. Empty
+        // cass-local-fixes-0413-ro since the 2026-11-09 rev move) at rev
+        // 898c43612b36301168b97644a89df2fb933ca457 — v0.4.13
+        // (upstream tag e4137af3) plus the vdbe range seeks (10eadc63
+        // seeks the single-column index range when the WHERE carries
+        // residual conjuncts; d9414f97 lets rowid range seeks take
+        // numbered-placeholder bounds), the DML equality-prefix index
+        // seeks (bd-j9gub: a DELETE or UPDATE whose equality conjuncts
+        // pin an index prefix SEARCHes the leading-column index instead
+        // of scanning, proven against stock SQLite; removes cass's
+        // O(N^2) per-conversation viewer DELETEs) and the strict
+        // read-only open mode (SQLITE_OPEN_STRICT_READ_ONLY: an open
+        // that never writes or creates any sidecar of the store it
+        // reads, refusing every WAL-index state that needs recovery
+        // with the typed BusyRecovery) — so the manifest keeps
+        // registry-shaped `=0.4.13` requirements and the committed
+        // [patch.crates-io] table redirects every family crate
+        // (including FAD's `^0.4.1` ask) to that rev. Empty
         // `expected_git` keeps this contract registry-shaped;
         // validate_fsqlite_source_pin enforces the fork URL, rev, uniform
-        // 0.4.12 version and single resolution per package against the
+        // 0.4.13 version and single resolution per package against the
         // [patch.crates-io] table and Cargo.lock.
         expected_git: "",
         expected_rev: "",
-        expected_version: "0.4.12",
+        expected_version: "0.4.13",
         // `async-api` exposes frankensqlite::AsyncConnection, which
         // src/search/query.rs uses (as SearchSqliteConnection) for the
         // no-hit alternate-agent suggestions without a full storage open.
@@ -135,13 +145,13 @@ const CONTRACTS: &[DependencyContract] = &[
         dep_key: "fsqlite-types",
         crate_package_name: "fsqlite-types",
         manifest_package_field: Some("fsqlite-types"),
-        // The 0.4.12 release publishes the entire family at one version,
+        // The 0.4.13 release publishes the entire family at one version,
         // and the owner fork keeps those versions; the committed
         // [patch.crates-io] table redirects the shared types to the fork
         // rev (see the facade contract and validate_fsqlite_source_pin).
         expected_git: "",
         expected_rev: "",
-        expected_version: "0.4.12",
+        expected_version: "0.4.13",
         expected_features: &[],
         expected_default_features: None,
         repo_rel: "../frankensqlite",
@@ -156,12 +166,12 @@ const CONTRACTS: &[DependencyContract] = &[
         dep_key: "fsqlite-types",
         crate_package_name: "fsqlite-types",
         manifest_package_field: Some("fsqlite-types"),
-        // Match the production shared types: same fork-pinned 0.4.12 family
+        // Match the production shared types: same fork-pinned 0.4.13 family
         // resolution (the [patch.crates-io] table covers dev-dependencies
         // too; validate_fsqlite_source_pin checks the single resolution).
         expected_git: "",
         expected_rev: "",
-        expected_version: "0.4.12",
+        expected_version: "0.4.13",
         expected_features: &[],
         expected_default_features: None,
         repo_rel: "../frankensqlite",
@@ -237,10 +247,18 @@ const CONTRACTS: &[DependencyContract] = &[
         // F14/F15/F16 archive the raw source records/parts for Copilot
         // (response parts), Antigravity (`agy_raw`) and OpenCode (tool parts)
         // so cass proves completeness from the source instead of guessing.
+        // F17 (cass-strict-ro) opens every external store with the fork's
+        // strict read-only mode (SQLITE_OPEN_STRICT_READ_ONLY), so a crashed
+        // store's unusable WAL-index never gets an in-place `-shm` rebuild on
+        // 0.4.13 — the typed BusyRecovery refusal engages the F9 snapshot
+        // fallback instead and the originals stay byte- and
+        // mtime-identical — and repoints FAD's own [patch.crates-io] table
+        // at the pushed fork rev 898c4361 (the same source cass pins through
+        // its committed patch table).
         // See that repo's LOCAL_FIXES.md. Return to the upstream URL/rev
         // once upstream carries every row there.
         expected_git: "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection",
-        expected_rev: "2b8ddec9f726073680243d88bd19264ba5ffc5d3",
+        expected_rev: "fd071f98354745f8e6cc497cc13af23c18d797d3",
         expected_version: "0.3.10",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.
@@ -630,21 +648,24 @@ fn validate_path_dependency_contracts(
 fn validate_fsqlite_source_pin(manifest_dir: &Path, manifest: &Value, packaged_manifest: bool) {
     // The fsqlite engine family resolves exclusively from the owner's
     // frankensqlite fork at the exact rev below, at the uniform published
-    // 0.4.12 family version, including the shared types (owner decision,
-    // 2026-11-07; rev moved to the DML-seek tip 2026-11-08). The fork rev
-    // is v0.4.12 (26aa19afcbd5afdb01658a10bb33417a
-    // d0b513be) plus two vdbe range-seek commits (10eadc63: seek the
-    // single-column index range when the WHERE carries residual conjuncts;
-    // d9414f97: rowid range seeks accept numbered placeholder bounds) and
-    // the DML equality-prefix index seeks (f39c8eb0+e8901664, bd-j9gub:
+    // 0.4.13 family version, including the shared types (owner decision,
+    // 2026-11-07; rev moved to the DML-seek tip 2026-11-08, then to the
+    // 0.4.13 strict-read-only tip 2026-11-09). The fork rev is v0.4.13
+    // (upstream tag e4137af3) plus the vdbe range-seek commits (10eadc63:
+    // seek the single-column index range when the WHERE carries residual
+    // conjuncts; d9414f97: rowid range seeks accept numbered placeholder
+    // bounds), the DML equality-prefix index seeks (bd-j9gub:
     // DELETE/UPDATE equality conjuncts pinning an index prefix SEARCH the
-    // leading-column index instead of scanning), so
-    // the fork's crates keep version 0.4.12 and satisfy the registry-shaped
-    // `=0.4.12` requirements in [dependencies]/[dev-dependencies] through
+    // leading-column index instead of scanning) and the strict read-only
+    // open mode (SQLITE_OPEN_STRICT_READ_ONLY: never write or create any
+    // sidecar of the store being read; refuse every WAL-index state that
+    // needs recovery with the typed BusyRecovery), so
+    // the fork's crates keep version 0.4.13 and satisfy the registry-shaped
+    // `=0.4.13` requirements in [dependencies]/[dev-dependencies] through
     // the committed [patch.crates-io] table. One source per package remains
     // load-bearing for read-only integrity.
     const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensqlite";
-    const EXPECTED_FORK_REV: &str = "e890166488fbfa355acb531d97040329c06eef0d";
+    const EXPECTED_FORK_REV: &str = "898c43612b36301168b97644a89df2fb933ca457";
     // A `rev = "<full-sha>"` git source serializes in Cargo.lock as
     // `git+<url>?rev=<rev>#<resolved-commit>`; with a full-sha rev the
     // resolved commit equals the rev.
@@ -690,7 +711,7 @@ fn validate_fsqlite_source_pin(manifest_dir: &Path, manifest: &Value, packaged_m
     }
 
     // 2. Lockfile convergence: every resolved fsqlite-family package must be
-    //    0.4.12, resolve from the pinned fork rev, and appear exactly once
+    //    0.4.13, resolve from the pinned fork rev, and appear exactly once
     //    per crate. Cargo resolves the lockfile before running build
     //    scripts, so the lockfile is authoritative here. Packaged manifests
     //    (`cargo package` verification builds) re-resolve into a fresh
@@ -736,7 +757,7 @@ fn validate_fsqlite_source_pin(manifest_dir: &Path, manifest: &Value, packaged_m
         if !(name == "fsqlite" || name.starts_with("fsqlite-")) {
             continue;
         }
-        let expected_version = "0.4.12";
+        let expected_version = "0.4.13";
         let version = package.get("version").and_then(Value::as_str).unwrap_or("");
         if !seen.insert(name) {
             violations.push(format!(
