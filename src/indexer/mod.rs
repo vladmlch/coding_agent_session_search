@@ -59325,24 +59325,24 @@ mod tests {
             }
             let caller = std::thread::current().id();
             let local = std::rc::Rc::new(std::cell::Cell::new(0));
+            // The timeout mode exercises the real bound (its exit-70 JSON
+            // asserts deadline_ms == 50); the non-timeout modes only need
+            // `deadline < post-return sleep` for the forgotten-timer check,
+            // so they get slack for slow panic/unwind environments.
+            let deadline = Duration::from_millis(if mode == "timeout" { 50 } else { 500 });
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_bounded_abort_wal_checkpoint(
-                    db_path,
-                    Duration::from_millis(50),
-                    "unit deadline",
-                    |_| {
-                        assert_eq!(std::thread::current().id(), caller);
-                        local.set(1);
-                        match mode.as_str() {
-                            "timeout" => std::thread::sleep(Duration::from_secs(3)),
-                            "panic" => panic!("planted checkpoint panic"),
-                            "error" => anyhow::bail!("planted checkpoint error"),
-                            "complete" => {}
-                            _ => anyhow::bail!("unknown checkpoint child mode"),
-                        }
-                        Ok(FinalWalCheckpointOutcome::Completed)
-                    },
-                )
+                run_bounded_abort_wal_checkpoint(db_path, deadline, "unit deadline", |_| {
+                    assert_eq!(std::thread::current().id(), caller);
+                    local.set(1);
+                    match mode.as_str() {
+                        "timeout" => std::thread::sleep(Duration::from_secs(3)),
+                        "panic" => panic!("planted checkpoint panic"),
+                        "error" => anyhow::bail!("planted checkpoint error"),
+                        "complete" => {}
+                        _ => anyhow::bail!("unknown checkpoint child mode"),
+                    }
+                    Ok(FinalWalCheckpointOutcome::Completed)
+                })
             }));
             match mode.as_str() {
                 "complete" => assert!(matches!(
@@ -59363,7 +59363,9 @@ mod tests {
             );
             fs::write(root.join("returned"), b"timer joined")?;
             // A forgotten timer must not kill an already-returned owner later.
-            std::thread::sleep(Duration::from_millis(150));
+            // This only needs to exceed the armed deadline (500 ms for the
+            // non-timeout modes); a never-disarmed timer still fires mid-sleep.
+            std::thread::sleep(Duration::from_secs(1));
             return Ok(());
         }
 
@@ -59385,6 +59387,11 @@ mod tests {
                     .args(["--exact", TEST, "--nocapture"])
                     .env(CHILD, mode)
                     .env(ROOT, root)
+                    // Pin the panic-hook input: an inherited RUST_BACKTRACE=1
+                    // makes the hook symbolicate this large debug binary inside
+                    // the armed deadline window, which is environmental cost
+                    // this test does not measure.
+                    .env("RUST_BACKTRACE", "0")
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::from(File::create(&stderr_path)?))
