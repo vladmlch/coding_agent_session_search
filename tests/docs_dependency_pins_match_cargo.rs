@@ -6,8 +6,9 @@
 //! found the tables two releases stale.
 //!
 //! Since 2026-11-07 the fsqlite family resolves from the owner's
-//! frankensqlite fork through the committed `[patch.crates-io]` table: the
-//! `[dependencies]` entries keep registry-shaped `=0.4.12` requirements, so
+//! frankensqlite fork through the committed `[patch.crates-io]` table (at
+//! the 0.4.13 strict-read-only rev since 2026-11-09): the
+//! `[dependencies]` entries keep registry-shaped `=0.4.13` requirements, so
 //! the fork's git revision is adopted from the patch entry here — otherwise
 //! a row documenting the fork source would be unchecked (and the family row
 //! would silently drop out of the `checked >= 6` floor).

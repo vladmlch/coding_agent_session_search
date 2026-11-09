@@ -77,7 +77,16 @@ fn legacy_store_is_proven_chat_free(path: &Path) -> bool {
     let Some(path) = path.to_str() else {
         return false;
     };
-    let Ok(connection) = open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY) else {
+    // Strict read-only (F17 doctrine): this classifier may never write or
+    // create any sidecar of the user's store. A plain read-only open on
+    // 0.4.13 rebuilds a never-initialized `-shm` in place (GH#528), mutating
+    // the store during a scan; the strict bit refuses WAL-index states
+    // needing recovery instead, and `false` (not proven chat-free) keeps the
+    // conservative path — the workspace keeps its legacy-chat handling.
+    let Ok(connection) = open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
+    ) else {
         return false;
     };
     // Inspect only small payloads, using the same BLOB-to-text conversion as

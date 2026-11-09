@@ -48503,9 +48503,25 @@ fn verify_doctor_backup_record(
     if verification.blocked_reasons.is_empty()
         && let Some(db_path) = verification.prior_live_db_path.as_ref()
     {
+        // Probe the recorded bundle with the fork's strict read-only mode:
+        // the open may never write or create any sidecar of the bundle it
+        // reads. A plain read-only open recovers a stale WAL index in place
+        // by rewriting the existing `-shm` (the family's read-only-open
+        // hardening since 0.4.13, GH#515/#528), which would invalidate the
+        // manifest's pinned `-shm` checksum for every later restore
+        // consumer. The strict mode instead refuses every WAL-index state
+        // that needs recovery with the typed BusyRecovery, which maps to
+        // `requires_private_wal_index_recovery` below — recovery stays on
+        // the private restore candidate
+        // (`validate_doctor_backup_restore_candidate`), the one place the
+        // restore pipeline rebuilds derived state. A bundle whose WAL
+        // index is self-consistent (a valid `-shm`, or none needed: a
+        // missing or header-less WAL reads the main file) still gets a
+        // real read here, so only recovery-needing bundles defer.
         match open_franken_with_flags(
             &db_path.to_string_lossy(),
-            FrankenOpenFlags::SQLITE_OPEN_READ_ONLY,
+            FrankenOpenFlags::SQLITE_OPEN_READ_ONLY
+                | FrankenOpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
         ) {
             Ok(mut connection) => {
                 if let Err(err) = connection.close_without_checkpoint_in_place() {
