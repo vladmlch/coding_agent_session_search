@@ -1352,6 +1352,205 @@ impl QuillCassIndex {
         }
     }
 
+    /// Exact canonical/region live partition of the durable generation this
+    /// retained writer is pinned to, counted on the writer's own published
+    /// view without opening a reader.
+    ///
+    /// [`open_cass_reader`] hashes EVERY segment on open, so a callback that
+    /// refreshes a checkpoint after each changed batch must never pay it.
+    /// [`QuillIndex::snapshot`] vouches for the pinned view: it refuses when
+    /// the writer's process-local publication authority may be behind durable.
+    /// That authority only tracks THIS writer's publications, though — a
+    /// retained writer can still be stale when another publication moved the
+    /// durable slots under the same path, even to a same-count generation.
+    /// So the pinned [`frankensearch::quill::LoadedManifest`] — the manifest
+    /// plus the recovery slot it was served from — must equal the
+    /// [`frankensearch::quill::load_manifest_pair`] read fresh from the same
+    /// directory, and the pinned source must be the CURRENT slot: a writer
+    /// that recovered through `MANIFEST.prev` must never certify the previous
+    /// generation under a fingerprint that names current bytes.
+    ///
+    /// `index_path` is the directory whose fingerprint the caller stamps. The
+    /// observation refuses unless it names this writer's actual directory
+    /// (canonical identity; symlink and relative aliases of the same directory
+    /// are preserved) — comparing a writer only with its own unrelated
+    /// directory and then fingerprinting a different `index_path` would
+    /// reintroduce false certification.
+    ///
+    /// Canonical membership is counted natively: each segment's validated
+    /// NUMERIC section is parsed under real ceilings and every `msg_idx`
+    /// pair's docid is checked against the segment's own live membership
+    /// (tombstones and docid holes excluded), so no stored body or document
+    /// id is ever materialized. Every live document carries exactly one
+    /// `msg_idx` pair under this schema, so the per-segment live count must
+    /// equal the manifest's `live_doc_count`, and the total must equal the
+    /// snapshot's native live count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error — callers defer, never certify — when the retained
+    /// authority is not the current durable generation, when `index_path` is
+    /// not this writer's directory, when a NUMERIC section is absent or fails
+    /// its bounded parse, when a live document's `msg_idx` is missing or
+    /// wrongly typed, or when the counted live total disagrees with the
+    /// snapshot's native live count.
+    pub(crate) fn retained_live_partition(
+        &self,
+        index_path: &Path,
+    ) -> Result<crate::search::tantivy::SearchableIndexPartition> {
+        if !crate::cli::state::probe_state_db_strict_worker::path_identities_match(
+            &self.directory,
+            index_path,
+        ) {
+            anyhow::bail!(
+                "the retained writer owns {}, not the certification target {}",
+                self.directory.display(),
+                index_path.display()
+            );
+        }
+        let snapshot = self
+            .index
+            .snapshot()
+            .map_err(|error| anyhow!("reading the retained Quill snapshot: {error}"))?;
+        let retained = snapshot.loaded_manifest();
+        if retained.source != frankensearch::quill::ManifestSource::Current {
+            anyhow::bail!(
+                "the retained writer at {} serves the previous MANIFEST slot; \
+                 refusing to certify counts from the previous generation",
+                self.directory.display()
+            );
+        }
+        let durable =
+            frankensearch::quill::load_manifest_pair(&self.directory).map_err(|error| {
+                anyhow!(
+                    "reading the durable Quill MANIFEST at {}: {error}",
+                    self.directory.display()
+                )
+            })?;
+        if durable != *retained {
+            anyhow::bail!(
+                "the retained writer's pinned generation no longer matches the \
+                 durable MANIFEST at {}",
+                self.directory.display()
+            );
+        }
+
+        let mut docs = 0_u64;
+        let mut canonical_docs = 0_u64;
+        for segment in snapshot.segments() {
+            let manifest = segment.manifest();
+            let span = manifest
+                .docid_hi
+                .checked_sub(manifest.docid_lo)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "segment {} has a reversed docid range [{}, {})",
+                        manifest.segment_id,
+                        manifest.docid_lo,
+                        manifest.docid_hi
+                    )
+                })?;
+            let numeric_bytes = segment
+                .section(frankensearch::quill::SectionKind::NUMERIC)
+                .map_err(|error| {
+                    anyhow!(
+                        "validating the NUMERIC section of segment {}: {error}",
+                        manifest.segment_id
+                    )
+                })?
+                .ok_or_else(|| {
+                    anyhow!("segment {} carries no NUMERIC section", manifest.segment_id)
+                })?;
+            // Real parser ceilings: one CASS document contributes at most one
+            // pair per numeric field, so no field can hold more pairs than
+            // the segment's physical span; every schema field together cannot
+            // hold more than span * the schema's own field count; the section
+            // can never exceed its own segment file; and the parser may accept
+            // no docid range wider than the manifest's declared one. These
+            // are maintenance work bounds, not engine query-fuel units.
+            let numeric = frankensearch::quill::quiver::NumericSection::parse_with_limits(
+                numeric_bytes,
+                CASS_SEMANTIC_SCHEMA,
+                manifest.docid_lo,
+                manifest.docid_hi,
+                frankensearch::quill::quiver::NumericLimits {
+                    max_fields: CASS_SEMANTIC_SCHEMA.fields.len(),
+                    max_entries_per_field: span,
+                    max_total_entries: span.saturating_mul(
+                        u64::try_from(CASS_SEMANTIC_SCHEMA.fields.len()).unwrap_or(u64::MAX),
+                    ),
+                    max_docid_span: span,
+                    max_section_bytes: manifest.file_len,
+                },
+            )
+            .map_err(|error| {
+                anyhow!(
+                    "parsing the NUMERIC section of segment {}: {error}",
+                    manifest.segment_id
+                )
+            })?;
+            let msg_idx = numeric
+                .field(frankensearch::quill::cass::field::MSG_IDX)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "the NUMERIC section of segment {} lacks msg_idx",
+                        manifest.segment_id
+                    )
+                })?;
+            let mut live_docs = 0_u64;
+            for entry in msg_idx.entries() {
+                if !frankensearch::quill::argus::LiveDocs::is_live(segment, entry.docid()) {
+                    continue;
+                }
+                live_docs = live_docs.checked_add(1).ok_or_else(|| {
+                    anyhow!(
+                        "live doc count overflows u64 in segment {}",
+                        manifest.segment_id
+                    )
+                })?;
+                let frankensearch::quill::quiver::NumericValue::U64(value) = entry.value() else {
+                    anyhow::bail!(
+                        "msg_idx pair for docid {} in segment {} is not U64",
+                        entry.docid(),
+                        manifest.segment_id
+                    );
+                };
+                if value < crate::viewer_extensions::search_regions::REGION_DOC_BASE {
+                    canonical_docs = canonical_docs
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow!("canonical doc count overflows u64"))?;
+                }
+            }
+            // Canonical ingest writes exactly one msg_idx pair per document,
+            // so a segment's live pair count must equal its manifest's live
+            // count — a live row without a pair, or a pair without a live
+            // row, is corruption this observation refuses to certify.
+            let expected_live = u64::from(manifest.live_doc_count());
+            if live_docs != expected_live {
+                anyhow::bail!(
+                    "live msg_idx pairs {live_docs} disagree with the manifest's \
+                     live doc count {expected_live} in segment {}",
+                    manifest.segment_id
+                );
+            }
+            docs = docs
+                .checked_add(live_docs)
+                .ok_or_else(|| anyhow!("live doc count overflows u64 across segments"))?;
+        }
+        if docs != snapshot.doc_count() {
+            anyhow::bail!(
+                "counted live docs {docs} disagree with the retained snapshot's \
+                 live count {}",
+                snapshot.doc_count()
+            );
+        }
+        Ok(crate::search::tantivy::SearchableIndexPartition {
+            docs: usize::try_from(docs).unwrap_or(usize::MAX),
+            canonical_docs: usize::try_from(canonical_docs).unwrap_or(usize::MAX),
+            region_docs: usize::try_from(docs - canonical_docs).unwrap_or(usize::MAX),
+        })
+    }
+
     /// Durable directory backing this index.
     #[must_use]
     pub fn path(&self) -> &Path {

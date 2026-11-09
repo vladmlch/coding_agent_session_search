@@ -2600,6 +2600,31 @@ impl TantivyIndex {
         self.inner.doc_count()
     }
 
+    /// Exact canonical/region live partition of the durable generation this
+    /// retained writer is pinned to, counted on the writer's own published
+    /// view with NO reader open — see
+    /// [`crate::search::quill_bridge::QuillCassIndex::retained_live_partition`].
+    /// The live watch checkpoint refresh runs after every changed batch;
+    /// opening a reader would re-hash every segment on each pass.
+    ///
+    /// `index_path` is the directory whose fingerprint the caller stamps; the
+    /// observation refuses unless it names this writer's actual directory.
+    /// Same durable-authority binding as [`searchable_index_live_partition`]:
+    /// the pinned manifest must still be the current durable slot, and the
+    /// partition counts live `msg_idx` membership on the native snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a stale retained authority, a non-current MANIFEST slot, a
+    /// mismatched directory, a missing or malformed numeric column, and any
+    /// counted live total that disagrees with the snapshot's own.
+    pub(crate) fn retained_live_partition(
+        &self,
+        index_path: &Path,
+    ) -> Result<SearchableIndexPartition> {
+        self.inner.retained_live_partition(index_path)
+    }
+
     /// Task 5: stage one session's persisted search-region documents
     /// (thinking/tools/artifacts/subagents/meta scopes and noise-filtered
     /// chat regions) against `viewer_search_regions` on this uncommitted
