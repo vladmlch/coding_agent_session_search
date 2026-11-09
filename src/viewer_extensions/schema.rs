@@ -1134,8 +1134,7 @@ mod tests {
 
         // The same connection stays usable, and the profile still
         // installs once the injection is gone.
-        connection
-            .execute_batch("DROP TRIGGER poison_meta_append; DROP TABLE commit_poison;")?;
+        connection.execute_batch("DROP TRIGGER poison_meta_append; DROP TABLE commit_poison;")?;
         ensure_schema(connection)?;
         assert_eq!(
             installed_version(connection)?,

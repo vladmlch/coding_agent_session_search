@@ -635,9 +635,7 @@ fn rollback_reports_no_active_transaction(error: &FrankenError) -> bool {
 /// a "no active transaction" refusal as already-clean. Only the call
 /// site's own transaction is ever rolled back — a pre-existing caller
 /// transaction fails `BEGIN IMMEDIATE` before this runs.
-fn rollback_owned_facts_transaction(
-    db: &impl FactsDb,
-) -> std::result::Result<(), FrankenError> {
+fn rollback_owned_facts_transaction(db: &impl FactsDb) -> std::result::Result<(), FrankenError> {
     match db.facts_execute("ROLLBACK", &[]) {
         Ok(_) => Ok(()),
         Err(error) if rollback_reports_no_active_transaction(&error) => Ok(()),
@@ -1346,9 +1344,7 @@ mod tests {
         );
 
         // The same connection still certifies once the injection is gone.
-        reader.execute_batch(
-            "DROP TRIGGER poison_journal_append; DROP TABLE commit_poison;",
-        )?;
+        reader.execute_batch("DROP TRIGGER poison_journal_append; DROP TABLE commit_poison;")?;
         let receipt = certify_lexical_publication(reader, 8, 42, None)?
             .expect("certification succeeds on the same connection after a handled failure");
         assert_eq!(receipt.lexical_generation, 1);
@@ -1374,9 +1370,7 @@ mod tests {
             reader.as_async().in_transaction(),
             "a failed BEGIN must not roll back the caller's transaction"
         );
-        reader.execute(
-            "INSERT INTO viewer_meta (key, value) VALUES ('caller_tx_probe', '1')",
-        )?;
+        reader.execute("INSERT INTO viewer_meta (key, value) VALUES ('caller_tx_probe', '1')")?;
         reader.execute("COMMIT")?;
         let probe: Option<String> = reader
             .query_row("SELECT value FROM viewer_meta WHERE key = 'caller_tx_probe'")?
