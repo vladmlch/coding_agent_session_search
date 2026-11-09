@@ -195,7 +195,10 @@ frankensearch = { version = "=0.7.1", default-features = false, features = ["has
 # originals stay byte- and mtime-identical — and repoints FAD's own
 # [patch.crates-io] table at the pushed fork rev 898c4361 (same source cass
 # pins through its committed patch table).
-franken-agent-detection = { version = "=0.3.10", git = "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection", rev = "fd071f98354745f8e6cc497cc13af23c18d797d3", features = ["connectors", "cursor", "chatgpt", "opencode", "crush", "goose", "hermes", "devin", "shelley", "grok-bot", "openclaw-sqlite", "copilot-vscdb", "codebuff", "codex-zstd", "pi-durable", "pi-sqlite"] }
+# 0d972a9 (cass-snapshot-cap, F18) caps that snapshot fallback at 2 GiB of
+# db + -wal and refuses a copy the temp dir has no room for, reporting a
+# typed scan error instead (a crashed 27 GB Devin store is not copied).
+franken-agent-detection = { version = "=0.3.10", git = "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection", rev = "0d972a98077d7748bce43f7e9902af9cd357ebb8", features = ["connectors", "cursor", "chatgpt", "opencode", "crush", "goose", "hermes", "devin", "shelley", "grok-bot", "openclaw-sqlite", "copilot-vscdb", "codebuff", "codex-zstd", "pi-durable", "pi-sqlite"] }
 wide = "1.4.0"  # Portable SIMD for P0 Opt 2: SIMD dot product
 arrayvec = "0.7.6"  # Stack-based arrays for P1 Opt 1.4: Edge N-gram optimization
 bloomfilter = "3.0.1"  # Probabilistic membership testing for P2 Opt 3.3: Workspace Cache

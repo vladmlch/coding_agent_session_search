@@ -1825,7 +1825,7 @@ dependencies = [
 [[package]]
 name = "franken-agent-detection"
 version = "0.3.10"
-source = "git+file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection?rev=fd071f98354745f8e6cc497cc13af23c18d797d3#fd071f98354745f8e6cc497cc13af23c18d797d3"
+source = "git+file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection?rev=0d972a98077d7748bce43f7e9902af9cd357ebb8#0d972a98077d7748bce43f7e9902af9cd357ebb8"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1836,6 +1836,7 @@ dependencies = [
  "chrono",
  "dirs",
  "dotenvy",
+ "fs4",
  "fsqlite",
  "once_cell",
  "serde",

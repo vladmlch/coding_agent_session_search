@@ -254,11 +254,13 @@ const CONTRACTS: &[DependencyContract] = &[
         // fallback instead and the originals stay byte- and
         // mtime-identical — and repoints FAD's own [patch.crates-io] table
         // at the pushed fork rev 898c4361 (the same source cass pins through
-        // its committed patch table).
+        // its committed patch table). F18 caps that snapshot fallback at
+        // 2 GiB of db + -wal and checks temp-dir free space, refusing with a
+        // typed scan error instead of copying a huge store.
         // See that repo's LOCAL_FIXES.md. Return to the upstream URL/rev
         // once upstream carries every row there.
         expected_git: "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection",
-        expected_rev: "fd071f98354745f8e6cc497cc13af23c18d797d3",
+        expected_rev: "0d972a98077d7748bce43f7e9902af9cd357ebb8",
         expected_version: "0.3.10",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.
