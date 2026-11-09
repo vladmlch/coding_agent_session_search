@@ -4481,6 +4481,61 @@ mod tests {
         );
     }
 
+    /// The retained-writer partition must agree with the engine's own live
+    /// membership over a real multi-segment, tombstoned index — the parity
+    /// control for the custom numeric/live traversal the retained path
+    /// takes instead of a query. Re-ingesting a document under its stable
+    /// identity tombstones the sealed row in the first segment; the
+    /// retained observation must still split canonical/region docs exactly
+    /// like the independently opened native exact partition.
+    #[test]
+    fn retained_live_partition_matches_independent_partition_over_tombstoned_segments() {
+        let root = TempDir::new().expect("temp dir");
+        let index_path = root.path().join("index");
+        let mut index = TantivyIndex::open_or_create(&index_path).expect("open index");
+        index
+            .inner
+            .add_cass_documents(&[
+                partition_test_doc("a", 0, "alpha"),
+                partition_test_doc("a", 1, "beta"),
+                partition_test_doc(
+                    "a",
+                    crate::viewer_extensions::search_regions::REGION_DOC_BASE,
+                    "region text",
+                ),
+            ])
+            .expect("batch");
+        index.commit().expect("seal the first segment");
+
+        // Re-ingesting a document under its stable identity tombstones the
+        // sealed row — a real second segment plus a tombstone in the first.
+        index
+            .upsert_prebuilt_documents_slice(&[partition_test_doc("a", 0, "alpha edited")])
+            .expect("upsert");
+        index.commit().expect("publish the replacement");
+
+        let live = crate::search::quill_bridge::manifest_live_doc_count(&index_path)
+            .expect("published manifest");
+        assert!(
+            live.tombstones > 0 && live.segments >= 2,
+            "the fixture needs a tombstone in a sealed segment: {live:?}"
+        );
+
+        let retained = index
+            .retained_live_partition(&index_path)
+            .expect("retained partition");
+        let independent = searchable_index_live_partition(&index_path)
+            .expect("independent partition")
+            .expect("index is searchable");
+        assert_eq!(
+            retained, independent,
+            "the retained view must count the same live canonical/region partition as the engine"
+        );
+        assert_eq!(retained.docs, 3);
+        assert_eq!(retained.canonical_docs, 2);
+        assert_eq!(retained.region_docs, 1);
+    }
+
     #[test]
     // Exercises the Tantivy-only shard-merge / federated-bundle machinery.
     // Quill has no N-directory merge, and the staged-shard rebuild strategy
