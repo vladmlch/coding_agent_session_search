@@ -13399,29 +13399,46 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
     db_state: LexicalRebuildDbState,
     total_messages: usize,
     max_conversation_id: Option<i64>,
-    observed_tantivy_docs: Option<usize>,
+    retained_index: Option<&TantivyIndex>,
     allow_full_expected_doc_scan: bool,
 ) -> Result<bool> {
     let total_conversations = db_state.total_conversations;
-    let observed_tantivy_docs = match observed_tantivy_docs {
-        Some(observed_tantivy_docs) => observed_tantivy_docs,
-        None => {
-            let Some(observed_tantivy_docs) = live_tantivy_doc_count(index_path)? else {
-                return Ok(false);
-            };
-            observed_tantivy_docs
+    // The coverage gate and the persisted region share must both be exact.
+    // `live_region_doc_bound` is only an UPPER bound — it also counts queued
+    // `pending_doc_deletes` identities whose documents are already
+    // physically absent — so the old `observed - bound` subtraction skipped
+    // honest refreshes whenever the bound over-counted, and certified a
+    // surplus canonical index whenever over-counting coincidentally matched
+    // the expectation. Observe the canonical/region partition through one
+    // native generation instead; the fingerprint bracket proves the stamped
+    // receipt names the same generation that was counted.
+    //
+    // A retained writer supplies the partition from its own pinned view —
+    // opening a reader on the live watch callback would re-hash every
+    // segment after each changed batch. The pinned view certifies only when
+    // it is still the current durable generation at THIS path: a retained
+    // writer displaced by a same-count republish refuses rather than mixing
+    // counts from two generations. Path-only callers independently open and
+    // bind the durable index the same way.
+    let fingerprint_before_partition = index_meta_fingerprint(index_path)?;
+    let observed = match retained_index {
+        Some(index) => index.retained_live_partition(index_path).map(Some),
+        None => crate::search::tantivy::searchable_index_live_partition(index_path),
+    };
+    let partition = match observed {
+        Ok(Some(partition)) => partition,
+        Ok(None) => return Ok(false),
+        Err(err) => {
+            tracing::debug!(
+                path = %index_path.display(),
+                error = %format!("{err:#}"),
+                "skipping lexical checkpoint refresh because the live index partition is unreadable"
+            );
+            return Ok(false);
         }
     };
-    // Task 5: live documents include converged search-region documents
-    // alongside canonical message documents. Subtract the persisted marks
-    // bound (region rows + queued stale deletes) so the coverage gate below
-    // compares the canonical-message share exactly like it did before
-    // region documents existed. A pending or partial region publication
-    // under-counts live region docs against the bound, which only makes
-    // this refresh skip — conservative, never a false certification.
-    let region_doc_bound =
-        crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw()).unwrap_or(0);
-    let observed_message_docs = observed_tantivy_docs.saturating_sub(region_doc_bound as usize);
+    let observed_tantivy_docs = partition.docs;
+    let observed_message_docs = partition.canonical_docs;
     // GH #435: the lexical sink intentionally drops hard-noise messages
     // (empty content / tool-acks via `is_hard_message_noise`), so on such
     // corpora a HEALTHY live index always has fewer docs than the raw
@@ -13463,6 +13480,13 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
     }
 
     let committed_meta_fingerprint = index_meta_fingerprint(index_path)?;
+    if committed_meta_fingerprint != fingerprint_before_partition {
+        tracing::debug!(
+            path = %index_path.display(),
+            "deferring lexical checkpoint refresh because the index republished mid-observation"
+        );
+        return Ok(false);
+    }
     let db_path_string = db_state.db_path.clone();
     let mut state = match load_lexical_rebuild_state(index_path)? {
         Some(state)
@@ -13498,7 +13522,7 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
         && state.committed_conversation_id == max_conversation_id
         && state.processed_conversations == total_conversations
         && state.indexed_docs == observed_tantivy_docs
-        && state.indexed_region_docs == region_doc_bound as usize
+        && state.indexed_region_docs == partition.region_docs
         && state.committed_meta_fingerprint == committed_meta_fingerprint
         && state.pending.is_none()
         && state.completed
@@ -13524,7 +13548,7 @@ fn persist_completed_lexical_rebuild_checkpoint_from_observations(
     // like `should_skip_post_full_scan_authoritative_rebuild` compare the
     // checkpoint's indexed_docs against live Tantivy observations.
     state.indexed_docs = observed_tantivy_docs;
-    state.indexed_region_docs = region_doc_bound as usize;
+    state.indexed_region_docs = partition.region_docs;
     state.pending = None;
     state.completed = true;
     state.committed_meta_fingerprint = committed_meta_fingerprint;
@@ -13586,7 +13610,6 @@ fn refresh_completed_watch_lexical_checkpoint(
     if !load_watch_lexical_replay_debt(storage)?.is_empty() {
         return Ok(false);
     }
-    let observed_docs = usize::try_from(index.doc_count()?)?;
     let total_conversations = count_total_conversations_exact(storage)?;
     let total_messages = count_total_messages_exact(storage)?;
     let max_conversation_id = max_conversation_id_exact(storage)?;
@@ -13596,16 +13619,23 @@ fn refresh_completed_watch_lexical_checkpoint(
         total_conversations,
         total_messages,
     )?;
-    // Use the committed writer's verified count rather than opening a new
-    // reader and hashing every lexical segment on each watch callback. The
-    // existing independent, noise-adjusted coverage check still applies.
+    // This callback runs after every changed batch, so the exact partition
+    // must be certified from the RETAINED writer's pinned view: opening a
+    // reader here would re-hash every segment on each pass (and the writer's
+    // own `doc_count` can fall back to a reader open on reconciliation
+    // failure). The retained observation binds the same durable authority the
+    // stamped fingerprint names — the pinned manifest must still be the
+    // current durable slot at this path — so a retained writer displaced by
+    // a same-count republish defers rather than certifying a stale
+    // generation. The existing independent, noise-adjusted coverage check
+    // still applies.
     persist_completed_lexical_rebuild_checkpoint_from_observations(
         storage,
         index_path,
         db_state,
         total_messages,
         max_conversation_id,
-        Some(observed_docs),
+        Some(index),
         false,
     )
 }
@@ -59343,24 +59373,24 @@ mod tests {
             }
             let caller = std::thread::current().id();
             let local = std::rc::Rc::new(std::cell::Cell::new(0));
+            // The timeout mode exercises the real bound (its exit-70 JSON
+            // asserts deadline_ms == 50); the non-timeout modes only need
+            // `deadline < post-return sleep` for the forgotten-timer check,
+            // so they get slack for slow panic/unwind environments.
+            let deadline = Duration::from_millis(if mode == "timeout" { 50 } else { 500 });
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                run_bounded_abort_wal_checkpoint(
-                    db_path,
-                    Duration::from_millis(50),
-                    "unit deadline",
-                    |_| {
-                        assert_eq!(std::thread::current().id(), caller);
-                        local.set(1);
-                        match mode.as_str() {
-                            "timeout" => std::thread::sleep(Duration::from_secs(3)),
-                            "panic" => panic!("planted checkpoint panic"),
-                            "error" => anyhow::bail!("planted checkpoint error"),
-                            "complete" => {}
-                            _ => anyhow::bail!("unknown checkpoint child mode"),
-                        }
-                        Ok(FinalWalCheckpointOutcome::Completed)
-                    },
-                )
+                run_bounded_abort_wal_checkpoint(db_path, deadline, "unit deadline", |_| {
+                    assert_eq!(std::thread::current().id(), caller);
+                    local.set(1);
+                    match mode.as_str() {
+                        "timeout" => std::thread::sleep(Duration::from_secs(3)),
+                        "panic" => panic!("planted checkpoint panic"),
+                        "error" => anyhow::bail!("planted checkpoint error"),
+                        "complete" => {}
+                        _ => anyhow::bail!("unknown checkpoint child mode"),
+                    }
+                    Ok(FinalWalCheckpointOutcome::Completed)
+                })
             }));
             match mode.as_str() {
                 "complete" => assert!(matches!(
@@ -59381,7 +59411,9 @@ mod tests {
             );
             fs::write(root.join("returned"), b"timer joined")?;
             // A forgotten timer must not kill an already-returned owner later.
-            std::thread::sleep(Duration::from_millis(150));
+            // This only needs to exceed the armed deadline (500 ms for the
+            // non-timeout modes); a never-disarmed timer still fires mid-sleep.
+            std::thread::sleep(Duration::from_secs(1));
             return Ok(());
         }
 
@@ -59403,6 +59435,11 @@ mod tests {
                     .args(["--exact", TEST, "--nocapture"])
                     .env(CHILD, mode)
                     .env(ROOT, root)
+                    // Pin the panic-hook input: an inherited RUST_BACKTRACE=1
+                    // makes the hook symbolicate this large debug binary inside
+                    // the armed deadline window, which is environmental cost
+                    // this test does not measure.
+                    .env("RUST_BACKTRACE", "0")
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::from(File::create(&stderr_path)?))
@@ -78683,6 +78720,708 @@ c.close()
                 .unwrap()
                 .is_none(),
             "sparse live Tantivy should not bootstrap a completed lexical checkpoint"
+        );
+    }
+
+    /// Task 5 / native-count repair: a queued `pending_doc_deletes` identity
+    /// can name a search-region document that is ALREADY physically absent
+    /// from the index (a CAS-refused stamp keeps the identity queued after
+    /// the delete replayed). The persisted `live_region_doc_bound` then
+    /// counts live region documents PLUS the absent identity — an upper
+    /// bound, not an exact count. The refresh must observe the live
+    /// canonical/region partition through a native reader instead of
+    /// subtracting that bound.
+    fn queue_absent_pending_doc_delete(storage: &FrankenStorage, conversation_id: i64) {
+        storage
+            .raw()
+            .execute_with_params(
+                "UPDATE viewer_search_region_marks \
+                 SET pending_doc_deletes = '[\"cass-doc-absent-region-0\"]' \
+                 WHERE conversation_id = ?1",
+                &[SqliteValue::Integer(conversation_id)],
+            )
+            .unwrap();
+    }
+
+    /// A healthy index whose pending-delete queue names an already-absent
+    /// document must still certify: the bound over-counts by the phantom
+    /// identity, so the old subtraction refused the refresh forever.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_counts_exact_region_docs_with_absent_pending_deletes()
+     {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-phantom"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        ingest_batch(
+            &storage,
+            Some(&mut index),
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+        )
+        .unwrap();
+        index.commit().unwrap();
+        drop(index);
+
+        queue_absent_pending_doc_delete(&storage, 1);
+        let live_docs = live_tantivy_doc_count(&index_path).unwrap().unwrap();
+        assert!(live_docs >= 2, "fixture must hold the two canonical docs");
+        let live_region_docs = live_docs - 2;
+        let region_doc_bound =
+            crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw()).unwrap()
+                as usize;
+        assert_eq!(
+            region_doc_bound,
+            live_region_docs + 1,
+            "the bound must carry exactly one phantom identity"
+        );
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+
+        let checkpoint = load_lexical_rebuild_checkpoint(&index_path)
+            .unwrap()
+            .expect("the honest index must certify despite the inflated bound");
+        assert_eq!(checkpoint.indexed_docs, live_docs);
+        assert_eq!(
+            checkpoint.indexed_region_docs, live_region_docs,
+            "the recorded region share must be the exact live count, not the bound"
+        );
+        assert_eq!(checkpoint.indexed_docs - checkpoint.indexed_region_docs, 2);
+    }
+
+    /// The same phantom-delete state that makes the bound over-count can
+    /// also make it under-count the canonical share required to expose a
+    /// SURPLUS: with `live - bound == expected`, the old subtraction
+    /// wrongly certified an index carrying an extra canonical document.
+    /// The refusal must also preserve a previously written checkpoint.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_refuses_surplus_canonical_docs() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-surplus"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        ingest_batch(
+            &storage,
+            Some(&mut index),
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+        )
+        .unwrap();
+        index.commit().unwrap();
+        drop(index);
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        let preserved = fs::read(lexical_rebuild_state_path(&index_path))
+            .expect("honest index must have been certified first");
+
+        // A surplus canonical document: a canonical identity the DB never
+        // recorded, landed by a stale/crashed ingest.
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        index
+            .add_messages_with_conversation_id(
+                &convs[0],
+                &[norm_msg(9, 1_700_000_000_900)],
+                Some(1),
+            )
+            .unwrap();
+        index.commit().unwrap();
+        drop(index);
+        queue_absent_pending_doc_delete(&storage, 1);
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        assert_eq!(
+            fs::read(lexical_rebuild_state_path(&index_path)).unwrap(),
+            preserved,
+            "a surplus canonical doc must not be certified away by the bound"
+        );
+    }
+
+    /// A live index missing a canonical document must still be refused —
+    /// exactness must not weaken the refusal the old subtraction already
+    /// provided.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_refuses_missing_canonical_docs() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-missing"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        ingest_batch(
+            &storage,
+            Some(&mut index),
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+        )
+        .unwrap();
+        index.commit().unwrap();
+        drop(index);
+
+        // Move the complete index aside and rebuild a sparse one missing
+        // the second canonical document: the live index is now genuinely
+        // behind the canonical archive (same fixture shape as the sparse
+        // checkpoint test above).
+        let full_backup = data_dir.join("index-full-backup");
+        fs::rename(&index_path, &full_backup).unwrap();
+        fs::create_dir_all(&index_path).unwrap();
+        let mut sparse_index = TantivyIndex::open_or_create(&index_path).unwrap();
+        sparse_index
+            .add_messages_with_conversation_id(&convs[0], &convs[0].messages[..1], Some(1))
+            .unwrap();
+        sparse_index.commit().unwrap();
+        drop(sparse_index);
+        queue_absent_pending_doc_delete(&storage, 1);
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        assert!(
+            load_lexical_rebuild_checkpoint(&index_path)
+                .unwrap()
+                .is_none(),
+            "an index missing a canonical doc must never be certified"
+        );
+    }
+
+    /// A retained writer's pinned view can name a generation the durable
+    /// directory has moved past — even a same-count republish under the same
+    /// path. The refresh must defer and preserve the checkpoint bytes rather
+    /// than certify the stale view as the current durable generation.
+    #[test]
+    #[serial]
+    fn persist_completed_lexical_rebuild_checkpoint_defers_when_retained_writer_is_stale() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("retained-stale"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        ingest_batch(
+            &storage,
+            Some(&mut index),
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+        )
+        .unwrap();
+        index.commit().unwrap();
+
+        // Certify once from the retained writer — the checkpoint bytes the
+        // stale observation must preserve.
+        let db_state = lexical_rebuild_db_state_with_exact_totals(
+            &storage,
+            &db_path,
+            count_total_conversations_exact(&storage).unwrap(),
+            count_total_messages_exact(&storage).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            persist_completed_lexical_rebuild_checkpoint_from_observations(
+                &storage,
+                &index_path,
+                db_state.clone(),
+                count_total_messages_exact(&storage).unwrap(),
+                max_conversation_id_exact(&storage).unwrap(),
+                Some(&index),
+                true,
+            )
+            .unwrap(),
+            "the current retained generation must certify"
+        );
+        let preserved = fs::read(lexical_rebuild_state_path(&index_path)).unwrap();
+
+        // A same-count different generation takes over the durable path; the
+        // original directory is retained as a backup, never deleted. The
+        // retained writer keeps its now-stale pinned view.
+        let replacement_dir = data_dir.join("index-replacement");
+        let mut replacement = TantivyIndex::open_or_create(&replacement_dir).unwrap();
+        replacement
+            .add_messages_with_conversation_id(
+                &convs[0],
+                &[
+                    norm_msg(8, 1_700_000_000_800),
+                    norm_msg(9, 1_700_000_000_900),
+                ],
+                Some(1),
+            )
+            .unwrap();
+        replacement.commit().unwrap();
+        drop(replacement);
+        // Carry the certified checkpoint into the displaced directory so the
+        // refusal has preserved bytes to prove.
+        fs::copy(
+            lexical_rebuild_state_path(&index_path),
+            lexical_rebuild_state_path(&replacement_dir),
+        )
+        .unwrap();
+        let moved_aside = data_dir.join("index-original");
+        fs::rename(&index_path, &moved_aside).unwrap();
+        fs::rename(&replacement_dir, &index_path).unwrap();
+
+        assert!(
+            !persist_completed_lexical_rebuild_checkpoint_from_observations(
+                &storage,
+                &index_path,
+                db_state,
+                count_total_messages_exact(&storage).unwrap(),
+                max_conversation_id_exact(&storage).unwrap(),
+                Some(&index),
+                true,
+            )
+            .unwrap(),
+            "a stale retained writer must defer the refresh"
+        );
+        assert_eq!(
+            fs::read(lexical_rebuild_state_path(&index_path)).unwrap(),
+            preserved,
+            "a deferred refresh must preserve the checkpoint bytes"
+        );
+    }
+
+    /// The live watch callback must certify from the RETAINED writer's
+    /// pinned view: `open_cass_reader` hashes every segment — a full index
+    /// read — and production runs this refresh after every changed batch
+    /// while `watch_lexical_checkpoint_pending` is set, so the partition
+    /// must be counted without opening a reader. The stamped counts must
+    /// also equal an independent native observation of the same durable
+    /// generation.
+    #[test]
+    #[serial]
+    fn refresh_completed_watch_lexical_checkpoint_certifies_from_retained_writer_without_reader_open()
+     {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("watch-retained"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        ingest_batch(
+            &storage,
+            Some(&mut index),
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+        )
+        .unwrap();
+        index.commit().unwrap();
+
+        // Seed the bounded expectation cache so the live callback's refresh
+        // is eligible without a cold body scan, then capture the reader-open
+        // witness only after all fixture/index/cache work is done.
+        let total_messages = count_total_messages_exact(&storage).unwrap();
+        assert_eq!(
+            expected_live_lexical_doc_count_cached(
+                &storage,
+                &index_path,
+                &db_path.to_string_lossy(),
+                total_messages,
+                None,
+            )
+            .unwrap(),
+            total_messages
+        );
+        let opens_before = crate::search::quill_bridge::reader_open_count();
+        assert!(
+            refresh_completed_watch_lexical_checkpoint(&storage, &index, &db_path, &index_path)
+                .unwrap(),
+            "a valid retained publication must certify"
+        );
+        assert_eq!(
+            crate::search::quill_bridge::reader_open_count(),
+            opens_before,
+            "the retained watch refresh must not reopen the index (a reader open re-hashes every segment)"
+        );
+
+        // The stamped partition must equal an independent native
+        // observation of the same durable generation.
+        let checkpoint = load_lexical_rebuild_checkpoint(&index_path)
+            .unwrap()
+            .expect("certified checkpoint");
+        let independent = crate::search::tantivy::searchable_index_live_partition(&index_path)
+            .unwrap()
+            .expect("published index");
+        assert_eq!(checkpoint.indexed_docs, independent.docs);
+        assert_eq!(checkpoint.indexed_region_docs, independent.region_docs);
+        assert_eq!(
+            checkpoint.indexed_docs - checkpoint.indexed_region_docs,
+            total_messages
+        );
+    }
+
+    /// The same phantom-delete healthy state must certify through the
+    /// retained watch path: a queued `pending_doc_deletes` identity can
+    /// name a document already physically absent from the index, so the
+    /// bookkeeping bound over-counts the live region share — the exact
+    /// native partition from the RETAINED writer still certifies without a
+    /// reader open.
+    #[test]
+    #[serial]
+    fn refresh_completed_watch_lexical_checkpoint_certifies_with_absent_pending_delete() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("watch-retained-phantom"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        ingest_batch(
+            &storage,
+            Some(&mut index),
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+        )
+        .unwrap();
+        index.commit().unwrap();
+
+        // One phantom identity inflates the bookkeeping bound above the
+        // live region share — the state the old `observed - bound`
+        // subtraction refused forever.
+        queue_absent_pending_doc_delete(&storage, 1);
+        let live_partition = crate::search::tantivy::searchable_index_live_partition(&index_path)
+            .unwrap()
+            .expect("published index");
+        let region_doc_bound =
+            crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw()).unwrap()
+                as usize;
+        assert!(
+            region_doc_bound > live_partition.region_docs,
+            "the bound must over-count the live region share through the phantom identity"
+        );
+
+        let opens_before = crate::search::quill_bridge::reader_open_count();
+        assert!(
+            refresh_completed_watch_lexical_checkpoint(&storage, &index, &db_path, &index_path)
+                .unwrap(),
+            "a healthy phantom-delete state must certify through the retained writer"
+        );
+        assert_eq!(
+            crate::search::quill_bridge::reader_open_count(),
+            opens_before,
+            "the retained watch refresh must not reopen the index"
+        );
+
+        let checkpoint = load_lexical_rebuild_checkpoint(&index_path)
+            .unwrap()
+            .expect("certified checkpoint");
+        assert_eq!(checkpoint.indexed_docs, live_partition.docs);
+        assert_eq!(checkpoint.indexed_region_docs, live_partition.region_docs);
+        assert_eq!(checkpoint.indexed_docs - checkpoint.indexed_region_docs, 2);
+    }
+
+    /// A metadata-only legacy directory is not a native readable
+    /// generation: `open_validated_lexical_index` refuses it and no native
+    /// reader can pin an exact partition, so a completed checkpoint must
+    /// never be minted from it. The old summary fallback would have
+    /// promoted the passive metadata into a fabricated exact partition.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_refuses_meta_json_only_index() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        // Canonical DB rows without any lexical index writes.
+        let convs = vec![norm_conv(
+            Some("meta-only"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        ingest_batch(
+            &storage,
+            None,
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            false,
+        )
+        .unwrap();
+
+        fs::create_dir_all(&index_path).unwrap();
+        fs::write(
+            index_path.join("meta.json"),
+            br#"{"segments":[{"max_doc":2,"deletes":null}]}"#,
+        )
+        .unwrap();
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        assert!(
+            load_lexical_rebuild_state(&index_path).unwrap().is_none(),
+            "a metadata-only legacy directory must not get a completed receipt"
+        );
+    }
+
+    /// Quill's two-slot recovery serves `MANIFEST.prev` when the current
+    /// `MANIFEST` is corrupt — correct for search, but the receipt's
+    /// fingerprint names the current bytes, so counts taken from the
+    /// previous generation must not be certified under it.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_refuses_corrupt_current_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-corrupt"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        ingest_batch(
+            &storage,
+            Some(&mut index),
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+        )
+        .unwrap();
+        index.commit().unwrap();
+        // A second publish lands a surplus canonical document; the previous
+        // slot keeps the honest generation.
+        index
+            .add_messages_with_conversation_id(
+                &convs[0],
+                &[norm_msg(9, 1_700_000_000_900)],
+                Some(1),
+            )
+            .unwrap();
+        index.commit().unwrap();
+        drop(index);
+
+        // Corrupt the current MANIFEST: a read now falls back to
+        // MANIFEST.prev, which still serves the honest generation.
+        let manifest = index_path.join(crate::search::quill_bridge::QUILL_INDEX_MARKER);
+        let mut bytes = fs::read(&manifest).unwrap();
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 0xff;
+        fs::write(&manifest, &bytes).unwrap();
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        assert!(
+            load_lexical_rebuild_state(&index_path).unwrap().is_none(),
+            "previous-slot counts must not be certified under the corrupt current fingerprint"
+        );
+    }
+
+    /// A federated bundle pins each shard's durable fingerprint: a shard
+    /// republished under an unchanged bundle must never be certified as
+    /// the pinned generation.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_certifies_valid_federated_bundle() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-bundle"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        // Canonical DB rows without lexical writes; the bundle is the index.
+        ingest_batch(
+            &storage,
+            None,
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            false,
+        )
+        .unwrap();
+
+        let shard = data_dir.join("shard-src");
+        let mut shard_index = TantivyIndex::open_or_create(&shard).unwrap();
+        shard_index
+            .add_messages_with_conversation_id(&convs[0], &convs[0].messages, Some(1))
+            .unwrap();
+        shard_index.commit().unwrap();
+        drop(shard_index);
+        crate::search::tantivy::publish_federated_searchable_index_directories(
+            &index_path,
+            &[&shard],
+        )
+        .unwrap();
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        let checkpoint = load_lexical_rebuild_checkpoint(&index_path)
+            .unwrap()
+            .expect("a valid bundle must certify");
+        assert_eq!(checkpoint.indexed_docs, 2);
+        assert_eq!(checkpoint.indexed_region_docs, 0);
+    }
+
+    /// Negative control: the bundle's shard is republished under an
+    /// unchanged bundle manifest — same doc count, different generation —
+    /// and must not be certified as the pinned generation.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_refuses_stale_federated_shard() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-stale-bundle"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        ingest_batch(
+            &storage,
+            None,
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            false,
+        )
+        .unwrap();
+
+        let shard = data_dir.join("shard-src");
+        let mut shard_index = TantivyIndex::open_or_create(&shard).unwrap();
+        shard_index
+            .add_messages_with_conversation_id(&convs[0], &convs[0].messages, Some(1))
+            .unwrap();
+        shard_index.commit().unwrap();
+        drop(shard_index);
+        crate::search::tantivy::publish_federated_searchable_index_directories(
+            &index_path,
+            &[&shard],
+        )
+        .unwrap();
+
+        // A different same-count generation moved into the shard slot
+        // while the bundle manifest stays pinned to the original.
+        let replacement = data_dir.join("shard-replacement");
+        let mut replacement_index = TantivyIndex::open_or_create(&replacement).unwrap();
+        replacement_index
+            .add_messages_with_conversation_id(
+                &convs[0],
+                &[
+                    norm_msg(9, 1_700_000_000_900),
+                    norm_msg(10, 1_700_000_001_000),
+                ],
+                Some(1),
+            )
+            .unwrap();
+        replacement_index.commit().unwrap();
+        drop(replacement_index);
+        let shard_slot = index_path.join("shards/shard-00000");
+        let moved_aside = data_dir.join("shard-00000-original");
+        fs::rename(&shard_slot, &moved_aside).unwrap();
+        fs::rename(&replacement, &shard_slot).unwrap();
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        assert!(
+            load_lexical_rebuild_state(&index_path).unwrap().is_none(),
+            "a same-count republished shard must not certify under the pinned bundle"
         );
     }
 

@@ -1806,20 +1806,21 @@ fn has_region_marks_table(db: &impl FactsDb) -> Result<bool> {
         .is_empty())
 }
 
-/// Upper bound on live region documents across the archive: only
-/// persisted rows that actually own a document count — the synthetic-slot
-/// rows (`quill_idx >= REGION_DOC_BASE`) carrying a bounded
-/// `indexed_text` fragment, i.e. exactly the rows [`region_docs`]
-/// materializes. Chat regions (canonical `quill_idx`, `indexed_text`
-/// NULL) map onto the message document and own none, so counting
-/// `marks.region_count` here over-bounded the region share and
-/// under-counted the observed canonical-message share, breaking watch
-/// checkpoint refreshes and the early-exit equality.
-/// `pending_doc_deletes` bounds stale identities still awaiting removal.
+/// Conservative upper bound on live region documents across the archive —
+/// planning bookkeeping, not an exact partition. Only persisted rows that
+/// actually own a document count — the synthetic-slot rows (`quill_idx >=
+/// REGION_DOC_BASE`) carrying a bounded `indexed_text` fragment, i.e.
+/// exactly the rows [`region_docs`] materializes. Chat regions (canonical
+/// `quill_idx`, `indexed_text` NULL) map onto the message document and own
+/// none, so counting `marks.region_count` here over-bounded the region
+/// share and under-counted the observed canonical-message share.
+/// `pending_doc_deletes` adds stale identities still awaiting removal, and
+/// a queued delete identity can name a document already physically absent
+/// from the index, so the bound can over-count the live share. It is
+/// approximate bookkeeping and proves no native generation membership;
 /// `0` on archives without the extension profile (no marks table). The
-/// lexical publication receipt uses this to split the total indexed-doc
-/// count back into its canonical-message share so the
-/// `indexed_docs <= total_messages` certification stays exact.
+/// exact canonical/region partition stamped by publication checkpoints
+/// now comes from the admitted native index itself.
 pub fn live_region_doc_bound(db: &impl FactsDb) -> Result<u64> {
     if !has_region_marks_table(db)? {
         return Ok(0);
