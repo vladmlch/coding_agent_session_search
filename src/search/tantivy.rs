@@ -1178,7 +1178,8 @@ pub struct SearchableIndexPartition {
     pub region_docs: usize,
 }
 
-/// Exact live partition of the published lexical index at `index_path`.
+/// Exact live partition of the published lexical index at `index_path`,
+/// bound to the durable generation a certifying caller would fingerprint.
 ///
 /// `Ok(None)` when no searchable index exists. A Quill index opens ONE
 /// reader and takes `doc_count` plus an exact-count canonical
@@ -1187,10 +1188,16 @@ pub struct SearchableIndexPartition {
 /// and region membership is read from the index itself rather than from
 /// `viewer_search_region_marks` bookkeeping, which is only an upper bound
 /// (a queued `pending_doc_deletes` identity can name a document already
-/// physically absent). A federated bundle sums per-shard partitions under
-/// the manifest's pinned per-shard doc counts and refuses a shard that
-/// republished mid-observation. A Tantivy-era directory predates persisted
-/// region documents, so every live document there is canonical.
+/// physically absent). The reader must serve the CURRENT `MANIFEST` slot:
+/// Quill's two-slot recovery legitimately serves `MANIFEST.prev` for
+/// search after a corrupt or missing current, but certifying those counts
+/// under a fingerprint that names different bytes would mint a receipt for
+/// a generation that never existed. A federated bundle requires every
+/// shard's pinned `meta_fingerprint` and doc count to match the shard's
+/// current durable slot, bracketed around each retained-reader
+/// observation. A metadata-only directory is NOT a native readable
+/// generation (`open_validated_lexical_index` refuses it the same way),
+/// so it cannot yield a partition.
 ///
 /// Callers certifying the observed generation should hash
 /// [`searchable_index_fingerprint`] before and after: equal hashes prove
@@ -1198,10 +1205,11 @@ pub struct SearchableIndexPartition {
 ///
 /// # Errors
 ///
-/// Returns an error when a published index cannot be opened or counted, or
-/// when a federated shard moved past the manifest mid-observation; callers
-/// that only need an estimate should treat the error as "unknown" rather
-/// than substituting bookkeeping bounds.
+/// Returns an error when a published index cannot be opened or counted,
+/// when the served generation is not the durable current one, or when a
+/// federated shard moved past its pinned authority mid-observation;
+/// callers that only need an estimate should treat the error as "unknown"
+/// rather than substituting bookkeeping bounds.
 pub fn searchable_index_live_partition(
     index_path: &Path,
 ) -> Result<Option<SearchableIndexPartition>> {
@@ -1212,17 +1220,54 @@ pub fn searchable_index_live_partition(
         .join(crate::search::quill_bridge::QUILL_INDEX_MARKER)
         .exists()
     {
-        let reader = crate::search::quill_bridge::open_cass_reader(index_path)?;
-        return quill_reader_live_partition(&reader).map(Some);
+        return quill_index_live_partition(index_path).map(Some);
     }
-    let Some(summary) = searchable_index_summary(index_path)? else {
-        return Ok(None);
-    };
-    Ok(Some(SearchableIndexPartition {
-        docs: summary.docs,
-        canonical_docs: summary.docs,
-        region_docs: 0,
-    }))
+    if index_path.join("meta.json").exists() {
+        anyhow::bail!(
+            "no native exact partition for metadata-only lexical directory {}",
+            index_path.display()
+        );
+    }
+    Ok(None)
+}
+
+/// Partition the native readable generation at `index_path`, bound to the
+/// durable authority a certifying caller would fingerprint: the retained
+/// reader must serve the CURRENT `MANIFEST` slot and the same generation
+/// the manifest read names, so Quill's two-slot recovery — which rightly
+/// serves `MANIFEST.prev` to search when the current slot is missing or
+/// corrupt — can never certify previous-generation counts under a current
+/// fingerprint.
+fn quill_index_live_partition(index_path: &Path) -> Result<SearchableIndexPartition> {
+    let live =
+        crate::search::quill_bridge::manifest_live_doc_count(index_path).ok_or_else(|| {
+            anyhow::anyhow!(
+                "no decodable Quill MANIFEST slot for partition at {}",
+                index_path.display()
+            )
+        })?;
+    if live.source != crate::search::quill_bridge::QuillManifestSource::Current {
+        anyhow::bail!(
+            "Quill index at {} serves {} rather than the current MANIFEST; \
+             refusing to certify counts from the previous generation",
+            index_path.display(),
+            live.source.as_str()
+        );
+    }
+    let reader = crate::search::quill_bridge::open_cass_reader(index_path)?;
+    let partition = quill_reader_live_partition(&reader)?;
+    // The retained reader pins its generation at open; a republish between
+    // the manifest read and that open moves generation or live docs and
+    // must not mix the two observations into one partition.
+    if reader.keeper_generation() != live.generation
+        || u64::try_from(partition.docs).unwrap_or(u64::MAX) != live.live_docs
+    {
+        anyhow::bail!(
+            "Quill index at {} republished during partition observation",
+            index_path.display()
+        );
+    }
+    Ok(partition)
 }
 
 /// Partition one already-open Quill reader's bound snapshot: `doc_count`
@@ -1245,10 +1290,17 @@ fn quill_reader_live_partition(
     let canonical_docs = page
         .total_count
         .context("Quill canonical partition count returned no exact total")?;
+    if canonical_docs > page.doc_count {
+        anyhow::bail!(
+            "contradictory Quill partition: canonical count {canonical_docs} \
+             exceeds live docs {}",
+            page.doc_count
+        );
+    }
     Ok(SearchableIndexPartition {
         docs: page.doc_count,
         canonical_docs,
-        region_docs: page.doc_count.saturating_sub(canonical_docs),
+        region_docs: page.doc_count - canonical_docs,
     })
 }
 
@@ -1256,6 +1308,11 @@ fn searchable_federated_live_partition(
     index_path: &Path,
     manifest: &FederatedSearchManifest,
 ) -> Result<SearchableIndexPartition> {
+    // The bundle pins each shard's durable fingerprint at publish time;
+    // require those pins to match the shards' CURRENT meta authority, so a
+    // same-count shard republish under an unchanged bundle cannot be
+    // certified as the pinned generation.
+    validate_federated_search_manifest(index_path, manifest, true)?;
     let mut partition = SearchableIndexPartition {
         docs: 0,
         canonical_docs: 0,
@@ -1263,9 +1320,8 @@ fn searchable_federated_live_partition(
     };
     for shard in &manifest.shards {
         let shard_path = index_path.join(&shard.relative_path);
-        let reader = crate::search::quill_bridge::open_cass_reader(&shard_path)
-            .with_context(|| format!("opening federated shard {}", shard_path.display()))?;
-        let shard_partition = quill_reader_live_partition(&reader)?;
+        let shard_partition = quill_index_live_partition(&shard_path)
+            .with_context(|| format!("partitioning federated shard {}", shard_path.display()))?;
         // The manifest pins each shard's published doc count; a shard that
         // republished mid-observation would mix generations into the sum.
         if shard_partition.docs != shard.docs {
@@ -1274,9 +1330,49 @@ fn searchable_federated_live_partition(
                 shard.relative_path
             );
         }
-        partition.docs += shard_partition.docs;
-        partition.canonical_docs += shard_partition.canonical_docs;
-        partition.region_docs += shard_partition.region_docs;
+        // Bracket the retained-reader observation against the pinned
+        // authority: re-reading the shard's durable fingerprint proves the
+        // slot did not move between validation and the count.
+        let observed_fingerprint = meta_fingerprint_for_existing_index_dir(&shard_path)
+            .with_context(|| {
+                format!(
+                    "re-reading federated shard fingerprint {}",
+                    shard_path.display()
+                )
+            })?;
+        if observed_fingerprint != shard.meta_fingerprint {
+            anyhow::bail!(
+                "federated shard {} changed under the pinned manifest during partition observation",
+                shard.relative_path
+            );
+        }
+        partition.docs = partition
+            .docs
+            .checked_add(shard_partition.docs)
+            .with_context(|| {
+                format!(
+                    "federated partition doc count overflows usize at {}",
+                    shard_path.display()
+                )
+            })?;
+        partition.canonical_docs = partition
+            .canonical_docs
+            .checked_add(shard_partition.canonical_docs)
+            .with_context(|| {
+                format!(
+                    "federated partition canonical count overflows usize at {}",
+                    shard_path.display()
+                )
+            })?;
+        partition.region_docs = partition
+            .region_docs
+            .checked_add(shard_partition.region_docs)
+            .with_context(|| {
+                format!(
+                    "federated partition region count overflows usize at {}",
+                    shard_path.display()
+                )
+            })?;
     }
     Ok(partition)
 }
@@ -4187,6 +4283,176 @@ mod tests {
         assert!(
             format!("{error:#}").contains("must stay under shards/"),
             "unexpected path error: {error:#}"
+        );
+    }
+
+    fn partition_test_doc(source_id: &str, msg_idx: u64, content: &str) -> FsCassDocument {
+        FsCassDocument {
+            agent: "claude".to_owned(),
+            workspace: Some("cass".to_owned()),
+            workspace_original: Some("cass".to_owned()),
+            source_path: format!("/transcripts/{source_id}.jsonl"),
+            msg_idx,
+            created_at: Some(1_700_000_000),
+            title: Some("partition session".to_owned()),
+            content: content.to_owned(),
+            source_id: source_id.to_owned(),
+            origin_kind: "local".to_owned(),
+            origin_host: None,
+            conversation_id: Some(1),
+        }
+    }
+
+    /// The partition splits canonical and persisted region documents by
+    /// the index's own `msg_idx` slot, not by bookkeeping.
+    #[test]
+    fn searchable_index_live_partition_splits_region_docs_natively() {
+        let root = TempDir::new().expect("temp dir");
+        let index_path = root.path().join("index");
+        let mut index = TantivyIndex::open_or_create(&index_path).expect("open index");
+        index
+            .inner
+            .add_cass_documents(&[
+                partition_test_doc("a", 0, "alpha"),
+                partition_test_doc("a", 1, "beta"),
+                partition_test_doc(
+                    "a",
+                    crate::viewer_extensions::search_regions::REGION_DOC_BASE,
+                    "region text",
+                ),
+            ])
+            .expect("batch");
+        index.commit().expect("publish");
+        drop(index);
+
+        let partition = searchable_index_live_partition(&index_path)
+            .expect("partition")
+            .expect("index is searchable");
+        assert_eq!(partition.docs, 3);
+        assert_eq!(partition.canonical_docs, 2);
+        assert_eq!(partition.region_docs, 1);
+    }
+
+    /// Quill's two-slot recovery serves `MANIFEST.prev` when the current
+    /// `MANIFEST` is corrupt — the right answer for search, but a
+    /// certification fingerprint names the current bytes, so a partition
+    /// taken from a fallback slot must be refused.
+    #[test]
+    fn searchable_index_live_partition_refuses_previous_manifest_slot() {
+        let root = TempDir::new().expect("temp dir");
+        let index_path = root.path().join("index");
+        let mut index = TantivyIndex::open_or_create(&index_path).expect("open index");
+        index
+            .inner
+            .add_cass_documents(&[partition_test_doc("a", 0, "alpha")])
+            .expect("first batch");
+        index.commit().expect("first publish");
+        index
+            .inner
+            .add_cass_documents(&[partition_test_doc("a", 1, "beta")])
+            .expect("second batch");
+        index.commit().expect("second publish");
+        drop(index);
+
+        let partition = searchable_index_live_partition(&index_path)
+            .expect("healthy index partitions")
+            .expect("index is searchable");
+        assert_eq!(partition.docs, 2);
+        assert_eq!(partition.canonical_docs, 2);
+        assert_eq!(partition.region_docs, 0);
+
+        let manifest = index_path.join(crate::search::quill_bridge::QUILL_INDEX_MARKER);
+        let mut bytes = fs::read(&manifest).expect("read MANIFEST");
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 0xff;
+        fs::write(&manifest, &bytes).expect("corrupt MANIFEST");
+
+        let error = searchable_index_live_partition(&index_path)
+            .expect_err("a previous-slot partition must not certify the current fingerprint");
+        assert!(
+            format!("{error:#}").contains("MANIFEST"),
+            "expected manifest-slot refusal, got: {error:#}"
+        );
+    }
+
+    /// A bundle pins each shard's durable fingerprint. Republishing a
+    /// shard under an unchanged bundle — same doc count, different
+    /// generation — must be refused, not silently certified as the pinned
+    /// generation.
+    #[test]
+    fn searchable_index_live_partition_refuses_stale_federated_shard() {
+        let root = TempDir::new().expect("temp dir");
+        let published = publish_test_federated_bundle(root.path());
+
+        let partition = searchable_index_live_partition(&published)
+            .expect("valid bundle partitions")
+            .expect("bundle is searchable");
+        assert_eq!(partition.docs, 2);
+        assert_eq!(partition.canonical_docs, 2);
+        assert_eq!(partition.region_docs, 0);
+
+        // A different same-count generation moved into the shard slot,
+        // leaving the bundle manifest untouched.
+        let replacement = root.path().join("shard-a-replacement");
+        let mut replacement_index =
+            TantivyIndex::open_or_create(&replacement).expect("create replacement");
+        replacement_index
+            .add_conversation_with_id(
+                &NormalizedConversation {
+                    agent_slug: "codex".to_string(),
+                    external_id: Some("bundle-a-new".to_string()),
+                    title: Some("Bundle replacement".to_string()),
+                    workspace: Some(PathBuf::from("/tmp/workspace")),
+                    source_path: PathBuf::from("/tmp/bundle-a-new.jsonl"),
+                    started_at: Some(1_700_000_002_000),
+                    ended_at: Some(1_700_000_002_100),
+                    metadata: Value::Null,
+                    messages: vec![NormalizedMessage {
+                        idx: 0,
+                        role: "assistant".to_string(),
+                        author: None,
+                        created_at: Some(1_700_000_002_010),
+                        content: "replacement content".to_string(),
+                        extra: Value::Null,
+                        snippets: Vec::new(),
+                        invocations: Vec::new(),
+                    }],
+                },
+                Some(10),
+            )
+            .expect("index replacement");
+        replacement_index.commit().expect("commit replacement");
+        drop(replacement_index);
+
+        let shard_slot = published.join("shards/shard-00000");
+        let moved_aside = root.path().join("shard-00000-original");
+        fs::rename(&shard_slot, &moved_aside).expect("move original shard aside");
+        fs::rename(&replacement, &shard_slot).expect("swap replacement shard in");
+
+        let error = searchable_index_live_partition(&published)
+            .expect_err("a same-count republished shard must not certify under the pinned bundle");
+        assert!(
+            format!("{error:#}").contains("fingerprint"),
+            "expected fingerprint refusal, got: {error:#}"
+        );
+    }
+
+    /// A legacy metadata-only directory is not a native readable
+    /// generation — it must not yield an exact partition, and it must
+    /// never be guessed as zero region documents.
+    #[test]
+    fn searchable_index_live_partition_refuses_meta_json_only_directory() {
+        let root = TempDir::new().expect("temp dir");
+        let index_path = root.path().join("index");
+        fs::create_dir_all(&index_path).expect("create dir");
+        fs::write(
+            index_path.join("meta.json"),
+            br#"{"segments":[{"max_doc":2,"deletes":null}]}"#,
+        )
+        .expect("write legacy meta");
+        assert!(
+            searchable_index_live_partition(&index_path).is_err(),
+            "a metadata-only legacy directory must not yield an exact partition"
         );
     }
 

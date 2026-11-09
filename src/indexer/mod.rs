@@ -78932,6 +78932,243 @@ c.close()
         );
     }
 
+    /// A metadata-only legacy directory is not a native readable
+    /// generation: `open_validated_lexical_index` refuses it and no native
+    /// reader can pin an exact partition, so a completed checkpoint must
+    /// never be minted from it. The old summary fallback would have
+    /// promoted the passive metadata into a fabricated exact partition.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_refuses_meta_json_only_index() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        // Canonical DB rows without any lexical index writes.
+        let convs = vec![norm_conv(
+            Some("meta-only"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        ingest_batch(
+            &storage,
+            None,
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            false,
+        )
+        .unwrap();
+
+        fs::create_dir_all(&index_path).unwrap();
+        fs::write(
+            index_path.join("meta.json"),
+            br#"{"segments":[{"max_doc":2,"deletes":null}]}"#,
+        )
+        .unwrap();
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        assert!(
+            load_lexical_rebuild_state(&index_path).unwrap().is_none(),
+            "a metadata-only legacy directory must not get a completed receipt"
+        );
+    }
+
+    /// Quill's two-slot recovery serves `MANIFEST.prev` when the current
+    /// `MANIFEST` is corrupt — correct for search, but the receipt's
+    /// fingerprint names the current bytes, so counts taken from the
+    /// previous generation must not be certified under it.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_refuses_corrupt_current_manifest() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-corrupt"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+        ingest_batch(
+            &storage,
+            Some(&mut index),
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+        )
+        .unwrap();
+        index.commit().unwrap();
+        // A second publish lands a surplus canonical document; the previous
+        // slot keeps the honest generation.
+        index
+            .add_messages_with_conversation_id(
+                &convs[0],
+                &[norm_msg(9, 1_700_000_000_900)],
+                Some(1),
+            )
+            .unwrap();
+        index.commit().unwrap();
+        drop(index);
+
+        // Corrupt the current MANIFEST: a read now falls back to
+        // MANIFEST.prev, which still serves the honest generation.
+        let manifest = index_path.join(crate::search::quill_bridge::QUILL_INDEX_MARKER);
+        let mut bytes = fs::read(&manifest).unwrap();
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 0xff;
+        fs::write(&manifest, &bytes).unwrap();
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        assert!(
+            load_lexical_rebuild_state(&index_path).unwrap().is_none(),
+            "previous-slot counts must not be certified under the corrupt current fingerprint"
+        );
+    }
+
+    /// A federated bundle pins each shard's durable fingerprint: a shard
+    /// republished under an unchanged bundle must never be certified as
+    /// the pinned generation.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_certifies_valid_federated_bundle() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-bundle"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        // Canonical DB rows without lexical writes; the bundle is the index.
+        ingest_batch(
+            &storage,
+            None,
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            false,
+        )
+        .unwrap();
+
+        let shard = data_dir.join("shard-src");
+        let mut shard_index = TantivyIndex::open_or_create(&shard).unwrap();
+        shard_index
+            .add_messages_with_conversation_id(&convs[0], &convs[0].messages, Some(1))
+            .unwrap();
+        shard_index.commit().unwrap();
+        drop(shard_index);
+        crate::search::tantivy::publish_federated_searchable_index_directories(
+            &index_path,
+            &[&shard],
+        )
+        .unwrap();
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        let checkpoint = load_lexical_rebuild_checkpoint(&index_path)
+            .unwrap()
+            .expect("a valid bundle must certify");
+        assert_eq!(checkpoint.indexed_docs, 2);
+        assert_eq!(checkpoint.indexed_region_docs, 0);
+    }
+
+    /// Negative control: the bundle's shard is republished under an
+    /// unchanged bundle manifest — same doc count, different generation —
+    /// and must not be certified as the pinned generation.
+    #[test]
+    #[serial]
+    fn refresh_completed_lexical_rebuild_checkpoint_refuses_stale_federated_shard() {
+        let tmp = TempDir::new().unwrap();
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        let db_path = data_dir.join("agent_search.db");
+        let index_path = index_dir(&data_dir).unwrap();
+        let storage = FrankenStorage::open(&db_path).unwrap();
+        ensure_fts_schema(&storage);
+
+        let convs = vec![norm_conv(
+            Some("exact-stale-bundle"),
+            vec![
+                norm_msg(0, 1_700_000_000_000),
+                norm_msg(1, 1_700_000_000_100),
+            ],
+        )];
+        ingest_batch(
+            &storage,
+            None,
+            &data_dir,
+            &convs,
+            &None,
+            LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            false,
+        )
+        .unwrap();
+
+        let shard = data_dir.join("shard-src");
+        let mut shard_index = TantivyIndex::open_or_create(&shard).unwrap();
+        shard_index
+            .add_messages_with_conversation_id(&convs[0], &convs[0].messages, Some(1))
+            .unwrap();
+        shard_index.commit().unwrap();
+        drop(shard_index);
+        crate::search::tantivy::publish_federated_searchable_index_directories(
+            &index_path,
+            &[&shard],
+        )
+        .unwrap();
+
+        // A different same-count generation moved into the shard slot
+        // while the bundle manifest stays pinned to the original.
+        let replacement = data_dir.join("shard-replacement");
+        let mut replacement_index = TantivyIndex::open_or_create(&replacement).unwrap();
+        replacement_index
+            .add_messages_with_conversation_id(
+                &convs[0],
+                &[
+                    norm_msg(9, 1_700_000_000_900),
+                    norm_msg(10, 1_700_000_001_000),
+                ],
+                Some(1),
+            )
+            .unwrap();
+        replacement_index.commit().unwrap();
+        drop(replacement_index);
+        let shard_slot = index_path.join("shards/shard-00000");
+        let moved_aside = data_dir.join("shard-00000-original");
+        fs::rename(&shard_slot, &moved_aside).unwrap();
+        fs::rename(&replacement, &shard_slot).unwrap();
+
+        refresh_completed_lexical_rebuild_checkpoint(&storage, &db_path, &data_dir).unwrap();
+        assert!(
+            load_lexical_rebuild_state(&index_path).unwrap().is_none(),
+            "a same-count republished shard must not certify under the pinned bundle"
+        );
+    }
+
     #[test]
     fn final_checkpoint_refresh_uses_settled_storage_fingerprint() {
         let tmp = TempDir::new().unwrap();
