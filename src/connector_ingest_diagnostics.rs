@@ -960,9 +960,19 @@ impl ConnectorIngestRun {
         if !wal_path.exists() && !journal_path.exists() {
             return;
         }
+        // Strict read-only (F17 doctrine): this probe may never write or
+        // create any sidecar of the user's store. A plain read-only open on
+        // 0.4.13 rebuilds a never-initialized `-shm` in place (GH#528), which
+        // would mutate the store during `cass index`; the strict bit instead
+        // refuses every WAL-index state needing recovery with the typed
+        // BusyRecovery, which `connector_scan_failure_kind` already maps to
+        // the same transient SourceLocked warning the other crashed-store
+        // classes produce. The connector's own read still goes through FAD's
+        // strict open + private-snapshot fallback (F9/F17), so a store this
+        // probe refuses is still indexed.
         let probe = open_with_flags(
             path.to_string_lossy().as_ref(),
-            OpenFlags::SQLITE_OPEN_READ_ONLY,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
         )
         .and_then(|connection| {
             connection.query_row_map("SELECT 1 FROM sqlite_master LIMIT 1", &[], |_row| Ok(()))
