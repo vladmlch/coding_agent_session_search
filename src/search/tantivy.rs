@@ -1558,6 +1558,20 @@ pub struct TantivyIndex {
     /// upsert of the same doc identity before publication is a duplicate
     /// live id Quill refuses. Cleared exactly when the stamp queue is.
     staged_region_doc_sessions: HashSet<i64>,
+    /// Whole-archive republish deferral (a REGION_VERSION bump): the
+    /// non-watch incremental lane latched this writer so its per-batch
+    /// region-doc prelude stages NOTHING — every upsert a re-projected
+    /// session issues against the committed snapshot replaces live
+    /// identities, publishes a successor segment and re-validates every
+    /// existing segment, so per-batch convergence is quadratic in the
+    /// session count (hours on a 6k-session archive). The lane drains the
+    /// accumulated pending set with ONE bounded
+    /// [`Self::converge_pending_search_region_docs`] pass right before
+    /// its final commit. Marks stay honestly `pending` until then; a
+    /// crash mid-run leaves exactly the state the pending sweep
+    /// re-converges on the next run. Never latched by watch or the
+    /// rebuild lanes.
+    region_doc_convergence_deferred: bool,
     /// Task 8 coverage floor: the `viewer_revisions` snapshot captured when
     /// this writer began staging the work its next commit will seal. The
     /// post-commit [`certify_lexical_publication`] receipt binds AT MOST
@@ -1592,6 +1606,7 @@ impl TantivyIndex {
             resume_reconcile_docs_remaining: 0,
             pending_region_doc_stamps: Vec::new(),
             staged_region_doc_sessions: HashSet::new(),
+            region_doc_convergence_deferred: false,
             publication_floor: None,
         })
     }
@@ -1620,6 +1635,7 @@ impl TantivyIndex {
             resume_reconcile_docs_remaining: 0,
             pending_region_doc_stamps: Vec::new(),
             staged_region_doc_sessions: HashSet::new(),
+            region_doc_convergence_deferred: false,
             publication_floor: None,
         })
     }
@@ -2468,6 +2484,24 @@ impl TantivyIndex {
         self.staged_region_doc_sessions.remove(&conversation_id);
         self.pending_region_doc_stamps
             .retain(|stamp| stamp.conversation_id != conversation_id);
+    }
+
+    /// Latch whole-archive republish deferral onto this writer: the
+    /// incremental lane's per-batch region-doc prelude (the pending sweep
+    /// and the per-session hooks) stages nothing until the lane's final
+    /// drain — see the field docs for why per-batch convergence is
+    /// quadratic during a REGION_VERSION republish. The lane owner calls
+    /// this once, before the first persist batch, after counting the
+    /// stale-version marks; nothing else may latch it.
+    pub fn defer_region_doc_convergence_to_final_drain(&mut self) {
+        self.region_doc_convergence_deferred = true;
+    }
+
+    /// Whether [`Self::defer_region_doc_convergence_to_final_drain`] was
+    /// latched on this writer. The per-batch prelude consults this before
+    /// staging; the final drain runs exactly when it is set.
+    pub fn region_doc_convergence_deferred_to_final_drain(&self) -> bool {
+        self.region_doc_convergence_deferred
     }
 
     /// Task 5: converge sessions whose region docs are still pending —

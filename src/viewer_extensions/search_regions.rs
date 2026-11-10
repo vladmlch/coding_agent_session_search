@@ -1384,21 +1384,50 @@ pub fn derive_meta_regions(
         next += 1;
     }
     // Subagents scope: resolved child descriptors bound to this parent.
-    let children = db.facts_query_map(
-        "SELECT c2.id, c2.title, c2.external_id, f2.first_prompt \
-         FROM viewer_session_facts f2 \
-         JOIN conversations c2 ON c2.id = f2.conversation_id \
-         WHERE f2.parent_conversation_id = ?1 ORDER BY c2.id LIMIT 64",
+    // The fork plans the one-shot JOIN as full scans of facts and
+    // conversations (measured 75 ms per call on the 6k-session archive,
+    // and this runs per republished conversation), so it is split into an
+    // equality seek on the facts parent index plus one rowid fetch per
+    // child, ordered and truncated in Rust. The row set is identical:
+    // `conversations.id` is the unique INTEGER PRIMARY KEY, so
+    // `ORDER BY c2.id` is a total order and `LIMIT 64` truncates the same
+    // prefix; a facts row without a canonical conversation drops out here
+    // exactly as the INNER JOIN dropped it.
+    type ChildDescriptor = (i64, Option<String>, Option<String>, Option<String>);
+    let child_links: Vec<(i64, Option<String>)> = db.facts_query_map(
+        "SELECT conversation_id, first_prompt FROM viewer_session_facts \
+         WHERE parent_conversation_id = ?1",
         &[ParamValue::from(conversation_id)],
         |row| {
             Ok((
                 row.get_typed::<i64>(0)?,
                 row.get_typed::<Option<String>>(1)?,
-                row.get_typed::<Option<String>>(2)?,
-                row.get_typed::<Option<String>>(3)?,
             ))
         },
     )?;
+    let mut children: Vec<ChildDescriptor> = Vec::with_capacity(child_links.len());
+    for (child_id, first_prompt) in child_links {
+        let Some((_, title, external_id)) = db
+            .facts_query_map(
+                "SELECT id, title, external_id FROM conversations WHERE id = ?1",
+                &[ParamValue::from(child_id)],
+                |row| {
+                    Ok((
+                        row.get_typed::<i64>(0)?,
+                        row.get_typed::<Option<String>>(1)?,
+                        row.get_typed::<Option<String>>(2)?,
+                    ))
+                },
+            )?
+            .into_iter()
+            .next()
+        else {
+            continue;
+        };
+        children.push((child_id, title, external_id, first_prompt));
+    }
+    children.sort_by_key(|(child_id, _, _, _)| *child_id);
+    children.truncate(64);
     for (child_id, title, external, first_prompt) in children {
         let text = [
             title.as_deref(),
@@ -1557,15 +1586,24 @@ pub fn publish_search_regions(
     // set owned that the new set no longer does becomes a pending delete —
     // the Quill publish lane removes exactly those identities, so a shrunk
     // or renumbered inventory never leaves a live stale region document.
-    let previous_slots: Vec<i64> = db.facts_query_map(
-        "SELECT quill_idx FROM viewer_search_regions WHERE conversation_id = ?1 \
-         AND quill_idx >= ?2",
-        &[
-            ParamValue::from(conversation_id),
-            ParamValue::from(REGION_DOC_BASE as i64),
-        ],
-        |row| row.get_typed::<i64>(0),
-    )?;
+    // The `quill_idx >= REGION_DOC_BASE` bound is applied in Rust, not in
+    // the WHERE clause: an equality + range pair over the two columns of
+    // `idx_viewer_search_regions_quill` makes the fork's SELECT planner
+    // fall back to a full covering-index SCAN (measured on the 6k-session
+    // archive and pinned as a planner-gap reproducer in
+    // tests/frankensqlite_compat_gates.rs), while the bare
+    // conversation_id equality SEEKS and returns only this session's own
+    // rows. The filtered set is identical, and the caller diffs it as a
+    // set.
+    let previous_slots: Vec<i64> = db
+        .facts_query_map(
+            "SELECT quill_idx FROM viewer_search_regions WHERE conversation_id = ?1",
+            &[ParamValue::from(conversation_id)],
+            |row| row.get_typed::<i64>(0),
+        )?
+        .into_iter()
+        .filter(|slot| *slot >= REGION_DOC_BASE as i64)
+        .collect();
     // Stage 1: the previous generation's session×scope chunk count per
     // scope is bounded by its region count (region-boundary packing makes
     // at most one chunk per region). The OLD chat chunk count itself is
@@ -1574,12 +1612,7 @@ pub fn publish_search_regions(
     // every slot under that bound; the post-commit delete ignores
     // identities that never existed, and the keep filter below protects
     // every chunk the new generation owns. Read BEFORE the row DELETE.
-    let old_scope_counts: Vec<(String, i64)> = db.facts_query_map(
-        "SELECT scope, COUNT(*) FROM viewer_search_regions \
-         WHERE conversation_id = ?1 GROUP BY scope",
-        &[ParamValue::from(conversation_id)],
-        |row| Ok((row.get_typed::<String>(0)?, row.get_typed::<i64>(1)?)),
-    )?;
+    let old_scope_counts = old_region_scope_counts(db, conversation_id)?;
     // Region documents are minted from the canonical conversation row
     // (`region_docs`), so their queued identities must be too. A packet can
     // name the session by another path than the row it merged into; ids
@@ -1672,6 +1705,44 @@ pub fn publish_search_regions(
     Ok(())
 }
 
+/// The previous generation's per-scope region row counts for one
+/// conversation — the conservative old-slot bound the session×scope stale
+/// queue uses. Grouped in Rust from an equality-prefix seek: SQL
+/// `GROUP BY scope` on this table plans as a full-table SCAN plus a temp
+/// B-tree on the fork (measured 2.45 s per call on the 6k-session /
+/// 1M-row archive, and the publication lane pays it per conversation),
+/// while the bare `conversation_id = ?` equality SEEKS an index and
+/// returns only the session's own rows. Sorting before the run-length
+/// fold reproduces SQL `GROUP BY`'s sorted output order (BINARY text
+/// collation = byte order, same as Rust's `String` ordering), so the
+/// produced `(scope, count)` list is element- and order-identical to the
+/// SQL aggregation's.
+fn old_region_scope_counts(db: &impl FactsDb, conversation_id: i64) -> Result<Vec<(String, i64)>> {
+    let mut scopes = db.facts_query_map(
+        "SELECT scope FROM viewer_search_regions WHERE conversation_id = ?1",
+        &[ParamValue::from(conversation_id)],
+        |row| row.get_typed::<String>(0),
+    )?;
+    scopes.sort();
+    let mut counts: Vec<(String, i64)> = Vec::new();
+    for scope in scopes {
+        match counts.last_mut() {
+            Some((scope_at, count)) if *scope_at == scope => *count += 1,
+            _ => counts.push((scope, 1)),
+        }
+    }
+    Ok(counts)
+}
+
+/// `region_key LIKE 'meta:%'` with SQLite's ASCII-case-insensitive LIKE
+/// semantics — a five-byte prefix match. The targeted meta replacement
+/// uses it to split a session's meta rows from its message-bound rows.
+fn is_meta_region_key(region_key: &str) -> bool {
+    region_key
+        .get(..5)
+        .is_some_and(|prefix| str::eq_ignore_ascii_case(prefix, "meta:"))
+}
+
 /// The conservative session×scope stale-identity queue for one
 /// conversation (Stage 1): every session-doc slot under the pre-delete
 /// per-scope region-count bound that the CURRENT rows' derivation does not
@@ -1720,15 +1791,24 @@ pub fn replace_meta_regions(db: &impl FactsDb, conversation_id: i64) -> Result<(
     let Some((_, source_revision, _, _)) = mark else {
         return Ok(());
     };
+    // The `NOT LIKE 'meta:%'` residual is applied in Rust, not in the
+    // WHERE clause: with it inlined the fork's SELECT planner SCANs the
+    // whole region table (measured 2.40 s per call on the 6k-session /
+    // 1M-row archive — this runs per parent-resolved conversation), while
+    // the bare conversation_id equality SEEKS. The fold reproduces
+    // `COALESCE(MAX(region_ordinal), -1)` exactly; `is_meta_region_key`
+    // carries the LIKE pattern's ASCII-case-insensitive semantics.
     let max_message_ordinal: i64 = db
         .facts_query_map(
-            "SELECT COALESCE(MAX(region_ordinal), -1) FROM viewer_search_regions \
-             WHERE conversation_id = ?1 AND region_key NOT LIKE 'meta:%'",
+            "SELECT region_key, region_ordinal FROM viewer_search_regions \
+             WHERE conversation_id = ?1",
             &[ParamValue::from(conversation_id)],
-            |row| row.get_typed::<i64>(0),
+            |row| Ok((row.get_typed::<String>(0)?, row.get_typed::<i64>(1)?)),
         )?
         .into_iter()
-        .next()
+        .filter(|(region_key, _)| !is_meta_region_key(region_key))
+        .map(|(_, region_ordinal)| region_ordinal)
+        .max()
         .unwrap_or(-1);
     let old_meta: Vec<i64> = db.facts_query_map(
         "SELECT quill_idx FROM viewer_search_regions \
@@ -1741,12 +1821,7 @@ pub fn replace_meta_regions(db: &impl FactsDb, conversation_id: i64) -> Result<(
     // subagents), so the session-doc stale queue needs the pre-delete
     // per-scope row counts as its conservative old-slot bound — read
     // BEFORE the meta DELETE, exactly like the full republication.
-    let old_scope_counts: Vec<(String, i64)> = db.facts_query_map(
-        "SELECT scope, COUNT(*) FROM viewer_search_regions \
-         WHERE conversation_id = ?1 GROUP BY scope",
-        &[ParamValue::from(conversation_id)],
-        |row| Ok((row.get_typed::<String>(0)?, row.get_typed::<i64>(1)?)),
-    )?;
+    let old_scope_counts = old_region_scope_counts(db, conversation_id)?;
     let meta = derive_meta_regions(
         db,
         conversation_id,
@@ -2316,6 +2391,33 @@ pub fn marked_region_doc_sessions(db: &impl FactsDb, limit: i64) -> Result<Vec<i
         |row| row.get_typed::<i64>(0),
     )
     .context("listing sessions carrying search-region marks")
+}
+
+/// Count of sessions whose region marks carry a stale
+/// [`REGION_VERSION`] — the whole-archive republish set a version bump
+/// creates. Stale marks still read `docs_state = 'published'` for their
+/// OLD version, so the pending sweep does not see them: the lane
+/// re-projects and re-converges them session by session as it re-persists
+/// each one. The incremental lane counts this set ONCE per run to decide
+/// whether region-doc convergence should ride the per-batch prelude (a
+/// small set: ordinary incremental runs and watch events) or defer to the
+/// run's final commit (a republish of hundreds of sessions publishing one
+/// segment per persist batch is the quadratic the bounded batch staging
+/// exists to avoid). Zero on archives without the extension profile.
+pub fn stale_region_version_session_count(db: &impl FactsDb) -> Result<i64> {
+    if !has_region_marks_table(db)? {
+        return Ok(0);
+    }
+    let rows = db
+        .facts_query_map(
+            "SELECT COUNT(*) FROM viewer_search_region_marks m \
+             WHERE m.region_version != ?1 \
+             AND EXISTS (SELECT 1 FROM conversations c WHERE c.id = m.conversation_id)",
+            &[ParamValue::from(REGION_VERSION)],
+            |row| row.get_typed::<i64>(0),
+        )
+        .context("counting sessions with stale-region-version marks")?;
+    Ok(rows.first().copied().unwrap_or(0))
 }
 
 /// The canonical identity fields every synthetic-slot Quill document for a

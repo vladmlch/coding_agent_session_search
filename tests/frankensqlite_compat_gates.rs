@@ -866,6 +866,370 @@ fn bd_j9gub_viewer_conversation_dml_seeks_index_prefixes_instead_of_scanning() {
     );
 }
 
+/// The per-conversation shapes the ingest generation publication issues
+/// (`publish_search_regions` / `replace_meta_regions` /
+/// `derive_meta_regions` / `generation_markers_visible` /
+/// `ingest_receipt_for`) run once per re-projected conversation on the
+/// incremental lane, so any shape that SCANs instead of SEEKING a
+/// leading-column index is O(N) per conversation — O(N^2) over the
+/// archive. bd-j9gub made the per-conversation DELETEs seek (the gate
+/// above); a `sample` of the whole-archive republish (run B, 2026-11-10,
+/// `.scratch/glm/2026-11-10-batched-region-converge/b-run.sample`) still
+/// caught the busy thread split between `publish_search_regions`'s
+/// `query_map_collect` and the per-batch converge/publish storm, and
+/// EXPLAIN + one-shot timing on a scratch copy of the 6k-session archive
+/// (5.4 GB, 1,018,353 region rows; same day, `cass-plan-gate.log`)
+/// attributed it to four shapes the fork plans as SCANs: the doc-slot
+/// range, the per-scope GROUP BY, the `NOT LIKE` MAX fold and the
+/// parent-link JOIN (2.45 s / 2.40 s / 75 ms per call respectively). The
+/// production queries were rewritten into the equality-prefix shapes
+/// below — every rewritten shape must SEARCH. The original SCANning SQL
+/// is kept verbatim in `planner_gap_shapes` as the fork's minimal
+/// SELECT-collect-gate reproducers (the same gap class bd-j9gub fixed
+/// for DML, still open for SELECT on this fork rev), pinned as SCANs so
+/// a fork fix — or regression — fails this gate by name; when one turns
+/// into a SEARCH, move it into `seek_shapes` and record the fork rev.
+///
+/// `CASS_TEST_REGION_SELECT_PLAN_DB` (optional) points this gate at a
+/// scratch COPY of a real archive: the gate then also prints each
+/// SELECT shape's plan against real data, the row counts of the tables
+/// involved, and a one-shot wall time per shape — the measurement half
+/// of the receipt. The probe never asserts, and never executes anything
+/// but the SELECT shapes (write shapes are plan-checked on the fixture
+/// only).
+#[test]
+fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let db_path = dir.path().join("viewer-select-plans.db");
+    let storage = FrankenStorage::open(&db_path).expect("create the canonical CASS schema");
+    schema::ensure_schema(storage.raw()).expect("install the production viewer schema");
+    let conn = storage.raw();
+
+    conn.execute_batch(
+        "INSERT INTO agents(id, slug, name, kind, created_at, updated_at)
+         VALUES (9903, 'selgate', 'select plan gate', 'cli', 1, 1);
+         INSERT INTO conversations(id, agent_id, title, source_path, source_id)
+         VALUES (99031, 9903, 'parent', 'fixture/parent.jsonl', 'local'),
+                (99032, 9903, 'child', 'fixture/child.jsonl', 'local');
+         INSERT INTO messages(id, conversation_id, idx, role, content)
+         VALUES (1, 99031, 0, 'user', 'parent question'),
+                (2, 99031, 1, 'assistant', 'parent answer'),
+                (3, 99032, 0, 'user', 'child question');
+         INSERT INTO viewer_search_regions(
+             conversation_id, region_ordinal, region_key, scope, quill_idx)
+         VALUES (99031, 0, 'meta:title', 'title', 4096),
+                (99031, 1, 'turn:1', 'chat', 4097),
+                (99032, 0, 'turn:1', 'chat', 4096);
+         INSERT INTO viewer_search_region_marks(
+             conversation_id, region_version, source_revision, region_count, docs_state)
+         VALUES (99031, 6, 1, 2, 'published'), (99032, 6, 1, 1, 'pending');
+         INSERT INTO viewer_tags(conversation_id, tag)
+         VALUES (99031, 'alpha'), (99031, 'beta'), (99032, 'gamma');
+         INSERT INTO viewer_annotations(conversation_id, custom_title, notes)
+         VALUES (99031, 'Custom title', 'some notes');
+         INSERT INTO viewer_session_facts(
+             conversation_id, extractor_version, source_revision, first_prompt,
+             parent_conversation_id)
+         VALUES (99031, 1, 1, 'first prompt', NULL),
+                (99032, 1, 1, 'child prompt', 99031);
+         INSERT INTO viewer_session_projection(
+             conversation_id, projection_version, extractor_version, source_revision)
+         VALUES (99031, 1, 1, 1);
+         INSERT INTO viewer_meta(key, value)
+         VALUES ('ingest_receipt:99031', '{}');",
+    )
+    .expect("seed viewer rows");
+
+    // Every per-conversation shape the generation publication issues, in
+    // publication order, in the exact SQL the production code sends
+    // (copied verbatim from publish_search_regions / replace_meta_regions /
+    // derive_meta_regions / generation_markers_visible / ingest_receipt_for).
+    // Params bind the parent conversation (99031) unless a shape is
+    // child-specific.
+    // The `viewer_meta` existence probe reads sqlite_master itself — the
+    // schema catalog is a few dozen rows with no index to seek, so a SCAN
+    // is its correct plan (the whole receipt path measured ~184 µs on the
+    // 5.4 GB archive copy). Only pinned for a non-empty plan.
+    let catalog_probes: &[(&str, &str, &[SqliteValue])] = &[(
+        "receipt viewer_meta probe",
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='viewer_meta' LIMIT 1",
+        &[],
+    )];
+    let seek_shapes: &[(&str, &str, &[SqliteValue])] = &[
+        (
+            "receipt read",
+            "SELECT value FROM viewer_meta WHERE key = ?1 LIMIT 1",
+            &[SqliteValue::Text("ingest_receipt:99031".into())],
+        ),
+        (
+            "markers facts visible",
+            "SELECT 1 FROM viewer_session_facts \
+             WHERE conversation_id = ?1 AND source_revision = ?2 LIMIT 1",
+            &[SqliteValue::Integer(99031), SqliteValue::Integer(1)],
+        ),
+        (
+            "markers projection visible",
+            "SELECT 1 FROM viewer_session_projection \
+             WHERE conversation_id = ?1 AND source_revision = ?2 LIMIT 1",
+            &[SqliteValue::Integer(99031), SqliteValue::Integer(1)],
+        ),
+        (
+            "markers marks visible",
+            "SELECT 1 FROM viewer_search_region_marks \
+             WHERE conversation_id = ?1 AND source_revision = ?2 AND region_version = ?3 LIMIT 1",
+            &[
+                SqliteValue::Integer(99031),
+                SqliteValue::Integer(1),
+                SqliteValue::Integer(6),
+            ],
+        ),
+        (
+            "resolved parent",
+            "SELECT parent_conversation_id FROM viewer_session_facts \
+             WHERE conversation_id = ?1",
+            &[SqliteValue::Integer(99032)],
+        ),
+        (
+            "message id binding",
+            "SELECT idx, id FROM messages WHERE conversation_id = ?1",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "previous doc slots",
+            "SELECT quill_idx FROM viewer_search_regions WHERE conversation_id = ?1",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "old scope counts",
+            "SELECT scope FROM viewer_search_regions WHERE conversation_id = ?1",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "canonical doc identity",
+            "SELECT source_id, source_path FROM conversations WHERE id = ?1 LIMIT 1",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "marks pending deletes",
+            "SELECT pending_doc_deletes FROM viewer_search_region_marks \
+             WHERE conversation_id = ?1",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "meta canonical title",
+            "SELECT title FROM conversations WHERE id = ?1",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "meta annotations",
+            "SELECT is_pinned, custom_title, notes FROM viewer_annotations \
+             WHERE conversation_id = ?1",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "meta tags",
+            "SELECT tag FROM viewer_tags WHERE conversation_id = ?1 ORDER BY tag",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "meta child facts seek",
+            "SELECT conversation_id, first_prompt FROM viewer_session_facts \
+             WHERE parent_conversation_id = ?1",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "meta child conversation fetch",
+            "SELECT id, title, external_id FROM conversations WHERE id = ?1",
+            &[SqliteValue::Integer(99032)],
+        ),
+        (
+            "mark read",
+            "SELECT region_version, source_revision, region_count, docs_state \
+             FROM viewer_search_region_marks WHERE conversation_id = ?1",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "max message ordinal",
+            "SELECT region_key, region_ordinal FROM viewer_search_regions \
+             WHERE conversation_id = ?1",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "old meta slots",
+            "SELECT quill_idx FROM viewer_search_regions \
+             WHERE conversation_id = ?1 AND region_key LIKE 'meta:%'",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "meta region delete",
+            "DELETE FROM viewer_search_regions WHERE conversation_id = ?1 \
+             AND region_key LIKE 'meta:%'",
+            &[SqliteValue::Integer(99031)],
+        ),
+    ];
+    // The fork's SELECT collect-gate gap reproducers — the original SQL of
+    // the four republish-lane shapes the production queries were rewritten
+    // away from (kept verbatim). Equality conjuncts pin an index prefix,
+    // yet a second conjunct touching an indexed column (range, NOT LIKE)
+    // or a GROUP BY / JOIN makes the fork SCAN instead of SEEK — the same
+    // class bd-j9gub fixed for DML, open for SELECT at the pinned fork rev
+    // 898c4361. Each is pinned as a SCAN: a fork fix turns one into a
+    // SEARCH and fails this gate BY NAME (graduate it into seek_shapes
+    // and record the rev); a fork regression turns a seek_shapes entry
+    // into one of these and fails there by name. The per-conversation
+    // DELETEs themselves are the bd-j9gub DML gate's pins above.
+    let planner_gap_shapes: &[(&str, &str, &[SqliteValue])] = &[
+        (
+            "gap: eq + range over both columns of the covering index",
+            "SELECT quill_idx FROM viewer_search_regions \
+             WHERE conversation_id = ?1 AND quill_idx >= ?2",
+            &[SqliteValue::Integer(99031), SqliteValue::Integer(4096)],
+        ),
+        (
+            "gap: GROUP BY defeats the covering (conversation_id, scope) index",
+            "SELECT scope, COUNT(*) FROM viewer_search_regions \
+             WHERE conversation_id = ?1 GROUP BY scope",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "gap: NOT LIKE residual defeats the seek (the LIKE variant seeks)",
+            "SELECT COALESCE(MAX(region_ordinal), -1) FROM viewer_search_regions \
+             WHERE conversation_id = ?1 AND region_key NOT LIKE 'meta:%'",
+            &[SqliteValue::Integer(99031)],
+        ),
+        (
+            "gap: parent-link JOIN scans facts and conversations",
+            "SELECT c2.id, c2.title, c2.external_id, f2.first_prompt \
+             FROM viewer_session_facts f2 \
+             JOIN conversations c2 ON c2.id = f2.conversation_id \
+             WHERE f2.parent_conversation_id = ?1 ORDER BY c2.id LIMIT 64",
+            &[SqliteValue::Integer(99031)],
+        ),
+    ];
+    let explain = |sql: &str, params: &[SqliteValue]| -> String {
+        conn.query_with_params(&format!("EXPLAIN QUERY PLAN {sql}"), params)
+            .unwrap_or_else(|error| panic!("explain: {error}"))
+            .iter()
+            .map(|row| row.get_typed::<String>(3).expect("query plan detail"))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    for (label, sql, params) in catalog_probes {
+        let details = explain(sql, params);
+        println!("[catalog-plan] {label}: {details}");
+        assert!(
+            !details.trim().is_empty(),
+            "{label}: EXPLAIN QUERY PLAN returned no rows"
+        );
+    }
+    for (label, sql, params) in seek_shapes {
+        let details = explain(sql, params);
+        println!("[select-plan] {label}: {details}");
+        assert!(
+            details.contains("SEARCH") && !details.contains("SCAN"),
+            "{label}: the per-conversation publication lane must SEEK a \
+             leading-column index, not SCAN — plan: {details}"
+        );
+    }
+    for (label, sql, params) in planner_gap_shapes {
+        let details = explain(sql, params);
+        println!("[planner-gap-plan] {label}: {details}");
+        assert!(
+            details.contains("SCAN"),
+            "{label}: the fork plans this shape as a SCAN today (measured: \
+             2.45 s / 2.40 s / 75 ms per call on the 6k-session archive, \
+             report.md 2026-11-10); if it now SEARCHes, move it into \
+             seek_shapes above and record the fork rev"
+        );
+    }
+
+    // Optional real-archive measurement against a scratch COPY. Never
+    // asserts: the fixture plans above are the gate; this prints plans,
+    // table sizes and one-shot timings for the A/B receipt. Only SELECT
+    // shapes execute — a write shape (e.g. "meta region delete") is
+    // plan-checked on the fixture above and skipped here so the copy's
+    // rows never change.
+    if let Ok(probe_db) = std::env::var("CASS_TEST_REGION_SELECT_PLAN_DB") {
+        let probe = Connection::open(&probe_db).expect("open the scratch archive copy");
+        let counts = [
+            "conversations",
+            "messages",
+            "viewer_search_regions",
+            "viewer_search_region_marks",
+            "viewer_tags",
+            "viewer_session_facts",
+        ];
+        for table in counts {
+            let n: i64 = probe
+                .query_with_params(&format!("SELECT COUNT(*) FROM {table}"), &[])
+                .expect("count rows")
+                .first()
+                .expect("count row")
+                .get_typed(0)
+                .expect("count column");
+            println!("[probe-count] {table}: {n}");
+        }
+        let probe_id: i64 = probe
+            .query_with_params(
+                "SELECT m.conversation_id FROM viewer_search_region_marks m \
+                 WHERE m.region_version = 5 LIMIT 1",
+                &[],
+            )
+            .expect("pick a stale-mark conversation")
+            .first()
+            .expect("a stale-mark conversation")
+            .get_typed(0)
+            .expect("conversation id column");
+        println!("[probe] stale-mark conversation {probe_id}");
+        let all_shapes = seek_shapes
+            .iter()
+            .map(|(label, sql, params)| (*label, *sql, *params, true))
+            .chain(
+                planner_gap_shapes
+                    .iter()
+                    .map(|(label, sql, params)| (*label, *sql, *params, false)),
+            );
+        for (label, sql, params, is_production) in all_shapes {
+            let mut bound: Vec<SqliteValue> = params.to_vec();
+            if bound.is_empty() {
+                // sqlite_master probe: no binding, no timing value.
+                continue;
+            }
+            if let SqliteValue::Text(_) = bound[0] {
+                bound[0] = SqliteValue::Text(format!("ingest_receipt:{probe_id}").into());
+            } else {
+                bound[0] = SqliteValue::Integer(probe_id);
+            }
+            for extra in bound.iter_mut().skip(1) {
+                if matches!(extra, SqliteValue::Integer(_)) {
+                    *extra = SqliteValue::Integer(1);
+                }
+            }
+            let details = probe
+                .query_with_params(&format!("EXPLAIN QUERY PLAN {sql}"), &bound)
+                .expect("explain on the copy")
+                .iter()
+                .map(|row| row.get_typed::<String>(3).expect("query plan detail"))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            if !sql.trim_start().starts_with("SELECT") {
+                println!("[probe-shape] {label}: write shape, plan only: {details}");
+                continue;
+            }
+            let start = std::time::Instant::now();
+            let rows = probe
+                .query_with_params(sql, &bound)
+                .expect("execute shape on the copy")
+                .len();
+            let tag = if is_production { "shape" } else { "gap-shape" };
+            println!(
+                "[probe-{tag}] {label}: rows={rows} {:?} plan: {details}",
+                start.elapsed()
+            );
+        }
+    }
+}
+
 // ============================================================================
 // GATE 1: FTS5 Compatibility
 // ============================================================================
