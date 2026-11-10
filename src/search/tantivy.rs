@@ -1558,6 +1558,20 @@ pub struct TantivyIndex {
     /// upsert of the same doc identity before publication is a duplicate
     /// live id Quill refuses. Cleared exactly when the stamp queue is.
     staged_region_doc_sessions: HashSet<i64>,
+    /// Whole-archive republish deferral (a REGION_VERSION bump): the
+    /// non-watch incremental lane latched this writer so its per-batch
+    /// region-doc prelude stages NOTHING — every upsert a re-projected
+    /// session issues against the committed snapshot replaces live
+    /// identities, publishes a successor segment and re-validates every
+    /// existing segment, so per-batch convergence is quadratic in the
+    /// session count (hours on a 6k-session archive). The lane drains the
+    /// accumulated pending set with ONE bounded
+    /// [`Self::converge_pending_search_region_docs`] pass right before
+    /// its final commit. Marks stay honestly `pending` until then; a
+    /// crash mid-run leaves exactly the state the pending sweep
+    /// re-converges on the next run. Never latched by watch or the
+    /// rebuild lanes.
+    region_doc_convergence_deferred: bool,
     /// Task 8 coverage floor: the `viewer_revisions` snapshot captured when
     /// this writer began staging the work its next commit will seal. The
     /// post-commit [`certify_lexical_publication`] receipt binds AT MOST
@@ -1592,6 +1606,7 @@ impl TantivyIndex {
             resume_reconcile_docs_remaining: 0,
             pending_region_doc_stamps: Vec::new(),
             staged_region_doc_sessions: HashSet::new(),
+            region_doc_convergence_deferred: false,
             publication_floor: None,
         })
     }
@@ -1620,6 +1635,7 @@ impl TantivyIndex {
             resume_reconcile_docs_remaining: 0,
             pending_region_doc_stamps: Vec::new(),
             staged_region_doc_sessions: HashSet::new(),
+            region_doc_convergence_deferred: false,
             publication_floor: None,
         })
     }
@@ -2470,10 +2486,40 @@ impl TantivyIndex {
             .retain(|stamp| stamp.conversation_id != conversation_id);
     }
 
+    /// Latch whole-archive republish deferral onto this writer: the
+    /// incremental lane's per-batch region-doc prelude (the pending sweep
+    /// and the per-session hooks) stages nothing until the lane's final
+    /// drain — see the field docs for why per-batch convergence is
+    /// quadratic during a REGION_VERSION republish. The lane owner calls
+    /// this once, before the first persist batch, after counting the
+    /// stale-version marks; nothing else may latch it.
+    pub fn defer_region_doc_convergence_to_final_drain(&mut self) {
+        self.region_doc_convergence_deferred = true;
+    }
+
+    /// Whether [`Self::defer_region_doc_convergence_to_final_drain`] was
+    /// latched on this writer. The per-batch prelude consults this before
+    /// staging; the final drain runs exactly when it is set.
+    pub fn region_doc_convergence_deferred_to_final_drain(&self) -> bool {
+        self.region_doc_convergence_deferred
+    }
+
     /// Task 5: converge sessions whose region docs are still pending —
     /// ingest republication and annotation-edit meta replacement both mark
     /// `docs_state != 'published'`; the next index run reconciles them.
     /// Returns the number of sessions converged.
+    ///
+    /// A REGION_VERSION bump makes the incremental lane's ingest re-project
+    /// every session of the archive, so this sweep re-stages them all at
+    /// once onto a committed snapshot that already holds their (prior
+    /// version's) documents. The upserts ride
+    /// [`Self::stage_region_doc_sessions_batched`] — one bounded upsert per
+    /// batch of sessions, not one per session: every upsert that replaces a
+    /// live identity publishes a successor and validates every segment, so
+    /// one upsert per session made the sweep quadratic in the session count
+    /// (hours on a 6k-session archive; the same defect
+    /// [`Self::converge_all_search_region_docs`] documents for the rebuild
+    /// lane).
     pub fn converge_pending_search_region_docs(
         &mut self,
         db: &impl crate::viewer_extensions::facts::FactsDb,
@@ -2485,39 +2531,28 @@ impl TantivyIndex {
         self.capture_publication_floor(db)?;
         let pending =
             crate::viewer_extensions::search_regions::pending_region_doc_sessions(db, limit)?;
-        let mut converged = 0_usize;
-        for conversation_id in pending {
-            self.stage_search_region_docs(db, conversation_id)?;
-            converged += 1;
-        }
-        Ok(converged)
+        self.stage_region_doc_sessions_batched(db, &pending)?;
+        Ok(pending.len())
     }
 
-    /// Task 5: converge EVERY session carrying a marks row — the
-    /// authoritative from-scratch rebuild owns no region documents, so
-    /// `published` marks must be re-materialized alongside `pending` ones.
-    /// Returns `(sessions_converged, documents_upserted)` so the rebuild's
-    /// published-doc accounting binds exactly what ships.
+    /// Stage the region documents of `sessions` in bounded batches — the
+    /// ONE shared upsert/stamp loop of
+    /// [`Self::converge_pending_search_region_docs`] and
+    /// [`Self::converge_all_search_region_docs`].
     ///
     /// The documents of many sessions go to the writer in one bounded upsert
-    /// (the prebuilt batch limits). A resumed terminal converges onto a
-    /// candidate whose commit already holds these documents, so every upsert
-    /// that replaces one publishes a successor and validates every segment;
-    /// one upsert per session made that pass quadratic in the session count
-    /// (hours on a 6,484-session archive, versus minutes from scratch).
-    pub fn converge_all_search_region_docs(
+    /// (the prebuilt batch limits) because every upsert that replaces a live
+    /// identity publishes a successor and validates every segment: one
+    /// upsert per session made whole-archive passes quadratic in the
+    /// session count. Each session's stamp queues only once its documents
+    /// are upserted, and a session already staged in this writer generation
+    /// is skipped — its stamp is already queued and a re-upsert would
+    /// duplicate a live id. Returns the number of documents staged.
+    fn stage_region_doc_sessions_batched(
         &mut self,
         db: &impl crate::viewer_extensions::facts::FactsDb,
-        limit: i64,
-    ) -> Result<(usize, usize)> {
-        let sessions =
-            crate::viewer_extensions::search_regions::marked_region_doc_sessions(db, limit)?;
-        if sessions.is_empty() {
-            return Ok((0, 0));
-        }
-        // Task 8: the first staged work on this writer captures the
-        // coverage floor its eventual commit will certify.
-        self.capture_publication_floor(db)?;
+        sessions: &[i64],
+    ) -> Result<usize> {
         let max_docs = tantivy_prebuilt_add_batch_max_messages();
         let max_chars = tantivy_add_batch_max_chars();
         let mut batch: Vec<FsCassDocument> = Vec::new();
@@ -2555,6 +2590,35 @@ impl TantivyIndex {
                 batch_chars = 0;
             }
         }
+        Ok(docs)
+    }
+
+    /// Task 5: converge EVERY session carrying a marks row — the
+    /// authoritative from-scratch rebuild owns no region documents, so
+    /// `published` marks must be re-materialized alongside `pending` ones.
+    /// Returns `(sessions_converged, documents_upserted)` so the rebuild's
+    /// published-doc accounting binds exactly what ships.
+    ///
+    /// The documents of many sessions go to the writer in one bounded upsert
+    /// (the prebuilt batch limits). A resumed terminal converges onto a
+    /// candidate whose commit already holds these documents, so every upsert
+    /// that replaces one publishes a successor and validates every segment;
+    /// one upsert per session made that pass quadratic in the session count
+    /// (hours on a 6,484-session archive, versus minutes from scratch).
+    pub fn converge_all_search_region_docs(
+        &mut self,
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+        limit: i64,
+    ) -> Result<(usize, usize)> {
+        let sessions =
+            crate::viewer_extensions::search_regions::marked_region_doc_sessions(db, limit)?;
+        if sessions.is_empty() {
+            return Ok((0, 0));
+        }
+        // Task 8: the first staged work on this writer captures the
+        // coverage floor its eventual commit will certify.
+        self.capture_publication_floor(db)?;
+        let docs = self.stage_region_doc_sessions_batched(db, &sessions)?;
         Ok((sessions.len(), docs))
     }
 

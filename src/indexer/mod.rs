@@ -15821,6 +15821,13 @@ fn run_streaming_consumer(
     flow_limiter: Arc<StreamingByteLimiter>,
     progress: &Option<Arc<IndexingProgress>>,
     lexical_strategy: LexicalPopulationStrategy,
+    // Whether this consumer run may latch the whole-archive region-doc
+    // republish deferral at its prologue. Production passes the scan
+    // entry's lane gate (`!opts.watch && opts.watch_once_paths.is_none()`):
+    // a watch run has no final drain, so latching its startup scan would
+    // strand every mark the watch loop persists at `pending` for the life
+    // of the process.
+    allow_region_doc_republish_deferral: bool,
     scan_start_ts: Option<i64>,
     progress_bump: Option<&Arc<AtomicI64>>,
 ) -> Result<(Vec<String>, NonWatchIngestOutcome)> {
@@ -15832,6 +15839,25 @@ fn run_streaming_consumer(
     let mut total_messages = 0usize;
     let mut switched_to_indexing = false;
     let mut commit_pacer = StreamingCommitPacer::new();
+    // Whole-archive republish deferral: latch before the first batch when the
+    // stale-version marks a REGION_VERSION bump left exceed the deferral
+    // threshold, so this consumer's per-batch region-doc prelude stages
+    // nothing and its final commit drains the accumulated pending set once
+    // (bounded, one handful of publishes). Idempotent with the scan entry's
+    // latch; the strategy gate keeps the rebuild flavors staging per batch —
+    // a fresh snapshot re-materializes every session and additive upserts do
+    // not republish. The caller's lane flag mirrors the scan entry's
+    // `!opts.watch && opts.watch_once_paths.is_none()` gate: a watch run
+    // has no final drain, so latching its startup scan would strand every
+    // mark the watch loop persists at `pending` for the life of the
+    // process — watch keeps per-event convergence (tantivy.rs: the latch is
+    // "never latched by watch").
+    if allow_region_doc_republish_deferral
+        && lexical_strategy == LexicalPopulationStrategy::IncrementalInline
+        && let Some(index) = t_index.as_deref_mut()
+    {
+        persist::maybe_defer_region_doc_convergence_for_republish(storage.raw(), index)?;
+    }
     let index_start = std::time::Instant::now();
     let mut ingest_outcome = NonWatchIngestOutcome::default();
     // Streaming ingest intentionally defers connection-local WAL
@@ -16282,6 +16308,16 @@ fn run_streaming_consumer(
     if let Some(t_index) = t_index
         && !ingest_outcome.lexical_update_deferred
     {
+        // Whole-archive republish deferral: this run's persist batches
+        // staged no region documents (the per-batch prelude skipped on the
+        // latched writer); converge everything they left `pending` in ONE
+        // bounded pass now — a handful of upserts and publishes for the
+        // whole run — and let the commit below stamp them all `published`
+        // together. Not draining here would leave the run's region marks
+        // pending; the drain is a no-op when the latch was never set.
+        if t_index.region_doc_convergence_deferred_to_final_drain() {
+            t_index.converge_pending_search_region_docs(storage.raw(), i64::MAX)?;
+        }
         // Final streaming commit seals every region document staged
         // during the run — the queued marks stamps land `published`
         // only after the commit succeeds.
@@ -16519,6 +16555,9 @@ where
         producer_config.flow_limiter.clone(),
         &opts.progress,
         lexical_strategy,
+        // The scan entry's lane gate, verbatim: watch keeps per-event
+        // region-doc convergence because a watch run has no final drain.
+        !opts.watch && opts.watch_once_paths.is_none(),
         scan_start_ts,
         progress_bump,
     );
@@ -19130,6 +19169,25 @@ fn run_index_with_storage_ownership(
                         "scan phase is deferring Tantivy writer open/commit until the authoritative rebuild"
                     );
                 }
+                // A whole-archive region republish (REGION_VERSION bump) must
+                // not converge per persist batch — one segment publish per
+                // batch is the quadratic this run would otherwise spend hours
+                // in. Latch the deferral once, before the first batch, when
+                // the stale-version marks say this scan re-projects more
+                // sessions than the deferral threshold. Watch keeps per-event
+                // convergence (its chunks have no final drain), and the
+                // rebuild lanes are excluded by the strategy check.
+                if scan_requires_tantivy
+                    && !opts.watch
+                    && opts.watch_once_paths.is_none()
+                    && lexical_strategy == LexicalPopulationStrategy::IncrementalInline
+                    && let Some(index) = t_index.as_mut()
+                {
+                    persist::maybe_defer_region_doc_convergence_for_republish(
+                        storage.raw(),
+                        index,
+                    )?;
+                }
                 preflight_phase!("watch_startup:scan_entry");
                 complete_preflight_phase!();
                 work_phase!("index:scan");
@@ -19241,6 +19299,15 @@ fn run_index_with_storage_ownership(
                     let t_index = t_index
                         .as_mut()
                         .expect("tantivy index must remain open for lexical commit");
+                    // Whole-archive republish deferral: drain the pending
+                    // region documents the per-batch prelude skipped before
+                    // this run's final seal. For the streaming flavor the
+                    // consumer already drained at its own final commit, so
+                    // this pass finds nothing pending; for the batch flavor
+                    // this IS the drain. No-op when the latch was never set.
+                    if t_index.region_doc_convergence_deferred_to_final_drain() {
+                        t_index.converge_pending_search_region_docs(storage.raw(), i64::MAX)?;
+                    }
                     // Seals any region documents staged during the run;
                     // their queued marks stamps land `published` only
                     // after the commit succeeds.
@@ -38028,6 +38095,61 @@ pub mod persist {
         }
     }
 
+    /// Whole-archive republish deferral threshold: once MORE sessions than
+    /// this carry stale-version region marks, per-batch region-doc
+    /// convergence costs one Quill segment publish per persist batch — the
+    /// streaming batch limits make every oversized agent session its own
+    /// batch, so a REGION_VERSION republish of thousands of sessions
+    /// publishes thousands of successor segments and re-validates the whole
+    /// archive that many times (measured 2026-11-10 on the owner's
+    /// 6,107-session archive: the incumbent lane spent ~3 s per session and
+    /// was heading past six hours). Above the threshold the lane defers
+    /// convergence to its final commit. Below it, convergence keeps riding
+    /// each batch's prelude so ordinary incremental runs, watch events and
+    /// crash leftovers converge with their batch exactly as before. Eight
+    /// streaming batches (64 conversations each) is far past any ordinary
+    /// incremental run's dirty set and small enough that a deferral never
+    /// delays a small run's first region search.
+    pub(super) const REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS: i64 = 512;
+
+    /// Latch whole-archive republish deferral onto the run's lexical writer
+    /// when the stale-version marks a REGION_VERSION bump leaves exceed
+    /// [`REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS`]. The non-watch
+    /// incremental lane calls this before its first persist batch (the scan
+    /// entry and the streaming consumer's prologue, each behind the scan
+    /// entry's lane gate `!opts.watch && opts.watch_once_paths.is_none()` —
+    /// the watch contract lives at the call sites, not in this helper);
+    /// the per-batch
+    /// region-doc prelude then stages nothing and the lane drains the
+    /// accumulated pending set with one bounded
+    /// [`TantivyIndex::converge_pending_search_region_docs`] pass right
+    /// before its final commit. Marks stay honestly `pending` in between —
+    /// a crash mid-run leaves exactly the state the next run's sweep
+    /// re-converges. Watch never latches (its chunks converge per event,
+    /// and a watch run has no final drain), and neither do the rebuild
+    /// lanes (a fresh snapshot re-materializes every session; additive
+    /// upserts do not republish). Idempotent: a second call on an already
+    /// latched writer is a no-op.
+    pub(super) fn maybe_defer_region_doc_convergence_for_republish(
+        db: &impl crate::viewer_extensions::facts::FactsDb,
+        index: &mut TantivyIndex,
+    ) -> Result<()> {
+        if index.region_doc_convergence_deferred_to_final_drain() {
+            return Ok(());
+        }
+        let stale_sessions =
+            crate::viewer_extensions::search_regions::stale_region_version_session_count(db)?;
+        if stale_sessions > REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS {
+            index.defer_region_doc_convergence_to_final_drain();
+            tracing::info!(
+                stale_sessions,
+                threshold = REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS,
+                "region-doc republish set exceeds the deferral threshold; converging region documents once at this run's final commit instead of per persist batch"
+            );
+        }
+        Ok(())
+    }
+
     fn publish_changed_packet_messages(
         index: &mut TantivyIndex,
         packet: &ConversationPacket,
@@ -39379,15 +39501,30 @@ pub mod persist {
         // receipt. Region-only early commits stay honest — marks remain
         // `pending` and session reads gate on them until the post-commit
         // stamp. The per-conversation hooks inside the loop dedupe.
+        //
+        // Whole-archive republish deferral: when the run latched the writer
+        // (a REGION_VERSION bump left more stale marks than the deferral
+        // threshold), this prelude stages NOTHING — the lane converges the
+        // accumulated pending set once, bounded, right before its final
+        // commit. Staging here per batch would publish one successor
+        // segment per batch (the streaming limits make every oversized
+        // session its own batch) and re-validate the whole archive each
+        // time; the marks stay `pending` in between, which is exactly the
+        // state the final drain and any crash recovery re-converge.
         if !defer_lexical_updates && let Some(index) = t_index.as_deref_mut() {
-            index.converge_pending_search_region_docs(storage.raw(), 4096)?;
-            for (_, outcome) in &ordered {
-                stage_persisted_region_docs(
-                    index,
-                    storage.raw(),
-                    outcome.conversation_id,
-                    lexical_strategy,
-                )?;
+            let defer_region_docs = lexical_strategy
+                == LexicalPopulationStrategy::IncrementalInline
+                && index.region_doc_convergence_deferred_to_final_drain();
+            if !defer_region_docs {
+                index.converge_pending_search_region_docs(storage.raw(), 4096)?;
+                for (_, outcome) in &ordered {
+                    stage_persisted_region_docs(
+                        index,
+                        storage.raw(),
+                        outcome.conversation_id,
+                        lexical_strategy,
+                    )?;
+                }
             }
         }
         for (_, outcome) in ordered {
@@ -39488,14 +39625,27 @@ pub mod persist {
                                 // Staging only queues the marks stamp;
                                 // `published` lands after this writer's
                                 // commit.
-                                stage_persisted_region_docs(
-                                    t_index.as_deref_mut().expect(
-                                        "incremental inline updates require Tantivy writer",
-                                    ),
-                                    storage.raw(),
-                                    outcome.conversation_id,
-                                    lexical_strategy,
-                                )?;
+                                //
+                                // Whole-archive republish deferral: skip
+                                // this hook too — per-outcome staging here
+                                // would defeat the latched writer's
+                                // accumulate-then-drain discipline one
+                                // session at a time. The final drain
+                                // converges this session with every other
+                                // pending one.
+                                let region_docs_deferred = t_index.as_ref().is_some_and(|index| {
+                                    index.region_doc_convergence_deferred_to_final_drain()
+                                });
+                                if !region_docs_deferred {
+                                    stage_persisted_region_docs(
+                                        t_index.as_deref_mut().expect(
+                                            "incremental inline updates require Tantivy writer",
+                                        ),
+                                        storage.raw(),
+                                        outcome.conversation_id,
+                                        lexical_strategy,
+                                    )?;
+                                }
                             }
                         }
                     }
@@ -40873,15 +41023,26 @@ pub mod persist {
             // Region-only early commits stay honest — marks remain
             // `pending` and session reads gate on them until the
             // post-commit stamp.
+            //
+            // Whole-archive republish deferral (see the begin-concurrent
+            // twin above): a latched writer skips the sweep AND the hooks —
+            // the lane drains the accumulated pending set once, bounded,
+            // right before its final commit, instead of publishing one
+            // successor segment per persist batch.
             if let Some(index) = t_index.as_deref_mut() {
-                index.converge_pending_search_region_docs(storage.raw(), 4096)?;
-                for outcome in &outcomes {
-                    stage_persisted_region_docs(
-                        index,
-                        storage.raw(),
-                        outcome.conversation_id,
-                        lexical_strategy,
-                    )?;
+                let defer_region_docs = lexical_strategy
+                    == LexicalPopulationStrategy::IncrementalInline
+                    && index.region_doc_convergence_deferred_to_final_drain();
+                if !defer_region_docs {
+                    index.converge_pending_search_region_docs(storage.raw(), 4096)?;
+                    for outcome in &outcomes {
+                        stage_persisted_region_docs(
+                            index,
+                            storage.raw(),
+                            outcome.conversation_id,
+                            lexical_strategy,
+                        )?;
+                    }
                 }
             }
             // ibuuh.32 / 5b9p0: route the serial-batched lexical sink
@@ -41765,6 +41926,242 @@ pub mod persist {
             )
             .unwrap();
             index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+        }
+
+        /// A tiny two-message claude_code session unique per `ordinal` — the
+        /// `region_reingest_session` shape, parameterized so a grind fixture
+        /// can hold hundreds of distinct sessions.
+        fn grind_region_session(dir: &std::path::Path, ordinal: i64) -> NormalizedConversation {
+            NormalizedConversation {
+                agent_slug: "claude_code".into(),
+                external_id: Some(format!("region-grind-{ordinal}")),
+                title: Some(format!("Region grind {ordinal}")),
+                workspace: Some(dir.join("workspace")),
+                source_path: dir.join(format!("region-grind-{ordinal}.jsonl")),
+                started_at: Some(1_700_000_000_000),
+                ended_at: Some(1_700_000_000_050),
+                metadata: serde_json::json!({"model": "fixture-model"}),
+                messages: vec![
+                    NormalizedMessage {
+                        idx: 0,
+                        role: "user".into(),
+                        author: None,
+                        created_at: Some(1_700_000_000_000),
+                        content: format!("question {ordinal}"),
+                        extra: serde_json::json!({"uuid": format!("u-{ordinal}-0")}),
+                        snippets: Vec::new(),
+                        invocations: Vec::new(),
+                    },
+                    NormalizedMessage {
+                        idx: 1,
+                        role: "assistant".into(),
+                        author: None,
+                        created_at: Some(1_700_000_000_050),
+                        content: format!("answer {ordinal}"),
+                        extra: serde_json::json!({"uuid": format!("u-{ordinal}-1")}),
+                        snippets: Vec::new(),
+                        invocations: Vec::new(),
+                    },
+                ],
+            }
+        }
+
+        /// `(region_version, docs_state, count)` rows of the region marks
+        /// table, the same audit the A/B reproduction ran on the real archive.
+        fn region_mark_state_histogram(storage: &FrankenStorage) -> Vec<(i64, String, i64)> {
+            storage
+                .raw()
+                .query_map_collect(
+                    "SELECT region_version, docs_state, COUNT(*) \
+                     FROM viewer_search_region_marks \
+                     GROUP BY region_version, docs_state \
+                     ORDER BY region_version, docs_state",
+                    &[] as &[ParamValue],
+                    |row| {
+                        Ok((
+                            row.get_typed::<i64>(0)?,
+                            row.get_typed::<String>(1)?,
+                            row.get_typed::<i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        }
+
+        /// The incremental lane's whole-archive republish (a REGION_VERSION
+        /// bump leaves every marks row stale, so every receipt demands a
+        /// re-projection) must defer region-doc staging to ONE bounded drain
+        /// before the run's final commit. Staging per persist batch published
+        /// one successor segment per session on the real archive — the
+        /// streaming limits make every oversized session its own batch —
+        /// which measured ~3 s per session on a 6,107-session archive.
+        #[test]
+        fn republish_grind_defers_region_staging_to_one_final_drain() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("grind.db"));
+            let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
+            let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+            let session_count = REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS + 1;
+            let convs: Vec<_> = (0..session_count)
+                .map(|ordinal| grind_region_session(dir.path(), ordinal))
+                .collect();
+
+            // Seed: one persist call = one batch (no oversized conversation
+            // to slice). Its prelude sweep finds no pending marks on a
+            // fresh archive; the per-outcome hook then stages each
+            // session's region docs additively (a fresh identity publishes
+            // nothing per upsert), and the final commit stamps every mark
+            // published at the current REGION_VERSION — the pre-bump state.
+            persist_conversations_batched(
+                &storage,
+                Some(&mut index),
+                &convs,
+                LexicalPopulationStrategy::IncrementalInline,
+                false,
+            )
+            .unwrap();
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+            assert_eq!(
+                region_mark_state_histogram(&storage),
+                vec![(
+                    crate::viewer_extensions::search_regions::REGION_VERSION,
+                    crate::viewer_extensions::search_regions::DOCS_PUBLISHED.to_string(),
+                    session_count
+                )],
+                "the seeded archive must hold every mark published at the current version"
+            );
+            let seeded_segments = index.segment_count();
+
+            // The durable state a REGION_VERSION bump creates: every marks row
+            // stale for its old version, still reading `published` — invisible
+            // to the pending sweep, and each session's receipt now demands a
+            // re-projection on its next persist.
+            storage
+                .raw()
+                .execute("UPDATE viewer_search_region_marks SET region_version = 5")
+                .unwrap();
+            assert_eq!(
+                crate::viewer_extensions::search_regions::stale_region_version_session_count(
+                    storage.raw()
+                )
+                .unwrap(),
+                session_count
+            );
+
+            // The lane's latch: the scan entry calls this once, before the
+            // first batch, and the stale count is what it reads.
+            maybe_defer_region_doc_convergence_for_republish(storage.raw(), &mut index).unwrap();
+            assert!(index.region_doc_convergence_deferred_to_final_drain());
+
+            // The grind: one persist batch per conversation, no commits
+            // between — the batch-of-one shape every oversized agent session
+            // produces on the streaming lane. The latched prelude must stage
+            // NOTHING: no upsert (so no publish), no queued stamp; the marks
+            // accumulate honestly `pending`.
+            for conv in &convs {
+                persist_conversations_batched(
+                    &storage,
+                    Some(&mut index),
+                    std::slice::from_ref(conv),
+                    LexicalPopulationStrategy::IncrementalInline,
+                    false,
+                )
+                .unwrap();
+            }
+            assert_eq!(
+                index.pending_region_doc_stamp_count(),
+                0,
+                "the deferred prelude must not queue any region-doc stamp during the grind"
+            );
+            assert_eq!(
+                index.segment_count(),
+                seeded_segments,
+                "the deferred prelude must not publish during the grind: seeded={seeded_segments} after={}",
+                index.segment_count()
+            );
+            assert_eq!(
+                region_mark_state_histogram(&storage),
+                vec![(
+                    crate::viewer_extensions::search_regions::REGION_VERSION,
+                    crate::viewer_extensions::search_regions::DOCS_PENDING.to_string(),
+                    session_count
+                )],
+                "every re-projected session must hold an honest pending mark at the current version"
+            );
+
+            // The final drain + commit — the production shape at the run's
+            // end: one bounded pass stages the whole accumulated set (a
+            // handful of upserts, not one per session) and the commit stamps
+            // them all `published` together.
+            index
+                .converge_pending_search_region_docs(storage.raw(), i64::MAX)
+                .unwrap();
+            assert_eq!(
+                index.pending_region_doc_stamp_count(),
+                session_count as usize,
+                "the drain queues one stamp per converged session"
+            );
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+            // The drain's ONE bounded upsert publishes successors for the
+            // live segments whose identities it replaces (a handful, bounded
+            // by the segment count — 6 on this fixture), and the commit's
+            // stale-identity delete publishes one more successor; the
+            // failure this guards against is one publish per SESSION.
+            assert!(
+                index.segment_count() <= seeded_segments + 32,
+                "the drain must publish a bounded handful of segments for the whole run: seeded={seeded_segments} after={}",
+                index.segment_count()
+            );
+            assert_eq!(
+                region_mark_state_histogram(&storage),
+                vec![(
+                    crate::viewer_extensions::search_regions::REGION_VERSION,
+                    crate::viewer_extensions::search_regions::DOCS_PUBLISHED.to_string(),
+                    session_count
+                )],
+                "the final commit must stamp every converged mark published"
+            );
+            assert_eq!(
+                crate::viewer_extensions::search_regions::stale_region_version_session_count(
+                    storage.raw()
+                )
+                .unwrap(),
+                0,
+                "the drained archive must hold no stale-version marks"
+            );
+        }
+
+        /// Below the deferral threshold the latch must NOT engage: ordinary
+        /// incremental runs, watch events and crash leftovers keep today's
+        /// converge-with-your-batch behavior.
+        #[test]
+        fn republish_deferral_engages_only_above_the_stale_threshold() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("below.db"));
+            let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
+            let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+            let convs: Vec<_> = (0..3)
+                .map(|ordinal| grind_region_session(dir.path(), ordinal))
+                .collect();
+            persist_conversations_batched(
+                &storage,
+                Some(&mut index),
+                &convs,
+                LexicalPopulationStrategy::IncrementalInline,
+                false,
+            )
+            .unwrap();
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+            storage
+                .raw()
+                .execute("UPDATE viewer_search_region_marks SET region_version = 5")
+                .unwrap();
+
+            maybe_defer_region_doc_convergence_for_republish(storage.raw(), &mut index).unwrap();
+            assert!(
+                !index.region_doc_convergence_deferred_to_final_drain(),
+                "three stale marks must not latch the deferral"
+            );
         }
 
         fn published_receipt(
@@ -58235,6 +58632,267 @@ mod tests {
         );
     }
 
+    /// A tiny two-message claude_code session unique per `ordinal` — the
+    /// shape the region marks machinery provably projects and publishes.
+    fn grind_stream_session(ordinal: i64) -> NormalizedConversation {
+        NormalizedConversation {
+            agent_slug: "claude_code".into(),
+            external_id: Some(format!("region-stream-grind-{ordinal}")),
+            title: Some(format!("Region stream grind {ordinal}")),
+            workspace: Some(PathBuf::from("/workspace/grind")),
+            source_path: PathBuf::from(format!("/logs/region-stream-grind-{ordinal}.jsonl")),
+            started_at: Some(1_700_000_000_000),
+            ended_at: Some(1_700_000_000_050),
+            metadata: serde_json::json!({"model": "fixture-model"}),
+            messages: vec![
+                NormalizedMessage {
+                    idx: 0,
+                    role: "user".into(),
+                    author: None,
+                    created_at: Some(1_700_000_000_000),
+                    content: format!("question {ordinal}"),
+                    extra: serde_json::json!({"uuid": format!("u-{ordinal}-0")}),
+                    snippets: Vec::new(),
+                    invocations: Vec::new(),
+                },
+                NormalizedMessage {
+                    idx: 1,
+                    role: "assistant".into(),
+                    author: None,
+                    created_at: Some(1_700_000_000_050),
+                    content: format!("answer {ordinal}"),
+                    extra: serde_json::json!({"uuid": format!("u-{ordinal}-1")}),
+                    snippets: Vec::new(),
+                    invocations: Vec::new(),
+                },
+            ],
+        }
+    }
+
+    /// `(region_version, docs_state, count)` rows of the region marks table.
+    fn stream_region_mark_histogram(storage: &FrankenStorage) -> Vec<(i64, String, i64)> {
+        storage
+            .raw()
+            .query_map_collect(
+                "SELECT region_version, docs_state, COUNT(*) \
+                 FROM viewer_search_region_marks \
+                 GROUP BY region_version, docs_state \
+                 ORDER BY region_version, docs_state",
+                &[] as &[ParamValue],
+                |row| {
+                    Ok((
+                        row.get_typed::<i64>(0)?,
+                        row.get_typed::<String>(1)?,
+                        row.get_typed::<i64>(2)?,
+                    ))
+                },
+            )
+            .unwrap()
+    }
+
+    /// Drive the real streaming consumer over one Batch message per
+    /// conversation — the batch-of-one shape every oversized agent session
+    /// produces on the lane — plus the producer's Done. The final flag is
+    /// the consumer's republish-deferral lane gate: `true` models an
+    /// ordinary non-watch run, `false` the watch lane.
+    fn run_streaming_consumer_over_sessions(
+        storage: &FrankenStorage,
+        data_dir: &Path,
+        index: &mut TantivyIndex,
+        convs: Vec<NormalizedConversation>,
+        allow_region_doc_republish_deferral: bool,
+    ) -> Result<()> {
+        let capacity = convs.len() + 1;
+        let (tx, rx) = bounded(capacity);
+        for conv in convs {
+            tx.send(IndexMessage::Batch {
+                connector_name: "claude",
+                conversations: vec![conv],
+                is_discovered: false,
+                message_count: 2,
+                byte_reservation: 0,
+            })?;
+        }
+        tx.send(IndexMessage::Done {
+            connector_name: "claude",
+            scan_ms: 1,
+            is_discovered: false,
+            scan_succeeded: true,
+            active_source_skipped: false,
+        })?;
+        drop(tx);
+        run_streaming_consumer(
+            rx,
+            1,
+            storage,
+            data_dir,
+            Some(index),
+            Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
+            &None,
+            LexicalPopulationStrategy::IncrementalInline,
+            allow_region_doc_republish_deferral,
+            None,
+            None,
+        )?;
+        Ok(())
+    }
+
+    /// The whole-archive republish through the REAL streaming consumer: a
+    /// REGION_VERSION bump leaves every marks row stale (still reading
+    /// `published` for its old version), so every session's receipt demands
+    /// a re-projection and the lane re-persists one session per batch. The
+    /// consumer must latch the deferral at its prologue, stage no region
+    /// documents per batch, and converge the accumulated pending set ONCE
+    /// at its final commit — not publish a successor segment per session.
+    #[test]
+    fn streaming_consumer_republish_grind_converges_once_not_per_batch() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir)?;
+        let db_path = data_dir.join("agent_search.db");
+        let storage = FrankenStorage::open(&db_path)?;
+        ensure_fts_schema(&storage);
+        let index_path = index_dir(&data_dir)?;
+        let mut index = TantivyIndex::open_or_create(&index_path)?;
+        let session_count = persist::REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS + 1;
+        let convs: Vec<_> = (0..session_count).map(grind_stream_session).collect();
+
+        // Run 1 seeds the archive at the current REGION_VERSION: the
+        // per-batch prelude converges each session with its batch and the
+        // consumer's final commit stamps every mark `published`.
+        run_streaming_consumer_over_sessions(&storage, &data_dir, &mut index, convs.clone(), true)?;
+        assert_eq!(
+            stream_region_mark_histogram(&storage),
+            vec![(
+                crate::viewer_extensions::search_regions::REGION_VERSION,
+                crate::viewer_extensions::search_regions::DOCS_PUBLISHED.to_string(),
+                session_count
+            )],
+            "the seeded archive must hold every mark published at the current version"
+        );
+        let seeded_segments = index.segment_count();
+
+        // The durable state a REGION_VERSION bump creates.
+        storage
+            .raw()
+            .execute("UPDATE viewer_search_region_marks SET region_version = 5")?;
+
+        // Run 2 — the republish grind: every receipt demands a re-projection,
+        // one session per persist batch. The consumer's final commit must
+        // leave every mark published again, and the whole grind must cost a
+        // bounded handful of segment publishes — not one per session.
+        run_streaming_consumer_over_sessions(&storage, &data_dir, &mut index, convs, true)?;
+
+        assert_eq!(
+            stream_region_mark_histogram(&storage),
+            vec![(
+                crate::viewer_extensions::search_regions::REGION_VERSION,
+                crate::viewer_extensions::search_regions::DOCS_PUBLISHED.to_string(),
+                session_count
+            )],
+            "the final drain plus the consumer's final commit must republish every mark"
+        );
+        assert!(
+            crate::viewer_extensions::search_regions::pending_region_doc_sessions(
+                storage.raw(),
+                i64::MAX
+            )?
+            .is_empty(),
+            "no session may remain pending after the run's final commit"
+        );
+        // The bound's provenance (do not reflexively tighten or loosen):
+        // the one final drain publishes successor segments for the live
+        // segments it replaces — measured +6 for this fixture's 513
+        // sessions — so +32 is generous headroom for commit-pacer
+        // batching, while staying 16x below the +513 that the
+        // one-publish-per-session failure mode would cost. A drain that
+        // publishes near the session count is the regression this bound
+        // exists to catch; one that lands near +6 is the expected shape.
+        assert!(
+            index.segment_count() <= seeded_segments + 32,
+            "the republish grind must not publish one segment per session: seeded={seeded_segments} after={}",
+            index.segment_count()
+        );
+        Ok(())
+    }
+
+    /// Regression (review Important 1): the watch lane's startup broad scan
+    /// drives this same consumer before the watch loop inherits the writer,
+    /// and a watch run has NO final drain — if the prologue latched the
+    /// whole-archive republish deferral on that lane, every persist the
+    /// watch loop later committed would skip region-doc convergence and its
+    /// marks would sit `pending` for the life of the process. The consumer
+    /// must never latch when the caller passes the watch lane, mirroring
+    /// the scan entry's `!opts.watch && opts.watch_once_paths.is_none()`
+    /// gate (tantivy.rs: the latch is "never latched by watch").
+    #[test]
+    fn streaming_consumer_watch_lane_never_latches_republish_deferral() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir)?;
+        let db_path = data_dir.join("agent_search.db");
+        let storage = FrankenStorage::open(&db_path)?;
+        ensure_fts_schema(&storage);
+        let index_path = index_dir(&data_dir)?;
+        let mut index = TantivyIndex::open_or_create(&index_path)?;
+        let session_count = persist::REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS + 1;
+        let convs: Vec<_> = (0..session_count).map(grind_stream_session).collect();
+
+        // Run 1 seeds the archive at the current REGION_VERSION through the
+        // ordinary lane: zero stale marks, so the allowed deferral never
+        // engages and per-batch convergence publishes every mark.
+        run_streaming_consumer_over_sessions(&storage, &data_dir, &mut index, convs.clone(), true)?;
+        assert_eq!(
+            stream_region_mark_histogram(&storage),
+            vec![(
+                crate::viewer_extensions::search_regions::REGION_VERSION,
+                crate::viewer_extensions::search_regions::DOCS_PUBLISHED.to_string(),
+                session_count
+            )],
+            "the seeded archive must hold every mark published at the current version"
+        );
+
+        // The durable state a REGION_VERSION bump creates: every mark now
+        // reads stale — more than the deferral threshold — so an ordinary
+        // non-watch consumer run WOULD latch here (the grind test above
+        // pins that lane).
+        storage
+            .raw()
+            .execute("UPDATE viewer_search_region_marks SET region_version = 5")?;
+
+        // Run 2 — the same above-threshold stale archive through the WATCH
+        // lane. The writer the watch loop would inherit must stay
+        // unlatched, and per-event convergence must still republish every
+        // mark: the consumer's final drain is itself gated on the latch
+        // flag, so a false flag plus zero pending marks proves convergence
+        // happened per batch, not in one deferred drain.
+        run_streaming_consumer_over_sessions(&storage, &data_dir, &mut index, convs, false)?;
+
+        assert!(
+            !index.region_doc_convergence_deferred_to_final_drain(),
+            "the watch lane must never latch the whole-archive republish deferral: \
+             a watch run has no final drain, so latched marks would never converge"
+        );
+        assert_eq!(
+            stream_region_mark_histogram(&storage),
+            vec![(
+                crate::viewer_extensions::search_regions::REGION_VERSION,
+                crate::viewer_extensions::search_regions::DOCS_PUBLISHED.to_string(),
+                session_count
+            )],
+            "the watch lane's per-event convergence must republish every mark"
+        );
+        assert!(
+            crate::viewer_extensions::search_regions::pending_region_doc_sessions(
+                storage.raw(),
+                i64::MAX
+            )?
+            .is_empty(),
+            "no session may remain pending on the watch lane"
+        );
+        Ok(())
+    }
+
     #[test]
     fn streaming_consumer_preserves_discovered_connector_with_no_batches() {
         for scan_start_ts in [None, Some(1_700_000_000_000)] {
@@ -58269,6 +58927,7 @@ mod tests {
                 Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
                 &Some(progress.clone()),
                 LexicalPopulationStrategy::IncrementalInline,
+                true,
                 scan_start_ts,
                 None,
             )
@@ -58336,6 +58995,7 @@ mod tests {
             Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
             &None,
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             Some(scan_start_ts),
             None,
         )?;
@@ -58391,6 +59051,7 @@ mod tests {
             Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
             &Some(progress.clone()),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             None,
             None,
         )?;
@@ -58453,6 +59114,7 @@ mod tests {
             Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
             &Some(progress),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             None,
             None,
         )?;
@@ -58502,6 +59164,7 @@ mod tests {
             Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
             &Some(progress.clone()),
             LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            true,
             Some(FrankenStorage::now_millis()),
             None,
         )
@@ -58571,6 +59234,7 @@ mod tests {
             Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
             &Some(progress.clone()),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             Some(FrankenStorage::now_millis()),
             None,
         )
@@ -58639,6 +59303,7 @@ mod tests {
                 Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
                 &Some(progress.clone()),
                 LexicalPopulationStrategy::IncrementalInline,
+                true,
                 Some(FrankenStorage::now_millis()),
                 None,
             )
@@ -58744,6 +59409,7 @@ mod tests {
                 Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
                 &Some(progress.clone()),
                 LexicalPopulationStrategy::IncrementalInline,
+                true,
                 Some(scan_watermark),
                 None,
             )
@@ -58794,6 +59460,7 @@ mod tests {
                     Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
                     &Some(progress.clone()),
                     LexicalPopulationStrategy::IncrementalInline,
+                    true,
                     Some(scan_watermark),
                     None,
                 )
@@ -60126,6 +60793,7 @@ mod tests {
             flow_limiter,
             &Some(progress.clone()),
             LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            true,
             Some(FrankenStorage::now_millis()),
             None,
         )
@@ -60376,6 +61044,7 @@ mod tests {
             flow_limiter,
             &Some(progress.clone()),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             None,
             None,
         )
@@ -60481,6 +61150,7 @@ mod tests {
                 flow_limiter,
                 &Some(progress),
                 LexicalPopulationStrategy::IncrementalInline,
+                true,
                 None,
                 None,
             )
@@ -60560,6 +61230,7 @@ mod tests {
             flow_limiter,
             &Some(progress.clone()),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             None,
             None,
         )
@@ -60607,6 +61278,7 @@ mod tests {
             flow_limiter,
             &Some(progress.clone()),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             None,
             None,
         )
@@ -60749,6 +61421,7 @@ mod tests {
             flow_limiter,
             &Some(progress.clone()),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             None,
             None,
         )
