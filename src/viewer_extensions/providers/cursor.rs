@@ -1,6 +1,10 @@
 //! Cursor session facts from harvested bubble extras. The pinned FAD
 //! connector stores the raw bubble verbatim in `extra_json` for composer
-//! sources and an empty object for aichat/agent-transcript sources.
+//! sources and an empty object for agent-transcript/draft-fallback sources
+//! — no-record shapes whose delivered text lives entirely in `content` and
+//! whose tool_use blocks the connector lifts into `invocations`, so their
+//! text/block inventories are complete and only thinking stays
+//! unverifiable (see the `bubble.is_empty()` arm).
 //! Behavioral port of the oracle `facts/cursor.py` + the native
 //! `providers/cursor/{delta,harvesting}.py` tool/thinking arms: real message
 //! shapes only — thinking and exit status that the bubble never recorded
@@ -23,7 +27,7 @@ use super::{
     events, json_text, text_id,
 };
 
-const EXTRACTOR_REVISION: &str = "cursor-facts-v1";
+const EXTRACTOR_REVISION: &str = "cursor-facts-v2";
 
 /// Canonical tool-name map (`providers/cursor/delta.py::CURSOR_TOOL_NAME_MAP`).
 fn cursor_tool_name(raw: &str) -> &str {
@@ -274,12 +278,28 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
             continue;
         };
         if bubble.is_empty() {
-            // aichat/agent-transcript paths persist no message-level extra.
-            coverage.mark(
-                &["tools", "thinking", "block_inventory", "text_inventory"],
-                "cursor_extra_absent",
-                "partial",
-            );
+            // The pinned connector's no-record shapes: agent-transcript
+            // messages and composer draft fallback messages persist no raw
+            // record but deliver every text-bearing field into `content`
+            // (transcripts flatten text blocks and render tool_use blocks)
+            // and lift every tool_use block into `invocations`, which the
+            // ingest merge archives under `cass.invocations`. A `{}` extra
+            // therefore proves the record held no tool_use blocks, and the
+            // event's text/block inventories are complete by construction —
+            // the projection derives the text part from `content`. Only
+            // thinking stays unverifiable: a dropped thinking block leaves
+            // no evidence anywhere in the archive.
+            if event.content.is_empty() {
+                // Unknown shape — every `{}` producer the connector has
+                // delivers non-empty content — keeps the full mark.
+                coverage.mark(
+                    &["tools", "thinking", "block_inventory", "text_inventory"],
+                    "cursor_extra_absent",
+                    "partial",
+                );
+            } else {
+                coverage.mark(&["thinking"], "cursor_extra_absent", "partial");
+            }
             continue;
         }
         bubble_models(extra, &mut models);

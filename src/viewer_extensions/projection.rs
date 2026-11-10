@@ -56,7 +56,15 @@ use super::providers::{events, is_compacted_extra, json_text, text_id};
 /// Bump when projection semantics change so persisted rows re-derive on
 /// the next ingest pass (targeted recomputation via the
 /// `viewer_session_projection` marker) instead of silently going stale.
-pub const PROJECTION_VERSION: i64 = 1;
+///
+/// v2: the `{"cass":{…}}` single-key skeleton no longer degrades cursor
+/// records to flattened text — the ingest extra-compaction that wrote it
+/// was codex-only (`should_compact_connector_extra`, removed 2026-11-08;
+/// codex rows indexed before that still carry the skeleton), so for every
+/// other provider that shape is the ingest merge envelope carrying lifted
+/// `invocations`, and the block inventory now derives one tool_call part
+/// per recorded call.
+pub const PROJECTION_VERSION: i64 = 2;
 
 // ---------------------------------------------------------------------------
 // Publication model
@@ -717,14 +725,21 @@ fn record_parts(
     rec: &Rec,
     msgs: &[crate::model::conversation_packet::ConversationPacketMessage],
     verified: &VerifiedCalls,
+    agent_slug: &str,
 ) -> Vec<Part> {
     let mut parts = Vec::new();
     for &pos in &rec.members {
         let message = &msgs[pos];
         let extra = &message.extra_json;
-        if is_compacted_extra(extra) {
-            // `{"cass":{…}}` skeleton — the recorded structure was compacted
-            // by normalization; only the flattened text remains.
+        // `{"cass":{…}}` single-key skeleton — the recorded structure was
+        // compacted by the former ingest layer (codex-only
+        // `should_compact_connector_extra`, removed 2026-11-08; rows
+        // indexed before that still carry it); only the flattened text
+        // remains. The shape is NOT a compaction marker for any other
+        // provider: there it is the ingest merge envelope archiving lifted
+        // `invocations` (see `merge_invocations_into_extra`), whose
+        // harvesting arm below derives the tool_call parts.
+        if agent_slug.eq_ignore_ascii_case("codex") && is_compacted_extra(extra) {
             if !message.content.is_empty() {
                 parts.push(Part {
                     kind: "text",
@@ -1208,7 +1223,7 @@ pub fn project_session_structure(
             continue;
         }
         last_boundary_step = rec.class == Class::Boundary;
-        let parts = record_parts(rec, msgs, &verified);
+        let parts = record_parts(rec, msgs, &verified, &packet.payload.identity.agent_slug);
         // Empty assistant steps are dropped by the oracle's normalizer;
         // user/system/boundary/error steps always survive.
         if rec.class == Class::Assistant && parts.is_empty() {

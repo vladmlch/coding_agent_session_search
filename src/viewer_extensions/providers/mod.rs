@@ -3,8 +3,8 @@
 //! Each provider module consumes the normalized packet's `extra_json`
 //! evidence (raw source records the connector preserved verbatim) and emits
 //! a [`ProviderExtraction`]. New providers land by adding a module and one
-//! dispatch arm below — antigravity/devin/cursor/junie/qoder are stubs
-//! returning `extractor_unavailable` until their wave ships.
+//! dispatch arm below — junie/qoder are stubs returning
+//! `extractor_unavailable` until their wave ships.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,8 +17,20 @@ use super::facts::{CoverageEntry, FACTS_EXTRACTOR_VERSION, FactPublication, Tool
 mod antigravity;
 mod claude;
 mod codex;
+mod copilot;
 mod cursor;
 mod devin;
+mod gemini;
+mod opencode;
+mod pi_agent;
+
+/// Copilot archived-response-part classification, shared with the
+/// search-regions copilot arm so the completeness claims and the indexed
+/// surface stay identical.
+pub(crate) use copilot::scan_copilot_parts;
+/// Gemini tool-result text + status verdict derivation, shared with the
+/// search-regions gemini arm so the facts and region lanes stay identical.
+pub(crate) use gemini::{gemini_call_result_text, gemini_status_verdict};
 
 pub(crate) mod classification;
 
@@ -320,7 +332,11 @@ pub(crate) fn recorded_text(value: &Value) -> (Option<String>, bool) {
                         texts.push(text.to_string());
                         continue;
                     }
-                    if !matches!(kind, Some("image" | "input_image")) {
+                    // `image_url` is the codex tool-output image part
+                    // (`{"type":"image_url","image_url":{…}}`, OpenAI
+                    // shape): an image carries no text, so it is known
+                    // non-text — never a "not recorded" claim.
+                    if !matches!(kind, Some("image" | "input_image" | "image_url")) {
                         complete = false;
                     }
                 } else {
@@ -393,6 +409,12 @@ pub(crate) struct ToolCollector {
     /// default is text-bearing loss (the result record is missing from
     /// storage); claude_code narrows it to `tools` only.
     result_missing_scopes: &'static [&'static str],
+    /// Call ids whose missing result record is PROVEN interrupted at the
+    /// source (the rollout ends mid-call, or a later user message cuts the
+    /// pending turn): the output text never existed in any local record, so
+    /// `finish()` marks them `tool_output_interrupted` (source-absent,
+    /// allowlisted) instead of the not-read `tool_result_missing`.
+    interrupted: BTreeSet<String>,
 }
 
 impl ToolCollector {
@@ -401,7 +423,16 @@ impl ToolCollector {
             calls: BTreeMap::new(),
             results: BTreeMap::new(),
             result_missing_scopes: &["tools", "text_inventory"],
+            interrupted: BTreeSet::new(),
         }
+    }
+
+    /// Codex only: record that an unpaired call's result text is absent at
+    /// the SOURCE (`providers/codex.rs` proves it — never a parse failure or
+    /// unknown shape), which is what makes the gap source-absent rather
+    /// than a not-read gap.
+    pub fn note_interrupted(&mut self, call_id: &str) {
+        self.interrupted.insert(call_id.to_string());
     }
 
     /// claude_code only: its connector drops `tool_result` content with no
@@ -504,7 +535,12 @@ impl ToolCollector {
                 None
             };
             if results.is_empty() {
-                coverage.mark(self.result_missing_scopes, "tool_result_missing", "partial");
+                let reason = if self.interrupted.contains(call_id) {
+                    "tool_output_interrupted"
+                } else {
+                    "tool_result_missing"
+                };
+                coverage.mark(self.result_missing_scopes, reason, "partial");
             }
             let exit_code = result.and_then(|r| r.exit_code);
             let is_error = result.and_then(|r| r.is_error);
@@ -654,6 +690,10 @@ pub(crate) fn extract(packet: &ConversationPacket, provider: &str) -> ProviderEx
         "antigravity" => antigravity::extract(packet),
         "devin" => devin::extract(packet),
         "cursor" => cursor::extract(packet),
+        "copilot" => copilot::extract(packet),
+        "gemini" => gemini::extract(packet),
+        "opencode" => opencode::extract(packet),
+        "pi_agent" => pi_agent::extract(packet),
         other => ProviderExtraction::unavailable(other),
     }
 }

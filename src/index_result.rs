@@ -4,9 +4,9 @@
 //! become a success event, exit zero or an idempotency success either. This
 //! boundary consumes the indexer's existing observations; it never opens a DB.
 
+use crate::cli::error::{CliError, CliResult};
 use crate::indexer::ConnectorStats;
 use crate::model::cli_error_kind::ErrorKind;
-use crate::{CliError, CliResult};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -116,7 +116,8 @@ mod tests {
         assert_eq!(error.code, 9);
         assert_eq!(error.kind, "index");
         assert!(error.retryable);
-        let mut payload = crate::cli_error_json_payload(&error, 17);
+        let mut payload =
+            crate::cli::output::cli_error_json_payload::cli_error_json_payload(&error, 17);
         assert!(annotate_partial_scan(&mut payload, true, &[]));
         assert_eq!(payload["success"], false);
         assert_eq!(payload["partial"], true);
@@ -195,7 +196,13 @@ mod tests {
             json!({"success":true,"coverage_status":"incomplete"}),
             json!({"success":false}),
         ] {
-            assert!(crate::cached_index_payload(&payload.to_string(), "same-key").is_none());
+            assert!(
+                crate::cli::commands::index::run_lexical_reconcile_cli::cached_index_payload(
+                    &payload.to_string(),
+                    "same-key"
+                )
+                .is_none()
+            );
         }
     }
 
@@ -206,7 +213,12 @@ mod tests {
             json!({"success":true,"messages":2}),
             json!({"ok":true,"messages":2}),
         ] {
-            let cached = crate::cached_index_payload(&payload.to_string(), "same-key").unwrap();
+            let cached =
+                crate::cli::commands::index::run_lexical_reconcile_cli::cached_index_payload(
+                    &payload.to_string(),
+                    "same-key",
+                )
+                .unwrap();
             assert_eq!(cached["cached"], true);
             assert_eq!(cached["idempotency_key"], "same-key");
             assert_eq!(cached["messages"], payload["messages"]);

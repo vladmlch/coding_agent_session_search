@@ -3,6 +3,81 @@ mod gh473_preflight {
     use super::*;
     use std::process::{Command, Stdio};
 
+    /// Exact canonical share: the committed index, served through the real
+    /// Quill reader under the production canonical-message guard. Region
+    /// documents (`msg_idx >= REGION_DOC_BASE`) cannot enter this list, and
+    /// neither can the `live_region_doc_bound` bookkeeping — persisted
+    /// doc-backed region rows and queued stale-delete identities are not
+    /// live canonical documents. Returns the stored `msg_idx` of every live
+    /// canonical document as a sorted multiset — a distinct document with a
+    /// colliding `msg_idx` (e.g. another conversation's msg-0) keeps its own
+    /// slot, so an extra canonical hit cannot silently collapse the way a
+    /// set would, and a missing document is named, not just counted.
+    fn canonical_msg_idx_vec(index: &TantivyIndex) -> Vec<u64> {
+        let reader = index.reader().expect("canonical reader");
+        crate::search::quill_bridge::refresh_reader(&reader).expect("canonical reader reload");
+        let query = crate::search::quill_bridge::canonical_message_query(
+            frankensearch::quill::query::Query::all(),
+        );
+        // The limit covers every fixture document; the exact total must
+        // equal the returned page so no canonical hit is truncated away.
+        let page = crate::search::quill_bridge::search_paginated(&reader, &query, 1024, 0, true)
+            .expect("canonical document query");
+        assert_eq!(
+            page.total_count.map(|count| count as u64),
+            Some(page.hits.len() as u64),
+            "the canonical page must cover the exact total"
+        );
+        let fields = crate::search::quill_bridge::QuillCassFields::compiled();
+        let mut msg_idxs: Vec<u64> = page
+            .hits
+            .iter()
+            .map(|hit| {
+                crate::search::quill_bridge::stored_u64(&reader, fields.msg_idx, hit.global_docid)
+                    .expect("read stored msg_idx")
+                    .expect("canonical documents always carry msg_idx")
+            })
+            .collect();
+        msg_idxs.sort_unstable();
+        msg_idxs
+    }
+
+    /// Packet mirroring `canonical_lexical_packet`: source identity material
+    /// read from the stored conversation row, so the reconcile path names the
+    /// exact document identities ingest published for this conversation.
+    fn canonical_replay_packet(
+        storage: &FrankenStorage,
+        conversation: &NormalizedConversation,
+        conversation_id: i64,
+    ) -> ConversationPacket {
+        let canonical_row = storage
+            .raw()
+            .query(&format!(
+                "SELECT source_id, origin_host FROM conversations WHERE id = {conversation_id}"
+            ))
+            .unwrap();
+        let raw_source_id: Option<String> = canonical_row[0].get_typed(0).unwrap();
+        let raw_origin_host: Option<String> = canonical_row[0].get_typed(1).unwrap();
+        let source_id = crate::search::tantivy::normalized_index_source_id(
+            raw_source_id.as_deref(),
+            None,
+            raw_origin_host.as_deref(),
+        );
+        let mut packet = ConversationPacket::from_normalized_conversation(
+            conversation,
+            ConversationPacketProvenance {
+                source_id: source_id.clone(),
+                origin_kind: crate::search::tantivy::normalized_index_origin_kind(&source_id, None),
+                origin_host: None,
+            },
+        );
+        packet.payload.identity.conversation_id = Some(conversation_id);
+        packet.payload.metadata_json = serde_json::json!({
+            "cass": {"origin": {"source_id": source_id}}
+        });
+        packet
+    }
+
     fn scalar(storage: &FrankenStorage, sql: &str) -> i64 {
         storage.raw().query(sql).unwrap()[0]
             .get_typed::<i64>(0)
@@ -328,12 +403,11 @@ mod gh473_preflight {
         );
         index.commit().unwrap();
         // Task 5: the index also holds this session's region documents;
-        // compare the canonical share.
+        // the canonical share is the exact multiset the committed index serves.
         assert_eq!(
-            index.doc_count().unwrap()
-                - crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw())
-                    .unwrap_or(0) as u64,
-            1
+            canonical_msg_idx_vec(&index),
+            vec![0_u64],
+            "canonical message share (Task 5: region docs share the index)"
         );
 
         // With a warm writer, the existing canonical transaction retry budget
@@ -365,10 +439,8 @@ mod gh473_preflight {
         );
         index.commit().unwrap();
         assert_eq!(
-            index.doc_count().unwrap()
-                - crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw())
-                    .unwrap_or(0) as u64,
-            1,
+            canonical_msg_idx_vec(&index),
+            vec![0_u64],
             "canonical message share (Task 5: region docs share the index)"
         );
 
@@ -391,12 +463,8 @@ mod gh473_preflight {
             assert_eq!(outcome.inserted_conversations, 0);
             index.commit().unwrap();
             assert_eq!(
-                index.doc_count().unwrap()
-                    - crate::viewer_extensions::search_regions::live_region_doc_bound(
-                        storage.raw(),
-                    )
-                    .unwrap_or(0) as u64,
-                2,
+                canonical_msg_idx_vec(&index),
+                vec![0_u64, 1],
                 "canonical message share (Task 5: region docs share the index)"
             );
             assert_eq!(scalar(&storage, "SELECT COUNT(*) FROM conversations"), 1);
@@ -405,10 +473,156 @@ mod gh473_preflight {
             assert_eq!(ledger.len(), 1);
             assert_eq!(ledger.get(&completion.key), Some(&completion.observation));
         }
+
+        // Missing-canonical negative control: drive the real reconcile
+        // removal path (`reconcile_messages_from_packet` — what
+        // `publish_changed_packet_messages` runs when a revision lands) with
+        // a revision whose content is hard noise. The packet reproduces the
+        // canonical replay context — source identity material read from the
+        // stored row — so the removal names the exact document ingest
+        // published. Region marks stay `pending` with a queued stale-delete
+        // identity, the bookkeeping the subtracted bound conflated, while
+        // one expected canonical document is truly absent.
+        let conversation_id = scalar(&storage, "SELECT MIN(id) FROM conversations");
+        let mut noise_packet = canonical_replay_packet(&storage, &conversation, conversation_id);
+        noise_packet.payload.messages[1].content = "   ".to_owned();
+        index
+            .reconcile_messages_from_packet(&noise_packet, &[1], Some(conversation_id))
+            .unwrap();
+        index.commit().unwrap();
+        let observed = canonical_msg_idx_vec(&index);
+        assert_eq!(
+            observed,
+            vec![0_u64],
+            "the noise revision must really remove msg-1's canonical document"
+        );
+        let missing: Vec<u64> = [0_u64, 1]
+            .into_iter()
+            .filter(|idx| !observed.contains(idx))
+            .collect();
+        assert_eq!(
+            missing,
+            vec![1_u64],
+            "the exact oracle must name the missing canonical message"
+        );
+        assert_eq!(
+            scalar(&storage, "SELECT COUNT(*) FROM viewer_search_region_marks"),
+            1,
+            "region bookkeeping stays present while a canonical doc is absent"
+        );
+        assert_ne!(
+            storage
+                .raw()
+                .query("SELECT pending_doc_deletes FROM viewer_search_region_marks")
+                .unwrap()[0]
+                .get_typed::<String>(0)
+                .unwrap(),
+            "[]",
+            "queued stale region deletes survive alongside the missing canonical doc"
+        );
+
+        // Restoring the message republishes its document through the same
+        // real reconcile path.
+        noise_packet.payload.messages[1].content = "msg-1".to_owned();
+        index
+            .reconcile_messages_from_packet(&noise_packet, &[1], Some(conversation_id))
+            .unwrap();
+        index.commit().unwrap();
+        assert_eq!(
+            canonical_msg_idx_vec(&index),
+            vec![0_u64, 1],
+            "the reconcile republish must restore the removed canonical document"
+        );
+
+        // Admission: a real third-message ingest shifts this session's
+        // region slots again and queues the retired slot's identity for
+        // deletion — an identity this index never materialized, because the
+        // writer's staged-session dedup kept only the first generation's
+        // staging. Both canonical documents stay live; the bound still
+        // counts the queued-absent identity, so only the exact canonical
+        // query admits the healthy share.
+        conversation.messages.push(norm_msg(2, 102));
+        persist::persist_conversations_batched_inner(
+            &storage,
+            Some(&mut index),
+            std::slice::from_ref(&conversation),
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+            false,
+            None,
+            persist::PersistHeartbeat::NONE,
+            None,
+        )
+        .unwrap();
+        index.commit().unwrap();
+        let observed = canonical_msg_idx_vec(&index);
+        assert_eq!(
+            observed,
+            vec![0_u64, 1, 2],
+            "queued pending-delete identities absent from the index must not \
+             hide live canonical documents"
+        );
+        let live_noncanonical = index.doc_count().unwrap() - observed.len() as u64;
+        let bound =
+            crate::viewer_extensions::search_regions::live_region_doc_bound(storage.raw()).unwrap();
+        assert!(
+            bound > live_noncanonical,
+            "the persisted bound must out-count the live non-canonical docs: \
+             queued deletes name identities absent from the index \
+             (bound {bound}, live non-canonical {live_noncanonical})"
+        );
+
+        // Extra-canonical negative control: a second conversation's canonical
+        // document is real index content this fixture never expects. Its
+        // msg-0 shares conv-1's `msg_idx`, so a plain set of idx values would
+        // silently collapse it; the multiset must refuse the phantom share by
+        // keeping both zeroes.
+        let extra = norm_conv(Some("gh473-extra"), vec![norm_msg(0, 200)]);
+        persist::persist_conversations_batched_inner(
+            &storage,
+            Some(&mut index),
+            std::slice::from_ref(&extra),
+            LexicalPopulationStrategy::IncrementalInline,
+            false,
+            false,
+            None,
+            persist::PersistHeartbeat::NONE,
+            None,
+        )
+        .unwrap();
+        index.commit().unwrap();
+        assert_eq!(
+            canonical_msg_idx_vec(&index),
+            vec![0_u64, 0, 1, 2],
+            "an extra canonical document must keep its own hit — the oracle \
+             cannot deduplicate duplicate msg_idx values away"
+        );
+
+        // Removing the extra document through the same real reconcile path
+        // restores the healthy share.
+        let extra_id = scalar(&storage, "SELECT MAX(id) FROM conversations");
+        let mut extra_packet = canonical_replay_packet(&storage, &extra, extra_id);
+        extra_packet.payload.messages[0].content = "   ".to_owned();
+        index
+            .reconcile_messages_from_packet(&extra_packet, &[0], Some(extra_id))
+            .unwrap();
+        index.commit().unwrap();
+        assert_eq!(
+            canonical_msg_idx_vec(&index),
+            vec![0_u64, 1, 2],
+            "the extra conversation's canonical document must really leave \
+             the share"
+        );
         drop(index);
         storage.close().unwrap();
         let reopened = FrankenStorage::open_readonly(&path).unwrap();
-        assert_eq!(scalar(&reopened, "SELECT COUNT(*) FROM messages"), 2);
+        assert_eq!(
+            scalar(
+                &reopened,
+                &format!("SELECT COUNT(*) FROM messages WHERE conversation_id = {conversation_id}")
+            ),
+            3
+        );
         assert_eq!(
             reopened
                 .source_ingest_ledger_entries()
@@ -417,7 +631,13 @@ mod gh473_preflight {
             Some(&completion.observation)
         );
         let index = TantivyIndex::open_or_create(&index_path).unwrap();
-        assert_eq!(index.doc_count().unwrap(), 2);
+        // The index also carries region documents; compare the exact
+        // canonical share, not the raw live total.
+        assert_eq!(
+            canonical_msg_idx_vec(&index),
+            vec![0_u64, 1, 2],
+            "canonical message share (Task 5: region docs share the index)"
+        );
         reopened.close_without_checkpoint().unwrap();
     }
 

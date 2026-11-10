@@ -48,6 +48,7 @@ use super::protocol::{ListFilters, PAGE_LIMIT, RESPONSE_BYTES, refuse};
 use super::query;
 use super::revisions;
 use super::search::{ReaderSet, decode_hit, engine_filters, raw_page};
+use coding_agent_search::viewer_extensions::facts::is_source_absent_gap;
 
 // ---------------------------------------------------------------------------
 // Budgets (mirroring dsl/normalize.py + evaluate.py EvaluationBudget)
@@ -62,7 +63,36 @@ const MAX_PAREN_DEPTH: usize = 32;
 /// is the explicit refusal bound for workloads whose universe itself is
 /// too large to be honest evidence (refusal, not a clipped answer).
 const HARD_UNIVERSE_CEILING: usize = 200_000;
+/// Bound on the region text RETURNED to the client (snippets/payload) and
+/// on the bounded first-chance verification window — never on what is
+/// VERIFIED: literal verification sees the whole region text (see
+/// [`region_text_full`]), because an index hit (or, ungated, any
+/// occurrence) may live past any prefix bound.
 const MAX_REGION_TEXT: usize = 64 * 1024;
+/// Request-total ceiling on whole-body verification scanning — the
+/// `messages.content` bytes one `search_sessions` request may match
+/// against (gated escalations past the bounded window plus every
+/// ungated chat-region check). The running total is checked before each
+/// whole-body scan; once it reaches the ceiling no further scan runs and
+/// the affected session degrades to honest uncertainty with a TYPED
+/// reason — `text_inventory:<state>:verification_bytes_budget_exceeded`
+/// for a gated candidate (the index-proven hit stays possible
+/// membership), `literal:verification_bytes_budget_exceeded` for
+/// ungated evaluation — never a silent cap. Persisted-fragment regions
+/// (derived/meta/noise) verify against their stored fragment and are not
+/// metered: that cost is bounded per region at publication and predates
+/// this budget.
+///
+/// The default covers the owner's real archive with headroom (measured
+/// 2026-11-09, read-only): 552,782 messages, 1.37 GB of content, largest
+/// message 2,298,357 B. The ungated count budget
+/// ([`MAX_UNGATED_CHAT_HYDRATIONS`]) admits at most 4,096 chat-region
+/// checks whose worst-case whole-body total is the top-4,096 byte sum,
+/// 196 MB; the gated escalation set is the 233 messages over 64 KiB,
+/// 26 MB. 512 MiB leaves ≥2.6x margin on the adversarial ungated shape
+/// and ~20x on real totals. Overridable for tests and operators through
+/// the bridge's `--text-verification-budget-bytes`.
+pub(crate) const MAX_TEXT_VERIFICATION_BYTES: usize = 512 * 1024 * 1024;
 const MAX_LITERAL_HITS: usize = 100_000;
 const CURSOR_MAX_BYTES: usize = 4_096;
 
@@ -944,8 +974,32 @@ fn compile_plan(root: Option<AstNode>, controls_scopes: Option<&[String]>) -> Re
 }
 
 // ---------------------------------------------------------------------------
-// Literal matcher — `_compile_fts_pattern` semantics as a checked local
-// verification (bounded, never a corpus scan).
+// Literal matcher — a checked local verification of the INDEX's own
+// tokenization (bounded, never a corpus scan).
+//
+// The gated lane's candidate set is defined by quill's CASS analyzer
+// (`frankensearch-quill` scribe: the cass schema analyzes `title`/
+// `content` with the hyphen pipeline — ASCII-alphanumeric runs, `_`/`$`
+// and every other non-alphanumeric scalar as separators, hyphen-joined
+// runs additionally emitting their parts — and the edge-prefix fields
+// split on `!is_alphanumeric` the same way). The verifier must read
+// region text with THOSE boundaries or an index-proven hit cannot
+// reproduce and strict search degrades the session to
+// `quill_hit_not_reproduced`: the old `[^\w\-_$]+` classes (the Python
+// oracle's `_compile_fts_pattern`) joined on `_`/`-`/`$`, reading
+// `G5_MODE_SEARCH_README.md` as one `g5_mode_search_readme` token where
+// the index reads [g5, mode, search, readme, md] — 27 sessions of
+// exactly that shape kept strict `README` search refusing on the owner
+// archive even after whole-body hydration. Splitting on every
+// non-alphanumeric scalar mirrors the analyzer's token boundaries for
+// everything it can see while staying broader where harmless (quill
+// only gates candidates; this matcher is the truth oracle), and
+// non-ASCII scripts the analyzer cannot see at all (Cyrillic — the
+// ungated lane's reason to exist) keep their Unicode-alphanumeric
+// reading. The one known remaining narrow class is CJK: the analyzer
+// bigrams unspaced CJK runs while this scan sees whole runs —
+// un-evidenced on the owner archive, left aligned-pending a real
+// reproducer rather than guessed at.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -957,26 +1011,31 @@ struct LiteralMatcher {
     never: bool,
 }
 
+/// Keep only the scalars the analyzer can see — used for the
+/// no-alphanumeric-run fallback in [`LiteralMatcher::new`].
 fn sanitize_fts_token(token: &str) -> String {
-    token
-        .chars()
-        .filter(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '$'))
-        .collect()
+    token.chars().filter(|ch| ch.is_alphanumeric()).collect()
 }
 
+/// Tokenize a literal the way the index analyzer tokenizes the same
+/// query: split on every non-alphanumeric scalar (see the section comment).
 fn literal_tokens(text: &str) -> Vec<String> {
-    // `_TOKEN_RE = r"[^\w\-_$]+"` split + `sanitize_fts_token`.
-    text.split(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '$'))
-        .map(sanitize_fts_token)
+    text.split(|ch: char| !ch.is_alphanumeric())
         .filter(|token| !token.is_empty())
+        .map(str::to_owned)
         .collect()
 }
 
-fn region_tokens(text: &str) -> Vec<String> {
-    text.split(|ch: char| !(ch.is_alphanumeric() || ch == '_' || ch == '-' || ch == '$'))
+/// Stream one region's tokens — the same non-alphanumeric boundaries
+/// [`literal_tokens`] splits on — one borrowed slice at a time. The
+/// matchers below lowercase each token the way the analyzer does.
+/// Whole-body verification streams a multi-megabyte region in one pass
+/// with O(phrase-length) scratch: the split runs on `char` boundaries,
+/// so a token is never cut the way a byte-windowed chunk would cut it,
+/// and no token vector is built.
+fn scan_region_tokens(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|ch: char| !ch.is_alphanumeric())
         .filter(|token| !token.is_empty())
-        .map(|token| token.to_lowercase())
-        .collect()
 }
 
 impl LiteralMatcher {
@@ -1027,25 +1086,42 @@ impl LiteralMatcher {
         }
     }
 
-    /// FTS-equivalent local verification over one region's text.
+    /// FTS-equivalent local verification over one region's text — the
+    /// whole body for whole-body callers, the bounded window for the
+    /// first chance. Tokens stream one at a time, so a huge region
+    /// verifies in bounded scratch; both arms return on the first proof.
     fn matches(&self, text: &str) -> bool {
         if self.never {
             return false;
         }
-        let tokens = region_tokens(text);
         if self.exact {
-            // Phrase: the literal token sequence must appear contiguously.
-            if self.tokens.len() > tokens.len() {
-                return false;
+            // Phrase: the literal token sequence must appear contiguously
+            // — a rolling window over the lowercased token stream.
+            let want = self.tokens.len();
+            let mut window: Vec<String> = Vec::with_capacity(want);
+            for token in scan_region_tokens(text) {
+                if window.len() == want {
+                    if window.as_slice() == self.tokens.as_slice() {
+                        return true;
+                    }
+                    window.remove(0);
+                }
+                window.push(token.to_lowercase());
             }
-            return tokens
-                .windows(self.tokens.len())
-                .any(|window| window == self.tokens.as_slice());
+            window.as_slice() == self.tokens.as_slice()
+        } else {
+            // Prefix terms: every word must prefix-match some token
+            // (independent) — each word drops out when its proof appears.
+            let mut pending: Vec<&str> = self.tokens.iter().map(String::as_str).collect();
+            for token in scan_region_tokens(text) {
+                let lowered = token.to_lowercase();
+                pending.retain(|word| !lowered.starts_with(word));
+                if pending.is_empty() {
+                    return true;
+                }
+            }
+            false
         }
-        // Prefix terms: every word must prefix-match some token (independent).
-        self.tokens
-            .iter()
-            .all(|word| tokens.iter().any(|token| token.starts_with(word.as_str())))
     }
 }
 
@@ -1086,6 +1162,21 @@ struct Region {
     indexed_text: Option<String>,
 }
 
+impl Region {
+    /// A canonical-row chat region: no persisted fragment (noise-chat
+    /// rows carry one) and the row anchors a canonical message, so the
+    /// region's evidence is the FULL `messages.content` — the same body
+    /// the canonical Quill document indexed. Only these regions hydrate
+    /// the canonical row, and only they can hold a hit past the 64 KiB
+    /// returned-text window.
+    fn hydrates_canonical_row(&self) -> bool {
+        self.indexed_text.is_none()
+            && self.message_id.is_some()
+            && self.text_source
+                == coding_agent_search::viewer_extensions::search_regions::TEXT_SOURCE_CHAT
+    }
+}
+
 /// Request-level bound on ungated (non-ASCII) literal verification:
 /// every chat region check costs one `messages.content` point read, so
 /// an ungated literal over a large universe would otherwise hydrate the
@@ -1117,6 +1208,23 @@ struct HydrateStats {
     /// removes redundant engine round-trips, never a region's accounted
     /// materialization.
     text_memo: HashMap<i64, Option<String>>,
+    /// Request-scoped memo of FULL `messages.content` rows — the
+    /// verification lane's whole-body text, fetched lazily only for the
+    /// regions that need it (a gated hit the bounded window cannot
+    /// reproduce, or an ungated chat check) so a request's resident text
+    /// stays proportional to what verification actually escalated, not to
+    /// the gated candidate set. `None` memoizes a proven-miss anchor.
+    full_text_memo: HashMap<i64, Option<String>>,
+    /// Whole-body text bytes scanned by literal verification this
+    /// request — the meter [`MAX_TEXT_VERIFICATION_BYTES`] ceilings.
+    verification_bytes: usize,
+    /// The request's whole-body scan ceiling (from the bridge's
+    /// `--text-verification-budget-bytes`, default
+    /// [`MAX_TEXT_VERIFICATION_BYTES`]). Set once at request start.
+    verification_budget: usize,
+    /// Calls spent fetching whole-body text (diagnostics; the memo makes
+    /// repeated checks on the same message free).
+    full_messages_hydrated: usize,
 }
 
 /// UTF-8-safe bound on hydrated region text — a raw byte slice panics when
@@ -1243,6 +1351,14 @@ fn region_text(
         if let Some(memo) = stats.text_memo.get(&message_id) {
             return Ok(memo.clone());
         }
+        // A whole-body row the verification lane already fetched answers
+        // the bounded window without a second point read; memoize the
+        // bound so later callers skip the re-slice.
+        if let Some(full) = stats.full_text_memo.get(&message_id) {
+            let bounded = full.as_ref().map(|text| bound_region_text(text));
+            stats.text_memo.insert(message_id, bounded.clone());
+            return Ok(bounded);
+        }
         let rows = connection.query_with_params(
             "SELECT content FROM messages WHERE id = ?1 LIMIT 1",
             &[SqliteValue::Integer(message_id)],
@@ -1257,6 +1373,40 @@ fn region_text(
         return Ok(bounded);
     }
     Ok(region.indexed_text.clone())
+}
+
+/// The FULL canonical row text for one canonical-row chat region — the
+/// whole `messages.content` value, memoized per request. This is the
+/// verification lane: matching must see the entire body, because a hit
+/// (an index-proven one past the window, or, ungated, any occurrence)
+/// may live beyond any prefix bound. The 64 KiB [`MAX_REGION_TEXT`]
+/// cap applies only to text RETURNED to clients (snippets/payload via
+/// [`region_text`]), never to what is verified. Callers gate on
+/// [`Region::hydrates_canonical_row`]; rows with a persisted fragment
+/// never reach here — their evidence is the fragment itself.
+fn region_text_full(
+    connection: &Connection,
+    region: &Region,
+    stats: &mut HydrateStats,
+) -> Result<Option<String>> {
+    let Some(message_id) = region.message_id else {
+        return Ok(None);
+    };
+    stats.full_messages_hydrated += 1;
+    if let Some(memo) = stats.full_text_memo.get(&message_id) {
+        return Ok(memo.clone());
+    }
+    let rows = connection.query_with_params(
+        "SELECT content FROM messages WHERE id = ?1 LIMIT 1",
+        &[SqliteValue::Integer(message_id)],
+    )?;
+    let content: Option<String> = rows
+        .first()
+        .map(|row| row.get_typed(0))
+        .transpose()?
+        .flatten();
+    stats.full_text_memo.insert(message_id, content.clone());
+    Ok(content)
 }
 
 struct SessionCtx {
@@ -1282,6 +1432,16 @@ struct SessionCtx {
     /// Per-field coverage states (`coverage_detail_json /fields/<f>/state`
     /// of the persisted facts row, else the query-time extraction).
     coverage: HashMap<String, String>,
+    /// Per-field coverage reason codes (`coverage_detail_json
+    /// /fields/<f>/reasons`) — the evidence that decides whether an
+    /// incomplete state is text ABSENT AT THE SOURCE (owner decision
+    /// 2026-11-07: exact, never blocks strict search) or text that was
+    /// NOT READ (still blocks).
+    coverage_reasons: HashMap<String, Vec<String>>,
+    /// Every reason code this session's facts prove as text absent at the
+    /// source (sorted, deduped) — the per-item `source_text_absent`
+    /// annotation. Empty for sessions without such gaps.
+    source_text_absent: Vec<String>,
     /// `true` when the message inventory was truncated by budget.
     inventory_partial: bool,
 }
@@ -1295,6 +1455,21 @@ impl SessionCtx {
             .get(field)
             .map(String::as_str)
             .unwrap_or("unavailable")
+    }
+    fn coverage_reasons_of(&self, field: &str) -> &[String] {
+        self.coverage_reasons
+            .get(field)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+    /// `true` when the field's coverage gap is a NOT-READ gap: incomplete
+    /// coverage that is not provably text absent at the source. Such a
+    /// field can still hide a matching region, so it keeps strict
+    /// membership `Unknown`; a source-absent gap cannot (no local record
+    /// ever held the text), so it stops contributing `unseen`.
+    fn field_blocks_strict(&self, field: &str) -> bool {
+        let state = self.coverage_of(field);
+        state != "complete" && !is_source_absent_gap(state, self.coverage_reasons_of(field))
     }
 }
 
@@ -1375,6 +1550,7 @@ fn session_ctx_from_parts(
     let provider =
         identity::normalize_agent_slug(&agent_slug.unwrap_or_default()).unwrap_or_default();
     let mut coverage: HashMap<String, String> = HashMap::new();
+    let mut coverage_reasons: HashMap<String, Vec<String>> = HashMap::new();
     if let Some(detail) = fact
         .coverage_detail_json
         .as_deref()
@@ -1384,6 +1560,16 @@ fn session_ctx_from_parts(
         for (field, entry) in fields {
             if let Some(state) = entry.get("state").and_then(Value::as_str) {
                 coverage.insert(field.clone(), state.to_owned());
+            }
+            if let Some(reasons) = entry.get("reasons").and_then(Value::as_array) {
+                let parsed: Vec<String> = reasons
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect();
+                if !parsed.is_empty() {
+                    coverage_reasons.insert(field.clone(), parsed);
+                }
             }
         }
     }
@@ -1417,6 +1603,35 @@ fn session_ctx_from_parts(
             .or_insert_with(|| "complete".to_owned());
     }
 
+    // Source-absent classification (owner decision 2026-11-07): every
+    // field whose incomplete coverage is PROVEN text absent at the
+    // source — all of its reason codes are on the closed allowlist —
+    // contributes its reasons to the per-item annotation. The docs-pending
+    // overwrite above is `pending` state, which never classifies, so
+    // unconverged region documents keep blocking strict search.
+    let source_text_absent: Vec<String> = coverage
+        .iter()
+        .filter(|(field, state)| {
+            is_source_absent_gap(
+                state.as_str(),
+                coverage_reasons
+                    .get(field.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+            )
+        })
+        .flat_map(|(field, _)| {
+            coverage_reasons
+                .get(field.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or(&[])
+                .iter()
+                .cloned()
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
     Ok(SessionCtx {
         conversation_id,
         public_id: None,
@@ -1444,6 +1659,8 @@ fn session_ctx_from_parts(
         model: conv.primary_model,
         regions: Vec::new(),
         coverage,
+        coverage_reasons,
+        source_text_absent,
         inventory_partial,
     })
 }
@@ -2043,9 +2260,10 @@ fn region_value(
 }
 
 /// `_unknown_field`: coverage decides whether a missing value is
-/// `FALSE` (complete inventory) or `UNKNOWN`.
+/// `FALSE` (complete inventory — or text provably absent at the source,
+/// which cannot record a value it never had) or `UNKNOWN`.
 fn unknown_field(session: &SessionCtx, field: &str, region: &Region) -> Truth {
-    if session.coverage_of(field) == "complete" {
+    if !session.field_blocks_strict(field) {
         return Truth::False;
     }
     if matches!(field, "tools" | "tool_exit")
@@ -2076,9 +2294,15 @@ fn collection(field: &str, op: &str, expected: &Value, session: &SessionCtx) -> 
         }
     }
     // Unseen: block inventory or the field's own coverage incomplete can
-    // still hide a matching region.
-    let unseen = (session.coverage_of("block_inventory") != "complete"
-        && session.coverage_of(coverage) != "complete")
+    // still hide a matching region. Source-absent gaps (owner decision
+    // 2026-11-07) cannot: unrecorded blocks would have to exist (not-read
+    // `block_inventory`) AND carry this field's text (the field's own
+    // not-read coverage) for a match to hide. The title leg stays on the
+    // raw state: an unread title (`overlay_not_supplied`) is a not-read
+    // gap that can hide a chat-scope match independent of the block
+    // inventory's source-absence.
+    let unseen = (session.field_blocks_strict("block_inventory")
+        && session.field_blocks_strict(coverage))
         || session.inventory_partial
         || (field == "scope"
             && expected.as_str() == Some("chat")
@@ -2249,6 +2473,77 @@ fn eval_predicate(
 // Literal + plan evaluation
 // ---------------------------------------------------------------------------
 
+/// One region's literal-verification verdict — always decided against
+/// the region's COMPLETE text evidence:
+///
+/// - A canonical-row chat region anchors the full `messages.content`
+///   (the same body the canonical Quill document indexed). A gated
+///   (index-proven) candidate first tries the bounded window — the
+///   common in-window hit reproduces there at zero escalation cost —
+///   and escalates to the whole body only when the window cannot
+///   reproduce the hit, which is where a past-window hit lives. An
+///   ungated (non-ASCII) literal skips the window entirely: the
+///   analyzer cannot prove the negative, so the whole body is the only
+///   honest evidence.
+/// - Persisted-fragment regions (derived/meta/noise-chat) verify against
+///   their stored fragment — the region document publishes exactly that
+///   fragment, so its evidence is already complete.
+///
+/// Whole-body scans are metered against the request's byte ceiling
+/// ([`HydrateStats::verification_budget`]): once the running total
+/// reaches the ceiling no further scan starts, and the verdict is the
+/// typed [`RegionMatch::BudgetExceeded`] — an explicit, reasoned
+/// refusal, never a silent cap. The one scan that crosses the ceiling
+/// overdrafts by at most a single region (the largest measured message
+/// is ~2.2 MB).
+enum RegionMatch {
+    /// The region's complete text evidence reproduces the literal.
+    Member,
+    /// The complete evidence is in and does NOT match.
+    NonMember,
+    /// No local text exists for the region (absent anchor or absent row).
+    NoText,
+    /// The request's whole-body byte ceiling is exhausted — the text
+    /// exists but cannot be scanned.
+    BudgetExceeded,
+}
+
+fn verify_region_text(
+    connection: &Connection,
+    region: &Region,
+    matcher: &LiteralMatcher,
+    quill_possible: Option<&HashSet<i64>>,
+    stats: &mut HydrateStats,
+) -> Result<RegionMatch> {
+    let canonical = region.hydrates_canonical_row();
+    if canonical
+        && quill_possible.is_some()
+        && let Some(bounded) = region_text(connection, region, stats)?
+        && matcher.matches(&bounded)
+    {
+        // Gated candidate: the bounded window already reproduces the hit.
+        return Ok(RegionMatch::Member);
+    }
+    let Some(text) = (if canonical {
+        region_text_full(connection, region, stats)?
+    } else {
+        region_text(connection, region, stats)?
+    }) else {
+        return Ok(RegionMatch::NoText);
+    };
+    if canonical {
+        if stats.verification_bytes >= stats.verification_budget {
+            return Ok(RegionMatch::BudgetExceeded);
+        }
+        stats.verification_bytes += text.len();
+    }
+    if matcher.matches(&text) {
+        Ok(RegionMatch::Member)
+    } else {
+        Ok(RegionMatch::NonMember)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn eval_literal(
     value: &str,
@@ -2266,12 +2561,14 @@ fn eval_literal(
     if matcher.never {
         return Ok(out);
     }
-    // A literal the index cannot express (non-ASCII text — Quill's
-    // analyzer produces no tokens for it, empirically verified) must not
-    // gate membership on hits: the gate would read the index's blind spot
-    // as a proven negative and silently false-negative every session.
+    // A literal the index cannot express (non-ASCII text — quill's CASS
+    // analyzer skips every non-ASCII non-CJK scalar, producing no tokens
+    // for it) must not gate membership on hits: the gate would read the
+    // index's blind spot as a proven negative and silently false-negative
+    // every session.
     // `quill_possible = None` evaluates every persisted region through the
     // matcher — still bounded by the region inventory, never a corpus read.
+    let mut gated_unreproduced = false;
     for region in &session.regions {
         // Indexed membership gate: only regions whose Quill document slot
         // produced a hit for this literal can be members. Everything else
@@ -2289,12 +2586,7 @@ fn eval_literal(
         // the request-level budget the session is `unseen` — honest
         // uncertainty that refuses without `allow_partial` — while
         // derived/meta regions keep verifying from persisted fragments.
-        if quill_possible.is_none()
-            && region.indexed_text.is_none()
-            && region.message_id.is_some()
-            && region.text_source
-                == coding_agent_search::viewer_extensions::search_regions::TEXT_SOURCE_CHAT
-        {
+        if quill_possible.is_none() && region.hydrates_canonical_row() {
             if stats.ungated_chat_hydrations >= MAX_UNGATED_CHAT_HYDRATIONS {
                 out.unseen = true;
                 out.reasons
@@ -2303,35 +2595,80 @@ fn eval_literal(
             }
             stats.ungated_chat_hydrations += 1;
         }
-        match region_text(connection, region, stats)? {
-            Some(text) if matcher.matches(&text) => {
+        match verify_region_text(connection, region, matcher, quill_possible, stats)? {
+            RegionMatch::Member => {
                 out.known.insert(region.key.clone());
                 out.possible.insert(region.key.clone());
                 if positive {
                     out.witnesses.push((region.key.clone(), branch.to_owned()));
                 }
             }
-            // A Quill-verified hit whose bounded fragment no longer
-            // reproduces the match (analyzer drift, canonical rewrite
-            // after publication) is POSSIBLE membership — honest
-            // uncertainty, never silently dropped or admitted. Only a
-            // gated candidate earns `possible`: under the ungated
+            RegionMatch::BudgetExceeded => {
+                if quill_possible.is_some() {
+                    // A gated candidate the budget could not verify: the
+                    // index-proven hit stays possible membership with a
+                    // typed reason — honest uncertainty, never silently
+                    // dropped or admitted.
+                    out.possible.insert(region.key.clone());
+                    out.reasons.insert(missing_reason(
+                        session,
+                        "text_inventory",
+                        "verification_bytes_budget_exceeded",
+                    ));
+                } else {
+                    out.unseen = true;
+                    out.reasons
+                        .insert("literal:verification_bytes_budget_exceeded".to_owned());
+                }
+            }
+            // A Quill-verified hit whose COMPLETE evidence cannot
+            // reproduce the match (analyzer drift, a canonical rewrite
+            // after publication — a hit past the returned-text window
+            // now escalates to the whole body, and the literal matcher
+            // reads the analyzer's own token boundaries, so neither a
+            // plain past-the-bound hit nor an index-proven hit on
+            // `_`/`-`/`$`-glued text lands here anymore) is POSSIBLE
+            // membership — honest
+            // uncertainty, never silently dropped or admitted, and
+            // always REASONED: an
+            // Unknown without a reason would make the strict refusal
+            // below report `facts_pending` over an EMPTY reason list (a
+            // vacuous all()), claiming reindexable facts where the
+            // evidence says the archived text could not verify the hit.
+            // Only a gated candidate earns `possible`: under the ungated
             // non-ASCII evaluation a non-matching region is a plain
-            // non-member, not uncertainty.
+            // non-member, not uncertainty. The reason itself is
+            // session-scoped — one String per session, built once after
+            // the loop: the reason set is identical either way (the set
+            // deduplicates), so per-region formatting would only add
+            // allocations to this hot loop.
             _ => {
                 if quill_possible.is_some() {
                     out.possible.insert(region.key.clone());
+                    gated_unreproduced = true;
                 }
             }
         }
     }
+    if gated_unreproduced {
+        out.reasons.insert(missing_reason(
+            session,
+            "text_inventory",
+            "quill_hit_not_reproduced",
+        ));
+    }
+    // Unseen: an inventory gap that could still hide a matching region.
+    // Source-absent gaps (text provably non-existent in any local record,
+    // owner decision 2026-11-07) cannot hide anything, so they stop
+    // contributing `unseen` — the session's existing text answers exactly.
+    // `inventory_partial` (docs not converged) is never source-absent.
     let unseen = session.inventory_partial
-        || session.coverage_of("block_inventory") != "complete"
-        || session.coverage_of("text_inventory") != "complete";
+        || session.field_blocks_strict("block_inventory")
+        || session.field_blocks_strict("text_inventory");
     if unseen {
         out.unseen = true;
         for field in ["block_inventory", "text_inventory"] {
-            if session.coverage_of(field) != "complete" || session.inventory_partial {
+            if session.inventory_partial || session.field_blocks_strict(field) {
                 out.reasons.insert(format!(
                     "{field}:{}:inventory_incomplete",
                     session.coverage_of(field)
@@ -2723,7 +3060,9 @@ struct EvaluatedSession {
 }
 
 /// `search_sessions(ast, query, filters, scopes, sort, mode, allow_partial,
-/// cursor, limit, max_matches)` — one bounded, generation-bound page.
+/// cursor, limit, max_matches, verification_budget_bytes)` — one bounded,
+/// generation-bound page. `verification_budget_bytes` is the request's
+/// whole-body scan ceiling (see [`MAX_TEXT_VERIFICATION_BYTES`]).
 #[allow(clippy::too_many_arguments)]
 pub fn search_sessions(
     connection: &Connection,
@@ -2738,6 +3077,7 @@ pub fn search_sessions(
     cursor: Option<&str>,
     limit: usize,
     max_matches: usize,
+    verification_budget_bytes: usize,
 ) -> Result<Value> {
     if !revisions::extensions_installed(connection)? {
         return Err(refuse(
@@ -2839,7 +3179,10 @@ pub fn search_sessions(
 
     // 3) Evaluate every session against its persisted region rows.
     let generation = revisions::generation(connection)?.unwrap_or_default();
-    let mut stats = HydrateStats::default();
+    let mut stats = HydrateStats {
+        verification_budget: verification_budget_bytes,
+        ..HydrateStats::default()
+    };
     let mut accepted: Vec<EvaluatedSession> = Vec::new();
     let mut unknown_reasons: BTreeMap<String, usize> = BTreeMap::new();
     let mut unknown_sessions = 0_usize;
@@ -2848,6 +3191,15 @@ pub fn search_sessions(
     // evaluates inside the request deadline).
     let sessions =
         load_sessions_indexed(connection, &universe, &id_subquery, &id_params, &mut stats)?;
+    // How many of the evaluated sessions carry source-absent (b) gaps —
+    // counted over the WHOLE candidate universe, not just result items:
+    // a (b) session excluded by proven absence (a NOT-match or a
+    // non-member) still had its verdict decided by source-absence, and
+    // the response must not hide that.
+    let source_absent_sessions = sessions
+        .iter()
+        .filter(|session| !session.source_text_absent.is_empty())
+        .count();
     // One chunked set read for every `messages.content` row the gated
     // literals can touch — replacing a point read per gated region with an
     // O(1)-queries-per-request hydration memo.
@@ -2913,14 +3265,30 @@ pub fn search_sessions(
                 for reason in &result.reasons {
                     *unknown_reasons.entry(reason.clone()).or_default() += 1;
                 }
+                // A session must never be Unknown with zero reasons: the
+                // refusal below reads `all()` over the reason list, and
+                // an empty list is vacuously true — it would report
+                // `facts_pending` with an empty evidence list, claiming
+                // reindexable facts the evidence never says. Internal-
+                // inconsistency backstop: every Unknown arm carries its
+                // reason, and this one names the violation.
+                if result.reasons.is_empty() {
+                    *unknown_reasons
+                        .entry("internal:inconsistency:unknown_without_reason".to_owned())
+                        .or_default() += 1;
+                }
             }
             Truth::False => {}
         }
     }
     if unknown_sessions > 0 && !allow_partial {
-        let pending = unknown_reasons
-            .keys()
-            .all(|reason| reason.contains(":pending:"));
+        // `facts_pending` (a reindex converges the evidence) needs a
+        // non-empty reason list whose every entry is pending. An empty
+        // list is data_unavailable — never a vacuous facts_pending.
+        let pending = !unknown_reasons.is_empty()
+            && unknown_reasons
+                .keys()
+                .all(|reason| reason.contains(":pending:"));
         return Err(refuse(
             if pending {
                 "facts_pending"
@@ -3077,6 +3445,12 @@ pub fn search_sessions(
             "started_at_ms": session.created_ms,
             "activity_ms": session.activity_ms,
             "score": entry.score,
+            // Owner decision 2026-11-07: reason codes this session's facts
+            // prove as text ABSENT AT THE SOURCE — the strict answer is
+            // exact over the existing text even though these fields'
+            // coverage is incomplete. Always present; empty when every
+            // gap is a read-recoverable one.
+            "source_text_absent": session.source_text_absent,
         });
         // Public identity is resolved lazily and stays nullable on failure
         // (a search page must not die on one unverifiable row).
@@ -3159,17 +3533,26 @@ pub fn search_sessions(
         "evaluated_sessions": accepted.len() + unknown_sessions,
         "unknown_sessions": unknown_sessions,
         "unknown_reasons": unknown_reasons,
+        // Sessions in the evaluated universe whose only inventory gaps
+        // are provably text absent at the source (see the per-item
+        // `source_text_absent` annotation).
+        "source_absent_sessions": source_absent_sessions,
         "generation": generation,
         "index_epoch": readers.index_epoch,
         "warnings": warnings,
         "issues": Value::Null,
         // Explicit diagnostics required by Task 5: candidate + hydration
-        // counts prove the indexed path never re-reads the corpus.
+        // counts prove the indexed path never re-reads the corpus. The
+        // verification meters prove whole-body scanning stays inside the
+        // request's byte ceiling.
         "diagnostics": {
             "candidate_sessions": universe_size,
             "region_rows_loaded": stats.regions_loaded,
             "regions_hydrated": stats.regions_hydrated,
             "messages_hydrated": stats.messages_hydrated,
+            "full_text_messages_hydrated": stats.full_messages_hydrated,
+            "verification_bytes_scanned": stats.verification_bytes,
+            "verification_budget_bytes": stats.verification_budget,
         },
     }))
 }

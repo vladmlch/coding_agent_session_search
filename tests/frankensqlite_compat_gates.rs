@@ -14,6 +14,7 @@ use fsqlite_types::value::SqliteValue;
 use std::fmt::Write as _;
 
 use coding_agent_search::storage::sqlite::{CURRENT_SCHEMA_VERSION, FrankenStorage, SqliteStorage};
+use coding_agent_search::viewer_extensions::schema;
 
 #[test]
 fn rusqlite_is_dev_dependency_only() {
@@ -42,10 +43,12 @@ fn rusqlite_is_dev_dependency_only() {
 
 /// The fsqlite engine family resolves exclusively from the owner's
 /// frankensqlite fork through the committed [patch.crates-io] table (owner
-/// decision, 2026-11-07): every member is redirected to
-/// `https://github.com/vladmlch/frankensqlite` at rev
-/// `d9414f972bf1fe004e1c991afc213e9be267a7cb` (v0.4.12 plus the two vdbe
-/// range-seek commits), while [dependencies] keep registry-shaped `=0.4.12`
+/// decision, 2026-11-07; rev moved to the DML-seek tip 2026-11-08): every
+/// member is redirected to `https://github.com/vladmlch/frankensqlite`
+/// (branch cass-local-fixes-dml) at rev
+/// `e890166488fbfa355acb531d97040329c06eef0d` (v0.4.12 plus the two vdbe
+/// range-seek commits and the DML equality-prefix index seeks, bd-j9gub),
+/// while [dependencies] keep registry-shaped `=0.4.12`
 /// requirements so every consumer — including franken-agent-detection's
 /// `^0.4.1` ask — converges on that one fork resolution per package.
 /// build.rs `validate_fsqlite_source_pin` rejects any family redirect that
@@ -59,8 +62,8 @@ fn frankensqlite_fork_source_identity_is_exact_and_coherent() {
     const FACADE_REQUIREMENT: &str = "=0.4.12";
     const TYPES_REQUIREMENT: &str = "=0.4.12";
     const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensqlite";
-    const EXPECTED_FORK_REV: &str = "d9414f972bf1fe004e1c991afc213e9be267a7cb";
-    const EXPECTED_FORK_LOCK_SOURCE: &str = "git+https://github.com/vladmlch/frankensqlite?rev=d9414f972bf1fe004e1c991afc213e9be267a7cb#d9414f972bf1fe004e1c991afc213e9be267a7cb";
+    const EXPECTED_FORK_REV: &str = "e890166488fbfa355acb531d97040329c06eef0d";
+    const EXPECTED_FORK_LOCK_SOURCE: &str = "git+https://github.com/vladmlch/frankensqlite?rev=e890166488fbfa355acb531d97040329c06eef0d#e890166488fbfa355acb531d97040329c06eef0d";
     const EXPECTED_FACADE_FEATURES: &[&str] = &["fts5", "async-api"];
 
     let manifest: toml::Table =
@@ -706,6 +709,158 @@ fn frankensqlite_parameterized_rowid_hydration_seeks_and_preserves_exact_rows() 
             "a new execution must not reuse the previous bound rowid set"
         );
     }
+}
+
+/// bd-j9gub (owner fork `e8901664`): the per-conversation viewer DELETEs must
+/// SEARCH a leading-column index instead of scanning the table. On the 0.4.12
+/// fork these DELETEs planned as full table scans — the DML collect gate only
+/// sought a single-column index or a FULL composite key, so an equality PREFIX
+/// of a composite key (the `(conversation_id, ...)` viewer keys) fell back to
+/// Rewind/Next, making the per-conversation republish pass O(N) per
+/// conversation, O(N^2) over the archive (measured at ~62% of the scan+persist
+/// stage at 300k rows; .scratch/glm/2026-11-07-index-speed). The fork (rev
+/// `e8901664`, still on the 0.4.12 base: `f39c8eb0`+`e8901664`, backported
+/// onto `d9414f97` from the 0.4.13 series) seeks the longest pinned index
+/// prefix and renders the seek in `EXPLAIN QUERY PLAN` for the three
+/// republish-path shapes — regions republish, regions meta rederive (prefix
+/// plus LIKE residual) and tags republish — which this gate pins against the
+/// production viewer schema. The sort orphan-cleanup shape (NOT EXISTS
+/// residual) is NOT covered by the fork's seek machinery yet: on both the
+/// pre-seek 0.4.12 rev (`d9414f97`) and rev `e8901664` it still plans as a
+/// SCAN (a rare maintenance path, not the measured hot cost), and the gate
+/// pins that measured plan class so the gap stays visible and any fork
+/// change — fix or regression — fails by name. The gate also smoke-executes
+/// the region and tag deletes so a seek change cannot pass by deleting wrong
+/// rows.
+#[test]
+fn bd_j9gub_viewer_conversation_dml_seeks_index_prefixes_instead_of_scanning() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let db_path = dir.path().join("viewer-dml-seek.db");
+    let storage = FrankenStorage::open(&db_path).expect("create the canonical CASS schema");
+    schema::ensure_schema(storage.raw()).expect("install the production viewer schema");
+    let conn = storage.raw();
+
+    conn.execute_batch(
+        "INSERT INTO agents(id, slug, name, kind, created_at, updated_at)
+         VALUES (9901, 'j9gub', 'plan gate', 'cli', 1, 1);
+         INSERT INTO conversations(id, agent_id, title, source_path)
+         VALUES (99011, 9901, 'first', 'fixture/first.jsonl'),
+                (99012, 9901, 'second', 'fixture/second.jsonl');
+         INSERT INTO viewer_search_regions(
+             conversation_id, region_ordinal, region_key, scope, quill_idx)
+         VALUES (99011, 0, 'meta:profile', 'session', 0),
+                (99011, 1, 'turn:1', 'turn', 1),
+                (99011, 2, 'meta:summary', 'session', 2),
+                (99012, 0, 'turn:1', 'turn', 0),
+                (99012, 1, 'meta:profile', 'session', 1);
+         INSERT INTO viewer_tags(conversation_id, tag)
+         VALUES (99011, 'alpha'), (99011, 'beta'), (99012, 'gamma');
+         -- No explicit viewer_session_sort seed: the schema's own
+         -- conversations-INSERT trigger creates exactly one sort row per
+         -- conversation (the production shape), so an explicit INSERT would
+         -- violate the conversation_id unique constraint.",
+    )
+    .expect("seed viewer rows");
+
+    // Every per-conversation viewer DELETE cass issues in production:
+    // search_regions.rs (republish + meta rederive), viewer_bridge/writer.rs
+    // (tags), sort.rs (orphan cleanup). bd-j9gub (fork rev `e8901664`) makes
+    // the first three SEEK the leading-column index. The fourth — the sort
+    // orphan-cleanup DELETE at src/viewer_extensions/sort.rs:394 — still plans
+    // as a full scan on every family rev measured (`d9414f97` and `e8901664`):
+    // the seek machinery treats a NOT EXISTS residual differently from
+    // simple residual conjuncts and bails to Rewind/Next. That shape is pinned
+    // separately below so the gap is visible, not silent: if the fork later
+    // seeks it, the pin fails and the shape graduates into `seek_shapes`.
+    let seek_shapes: &[(&str, &str)] = &[
+        (
+            "regions republish",
+            "DELETE FROM viewer_search_regions WHERE conversation_id = ?1",
+        ),
+        (
+            "regions meta rederive",
+            "DELETE FROM viewer_search_regions WHERE conversation_id = ?1 \
+             AND region_key LIKE 'meta:%'",
+        ),
+        (
+            "tags republish",
+            "DELETE FROM viewer_tags WHERE conversation_id = ?1",
+        ),
+    ];
+    let known_scan_shapes: &[(&str, &str)] = &[(
+        "sort orphan cleanup",
+        "DELETE FROM viewer_session_sort \
+             WHERE conversation_id = ?1 \
+               AND NOT EXISTS (SELECT 1 FROM conversations c WHERE c.id = ?1)",
+    )];
+    let explain = |sql: &str| -> String {
+        conn.query_with_params(
+            &format!("EXPLAIN QUERY PLAN {sql}"),
+            &[SqliteValue::Integer(99011)],
+        )
+        .unwrap_or_else(|error| panic!("explain: {error}"))
+        .iter()
+        .map(|row| row.get_typed::<String>(3).expect("query plan detail"))
+        .collect::<Vec<_>>()
+        .join(" | ")
+    };
+    for (label, sql) in seek_shapes {
+        let details = explain(sql);
+        assert!(
+            details.contains("SEARCH") && !details.contains("SCAN"),
+            "{label}: per-conversation viewer DELETE must SEARCH a leading-column \
+             index instead of scanning (bd-j9gub); plan: {details}"
+        );
+    }
+    for (label, sql) in known_scan_shapes {
+        let details = explain(sql);
+        assert!(
+            details.contains("SCAN"),
+            "{label}: the fork previously planned this NOT EXISTS-residual DELETE \
+             as a SCAN (measured on rev `e8901664` and on the pre-seek `d9414f97`); \
+             a SEARCH here means the fork graduated this shape — move it into \
+             `seek_shapes` and record the fork rev; plan: {details}"
+        );
+    }
+
+    // The seeks must still delete exactly the targeted conversation's rows:
+    // conversation 99011 loses everything, conversation 99012 keeps its
+    // non-meta region, tag and sort row.
+    conn.execute_with_params(
+        "DELETE FROM viewer_search_regions WHERE conversation_id = ?1",
+        &[SqliteValue::Integer(99011)],
+    )
+    .expect("delete the first conversation's regions");
+    conn.execute_with_params(
+        "DELETE FROM viewer_search_regions WHERE conversation_id = ?1 \
+         AND region_key LIKE 'meta:%'",
+        &[SqliteValue::Integer(99012)],
+    )
+    .expect("delete the second conversation's meta regions");
+    conn.execute_with_params(
+        "DELETE FROM viewer_tags WHERE conversation_id = ?1",
+        &[SqliteValue::Integer(99011)],
+    )
+    .expect("delete the first conversation's tags");
+    let count = |sql: &str| -> i64 {
+        conn.query(sql)
+            .unwrap_or_else(|error| panic!("count after delete: {error}"))
+            .first()
+            .expect("count row")
+            .get_typed(0)
+            .expect("count column")
+    };
+    assert_eq!(
+        (
+            count("SELECT COUNT(*) FROM viewer_search_regions WHERE conversation_id = 99011"),
+            count("SELECT COUNT(*) FROM viewer_search_regions WHERE conversation_id = 99012"),
+            count("SELECT COUNT(*) FROM viewer_tags WHERE conversation_id = 99011"),
+            count("SELECT COUNT(*) FROM viewer_tags WHERE conversation_id = 99012"),
+            count("SELECT COUNT(*) FROM viewer_session_sort WHERE conversation_id = 99012"),
+        ),
+        (0, 1, 0, 1, 1),
+        "the seeked DELETEs must remove exactly the targeted conversation's rows"
+    );
 }
 
 // ============================================================================

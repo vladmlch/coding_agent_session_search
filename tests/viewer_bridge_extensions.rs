@@ -21,6 +21,7 @@ use coding_agent_search::model::types::{
     Agent, AgentKind, Conversation, Message, MessageRole, Snippet,
 };
 use coding_agent_search::storage::sqlite::{CURRENT_SCHEMA_VERSION, FrankenStorage};
+use coding_agent_search::viewer_extensions::projection;
 use coding_agent_search::viewer_extensions::{backfill, facts, schema};
 use serde_json::{Value, json};
 use support::{BridgeHarness, FixtureConversation, SeedConversation, SeedMessage};
@@ -4618,6 +4619,57 @@ fn details_tool_output_chunked_walk_is_byte_exact() -> Result<()> {
     bridge.shutdown()
 }
 
+/// The viewer-bridge `get_tool_output` oracle mirrors the facts-lane
+/// `recorded_text` rule (src/viewer_extensions/providers/mod.rs): an
+/// `image_url` part is the codex tool-output image shape (OpenAI form), a
+/// known NON-TEXT part — so an image-only recorded output (FAD F13 emits
+/// them with empty content) is `available` evidence, never a `partial`
+/// "not recorded" claim about a record that exists.
+#[test]
+fn details_tool_output_image_only_parts_stay_available() -> Result<()> {
+    let mut fixture = detail_fixture();
+    // Empty canonical content: the recorded evidence lives in the
+    // `source:"tool_result"` extra `output` parts (an image-only list),
+    // exactly like a post-F13 image-only codex output row.
+    fixture[0].messages[2].content = String::new();
+    let mut bridge = BridgeHarness::with_seed(&fixture, &[])?;
+    seed_detail_extras(&bridge)?;
+    let extra = json!({
+        "source":"tool_result","tool_use_id":"call-img","is_error":false,
+        "output":[{"type":"image_url",
+        "image_url":{"url":"data:image/png;base64,MADEUP"}}]
+    });
+    {
+        let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+        writer.execute_with_params(
+            "UPDATE messages SET extra_bin = NULL, extra_json = ?1 \
+             WHERE conversation_id = 1 AND idx = 2",
+            &param_slice_to_values(params![extra.to_string()]),
+        )?;
+    }
+    init_extensions(&bridge)?;
+
+    let detail = bridge.exchange(json!({
+        "op":"get_session_details","conversation_id":1,"sections":["messages"]}))?;
+    ensure!(detail["ok"] == true, "{detail}");
+    let revision = detail["result"]["generation"]["canonical_revision"]
+        .as_i64()
+        .unwrap();
+    let output = bridge.exchange(json!({
+        "op":"get_tool_output","conversation_id":1,"expected_revision":revision,
+        "step_anchor":{"kind":"message","idx":2}}))?;
+    ensure!(output["ok"] == true, "{output}");
+    let resource = &output["result"];
+    ensure!(resource["content"] == "", "{resource}");
+    ensure!(resource["content_bytes"].as_i64() == Some(0), "{resource}");
+    ensure!(resource["tool_use_id"] == "call-img", "{resource}");
+    ensure!(
+        resource["availability"] == "available",
+        "an image-only recorded output is available evidence, not partial: {resource}"
+    );
+    bridge.shutdown()
+}
+
 // ---------------------------------------------------------------------------
 // Task 10: SQL analytics — projects / dashboard / health
 // ---------------------------------------------------------------------------
@@ -5958,7 +6010,10 @@ fn backfill_replays_committed_canonical_into_extension_tables() -> Result<()> {
          step_count, turn_count, tool_call_count \
          FROM viewer_session_projection WHERE conversation_id = 1",
     )?;
-    ensure!(projection.get_typed::<i64>(0)? == 1, "projection_version");
+    ensure!(
+        projection.get_typed::<i64>(0)? == projection::PROJECTION_VERSION,
+        "projection_version"
+    );
     ensure!(projection.get_typed::<i64>(1)? == facts::FACTS_EXTRACTOR_VERSION);
     ensure!(
         projection.get_typed::<i64>(2)? == expected_facts.source_revision,
@@ -6501,8 +6556,9 @@ fn ingest_publishes_coherent_extension_generation() -> Result<()> {
         "receipt must bind the same source_revision as the rows: {receipt}"
     );
     ensure!(
-        receipt["extractor_version"].as_i64() == Some(1)
-            && receipt["projection_version"].as_i64() == Some(1),
+        receipt["extractor_version"].as_i64() == Some(facts::FACTS_EXTRACTOR_VERSION)
+            && receipt["projection_version"].as_i64()
+                == Some(coding_agent_search::viewer_extensions::projection::PROJECTION_VERSION),
         "receipt must name the current extractor/projection versions: {receipt}"
     );
     ensure!(

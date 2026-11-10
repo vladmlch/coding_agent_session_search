@@ -338,7 +338,15 @@ RETARGETS = [
         "test": "pass4_lib_dispatch_routes_through_doctor_chokepoint_apis",
         "test_file": "tests/doctor_mutate_auditor.rs",
         "stage": "3c",
-        "find": 'fs::read_to_string(format!("{manifest}/src/lib.rs"))',
+        "find": 'fs::read_to_string(format!("{manifest}/src/lib.rs"))'
+                '.expect("lib.rs readable")',
+        # Explicit `with`: the generic fs::read_to_string branch would emit
+        # the Ok(..).unwrap() union that was already repaired once; keep the
+        # approved two-read/expect union pinned here instead.
+        "with": 'fs::read_to_string(format!("{manifest}/src/lib.rs"))'
+                '.expect("lib.rs readable") + '
+                '&fs::read_to_string(format!("{manifest}/src/doctor/run_doctor_ls.rs"))'
+                '.expect("run_doctor_ls.rs readable")',
         "reads": ["src/lib.rs"],
         "reads_markers": ["fn run_doctor_ls"],
         "markers": [

@@ -157,8 +157,8 @@ markers = [ "REMOVED_COMMANDS", "REMOVED_FLAGS", "was removed" ]
 test = "pass4_lib_dispatch_routes_through_doctor_chokepoint_apis"
 test_file = "tests/doctor_mutate_auditor.rs"
 stage = "3c"
-find = "fs::read_to_string(format!(\"{manifest}/src/lib.rs\"))"
-with = "Ok::<_, std::io::Error>(fs::read_to_string(format!(\"{manifest}/src/lib.rs\")).unwrap() + &fs::read_to_string(format!(\"{manifest}/src/doctor/run_doctor_ls.rs\")).unwrap())"
+find = "fs::read_to_string(format!(\"{manifest}/src/lib.rs\")).expect(\"lib.rs readable\")"
+with = "fs::read_to_string(format!(\"{manifest}/src/lib.rs\")).expect(\"lib.rs readable\") + &fs::read_to_string(format!(\"{manifest}/src/doctor/run_doctor_ls.rs\")).expect(\"run_doctor_ls.rs readable\")"
 to = [ "src/lib.rs", "src/doctor/run_doctor_ls.rs" ]
 markers = [ "crate::doctor_runs::list_runs", "crate::doctor_runs::find_latest_run", "crate::doctor_runs::RunId", "crate::doctor_undo::undo_run", "doctor_robot_docs_body", "RobotTopic::Doctor" ]
 

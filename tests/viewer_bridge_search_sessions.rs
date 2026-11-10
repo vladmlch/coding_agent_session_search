@@ -936,12 +936,14 @@ fn search_sessions_indexed_hydration_is_bounded() -> Result<()> {
     bridge.shutdown()
 }
 
-/// Unicode + deep coordinates + the 64 KiB region-text byte budget. S8
+/// Unicode + deep coordinates + the returned-text byte bound. S8
 /// parks a Cyrillic marker at message idx 1100 (deep-link coordinate);
-/// S9 holds a >64 KiB chat body whose terms straddle the hydration bound —
-/// in-budget terms verify, out-of-budget hits degrade to honest
-/// `unknown` (never a silent false negative and never a slice panic on a
-/// multibyte boundary).
+/// S9 holds a >64 KiB chat body whose terms straddle the old hydration
+/// bound — in-window terms verify from the bounded preview, and hits
+/// past the window verify over the WHOLE body (strict members, never a
+/// silent false negative). The 64 KiB cap survives only on text
+/// RETURNED to the client; the multibyte 'ж' straddling the bound must
+/// never panic the lane.
 #[test]
 fn search_sessions_unicode_deep_and_byte_budget() -> Result<()> {
     let mut fixture = gold_fixture();
@@ -1007,22 +1009,394 @@ fn search_sessions_unicode_deep_and_byte_budget() -> Result<()> {
         "deep witness must carry message idx 1100: {matches:?}"
     );
 
-    // In-budget term verifies normally.
+    // In-window term verifies from the bounded preview.
     let page = search(&mut bridge, json!({"query":"boundaryterm"}))?;
     assert_members(&page, &[9])?;
 
-    // `beyondterm` is indexed in the canonical document but lies past the
-    // 64 KiB hydration bound: the hit cannot be verified, so the session
-    // is honestly `unknown` — the page refuses instead of answering a
-    // silently incomplete membership.
+    // `beyondterm` is indexed in the canonical document and lies past the
+    // 64 KiB window: verification escalates to the whole body, finds the
+    // hit and answers STRICTLY — an exact member, not the old
+    // bounded-prefix honest-unknown refusal.
     let page = search(&mut bridge, json!({"query":"beyondterm"}))?;
-    ensure!(
-        page["ok"] == false,
-        "an unverifiable out-of-budget hit must not silently miss: {page}"
-    );
+    assert_members(&page, &[9])?;
 
     // The boundary-safe truncation did not panic the lane — the bridge is
     // still serving (the searches above already proved it).
+    bridge.shutdown()
+}
+
+/// A gated index hit past the 64 KiB window is an EXACT strict member:
+/// verification sees the whole canonical body, so the hit reproduces
+/// wherever it lives. The 64 KiB cap survives only on text RETURNED to
+/// the client (snippets/payload); the bounded window stays the first
+/// chance because the common in-window hit costs no escalation. The
+/// unreproducible-hit arm (`quill_hit_not_reproduced`) remains in the
+/// evaluator for genuine drift — an index hit the archived text cannot
+/// reproduce at all — but the past-bound placement that used to reach it
+/// is fixed here.
+#[test]
+fn search_sessions_past_bound_hit_is_a_strict_member() -> Result<()> {
+    let mut fixture = gold_fixture();
+    // A >64 KiB chat body whose only occurrence of the marker term sits
+    // far past the bound (the real archive shape: an indexed long message
+    // whose hit lands beyond every hydrated fragment).
+    let long_body = format!("{} farbeyondterm", "a".repeat(70_000));
+    let long_body: &'static str = Box::leak(long_body.into_boxed_str());
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-far",
+        source_path: "/sessions/s-8-far.jsonl",
+        workspace: None,
+        title: "far out-of-budget session",
+        started_at: Some(6_200),
+        ended_at: Some(9_300),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![(0, MessageRole::User, long_body, None)],
+    });
+    let mut bridge = gold_harness_full(&fixture, &[])?;
+
+    // Strict: the past-bound hit verifies over the whole body — an exact
+    // member, answered without allow_partial.
+    let page = search(&mut bridge, json!({"query":"farbeyondterm"}))?;
+    assert_members(&page, &[8])?;
+    // The witness deep-links the canonical message, and the snippet is
+    // the bounded RETURNED window: verification saw the whole body, but
+    // the payload never carries more than the 64 KiB cap.
+    let matches = page["result"]["matches"]["8"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure!(
+        matches.len() == 1,
+        "the member carries exactly one witness: {page}"
+    );
+    ensure!(
+        matches[0]["message_idx"].as_i64() == Some(0),
+        "the witness anchors message idx 0: {page}"
+    );
+    let snippet = matches[0]["snippet"].as_str().unwrap_or_default();
+    ensure!(
+        !snippet.contains("farbeyondterm"),
+        "the returned snippet is the bounded window, not the whole body: {page}"
+    );
+
+    // allow_partial answers identically — the session is now KNOWN, so
+    // the page is complete with no membership warning.
+    let page = search(
+        &mut bridge,
+        json!({"query":"farbeyondterm", "allow_partial": true}),
+    )?;
+    assert_members(&page, &[8])?;
+    ensure!(
+        page["result"]["complete"] == true,
+        "a verified past-bound member leaves the page complete: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// Whole-body verification shapes: every hit the 64 KiB window cannot see
+/// still decides EXACTLY. The window's edge cuts the first marker token
+/// mid-token (`o` of `omega` at byte 65,535) — the truncated window token
+/// must neither satisfy the query nor crash the matcher, while the whole
+/// body finds the phrase, the bare term, the ungated non-ASCII term past
+/// the window and the term at the very END of the body. An absent term
+/// over the same huge body is a DEFINITE non-member (strict, no Unknown)
+/// — for a gated literal (the index proves no hit) and for an ungated
+/// non-ASCII literal (the whole body was scanned and the term is absent).
+#[test]
+fn search_sessions_past_bound_shapes_verify_over_the_whole_body() -> Result<()> {
+    let mut fixture = gold_fixture();
+    // 16,383 * "pad " = 65,532 B, then "xy " lands the separator at byte
+    // 65,534 and `omega` starts AT byte 65,535 — inside the 64 KiB
+    // window ([0, 65_536)) by exactly one byte, so the window holds the
+    // truncated token "o" while the full body holds "omega".
+    let mut body = String::with_capacity(70_000);
+    for _ in 0..16_383 {
+        body.push_str("pad ");
+    }
+    body.push_str("xy omega zero endpoint past the window");
+    body.push_str(" middlefiller");
+    // Ungated-lane marker (non-ASCII) past the window.
+    body.push_str(" хвостовой");
+    // …and a term at the very END of the body.
+    body.push_str(" trailingfiller finaltail");
+    let body: &'static str = Box::leak(body.into_boxed_str());
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-shapes",
+        source_path: "/sessions/s-8-shapes.jsonl",
+        workspace: None,
+        title: "past-bound shapes session",
+        started_at: Some(6_200),
+        ended_at: Some(9_300),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![(0, MessageRole::User, body, None)],
+    });
+    let mut bridge = gold_harness_full(&fixture, &[])?;
+
+    // Exact phrase past the window, its first token cut mid-token by the
+    // window edge — the truncated "o" must not satisfy the phrase.
+    let page = search(&mut bridge, json!({"query":"\"omega zero endpoint\""}))?;
+    assert_members(&page, &[8])?;
+
+    // Bare term whose token the window cut to "o" — the whole body finds
+    // the full token.
+    let page = search(&mut bridge, json!({"query":"omega"}))?;
+    assert_members(&page, &[8])?;
+
+    // Non-ASCII term past the window — the ungated lane scans the whole
+    // body and finds it (an exact member, not honest-unknown).
+    let page = search(&mut bridge, json!({"query":"хвостовой"}))?;
+    assert_members(&page, &[8])?;
+
+    // A term at the very END of the body — no trailing context at all.
+    let page = search(&mut bridge, json!({"query":"finaltail"}))?;
+    assert_members(&page, &[8])?;
+
+    // Absent term over the huge body: gated (the index proves no hit) —
+    // a DEFINITE non-member, strict page answering OK with no members.
+    let page = search(&mut bridge, json!({"query":"absentmarker"}))?;
+    assert_members(&page, &[])?;
+    ensure!(
+        page["result"]["complete"] == true,
+        "a proven absence leaves the strict page complete: {page}"
+    );
+
+    // Absent non-ASCII term: the whole body was scanned (definite
+    // absence), so the page is again an exact empty answer — never an
+    // Unknown refusal.
+    let page = search(&mut bridge, json!({"query":"отсутствует"}))?;
+    assert_members(&page, &[])?;
+    ensure!(
+        page["result"]["complete"] == true,
+        "a scanned-and-absent term is a definite non-member: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The verifier must read region text with the INDEX ANALYZER's token
+/// boundaries, or an index-proven hit cannot reproduce even over the
+/// whole body. quill indexes `title`/`content` with the CASS hyphen
+/// pipeline (ASCII-alphanumeric runs; `_` and `$` are separators;
+/// hyphen-joined runs additionally emit their parts), so `readme` is a
+/// real TOKEN of `G5_MODE_SEARCH_README.md` to the index — while the old
+/// `\w\-$`-joining verifier saw one `g5_mode_search_readme` token and
+/// degraded the session to `quill_hit_not_reproduced`. 27 sessions
+/// exactly like this kept strict `README` search refusing on the owner
+/// archive even after whole-body hydration landed. The literal tokenizer
+/// now splits on every non-alphanumeric scalar, mirroring the analyzer
+/// (and its edge-prefix fields, which split the same way), so every
+/// gated hit on `_`/`$`-glued or hyphen-joined text reproduces.
+#[test]
+fn search_sessions_verifier_reads_index_analyzer_token_boundaries() -> Result<()> {
+    let mut fixture = gold_fixture();
+    // The real-archive shape: a directory-listing message whose marker
+    // terms are glued by `_`, `-` and `$`.
+    let body: &'static str =
+        "listing of G5_MODE_SEARCH_README.md MUJOCO_LOG.TXT then mcp-server hookup cost$total";
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-analyzer",
+        source_path: "/sessions/s-8-analyzer.jsonl",
+        workspace: None,
+        title: "analyzer boundary session",
+        started_at: Some(6_200),
+        ended_at: Some(9_300),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![(0, MessageRole::User, body, None)],
+    });
+    let mut bridge = gold_harness_full(&fixture, &[])?;
+
+    // `_`-glued text: the index tokenizes G5_MODE_SEARCH_README.md into
+    // [g5, mode, search, readme, md], so bare `readme` is an
+    // index-proven hit the verifier must reproduce.
+    let page = search(&mut bridge, json!({"query":"readme"}))?;
+    assert_members(&page, &[8])?;
+
+    // Exact phrase across the `_` join: [mode, search] are adjacent
+    // analyzer tokens.
+    let page = search(&mut bridge, json!({"query":"\"mode search\""}))?;
+    assert_members(&page, &[8])?;
+
+    // Hyphen-joined text: the analyzer emits the parts of `mcp-server`,
+    // so bare `server` is an index-proven hit — in the glued message AND
+    // in S1's `meta:tags` region (the fixture's `mcp-server` tag). The
+    // old `\w\-$`-joining verifier saw one `mcp-server` token in both
+    // places and degraded BOTH sessions to `quill_hit_not_reproduced`
+    // for `server`; the aligned verifier reproduces the index on both.
+    let page = search(&mut bridge, json!({"query":"server"}))?;
+    assert_members(&page, &[1, 8])?;
+    let s1_witness = page["result"]["matches"]["1"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure!(
+        s1_witness.iter().any(|m| m["block_key"] == "meta:tags"),
+        "S1's `server` witness anchors its mcp-server tag region: {page}"
+    );
+
+    // `$`-glued text splits the same way.
+    let page = search(&mut bridge, json!({"query":"total"}))?;
+    assert_members(&page, &[8])?;
+
+    // A hyphen-bearing QUERY gates on the analyzer's joined token
+    // (`g5-mode` — the run the CASS tokenizer keeps), and `_`-glued text
+    // carries only the PARTS — so the index proves NO hit anywhere: a
+    // definite, complete absence, the same verdict as `absentmarker`.
+    // (The verifier's [g5, mode] reading is broader than this gate but
+    // never diverges: every doc the gate CAN prove carries the joined
+    // run, hence both parts, and verifies as a member.)
+    let page = search(&mut bridge, json!({"query":"g5-mode"}))?;
+    assert_members(&page, &[])?;
+    ensure!(
+        page["result"]["complete"] == true,
+        "a joiner-bearing query with no joined token anywhere is a proven absence: {page}"
+    );
+
+    // The spaced counterpart: two ANDed part terms gate on the indexed
+    // parts, so `_`-glued text IS a candidate — and a member.
+    let page = search(&mut bridge, json!({"query":"g5 mode"}))?;
+    assert_members(&page, &[8])?;
+
+    // A pure-joiner ASCII literal sanitizes to an empty lexical query,
+    // and the engine REFUSES the whole op with a typed `invalid_request`
+    // — pre-existing gate behavior, unchanged by the alignment: the
+    // no-silent-substitution contract, not an empty lie. The verifier's
+    // never-matcher serves joiner-only literals that SKIP the gate
+    // (non-ASCII — the analyzer emits no tokens for them), pinned next.
+    let page = search(&mut bridge, json!({"query":"___"}))?;
+    ensure!(
+        page["ok"] == false && page["error"]["kind"] == "invalid_request",
+        "a pure-joiner ASCII literal refuses with a typed error: {page}"
+    );
+
+    // A joiner-only non-ASCII literal skips the gate and evaluates
+    // through the never-matcher: a complete, definite absence.
+    let page = search(&mut bridge, json!({"query":"。。。"}))?;
+    assert_members(&page, &[])?;
+    ensure!(
+        page["result"]["complete"] == true,
+        "a joiner-only non-ASCII literal is a proven absence: {page}"
+    );
+
+    // The never-matcher arm above needs no scan to find nothing, and the
+    // other arms come from reproduced gated hits: a member witness
+    // anchors the glued message.
+    let page = search(&mut bridge, json!({"query":"readme"}))?;
+    let matches = page["result"]["matches"]["8"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure!(
+        matches.len() == 1 && matches[0]["message_idx"].as_i64() == Some(0),
+        "the glued-text member carries one witness on message 0: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The whole-body verification budget refuses with a TYPED reason, never
+/// a silent cap. Past the request's byte ceiling the affected sessions
+/// degrade to honest uncertainty naming
+/// `verification_bytes_budget_exceeded` — gated candidates through
+/// `text_inventory:<state>:…` (the index-proven hit stays possible
+/// membership), ungated evaluation through `literal:…` — and
+/// `allow_partial` still serves the verified membership with the
+/// `membership_incomplete` warning.
+#[test]
+fn search_sessions_verification_budget_refusal_is_typed() -> Result<()> {
+    let mut fixture = gold_fixture();
+    // A body far past the 64 KiB window whose marker only the whole-body
+    // escalation can verify.
+    let long_body = format!("{} budgetmarker past the window", "b".repeat(100_000));
+    let long_body: &'static str = Box::leak(long_body.into_boxed_str());
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-budget",
+        source_path: "/sessions/s-8-budget.jsonl",
+        workspace: None,
+        title: "budget ceiling session",
+        started_at: Some(6_200),
+        ended_at: Some(9_300),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![(0, MessageRole::User, long_body, None)],
+    });
+    // Budget 1 byte: the first whole-body scan overdrafts by design (the
+    // ceiling gates every scan AFTER the running total reaches it), so
+    // every later region — session 8's gated escalation included —
+    // refuses with the typed reason.
+    let mut bridge = gold_harness_full(&fixture, &["--text-verification-budget-bytes", "1"])?;
+
+    // Ungated (non-ASCII) evaluation: budget exhaustion is honest
+    // `unseen` — the strict page refuses naming the typed reason.
+    let page = search(&mut bridge, json!({"query":"маркер"}))?;
+    ensure!(
+        page["ok"] == false,
+        "budget exhaustion must refuse strict search: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "budget exhaustion is honest-unavailable, never pending: {page}"
+    );
+    let message = page["error"]["message"].as_str().unwrap_or_default();
+    ensure!(
+        message.contains("literal:verification_bytes_budget_exceeded"),
+        "the ungated refusal must name the typed budget reason: {page}"
+    );
+
+    // Gated escalation past the budget: the index-proven hit is possible
+    // membership whose whole-body verification the budget refused — the
+    // strict page names the inventory-scoped reason.
+    let page = search(
+        &mut bridge,
+        json!({"ast":{"type":"or","children":[
+        {"type":"term","value":"кириллица"},
+        {"type":"term","value":"budgetmarker"}]}}),
+    )?;
+    ensure!(
+        page["ok"] == false,
+        "a gated hit the budget cannot verify must refuse: {page}"
+    );
+    let message = page["error"]["message"].as_str().unwrap_or_default();
+    ensure!(
+        message.contains("text_inventory:complete:verification_bytes_budget_exceeded"),
+        "the gated refusal must name the inventory-scoped budget reason: {page}"
+    );
+
+    // allow_partial serves the verified membership: nothing verified to
+    // a member, the page is incomplete with the honest warning.
+    let page = search(
+        &mut bridge,
+        json!({"query":"маркер", "allow_partial": true}),
+    )?;
+    ensure!(page["ok"] == true, "partial opt-in must serve: {page}");
+    ensure!(
+        page["result"]["complete"] == false,
+        "the budget-refused sessions keep the page incomplete: {page}"
+    );
+    ensure!(
+        ids(&page).is_empty(),
+        "no session verifies the marker: {page}"
+    );
+    let warnings = page["result"]["warnings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure!(
+        warnings.iter().any(|w| w == "membership_incomplete"),
+        "the budget-refused sessions must keep their warning: {page}"
+    );
     bridge.shutdown()
 }
 
@@ -1921,5 +2295,1015 @@ fn search_sessions_failed_converge_debt_survives_repeated_flushes() -> Result<()
         "the retried converge must publish the owed marks: {marks:?}"
     );
     drop(writer);
+    bridge.shutdown()
+}
+
+// ---------------------------------------------------------------------------
+// Strict search: text ABSENT AT THE SOURCE vs text NOT READ (owner
+// decision 2026-11-07)
+// ---------------------------------------------------------------------------
+//
+// A coverage gap whose reason code is on the closed source-absent
+// allowlist — text provably non-existent in ANY local record, e.g. the
+// provider-encrypted codex `agent_message` handoff — must NOT block
+// strict search: membership is exact over the text that exists, with a
+// per-item `source_text_absent` annotation and a response-level count of
+// the sessions that carried such gaps. Everything else (unread text,
+// unknown shapes, extractor gaps, facts pending, or a reason code the
+// allowlist does not name) keeps blocking exactly as before.
+// ---------------------------------------------------------------------------
+
+/// Overwrite one session's persisted facts coverage after spawn. The
+/// bridge re-reads `viewer_session_facts` on every request, so the next
+/// `search_sessions` evaluates the new manifest — the same post-spawn
+/// mutation lane the large-universe honesty test uses.
+fn set_facts_coverage(bridge: &BridgeHarness, id: i64, state: &str, detail: Value) -> Result<()> {
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    writer.execute_with_params(
+        "UPDATE viewer_session_facts SET coverage_state=?1, coverage_detail_json=?2 \
+         WHERE conversation_id=?3",
+        &param_slice_to_values(params![state, detail.to_string(), id]),
+    )?;
+    Ok(())
+}
+
+/// The manifest the codex extractor publishes for a session whose ONLY
+/// inventory gap is a provider-encrypted `agent_message` handoff — the
+/// exact shape `codex_agent_message_encrypted_payload_is_known_unreadable`
+/// pins in the ingest suite: `chat` partial (the readable envelope header
+/// is evidence), `text_inventory` unavailable with `agent_message_encrypted`,
+/// `block_inventory` complete, plus the fixed overlay/metrics/compaction
+/// entries every publication carries. The encrypted text never existed in
+/// any local record, so its absence is provable at the source.
+fn codex_encrypted_manifest() -> Value {
+    json!({
+        "extractor": "codex-facts-v1",
+        "extractor_version": 2,
+        "provider": "codex",
+        "fields": {
+            "chat": {"state":"partial","reasons":["agent_message_encrypted"]},
+            "tools": {"state":"complete","reasons":[]},
+            "thinking": {"state":"complete","reasons":[]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"unavailable","reasons":["agent_message_encrypted"]},
+            "files": {"state":"complete","reasons":[]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// The manifest the claude extractor publishes when a tool result's text
+/// exists at the source but was not recorded — a NOT-READ gap
+/// (`tool_output_not_recorded`): strict search must keep refusing on it.
+fn claude_unread_tool_output_manifest() -> Value {
+    json!({
+        "extractor": "claude-facts-v1",
+        "extractor_version": 2,
+        "provider": "claude_code",
+        "fields": {
+            "chat": {"state":"complete","reasons":[]},
+            "tools": {"state":"partial","reasons":["tool_output_not_recorded"]},
+            "thinking": {"state":"complete","reasons":[]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"partial","reasons":["tool_output_not_recorded"]},
+            "files": {"state":"complete","reasons":[]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 1, "paired_calls": 1}
+    })
+}
+
+fn result_item(page: &Value, id: i64) -> Result<Value> {
+    page["result"]["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["conversation_id"] == id)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("session {id} missing from items: {page}"))
+}
+
+/// (i) A session whose ONLY inventory gap is `agent_message_encrypted`
+/// (text provably absent at the source) must ANSWER strict search — no
+/// `allow_partial` — because membership over the existing text is exact.
+/// The result item carries the `source_text_absent` annotation, clean
+/// sessions carry an empty one, and the response counts how many of the
+/// evaluated sessions had such a gap.
+#[test]
+fn search_sessions_source_absent_gap_answers_strict_with_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "unavailable", codex_encrypted_manifest())?;
+
+    // S5's chat text ("codex remote quux") still exists and matches: the
+    // strict page answers S3+S5 exactly as if the facts were complete.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["agent_message_encrypted"]),
+        "the source-absent session must be annotated with its reason: {s5}"
+    );
+    let s3 = result_item(&page, 3)?;
+    ensure!(
+        s3["source_text_absent"] == json!([]),
+        "a session without gaps keeps an empty annotation: {s3}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // A term S5's existing text lacks is a PROVEN non-member: S5 drops out
+    // of the result set and the strict answer stays complete — but S5 was
+    // still evaluated under source-absence, so the response keeps counting
+    // it even though it is not a result item.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "the count covers the evaluated universe, not just result items: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// (ii) A source-absent session does not unlock strict search for the
+/// rest of the universe: one additional NOT-READ gap (`tool_output_not_
+/// recorded` — text that exists at the source but was not recorded) keeps
+/// the honest `data_unavailable` refusal. Narrowing the universe to the
+/// source-absent session alone answers strictly again.
+#[test]
+fn search_sessions_source_absent_plus_unread_gap_still_refuses() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "unavailable", codex_encrypted_manifest())?;
+    set_facts_coverage(&bridge, 4, "partial", claude_unread_tool_output_manifest())?;
+
+    // S4's unrecorded tool output could still hold "quux": the strict
+    // answer stays refused — the (b) relaxation never weakens an (a) gap.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    ensure!(page["ok"] == false, "the unread gap must refuse: {page}");
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "expected data_unavailable, got {page}"
+    );
+
+    // With the universe narrowed to the source-absent session alone, the
+    // strict answer is exact again.
+    let page = search(
+        &mut bridge,
+        json!({"query":"quux","filters":{"provider":"codex"}}),
+    )?;
+    assert_members(&page, &[5])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["agent_message_encrypted"]),
+        "the source-absent session must be annotated: {s5}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// (iii) NOT queries over a source-absent session: its existing text
+/// provably lacks the term, so the session IS a NOT-match — exact strict
+/// membership, annotated like any other result item.
+#[test]
+fn search_sessions_not_query_treats_source_absent_session_as_exact() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "unavailable", codex_encrypted_manifest())?;
+
+    // No session contains the term: every non-subagent session is a
+    // NOT-match, including the source-absent S5.
+    let page = search(&mut bridge, json!({"query":"NOT zzz_absent_literal"}))?;
+    assert_members(&page, &[1, 2, 3, 4, 5, 7])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["agent_message_encrypted"]),
+        "a NOT-matching source-absent session carries the same annotation: {s5}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // S5's existing text contains "quux", so under NOT it is a proven
+    // non-member: the answer stays strict and complete without it.
+    let page = search(&mut bridge, json!({"query":"NOT quux"}))?;
+    assert_members(&page, &[1, 2, 4, 7])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "S5 was evaluated (and excluded) under source-absence: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// (iv) The classification is a CLOSED ALLOWLIST: a reason code it does
+/// not name — however new or plausible — is a NOT-READ gap and keeps
+/// blocking, even mixed with an allowlisted code. The queries use `foo`,
+/// a term S5's existing text lacks, so S5's membership is genuinely
+/// unknown (a verified positive match would dominate regardless — `quux`
+/// answers with S5 either way). `allow_partial` serves the verified
+/// membership with the gap session dropped, and no source-absent
+/// annotation or count is ever claimed for it.
+#[test]
+fn search_sessions_unknown_reason_code_still_blocks_strict() -> Result<()> {
+    let mut bridge = gold_harness()?;
+
+    // A brand-new reason code: not-read by default, strict stays refused.
+    let mut unknown = codex_encrypted_manifest();
+    unknown["fields"]["chat"]["reasons"] = json!(["brand_new_gap_code"]);
+    unknown["fields"]["text_inventory"]["reasons"] = json!(["brand_new_gap_code"]);
+    set_facts_coverage(&bridge, 5, "unavailable", unknown)?;
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    ensure!(
+        page["ok"] == false,
+        "an unnamed reason code must keep strict search refused: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "expected data_unavailable, got {page}"
+    );
+
+    // allow_partial serves the verified membership (S1+S2) with S5
+    // dropped as honestly unknown — and no annotation or source-absent
+    // count is claimed for a session that is not provably absent at
+    // source.
+    let page = search(&mut bridge, json!({"query":"foo","allow_partial":true}))?;
+    ensure!(page["ok"] == true, "partial opt-in must serve: {page}");
+    ensure!(
+        page["result"]["complete"] == false,
+        "the unknown session keeps the page incomplete: {page}"
+    );
+    assert_eq!(
+        ids(&page),
+        vec![1, 2],
+        "only the verified sessions serve: {page}"
+    );
+    let s1 = result_item(&page, 1)?;
+    ensure!(
+        s1["source_text_absent"] == json!([]),
+        "no source-absent annotation for unnamed codes: {s1}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 0,
+        "no source-absent count for unnamed codes: {page}"
+    );
+
+    // Mixed allowlisted + unknown reasons on the same field: the unknown
+    // member alone is enough to keep strict refused.
+    let mut mixed = codex_encrypted_manifest();
+    mixed["fields"]["chat"]["reasons"] = json!(["agent_message_encrypted", "brand_new_gap_code"]);
+    mixed["fields"]["text_inventory"]["reasons"] =
+        json!(["agent_message_encrypted", "brand_new_gap_code"]);
+    set_facts_coverage(&bridge, 5, "unavailable", mixed)?;
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    ensure!(
+        page["ok"] == false,
+        "a mixed reason set must keep strict search refused: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "expected data_unavailable, got {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The manifest the codex extractor publishes for a session whose ONLY
+/// inventory gap is an interrupted call (codex-facts-v2): the rollout
+/// provably ended mid-call — the call is the packet's last event, or the
+/// next task's user message cut the pending turn (codex never accepts user
+/// input mid-turn) — so the result text never existed in any local record.
+/// `tools` and `text_inventory` go partial with `tool_output_interrupted`
+/// (on the source-absent allowlist); the tool-verdict scopes keep their
+/// honest unrecorded gaps, which are not text claims.
+fn codex_interrupted_call_manifest() -> Value {
+    json!({
+        "extractor": "codex-facts-v2",
+        "extractor_version": 2,
+        "provider": "codex",
+        "fields": {
+            "chat": {"state":"complete","reasons":[]},
+            "tools": {"state":"partial","reasons":["tool_output_interrupted"]},
+            "thinking": {"state":"complete","reasons":[]},
+            "tool_exit": {"state":"unavailable","reasons":["tool_exit_not_recorded"]},
+            "tool_error": {"state":"unavailable","reasons":["tool_error_not_recorded"]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"partial","reasons":["tool_output_interrupted"]},
+            "files": {"state":"complete","reasons":[]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 1, "paired_calls": 0}
+    })
+}
+
+/// (v) The interrupted-call proof joins the source-absent allowlist: the
+/// rollout provably holds no output record for the call, so membership
+/// over the text that does exist stays exact. The session ANSWERS strict
+/// search with the `tool_output_interrupted` annotation.
+#[test]
+fn search_sessions_interrupted_tool_output_answers_strict_with_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "partial", codex_interrupted_call_manifest())?;
+
+    // S5's chat text ("codex remote quux") still exists and matches: the
+    // strict page answers S3+S5 exactly as if the facts were complete.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["tool_output_interrupted"]),
+        "the interrupted session must be annotated with its reason: {s5}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // A term S5's existing text lacks is a PROVEN non-member.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    bridge.shutdown()
+}
+
+/// The manifest the claude extractor publishes for a rewritten-replay pair
+/// (claude-facts-v3): the live record survives the facts lane, BOTH texts
+/// index as packet messages, and the conflict is recorded on the dedicated
+/// `replay_conflict` scope — a custom scope no strict gate consults — so
+/// every core text verdict stays complete.
+fn claude_rewritten_replay_manifest() -> Value {
+    json!({
+        "extractor": "claude-facts-v3",
+        "extractor_version": 2,
+        "provider": "claude_code",
+        "fields": {
+            "chat": {"state":"complete","reasons":[]},
+            "tools": {"state":"complete","reasons":[]},
+            "thinking": {"state":"complete","reasons":[]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"complete","reasons":[]},
+            "files": {"state":"complete","reasons":[]},
+            "mcp": {"state":"complete","reasons":[]},
+            "replay_conflict": {"state":"partial","reasons":["claude_rewritten_replay"]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (vi) A rewritten-replay conflict rides a custom `replay_conflict` scope:
+/// both versions of the record are local indexed packet messages, so the
+/// conflict never demotes a text verdict, never blocks strict search and
+/// never claims a source-absent annotation (the rewritten text EXISTS —
+/// twice).
+#[test]
+fn search_sessions_replay_conflict_scope_never_blocks_strict() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 4, "partial", claude_rewritten_replay_manifest())?;
+
+    // S4's text still matches, and the conflict scope does not exclude it.
+    let page = search(&mut bridge, json!({"query":"answer"}))?;
+    assert_members(&page, &[4])?;
+    let s4 = result_item(&page, 4)?;
+    ensure!(
+        s4["source_text_absent"] == json!([]),
+        "a replay conflict is not a source-absent annotation: {s4}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 0,
+        "no source-absent count for a replay conflict: {page}"
+    );
+
+    // A term S4 lacks is a proven non-member; the evaluated conflict scope
+    // keeps the strict answer complete.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    bridge.shutdown()
+}
+
+/// The manifest the codex extractor publishes for a session whose ONLY
+/// inventory gap is a reasoning item carrying `encrypted_content` — the
+/// exact shape the encrypted arm of `fn reasoning()` in
+/// `src/viewer_extensions/providers/codex.rs` produces (the code is
+/// emitted only there, never for a parse failure): `thinking` and
+/// `text_inventory` unavailable with `reasoning_encrypted`, `chat`
+/// complete (the readable chat text is evidence), plus the fixed
+/// overlay/metrics/compaction entries. The provider hands the reasoning
+/// over already encrypted, so no plaintext ever existed locally.
+fn codex_reasoning_encrypted_manifest() -> Value {
+    json!({
+        "extractor": "codex-facts-v1",
+        "extractor_version": 2,
+        "provider": "codex",
+        "fields": {
+            "chat": {"state":"complete","reasons":[]},
+            "tools": {"state":"complete","reasons":[]},
+            "thinking": {"state":"unavailable","reasons":["reasoning_encrypted"]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"unavailable","reasons":["reasoning_encrypted"]},
+            "files": {"state":"complete","reasons":[]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// The manifest the claude extractor publishes for a session whose ONLY
+/// inventory gap is a `redacted_thinking` block — the exact shape the
+/// `redacted_thinking` arm of `fn part()` in
+/// `src/viewer_extensions/providers/claude.rs` produces (pinned by the
+/// details suite's thinking fixture; the code is emitted only for that
+/// explicit block type, never for an unknown shape): `thinking` and
+/// `text_inventory` unavailable with `thinking_redacted`, `chat`
+/// complete. Anthropic returns redacted thinking only encrypted, so no
+/// plaintext ever existed locally.
+fn claude_redacted_thinking_manifest() -> Value {
+    json!({
+        "extractor": "claude-facts-v1",
+        "extractor_version": 2,
+        "provider": "claude_code",
+        "fields": {
+            "chat": {"state":"complete","reasons":[]},
+            "tools": {"state":"complete","reasons":[]},
+            "thinking": {"state":"unavailable","reasons":["thinking_redacted"]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"unavailable","reasons":["thinking_redacted"]},
+            "files": {"state":"complete","reasons":[]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (v) Owner follow-up (2026-11-07): the source-absent class covers text
+/// the PROVIDER encrypted so no plaintext ever exists locally. A codex
+/// session whose only gap is `reasoning_encrypted` (a reasoning item
+/// carrying `encrypted_content`) must ANSWER strict search with the
+/// `source_text_absent` annotation, exactly like
+/// `agent_message_encrypted`.
+#[test]
+fn search_sessions_reasoning_encrypted_gap_answers_strict_with_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(
+        &bridge,
+        5,
+        "unavailable",
+        codex_reasoning_encrypted_manifest(),
+    )?;
+
+    // S5's chat text ("codex remote quux") still exists and matches: the
+    // strict page answers S3+S5 exactly, with the encrypted-reasoning gap
+    // annotated.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["reasoning_encrypted"]),
+        "the provider-encrypted reasoning gap must be annotated: {s5}"
+    );
+    let s3 = result_item(&page, 3)?;
+    ensure!(
+        s3["source_text_absent"] == json!([]),
+        "a session without gaps keeps an empty annotation: {s3}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // A term S5's existing text lacks is a PROVEN non-member: S5 drops
+    // out of the result set, the strict answer stays complete, and the
+    // gap keeps counting over the evaluated universe.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "S5 was evaluated (and excluded) under source-absence: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// (vi) Owner follow-up (2026-11-07), claude side: a session whose only
+/// gap is a `redacted_thinking` block (`thinking_redacted`) answers
+/// strict search with the annotation — same provider-encrypted class.
+#[test]
+fn search_sessions_thinking_redacted_gap_answers_strict_with_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(
+        &bridge,
+        4,
+        "unavailable",
+        claude_redacted_thinking_manifest(),
+    )?;
+
+    // S4's chat text ("answer follows") still exists and matches: the
+    // strict page answers exactly, with the redacted-thinking gap
+    // annotated.
+    let page = search(&mut bridge, json!({"query":"answer"}))?;
+    assert_members(&page, &[4])?;
+    let s4 = result_item(&page, 4)?;
+    ensure!(
+        s4["source_text_absent"] == json!(["thinking_redacted"]),
+        "the redacted-thinking gap must be annotated: {s4}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // A term S4's existing text lacks is a PROVEN non-member: S4 drops
+    // out, the strict answer stays complete, and the gap keeps counting.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "S4 was evaluated (and excluded) under source-absence: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The manifest the v3 antigravity extractor publishes for a session whose
+/// ONLY text gap is the source-side truncation marker — the exact shape
+/// `antigravity_f10_truncated_fields_mark_scopes_source_absent` pins in
+/// the ingest suite: `chat`/`thinking`/`files` partial and `text_inventory`
+/// unavailable, every one with `agy_source_truncated` only. The F10
+/// passthrough marker proves the source application cut the named fields
+/// BEFORE persisting, so the cut text never existed in any local record.
+/// A session without MODEL-step envelopes keeps the block inventory
+/// complete, so strict search answers over the surviving text.
+fn antigravity_source_truncated_manifest() -> Value {
+    json!({
+        "extractor": "antigravity-facts-v3",
+        "extractor_version": 3,
+        "provider": "antigravity",
+        "fields": {
+            "chat": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tools": {"state":"complete","reasons":[]},
+            "thinking": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"unavailable","reasons":["agy_source_truncated"]},
+            "files": {"state":"partial","reasons":["agy_source_truncated"]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (vii) Owner follow-up (2026-11-08), antigravity side: the F10
+/// `truncated_fields` passthrough marker is a source-absent gap — the
+/// source app cut the named fields before persisting, so no read of any
+/// local artifact could recover them. A session whose only gaps carry
+/// that marker answers strict search over its surviving text, annotated
+/// exactly like the provider-encrypted class.
+#[test]
+fn search_sessions_agy_source_truncated_gap_answers_strict_with_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(
+        &bridge,
+        5,
+        "partial",
+        antigravity_source_truncated_manifest(),
+    )?;
+
+    // S5's chat text ("codex remote quux") still exists and matches: the
+    // strict page answers S3+S5 exactly, with the truncation gap
+    // annotated.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["agy_source_truncated"]),
+        "the source-truncation gap must be annotated: {s5}"
+    );
+    let s3 = result_item(&page, 3)?;
+    ensure!(
+        s3["source_text_absent"] == json!([]),
+        "a session without gaps keeps an empty annotation: {s3}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // A term S5's existing text lacks is a PROVEN non-member: S5 drops
+    // out, the strict answer stays complete, and the gap keeps counting.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "S5 was evaluated (and excluded) under source-absence: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The manifest the v2 claude extractor publishes for a Desktop sidecar
+/// session whose ONLY inventory gap is the app's own body-cull marker —
+/// the exact shape `claude_desktop_sidecar_envelope_is_a_known_shape`
+/// pins in the ingest suite: `chat` complete (the metadata lines and the
+/// `raw.initialMessage` prompt region are the session's real, indexed
+/// text), `block_inventory`/`text_inventory` unavailable with
+/// `claude_sidecar_body_culled`. The sidecar's explicit
+/// `cass.body_available == false` envelope is the Desktop app stating
+/// the CLI conversation body was culled before the sidecar was written,
+/// so the missing body text never existed in any local record.
+fn claude_sidecar_culled_manifest() -> Value {
+    json!({
+        "extractor": "claude-facts-v2",
+        "extractor_version": 6,
+        "provider": "claude_code",
+        "fields": {
+            "chat": {"state":"complete","reasons":[]},
+            "tools": {"state":"complete","reasons":[]},
+            "thinking": {"state":"complete","reasons":[]},
+            "tool_exit": {"state":"complete","reasons":[]},
+            "tool_error": {"state":"complete","reasons":[]},
+            "block_inventory": {"state":"unavailable","reasons":["claude_sidecar_body_culled"]},
+            "text_inventory": {"state":"unavailable","reasons":["claude_sidecar_body_culled"]},
+            "files": {"state":"complete","reasons":[]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (ix) Owner follow-up (2026-11-08), claude side: the Desktop sidecar's
+/// body-cull marker is a source-absent gap — the app's own
+/// `body_available: false` envelope proves the culled conversation body
+/// never existed in any local record. A session whose only gaps carry
+/// that marker answers strict search over its surviving text (the
+/// metadata lines plus the `initialMessage` prompt region), annotated
+/// exactly like the provider-encrypted class.
+#[test]
+fn search_sessions_claude_sidecar_culled_gap_answers_strict_with_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "unavailable", claude_sidecar_culled_manifest())?;
+
+    // S5's chat text ("codex remote quux") still exists and matches: the
+    // strict page answers S3+S5 exactly, with the body-cull gap annotated.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["claude_sidecar_body_culled"]),
+        "the sidecar body-cull gap must be annotated: {s5}"
+    );
+    let s3 = result_item(&page, 3)?;
+    ensure!(
+        s3["source_text_absent"] == json!([]),
+        "a session without gaps keeps an empty annotation: {s3}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "one evaluated session had a source-absent gap: {page}"
+    );
+
+    // A term S5's existing text lacks is a PROVEN non-member: S5 drops
+    // out, the strict answer stays complete, and the gap keeps counting.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "S5 was evaluated (and excluded) under source-absence: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// (x) The new allowlist member never over-unlocks: a session whose
+/// inventory gap mixes the body-cull marker with an unknown-shape mark is
+/// NOT provably source-absent — matching regions could still hide behind
+/// the unknown shape — so strict search keeps its honest
+/// `data_unavailable` refusal.
+#[test]
+fn search_sessions_claude_sidecar_cull_mixed_with_unknown_still_refuses_strict() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    let mut manifest = claude_sidecar_culled_manifest();
+    manifest["fields"]["text_inventory"] = json!({"state":"unavailable","reasons":["claude_sidecar_body_culled","claude_shape_unknown"]});
+    set_facts_coverage(&bridge, 5, "unavailable", manifest)?;
+
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    ensure!(
+        page["ok"] == false,
+        "the mixed cull+unknown gap must keep strict search refused: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "expected data_unavailable, got {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The manifest the v3 antigravity extractor publishes for a REALISTIC F10
+/// session that also carries truncation markers: the canonical `agy_type`
+/// envelope (block inventory), unrecorded call identities (tools) and the
+/// F10 lifecycle-status verdicts (tool_exit/tool_error partial) sit
+/// alongside the truncation marker. The envelope and identity marks are
+/// honest NOT-READ gaps — structure the connector does not preserve, so
+/// matching regions could still hide behind them.
+fn antigravity_f10_realistic_manifest() -> Value {
+    json!({
+        "extractor": "antigravity-facts-v3",
+        "extractor_version": 3,
+        "provider": "antigravity",
+        "fields": {
+            "chat": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tools": {"state":"partial","reasons":[
+                "agy_tool_call_identity_missing",
+                "agy_tool_result_identity_missing",
+                "agy_source_truncated"
+            ]},
+            "thinking": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tool_exit": {"state":"partial","reasons":["agy_status_unpaired"]},
+            "tool_error": {"state":"partial","reasons":["agy_status_unpaired"]},
+            "block_inventory": {"state":"partial","reasons":["agy_canonical_envelope"]},
+            "text_inventory": {"state":"partial","reasons":["agy_source_truncated"]},
+            "files": {"state":"partial","reasons":["agy_source_truncated"]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (viii) The allowlist member never over-unlocks: a realistic agy session
+/// also carries the canonical-envelope and call-identity marks — NOT-READ
+/// gaps that can still hide matching regions — so strict search keeps its
+/// honest `data_unavailable` refusal even though `agy_source_truncated`
+/// itself is allowlisted. The probe uses `foo`, a term S5's verified text
+/// lacks: a verified positive match would dominate regardless, but S5's
+/// non-membership is exactly what the envelope gap leaves unprovable.
+#[test]
+fn search_sessions_agy_realistic_marks_still_refuse_strict() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "partial", antigravity_f10_realistic_manifest())?;
+
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    ensure!(
+        page["ok"] == false,
+        "the envelope/identity gaps must keep strict search refused: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "expected data_unavailable, got {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The manifest the post-F15 antigravity extractor publishes for the
+/// dominant real-archive shape once every emitted record archives its raw
+/// source: the block inventory is VERIFIED complete (the raw record is
+/// present and every field accounted for), so the last NOT-READ reason
+/// on the strict-gated fields is gone; only the allowlisted
+/// `agy_source_truncated` remains on the text scopes. Strict search may
+/// evaluate such a session.
+fn antigravity_raw_verified_manifest() -> Value {
+    json!({
+        "extractor": "antigravity-facts-v5",
+        "extractor_version": 9,
+        "provider": "antigravity",
+        "fields": {
+            "chat": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tools": {"state":"partial","reasons":[
+                "agy_tool_call_identity_missing",
+                "agy_tool_result_identity_missing",
+                "agy_source_truncated"
+            ]},
+            "thinking": {"state":"partial","reasons":["agy_source_truncated"]},
+            "tool_exit": {"state":"partial","reasons":["agy_status_unpaired"]},
+            "tool_error": {"state":"partial","reasons":["agy_status_unpaired"]},
+            "block_inventory": {"state":"complete","reasons":[]},
+            "text_inventory": {"state":"partial","reasons":["agy_source_truncated"]},
+            "files": {"state":"partial","reasons":["agy_source_truncated"]},
+            "mcp": {"state":"complete","reasons":[]},
+            "title": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "artifacts": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "subagents": {"state":"unavailable","reasons":["overlay_not_supplied"]},
+            "is_subagent": {"state":"complete","reasons":[]},
+            "parent_relation": {"state":"complete","reasons":[]},
+            "metrics": {"state":"partial","reasons":["native_metrics_partial"]},
+            "compaction": {"state":"unavailable","reasons":["boundary_records_not_normalized"]}
+        },
+        "counts": {"tool_calls": 0, "paired_calls": 0}
+    })
+}
+
+/// (viii-b) The raw-verified shape is what the F15 extractor now
+/// publishes for the dominant archive session: the block inventory is
+/// complete, and the only text-scope gap is the allowlisted
+/// source-truncation marker — nothing that can hide a matching region —
+/// so strict search must NOT refuse the session. This pins the
+/// end-to-end outcome of the raw-record verification: with
+/// `agy_canonical_envelope` retired, the strict gate evaluates the
+/// session instead of degrading to `data_unavailable`.
+#[test]
+fn search_sessions_agy_raw_verified_no_longer_refuses_strict() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "partial", antigravity_raw_verified_manifest())?;
+
+    // The probe term is absent from S5's verified regions, so S5 is a
+    // proven non-member — but the search must RUN: no
+    // `data_unavailable` refusal from an inventory gap.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    ensure!(
+        page["ok"] == true,
+        "the raw-verified session must not refuse strict search: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The fixture session for (ix): the real F10 shape the v3 report
+/// quantified as the archive's only not-read gap — a tool-step GENERIC
+/// record whose `error` passthrough failure text differs from the step
+/// narration, plus a system ERROR_MESSAGE announcing a different
+/// failure. The needles "gyrocopter" and "wobbledrive" appear ONLY in
+/// the error fields.
+fn antigravity_error_field_session() -> GoldSession {
+    GoldSession {
+        id: 8,
+        agent: "antigravity",
+        source_id: "local",
+        external_id: "s-8-agy-error",
+        source_path: "/sessions/s-8-agy-error.jsonl",
+        workspace: None,
+        title: "agy error passthrough",
+        started_at: Some(6_000),
+        ended_at: Some(9_500),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            (0, MessageRole::User, "assemble the widget", None),
+            (
+                1,
+                MessageRole::Tool,
+                "step narration content",
+                Some(json!({"agy_type":"GENERIC","status":"ERROR",
+                    "error":"step gyrocopter failure detail"})),
+            ),
+            (
+                2,
+                MessageRole::System,
+                "assembly failure summary",
+                Some(json!({"agy_type":"ERROR_MESSAGE","agy_source":"SYSTEM",
+                    "status":"ERROR",
+                    "error":"pipeline wobbledrive failure detail"})),
+            ),
+        ],
+    }
+}
+
+/// (ix) Owner follow-up (2026-11-08): the F10 `error` passthrough text is
+/// local and readable, so it INDEXES as a search region instead of
+/// keeping the `agy_error_field_not_indexed` not-read gap the v3 report
+/// quantified. A strict search for a word that appears only in the error
+/// text finds the session — the verified hit dominates the session's
+/// structural (envelope/identity) marks — and the session's facts carry
+/// no text gap from the error field. The facts row below is the REAL
+/// extractor manifest (the same generation path ingest runs), not a
+/// hand-written one, so the strict lane evaluates exactly what a real
+/// ingest would publish.
+#[test]
+fn search_sessions_agy_error_field_text_answers_strict_search() -> Result<()> {
+    let mut sessions = gold_fixture();
+    sessions.push(antigravity_error_field_session());
+    let mut bridge = gold_harness_full(&sessions, &[])?;
+
+    // Replace the seeded fixture-complete row with the real manifest.
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let agy = sessions.pop().expect("the antigravity session");
+    let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+        &writer,
+        &gold_conversation(&agy),
+        agy.id,
+    )?;
+    drop(writer);
+    let facts = generation.facts;
+    let mut fields = serde_json::Map::new();
+    for entry in &facts.coverage {
+        fields.insert(
+            entry.field.clone(),
+            json!({"state": entry.state, "reasons": entry.reasons}),
+        );
+    }
+    let manifest = json!({
+        "extractor": facts.extractor,
+        "extractor_version": facts.extractor_version,
+        "provider": facts.provider,
+        "fields": fields,
+        "counts": {
+            "tool_calls": facts.tools.len(),
+            "paired_calls": facts.tools.iter().filter(|t| t.has_result).count(),
+        }
+    });
+    set_facts_coverage(&bridge, agy.id, facts.coverage_state.as_str(), manifest)?;
+
+    // A word that appears ONLY in the tool-step error text: the strict
+    // page answers exactly [8] — the error region is a verified hit.
+    let page = search(&mut bridge, json!({"query": "gyrocopter"}))?;
+    assert_members(&page, &[8])?;
+    // The tools scope and the recorded error flags address the failure
+    // text as tool error text, like every provider's erroring result.
+    let page = search(&mut bridge, json!({"query": "in:tools gyrocopter"}))?;
+    assert_members(&page, &[8])?;
+    let page = search(&mut bridge, json!({"query": "error:tool gyrocopter"}))?;
+    assert_members(&page, &[8])?;
+    // The system ERROR_MESSAGE's differing error text is chat-scope text.
+    let page = search(&mut bridge, json!({"query": "in:chat wobbledrive"}))?;
+    assert_members(&page, &[8])?;
+
+    // No source-absent gap is involved: the found session carries no
+    // annotation (its residual marks are structural, not text gaps).
+    let s8 = result_item(&page, 8)?;
+    ensure!(
+        s8["source_text_absent"] == json!([]),
+        "no source-absent annotation for an indexed-error session: {s8}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 0,
+        "no source-absent count: {page}"
+    );
+
+    // Coverage has no not-read gap from the error field: the real
+    // manifest carries no reason for it anywhere.
+    ensure!(
+        !facts.coverage.iter().any(|entry| entry
+            .reasons
+            .iter()
+            .any(|r| r == "agy_error_field_not_indexed")),
+        "the retired mark must be gone from the real manifest: {:?}",
+        facts.coverage
+    );
     bridge.shutdown()
 }

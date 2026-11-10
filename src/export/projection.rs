@@ -1093,12 +1093,14 @@ mod tests {
         // The markdown renderer's include-tools path reads
         // `message.content` for `tool_use` blocks — the same key the
         // cass-invocations subset writes.
-        let md = crate::format_as_markdown(&raw, &None, None, true);
+        let md = crate::cli::commands::export::format_as_markdown::format_as_markdown(
+            &raw, &None, None, true,
+        );
         assert!(md.contains("**Tool: view_file**"), "markdown: {md}");
         assert!(md.contains("/a.rs"), "markdown: {md}");
         // `call_id` is exposed for HTML correlation via
         // `extract_tool_correlation_id`.
-        let calls = crate::extract_tool_calls(&raw[0]);
+        let calls = crate::cli::commands::export_html::extract_tool_calls(&raw[0]);
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].name, "view_file");
         assert_eq!(calls[0].correlation_id.as_deref(), Some("call-9"));
@@ -1207,7 +1209,7 @@ mod tests {
         let raw = to_raw_messages(&projected);
 
         // The merged messages must drive the existing HTML tool pipeline.
-        let calls = crate::extract_tool_calls(&raw[0]);
+        let calls = crate::cli::commands::export_html::extract_tool_calls(&raw[0]);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "inspect_workspace");
         assert!(
@@ -1217,7 +1219,7 @@ mod tests {
         );
         assert_eq!(calls[0].correlation_id.as_deref(), Some("call-1"));
 
-        let results = crate::extract_tool_calls(&raw[1]);
+        let results = crate::cli::commands::export_html::extract_tool_calls(&raw[1]);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "inspect_workspace");
         assert_eq!(results[0].output.as_deref(), Some("result-body"));
@@ -1243,12 +1245,20 @@ mod tests {
         let raw = to_raw_messages(&projected);
         // The markdown renderer's include-tools path reads
         // `message.content`/`content` arrays for `tool_use` blocks.
-        let md = crate::format_as_markdown(&raw, &None, None, true);
+        let md = crate::cli::commands::export::format_as_markdown::format_as_markdown(
+            &raw, &None, None, true,
+        );
         assert!(md.contains("**Tool: Bash**"), "markdown: {md}");
         assert!(md.contains("ls -la"), "markdown: {md}");
         // And the role/content extraction paths stay on the normalized data.
-        assert_eq!(crate::extract_role(&raw[0]), "assistant");
-        assert_eq!(crate::extract_text_content(&raw[0]), "running ls");
+        assert_eq!(
+            crate::cli::commands::expand::extract_role(&raw[0]),
+            "assistant"
+        );
+        assert_eq!(
+            crate::cli::commands::expand::extract_text_content(&raw[0]),
+            "running ls"
+        );
     }
 
     #[test]

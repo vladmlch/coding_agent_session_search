@@ -17,8 +17,8 @@
 
 use anyhow::{Context, Result, bail};
 
-use crate::franken_sync::Connection;
 use crate::franken_sync::compat::RowExt;
+use crate::franken_sync::{Connection, FrankenError};
 
 /// Version of the additive extension profile. Bumped only when a later task
 /// needs objects that `IF NOT EXISTS` DDL cannot express (e.g. a column
@@ -984,19 +984,52 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
         connection.execute_batch(VIEWER_SCHEMA_V9)?;
         Ok(())
     })();
+    // A failed COMMIT can leave this function's own transaction ACTIVE in
+    // the engine (concurrent-mode snapshot conflict, deferred-FK recheck),
+    // and a body error can leave it open too, so every post-BEGIN failure
+    // rolls back while the transaction is still open. Only this function's
+    // transaction can be open here: a pre-existing caller transaction
+    // fails BEGIN above, and a failed BEGIN returns without cleanup. The
+    // initiating error stays the cause; a rollback failure is reported
+    // with it, never swallowed — a possibly-open transaction must not be
+    // claimed clean.
+    let cleanup = |error: anyhow::Error| -> anyhow::Error {
+        match rollback_owned_transaction(connection) {
+            Ok(()) => error,
+            Err(rollback) => error.context(format!(
+                "rolling back the failed schema transaction also failed ({rollback}); \
+                 the connection may still hold it open"
+            )),
+        }
+    };
     match applied {
-        Ok(()) => {
-            connection
-                .execute("COMMIT")
-                .context("committing viewer extension schema")?;
-            Ok(())
-        }
-        Err(error) => {
-            // Best-effort rollback; the DDL error is the one to report.
-            let _ = connection.execute("ROLLBACK");
-            Err(error).context("applying viewer extension schema DDL")
-        }
+        Ok(()) => match connection
+            .execute("COMMIT")
+            .context("committing viewer extension schema")
+        {
+            Ok(_) => Ok(()),
+            Err(error) => Err(cleanup(error)),
+        },
+        Err(error) => Err(cleanup(error).context("applying viewer extension schema DDL")),
     }
+}
+
+/// Roll back the transaction an owned `BEGIN` site began, when it is still
+/// open. `Ok(())` certifies the connection is back in autocommit — either
+/// the engine already closed the transaction (some COMMIT-time failures
+/// unwind it themselves) or the rollback succeeded. `Err` means the
+/// rollback itself failed; callers must surface that alongside the
+/// initiating error instead of claiming a clean connection.
+///
+/// Only a transaction the call site itself began is ever rolled back: a
+/// pre-existing caller transaction fails `BEGIN` before this runs.
+pub(crate) fn rollback_owned_transaction(
+    connection: &Connection,
+) -> std::result::Result<(), FrankenError> {
+    if !connection.as_async().in_transaction() {
+        return Ok(());
+    }
+    connection.execute("ROLLBACK").map(|_| ())
 }
 
 /// The installed extension profile version, if `viewer_meta` exists.
@@ -1030,4 +1063,114 @@ fn require_canonical_base(connection: &Connection) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    //! Transaction-ownership regression lane for [`ensure_schema`]: real
+    //! COMMIT failures injected through the engine's deferred-FK recheck,
+    //! plus caller-transaction preservation. The wider profile surface is
+    //! exercised by `tests/viewer_bridge_extensions.rs`.
+
+    use super::*;
+
+    use crate::storage::sqlite::FrankenStorage;
+
+    fn fixture() -> (tempfile::TempDir, std::path::PathBuf, FrankenStorage) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db = temp.path().join("archive.db");
+        let storage = FrankenStorage::open(&db).expect("canonical schema");
+        (temp, db, storage)
+    }
+
+    /// Real COMMIT-failure injection: pre-create `viewer_meta` with the
+    /// shape the profile declares — `CREATE TABLE IF NOT EXISTS` then
+    /// keeps it, trigger included — and arm an `AFTER INSERT` trigger
+    /// that plants a `DEFERRABLE INITIALLY DEFERRED` foreign-key
+    /// violation inside the install transaction. The engine defers the
+    /// check to COMMIT, where the surviving violation fails the COMMIT
+    /// but — matching SQLite — leaves the transaction ACTIVE: exactly
+    /// the ownership hole this test guards.
+    fn arm_commit_failure_on_meta_writes(connection: &Connection) {
+        connection
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS viewer_meta (
+                     key TEXT PRIMARY KEY,
+                     value TEXT NOT NULL
+                 );
+                 CREATE TABLE commit_poison (
+                     id INTEGER PRIMARY KEY,
+                     parent INTEGER REFERENCES conversations(id)
+                         DEFERRABLE INITIALLY DEFERRED
+                 );
+                 CREATE TRIGGER poison_meta_append
+                 AFTER INSERT ON viewer_meta BEGIN
+                     INSERT INTO commit_poison(parent) VALUES (999999);
+                 END;",
+            )
+            .expect("commit-failure injection trigger");
+    }
+
+    /// A COMMIT that fails inside `ensure_schema` must roll back the
+    /// transaction it began: the initiating error stays the cause,
+    /// `in_transaction()` proves the connection clean, and a second
+    /// install on the same connection still succeeds.
+    #[test]
+    fn ensure_schema_commit_failure_rolls_back_owned_transaction() -> Result<()> {
+        let (_temp, _db, storage) = fixture();
+        let connection = storage.raw();
+        arm_commit_failure_on_meta_writes(connection);
+
+        let error = ensure_schema(connection)
+            .expect_err("a schema COMMIT the deferred-FK recheck fails must surface");
+        assert!(
+            format!("{error:#}").contains("committing viewer extension schema"),
+            "the initiating COMMIT failure must stay the cause: {error:#}"
+        );
+        assert!(
+            !connection.as_async().in_transaction(),
+            "the failed install must not leave its own transaction open"
+        );
+
+        // The same connection stays usable, and the profile still
+        // installs once the injection is gone.
+        connection.execute_batch("DROP TRIGGER poison_meta_append; DROP TABLE commit_poison;")?;
+        ensure_schema(connection)?;
+        assert_eq!(
+            installed_version(connection)?,
+            Some(EXTENSION_SCHEMA_VERSION),
+            "the same connection must still install the extension profile"
+        );
+        Ok(())
+    }
+
+    /// An `ensure_schema` invoked while the CALLER already holds a
+    /// transaction fails without touching it — the ownership rule only
+    /// ever rolls back what the function itself began.
+    #[test]
+    fn ensure_schema_preserves_caller_owned_transaction() -> Result<()> {
+        let (_temp, _db, storage) = fixture();
+        let connection = storage.raw();
+        connection.execute("BEGIN")?;
+        let error =
+            ensure_schema(connection).expect_err("install inside a caller transaction must fail");
+        assert!(
+            format!("{error:#}").contains("viewer extension schema"),
+            "the refused install must still name the schema it was installing: {error:#}"
+        );
+        assert!(
+            connection.as_async().in_transaction(),
+            "a failed install must not roll back the caller's transaction"
+        );
+        connection.execute("CREATE TABLE caller_probe (id INTEGER)")?;
+        connection.execute("COMMIT")?;
+        assert_eq!(
+            connection
+                .query("SELECT 1 FROM sqlite_master WHERE name = 'caller_probe'")?
+                .len(),
+            1,
+            "the caller's transaction must still commit"
+        );
+        Ok(())
+    }
 }

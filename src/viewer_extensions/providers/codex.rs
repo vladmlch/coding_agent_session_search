@@ -18,7 +18,7 @@ use super::{
     text_id,
 };
 
-const EXTRACTOR_REVISION: &str = "codex-facts-v1";
+const EXTRACTOR_REVISION: &str = "codex-facts-v2";
 const CALLS: &[&str] = &["function_call", "custom_tool_call"];
 const RESULTS: &[&str] = &[
     "function_call_output",
@@ -317,6 +317,21 @@ fn message_content(payload: &Value, coverage: &mut CoverageBuilder) {
                     )
                 {
                     continue;
+                } else if part.is_object()
+                    && part.get("type").and_then(Value::as_str) == Some("encrypted_content")
+                {
+                    // Provider-encrypted inter-agent payload (codex protocol
+                    // `AgentMessageInputContent::EncryptedContent`): the model
+                    // hands the handoff over already encrypted, so the rollout
+                    // never held the plaintext — only the sibling `input_text`
+                    // envelope header is readable. A known shape whose text is
+                    // deliberately unreadable earns the redacted-thinking
+                    // verdict, never an unknown-part claim.
+                    coverage.mark(
+                        &["chat", "text_inventory"],
+                        "agent_message_encrypted",
+                        "unavailable",
+                    );
                 } else {
                     coverage.unknown("codex_message_part_unknown");
                 }
@@ -438,9 +453,6 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
             deduped.push((event.idx, event.role, event.content));
             continue;
         }
-        if is_compacted_extra(record) {
-            coverage.mark_compacted("extra_compacted");
-        }
         if let Some(model) = record
             .get("model")
             .or_else(|| record.pointer("/response/model"))
@@ -460,7 +472,23 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
             continue;
         }
         if !wrapped {
-            coverage.unknown("codex_shape_unknown");
+            // An unwrappable codex record is the extra-compaction envelope:
+            // archives indexed while the compaction layers were live (cass
+            // ≥16 MiB / FAD ≥32 MiB, removed 2026-11-08) carry per-message
+            // extras reduced to the `{"cass":{…}}` skeleton or its empty
+            // `{}` product — the connector only ever emits
+            // `response_item`/`event_msg` records, and both require a payload
+            // object to become messages, so a record without that shape IS
+            // the skeleton (the message text itself stayed in `content`).
+            // The envelope is a known shape: the partial `extra_compacted`
+            // verdict is the truthful one, never an unknown-shape claim.
+            // Legacy-format rollout items (`{"role":…,"content":…}`) are not
+            // envelopes and keep the unknown verdict.
+            if is_compacted_extra(record) || record.as_object().is_some_and(|map| map.is_empty()) {
+                coverage.mark_compacted("extra_compacted");
+            } else {
+                coverage.unknown("codex_shape_unknown");
+            }
             deduped.push((event.idx, event.role, event.content));
             continue;
         }
@@ -498,6 +526,38 @@ pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
         } else {
             coverage.unknown("codex_payload_unknown");
         }
+    }
+
+    // Prove interruption for unpaired calls straight from the source
+    // (owner decision, 2026-11-08): the output record never existed in the
+    // append-only rollout when (a) the call is the packet's LAST event —
+    // the run was cut mid-call — or (b) a user-role message follows the
+    // call — codex never takes user input mid-turn, so the pending turn
+    // was cut. The proof runs over ALL packet events (not the deduped
+    // stream), so any later record, compacted or not, disqualifies it.
+    // Calls that pair only via FAD F13's textless image-output emission
+    // (branch cass-last-eight) never reach here — they have a result.
+    // Everything else keeps the honest not-read `tool_result_missing`.
+    let max_idx = input.iter().map(|event| event.idx).max();
+    let user_max_idx = input
+        .iter()
+        .filter(|event| event.role == "user")
+        .map(|event| event.idx)
+        .max();
+    let interrupted_calls: Vec<String> = tools
+        .calls
+        .iter()
+        .filter(|(call_id, calls)| {
+            !tools.results.contains_key(*call_id)
+                && calls.iter().any(|call| {
+                    Some(call.event_idx) == max_idx
+                        || user_max_idx.is_some_and(|user_idx| call.event_idx < user_idx)
+                })
+        })
+        .map(|(call_id, _)| call_id.clone())
+        .collect();
+    for call_id in interrupted_calls {
+        tools.note_interrupted(&call_id);
     }
 
     // Codex subagent evidence lives in `session_meta.payload.parent_thread_id`

@@ -1,5 +1,7 @@
 use coding_agent_search::connectors::cursor::CursorConnector;
-use coding_agent_search::connectors::{Connector, NormalizedConversation, ScanContext};
+use coding_agent_search::connectors::{
+    Connector, NormalizedConversation, Origin, ScanContext, ScanRoot,
+};
 use coding_agent_search::franken_sync::Connection as FrankenConnection;
 use coding_agent_search::franken_sync::compat::ConnectionExt;
 use serde::Deserialize;
@@ -408,7 +410,12 @@ fn scan_finds_workspace_storage_dbs() {
 fn scan_empty_dir_returns_empty() {
     let tmp = TempDir::new().unwrap();
     let connector = CursorConnector::new();
-    let ctx = ScanContext::local_default(tmp.path().to_path_buf(), None);
+    // A remote explicit root disables default detection, so the scan never
+    // probes this machine's real Cursor storage; the empty fixture dir is
+    // the only candidate (mirrors FAD's own hermetic F9 tests).
+    let origin = Origin::remote_with_host("testhost", "u@testhost");
+    let scan_root = ScanRoot::remote(tmp.path().to_path_buf(), origin, None);
+    let ctx = ScanContext::with_roots(tmp.path().to_path_buf(), vec![scan_root], None);
     let convs = connector.scan(&ctx).unwrap();
     assert!(convs.is_empty());
 }

@@ -44,8 +44,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 
 use crate::franken_sync::compat::{ParamValue, RowExt};
-use crate::franken_sync::{Connection, SqliteValue};
+use crate::franken_sync::{Connection, FrankenError, SqliteValue};
 use crate::viewer_extensions::facts::FactsDb;
+use crate::viewer_extensions::schema::rollback_owned_transaction;
 
 /// Journal event kinds. Keep stable: they are the wire vocabulary the
 /// Task-12 event stream and `changes_since` responses speak.
@@ -464,17 +465,30 @@ pub fn notify_committed_change_with_retention(
         set_meta(connection, META_COMPACTED_THROUGH, high_water)?;
         Ok(high_water)
     })();
+    // The same ownership rule as the schema installer: a failed COMMIT can
+    // leave this pass's transaction ACTIVE in the engine, and a body error
+    // can too, so roll back while it is still open. Only this pass's
+    // transaction can be open here — a pre-existing caller transaction
+    // fails BEGIN IMMEDIATE above. The initiating error stays the cause; a
+    // rollback failure is reported with it, never swallowed.
+    let cleanup = |error: anyhow::Error| -> anyhow::Error {
+        match rollback_owned_transaction(connection) {
+            Ok(()) => error,
+            Err(rollback) => error.context(format!(
+                "rolling back the failed notify transaction also failed ({rollback}); \
+                 the connection may still hold it open"
+            )),
+        }
+    };
     match result {
-        Ok(high_water) => {
-            connection
-                .execute("COMMIT")
-                .context("committing change-journal notify transaction")?;
-            Ok(high_water)
-        }
-        Err(error) => {
-            let _ = connection.execute("ROLLBACK");
-            Err(error)
-        }
+        Ok(high_water) => match connection
+            .execute("COMMIT")
+            .context("committing change-journal notify transaction")
+        {
+            Ok(_) => Ok(high_water),
+            Err(error) => Err(cleanup(error)),
+        },
+        Err(error) => Err(cleanup(error)),
     }
 }
 
@@ -605,6 +619,30 @@ fn journal_installed_facts(db: &impl FactsDb) -> Result<bool> {
     Ok(!rows.is_empty())
 }
 
+/// A `ROLLBACK` that reports no open transaction still certifies the
+/// connection is clean: the engine already closed the transaction the
+/// caller began (some COMMIT-time failures unwind it themselves).
+fn rollback_reports_no_active_transaction(error: &FrankenError) -> bool {
+    match error {
+        FrankenError::NoActiveTransaction => true,
+        FrankenError::FunctionError(detail) => detail.contains("no transaction is active"),
+        _ => false,
+    }
+}
+
+/// [`rollback_owned_transaction`] for the `FactsDb` surface, which cannot
+/// probe `in_transaction`: issue the rollback unconditionally and classify
+/// a "no active transaction" refusal as already-clean. Only the call
+/// site's own transaction is ever rolled back — a pre-existing caller
+/// transaction fails `BEGIN IMMEDIATE` before this runs.
+fn rollback_owned_facts_transaction(db: &impl FactsDb) -> std::result::Result<(), FrankenError> {
+    match db.facts_execute("ROLLBACK", &[]) {
+        Ok(_) => Ok(()),
+        Err(error) if rollback_reports_no_active_transaction(&error) => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 /// Certify one REAL committed Quill publication — the only lane that may
 /// mint `lexical_generation` or journal `index_ready`.
 ///
@@ -717,16 +755,32 @@ pub fn certify_lexical_publication(
         )?;
         Ok(Some(receipt))
     })();
+    // The same ownership rule as the notify pass, through the `FactsDb`
+    // surface which cannot probe `in_transaction`: a failed COMMIT can
+    // leave this transaction ACTIVE, so the rollback is unconditional and
+    // a "no active transaction" refusal certifies the engine already
+    // closed it. Only this certification's transaction can be open — a
+    // pre-existing caller transaction fails BEGIN IMMEDIATE above. The
+    // initiating error stays the cause; a rollback failure is reported
+    // with it, never swallowed.
+    let cleanup = |error: anyhow::Error| -> anyhow::Error {
+        match rollback_owned_facts_transaction(db) {
+            Ok(()) => error,
+            Err(rollback) => error.context(format!(
+                "rolling back the failed certification transaction also failed ({rollback}); \
+                 the connection may still hold it open"
+            )),
+        }
+    };
     match result {
-        Ok(receipt) => {
-            db.facts_execute("COMMIT", &[])
-                .context("committing lexical certification transaction")?;
-            Ok(receipt)
-        }
-        Err(error) => {
-            let _ = db.facts_execute("ROLLBACK", &[]);
-            Err(error)
-        }
+        Ok(receipt) => match db
+            .facts_execute("COMMIT", &[])
+            .context("committing lexical certification transaction")
+        {
+            Ok(_) => Ok(receipt),
+            Err(error) => Err(cleanup(error)),
+        },
+        Err(error) => Err(cleanup(error)),
     }
 }
 
@@ -1171,6 +1225,186 @@ mod tests {
             1,
             "read-side coalescing keeps only the newest index_ready: {:?}",
             page.events
+        );
+        Ok(())
+    }
+
+    /// Real COMMIT-failure injection: an `AFTER INSERT` trigger on
+    /// `viewer_change_log` plants a `DEFERRABLE INITIALLY DEFERRED`
+    /// foreign-key violation inside the transaction under test. The
+    /// engine defers the check to COMMIT, where the surviving violation
+    /// fails the COMMIT but — matching SQLite — leaves the transaction
+    /// ACTIVE: exactly the ownership hole these tests guard.
+    fn arm_commit_failure_on_journal_appends(connection: &Connection) {
+        connection
+            .execute_batch(
+                "CREATE TABLE commit_poison (
+                     id INTEGER PRIMARY KEY,
+                     parent INTEGER REFERENCES conversations(id)
+                         DEFERRABLE INITIALLY DEFERRED
+                 );
+                 CREATE TRIGGER poison_journal_append
+                 AFTER INSERT ON viewer_change_log BEGIN
+                     INSERT INTO commit_poison(parent) VALUES (999999);
+                 END;",
+            )
+            .expect("commit-failure injection trigger");
+    }
+
+    /// A COMMIT that fails inside `notify_committed_change` must roll
+    /// back the transaction the pass began: the initiating error stays
+    /// the cause, `in_transaction()` proves the connection clean, the
+    /// rolled-back pass leaves no partial state, and the same connection
+    /// still runs an ordinary transaction.
+    #[test]
+    fn notify_commit_failure_rolls_back_owned_transaction() -> Result<()> {
+        let (_temp, _db, storage) = fixture();
+        let reader = storage.raw();
+        reader.execute("PRAGMA foreign_keys = ON")?;
+        storage.insert_conversation_tree(agent(&storage), None, &canned(1, "alpha", 1))?;
+        arm_commit_failure_on_journal_appends(reader);
+
+        let error = notify_committed_change(reader, 0)
+            .expect_err("a notify COMMIT the deferred-FK recheck fails must surface");
+        assert!(
+            format!("{error:#}").contains("committing change-journal notify transaction"),
+            "the initiating COMMIT failure must stay the cause: {error:#}"
+        );
+        assert!(
+            !reader.as_async().in_transaction(),
+            "the failed pass must not leave its own transaction open"
+        );
+
+        // The rolled-back pass left no partial state behind.
+        let page = changes_since(reader, 0, 64)?;
+        assert!(
+            page.events.iter().all(|e| e.kind != kind::CANONICAL_READY),
+            "a rolled-back notify must not leave its canonical_ready marker: {:?}",
+            page.events
+        );
+        assert!(
+            meta_int(reader, META_COMPACTED_THROUGH)?.is_none(),
+            "a rolled-back notify must not persist the compaction watermark"
+        );
+
+        // The same connection still runs an ordinary transaction: the
+        // injection stays armed, so the probe writes outside the journal
+        // (a journal append would re-trigger the deferred violation).
+        reader.execute("BEGIN")?;
+        reader.execute("CREATE TABLE reuse_probe (id INTEGER)")?;
+        reader.execute("COMMIT")?;
+        assert_eq!(
+            reader
+                .query("SELECT 1 FROM sqlite_master WHERE name = 'reuse_probe'")?
+                .len(),
+            1,
+            "the same connection must accept a later committed transaction"
+        );
+        Ok(())
+    }
+
+    /// The certification lane's COMMIT failure obeys the same ownership
+    /// rule through the `FactsDb` surface: roll back the transaction the
+    /// certification began, keep the initiating error as the cause,
+    /// leave no receipt/generation/journal residue, and keep the
+    /// connection usable.
+    #[test]
+    fn certify_commit_failure_rolls_back_owned_transaction() -> Result<()> {
+        let (_temp, _db, storage) = fixture();
+        let reader = storage.raw();
+        reader.execute("PRAGMA foreign_keys = ON")?;
+        storage.insert_conversation_tree(agent(&storage), None, &canned(1, "alpha", 1))?;
+        arm_commit_failure_on_journal_appends(reader);
+
+        let error = certify_lexical_publication(reader, 7, 42, None)
+            .expect_err("a certification COMMIT the deferred-FK recheck fails must surface");
+        assert!(
+            format!("{error:#}").contains("committing lexical certification transaction"),
+            "the initiating COMMIT failure must stay the cause: {error:#}"
+        );
+        assert!(
+            !reader.as_async().in_transaction(),
+            "the failed certification must not leave its own transaction open"
+        );
+        assert!(
+            latest_lexical_publication(reader)?.is_none(),
+            "a rolled-back certification must not persist a receipt"
+        );
+        assert_eq!(
+            current_journal_revisions(reader)?.map(|r| r.lexical_generation),
+            Some(0),
+            "a rolled-back certification must not mint lexical_generation"
+        );
+        assert!(
+            changes_since(reader, 0, 64)?
+                .events
+                .iter()
+                .all(|e| e.kind != kind::INDEX_READY),
+            "a rolled-back certification must not journal index_ready"
+        );
+
+        // The same connection still certifies once the injection is gone.
+        reader.execute_batch("DROP TRIGGER poison_journal_append; DROP TABLE commit_poison;")?;
+        let receipt = certify_lexical_publication(reader, 8, 42, None)?
+            .expect("certification succeeds on the same connection after a handled failure");
+        assert_eq!(receipt.lexical_generation, 1);
+        Ok(())
+    }
+
+    /// A notify invoked while the CALLER already holds a transaction
+    /// fails at BEGIN IMMEDIATE and must not roll back the caller's
+    /// transaction — the ownership rule only ever rolls back what the
+    /// function itself began.
+    #[test]
+    fn notify_preserves_caller_owned_transaction() -> Result<()> {
+        let (_temp, _db, storage) = fixture();
+        let reader = storage.raw();
+        reader.execute("BEGIN")?;
+        let error = notify_committed_change(reader, 0)
+            .expect_err("notify inside a caller transaction must fail at BEGIN");
+        assert!(
+            format!("{error:#}").contains("opening change-journal notify transaction"),
+            "the failure must be the nested BEGIN, not work inside it: {error:#}"
+        );
+        assert!(
+            reader.as_async().in_transaction(),
+            "a failed BEGIN must not roll back the caller's transaction"
+        );
+        reader.execute("INSERT INTO viewer_meta (key, value) VALUES ('caller_tx_probe', '1')")?;
+        reader.execute("COMMIT")?;
+        let probe: Option<String> = reader
+            .query_row("SELECT value FROM viewer_meta WHERE key = 'caller_tx_probe'")?
+            .get_typed(0)?;
+        assert_eq!(
+            probe.as_deref(),
+            Some("1"),
+            "the caller's transaction must still commit"
+        );
+        Ok(())
+    }
+
+    /// The same rule for the certification lane: a caller-held
+    /// transaction fails BEGIN IMMEDIATE and is left untouched.
+    #[test]
+    fn certify_preserves_caller_owned_transaction() -> Result<()> {
+        let (_temp, _db, storage) = fixture();
+        let reader = storage.raw();
+        storage.insert_conversation_tree(agent(&storage), None, &canned(1, "alpha", 1))?;
+        reader.execute("BEGIN")?;
+        let error = certify_lexical_publication(reader, 7, 42, None)
+            .expect_err("certification inside a caller transaction must fail at BEGIN");
+        assert!(
+            format!("{error:#}").contains("opening lexical certification transaction"),
+            "the failure must be the nested BEGIN, not work inside it: {error:#}"
+        );
+        assert!(
+            reader.as_async().in_transaction(),
+            "a failed BEGIN must not roll back the caller's transaction"
+        );
+        reader.execute("COMMIT")?;
+        assert!(
+            latest_lexical_publication(reader)?.is_none(),
+            "the refused certification must leave no receipt"
         );
         Ok(())
     }

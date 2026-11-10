@@ -111,14 +111,18 @@ fn insert_text_message(
 
 /// Scan with the db file itself as the explicit root, keeping the test
 /// hermetic (no fallback to the developer's real Goose install).
-fn scan_db(path: &Path) -> Vec<NormalizedConversation> {
+fn scan_db_result(path: &Path) -> anyhow::Result<Vec<NormalizedConversation>> {
     let connector = GooseConnector::new();
     let ctx = ScanContext::with_roots(
         PathBuf::new(),
         vec![ScanRoot::local(path.to_path_buf())],
         None,
     );
-    connector.scan(&ctx).expect("goose scan should not error")
+    connector.scan(&ctx)
+}
+
+fn scan_db(path: &Path) -> Vec<NormalizedConversation> {
+    scan_db_result(path).expect("goose scan should not error")
 }
 
 #[test]
@@ -277,7 +281,7 @@ fn goose_zero_byte_db_yields_no_conversations() {
 }
 
 #[test]
-fn goose_malformed_schema_db_yields_no_conversations() {
+fn goose_malformed_schema_db_fails_the_scan_naming_the_store() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("sessions.db");
     let conn = Connection::open(db_path.to_string_lossy().as_ref()).unwrap();
@@ -285,21 +289,30 @@ fn goose_malformed_schema_db_yields_no_conversations() {
     conn.execute("CREATE TABLE unrelated (x TEXT)").unwrap();
     drop(conn);
 
+    // F9 checked-scan contract: a store with tables but none of Goose's is
+    // unreadable, so the scan fails naming the store instead of hiding as
+    // zero sessions.
+    let error = scan_db_result(&db_path).expect_err("a db without goose tables must fail the scan");
+    let chain = format!("{error:#}");
     assert!(
-        scan_db(&db_path).is_empty(),
-        "a db without goose tables must be tolerated with no results"
+        chain.contains(db_path.to_string_lossy().as_ref()),
+        "the scan error must name the failing store: {chain}"
     );
 }
 
 #[test]
-fn goose_non_utf8_garbage_db_yields_no_conversations() {
+fn goose_non_utf8_garbage_db_fails_the_scan_naming_the_store() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("sessions.db");
     fs::write(&db_path, [0xFFu8, 0xFE, 0x00, 0x9C, 0x80, 0x01]).unwrap();
 
+    // F9 checked-scan contract: garbage bytes are not a database, so the
+    // scan fails naming the store instead of hiding as zero sessions.
+    let error = scan_db_result(&db_path).expect_err("a non-database file must fail the scan");
+    let chain = format!("{error:#}");
     assert!(
-        scan_db(&db_path).is_empty(),
-        "non-SQLite garbage bytes must be tolerated with no results"
+        chain.contains(db_path.to_string_lossy().as_ref()),
+        "the scan error must name the failing store: {chain}"
     );
 }
 

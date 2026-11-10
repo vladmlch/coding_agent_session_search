@@ -18,11 +18,11 @@ use anyhow::{Context, Result};
 use coding_agent_search::franken_sync::compat::{
     OpenFlags, RowExt, open_with_flags, param_slice_to_values,
 };
-use coding_agent_search::franken_sync::{Connection, params};
+use coding_agent_search::franken_sync::{Connection, FrankenError, params};
 use serde_json::{Value, json};
 
 use super::annotations;
-use super::protocol::{AnnotationPatch, Generation, refuse};
+use super::protocol::{AnnotationPatch, Generation, Refusal, refuse};
 use super::revisions;
 
 fn now_ms() -> i64 {
@@ -30,6 +30,33 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|span| span.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or(0)
+}
+
+/// Roll back only while the writer's own transaction is still open: a
+/// `COMMIT` that already released it — or a write that never reached
+/// one — makes this a no-op, and a pre-existing transaction can never
+/// reach it because `BEGIN IMMEDIATE` fails first.
+fn rollback_owned_transaction(connection: &Connection) -> std::result::Result<(), FrankenError> {
+    if !connection.as_async().in_transaction() {
+        return Ok(());
+    }
+    connection.execute("ROLLBACK").map(|_| ())
+}
+
+/// Attach a failed rollback to the initiating error without masking it:
+/// a `Refusal` keeps its protocol `kind` — `protocol::failure` reads
+/// only the top error for `error.kind` — with the cleanup failure
+/// folded into the message; any other error carries it as anyhow
+/// context over the preserved cause.
+fn with_cleanup_failure(error: anyhow::Error, rollback_error: &FrankenError) -> anyhow::Error {
+    let note = format!(
+        "rolling back the failed extension write also failed ({rollback_error}); \
+         the writer connection may still hold the transaction open"
+    );
+    match error.downcast_ref::<Refusal>() {
+        Some(refusal) => refuse(refusal.kind, format!("{}; {note}", refusal.message)),
+        None => error.context(note),
+    }
 }
 
 /// Owned writable extension connection. All `viewer_*` writes flow through
@@ -100,20 +127,27 @@ impl OwnedWriter {
             )
         })?;
         let now = now_ms();
-        match write(&self.connection, now) {
-            Ok(value) => {
-                self.connection.execute("COMMIT").map_err(|e| {
-                    refuse(
-                        "canonical_write_failed",
-                        format!("Extension write commit failed: {e}"),
-                    )
-                })?;
-                Ok(value)
-            }
-            Err(error) => {
-                // Best-effort release; the write error is the one to report.
-                let _ = self.connection.execute("ROLLBACK");
-                Err(error)
+        let outcome = match write(&self.connection, now) {
+            Ok(value) => match self.connection.execute("COMMIT") {
+                Ok(_) => return Ok(value),
+                // A failed COMMIT can leave the transaction ACTIVE
+                // (deferred-constraint recheck, concurrent-mode
+                // conflict); the owned transaction is rolled back below
+                // so one failed write cannot poison this persistent
+                // lane for every later mutation.
+                Err(commit_error) => Err(refuse(
+                    "canonical_write_failed",
+                    format!("Extension write commit failed: {commit_error}"),
+                )),
+            },
+            Err(error) => Err(error),
+        };
+        match rollback_owned_transaction(&self.connection) {
+            // The initiating error is the one to report; the rollback is
+            // cleanup only.
+            Ok(()) => outcome,
+            Err(rollback_error) => {
+                outcome.map_err(|error| with_cleanup_failure(error, &rollback_error))
             }
         }
     }
@@ -303,5 +337,167 @@ impl OwnedWriter {
             )
             .context("probing pending search-region doc marks")?;
         Ok(!rows.is_empty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Transaction-ownership regression lane for [`OwnedWriter::transact`]:
+    //! a real COMMIT failure injected through the engine's deferred-FK
+    //! recheck — the surviving violation fails the COMMIT but, matching
+    //! SQLite, leaves the transaction ACTIVE — plus pre-existing
+    //! transaction preservation. The wider protocol surface is exercised
+    //! by `tests/viewer_bridge_extensions.rs`.
+
+    use super::*;
+
+    use crate::viewer_bridge::protocol::Refusal;
+    use coding_agent_search::storage::sqlite::FrankenStorage;
+
+    /// A writable lane over a real archive: the canonical schema comes
+    /// from the storage open, the extension profile and observers are
+    /// installed exactly as `OwnedWriter::open` does, then the writer is
+    /// bound to its own read/write connection — the persistent lane a
+    /// poisoned transaction would strand.
+    fn fixture() -> Result<(tempfile::TempDir, OwnedWriter)> {
+        let temp = tempfile::tempdir().context("tempdir")?;
+        let db = temp.path().join("archive.db");
+        let canonical = FrankenStorage::open(&db).context("canonical schema")?;
+        drop(canonical);
+        let path = db.to_str().context("archive path is not UTF-8")?;
+        let connection = open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)
+            .context("writer connection")?;
+        connection.execute("PRAGMA busy_timeout = 10000")?;
+        connection.execute("PRAGMA foreign_keys = ON")?;
+        coding_agent_search::viewer_extensions::schema::ensure_schema(&connection)?;
+        revisions::ensure_observers(&connection)?;
+        connection.execute_batch(
+            "INSERT OR IGNORE INTO agents (id, slug, name, kind, created_at, updated_at) \
+             VALUES (1, 'fixture-agent', 'Fixture Agent', 'fixture', 0, 0);
+             INSERT OR IGNORE INTO sources (id, kind, created_at, updated_at) \
+             VALUES ('local', 'local', 0, 0);
+             INSERT INTO conversations \
+             (id, agent_id, source_id, external_id, source_path) \
+             VALUES (1, 1, 'local', 'fixture-1', '/fixture/session-1.jsonl');",
+        )?;
+        Ok((temp, OwnedWriter { connection }))
+    }
+
+    fn patch() -> AnnotationPatch {
+        AnnotationPatch {
+            is_pinned: Some(true),
+            ..AnnotationPatch::default()
+        }
+    }
+
+    /// Real COMMIT-failure injection: an `AFTER INSERT` trigger on
+    /// `viewer_annotations` plants a `DEFERRABLE INITIALLY DEFERRED`
+    /// foreign-key violation inside the writer's own transaction. The
+    /// engine defers the check to COMMIT, where the surviving violation
+    /// fails the COMMIT but — matching SQLite — leaves the transaction
+    /// ACTIVE: exactly the ownership hole this test guards.
+    fn arm_commit_failure(writer: &OwnedWriter) -> Result<()> {
+        writer.connection.execute_batch(
+            "CREATE TABLE commit_poison (
+                 id INTEGER PRIMARY KEY,
+                 parent INTEGER REFERENCES conversations(id)
+                     DEFERRABLE INITIALLY DEFERRED
+             );
+             CREATE TRIGGER poison_annotation_upsert
+             AFTER INSERT ON viewer_annotations BEGIN
+                 INSERT INTO commit_poison(parent) VALUES (999999);
+             END;",
+        )?;
+        Ok(())
+    }
+
+    /// A COMMIT that fails inside `transact` must roll back the
+    /// transaction it began: the `canonical_write_failed` refusal stays
+    /// the top error (the JSONL `error.kind` contract reads only the top
+    /// error), `in_transaction()` proves the connection clean, no
+    /// annotation/journal/revision row survives, and the SAME persistent
+    /// writer keeps serving mutations once the injection is gone — no
+    /// reconnect.
+    #[test]
+    fn transact_commit_failure_rolls_back_owned_transaction() -> Result<()> {
+        let (_temp, mut writer) = fixture()?;
+        arm_commit_failure(&writer)?;
+        // The fixture's own canonical seed already journals one row; the
+        // assertion is that the failed mutation adds none.
+        let journal_before: i64 = writer
+            .connection
+            .query_row("SELECT COUNT(*) FROM viewer_change_log")?
+            .get_typed(0)?;
+
+        let error = writer
+            .patch_annotations(1, 0, &patch())
+            .expect_err("a COMMIT the deferred-FK recheck fails must surface");
+        let refusal = error
+            .downcast_ref::<Refusal>()
+            .expect("the top error must stay the canonical_write_failed refusal");
+        assert_eq!(refusal.kind, "canonical_write_failed");
+        assert!(
+            !writer.connection.as_async().in_transaction(),
+            "the failed mutation must not leave its own transaction open"
+        );
+        let annotations: i64 = writer
+            .connection
+            .query_row("SELECT COUNT(*) FROM viewer_annotations WHERE conversation_id = 1")?
+            .get_typed(0)?;
+        assert_eq!(
+            annotations, 0,
+            "the failed upsert must not partially commit"
+        );
+        let journal: i64 = writer
+            .connection
+            .query_row("SELECT COUNT(*) FROM viewer_change_log")?
+            .get_typed(0)?;
+        assert_eq!(
+            journal, journal_before,
+            "the observer journal row must roll back with the payload"
+        );
+        assert_eq!(
+            writer.generation()?.annotation_revision,
+            0,
+            "the revision bump must roll back with the payload"
+        );
+
+        // Same persistent writer, injection removed: the lane is not
+        // poisoned and needs no reconnect.
+        writer
+            .connection
+            .execute_batch("DROP TRIGGER poison_annotation_upsert; DROP TABLE commit_poison;")?;
+        let receipt = writer.patch_annotations(1, 0, &patch())?;
+        assert_eq!(receipt["annotation"]["revision"], json!(1));
+        assert_eq!(
+            writer.generation()?.annotation_revision,
+            1,
+            "the same writer must still commit the retried mutation"
+        );
+        Ok(())
+    }
+
+    /// A mutation attempted while the connection ALREADY sits inside a
+    /// transaction the writer did not begin must refuse at `BEGIN
+    /// IMMEDIATE` and leave that transaction alone — the ownership rule
+    /// only ever rolls back what `transact` itself began.
+    #[test]
+    fn transact_preserves_preexisting_transaction() -> Result<()> {
+        let (_temp, mut writer) = fixture()?;
+        writer.connection.execute("BEGIN")?;
+        let error = writer
+            .patch_annotations(1, 0, &patch())
+            .expect_err("a mutation over a pre-existing transaction must refuse");
+        let refusal = error
+            .downcast_ref::<Refusal>()
+            .expect("the top error must stay the writer_unavailable refusal");
+        assert_eq!(refusal.kind, "writer_unavailable");
+        assert!(
+            writer.connection.as_async().in_transaction(),
+            "a refused mutation must not roll back the pre-existing transaction"
+        );
+        writer.connection.execute("COMMIT")?;
+        writer.patch_annotations(1, 0, &patch())?;
+        Ok(())
     }
 }

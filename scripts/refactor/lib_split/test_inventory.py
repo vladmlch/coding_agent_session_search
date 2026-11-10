@@ -218,8 +218,12 @@ def main(argv):
             out.write_text(text + "\n")
         print(f"{len(inv)} tests inventoried")
     elif cmd == "diff":
-        before = json.loads(Path(argv[2]).read_text())
-        after = json.loads(Path(argv[3]).read_text())
+        try:
+            before = json.loads(Path(argv[2]).read_text())
+            after = json.loads(Path(argv[3]).read_text())
+        except (OSError, ValueError) as e:
+            print(f"INVENTORY: {e}", file=sys.stderr)
+            return 2
         d = diff(before, after)
         report = {
             "missing": d.missing, "added": d.added,

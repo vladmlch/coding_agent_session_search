@@ -9,8 +9,9 @@ use std::io::{self, Write};
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
 
-use crate::{
-    TimelineGrouping, normalized_provenance_origin_host, normalized_provenance_origin_kind,
+use crate::TimelineGrouping;
+use crate::cli::commands::view::role_to_export_string::{
+    normalized_provenance_origin_host, normalized_provenance_origin_kind,
     normalized_provenance_source_id,
 };
 

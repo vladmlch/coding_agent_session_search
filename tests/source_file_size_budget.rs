@@ -9,16 +9,18 @@
 //! oversized file fails as soon as a stage lands it rather than at the
 //! end of the program.
 //!
-//! Exactly one temporary exemption remains, bound to the stage at which
-//! it must be gone:
-//!   - `src/lib.rs` through stage 6 (the thin-shim cleanup stage).
+//! Each temporary exemption was bound to the stage at which it had to be
+//! gone, and all have now expired:
+//!   - `src/lib.rs` was exempt through stage 6 (the thin-shim cleanup
+//!     stage); stage 6 landed it and the cover is removed.
 //!   - `src/doctor/run.rs` was exempt through stage 5 (the DoctorRun
 //!     structural decomposition stage); stage 5 landed it and the cover
 //!     is removed.
 //!
 //! When SPLIT_STAGE advances past an exemption's stage the file loses
-//! its cover and must satisfy BUDGET like everything else; past stage 6
-//! the exemption list is effectively empty.
+//! its cover and must satisfy BUDGET like everything else; at stage 6
+//! every plan-authorized cover has expired, so the exemption list is
+//! empty.
 
 use std::collections::HashSet;
 use std::fs;
@@ -29,7 +31,7 @@ const BUDGET: usize = 2000;
 /// Current progress through the split program (plan §8 stage order).
 /// Stages 5 and 6 are manual; SPLIT_STAGE records how far the move-only
 /// applies have landed so exemptions age out correctly.
-const SPLIT_STAGE: &str = "5";
+const SPLIT_STAGE: &str = "6";
 
 const STAGE_ORDER: &[&str] = &[
     "1a", "1b", "1c", "2a", "2b", "2c", "2d", "2e", "2f", "2g", "3a", "3b", "3c", "3d", "4", "5",
@@ -53,8 +55,10 @@ const FILES: &[&str] = &[
 ];
 
 /// Temporary exemptions: (path, last stage at which it may exceed the
-/// budget). Only plan-authorized exceptions may appear here.
-const TEMPORARY_EXCEPTIONS: &[(&str, &str)] = &[("src/lib.rs", "6")];
+/// budget). Only plan-authorized exceptions may appear here. Stage 6
+/// landed the thin-shim cleanup, so the last cover (src/lib.rs) has
+/// expired and the list is empty.
+const TEMPORARY_EXCEPTIONS: &[(&str, &str)] = &[];
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
@@ -155,14 +159,14 @@ fn lib_rs_split_files_respect_size_budget() {
 
 #[test]
 fn temporary_exceptions_are_exactly_the_plan_authorized() {
-    // The only sanctioned exceptions, each bound to its plan stage.
-    // lib-split 5 removed the src/doctor/run.rs cover when the DoctorRun
-    // decomposition landed; src/lib.rs through stage 6 remains.
+    // No exceptions remain: stage 5 removed the src/doctor/run.rs cover
+    // and stage 6 removed the src/lib.rs cover when the thin-shim
+    // cleanup landed. Any new entry here is unauthorized drift.
     assert_eq!(
         TEMPORARY_EXCEPTIONS,
-        &[("src/lib.rs", "6")],
+        &[] as &[(&str, &str)],
         "exception list drifted — only plan-authorized \
-         stage-bound exceptions are allowed"
+         stage-bound exceptions are allowed, and none remain"
     );
     for (_, through) in TEMPORARY_EXCEPTIONS {
         assert!(
@@ -176,49 +180,49 @@ fn temporary_exceptions_are_exactly_the_plan_authorized() {
 fn budget_rejects_oversized_unexempt_file() {
     // Negative proof: the guard must flag an oversized file that has no
     // exemption covering it — a scoped temp tree, not the real repo.
-    let tmp = std::env::temp_dir().join(format!("cass_size_budget_neg_{}", std::process::id()));
+    // tempfile::tempdir gives a privately-owned directory (no predictable
+    // world-writable path to precreate/symlink) and cleans up on drop.
+    let tmp_guard = tempfile::tempdir().unwrap();
+    let tmp = tmp_guard.path();
     let cli = tmp.join("src/cli");
     fs::create_dir_all(&cli).unwrap();
     let big = cli.join("oversized_probe.rs");
     let blob = "x\n".repeat(BUDGET + 1);
     fs::write(&big, &blob).unwrap();
-    // Also seed an exempt-at-stage-6 lib.rs to prove exemptions still work.
+    // Also seed an oversized lib.rs: its stage-6 cover has lapsed, so it
+    // must be flagged at every stage now.
     fs::write(tmp.join("src/lib.rs"), &blob).unwrap();
 
-    let at_4 = oversized_in_scope(&tmp, "4");
+    let at_4 = oversized_in_scope(tmp, "4");
     assert!(
         at_4.iter().any(|l| l.contains("oversized_probe.rs")),
         "oversized unexempt file must be flagged: {at_4:?}"
     );
     assert!(
-        !at_4.iter().any(|l| l.contains("src/lib.rs")),
-        "src/lib.rs is exempt through stage 6: {at_4:?}"
+        at_4.iter().any(|l| l.contains("src/lib.rs")),
+        "src/lib.rs has no remaining exemption: {at_4:?}"
     );
 
-    // lib.rs is exempt through stage 6 inclusive (the shim stage); once
-    // the program reports a stage past "6" the cover lapses and an
-    // oversized lib.rs must be flagged.
-    let past_end = oversized_in_scope(&tmp, "7");
+    // The current stage ("6") must flag an oversized lib.rs too — the
+    // thin-shim cover ended when stage 6 landed.
+    let at_current = oversized_in_scope(tmp, SPLIT_STAGE);
     assert!(
-        past_end.iter().any(|l| l.contains("src/lib.rs")),
-        "src/lib.rs exemption expires after stage 6: {past_end:?}"
+        at_current.iter().any(|l| l.contains("src/lib.rs")),
+        "src/lib.rs exemption expired at stage 6: {at_current:?}"
     );
     // lib-split 5 removed the doctor/run.rs exemption — an oversized
     // run.rs is flagged at every stage from 5 onward.
     let run = tmp.join("src/doctor/run.rs");
     fs::create_dir_all(run.parent().unwrap()).unwrap();
     fs::write(&run, &blob).unwrap();
-    let at_5 = oversized_in_scope(&tmp, "5");
+    let at_5 = oversized_in_scope(tmp, "5");
     assert!(
         at_5.iter().any(|l| l.contains("run.rs")),
         "doctor/run.rs exemption removed in stage 5: {at_5:?}"
     );
-    let at_6 = oversized_in_scope(&tmp, "6");
+    let at_6 = oversized_in_scope(tmp, "6");
     assert!(
         at_6.iter().any(|l| l.contains("run.rs")),
         "doctor/run.rs stays budget-checked past stage 5: {at_6:?}"
     );
-
-    // cleanup is best-effort in a test; failure is not fatal.
-    let _ = fs::remove_dir_all(&tmp);
 }
