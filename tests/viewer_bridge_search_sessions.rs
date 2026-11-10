@@ -1400,6 +1400,109 @@ fn search_sessions_verification_budget_refusal_is_typed() -> Result<()> {
     bridge.shutdown()
 }
 
+/// Review I-1: fast-lane witness discovery that exhausts the request's
+/// whole-body verification budget refuses the whole page with the typed
+/// `verification_budget_exceeded` kind (design §7). Budget exhaustion is
+/// honest unavailability — never §6.4 analyzer drift, and never a
+/// doc-claimed member emitted with `complete:true` under the drift
+/// warning.
+#[test]
+fn search_sessions_fast_lane_budget_exhaustion_is_typed_refusal() -> Result<()> {
+    let mut fixture = gold_fixture();
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-fast-budget",
+        source_path: "/sessions/s-8-fast-budget.jsonl",
+        workspace: None,
+        title: "fast-lane budget session",
+        started_at: Some(6_400),
+        ended_at: Some(9_400),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        // Two canonical chat regions: the marker sits at the very start of
+        // message 0 (inside the session doc's content-prefix window, so
+        // the fast lane claims membership), and message 1 is the second
+        // region discovery reaches after the budget overdrafts.
+        messages: vec![
+            (
+                0,
+                MessageRole::User,
+                "budgetmarker9 early window body",
+                None,
+            ),
+            (
+                1,
+                MessageRole::Agent,
+                "second canonical region without the marker",
+                None,
+            ),
+        ],
+    });
+    // Budget 1 byte: discovery's first whole-body scan overdrafts by
+    // design (the ceiling gates every scan AFTER the running total
+    // reaches it), so the SECOND region's verify hits BudgetExceeded
+    // mid-discovery.
+    let mut bridge = gold_harness_full(&fixture, &["--text-verification-budget-bytes", "1"])?;
+    let page = search(&mut bridge, json!({"query":"budgetmarker9"}))?;
+    ensure!(
+        page["ok"] == false,
+        "fast-lane budget exhaustion must refuse the page, not emit a member: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "verification_budget_exceeded",
+        "the refusal must carry the typed §7 kind: {page}"
+    );
+    let message = page["error"]["message"].as_str().unwrap_or_default();
+    ensure!(
+        message.contains("verification_bytes_budget_exceeded"),
+        "the refusal must name the same typed reason as the legacy lane: {page}"
+    );
+    bridge.shutdown()?;
+
+    // Control, default budget: the same query answers with the verified
+    // witness — proving the refusal above is budget-driven, not a
+    // fixture artifact, and that discovery normally reproduces the
+    // claim without the drift annotation.
+    let mut bridge = gold_harness_full(&fixture, &[])?;
+    let page = search(&mut bridge, json!({"query":"budgetmarker9"}))?;
+    ensure!(page["ok"] == true, "the default budget must answer: {page}");
+    assert_members(&page, &[8])?;
+    ensure!(
+        page["result"]["complete"] == true,
+        "within the budget the page stays complete: {page}"
+    );
+    let matches = page["result"]["matches"]["8"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure!(
+        matches.len() == 1 && matches[0]["message_idx"].as_i64() == Some(0),
+        "message 0's region is the one verified witness: {page}"
+    );
+    let item = page["result"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|it| it["conversation_id"].as_i64() == Some(8))
+        .unwrap_or(Value::Null);
+    ensure!(
+        item["witness_count"].as_i64() == Some(1),
+        "the witness count mirrors the verified matches: {page}"
+    );
+    let warnings = page["result"]["warnings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure!(
+        !warnings.iter().any(|w| w == "witnesses_not_reproduced"),
+        "no drift warning when discovery reproduces the witness: {page}"
+    );
+    bridge.shutdown()
+}
+
 /// Phrase (quoted, contiguous-token), prefix (non-exact), and code
 /// punctuation semantics through the persisted regions — the same
 /// semantics the query-time lane produced.
@@ -1977,6 +2080,275 @@ fn region_doc_stamp_is_freshness_guarded() -> Result<()> {
         "the current stamp publishes and clears the queue: {row:?}"
     );
     Ok(())
+}
+
+/// Review I-3(b): the conservative stale queue RETIRES a session's old
+/// chunks when the session shrinks. Three 30k-char messages pack two chat
+/// chunks (messages 0+1, then 2 alone, marker at message 2's start so
+/// chunk 1's prefix window claims it); a reindex that drops two messages
+/// leaves ONE chat chunk. The republish must queue the retired chunk's
+/// document identity — plus the phantom slot the old per-scope region
+/// count conservatively covers — the commit must actually delete the
+/// retired chunk from the engine, and the post-stamp fast lane must stop
+/// claiming the retired marker while claiming the new body's term.
+#[test]
+fn search_regions_stale_queue_retires_shrunk_session_chunks() -> Result<()> {
+    use coding_agent_search::viewer_extensions::search_regions::{
+        REGION_DOC_BASE, SESSION_DOC_BASE, SESSION_DOC_SCOPE_SHIFT, session_scope_docs,
+        session_scope_ordinal, stage_region_docs, stamp_region_docs_published,
+    };
+    // The archive outlives both bridges: each harness owns only a
+    // throwaway tempdir, the real data dir rides in `archive`.
+    let archive = tempfile::tempdir()?;
+    let data_dir = archive.path().join("data");
+    std::fs::create_dir(&data_dir)?;
+    let db = data_dir.join("archive.db");
+
+    let long_a: &'static str = Box::leak("a".repeat(30_000).into_boxed_str());
+    let long_b: &'static str = Box::leak("b".repeat(30_000).into_boxed_str());
+    let long_c: &'static str =
+        Box::leak(format!("retiredchunkmarker {}", "c".repeat(30_000)).into_boxed_str());
+    let mut fixture = gold_fixture();
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-shrink",
+        source_path: "/sessions/s-8-shrink.jsonl",
+        workspace: None,
+        title: "chunk shrink session",
+        started_at: Some(6_500),
+        ended_at: Some(9_500),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            (0, MessageRole::User, long_a, None),
+            (1, MessageRole::User, long_b, None),
+            (2, MessageRole::User, long_c, None),
+        ],
+    });
+    let writer = gold_seed(&fixture, &db)?;
+
+    // Generation 1 — gold_harness_full's phased body: canonical docs,
+    // every session's region docs staged, committed, stamped.
+    let index_path = expected_index_dir(&data_dir);
+    {
+        let mut docs = Vec::new();
+        for session in &fixture {
+            for (idx, _role, content, _extra) in &session.messages {
+                docs.push(CassDocument {
+                    agent: session.agent.to_owned(),
+                    workspace: session.workspace.map(str::to_owned),
+                    workspace_original: session.workspace.map(str::to_owned),
+                    source_path: session.source_path.to_owned(),
+                    msg_idx: *idx as u64,
+                    created_at: session.started_at.map(|base| base + idx),
+                    title: Some(session.title.to_owned()),
+                    content: (*content).to_owned(),
+                    source_id: session.source_id.to_owned(),
+                    origin_kind: "local".to_owned(),
+                    origin_host: session.origin_host.map(str::to_owned),
+                    conversation_id: Some(session.id),
+                });
+            }
+        }
+        let mut index = QuillCassIndex::open_or_create(&index_path)?;
+        index.add_cass_documents(&docs)?;
+        let mut stamps = Vec::new();
+        for session in &fixture {
+            let (_docs, stamp) = stage_region_docs(&mut index, &writer, session.id)?;
+            if let Some(stamp) = stamp {
+                stamps.push(stamp);
+            }
+        }
+        index.commit()?;
+        stamp_region_docs_published(&writer, &stamps)?;
+        std::fs::write(
+            index_path.join("schema_hash.json"),
+            serde_json::to_vec(&json!({
+                "schema_hash": coding_agent_search::search::tantivy::SCHEMA_HASH,
+            }))?,
+        )?;
+    }
+
+    // Gen-1 shape: the chat scope packs TWO chunks — messages 0+1 then
+    // message 2 alone — and the marker rides chunk 1's prefix window.
+    let chat_ordinal = session_scope_ordinal("chat");
+    let chat_slot = |seq: u64| SESSION_DOC_BASE + (chat_ordinal << SESSION_DOC_SCOPE_SHIFT) + seq;
+    let docs = session_scope_docs(&writer, 8)?.expect("session 8 owns session docs");
+    let doc_slots = || -> Vec<u64> {
+        let mut slots: Vec<u64> = docs.iter().map(|doc| doc.slot).collect();
+        slots.sort_unstable();
+        slots
+    };
+    // The title scope owns its own single chunk (SESSION_DOC_BASE + 0)
+    // alongside the chat scope's two.
+    ensure!(
+        doc_slots() == vec![SESSION_DOC_BASE, chat_slot(0), chat_slot(1)],
+        "90k chat chars pack two chat chunks plus the title doc: {:?}",
+        doc_slots()
+    );
+    let chat_chunk1 = docs
+        .iter()
+        .find(|doc| doc.slot == chat_slot(1))
+        .expect("chat chunk 1");
+    ensure!(
+        chat_chunk1.text.starts_with("retiredchunkmarker"),
+        "the marker rides chunk 1: {:?}",
+        chat_chunk1.text.chars().take(40).collect::<String>()
+    );
+
+    // Bridge #1: the fast lane claims the marker through chunk 1.
+    drop(writer);
+    let mut bridge =
+        BridgeHarness::spawn_fixture(tempfile::tempdir()?, data_dir.clone(), db.clone(), &[])?;
+    let page = search(&mut bridge, json!({"query":"retiredchunkmarker"}))?;
+    assert_members(&page, &[8])?;
+    bridge.shutdown()?;
+
+    // The shrink: two messages dropped, the survivor's body replaced —
+    // the shape a reindex of a truncated session file produces.
+    let writer = Connection::open(db.to_string_lossy().into_owned())?;
+    writer.execute("DELETE FROM messages WHERE conversation_id = 8 AND idx > 0")?;
+    writer.execute_with_params(
+        "UPDATE messages SET content = ?1 WHERE conversation_id = 8 AND idx = 0",
+        &param_slice_to_values(params!("newbodyterm shrunk single-chunk body")),
+    )?;
+    let shrunk = GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-shrink",
+        source_path: "/sessions/s-8-shrink.jsonl",
+        workspace: None,
+        title: "chunk shrink session",
+        started_at: Some(6_500),
+        ended_at: Some(9_500),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![(
+            0,
+            MessageRole::User,
+            "newbodyterm shrunk single-chunk body",
+            None,
+        )],
+    };
+    let conv = gold_conversation(&shrunk);
+    let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+        &writer, &conv, 8,
+    )?;
+    coding_agent_search::viewer_extensions::search_regions::publish_search_regions(
+        &writer,
+        8,
+        &generation.packet,
+        &generation.structure,
+    )?;
+
+    // The queue pins the whole retire set:
+    // - chat seq 1: the RETIRED chunk-1 document (the old live chunk),
+    // - chat seq 2: the phantom slot the old 3-region chat count
+    //   conservatively covers (a third chunk never existed),
+    // - REGION_DOC_BASE+3: the old meta region row's document — the old
+    //   inventory numbered it at ordinal 3 (after three chat regions);
+    //   the shrunk inventory renumbers it to ordinal 1, so the pre-Stage-1
+    //   region-doc diff queues the old slot.
+    // The surviving chat chunk 0 is reclaimed, never queued.
+    let row = writer.query_row(
+        "SELECT docs_state, pending_doc_deletes FROM viewer_search_region_marks \
+         WHERE conversation_id = 8",
+    )?;
+    let state = row.get_typed::<String>(0)?;
+    let pending_raw = row.get_typed::<String>(1)?;
+    ensure!(
+        state == "pending",
+        "the republish re-pends the marks row: {state}"
+    );
+    let doc_identity = |slot: u64| {
+        frankensearch::quill::cass::cass_document_identity(
+            "local",
+            frankensearch::quill::cass::CassConversationKey {
+                source_path: "/sessions/s-8-shrink.jsonl",
+                id: Some(8),
+            },
+            slot,
+        )
+    };
+    let mut queued: Vec<String> = serde_json::from_str(&pending_raw)?;
+    let mut expected = vec![
+        doc_identity(chat_slot(1)),
+        doc_identity(chat_slot(2)),
+        doc_identity(REGION_DOC_BASE + 3),
+    ];
+    queued.sort();
+    expected.sort();
+    ensure!(
+        queued == expected,
+        "exactly the retired chunk, its phantom sibling and the renumbered \
+         meta region doc are queued: {pending_raw}"
+    );
+
+    // The shrunk session packs ONE chat chunk now (plus its title doc).
+    let docs = session_scope_docs(&writer, 8)?.expect("session 8 still owns session docs");
+    let mut shrunk_slots: Vec<u64> = docs.iter().map(|doc| doc.slot).collect();
+    shrunk_slots.sort_unstable();
+    ensure!(
+        shrunk_slots == vec![SESSION_DOC_BASE, chat_slot(0)],
+        "the shrunk session packs one chat chunk plus the title doc: {shrunk_slots:?}"
+    );
+
+    // Retire — the production lane from viewer_bridge::Writer::
+    // converge_search_region_docs: one converge pass stages every
+    // pending session, then the stamped commit executes the queued
+    // stale deletes BEFORE flipping the marks row published. Plain
+    // commit() seals the replacements but never executes the queue —
+    // the retired chunk's posting would stay live while the marks row
+    // claimed an empty queue.
+    let mut index =
+        coding_agent_search::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+    let converged = index.converge_pending_search_region_docs(&writer, i64::MAX)?;
+    ensure!(
+        converged == 1,
+        "only the re-pended session 8 converges: {converged}"
+    );
+    index.commit_with_region_doc_stamps(&writer)?;
+    let row = writer.query_row(
+        "SELECT docs_state, pending_doc_deletes FROM viewer_search_region_marks \
+         WHERE conversation_id = 8",
+    )?;
+    ensure!(
+        row.get_typed::<String>(0)? == "published" && row.get_typed::<String>(1)? == "[]",
+        "the stamp publishes and clears the queue: {row:?}"
+    );
+
+    // Bridge #2: the retired chunk no longer claims — the marker's
+    // posting set is empty — while the new body's term claims through
+    // the repacked single chunk.
+    drop(writer);
+    let mut bridge =
+        BridgeHarness::spawn_fixture(tempfile::tempdir()?, data_dir.clone(), db.clone(), &[])?;
+    let page = search(&mut bridge, json!({"query":"retiredchunkmarker"}))?;
+    ensure!(
+        page["ok"] == true,
+        "the retired-marker query must answer: {page}"
+    );
+    ensure!(
+        ids(&page).is_empty(),
+        "the retired chunk's document is gone from the posting set: {page}"
+    );
+    let page = search(&mut bridge, json!({"query":"newbodyterm"}))?;
+    assert_members(&page, &[8])?;
+    let item = page["result"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|it| it["conversation_id"].as_i64() == Some(8))
+        .unwrap_or(Value::Null);
+    ensure!(
+        item["witness_count"].as_i64() == Some(1),
+        "the new body's witness is discovered on the repacked chunk: {page}"
+    );
+    bridge.shutdown()
 }
 
 /// The live region-doc bound counts ONLY doc-backed rows — chat regions

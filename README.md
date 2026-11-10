@@ -1466,6 +1466,43 @@ When an exact query's first page returns fewer than 3 results (or fewer than a s
 - The wildcard results replace the exact ones only when they find more hits; robot mode then reports `_meta.wildcard_fallback: true`. When a sparse result did not get the retry, `_meta.wildcard_fallback_skipped` says why: `index_over_automatic_limit` (the index is over the document cap), `automatic_retry_disabled` (the cap is `0`) or `long_query_term`; add explicit wildcards to run it anyway. When the retry itself runs out of query fuel, the exact results are returned and the field is `query_fuel_exhausted`
 - TUI shows a "fuzzy" indicator in the status bar
 
+### Strict Session Search (the `search_sessions` viewer lane)
+
+The `cass-viewer-bridge` protocol (the `cass_owned_queries_v1` lane that serves
+the session view) answers session-level queries from strict evidence: a session
+is a member only when proven, and anything unprovable is a typed refusal, never
+a guess.
+
+- **Fast lane.** Plans whose every literal is a single ASCII token — including
+  AND/OR/NOT over them — answer from one aggregated document per
+  (conversation, scope) chunk, built at index time from the session's whole
+  region inventory. Phrases, non-ASCII literals and region-domain predicates
+  (`tool:`, `file:`, …) stay on the per-region lane. The `membership_source`
+  receipt says which lane answered (`session_scope_docs` | `region_literals`).
+- **Witnesses are proven, not presumed.** For the sessions a page actually
+  emits, their persisted regions are re-verified textually and returned as
+  deep-link matches. `witness_count` is the number of witnesses *delivered*
+  (bounded by the page's match limit), not the total. A session the documents
+  claim but whose regions cannot textually reproduce the term is still
+  emitted, with `witness_count=0` and the `witnesses_not_reproduced` warning —
+  visible drift, never a silent drop.
+- **Bare-term prefix window** *(accepted, pending an engine-side fix)*: a
+  bare (unquoted) token's membership is claimed from the first 4 KiB of each
+  64-KiB session chunk, so a bare term whose only occurrences sit deeper in a
+  long session is not claimed on the fast lane; `NOT` complements over-include
+  by the same class. Quoted exact terms read the full chunk text and are
+  unaffected.
+- **Budget honesty.** Whole-body verification is metered per request
+  (`--text-verification-budget-bytes`). If discovery exhausts it mid-page, the
+  page refuses with the typed `verification_budget_exceeded` error — never a
+  silently truncated member list stamped `complete`.
+- Region rows are read on demand (`region_load_mode`, `region_load_reason`,
+  `region_rows_loaded`, `fragments_loaded` receipts), so a query's cost scales
+  with its result size, not the archive; `score_domain`
+  (`session_docs` | `region_documents`) receipts which document set scored
+  the page. Pending region publication or not-yet-read coverage gaps refuse
+  exactly on either lane.
+
 ---
 
 ## ⌨️ Complete Keyboard Reference

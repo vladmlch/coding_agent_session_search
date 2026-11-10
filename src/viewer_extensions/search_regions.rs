@@ -87,7 +87,13 @@ use super::providers::{gemini_call_result_text, gemini_status_verdict, scan_copi
 /// sets instead of the capped message-lane enumeration (Stage 1 of the
 /// 2026-11-10 strict-common-terms report, §6.1/§6.2). The bump forces one
 /// republish of every existing marks row — the fast path refuses to trust
-/// session docs stamped at any older version.
+/// session docs stamped at any older version. Transition note (review
+/// M-2): that first republish queues session-doc stale slots bounded by
+/// each conversation's OLD per-scope region-row count — slots that never
+/// held a live document under v5, when session docs did not exist.
+/// Harmless (the retire DELETE ignores absent ids) but the one-time
+/// `pending_doc_deletes` JSON and live-bound contribution across a full
+/// reindex is proportional to region counts, not to real stale chunks.
 pub const REGION_VERSION: i64 = 6;
 
 /// Synthetic `msg_idx` space for region documents: `REGION_DOC_BASE +
@@ -2116,11 +2122,18 @@ fn has_region_marks_table(db: &impl FactsDb) -> Result<bool> {
 /// current rows pack into under [`pack_region_boundaries`] — the same
 /// greedy packer the staging lane materializes documents with, fed the
 /// same per-region char contributions (`LENGTH(text) + 1`), so the bound
-/// is exact at convergence rather than merely conservative. This streams
-/// one row per region and evaluates `LENGTH()` over every chat region's
-/// message content — the one deliberate cost of keeping the bound SQL-free
-/// of a persisted length column (no DDL is allowed for Stage 1); it runs
-/// on indexer-side certification paths only, never on the query lane.
+/// is exact-or-OVER at convergence, never exact (review M-3): the fold
+/// counts every marked conversation's region rows, while staging also
+/// requires a resolvable doc identity (`source_path`) — a marked
+/// conversation without one contributes to the bound but publishes
+/// nothing. Over is the safe direction for a bound (the gh473 watch
+/// can only over-report), and that slack is exactly where a real
+/// runaway could hide, so drift through it must be investigated, not
+/// amortized. This streams one row per region and evaluates `LENGTH()`
+/// over every chat region's message content — the one deliberate cost of
+/// keeping the bound SQL-free of a persisted length column (no DDL is
+/// allowed for Stage 1); it runs on indexer-side certification paths
+/// only, never on the query lane.
 ///
 /// `pending_doc_deletes` bounds stale identities still awaiting removal
 /// (region drops and the conservative session-doc queue alike).
@@ -2884,6 +2897,81 @@ mod tests {
     fn session_slot(scope: &str, chunk: u64) -> i64 {
         (SESSION_DOC_BASE + (session_scope_ordinal(scope) << SESSION_DOC_SCOPE_SHIFT) + chunk)
             as i64
+    }
+
+    /// Review I-3(a): the ONE authoritative chunker multi-chunk packs.
+    /// Every case re-proves the invariants the three consumers (staging,
+    /// publication keep set, live-doc bound) all rely on: half-open
+    /// contiguous cover of the region list, multi-region chunks within
+    /// the cap, oversized regions isolated, no arithmetic overflow.
+    #[test]
+    fn pack_region_boundaries_multi_chunk_and_edge_cases() {
+        fn assert_cover(lengths: &[u64], cap: u64) -> Vec<(usize, usize)> {
+            let ranges = pack_region_boundaries(lengths, cap);
+            let mut cursor = 0_usize;
+            for &(start, end) in &ranges {
+                assert_eq!(start, cursor, "ranges must be contiguous: {ranges:?}");
+                assert!(start < end, "no empty ranges: {ranges:?}");
+                cursor = end;
+            }
+            assert_eq!(
+                cursor,
+                lengths.len(),
+                "the cover must end at the last region: {ranges:?}"
+            );
+            for &(start, end) in &ranges {
+                let sum: u64 = lengths[start..end].iter().sum();
+                if end - start > 1 {
+                    assert!(
+                        sum <= cap,
+                        "a multi-region chunk must fit the cap ({sum} > {cap}): {ranges:?}"
+                    );
+                }
+            }
+            ranges
+        }
+
+        // Empty input: no chunks, no panic.
+        assert_eq!(
+            pack_region_boundaries(&[], 64 * 1024),
+            Vec::<(usize, usize)>::new()
+        );
+
+        // Single region: exactly one chunk however small or oversized.
+        assert_eq!(pack_region_boundaries(&[7], 10), vec![(0, 1)]);
+        assert_eq!(pack_region_boundaries(&[100], 10), vec![(0, 1)]);
+
+        // Multi-chunk packing: five regions of 5 chars under cap 12 pack
+        // two-per-chunk (5+5=10 fits, +5 overflows), last chunk alone.
+        let lengths = [5_u64, 5, 5, 5, 5];
+        assert_eq!(assert_cover(&lengths, 12), vec![(0, 2), (2, 4), (4, 5)]);
+
+        // Inclusive boundary: exactly `cap` characters still pack together
+        // (the boundary is `> cap`, so 6+6=12 under cap 12 is ONE chunk).
+        assert_eq!(assert_cover(&[6, 6], 12), vec![(0, 2)]);
+
+        // Oversized region takes a chunk of its own and does not drag
+        // neighbors into it: [5, 100, 5] under cap 12 isolates the 100.
+        assert_eq!(assert_cover(&[5, 100, 5], 12), vec![(0, 1), (1, 2), (2, 3)]);
+        // ...even in the middle of the run: [100, 5, 5] leaves the two
+        // small regions packed together after it.
+        assert_eq!(assert_cover(&[100, 5, 5], 12), vec![(0, 1), (1, 3)]);
+
+        // Zero-length regions cost only their separator and pack freely.
+        assert_eq!(assert_cover(&[0, 0, 0], 1), vec![(0, 3)]);
+
+        // Saturation: near-u64::MAX contributions never overflow — the
+        // oversized-isolation rule keeps saturating_add inaudible.
+        assert_cover(&[u64::MAX, u64::MAX, 3], 10);
+
+        // Realistic shape: 200 regions of 1000 chars under the production
+        // 64-KiB cap → 65 regions per chunk (65_000 ≤ 65_536; 66_000
+        // overflows), 4 chunks with a 5-region tail.
+        let realistic: Vec<u64> = std::iter::repeat_n(1000, 200).collect();
+        let ranges = assert_cover(&realistic, SESSION_DOC_CHUNK_CHAR_CAP as u64);
+        assert_eq!(ranges.len(), 4, "65+65+65+5 regions: {ranges:?}");
+        assert_eq!(ranges[0], (0, 65));
+        assert_eq!(ranges[3], (195, 200));
     }
 
     #[test]

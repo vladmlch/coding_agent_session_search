@@ -51,7 +51,39 @@
 //!    structural-only, one read per conversation on first touch
 //!    (receipted as `fragments_loaded`), and the one predicate arm that
 //!    reads fragments (`mcp`) keeps eager semantics through a chunked
-//!    prefetch.
+//!    prefetch. Stage 1b plans the region READ the request spends
+//!    through [`plan_region_load_mode`] — `emitted_page_sessions`
+//!    (fast lane: the emitted page's conversations only, loaded at page
+//!    time), `gated_quill_seeks` (legacy: per-literal Quill gates) or
+//!    the `universe_structural` fallback — receipted as
+//!    `region_load_mode`/`region_load_reason`/`region_rows_loaded`.
+//!    Receipt semantics (review I-2): `witness_count` is the DELIVERED
+//!    witness count — textual witnesses the page could prove and
+//!    deep-link, 0 under the §6.4 annotation — not a claim that the
+//!    doc's membership was fully reproduced; `score_domain`
+//!    (`session_docs` | `region_documents`) receipts which document set
+//!    scored the page. Budget exhaustion is NEVER drift: when §6.4
+//!    discovery exhausts the request's whole-body verification budget
+//!    (`--text-verification-budget-bytes`), the page refuses with the
+//!    typed `verification_budget_exceeded` kind naming the legacy lane's
+//!    `verification_bytes_budget_exceeded` reason — never a member with
+//!    `complete:true`; `witnesses_not_reproduced` stays reserved for
+//!    regions that were consulted and disagreed. Bare (unquoted)
+//!    literals claim membership through the engine's prefix-n-gram field,
+//!    which frankensearch-quill builds from only the first
+//!    `CONTENT_PREFIX_MAX_BYTES` = 4 KiB of each 64-KiB chunk's packed
+//!    text (`cass_prefix_source`): a bare term whose only occurrences
+//!    sit past that window is not claimed — §8.3, owner decision option
+//!    1: accepted, pending an engine-side fix; exact-quoted literals
+//!    match the full chunk text and are unaffected. Because the window
+//!    can only UNDER-claim bare-term members, a NOT over the same
+//!    literal correspondingly over-includes its complement: a session
+//!    the window cannot see as a member may still carry the term
+//!    past-window, and the complement keeps it. The session docs are
+//!    a MEMBERSHIP source, not a text substitute: every emitted witness
+//!    is still proven from the canonical region rows, and a doc claim
+//!    the regions cannot reproduce is the §6.4 annotation, never a
+//!    silent substitution.
 //!
 //! Forbidden here (plan): no `cass_facts` FTS5, no unbounded corpus
 //! regex, no silent `max_hits` truncation, no first-20-hits ⇒ first-20-
@@ -3722,9 +3754,12 @@ fn fast_score_and_claims(
 /// consults exactly the region set it always saw. A claim no region
 /// reproduces (analyzer n-gram drift) returns an empty list; the caller
 /// annotates `witness_count=0` with the `witnesses_not_reproduced`
-/// warning instead of refusing the page. A verification budget
-/// exhaustion stops discovery for the session and returns what was
-/// found.
+/// warning instead of refusing the page — that warning therefore names
+/// ONLY regions that were consulted and disagreed. A verification budget
+/// exhaustion is NOT drift: discovery reports [`FastWitnesses::BudgetExhausted`]
+/// and the caller refuses the whole page with the typed
+/// `verification_budget_exceeded` kind (design §7), never a member
+/// emitted with `complete:true`.
 fn discover_fast_witnesses(
     connection: &Connection,
     regions: &[Region],
@@ -3732,7 +3767,7 @@ fn discover_fast_witnesses(
     matchers: &HashMap<(String, bool), LiteralMatcher>,
     max_matches: usize,
     stats: &mut HydrateStats,
-) -> Result<Vec<(String, String)>> {
+) -> Result<FastWitnesses> {
     let mut discovered: Vec<(String, String)> = Vec::new();
     for (branch, (value, exact)) in claims {
         if discovered.len() >= max_matches {
@@ -3752,12 +3787,28 @@ fn discover_fast_witnesses(
                 RegionMatch::Member => {
                     discovered.push((region.key.clone(), branch.clone()));
                 }
-                RegionMatch::BudgetExceeded => break,
+                RegionMatch::BudgetExceeded => {
+                    return Ok(FastWitnesses::BudgetExhausted);
+                }
                 RegionMatch::NoText | RegionMatch::NonMember => {}
             }
         }
     }
-    Ok(discovered)
+    Ok(FastWitnesses::Found(discovered))
+}
+
+/// The §6.4 discovery outcome for one emitted fast-lane session.
+enum FastWitnesses {
+    /// Discovery ran to its bounded end (or found `max_matches`): the
+    /// (region key, branch) witnesses proven from the region rows. An
+    /// empty list here is genuine consulted-and-disagreed drift.
+    Found(Vec<(String, String)>),
+    /// The request's whole-body verification budget ran out mid-discovery.
+    /// Honest unavailability per design §7 — the page must refuse with
+    /// the typed `verification_budget_exceeded` kind, mirroring the legacy
+    /// lane's `verification_bytes_budget_exceeded` reason, and must never
+    /// degrade into the drift annotation or a `complete:true` member.
+    BudgetExhausted,
 }
 
 // ---------------------------------------------------------------------------
@@ -3963,8 +4014,19 @@ pub fn search_sessions(
     } else {
         if fast_eligible {
             // The marks-gate fallback: the legacy per-region enumeration
-            // runs here instead of before the universe read. The two
-            // reads have no coupling, so the reordering is unobservable.
+            // runs here instead of before the universe read. For every
+            // answerable query the two reads have no coupling, so the
+            // reordering is unobservable — with one honest corner
+            // (review M-1): a plan BOTH over the literal enumeration cap
+            // and over the universe ceiling refuses
+            // `search_budget_exceeded` here (the ceiling check ran
+            // first), where a non-fast plan with the same literal and
+            // universe refuses `ranking_budget_exceeded` (it enumerated
+            // first). Both are honest typed refusals of the same query;
+            // only the reported kind differs by lane. Pinning the corner
+            // needs a >HARD_UNIVERSE_CEILING-session fixture carrying a
+            // >MAX_LITERAL_HITS literal (both hard constants, no test
+            // knobs) — deferred as disproportionate to the divergence.
             let LegacyLiteralEvidence { scores, possible } =
                 legacy_literal_evidence(readers, &plan, &engine_filters)?;
             quill_scores = scores;
@@ -4315,14 +4377,35 @@ pub fn search_sessions(
             Vec::new()
         };
         let fast_discovered: Vec<(String, String)> = if entry.fast_lane {
-            discover_fast_witnesses(
+            match discover_fast_witnesses(
                 connection,
                 &page_regions,
                 &entry.fast_claims,
                 &matchers,
                 max_matches,
                 &mut stats,
-            )?
+            )? {
+                FastWitnesses::Found(discovered) => discovered,
+                FastWitnesses::BudgetExhausted => {
+                    // Design §7: budget exhaustion is honest
+                    // unavailability — not §6.4 drift and never a
+                    // silently-truncated member with `complete:true`.
+                    // Refuse the whole page with the typed kind, naming
+                    // the same verification_bytes_budget_exceeded reason
+                    // the legacy lane's refusal carries.
+                    return Err(refuse(
+                        "verification_budget_exceeded",
+                        format!(
+                            "Witness verification for conversation {} exhausted the \
+                             request's {}-byte text-verification budget mid-discovery \
+                             (verification_bytes_budget_exceeded) — honest unavailability, \
+                             never a complete answer. Raise --text-verification-budget-bytes \
+                             and retry.",
+                            session.conversation_id, stats.verification_budget
+                        ),
+                    ));
+                }
+            }
         } else {
             Vec::new()
         };
@@ -4371,9 +4454,12 @@ pub fn search_sessions(
         }
         if entry.fast_lane && !entry.fast_claims.is_empty() && fast_discovered.is_empty() {
             // The §6.4 annotation: the session documents claimed the
-            // member but no region reproduces the literal textually
-            // (analyzer n-gram drift). Emitted with witness_count=0 and
-            // named — never silently dropped, never a whole-page refusal.
+            // member but no consulted region reproduced the literal
+            // textually (analyzer n-gram drift). Emitted with
+            // witness_count=0 and named — never silently dropped, never
+            // a whole-page refusal. Budget exhaustion never reaches
+            // here: it refuses the page above, so this warning names
+            // ONLY consulted-and-disagreed drift.
             warnings.push("witnesses_not_reproduced".to_owned());
         }
         if !session_matches.is_empty() {
