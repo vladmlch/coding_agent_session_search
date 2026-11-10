@@ -132,7 +132,17 @@ pub use providers::classification::SessionQualityMetrics;
 /// connector actually drops keeps the partial
 /// (providers/antigravity.rs, antigravity-facts-v6). Pre-v12 rows keep
 /// the v5 verdicts unchanged.
-pub const FACTS_EXTRACTOR_VERSION: i64 = 12;
+/// v13: v12 plus the tool-coverage fixes (owner decision, 2026-11-10,
+/// §5.1–§5.5a): antigravity's name-only invocations synthesize stable
+/// `agy-anon:{event}:{n}` pairing ids so `tool:`/`file:` answer (the
+/// identity reason narrows to the exit/error scopes), the devin facts
+/// lane reads the archived `cass.invocations` verbatim (retiring
+/// `devin_tool_calls_not_normalized` where the calls are carried), and
+/// codex calls whose record type is corpus-proven to never carry exit
+/// status swap the not-read verdict for the allowlisted
+/// `codex_tool_status_absent_at_source`. REGION_VERSION stays 6;
+/// `cass index --full` converges pre-existing rows onto v13.
+pub const FACTS_EXTRACTOR_VERSION: i64 = 13;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
@@ -334,10 +344,27 @@ pub struct CoverageEntry {
 ///   `/cass/source == "claude_code_desktop_sidecar"` AND
 ///   `body_available == false` — a sidecar without the marker, or any
 ///   other unknown shape, keeps `claude_shape_unknown`, a not-read gap.
+/// - `codex_tool_status_absent_at_source` (owner decision, 2026-11-10,
+///   §5.5a): a codex call whose output record type NEVER carries exit
+///   status at the source, so the missing `tool_exit`/`tool_error` verdict
+///   never existed in any local record. `proven_no_exit` in
+///   `providers/codex.rs` proves it from the record type — a
+///   format-level proof (the OpenAI-shaped `function_call_output` has no
+///   status fields; 0 of 19,249 corpus outputs carry status, and pairing
+///   is kind-homogeneous, so every `function_call` name including all
+///   `mcp__*` calls is covered) plus one name-level proof (custom `exec`:
+///   0 of 63,517). `apply_patch` (611 of 734 custom outputs DO record
+///   `exit_code`) and every unlisted custom name stay not-read. The mark
+///   fires only when the call's recorded verdict really is missing, so a
+///   later record carrying status overrides it per record.
 ///
 /// NOT here on purpose:
 /// - `agy_status_dropped_by_connector` / `agy_status_unpaired`: tool
 ///   verdict gaps, not text gaps — text-absence semantics do not apply.
+/// - `agy_tool_call_identity_missing` / `agy_tool_result_identity_missing`
+///   (§5.2): verdict gaps naming the missing call identity — the tool
+///   name inventory and the output text are unaffected, so they are not
+///   text absences.
 /// - Any unknown/new reason code: defaults to NOT-READ. Adding a member
 ///   is an owner decision, never an inference from a state string.
 pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &[
@@ -347,6 +374,7 @@ pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &[
     "agy_source_truncated",
     "claude_sidecar_body_culled",
     "tool_output_interrupted",
+    "codex_tool_status_absent_at_source",
 ];
 
 /// `true` when a coverage entry's gap is provably text absent at the
@@ -1413,7 +1441,7 @@ mod source_absent_tests {
         // Mixed with any not-read reason the proof breaks.
         assert!(!is_source_absent_gap(
             "partial",
-            &reasons(&["agy_source_truncated", "agy_tool_call_identity_missing"])
+            &reasons(&["agy_source_truncated", "agy_tool_name_missing"])
         ));
         // The malformed-marker variant stays not-read.
         assert!(!is_source_absent_gap(
@@ -1483,6 +1511,46 @@ mod source_absent_tests {
         assert!(!is_source_absent_gap(
             "partial",
             &reasons(&["tool_result_missing"])
+        ));
+    }
+
+    #[test]
+    fn codex_proven_no_exit_status_marker_is_source_absent() {
+        // The codex proven-never-exit tool types (owner decision,
+        // 2026-11-10): the rollout corpus (2,520 files, every
+        // `function_call_output` and `custom_tool_call_output` scanned)
+        // proves named tool types — `exec`, `exec_command`, `wait`, …
+        // every observed name except `apply_patch` — NEVER record
+        // `exit_code`/`is_error` on their output records (e.g. `exec`:
+        // 63,517 outputs, 0 with status; the OpenAI-shaped
+        // `function_call_output` record has no status fields at all:
+        // 19,249 records, 0 with status). For such a call the missing
+        // exit/error status never existed in any local record.
+        // `call()` in `providers/codex.rs` notes the qualified call id only
+        // when the recorded name is on that proven list — `apply_patch`
+        // (611 of 734 outputs carry `exit_code`) and unknown names keep
+        // `tool_exit_not_recorded`/`tool_error_not_recorded`, not-read
+        // gaps.
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["codex_tool_status_absent_at_source"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["codex_tool_status_absent_at_source"])
+        ));
+        // Mixed with any not-read reason the proof breaks.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&[
+                "codex_tool_status_absent_at_source",
+                "tool_exit_not_recorded"
+            ])
+        ));
+        // The unproven per-call verdict stays not-read.
+        assert!(!is_source_absent_gap(
+            "unavailable",
+            &reasons(&["tool_exit_not_recorded"])
         ));
     }
 }

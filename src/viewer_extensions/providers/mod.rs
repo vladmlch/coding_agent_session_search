@@ -415,6 +415,23 @@ pub(crate) struct ToolCollector {
     /// `finish()` marks them `tool_output_interrupted` (source-absent,
     /// allowlisted) instead of the not-read `tool_result_missing`.
     interrupted: BTreeSet<String>,
+    /// Call ids this extractor SYNTHESIZED because the source record named
+    /// a tool but carried no call id (antigravity's name-only invocations —
+    /// corpus-proven: all 10,103 archived calls are name-only, zero output
+    /// records carry any id, and zero ids anywhere match the `agy-anon:`
+    /// prefix). A synthesized id is a stable local pairing key, never a
+    /// source identity: `raw_call_id` stays empty, and `finish()` skips the
+    /// pairing/verdict marks for it — the identity partial already names
+    /// the verdict gap on the exit/error scopes.
+    synthesized: BTreeSet<String>,
+    /// Call ids whose exit status is PROVEN absent at the source (codex
+    /// only — `providers/codex.rs` proves it from the record type, never
+    /// from a parse failure or unknown shape): `finish()` swaps the not-read
+    /// `tool_exit_not_recorded`/`tool_error_not_recorded` verdicts for the
+    /// allowlisted `codex_tool_status_absent_at_source` for these ids, and
+    /// only when the recorded verdict really is missing (self-correcting
+    /// per record).
+    exit_absent_at_source: BTreeSet<String>,
 }
 
 impl ToolCollector {
@@ -424,6 +441,8 @@ impl ToolCollector {
             results: BTreeMap::new(),
             result_missing_scopes: &["tools", "text_inventory"],
             interrupted: BTreeSet::new(),
+            synthesized: BTreeSet::new(),
+            exit_absent_at_source: BTreeSet::new(),
         }
     }
 
@@ -433,6 +452,35 @@ impl ToolCollector {
     /// than a not-read gap.
     pub fn note_interrupted(&mut self, call_id: &str) {
         self.interrupted.insert(call_id.to_string());
+    }
+
+    /// Antigravity only: mint the next synthetic id for a name-only
+    /// invocation on `event_idx` — `agy-anon:{event_idx}:{n}` with the
+    /// smallest `n` whose id is not already held (synthesized, call or
+    /// result). Two name-only invocations on one event therefore never
+    /// merge, and a source-issued id can never be displaced: synthesis
+    /// runs only in the no-identity branch, and any real id that later
+    /// collides with a synthesized string lands in the same candidates
+    /// vector and degrades to an honest `conflicting_event`, never a
+    /// silent pair.
+    pub fn next_synthetic_call_id(&mut self, event_idx: i64) -> String {
+        let candidate = (0u64..)
+            .map(|n| format!("agy-anon:{event_idx}:{n}"))
+            .find(|candidate| {
+                !self.synthesized.contains(candidate)
+                    && !self.calls.contains_key(candidate)
+                    && !self.results.contains_key(candidate)
+            })
+            .expect("a name-only event holds finitely many ids");
+        self.synthesized.insert(candidate.clone());
+        candidate
+    }
+
+    /// Codex only: record that this call's exit status never existed at the
+    /// source — `providers/codex.rs` proves it from the tool's record type
+    /// (corpus census), never from a parse failure or unknown shape.
+    pub fn note_exit_absent_at_source(&mut self, call_id: &str) {
+        self.exit_absent_at_source.insert(call_id.to_string());
     }
 
     /// claude_code only: its connector drops `tool_result` content with no
@@ -526,6 +574,7 @@ impl ToolCollector {
                 continue;
             }
             let call = &calls[0];
+            let synthesized = self.synthesized.contains(call_id);
             if results.len() > 1 {
                 self.ambiguous(call_id, coverage);
             }
@@ -534,7 +583,12 @@ impl ToolCollector {
             } else {
                 None
             };
-            if results.is_empty() {
+            // A synthesized id has no source identity to pair against: the
+            // source records antigravity outputs as nameless top-level
+            // records (corpus-proven), so the absent result is not a
+            // missing record, and the identity partial already names the
+            // verdict gap. No pairing mark fires for it.
+            if results.is_empty() && !synthesized {
                 let reason = if self.interrupted.contains(call_id) {
                     "tool_output_interrupted"
                 } else {
@@ -544,11 +598,34 @@ impl ToolCollector {
             }
             let exit_code = result.and_then(|r| r.exit_code);
             let is_error = result.and_then(|r| r.is_error);
-            if exit_code.is_none() {
-                coverage.mark(&["tool_exit"], "tool_exit_not_recorded", "unavailable");
+            // Same for the exit/error verdicts: a synthesized id's verdict
+            // gap is already named by the identity partial on both scopes,
+            // so the not-read verdicts would only duplicate it — and raise
+            // the severity past what the source can justify.
+            if exit_code.is_none() && !synthesized {
+                if self.exit_absent_at_source.contains(call_id) {
+                    // Codex only: this tool's record type is corpus-proven
+                    // to never carry exit status, so the missing verdict is
+                    // a source-absent gap, not a not-read one.
+                    coverage.mark(
+                        &["tool_exit"],
+                        "codex_tool_status_absent_at_source",
+                        "unavailable",
+                    );
+                } else {
+                    coverage.mark(&["tool_exit"], "tool_exit_not_recorded", "unavailable");
+                }
             }
-            if is_error.is_none() {
-                coverage.mark(&["tool_error"], "tool_error_not_recorded", "unavailable");
+            if is_error.is_none() && !synthesized {
+                if self.exit_absent_at_source.contains(call_id) {
+                    coverage.mark(
+                        &["tool_error"],
+                        "codex_tool_status_absent_at_source",
+                        "unavailable",
+                    );
+                } else {
+                    coverage.mark(&["tool_error"], "tool_error_not_recorded", "unavailable");
+                }
             }
             let path = argument_path(call.arguments.as_ref());
             if path.is_some() {

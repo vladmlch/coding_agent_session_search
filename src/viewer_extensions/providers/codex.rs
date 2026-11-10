@@ -61,6 +61,22 @@ fn qualified_call(segment: Option<&str>, call_id: &str) -> String {
     format!("codex-segment:{digest}")
 }
 
+/// §5.5a: corpus-proven "this call's output record type NEVER carries exit
+/// status at the source" (2,520 local rollouts, plain JSONL reads; receipts
+/// `.scratch/glm/2026-11-10-tool-coverage-fixes/codex_exit_name_kind_census.txt`):
+/// - every `function_call` — any name, including all `mcp__*` calls — pairs
+///   kind-homogeneously with a `function_call_output`, and that OpenAI-shaped
+///   record has no status fields at all (0 of 19,249 outputs carry exit
+///   status): a format-level statement, so the missing verdict never
+///   existed in any local record;
+/// - custom `exec` only: 0 of 63,517 outputs carry status;
+/// - `apply_patch` is EXCLUDED (611 of 734 custom outputs DO record
+///   `exit_code`), and so is every custom name the census has not covered:
+///   an unproven absence keeps the not-read verdict and keeps blocking.
+fn proven_no_exit(is_custom: bool, name: &str) -> bool {
+    !is_custom || name == "exec"
+}
+
 /// `(payload, wrapped)`: response_item/event_msg carry a payload dict;
 /// event_msg with a bare `message` string reads as the record itself.
 fn payload_of(record: &Value) -> (Value, bool) {
@@ -162,28 +178,28 @@ fn call(
         coverage.unknown("codex_tool_identity_missing");
         return;
     };
-    let (arguments, valid) =
-        if payload.get("type").and_then(Value::as_str) == Some("custom_tool_call") {
-            // CASS preserves even JSON-looking freeform input verbatim.
-            (
-                payload.get("input").cloned(),
-                payload.get("input").and_then(Value::as_str).is_some(),
-            )
-        } else {
-            let has_field = payload
-                .as_object()
-                .is_some_and(|m| m.contains_key("arguments") || m.contains_key("args"));
-            let (args, ok) = decode(
-                payload
-                    .get("arguments")
-                    .or(payload.get("args"))
-                    .unwrap_or(&Value::Null),
-            );
-            (
-                if has_field || ok { Some(args) } else { None },
-                ok && has_field,
-            )
-        };
+    let is_custom = payload.get("type").and_then(Value::as_str) == Some("custom_tool_call");
+    let (arguments, valid) = if is_custom {
+        // CASS preserves even JSON-looking freeform input verbatim.
+        (
+            payload.get("input").cloned(),
+            payload.get("input").and_then(Value::as_str).is_some(),
+        )
+    } else {
+        let has_field = payload
+            .as_object()
+            .is_some_and(|m| m.contains_key("arguments") || m.contains_key("args"));
+        let (args, ok) = decode(
+            payload
+                .get("arguments")
+                .or(payload.get("args"))
+                .unwrap_or(&Value::Null),
+        );
+        (
+            if has_field || ok { Some(args) } else { None },
+            ok && has_field,
+        )
+    };
     if !valid {
         coverage.mark(&["files", "mcp"], "tool_arguments_unparsed", "partial");
         if arguments.is_none() {
@@ -195,10 +211,18 @@ fn call(
         }
     }
     coverage.evidence("tools");
+    let qualified = qualified_call(segment, &call_id);
+    if proven_no_exit(is_custom, &name) {
+        // §5.5a: this call's output type is corpus-proven to never carry
+        // exit status at the source. `finish()` swaps the not-read verdict
+        // for the allowlisted source-absent reason — and only when the
+        // recorded verdict really is missing (self-correcting per record).
+        tools.note_exit_absent_at_source(&qualified);
+    }
     tools.call(RecordedCall {
         event_idx: event.idx,
         message_id: event.message_id,
-        call_id: qualified_call(segment, &call_id),
+        call_id: qualified,
         raw_call_id: call_id,
         name,
         arguments,

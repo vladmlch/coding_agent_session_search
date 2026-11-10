@@ -374,6 +374,43 @@ impl Extraction {
         }
     }
 
+    /// §5.3: archived `cass.invocations[]` items (the connector's own
+    /// normalized call records, kept in the sparse record's extra) reach the
+    /// collector VERBATIM — never through [`arguments`], so the extractor's
+    /// `complete` flag cannot flip: the corpus probe proved the 41 string
+    /// arguments in the archive are plain text (all contain spaces, none
+    /// start with `{`, zero parse as JSON), so decoding them would falsely
+    /// report a source/graph gap and degrade
+    /// `[chat, block_inventory, text_inventory, subagents]` for 13 real
+    /// conversations.
+    fn call_verbatim(
+        &mut self,
+        record: &DevinRecord,
+        identifier: String,
+        name: String,
+        arguments: Value,
+    ) {
+        let key = (record.graph_root.clone(), identifier);
+        match self.calls.entry(key.clone()) {
+            Entry::Occupied(entry) => {
+                let previous = entry.get();
+                if previous.name != name || previous.value != arguments {
+                    // Same conflict semantics as [`Extraction::call`]: a
+                    // tool-verdict gap, never a text gap.
+                    self.conflicts.insert(key);
+                }
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(DevinCall {
+                    name,
+                    value: arguments,
+                    event_idx: record.event.idx,
+                    message_id: record.event.message_id,
+                });
+            }
+        }
+    }
+
     /// Record content: recorded `payload.content`, or the normalized message
     /// content for sparse extras (the connector's projection of
     /// `chat_message.content`).
@@ -438,10 +475,69 @@ impl Extraction {
                         None => known = false,
                     }
                 }
+                // §5.3: the sparse record's extra archives the connector's
+                // normalized calls under `cass.invocations` — the same lane
+                // the region reader already answers `tool:`/`file:` from.
+                // A usable item is a `kind == "tool"` (absent `kind`
+                // defaults to tool, mirroring the region lane) record with a
+                // non-empty name and an id from [call_id, id, tool_call_id];
+                // arguments pass VERBATIM (object → object, string → literal
+                // string, absent → Null). An unusable item keeps the
+                // not-normalized mark below — the reader never touches
+                // `known` (a blocked invocation is a tool gap, not a
+                // record-unknown).
+                let mut archived_calls = 0_usize;
+                let mut archived_unusable = false;
+                if record.sparse
+                    && let Some(items) = record
+                        .payload
+                        .pointer("/cass/invocations")
+                        .and_then(Value::as_array)
+                {
+                    for item in items {
+                        let Some(item) = item.as_object() else {
+                            archived_unusable = true;
+                            continue;
+                        };
+                        if !matches!(
+                            item.get("kind").and_then(Value::as_str),
+                            None | Some("tool")
+                        ) {
+                            archived_unusable = true;
+                            continue;
+                        }
+                        let Some(name) = item
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .filter(|name| !name.is_empty())
+                        else {
+                            archived_unusable = true;
+                            continue;
+                        };
+                        let Some(identifier) = ["call_id", "id", "tool_call_id"]
+                            .iter()
+                            .find_map(|key| text_id(item.get(*key)))
+                        else {
+                            archived_unusable = true;
+                            continue;
+                        };
+                        let (normalized, _category) = normalize_devin_tool(None, Some(name), None);
+                        let arguments = item.get("arguments").cloned().unwrap_or(Value::Null);
+                        self.call_verbatim(record, identifier, normalized, arguments);
+                        archived_calls += 1;
+                    }
+                }
                 // The connector renders dropped calls as `[tool_call: name]`
                 // content lines: evidence the calls existed even though the
-                // packet no longer carries their ids/arguments.
-                if record.sparse && record.event.content.contains("[tool_call:") {
+                // packet no longer carries their ids/arguments. The archived
+                // invocations ARE those calls, so the mark retires when the
+                // record's invocations collected at least one call with no
+                // unusable item; a record whose calls exist only as rendered
+                // lines (or whose archive holds an unusable item) keeps it.
+                if record.sparse
+                    && record.event.content.contains("[tool_call:")
+                    && !(archived_calls > 0 && !archived_unusable)
+                {
                     self.coverage.mark(
                         &["tools", "tool_exit", "tool_error", "files"],
                         "devin_tool_calls_not_normalized",
