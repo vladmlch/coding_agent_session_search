@@ -1978,6 +1978,112 @@ pub fn regions_for_universe_subquery(
     Ok(out)
 }
 
+/// The structural column list shared by the Stage 1b on-demand region
+/// reads — the same 18 positions [`regions_for_universe_subquery`] selects,
+/// with `indexed_text IS NOT NULL` at position 16 so the fragment TEXT
+/// itself never rides a query-lane read (Stage 1 §6.3 lazy fragments).
+const REGION_STRUCTURAL_COLUMNS: &str = "SELECT conversation_id, region_ordinal, region_key, \
+     scope, scope_known, quill_idx, message_idx, message_id, step_index, turn_index, \
+     tool_name, file_path, exit_code, has_error, error_type, text_source, \
+     indexed_text IS NOT NULL, source_revision FROM viewer_search_regions";
+
+/// Every structural region row of ONE conversation, ordinal order — the
+/// Stage 1b fast lane's page-time load (`emitted_page_sessions` mode): one
+/// indexed read per EMITTED session, the same rows in the same order the
+/// universe load attached before Stage 1b, so page-time witness discovery
+/// (Stage 1 §6.4) consults exactly the region set it always saw.
+pub fn regions_for_conversation_structural(
+    connection: &crate::franken_sync::Connection,
+    conversation_id: i64,
+) -> Result<Vec<RegionRow>> {
+    let sql = format!(
+        "{REGION_STRUCTURAL_COLUMNS} \
+         WHERE conversation_id = ?1 ORDER BY region_ordinal"
+    );
+    let rows = connection
+        .query_with_params(
+            &sql,
+            &[crate::franken_sync::SqliteValue::Integer(conversation_id)],
+        )
+        .context("loading one session's search regions")?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        out.push(region_row_structural(row)?);
+    }
+    Ok(out)
+}
+
+/// Chunk bound for the gated per-conversation `quill_idx IN (...)` seeks —
+/// 501 bound parameters per statement stays well inside the engine's
+/// variable ceiling while keeping one indexed seek per conversation chunk.
+const QUILL_SLOT_CHUNK: usize = 500;
+
+/// Structural region rows for an explicit batch of (conversation,
+/// `quill_idx`) slots — the Stage 1b legacy lane's gated read
+/// (`gated_quill_seeks` mode). One `conversation_id = ? AND quill_idx IN
+/// (...)` statement per conversation chunk seeks
+/// `idx_viewer_search_regions_quill` directly; the caller's slot sets are
+/// exactly the Quill hit gates the search lane already holds in memory, so
+/// a session with no gated hits for any plan literal reads nothing at all.
+/// Rows come back per conversation in `region_ordinal` order (chunk results
+/// are re-sorted because chunks split the SORTED `quill_idx` list, not the
+/// ordinal run), matching the iteration order the eager universe load
+/// produced — byte-identical evaluation depends on that order.
+pub fn regions_for_quill_slots(
+    connection: &crate::franken_sync::Connection,
+    slots: &HashMap<i64, Vec<i64>>,
+) -> Result<HashMap<i64, Vec<RegionRow>>> {
+    let mut out: HashMap<i64, Vec<RegionRow>> = HashMap::with_capacity(slots.len());
+    // Deterministic conversation order (queries are independent; the sort
+    // only stabilizes diagnostics-visible query sequencing).
+    let mut cids: Vec<i64> = slots.keys().copied().collect();
+    cids.sort_unstable();
+    for cid in cids {
+        let wanted: Vec<i64> = slots
+            .get(&cid)
+            .map(|slots| {
+                slots
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::BTreeSet<i64>>()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let mut rows: Vec<RegionRow> = Vec::new();
+        for chunk in wanted.chunks(QUILL_SLOT_CHUNK) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let mut placeholders = Vec::with_capacity(chunk.len() + 1);
+            placeholders.push("?1".to_owned());
+            for index in 0..chunk.len() {
+                placeholders.push(format!("?{}", index + 2));
+            }
+            let sql = format!(
+                "{REGION_STRUCTURAL_COLUMNS} WHERE conversation_id = ?1 \
+                 AND quill_idx IN ({}) ORDER BY region_ordinal",
+                placeholders.join(",")
+            );
+            let mut params: Vec<crate::franken_sync::SqliteValue> =
+                Vec::with_capacity(chunk.len() + 1);
+            params.push(crate::franken_sync::SqliteValue::Integer(cid));
+            for slot in chunk {
+                params.push(crate::franken_sync::SqliteValue::Integer(*slot));
+            }
+            let chunk_rows = connection
+                .query_with_params(&sql, &params)
+                .context("loading gated search regions")?;
+            for row in &chunk_rows {
+                rows.push(region_row_structural(row)?);
+            }
+        }
+        rows.sort_by_key(|row| row.region_ordinal);
+        out.insert(cid, rows);
+    }
+    Ok(out)
+}
+
 /// Whether this archive carries the extension profile's marks table.
 /// Canonical-only stores (minimal test schemas, archives opened before
 /// the viewer profile ever installed) legitimately lack it; every

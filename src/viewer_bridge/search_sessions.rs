@@ -1398,6 +1398,75 @@ fn plan_reads_fragments(node: &PlanNode) -> bool {
     }
 }
 
+/// Stage 1b (owner decision 2026-11-10): which region rows the plan's
+/// evaluation can actually consult — decided from the plan alone, before
+/// the universe read, so the whole-universe region load only happens for
+/// the plans that need it.
+///
+/// `universe_structural` — today's eager load, for that plan only:
+/// - any Predicate with a block-domain field (BLOCK_FIELDS) or `has_mcp`:
+///   `collection` iterates the WHOLE region set and its Unknown verdicts
+///   hinge on per-session coverage × per-region scope (`unknown_field`) —
+///   state no index seek can reproduce — and the tool/file/mcp matchers
+///   fold case, expand synonym classes and glob, so they are not
+///   seek-expressible either. The brief's explicit fallback path.
+/// - any non-ASCII literal that is not a `never` matcher: the analyzer
+///   cannot prove the negative, so `eval_literal`'s ungated branch
+///   consults EVERY region under MAX_UNGATED_CHAT_HYDRATIONS.
+///
+/// `on_demand` — every other plan: literals are all gated (ASCII,
+/// index-provable) and predicates are all session-domain, so region rows
+/// are consulted only where the Quill gates pointed (legacy lane:
+/// `gated_quill_seeks`; fast lane: the emitted page's sessions,
+/// `emitted_page_sessions`). False regions are provable no-ops in both
+/// consumers (`collection` counts only True/Unknown rows; gated
+/// `eval_literal` skips every non-gated row), which is what makes loading
+/// exactly the consulted rows byte-identical to loading all of them.
+enum RegionLoadMode {
+    /// (reason) — today's eager structural universe load; the reason is
+    /// receipted in diagnostics.
+    UniverseStructural(&'static str),
+    /// Region rows load on demand, scaled to hit/page size.
+    OnDemand,
+}
+
+fn plan_region_load_mode(
+    node: &PlanNode,
+    matchers: &HashMap<(String, bool), LiteralMatcher>,
+) -> RegionLoadMode {
+    match node {
+        PlanNode::Literal { value, exact, .. } => {
+            let never = matchers
+                .get(&(value.clone(), *exact))
+                .is_some_and(|matcher| matcher.never);
+            if !value.is_ascii() && !never {
+                RegionLoadMode::UniverseStructural("ungated_literal")
+            } else {
+                RegionLoadMode::OnDemand
+            }
+        }
+        PlanNode::Predicate { field, .. } => {
+            if field == "has_mcp" || BLOCK_FIELDS.contains(&field.as_str()) {
+                RegionLoadMode::UniverseStructural("region_domain_predicate")
+            } else {
+                RegionLoadMode::OnDemand
+            }
+        }
+        PlanNode::Not(child) => plan_region_load_mode(child, matchers),
+        PlanNode::And(children) | PlanNode::Or(children) => children
+            .iter()
+            .map(|child| plan_region_load_mode(child, matchers))
+            .find_map(|mode| match mode {
+                RegionLoadMode::UniverseStructural(reason) => {
+                    Some(RegionLoadMode::UniverseStructural(reason))
+                }
+                RegionLoadMode::OnDemand => None,
+            })
+            .unwrap_or(RegionLoadMode::OnDemand),
+        PlanNode::All => RegionLoadMode::OnDemand,
+    }
+}
+
 /// Fill every universe region's persisted fragment in place (the
 /// `mcp`-predicate plan's eager lane): chunked `IN()` reads over the
 /// conversation set — the same shape as [`prefetch_gated_message_texts`]
@@ -1451,6 +1520,70 @@ fn prefetch_region_fragments(
                 region.indexed_text = Some(text.clone());
             }
         }
+    }
+    Ok(())
+}
+
+/// Stage 1b gated lane: attach ONLY the region rows the plan's Quill hit
+/// gates can consult — the union, per conversation, of every gated
+/// literal's `(conversation_id, quill_idx)` set (the same gate maps
+/// `prefetch_gated_message_texts` and `eval_literal` filter by), read
+/// through one indexed seek per conversation chunk
+/// ([`regions_for_quill_slots`]). Every consumer of `session.regions` on
+/// this lane is gate-filtered (`eval_literal` skips non-gated rows;
+/// `prefetch_gated_message_texts` re-checks each literal's own gate;
+/// witnesses and snippets only reference gated members), so a session with
+/// no gated hits for any plan literal reads NOTHING — and the rows that do
+/// load evaluate byte-identically to the eager universe load, in the same
+/// `region_ordinal` order.
+///
+/// Non-ASCII and `never` literals contribute no slots: the former keep
+/// the eager structural lane (see [`plan_region_load_mode`]), the latter
+/// return from `eval_literal` before ever touching a region.
+fn attach_gated_regions(
+    connection: &Connection,
+    sessions: &mut [SessionCtx],
+    plan: &Plan,
+    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    quill_possible: &HashMap<String, HashMap<i64, HashSet<i64>>>,
+    stats: &mut HydrateStats,
+) -> Result<()> {
+    let mut slots: HashMap<i64, Vec<i64>> = HashMap::new();
+    for (value, exact) in &plan.literals {
+        if !value.is_ascii()
+            || matchers
+                .get(&(value.clone(), *exact))
+                .is_some_and(|matcher| matcher.never)
+        {
+            continue;
+        }
+        let Some(gates) = quill_possible.get(&format!("{value}|{exact}")) else {
+            continue;
+        };
+        for (cid, quill_idxs) in gates {
+            slots
+                .entry(*cid)
+                .or_default()
+                .extend(quill_idxs.iter().copied());
+        }
+    }
+    if slots.is_empty() {
+        return Ok(());
+    }
+    let rows = coding_agent_search::viewer_extensions::search_regions::regions_for_quill_slots(
+        connection, &slots,
+    )?;
+    let mut by_cid: HashMap<i64, usize> = HashMap::with_capacity(sessions.len());
+    for (index, session) in sessions.iter().enumerate() {
+        by_cid.insert(session.conversation_id, index);
+    }
+    for (cid, rows) in rows {
+        let Some(&index) = by_cid.get(&cid) else {
+            continue;
+        };
+        let session = &mut sessions[index];
+        session.regions = rows.into_iter().map(|row| region_from(cid, row)).collect();
+        stats.regions_loaded += session.regions.len();
     }
     Ok(())
 }
@@ -1895,6 +2028,7 @@ fn load_sessions_indexed(
     id_subquery: &str,
     id_params: &[SqliteValue],
     stats: &mut HydrateStats,
+    load_universe_regions: bool,
 ) -> Result<Vec<SessionCtx>> {
     let conv_rows = connection.query_with_params(
         &format!(
@@ -2019,12 +2153,23 @@ fn load_sessions_indexed(
             .or_default()
             .push(row.get_typed::<String>(1)?);
     }
-    let region_rows =
-        coding_agent_search::viewer_extensions::search_regions::regions_for_universe_subquery(
-            connection,
-            id_subquery,
-            id_params,
-        )?;
+    // Stage 1b: the whole-universe region read only happens for plans that
+    // can consult ANY region (see [`plan_region_load_mode`]). On-demand
+    // plans attach regions later — the gated (conversation, quill_idx)
+    // seeks on the legacy lane, the emitted page's sessions on the fast
+    // lane — so a zero-hit or rare-term request never pays the archive-
+    // sized read (762k rows on the 6k-session archive).
+    let region_rows = if load_universe_regions {
+        Some(
+            coding_agent_search::viewer_extensions::search_regions::regions_for_universe_subquery(
+                connection,
+                id_subquery,
+                id_params,
+            )?,
+        )
+    } else {
+        None
+    };
     let mut ordered = Vec::with_capacity(universe_ids.len());
     for cid in universe_ids {
         let Some(conv_p) = conv.remove(cid) else {
@@ -2063,7 +2208,8 @@ fn load_sessions_indexed(
         )?;
         session.tags = tags.remove(cid).unwrap_or_default();
         session.regions = region_rows
-            .get(cid)
+            .as_ref()
+            .and_then(|rows| rows.get(cid))
             .map(|rows| {
                 rows.iter()
                     .cloned()
@@ -2071,7 +2217,9 @@ fn load_sessions_indexed(
                     .collect()
             })
             .unwrap_or_default();
-        stats.regions_loaded += session.regions.len();
+        if load_universe_regions {
+            stats.regions_loaded += session.regions.len();
+        }
         ordered.push(session);
     }
     Ok(ordered)
@@ -3568,14 +3716,18 @@ fn fast_score_and_claims(
 /// textually, bounded by `max_matches`, through the same
 /// [`verify_region_text`] the legacy lane used at eval time — so an
 /// emitted witness binds canonical coordinates and a snippet exactly as
-/// before. A claim no region reproduces (analyzer n-gram drift) returns
-/// an empty list; the caller annotates `witness_count=0` with the
-/// `witnesses_not_reproduced` warning instead of refusing the page. A
-/// verification budget exhaustion stops discovery for the session and
-/// returns what was found.
+/// before. The region slice is the Stage 1b page-time load: the EMITTED
+/// session's full structural row set (one indexed read, same
+/// `region_ordinal` order the eager universe load produced), so discovery
+/// consults exactly the region set it always saw. A claim no region
+/// reproduces (analyzer n-gram drift) returns an empty list; the caller
+/// annotates `witness_count=0` with the `witnesses_not_reproduced`
+/// warning instead of refusing the page. A verification budget
+/// exhaustion stops discovery for the session and returns what was
+/// found.
 fn discover_fast_witnesses(
     connection: &Connection,
-    session: &SessionCtx,
+    regions: &[Region],
     claims: &[FastClaim],
     matchers: &HashMap<(String, bool), LiteralMatcher>,
     max_matches: usize,
@@ -3592,7 +3744,7 @@ fn discover_fast_witnesses(
         if matcher.never {
             continue;
         }
-        for region in &session.regions {
+        for region in regions {
             if discovered.len() >= max_matches {
                 break;
             }
@@ -3765,8 +3917,22 @@ pub fn search_sessions(
     // never degrade to a per-session query storm (a >50k universe still
     // evaluates inside the request deadline). `mut`: the legacy lane's
     // fragment prefetch (mcp plans) fills `indexed_text` in place.
-    let mut sessions =
-        load_sessions_indexed(connection, &universe, &id_subquery, &id_params, &mut stats)?;
+    //
+    // Stage 1b: the whole-universe REGION read rides along only for plans
+    // that can consult any region (block-domain predicates, ungated
+    // literals — see [`plan_region_load_mode`]); every other plan loads
+    // its region rows on demand, scaled to hit/page size instead of
+    // archive size.
+    let region_load = plan_region_load_mode(&plan.root, &matchers);
+    let load_universe_regions = matches!(region_load, RegionLoadMode::UniverseStructural(_));
+    let mut sessions = load_sessions_indexed(
+        connection,
+        &universe,
+        &id_subquery,
+        &id_params,
+        &mut stats,
+        load_universe_regions,
+    )?;
     // How many of the evaluated sessions carry source-absent (b) gaps —
     // counted over the WHOLE candidate universe, not just result items:
     // a (b) session excluded by proven absence (a NOT-match or a
@@ -3803,6 +3969,21 @@ pub fn search_sessions(
                 legacy_literal_evidence(readers, &plan, &engine_filters)?;
             quill_scores = scores;
             quill_possible = possible;
+        }
+        // Stage 1b gated lane: attach ONLY the region rows the Quill hit
+        // gates can consult (one indexed seek per conversation chunk) —
+        // a session with no gated hits for any plan literal reads
+        // nothing. Byte-identical evaluation: every consumer on this
+        // lane is gate-filtered (see [`attach_gated_regions`]).
+        if !load_universe_regions {
+            attach_gated_regions(
+                connection,
+                &mut sessions,
+                &plan,
+                &matchers,
+                &quill_possible,
+                &mut stats,
+            )?;
         }
         // One chunked set read for every `messages.content` row the gated
         // literals can touch — replacing a point read per gated region
@@ -4111,10 +4292,32 @@ pub fn search_sessions(
         // its textual witnesses HERE (§6.4) — for the emitted session only,
         // bounded by max_matches, through the same verify_region_text the
         // legacy lane ran at eval time.
+        //
+        // Stage 1b `emitted_page_sessions`: this emitted session's full
+        // structural row set is THE region read the fast lane spends — one
+        // indexed per-conversation read, the same rows in the same
+        // `region_ordinal` order the eager universe load attached before
+        // Stage 1b, so §6.4 discovery and the witness/snippet lookups
+        // below consult exactly the evidence they always saw. Sessions
+        // past the byte budget (the `break` above) never load.
+        let page_regions: Vec<Region> = if entry.fast_lane {
+            let rows = coding_agent_search::viewer_extensions::search_regions::regions_for_conversation_structural(
+                connection,
+                session.conversation_id,
+            )?;
+            let regions: Vec<Region> = rows
+                .into_iter()
+                .map(|row| region_from(session.conversation_id, row))
+                .collect();
+            stats.regions_loaded += regions.len();
+            regions
+        } else {
+            Vec::new()
+        };
         let fast_discovered: Vec<(String, String)> = if entry.fast_lane {
             discover_fast_witnesses(
                 connection,
-                session,
+                &page_regions,
                 &entry.fast_claims,
                 &matchers,
                 max_matches,
@@ -4129,12 +4332,20 @@ pub fn search_sessions(
             &entry.witnesses
         };
         let mut session_matches = Vec::new();
+        // The fast lane resolves witness regions against its page-time
+        // load; the legacy lane against the session's (eager or gated)
+        // resident rows — either way exactly the set the witnesses were
+        // proven from.
+        let regions_lookup: &[Region] = if entry.fast_lane {
+            &page_regions
+        } else {
+            &entry.session.regions
+        };
         for (region_key, branch) in witnesses {
             if session_matches.len() >= max_matches {
                 break;
             }
-            let Some(region) = session
-                .regions
+            let Some(region) = regions_lookup
                 .iter()
                 .find(|region| &region.key == region_key)
             else {
@@ -4191,6 +4402,17 @@ pub fn search_sessions(
         }
     }
     let complete = unknown_sessions == 0;
+    // Stage 1b receipts, hoisted for the json! macro below: which
+    // region-read strategy ran, and — for the structural fallback — why.
+    let region_load_mode = match (&region_load, fast_lane) {
+        (RegionLoadMode::UniverseStructural(_), _) => "universe_structural",
+        (RegionLoadMode::OnDemand, true) => "emitted_page_sessions",
+        (RegionLoadMode::OnDemand, false) => "gated_quill_seeks",
+    };
+    let region_load_reason = match region_load {
+        RegionLoadMode::UniverseStructural(reason) => json!(reason),
+        RegionLoadMode::OnDemand => Value::Null,
+    };
     let next_cursor = if has_more {
         last.map(|cursor| encode_cursor(sort_name, &cursor, &generation, &query_digest))
             .map(Value::String)
@@ -4235,6 +4457,13 @@ pub fn search_sessions(
         "diagnostics": {
             "candidate_sessions": universe_size,
             "region_rows_loaded": stats.regions_loaded,
+            // Stage 1b receipts: which region-read strategy ran and — for
+            // the structural fallback — why. `region_rows_loaded` above now
+            // counts ONLY what the request actually read (gated seeks,
+            // emitted-page loads, or the full structural load for
+            // fallback plans), never a fixed archive-sized floor.
+            "region_load_mode": region_load_mode,
+            "region_load_reason": region_load_reason,
             "regions_hydrated": stats.regions_hydrated,
             "messages_hydrated": stats.messages_hydrated,
             "full_text_messages_hydrated": stats.full_messages_hydrated,

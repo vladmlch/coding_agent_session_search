@@ -3872,8 +3872,11 @@ fn search_sessions_fast_path_stale_generation_cursor_refused() -> Result<()> {
 /// `indexed_text` never rides it — and every derived/meta snippet stays
 /// byte-identical to the eager loader's answer on this same fixture (the
 /// golden snippets were captured from the incumbent loader before the
-/// change). `fragments_loaded` receipts the lazy reads; the structural row
-/// count still accounts for every persisted universe row.
+/// change). `fragments_loaded` receipts the lazy reads. Stage 1b extends
+/// the receipts: `region_rows_loaded` counts only what the request read
+/// (page sessions on the fast lane, gated seeks on the legacy lane), and
+/// `region_load_mode`/`region_load_reason` name the strategy and, for the
+/// structural fallback, its cause.
 #[test]
 fn search_sessions_lazy_fragments_equivalence() -> Result<()> {
     let mut bridge = gold_harness()?;
@@ -3940,18 +3943,360 @@ fn search_sessions_lazy_fragments_equivalence() -> Result<()> {
         "zephyr snippet must stay byte-identical: {witnesses:?}"
     );
 
-    // The structural load still counts every persisted universe row (S6 is
-    // outside the default browse universe).
+    // Stage 1b receipts. "foo" rides the fast lane, so its region read is
+    // the EMITTED page's sessions only (S1 + S2) — `region_rows_loaded`
+    // reflects exactly what was read, and `region_load_mode` names the
+    // strategy. A zero-hit or deeper page never pays for sessions it did
+    // not emit.
+    let page_rows: i64 = {
+        let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+        writer
+            .query_row("SELECT COUNT(*) FROM viewer_search_regions WHERE conversation_id IN (1,2)")?
+            .get_typed(0)?
+    };
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    ensure!(
+        page["result"]["diagnostics"]["region_rows_loaded"].as_u64() == Some(page_rows as u64),
+        "the page-mode load must count exactly the emitted sessions' rows: {page}"
+    );
+    ensure!(
+        page["result"]["diagnostics"]["region_load_mode"] == json!("emitted_page_sessions"),
+        "the fast lane must receipt its page-time region load: {page}"
+    );
+    // A structural-fallback plan (a block-domain predicate — `scope` here)
+    // keeps today's eager load: every persisted universe row is counted
+    // (S6 is outside the default browse universe), the mode names the
+    // fallback and the reason names its cause.
     let expected_rows: i64 = {
         let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
         writer
             .query_row("SELECT COUNT(*) FROM viewer_search_regions WHERE conversation_id != 6")?
             .get_typed(0)?
     };
-    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    let page = search(&mut bridge, json!({"query":"in:thinking zeta"}))?;
     ensure!(
         page["result"]["diagnostics"]["region_rows_loaded"].as_u64() == Some(expected_rows as u64),
-        "the structural-only universe load must still count every row: {page}"
+        "the structural fallback must still count every row: {page}"
+    );
+    ensure!(
+        page["result"]["diagnostics"]["region_load_mode"] == json!("universe_structural")
+            && page["result"]["diagnostics"]["region_load_reason"]
+                == json!("region_domain_predicate"),
+        "the structural fallback must receipt its mode and reason: {page}"
+    );
+    // A legacy gated plan (two single-token conjuncts are not
+    // fast-lane-composable) reads ONLY the gated rows: strictly fewer than
+    // the universe unless every region is gated.
+    let page = search(&mut bridge, json!({"query":"foo bar"}))?;
+    ensure!(
+        page["result"]["diagnostics"]["region_load_mode"] == json!("gated_quill_seeks"),
+        "the legacy gated lane must receipt its seek strategy: {page}"
+    );
+    let gated_rows = page["result"]["diagnostics"]["region_rows_loaded"]
+        .as_u64()
+        .unwrap_or(0);
+    ensure!(
+        gated_rows <= expected_rows as u64,
+        "gated seeks must never read more than the universe: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// Stage 1b: on-demand region loading — A/B equivalence against the Stage 1
+/// eager universe loader (commit 87822ef2), pinned on this gold fixture.
+///
+/// The pinned digests ARE the Stage 1 answers for this corpus: the same
+/// corpus ran against the 87822ef2 tree before the Stage 1b change and the
+/// full responses were captured (receipt:
+/// `.scratch/glm/2026-11-10-session-scope-docs/` — stage1 capture
+/// `stage1_true_answers.json`, Stage 1b capture `stage1b_run_r1.json`; the
+/// digests below are the Stage 1 values, and the two captures agree
+/// byte-for-byte). Each digest covers the WHOLE response minus per-run
+/// fields only (`result.diagnostics`, `result.archive_stamp` — the harness
+/// tempdir path + inode, `result.catalog_revision` — a hash over that path,
+/// `result.index_epoch` + `result.next_cursor` — fresh per harness index),
+/// so members, witnesses, snippets, scores, verdicts, warnings and cursor
+/// resumption all ride the pin.
+///
+/// The hydration counters (`regions_hydrated`, `messages_hydrated`,
+/// `fragments_loaded`, `verification_bytes_scanned`) must be IDENTICAL to
+/// Stage 1's: on-demand loading changes WHICH rows are resident, never
+/// which regions evaluation consults. `region_rows_loaded` is the NEW
+/// contract — only what was read — and `region_load_mode`/`
+/// `region_load_reason` name the strategy (fast lane:
+/// `emitted_page_sessions`; legacy lane: `gated_quill_seeks`; fallback
+/// plans: `universe_structural` + reason).
+#[test]
+fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
+    struct CorpusPin {
+        request: Value,
+        digest: &'static str,
+        mode: Option<&'static str>,
+        reason: Option<&'static str>,
+        rows: Option<u64>,
+        regions_hydrated: Option<u64>,
+        messages_hydrated: Option<u64>,
+        fragments_loaded: Option<u64>,
+        verification_bytes: Option<u64>,
+    }
+    let corpus = vec![
+        CorpusPin {
+            request: json!({"query":"foo"}),
+            digest: "caa65845df7682165531627427dc463a680becd5cf04c56b1c5f1479e77d6b76",
+            mode: Some("emitted_page_sessions"),
+            reason: None,
+            rows: Some(9),
+            regions_hydrated: Some(8),
+            messages_hydrated: Some(2),
+            fragments_loaded: Some(2),
+            verification_bytes: Some(51),
+        },
+        CorpusPin {
+            request: json!({"query":"NOT quux"}),
+            digest: "32e437ebd303e86a0ac4df7cc1ef55f6e942215f5c0996d943ffd76d14eb4a01",
+            mode: Some("emitted_page_sessions"),
+            reason: None,
+            rows: Some(16),
+            regions_hydrated: Some(0),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            request: json!({"query":"fluxcap"}),
+            digest: "928ebd1e1aee0de8c012d29992bbd4da73e4bce1dda755bc6617a528fe4f5c32",
+            mode: Some("emitted_page_sessions"),
+            reason: None,
+            rows: Some(6),
+            regions_hydrated: Some(6),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(1),
+            verification_bytes: Some(24),
+        },
+        CorpusPin {
+            // Refused before evaluation: the typed error envelope is the
+            // pinned answer; no diagnostics object exists to pin.
+            request: json!({"query":"foo","limit":0}),
+            digest: "1eaee749bab222766e058d37ab95fa890daee9038d4dc185656d3cdbea564ee0",
+            mode: None,
+            reason: None,
+            rows: None,
+            regions_hydrated: None,
+            messages_hydrated: None,
+            fragments_loaded: None,
+            verification_bytes: None,
+        },
+        CorpusPin {
+            request: json!({"query":"quux","limit":1,"sort":"updated_desc"}),
+            digest: "be734c14513f473f421739046e57fcf98b3e0c74ea543e89adf07fa376d1b080",
+            mode: Some("emitted_page_sessions"),
+            reason: None,
+            rows: Some(2),
+            regions_hydrated: Some(2),
+            messages_hydrated: Some(1),
+            fragments_loaded: Some(1),
+            verification_bytes: Some(17),
+        },
+        CorpusPin {
+            // Two single-token conjuncts are not fast-lane composable:
+            // the legacy lane reads ONLY the gated rows.
+            request: json!({"query":"foo bar"}),
+            digest: "0fcbcab50dec943dffc7cb3dbaf2a1007f89ff0e0026a867586b28dbc6d9c5b6",
+            mode: Some("gated_quill_seeks"),
+            reason: None,
+            rows: Some(3),
+            regions_hydrated: Some(6),
+            messages_hydrated: Some(6),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            request: json!({"query":"\"combined request\""}),
+            digest: "2b0c671b7698b43442866a13a2d972dca9cbbc5adfaea003b6ee97ce5b0d6974",
+            mode: Some("gated_quill_seeks"),
+            reason: None,
+            rows: Some(1),
+            regions_hydrated: Some(2),
+            messages_hydrated: Some(2),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            request: json!({"query":"in:thinking zeta"}),
+            digest: "0ed2ff840a4fb0105724196b958b31208f323d9a59688ff9e5ab7a9cbfa91e43",
+            mode: Some("universe_structural"),
+            reason: Some("region_domain_predicate"),
+            rows: Some(23),
+            regions_hydrated: Some(2),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(1),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            request: json!({"ast":{"type":"and","children":[
+                {"type":"filter","field":"tool","op":"EQ","value":"Bash"},
+                {"type":"term","value":"quux"}]}}),
+            digest: "53adcb99e534ad9cb81951bc72a2e7435c953ddd3f2bdc5c988f108f05f0a5b7",
+            mode: Some("universe_structural"),
+            reason: Some("region_domain_predicate"),
+            rows: Some(23),
+            regions_hydrated: Some(3),
+            messages_hydrated: Some(1),
+            fragments_loaded: Some(1),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            request: json!({"ast":{"type":"filter","field":"exit","op":"EQ","value":2}}),
+            digest: "a8db0ed48e437687a42e49790a66e5aefe06b482bcb264e35fd2231cdb5a26cd",
+            mode: Some("universe_structural"),
+            reason: Some("region_domain_predicate"),
+            rows: Some(23),
+            regions_hydrated: Some(0),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            request: json!({"ast":{"type":"filter","field":"has_mcp","op":"EQ","value":true}}),
+            digest: "a2084341361a4c5920156429cc358cebb1223010415113b7b8d53551e63a4fa4",
+            mode: Some("universe_structural"),
+            reason: Some("region_domain_predicate"),
+            rows: Some(23),
+            regions_hydrated: Some(0),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            // A non-ASCII literal cannot be index-gated: the whole region
+            // inventory stays honest evidence (ungated structural path).
+            request: json!({"query":"жжж"}),
+            digest: "2beaeb1af94a3732d3684507c086531aa1a7a0d99a47db7f6cc776b5be5d85bc",
+            mode: Some("universe_structural"),
+            reason: Some("ungated_literal"),
+            rows: Some(23),
+            regions_hydrated: Some(13),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(6),
+            verification_bytes: Some(159),
+        },
+        CorpusPin {
+            // Zero hits: NO region row is read at all — the request's
+            // region cost is zero, not the universe size.
+            request: json!({"query":"wumpus"}),
+            digest: "a0ae8e1263e446fc2ac5dd78382233cbd522dbea9b6e915592c0d08dd4fe8c66",
+            mode: Some("emitted_page_sessions"),
+            reason: None,
+            rows: Some(0),
+            regions_hydrated: Some(0),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            // No literals at all: nothing is gated, nothing is read.
+            request: json!({"query":null}),
+            digest: "a32ebe8cefffc6933f97ed9b232da181c2dcf329aebc28dccb76a88f39529169",
+            mode: Some("gated_quill_seeks"),
+            reason: None,
+            rows: Some(0),
+            regions_hydrated: Some(0),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            request: json!({"query":"foo","filters":{"tag":"release-blocker"}}),
+            digest: "5b374fec6d0abebbe00dcf65ec511592b614fdf5cc61115393e272756f477a5d",
+            mode: Some("emitted_page_sessions"),
+            reason: None,
+            rows: Some(6),
+            regions_hydrated: Some(6),
+            messages_hydrated: Some(1),
+            fragments_loaded: Some(1),
+            verification_bytes: Some(24),
+        },
+    ];
+    let mut bridge = gold_harness()?;
+    let digest_of = |page: &Value| -> Result<String> {
+        let mut stripped = page.clone();
+        if let Some(result) = stripped.get_mut("result").and_then(|r| r.as_object_mut()) {
+            result.remove("diagnostics");
+            result.remove("archive_stamp");
+            result.remove("catalog_revision");
+            result.remove("index_epoch");
+            result.remove("next_cursor");
+        }
+        Ok(blake3::hash(&serde_json::to_vec(&stripped)?)
+            .to_hex()
+            .to_string())
+    };
+    for pin in &corpus {
+        let page = search(&mut bridge, pin.request.clone())?;
+        let digest = digest_of(&page)?;
+        ensure!(
+            digest == pin.digest,
+            "Stage 1b diverged from the Stage 1 answer for {:?}: {page}",
+            pin.request
+        );
+        let diag = &page["result"]["diagnostics"];
+        if let Some(mode) = pin.mode {
+            ensure!(
+                diag["region_load_mode"] == json!(mode),
+                "region_load_mode receipt for {:?}: {page}",
+                pin.request
+            );
+            ensure!(
+                match pin.reason {
+                    Some(reason) => diag["region_load_reason"] == json!(reason),
+                    None => diag["region_load_reason"].is_null(),
+                },
+                "region_load_reason receipt for {:?}: {page}",
+                pin.request
+            );
+            ensure!(
+                diag["region_rows_loaded"].as_u64() == pin.rows,
+                "region_rows_loaded receipt for {:?}: {page}",
+                pin.request
+            );
+            ensure!(
+                diag["regions_hydrated"].as_u64() == pin.regions_hydrated
+                    && diag["messages_hydrated"].as_u64() == pin.messages_hydrated
+                    && diag["fragments_loaded"].as_u64() == pin.fragments_loaded
+                    && diag["verification_bytes_scanned"].as_u64() == pin.verification_bytes,
+                "hydration counters must stay identical to Stage 1 for {:?}: {page}",
+                pin.request
+            );
+        } else {
+            ensure!(
+                page["ok"] == false && diag.is_null(),
+                "the refused shape must carry no diagnostics: {page}"
+            );
+        }
+    }
+    // Cursor page 2 of the quux walk: the page-2 session's regions load at
+    // ITS page time — resumption answers are byte-identical too.
+    let page1 = search(
+        &mut bridge,
+        json!({"query":"quux","limit":1,"sort":"updated_desc"}),
+    )?;
+    let cursor = page1["result"]["next_cursor"]
+        .as_str()
+        .map(str::to_owned)
+        .expect("page 1 cursor");
+    let page2 = search(
+        &mut bridge,
+        json!({"query":"quux","limit":1,"sort":"updated_desc","cursor":cursor}),
+    )?;
+    let digest2 = digest_of(&page2)?;
+    ensure!(
+        digest2 == "61ec50b44414ca972066be4298ca78e9f3bfa6e153864565b0dcd9912cbb7a4e",
+        "Stage 1b diverged from the Stage 1 page-2 answer: {page2}"
+    );
+    ensure!(
+        page2["result"]["diagnostics"]["region_load_mode"] == json!("emitted_page_sessions")
+            && page2["result"]["diagnostics"]["region_rows_loaded"].as_u64() == Some(5),
+        "page 2 must load only its own session's regions: {page2}"
     );
     bridge.shutdown()
 }
