@@ -23614,6 +23614,21 @@ fn lexical_engine_invariant_hint(error: &anyhow::Error) -> Option<String> {
     })
 }
 
+/// Remedy for a lexical query the engine refused because a prefix or
+/// wildcard literal expanded past its per-leaf dictionary cap, or `None`
+/// for every other failure. Like the invariant remedy, this refusal is
+/// deterministic — the same query fails the same way — so an envelope
+/// carrying this hint must also say `retryable: false`, and the engine's
+/// own message names the pattern that exploded.
+fn lexical_glob_expansion_hint(error: &anyhow::Error) -> Option<String> {
+    crate::search::quill_bridge::is_glob_expansion_limited(error).then(|| {
+        "a prefix or wildcard term expanded past the lexical engine's per-leaf \
+         dictionary cap; lengthen the prefix before the wildcard (or use a rarer \
+         term) and run the search again"
+            .to_string()
+    })
+}
+
 #[cfg(test)]
 mod lexical_engine_invariant_hint_tests {
     use super::*;
@@ -23673,11 +23688,12 @@ fn execute_search_operation(
             )
             .map_err(|error| {
                 // GH #441: a lexical-only search has no semantic leg to
-                // degrade to, so name the two real remedies instead of a bare
+                // degrade to, so name the real remedies instead of a bare
                 // engine error.
                 let fuel_exhausted = crate::search::quill_bridge::is_query_fuel_exhausted(&error);
                 let invariant_hint = lexical_engine_invariant_hint(&error);
-                let retryable = invariant_hint.is_none();
+                let glob_hint = lexical_glob_expansion_hint(&error);
+                let retryable = invariant_hint.is_none() && glob_hint.is_none();
                 let hint = if fuel_exhausted {
                     Some(format!(
                         "the lexical engine hit its per-query work ceiling (usually a long, \
@@ -23690,7 +23706,7 @@ fn execute_search_operation(
                         crate::search::quill_bridge::cass_quill_config().query_fuel_budget
                     ))
                 } else {
-                    invariant_hint
+                    glob_hint.or(invariant_hint)
                 };
                 CliError {
                     code: 9,
@@ -23803,15 +23819,18 @@ fn execute_search_operation(
                             field_mask,
                         )
                         .map_err(|fallback_error| {
-                            let invariant_hint = lexical_engine_invariant_hint(&fallback_error);
+                            let invariant_hint =
+                                lexical_engine_invariant_hint(&fallback_error);
+                            let glob_hint =
+                                lexical_glob_expansion_hint(&fallback_error);
                             CliError {
                                 code: 9,
                                 kind: CliErrorKind::Search.kind_str(),
                                 message: format!(
                                     "hybrid search failed ({error}); lexical fallback failed: {fallback_error}"
                                 ),
-                                retryable: invariant_hint.is_none(),
-                                hint: invariant_hint,
+                                retryable: invariant_hint.is_none() && glob_hint.is_none(),
+                                hint: glob_hint.or(invariant_hint),
                             }
                         })?
                 } else if message.contains("unavailable") || message.contains("no embedder") {
@@ -23827,12 +23846,13 @@ fn execute_search_operation(
                     });
                 } else {
                     let invariant_hint = lexical_engine_invariant_hint(&error);
+                    let glob_hint = lexical_glob_expansion_hint(&error);
                     return Err(CliError {
                         code: 9,
                         kind: CliErrorKind::Search.kind_str(),
                         message: format!("hybrid search failed: {error}"),
-                        retryable: invariant_hint.is_none(),
-                        hint: invariant_hint.or_else(|| {
+                        retryable: invariant_hint.is_none() && glob_hint.is_none(),
+                        hint: glob_hint.or(invariant_hint).or_else(|| {
                             Some(
                                 "Retry with the default hybrid-preferred mode when lexical evidence is acceptable"
                                     .to_string(),

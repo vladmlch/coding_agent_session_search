@@ -30,7 +30,9 @@ use frankensearch::quill::cass::{
     CassMergeStatus,
 };
 use frankensearch::quill::schema::CASS_SEMANTIC_SCHEMA;
-use frankensearch::quill::{QuillConfig, QuillIndex, QuillSearchIndex, SchemaDocument};
+use frankensearch::quill::{
+    QuillConfig, QuillIndex, QuillIndexError, QuillSearchIndex, SchemaDocument, TermDictionaryError,
+};
 
 #[path = "quill_bridge/fuel_errors.rs"]
 mod fuel_errors;
@@ -70,6 +72,28 @@ pub fn is_engine_invariant_failure(error: &anyhow::Error) -> bool {
         cause
             .to_string()
             .contains("posting cursor invariant failed")
+    })
+}
+
+/// Whether `error` is Quill's typed per-leaf glob-expansion refusal
+/// (`QuillIndexError::Dictionary(TermDictionaryError::GlobExpansionLimitExceeded)`),
+/// anywhere in its cause chain. The engine expands a glob query against each
+/// sealed leaf's own term dictionary under [`QuillConfig::glob_expansion_limit`]
+/// (default 16,384 matching terms per leaf); a prefix that crosses the cap
+/// refuses typed instead of silently under-matching, and the engine's own
+/// diagnostic names the pattern that exploded. Callers surface it as a typed
+/// refusal naming the term and suggesting a longer prefix — never a silent
+/// drop and never a truncated match set.
+#[must_use]
+pub fn is_glob_expansion_limited(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let Some(engine) = cause.downcast_ref::<QuillIndexError>() else {
+            return false;
+        };
+        matches!(
+            engine,
+            QuillIndexError::Dictionary(TermDictionaryError::GlobExpansionLimitExceeded { .. })
+        )
     })
 }
 
@@ -578,6 +602,32 @@ pub(crate) fn open_cass_reader_with_query_fuel_budget(
                 CASS_SEMANTIC_SCHEMA,
                 QuillConfig {
                     query_fuel_budget,
+                    ..cass_quill_config()
+                },
+            )
+            .await
+        }
+    })
+    .map_err(|error| anyhow!("opening Quill CASS reader at {}: {error}", path.display()))
+}
+
+/// [`open_cass_reader`] with its own per-leaf glob-expansion cap, for
+/// callers (the viewer bridge's tests, which live in the bin crate) that
+/// need a prefix literal to explode against the dictionary without a
+/// process-wide environment variable.
+pub fn open_cass_reader_with_glob_expansion_limit(
+    path: &Path,
+    glob_expansion_limit: usize,
+) -> Result<QuillSearchIndex> {
+    drive(|cx| {
+        let path = path.to_path_buf();
+        async move {
+            QuillSearchIndex::open_with_schema(
+                &cx,
+                path,
+                CASS_SEMANTIC_SCHEMA,
+                QuillConfig {
+                    glob_expansion_limit,
                     ..cass_quill_config()
                 },
             )

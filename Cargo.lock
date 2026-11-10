@@ -2021,8 +2021,7 @@ dependencies = [
 [[package]]
 name = "frankensearch-quill"
 version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95c1655504a8ad2fe3cfad7e92bce948f28dddad07bc3a5a127660414c853ec5"
+source = "git+file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/frankensearch?rev=ce5f1bd633bff8f365f3a0292c18292627cb4c30#ce5f1bd633bff8f365f3a0292c18292627cb4c30"
 dependencies = [
  "ahash",
  "arc-swap",
