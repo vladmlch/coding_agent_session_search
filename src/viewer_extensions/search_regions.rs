@@ -3201,6 +3201,202 @@ mod tests {
         Ok(())
     }
 
+    /// A REGION_VERSION bump re-ingests every session of the archive: the
+    /// generation republish rewrites each marks row `pending` while its
+    /// documents stay live in the committed snapshot, and the incremental
+    /// lane's pending sweep re-stages the whole set. One upsert per session
+    /// published a successor and validated every segment per session — the
+    /// same quadratic pass the twin test above shed for
+    /// [`TantivyIndex::converge_all_search_region_docs`], reached from the
+    /// incremental lane. The pending sweep must batch sessions the same
+    /// way, and the replacement must still leave exactly one live document
+    /// per identity.
+    ///
+    /// [`TantivyIndex::converge_all_search_region_docs`]:
+    ///     crate::search::tantivy::TantivyIndex::converge_all_search_region_docs
+    #[test]
+    fn converge_pending_onto_a_committed_candidate_publishes_per_batch_not_per_session()
+    -> Result<()> {
+        let (temp, storage) = fixture();
+        let db = storage.raw();
+        let agent = agent_id(&storage);
+        let sessions = 6_i64;
+        for id in 1..=sessions {
+            insert_conversation(db, id, agent);
+            insert_marks(db, id, "[]");
+            insert_region(db, id, 0, base(0), Some("first region"));
+            insert_region(db, id, 1, base(1), Some("second region"));
+        }
+        let index_path = temp.path().join("index");
+        let mut index = crate::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+        // Stage 1: each conversation ships 2 region documents plus 1
+        // session×scope chunk (its two 'block' regions pack into one
+        // 28-char chunk) — 3 documents per session — and the stamped
+        // commit flips every marks row `published`.
+        assert_eq!(
+            index.converge_pending_search_region_docs(db, i64::MAX)?,
+            sessions as usize
+        );
+        assert_eq!(
+            index.pending_region_doc_stamp_count(),
+            sessions as usize,
+            "every converged session queues exactly one stamp"
+        );
+        index.commit_with_region_doc_stamps(db)?;
+        let states = db.facts_query_map(
+            "SELECT docs_state FROM viewer_search_region_marks ORDER BY conversation_id",
+            &[],
+            |row| row.get_typed::<String>(0),
+        )?;
+        assert!(
+            states.iter().all(|state| state == "published"),
+            "the stamped commit publishes every converged session: {states:?}"
+        );
+        drop(index);
+
+        // The version-bump republish: every marks row flips `pending`
+        // again while the same identities stay live in the committed
+        // snapshot.
+        db.facts_execute(
+            "UPDATE viewer_search_region_marks SET docs_state = 'pending'",
+            &[],
+        )?;
+
+        // The resumed incremental run opens a new writer on the committed
+        // candidate.
+        let mut resumed = crate::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+        let segments_before = resumed.segment_count();
+        assert_eq!(
+            resumed.converge_pending_search_region_docs(db, i64::MAX)?,
+            sessions as usize
+        );
+        resumed.commit_with_region_doc_stamps(db)?;
+        let published = resumed.segment_count().saturating_sub(segments_before);
+        assert!(
+            published <= 1,
+            "re-converging {sessions} pending sessions published {published} segments; \
+             one batch must publish at most one"
+        );
+        assert_eq!(
+            resumed.doc_count()?,
+            3 * sessions as u64,
+            "replacement must leave one live document per identity"
+        );
+        Ok(())
+    }
+
+    /// The sweep is idempotent within one writer generation: a session it
+    /// already staged (stamp queued, marks still `pending` until the
+    /// post-commit stamp) is never re-upserted — a duplicate live id — so a
+    /// second pass over the same pending set converges the same sessions
+    /// without touching the writer.
+    #[test]
+    fn converge_pending_is_idempotent_within_one_writer_generation() -> Result<()> {
+        let (temp, storage) = fixture();
+        let db = storage.raw();
+        let agent = agent_id(&storage);
+        let sessions = 3_i64;
+        for id in 1..=sessions {
+            insert_conversation(db, id, agent);
+            insert_marks(db, id, "[]");
+            insert_region(db, id, 0, base(0), Some("first region"));
+            insert_region(db, id, 1, base(1), Some("second region"));
+        }
+        let index_path = temp.path().join("index");
+        let mut index = crate::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+        assert_eq!(
+            index.converge_pending_search_region_docs(db, i64::MAX)?,
+            sessions as usize
+        );
+        let stamps = index.pending_region_doc_stamp_count();
+        let segments = index.segment_count();
+        let docs = index.doc_count()?;
+
+        // Marks are still `pending` (nothing committed yet), so the second
+        // sweep lists the same sessions — but every one is already staged
+        // on this writer, so nothing is upserted or queued again.
+        assert_eq!(
+            index.converge_pending_search_region_docs(db, i64::MAX)?,
+            sessions as usize,
+            "marks stay pending until the commit stamps them"
+        );
+        assert_eq!(
+            index.pending_region_doc_stamp_count(),
+            stamps,
+            "no session stages twice in one writer generation"
+        );
+        assert_eq!(
+            index.segment_count(),
+            segments,
+            "no re-upsert means no publish between the sweeps"
+        );
+        assert_eq!(index.doc_count()?, docs, "no duplicate live identities");
+        index.commit_with_region_doc_stamps(db)?;
+        assert_eq!(index.pending_region_doc_stamp_count(), 0);
+        Ok(())
+    }
+
+    /// A crash mid-sweep — the writer dropped before its commit — must
+    /// leave every swept session's marks honestly `pending`: stamps queue
+    /// only after their documents are upserted and the marks row itself
+    /// only flips at the post-commit stamp, so the next run re-converges
+    /// the same sessions and the recovered commit publishes them.
+    #[test]
+    fn converge_pending_crash_before_commit_leaves_honest_pending_marks() -> Result<()> {
+        let (temp, storage) = fixture();
+        let db = storage.raw();
+        let agent = agent_id(&storage);
+        let sessions = 3_i64;
+        for id in 1..=sessions {
+            insert_conversation(db, id, agent);
+            insert_marks(db, id, "[]");
+            insert_region(db, id, 0, base(0), Some("first region"));
+            insert_region(db, id, 1, base(1), Some("second region"));
+        }
+        let index_path = temp.path().join("index");
+        {
+            let mut index = crate::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+            assert_eq!(
+                index.converge_pending_search_region_docs(db, i64::MAX)?,
+                sessions as usize
+            );
+            // Crash: the writer drops WITHOUT commit — staged docs are lost.
+        }
+        let states = db.facts_query_map(
+            "SELECT docs_state FROM viewer_search_region_marks ORDER BY conversation_id",
+            &[],
+            |row| row.get_typed::<String>(0),
+        )?;
+        assert!(
+            states.iter().all(|state| state == "pending"),
+            "a crashed sweep must leave every mark pending: {states:?}"
+        );
+
+        // Recovery: a fresh writer re-converges every session and the
+        // stamped commit publishes them.
+        let mut index = crate::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+        assert_eq!(
+            index.converge_pending_search_region_docs(db, i64::MAX)?,
+            sessions as usize
+        );
+        index.commit_with_region_doc_stamps(db)?;
+        let states = db.facts_query_map(
+            "SELECT docs_state FROM viewer_search_region_marks ORDER BY conversation_id",
+            &[],
+            |row| row.get_typed::<String>(0),
+        )?;
+        assert!(
+            states.iter().all(|state| state == "published"),
+            "the recovered commit publishes the re-converged sessions: {states:?}"
+        );
+        assert_eq!(
+            index.doc_count()?,
+            3 * sessions as u64,
+            "recovery converges to one live document per identity"
+        );
+        Ok(())
+    }
+
     /// A packet can name a session by another path than the conversation
     /// row it merged into (a Cursor composer re-emitted under a second
     /// path). Region documents are minted from the row, so the delete queue
