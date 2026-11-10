@@ -1393,6 +1393,11 @@ pub fn derive_meta_regions(
     // `ORDER BY c2.id` is a total order and `LIMIT 64` truncates the same
     // prefix; a facts row without a canonical conversation drops out here
     // exactly as the INNER JOIN dropped it.
+    // Cost note: this fetches ALL children of the parent and truncates to
+    // 64 in Rust — O(children) row fetches where the SQL JOIN stopped at
+    // its O(64) LIMIT. Bounded in practice by archive shape (a parent
+    // with thousands of direct children is pathological); revisit only
+    // if a real archive shows one.
     type ChildDescriptor = (i64, Option<String>, Option<String>, Option<String>);
     let child_links: Vec<(i64, Option<String>)> = db.facts_query_map(
         "SELECT conversation_id, first_prompt FROM viewer_session_facts \

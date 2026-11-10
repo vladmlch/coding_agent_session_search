@@ -10,6 +10,7 @@
 use coding_agent_search::franken_sync::Connection;
 use coding_agent_search::franken_sync::Connection as FrankenConnection;
 use coding_agent_search::franken_sync::compat::RowExt;
+use coding_agent_search::franken_sync::compat::{OpenFlags, open_with_flags};
 use fsqlite_types::value::SqliteValue;
 use std::fmt::Write as _;
 
@@ -946,6 +947,11 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
     // derive_meta_regions / generation_markers_visible / ingest_receipt_for).
     // Params bind the parent conversation (99031) unless a shape is
     // child-specific.
+    // Each shape carries a `Production:` comment naming its origin
+    // (file::function). The pins are verbatim copies, so production drift
+    // — a reordered param, an added conjunct — silently stops pinning the
+    // real shape while this gate stays green; when editing one of these
+    // queries in production, update its pin in the same change.
     // The `viewer_meta` existence probe reads sqlite_master itself — the
     // schema catalog is a few dozen rows with no index to seek, so a SCAN
     // is its correct plan (the whole receipt path measured ~184 µs on the
@@ -956,23 +962,27 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
         &[],
     )];
     let seek_shapes: &[(&str, &str, &[SqliteValue])] = &[
+        // Production: viewer_extensions/facts.rs `ingest_receipt_for`
         (
             "receipt read",
             "SELECT value FROM viewer_meta WHERE key = ?1 LIMIT 1",
             &[SqliteValue::Text("ingest_receipt:99031".into())],
         ),
+        // Production: viewer_extensions/projection.rs `generation_markers_visible`
         (
             "markers facts visible",
             "SELECT 1 FROM viewer_session_facts \
              WHERE conversation_id = ?1 AND source_revision = ?2 LIMIT 1",
             &[SqliteValue::Integer(99031), SqliteValue::Integer(1)],
         ),
+        // Production: viewer_extensions/projection.rs `generation_markers_visible`
         (
             "markers projection visible",
             "SELECT 1 FROM viewer_session_projection \
              WHERE conversation_id = ?1 AND source_revision = ?2 LIMIT 1",
             &[SqliteValue::Integer(99031), SqliteValue::Integer(1)],
         ),
+        // Production: viewer_extensions/projection.rs `generation_markers_visible`
         (
             "markers marks visible",
             "SELECT 1 FROM viewer_search_region_marks \
@@ -983,83 +993,120 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
                 SqliteValue::Integer(6),
             ],
         ),
+        // Production: viewer_extensions/projection.rs `publish_ingest_generation_in_tx`
         (
             "resolved parent",
             "SELECT parent_conversation_id FROM viewer_session_facts \
              WHERE conversation_id = ?1",
             &[SqliteValue::Integer(99032)],
         ),
+        // Production: viewer_extensions/search_regions.rs `publish_search_regions`
         (
             "message id binding",
             "SELECT idx, id FROM messages WHERE conversation_id = ?1",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_extensions/search_regions.rs
+        // `publish_search_regions` (previous_slots). Rewritten by fix 1:
+        // the `quill_idx >= REGION_DOC_BASE` range moved to Rust; the
+        // planner-gap shape it replaced lives in `planner_gap_shapes`.
         (
             "previous doc slots",
             "SELECT quill_idx FROM viewer_search_regions WHERE conversation_id = ?1",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_extensions/search_regions.rs
+        // `old_region_scope_counts`. Rewritten by fix 1: SQL GROUP BY
+        // folded into a Rust run-length count; the planner-gap shape it
+        // replaced lives in `planner_gap_shapes`.
         (
             "old scope counts",
             "SELECT scope FROM viewer_search_regions WHERE conversation_id = ?1",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_extensions/search_regions.rs
+        // `region_doc_identity_parts`
         (
             "canonical doc identity",
             "SELECT source_id, source_path FROM conversations WHERE id = ?1 LIMIT 1",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_extensions/search_regions.rs
+        // `stale_doc_ids_json`
         (
             "marks pending deletes",
             "SELECT pending_doc_deletes FROM viewer_search_region_marks \
              WHERE conversation_id = ?1",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_extensions/search_regions.rs
+        // `derive_meta_regions`
         (
             "meta canonical title",
             "SELECT title FROM conversations WHERE id = ?1",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_extensions/search_regions.rs
+        // `derive_meta_regions`
         (
             "meta annotations",
             "SELECT is_pinned, custom_title, notes FROM viewer_annotations \
              WHERE conversation_id = ?1",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_extensions/search_regions.rs
+        // `derive_meta_regions`
         (
             "meta tags",
             "SELECT tag FROM viewer_tags WHERE conversation_id = ?1 ORDER BY tag",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_extensions/search_regions.rs
+        // `derive_meta_regions` (child_links). Rewritten by fix 1: the
+        // parent-link JOIN split into this equality seek plus per-child
+        // rowid fetches; the planner-gap shape it replaced lives in
+        // `planner_gap_shapes`.
         (
             "meta child facts seek",
             "SELECT conversation_id, first_prompt FROM viewer_session_facts \
              WHERE parent_conversation_id = ?1",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_extensions/search_regions.rs
+        // `derive_meta_regions` (per-child fetch of the split JOIN)
         (
             "meta child conversation fetch",
             "SELECT id, title, external_id FROM conversations WHERE id = ?1",
             &[SqliteValue::Integer(99032)],
         ),
+        // Production: viewer_extensions/search_regions.rs `region_mark`
         (
             "mark read",
             "SELECT region_version, source_revision, region_count, docs_state \
              FROM viewer_search_region_marks WHERE conversation_id = ?1",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_extensions/search_regions.rs
+        // `replace_meta_regions` (max message ordinal). Rewritten by fix
+        // 1: the `NOT LIKE 'meta:%'` residual moved to Rust
+        // (`is_meta_region_key`); the planner-gap shape it replaced lives
+        // in `planner_gap_shapes`.
         (
             "max message ordinal",
             "SELECT region_key, region_ordinal FROM viewer_search_regions \
              WHERE conversation_id = ?1",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_extensions/search_regions.rs
+        // `replace_meta_regions` (old_meta — LIKE seeks the index)
         (
             "old meta slots",
             "SELECT quill_idx FROM viewer_search_regions \
              WHERE conversation_id = ?1 AND region_key LIKE 'meta:%'",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_extensions/search_regions.rs
+        // `replace_meta_regions` (the meta-region delete)
         (
             "meta region delete",
             "DELETE FROM viewer_search_regions WHERE conversation_id = ?1 \
@@ -1150,7 +1197,15 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
     // plan-checked on the fixture above and skipped here so the copy's
     // rows never change.
     if let Ok(probe_db) = std::env::var("CASS_TEST_REGION_SELECT_PLAN_DB") {
-        let probe = Connection::open(&probe_db).expect("open the scratch archive copy");
+        // Strict read-only (the F17 doctrine the production external-store
+        // readers follow): even on a scratch COPY, the probe never asserts
+        // and only executes SELECTs, so it has no business creating or
+        // rewriting any sidecar of the store it reads.
+        let probe = open_with_flags(
+            &probe_db,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
+        )
+        .expect("open the scratch archive copy strict-read-only");
         let counts = [
             "conversations",
             "messages",

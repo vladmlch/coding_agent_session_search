@@ -15821,6 +15821,13 @@ fn run_streaming_consumer(
     flow_limiter: Arc<StreamingByteLimiter>,
     progress: &Option<Arc<IndexingProgress>>,
     lexical_strategy: LexicalPopulationStrategy,
+    // Whether this consumer run may latch the whole-archive region-doc
+    // republish deferral at its prologue. Production passes the scan
+    // entry's lane gate (`!opts.watch && opts.watch_once_paths.is_none()`):
+    // a watch run has no final drain, so latching its startup scan would
+    // strand every mark the watch loop persists at `pending` for the life
+    // of the process.
+    allow_region_doc_republish_deferral: bool,
     scan_start_ts: Option<i64>,
     progress_bump: Option<&Arc<AtomicI64>>,
 ) -> Result<(Vec<String>, NonWatchIngestOutcome)> {
@@ -15839,8 +15846,14 @@ fn run_streaming_consumer(
     // (bounded, one handful of publishes). Idempotent with the scan entry's
     // latch; the strategy gate keeps the rebuild flavors staging per batch —
     // a fresh snapshot re-materializes every session and additive upserts do
-    // not republish.
-    if lexical_strategy == LexicalPopulationStrategy::IncrementalInline
+    // not republish. The caller's lane flag mirrors the scan entry's
+    // `!opts.watch && opts.watch_once_paths.is_none()` gate: a watch run
+    // has no final drain, so latching its startup scan would strand every
+    // mark the watch loop persists at `pending` for the life of the
+    // process — watch keeps per-event convergence (tantivy.rs: the latch is
+    // "never latched by watch").
+    if allow_region_doc_republish_deferral
+        && lexical_strategy == LexicalPopulationStrategy::IncrementalInline
         && let Some(index) = t_index.as_deref_mut()
     {
         persist::maybe_defer_region_doc_convergence_for_republish(storage.raw(), index)?;
@@ -16542,6 +16555,9 @@ where
         producer_config.flow_limiter.clone(),
         &opts.progress,
         lexical_strategy,
+        // The scan entry's lane gate, verbatim: watch keeps per-event
+        // region-doc convergence because a watch run has no final drain.
+        !opts.watch && opts.watch_once_paths.is_none(),
         scan_start_ts,
         progress_bump,
     );
@@ -38100,7 +38116,10 @@ pub mod persist {
     /// when the stale-version marks a REGION_VERSION bump leaves exceed
     /// [`REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS`]. The non-watch
     /// incremental lane calls this before its first persist batch (the scan
-    /// entry and the streaming consumer's prologue); the per-batch
+    /// entry and the streaming consumer's prologue, each behind the scan
+    /// entry's lane gate `!opts.watch && opts.watch_once_paths.is_none()` —
+    /// the watch contract lives at the call sites, not in this helper);
+    /// the per-batch
     /// region-doc prelude then stages nothing and the lane drains the
     /// accumulated pending set with one bounded
     /// [`TantivyIndex::converge_pending_search_region_docs`] pass right
@@ -58673,12 +58692,15 @@ mod tests {
 
     /// Drive the real streaming consumer over one Batch message per
     /// conversation — the batch-of-one shape every oversized agent session
-    /// produces on the lane — plus the producer's Done.
+    /// produces on the lane — plus the producer's Done. The final flag is
+    /// the consumer's republish-deferral lane gate: `true` models an
+    /// ordinary non-watch run, `false` the watch lane.
     fn run_streaming_consumer_over_sessions(
         storage: &FrankenStorage,
         data_dir: &Path,
         index: &mut TantivyIndex,
         convs: Vec<NormalizedConversation>,
+        allow_region_doc_republish_deferral: bool,
     ) -> Result<()> {
         let capacity = convs.len() + 1;
         let (tx, rx) = bounded(capacity);
@@ -58708,6 +58730,7 @@ mod tests {
             Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
             &None,
             LexicalPopulationStrategy::IncrementalInline,
+            allow_region_doc_republish_deferral,
             None,
             None,
         )?;
@@ -58737,7 +58760,7 @@ mod tests {
         // Run 1 seeds the archive at the current REGION_VERSION: the
         // per-batch prelude converges each session with its batch and the
         // consumer's final commit stamps every mark `published`.
-        run_streaming_consumer_over_sessions(&storage, &data_dir, &mut index, convs.clone())?;
+        run_streaming_consumer_over_sessions(&storage, &data_dir, &mut index, convs.clone(), true)?;
         assert_eq!(
             stream_region_mark_histogram(&storage),
             vec![(
@@ -58758,7 +58781,7 @@ mod tests {
         // one session per persist batch. The consumer's final commit must
         // leave every mark published again, and the whole grind must cost a
         // bounded handful of segment publishes — not one per session.
-        run_streaming_consumer_over_sessions(&storage, &data_dir, &mut index, convs)?;
+        run_streaming_consumer_over_sessions(&storage, &data_dir, &mut index, convs, true)?;
 
         assert_eq!(
             stream_region_mark_histogram(&storage),
@@ -58777,10 +58800,95 @@ mod tests {
             .is_empty(),
             "no session may remain pending after the run's final commit"
         );
+        // The bound's provenance (do not reflexively tighten or loosen):
+        // the one final drain publishes successor segments for the live
+        // segments it replaces — measured +6 for this fixture's 513
+        // sessions — so +32 is generous headroom for commit-pacer
+        // batching, while staying 16x below the +513 that the
+        // one-publish-per-session failure mode would cost. A drain that
+        // publishes near the session count is the regression this bound
+        // exists to catch; one that lands near +6 is the expected shape.
         assert!(
             index.segment_count() <= seeded_segments + 32,
             "the republish grind must not publish one segment per session: seeded={seeded_segments} after={}",
             index.segment_count()
+        );
+        Ok(())
+    }
+
+    /// Regression (review Important 1): the watch lane's startup broad scan
+    /// drives this same consumer before the watch loop inherits the writer,
+    /// and a watch run has NO final drain — if the prologue latched the
+    /// whole-archive republish deferral on that lane, every persist the
+    /// watch loop later committed would skip region-doc convergence and its
+    /// marks would sit `pending` for the life of the process. The consumer
+    /// must never latch when the caller passes the watch lane, mirroring
+    /// the scan entry's `!opts.watch && opts.watch_once_paths.is_none()`
+    /// gate (tantivy.rs: the latch is "never latched by watch").
+    #[test]
+    fn streaming_consumer_watch_lane_never_latches_republish_deferral() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let data_dir = tmp.path().join("data");
+        fs::create_dir_all(&data_dir)?;
+        let db_path = data_dir.join("agent_search.db");
+        let storage = FrankenStorage::open(&db_path)?;
+        ensure_fts_schema(&storage);
+        let index_path = index_dir(&data_dir)?;
+        let mut index = TantivyIndex::open_or_create(&index_path)?;
+        let session_count = persist::REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS + 1;
+        let convs: Vec<_> = (0..session_count).map(grind_stream_session).collect();
+
+        // Run 1 seeds the archive at the current REGION_VERSION through the
+        // ordinary lane: zero stale marks, so the allowed deferral never
+        // engages and per-batch convergence publishes every mark.
+        run_streaming_consumer_over_sessions(&storage, &data_dir, &mut index, convs.clone(), true)?;
+        assert_eq!(
+            stream_region_mark_histogram(&storage),
+            vec![(
+                crate::viewer_extensions::search_regions::REGION_VERSION,
+                crate::viewer_extensions::search_regions::DOCS_PUBLISHED.to_string(),
+                session_count
+            )],
+            "the seeded archive must hold every mark published at the current version"
+        );
+
+        // The durable state a REGION_VERSION bump creates: every mark now
+        // reads stale — more than the deferral threshold — so an ordinary
+        // non-watch consumer run WOULD latch here (the grind test above
+        // pins that lane).
+        storage
+            .raw()
+            .execute("UPDATE viewer_search_region_marks SET region_version = 5")?;
+
+        // Run 2 — the same above-threshold stale archive through the WATCH
+        // lane. The writer the watch loop would inherit must stay
+        // unlatched, and per-event convergence must still republish every
+        // mark: the consumer's final drain is itself gated on the latch
+        // flag, so a false flag plus zero pending marks proves convergence
+        // happened per batch, not in one deferred drain.
+        run_streaming_consumer_over_sessions(&storage, &data_dir, &mut index, convs, false)?;
+
+        assert!(
+            !index.region_doc_convergence_deferred_to_final_drain(),
+            "the watch lane must never latch the whole-archive republish deferral: \
+             a watch run has no final drain, so latched marks would never converge"
+        );
+        assert_eq!(
+            stream_region_mark_histogram(&storage),
+            vec![(
+                crate::viewer_extensions::search_regions::REGION_VERSION,
+                crate::viewer_extensions::search_regions::DOCS_PUBLISHED.to_string(),
+                session_count
+            )],
+            "the watch lane's per-event convergence must republish every mark"
+        );
+        assert!(
+            crate::viewer_extensions::search_regions::pending_region_doc_sessions(
+                storage.raw(),
+                i64::MAX
+            )?
+            .is_empty(),
+            "no session may remain pending on the watch lane"
         );
         Ok(())
     }
@@ -58819,6 +58927,7 @@ mod tests {
                 Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
                 &Some(progress.clone()),
                 LexicalPopulationStrategy::IncrementalInline,
+                true,
                 scan_start_ts,
                 None,
             )
@@ -58886,6 +58995,7 @@ mod tests {
             Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
             &None,
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             Some(scan_start_ts),
             None,
         )?;
@@ -58941,6 +59051,7 @@ mod tests {
             Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
             &Some(progress.clone()),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             None,
             None,
         )?;
@@ -59003,6 +59114,7 @@ mod tests {
             Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
             &Some(progress),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             None,
             None,
         )?;
@@ -59052,6 +59164,7 @@ mod tests {
             Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
             &Some(progress.clone()),
             LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            true,
             Some(FrankenStorage::now_millis()),
             None,
         )
@@ -59121,6 +59234,7 @@ mod tests {
             Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
             &Some(progress.clone()),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             Some(FrankenStorage::now_millis()),
             None,
         )
@@ -59189,6 +59303,7 @@ mod tests {
                 Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
                 &Some(progress.clone()),
                 LexicalPopulationStrategy::IncrementalInline,
+                true,
                 Some(FrankenStorage::now_millis()),
                 None,
             )
@@ -59294,6 +59409,7 @@ mod tests {
                 Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
                 &Some(progress.clone()),
                 LexicalPopulationStrategy::IncrementalInline,
+                true,
                 Some(scan_watermark),
                 None,
             )
@@ -59344,6 +59460,7 @@ mod tests {
                     Arc::new(StreamingByteLimiter::new(STREAMING_MAX_BYTES_IN_FLIGHT)),
                     &Some(progress.clone()),
                     LexicalPopulationStrategy::IncrementalInline,
+                    true,
                     Some(scan_watermark),
                     None,
                 )
@@ -60676,6 +60793,7 @@ mod tests {
             flow_limiter,
             &Some(progress.clone()),
             LexicalPopulationStrategy::DeferredAuthoritativeDbRebuild,
+            true,
             Some(FrankenStorage::now_millis()),
             None,
         )
@@ -60926,6 +61044,7 @@ mod tests {
             flow_limiter,
             &Some(progress.clone()),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             None,
             None,
         )
@@ -61031,6 +61150,7 @@ mod tests {
                 flow_limiter,
                 &Some(progress),
                 LexicalPopulationStrategy::IncrementalInline,
+                true,
                 None,
                 None,
             )
@@ -61110,6 +61230,7 @@ mod tests {
             flow_limiter,
             &Some(progress.clone()),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             None,
             None,
         )
@@ -61157,6 +61278,7 @@ mod tests {
             flow_limiter,
             &Some(progress.clone()),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             None,
             None,
         )
@@ -61299,6 +61421,7 @@ mod tests {
             flow_limiter,
             &Some(progress.clone()),
             LexicalPopulationStrategy::IncrementalInline,
+            true,
             None,
             None,
         )
