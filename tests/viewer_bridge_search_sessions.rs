@@ -1979,11 +1979,13 @@ fn region_doc_stamp_is_freshness_guarded() -> Result<()> {
     Ok(())
 }
 
-/// The live region-doc bound counts ONLY doc-backed rows: chat regions
-/// (canonical `quill_idx`, `indexed_text` NULL) own no document — the
-/// earlier `marks.region_count` bound charged every persisted row for a
-/// doc it never had, under-counted the observed message share, and broke
-/// the watch checkpoint's refresh/early-exit equality.
+/// The live region-doc bound counts ONLY doc-backed rows — chat regions
+/// (canonical `quill_idx`, `indexed_text` NULL) own no document — plus,
+/// since Stage 1, the session×scope chunks every marked conversation
+/// stages into the same archive (one per (scope, chunk) the packer
+/// emits). The earlier `marks.region_count` bound charged every persisted
+/// row for a doc it never had, under-counted the observed message share,
+/// and broke the watch checkpoint's refresh/early-exit equality.
 #[test]
 fn live_region_doc_bound_counts_only_doc_backed_rows() -> Result<()> {
     let temp = tempfile::tempdir()?;
@@ -2005,18 +2007,42 @@ fn live_region_doc_bound_counts_only_doc_backed_rows() -> Result<()> {
         total_rows > doc_backed,
         "fixture must contain non-doc-backed chat rows: {total_rows} vs {doc_backed}"
     );
+    // The Stage 1 session-doc term: one chunk per (scope, chunk) the
+    // packer derives per MARKED conversation — the same public derivation
+    // the staging lane runs, so the bound stays exact at convergence.
+    let marked: Vec<i64> = {
+        let rows = writer.query("SELECT conversation_id FROM viewer_search_region_marks")?;
+        let mut ids = Vec::new();
+        for row in &rows {
+            ids.push(row.get_typed::<i64>(0)?);
+        }
+        ids
+    };
+    let mut session_chunks = 0_u64;
+    for cid in &marked {
+        session_chunks +=
+            coding_agent_search::viewer_extensions::search_regions::session_scope_docs(
+                &writer, *cid,
+            )?
+            .map_or(0, |docs| docs.len() as u64);
+    }
+    ensure!(
+        session_chunks > 0,
+        "the fixture must stage session×scope chunks: {session_chunks}"
+    );
     let bound =
         coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(&writer)?;
     ensure!(
-        bound == doc_backed as u64,
-        "bound must count doc-backed rows only: {bound} != {doc_backed}"
+        bound == doc_backed as u64 + session_chunks,
+        "bound must count doc-backed rows plus session×scope chunks: {bound} != {}",
+        doc_backed as u64 + session_chunks
     );
     let marks_total: i64 = writer
         .query_row("SELECT COALESCE(SUM(region_count),0) FROM viewer_search_region_marks")?
         .get_typed(0)?;
     ensure!(
-        bound < marks_total as u64,
-        "the old region_count bound ({marks_total}) over-counted: {bound}"
+        (doc_backed as u64) < marks_total as u64,
+        "the old region_count bound ({marks_total}) over-counted doc-backed rows ({doc_backed})"
     );
 
     // A queued stale identity raises the bound by exactly its length.
@@ -2027,7 +2053,7 @@ fn live_region_doc_bound_counts_only_doc_backed_rows() -> Result<()> {
     let bound =
         coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(&writer)?;
     ensure!(
-        bound == doc_backed as u64 + 2,
+        bound == doc_backed as u64 + session_chunks + 2,
         "pending deletes bound stale identities: {bound}"
     );
     Ok(())
@@ -3304,6 +3330,628 @@ fn search_sessions_agy_error_field_text_answers_strict_search() -> Result<()> {
             .any(|r| r == "agy_error_field_not_indexed")),
         "the retired mark must be gone from the real manifest: {:?}",
         facts.coverage
+    );
+    bridge.shutdown()
+}
+
+// ---------------------------------------------------------------------------
+// Strict search Stage 1: session×scope docs fast path + lazy fragments
+// (owner decision 2026-11-10)
+// ---------------------------------------------------------------------------
+//
+// Plans whose every literal is a single ASCII token (exact or prefix)
+// answer from the published session×scope documents: one Quill doc per
+// (conversation, scope) chunk, derived and published through the same
+// region-doc lane, marks-disciplined. Membership is the session-doc
+// posting set; NOT/AND/OR keep the three-valued set algebra; witnesses are
+// discovered textually for the emitted page only. The ONE deliberate
+// relaxation: a session whose doc claims membership but whose regions
+// cannot textually reproduce the literal (analyzer prefix-n-gram drift) is
+// EMITTED with `witness_count=0`, a page-level warning and the
+// `membership_source` receipt — never silently dropped, never a whole-page
+// refusal. Pending marks and not-read coverage gaps keep refusing exactly
+// as before. Everything else — multi-token literals, exact phrases,
+// non-ASCII, same-block ANDs, literal×region-predicate ANDs — stays on the
+// legacy per-region lane. Lazy fragments: the universe load is
+// structural-only; `indexed_text` hydrates per emitted page.
+// ---------------------------------------------------------------------------
+
+/// Stage 1 (i): single-token ASCII plans answer exactly from the
+/// session×scope documents and report the lane receipt. Every probe here is
+/// a single token in at least one fixture region, so the fast path and the
+/// legacy lane must agree on membership — the assertions pin the RECEIPT
+/// (`membership_source`), the exact uncapped `total_sessions`, and
+/// membership itself, so a fast path that answers wrong never passes.
+#[test]
+fn search_sessions_fast_path_single_token_membership() -> Result<()> {
+    let mut bridge = gold_harness()?;
+
+    // foo lives in S1+S2 chat — the chat-scope session docs carry it.
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "single-token plans must report the session-scope-doc lane: {page}"
+    );
+    ensure!(
+        page["result"]["total_sessions"] == 2,
+        "the fast path is exact, never capped: {page}"
+    );
+
+    // quux lives in S3 tool fragments and S5 chat — two providers, one
+    // posting-set answer.
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "single-token plans must report the session-scope-doc lane: {page}"
+    );
+
+    // zeta lives only inside a thinking block: the thinking-scope chunk
+    // carries it even though no chat region does.
+    let page = search(&mut bridge, json!({"query":"zeta"}))?;
+    assert_members(&page, &[4])?;
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "scope-chunk membership must cover non-chat scopes: {page}"
+    );
+
+    // deploy spans S3's chat, tool-call and tool-result regions.
+    let page = search(&mut bridge, json!({"query":"deploy"}))?;
+    assert_members(&page, &[3])?;
+
+    // Quoted single token: still one literal; exactness is the matcher's
+    // job over the session's own regions, not the lane's.
+    let page = search(&mut bridge, json!({"query":"\"deploy\""}))?;
+    assert_members(&page, &[3])?;
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "quoted single tokens ride the same lane: {page}"
+    );
+
+    // Prefix literal (`flu*` → the non-exact token "flu") rides the lane;
+    // the n-gram gate hits S1's notes fragment and the matcher reproduces.
+    let page = search(&mut bridge, json!({"query":"flu*"}))?;
+    assert_members(&page, &[1])?;
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "prefix literals ride the session-scope-doc lane: {page}"
+    );
+
+    bridge.shutdown()
+}
+
+/// Stage 1 (ii): NOT is the set complement, OR the union, AND NOT the
+/// intersection-with-complement — all exact over the posting sets, with
+/// source-absent sessions staying exact members under their annotation
+/// (owner decision 2026-11-07 preserved on the fast lane).
+#[test]
+fn search_sessions_fast_path_not_complement_and_source_absent() -> Result<()> {
+    let mut bridge = gold_harness()?;
+
+    // NOT over session docs: complement over the browse universe (S6 stays
+    // out of it as everywhere else).
+    let page = search(&mut bridge, json!({"query":"NOT foo"}))?;
+    assert_members(&page, &[3, 4, 5, 7])?;
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "NOT over a fast literal stays on the fast lane: {page}"
+    );
+    ensure!(
+        page["result"]["total_sessions"] == 4,
+        "the complement must be exact: {page}"
+    );
+
+    // OR: union of the two posting sets.
+    let page = search(&mut bridge, json!({"query":"foo OR zeta"}))?;
+    assert_members(&page, &[1, 2, 4])?;
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "OR over fast literals stays on the fast lane: {page}"
+    );
+
+    // AND NOT: intersection with complement, exact count — the
+    // `error AND NOT test` shape.
+    let page = search(&mut bridge, json!({"query":"quux AND NOT deploy"}))?;
+    assert_members(&page, &[5])?;
+    ensure!(
+        page["result"]["total_sessions"] == 1,
+        "the intersection must be exact: {page}"
+    );
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "AND NOT over fast literals stays on the fast lane: {page}"
+    );
+
+    // Source-absent gap (provider-encrypted reasoning, allowlisted) keeps
+    // the strict answer exact with the annotation on the fast lane too.
+    set_facts_coverage(
+        &bridge,
+        5,
+        "unavailable",
+        codex_reasoning_encrypted_manifest(),
+    )?;
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["reasoning_encrypted"]),
+        "the encrypted-reasoning gap must stay annotated on the fast lane: {s5}"
+    );
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "the source-absent count survives the fast lane: {page}"
+    );
+    // A term S5's existing text lacks is still a PROVEN non-member under
+    // source absence — negatives keep today's semantics.
+    let page = search(&mut bridge, json!({"query":"warpdrive"}))?;
+    assert_members(&page, &[])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "S5 was evaluated (and excluded) under source absence: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// Stage 1 (iii): the full keyset walk at limit 1 equals the one-shot
+/// member set — no duplicates, no losses, one generation throughout, and
+/// every page carries the exact `total_sessions`.
+#[test]
+fn search_sessions_fast_path_cursor_walk_equals_one_shot() -> Result<()> {
+    let mut bridge = gold_harness()?;
+
+    let whole = search(&mut bridge, json!({"query":"quux", "sort":"updated_desc"}))?;
+    assert_members(&whole, &[3, 5])?;
+    ensure!(
+        whole["result"]["total_sessions"] == 2,
+        "one-shot total must be exact: {whole}"
+    );
+    let generation = whole["result"]["generation"].clone();
+
+    let mut walked: Vec<i64> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..10 {
+        let mut body = json!({"query":"quux","limit":1,"sort":"updated_desc"});
+        if let Some(raw) = &cursor {
+            body["cursor"] = json!(raw);
+        }
+        let page = search(&mut bridge, body)?;
+        ensure!(page["ok"] == true, "walk page refused: {page}");
+        ensure!(
+            page["result"]["generation"] == generation,
+            "generation must stay bound across fast-path pages: {page}"
+        );
+        ensure!(
+            page["result"]["total_sessions"] == 2,
+            "every fast-path page carries the exact total: {page}"
+        );
+        for item in page["result"]["items"].as_array().expect("items") {
+            let id = item["conversation_id"].as_i64().expect("id");
+            ensure!(
+                !walked.contains(&id),
+                "keyset walk must never repeat a session: {walked:?}"
+            );
+            walked.push(id);
+        }
+        cursor = page["result"]["next_cursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+    walked.sort_unstable();
+    ensure!(
+        walked == vec![3, 5],
+        "the full cursor walk must equal the one-shot member set: {walked:?}"
+    );
+    bridge.shutdown()
+}
+
+/// Stage 1 (iv): marks discipline. The session-scope fast lane engages only
+/// when EVERY universe session's marks are converged — `docs_state`
+/// published at the current `REGION_VERSION`. One unconverged session
+/// (`docs_state` pending, a stale `region_version` from an older binary, or
+/// a missing marks row) keeps the whole query on the legacy region lane,
+/// refusing and answering exactly as today: the pending gap still degrades
+/// an unwitnessed candidate to `facts_pending` under strict and to the
+/// incomplete `allow_partial` page, and the lane receipt names what ran.
+/// The 65k no-marks universe of the existing
+/// `search_sessions_large_universe_stays_honest` stress keeps its cap
+/// refusal through the same fallback.
+#[test]
+fn search_sessions_fast_path_marks_pending_refuses() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+
+    // docs_state pending: S1's session documents are not converged. S1 has
+    // no quux witness, so its pending inventory gap is the honest Unknown
+    // today — and the fast lane must not bypass it by trusting docs.
+    writer.execute(
+        "UPDATE viewer_search_region_marks SET docs_state='pending' \
+         WHERE conversation_id=1",
+    )?;
+    drop(writer);
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    ensure!(
+        page["ok"] == false,
+        "pending session docs must keep the strict refusal: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "facts_pending",
+        "pending session docs are reindexable facts: {page}"
+    );
+
+    // allow_partial: S1 drops to unknown, the witnessed members stay, the
+    // page is honestly incomplete with the standing warning.
+    let page = search(&mut bridge, json!({"query":"quux","allow_partial":true}))?;
+    ensure!(page["ok"] == true, "partial opt-in must serve: {page}");
+    ensure!(
+        page["result"]["complete"] == false,
+        "the pending session keeps the page incomplete: {page}"
+    );
+    ensure!(
+        ids(&page) == vec![3, 5],
+        "the witnessed members stay under allow_partial: {page}"
+    );
+    let warnings = page["result"]["warnings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure!(
+        warnings.iter().any(|w| w == "membership_incomplete"),
+        "the incomplete page must keep its warning: {page}"
+    );
+
+    // A published marks row from an OLDER region version carries no current
+    // session docs. The query must not trust them: it falls back to the
+    // legacy region lane, answers today's exact member set, and receipts
+    // the lane that ran.
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    writer.execute_with_params(
+        "UPDATE viewer_search_region_marks SET docs_state='published', region_version=?1 \
+         WHERE conversation_id=1",
+        &param_slice_to_values(params![
+            coding_agent_search::viewer_extensions::search_regions::REGION_VERSION - 1
+        ]),
+    )?;
+    drop(writer);
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    ensure!(
+        page["ok"] == true,
+        "a stale region_version falls back to the legacy lane, not a refusal: {page}"
+    );
+    assert_members(&page, &[3, 5])?;
+    ensure!(
+        page["result"]["membership_source"] == "region_literals",
+        "a stale region_version must never feed the fast lane: {page}"
+    );
+    ensure!(
+        page["result"]["complete"] == true,
+        "the legacy fallback keeps the exact strict answer: {page}"
+    );
+
+    // A missing marks row (never published) is the same pending gap.
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    writer.execute("DELETE FROM viewer_search_region_marks WHERE conversation_id=1")?;
+    drop(writer);
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    ensure!(
+        page["ok"] == false && page["error"]["kind"] == "facts_pending",
+        "a missing marks row must refuse facts_pending: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// Stage 1 (v): witness discovery runs for the emitted page's sessions
+/// only — bounded by `max_matches_per_session`, anchored, snippet-bearing,
+/// with a per-item `witness_count` receipt — and the one deliberate
+/// relaxation: an analyzer n-gram hit the region text cannot reproduce
+/// ("depl" is an n-gram of "deploy", never a whole token) is EMITTED with
+/// `witness_count=0` plus a page-level warning, never a whole-page refusal
+/// and never a silent member.
+#[test]
+fn search_sessions_fast_path_witnesses_and_drift_annotation() -> Result<()> {
+    let mut bridge = gold_harness()?;
+
+    let page = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&page, &[3, 5])?;
+    let matches = page["result"]["matches"].as_object().expect("matches");
+    let s3 = matches
+        .get("3")
+        .and_then(Value::as_array)
+        .expect("S3 witnesses");
+    ensure!(!s3.is_empty(), "S3 must carry witnesses: {page}");
+    ensure!(
+        s3.iter()
+            .any(|m| m["location"] == "tools" && m["message_idx"] == json!(2)),
+        "expected a tools witness bound to message idx 2: {s3:?}"
+    );
+    ensure!(
+        s3.iter().all(|m| m["anchor_status"] == "verified"),
+        "witnesses must bind canonical message coordinates: {s3:?}"
+    );
+    let s5 = matches
+        .get("5")
+        .and_then(Value::as_array)
+        .expect("S5 witnesses");
+    ensure!(
+        s5.iter().any(|m| m["snippet"]
+            .as_str()
+            .is_some_and(|snippet| snippet.contains("quux"))),
+        "S5's chat witness must carry a snippet: {s5:?}"
+    );
+    let s3_item = result_item(&page, 3)?;
+    ensure!(
+        s3_item["witness_count"].as_i64() == Some(s3.len() as i64),
+        "witness_count must match the delivered witness list: {s3_item}"
+    );
+
+    // The bound: max_matches_per_session caps discovery per session.
+    let page = search(
+        &mut bridge,
+        json!({"query":"quux","max_matches_per_session":2}),
+    )?;
+    assert_members(&page, &[3, 5])?;
+    let s3 = page["result"]["matches"]["3"]
+        .as_array()
+        .expect("S3 witnesses");
+    ensure!(
+        s3.len() == 2,
+        "witness discovery must stop at max_matches_per_session: {s3:?}"
+    );
+    let s3_item = result_item(&page, 3)?;
+    ensure!(
+        s3_item["witness_count"] == 2,
+        "witness_count must report the delivered bound: {s3_item}"
+    );
+
+    // The drift case: the session doc gates a member the regions cannot
+    // reproduce textually. Emitted, warned, annotated — never refused.
+    let page = search(
+        &mut bridge,
+        json!({"ast":{"type":"term","value":"depl","exact":true}}),
+    )?;
+    ensure!(
+        page["ok"] == true,
+        "an n-gram drift hit must not refuse the strict page: {page}"
+    );
+    ensure!(
+        ids(&page) == vec![3],
+        "the doc-claimed member is emitted exactly: {page}"
+    );
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "the drift annotation rides the fast-lane receipt: {page}"
+    );
+    let s3_item = result_item(&page, 3)?;
+    ensure!(
+        s3_item["witness_count"] == 0,
+        "no textual witness reproduces the n-gram hit: {s3_item}"
+    );
+    let warnings = page["result"]["warnings"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure!(
+        warnings.iter().any(|w| w == "witnesses_not_reproduced"),
+        "the drift must carry a page-level warning, never silence: {page}"
+    );
+    ensure!(
+        page["result"]["matches"]
+            .as_object()
+            .is_some_and(|m| m.get("3").is_none()),
+        "a session with no reproduced witness carries no witness list: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// Stage 1 (vi): the composition boundary. Same-block ANDs, multi-token
+/// literals, exact phrases, non-ASCII literals, literal×region-predicate
+/// ANDs and literal-free plans keep the per-region semantics on the legacy
+/// lane (`membership_source` = `region_literals`) — the fast path must
+/// never silently change what `foo AND bar` means. An OR over a fast
+/// literal and a region predicate stays fast: OR truth is per-arm.
+#[test]
+fn search_sessions_fast_path_boundary_stays_legacy() -> Result<()> {
+    let mut bridge = gold_harness()?;
+
+    // Two positive literals under AND carry same-block semantics the
+    // session docs cannot express.
+    let page = search(&mut bridge, json!({"query":"foo AND bar"}))?;
+    assert_members(&page, &[1])?;
+    ensure!(
+        page["result"]["membership_source"] == "region_literals",
+        "two-positive-literal ANDs keep same-block semantics on the legacy lane: {page}"
+    );
+
+    // Multi-token non-exact literal (mcp-server → tokens mcp+server).
+    let page = search(&mut bridge, json!({"query":"mcp-server"}))?;
+    assert_members(&page, &[1])?;
+    ensure!(
+        page["result"]["membership_source"] == "region_literals",
+        "multi-token literals stay on the legacy lane: {page}"
+    );
+
+    // Exact phrase: legacy.
+    let page = search(&mut bridge, json!({"query":"\"foo bar\""}))?;
+    assert_members(&page, &[1])?;
+    ensure!(
+        page["result"]["membership_source"] == "region_literals",
+        "exact phrases stay on the legacy lane: {page}"
+    );
+
+    // Non-ASCII literal: invisible to the analyzer, ungated evaluation.
+    let page = search(&mut bridge, json!({"query":"кириллица"}))?;
+    assert_members(&page, &[])?;
+    ensure!(
+        page["result"]["membership_source"] == "region_literals",
+        "non-ASCII literals stay on the legacy lane: {page}"
+    );
+
+    // A literal ANDed with a region-level predicate keeps region truth.
+    let page = search(&mut bridge, json!({"query":"in:tools quux"}))?;
+    assert_members(&page, &[3])?;
+    ensure!(
+        page["result"]["membership_source"] == "region_literals",
+        "literal×scope ANDs stay on the legacy lane: {page}"
+    );
+    let page = search(&mut bridge, json!({"query":"tool:Bash quux"}))?;
+    assert_members(&page, &[3])?;
+    ensure!(
+        page["result"]["membership_source"] == "region_literals",
+        "literal×tool ANDs stay on the legacy lane: {page}"
+    );
+
+    // A literal-free plan has no session-doc work: legacy.
+    let page = search(&mut bridge, json!({"query":"NOT tool:Bash"}))?;
+    assert_members(&page, &[1, 2, 4, 5, 7])?;
+    ensure!(
+        page["result"]["membership_source"] == "region_literals",
+        "literal-free plans stay on the legacy lane: {page}"
+    );
+
+    // OR over a fast literal and a region predicate: per-arm truth, fast.
+    let page = search(&mut bridge, json!({"query":"foo OR has:error"}))?;
+    assert_members(&page, &[1, 2, 3])?;
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "OR over a fast literal and a region predicate stays fast: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// Stage 1 (vii): the fast path inherits the generation-bound cursor. A
+/// canonical commit between two pages moves the bound generation — the
+/// continuation is a typed `cursor_expired`, never a mixed-generation page,
+/// and fresh first pages stay exact.
+#[test]
+fn search_sessions_fast_path_stale_generation_cursor_refused() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    // Canonical observers make a second connection's commit bump
+    // `canonical_revision` (the same mechanics as the legacy mid-index
+    // test).
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    revisions::ensure_observers(&writer)?;
+    drop(writer);
+
+    let page1 = search(
+        &mut bridge,
+        json!({"query":"quux","limit":1,"sort":"updated_desc"}),
+    )?;
+    ensure!(page1["ok"] == true, "page1 refused: {page1}");
+    ensure!(
+        page1["result"]["membership_source"] == "session_scope_docs",
+        "the paginated fast plan must report its lane: {page1}"
+    );
+    let cursor = page1["result"]["next_cursor"]
+        .as_str()
+        .expect("quux fixture must paginate at limit=1")
+        .to_owned();
+
+    // Mid-index: a guarded conversations-UPDATE on a SECOND connection
+    // bumps canonical_revision inside its commit.
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    writer.execute("UPDATE conversations SET title='fast path retitle' WHERE id=1")?;
+    drop(writer);
+
+    let page2 = search(
+        &mut bridge,
+        json!({"query":"quux","limit":1,"sort":"updated_desc","cursor":cursor}),
+    )?;
+    ensure!(
+        page2["ok"] == false && page2["error"]["kind"] == "cursor_expired",
+        "a moved generation must expire the fast-path cursor: {page2}"
+    );
+
+    // The lane stays live: a fresh first page still serves exact membership.
+    let fresh = search(&mut bridge, json!({"query":"quux"}))?;
+    assert_members(&fresh, &[3, 5])?;
+    bridge.shutdown()
+}
+
+/// Stage 1 (viii): lazy fragments. The universe load is structural-only —
+/// `indexed_text` never rides it — and every derived/meta snippet stays
+/// byte-identical to the eager loader's answer on this same fixture (the
+/// golden snippets were captured from the incumbent loader before the
+/// change). `fragments_loaded` receipts the lazy reads; the structural row
+/// count still accounts for every persisted universe row.
+#[test]
+fn search_sessions_lazy_fragments_equivalence() -> Result<()> {
+    let mut bridge = gold_harness()?;
+
+    // Fast lane + meta fragment: the notes snippet hydrates lazily.
+    let page = search(&mut bridge, json!({"query":"fluxcap"}))?;
+    assert_members(&page, &[1])?;
+    ensure!(
+        page["result"]["diagnostics"]["fragments_loaded"]
+            .as_u64()
+            .is_some(),
+        "the lazy-fragment lane must receipt its fragment reads: {page}"
+    );
+    let witnesses = page["result"]["matches"]["1"]
+        .as_array()
+        .expect("S1 witnesses");
+    ensure!(
+        witnesses
+            .iter()
+            .any(|m| m["snippet"] == json!("the fluxcap release note")),
+        "fluxcap snippet must stay byte-identical: {witnesses:?}"
+    );
+    let s1_item = result_item(&page, 1)?;
+    ensure!(
+        s1_item["witness_count"].as_i64() == Some(witnesses.len() as i64),
+        "witness_count must match the delivered list: {s1_item}"
+    );
+
+    // Legacy lane + derived fragment: the thinking snippet is unchanged.
+    let page = search(&mut bridge, json!({"query":"in:thinking zeta"}))?;
+    assert_members(&page, &[4])?;
+    let witnesses = page["result"]["matches"]["4"]
+        .as_array()
+        .expect("S4 witnesses");
+    ensure!(
+        witnesses
+            .iter()
+            .any(|m| m["snippet"] == json!("pondering zeta")),
+        "zeta snippet must stay byte-identical: {witnesses:?}"
+    );
+
+    // Legacy lane + derived fragment: the artifacts attachment path.
+    let page = search(&mut bridge, json!({"query":"in:artifacts evidence"}))?;
+    assert_members(&page, &[7])?;
+    let witnesses = page["result"]["matches"]["7"]
+        .as_array()
+        .expect("S7 witnesses");
+    ensure!(
+        witnesses
+            .iter()
+            .any(|m| m["snippet"] == json!("/tmp/evidence.png")),
+        "evidence snippet must stay byte-identical: {witnesses:?}"
+    );
+
+    // Legacy lane + meta fragment: the subagents descriptor.
+    let page = search(&mut bridge, json!({"query":"in:subagents zephyr"}))?;
+    assert_members(&page, &[1])?;
+    let witnesses = page["result"]["matches"]["1"]
+        .as_array()
+        .expect("S1 witnesses");
+    ensure!(
+        witnesses.iter().any(|m| m["snippet"]
+            == json!("subagent worker zephyr\ns-1-chat/subagents/agent-worker.jsonl")),
+        "zephyr snippet must stay byte-identical: {witnesses:?}"
+    );
+
+    // The structural load still counts every persisted universe row (S6 is
+    // outside the default browse universe).
+    let expected_rows: i64 = {
+        let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+        writer
+            .query_row("SELECT COUNT(*) FROM viewer_search_regions WHERE conversation_id != 6")?
+            .get_typed(0)?
+    };
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    ensure!(
+        page["result"]["diagnostics"]["region_rows_loaded"].as_u64() == Some(expected_rows as u64),
+        "the structural-only universe load must still count every row: {page}"
     );
     bridge.shutdown()
 }

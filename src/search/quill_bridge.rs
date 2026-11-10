@@ -375,6 +375,70 @@ pub fn canonical_message_query(
     )
 }
 
+/// Region-document guard for the Stage 1 session×scope documents.
+///
+/// Stage 1 publishes one aggregated document per (conversation, scope)
+/// chunk into the same synthetic `msg_idx` space, at slots ≥
+/// [`SESSION_DOC_BASE`] — strictly above every region-document slot. The
+/// legacy per-region enumeration lane must never see them: they carry no
+/// region coordinates, so they would surface as phantom hits that inflate
+/// `total_count` toward the enumeration cap and crowd real region hits
+/// out of a page. The same in-engine `MustNot` range shape as
+/// [`canonical_message_query`] keeps page boundaries and exact totals
+/// honest.
+#[must_use]
+pub fn region_documents_query(
+    query: frankensearch::quill::query::Query,
+) -> frankensearch::quill::query::Query {
+    use frankensearch::quill::query::{BooleanClause, Occur, QueryValue};
+    use std::ops::Bound;
+    frankensearch::quill::query::Query::boolean(
+        Vec::from([
+            BooleanClause::new(Occur::Must, query),
+            BooleanClause::new(
+                Occur::MustNot,
+                frankensearch::quill::query::Query::range(
+                    frankensearch::quill::cass::field::MSG_IDX,
+                    Bound::Included(QueryValue::U64(
+                        crate::viewer_extensions::search_regions::SESSION_DOC_BASE,
+                    )),
+                    Bound::Unbounded,
+                ),
+            ),
+        ]),
+        None,
+    )
+}
+
+/// Session×scope-document selector (Stage 1 fast lane): the mirror of
+/// [`region_documents_query`], admitting ONLY the aggregated documents at
+/// `msg_idx >= SESSION_DOC_BASE`. Membership on the fast lane is the set
+/// of conversations whose session×scope chunks hit the literal; the
+/// region documents and canonical messages stay out of the posting set.
+#[must_use]
+pub fn session_scope_documents_query(
+    query: frankensearch::quill::query::Query,
+) -> frankensearch::quill::query::Query {
+    use frankensearch::quill::query::{BooleanClause, Occur, QueryValue};
+    use std::ops::Bound;
+    frankensearch::quill::query::Query::boolean(
+        Vec::from([
+            BooleanClause::new(Occur::Must, query),
+            BooleanClause::new(
+                Occur::Must,
+                frankensearch::quill::query::Query::range(
+                    frankensearch::quill::cass::field::MSG_IDX,
+                    Bound::Included(QueryValue::U64(
+                        crate::viewer_extensions::search_regions::SESSION_DOC_BASE,
+                    )),
+                    Bound::Unbounded,
+                ),
+            ),
+        ]),
+        None,
+    )
+}
+
 /// Read one stored text column for a hit, if the column holds anything.
 ///
 /// # Errors
