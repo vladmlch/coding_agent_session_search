@@ -1815,7 +1815,19 @@ impl TantivyIndex {
         for stamp in &stamps {
             let ids: Vec<String> =
                 serde_json::from_str(&stamp.pending_doc_deletes).unwrap_or_default();
-            stale_ids.extend(ids);
+            if ids.is_empty() {
+                continue;
+            }
+            // GH #457 (Layer 2): never delete an identity this staged
+            // generation upserted — every keep id is live in the candidate
+            // this commit just published, and removing one is the
+            // fresh-reader doc-count deficit the certification refuses. A
+            // crash-left queue (or one left by a receipt-skipped
+            // conversation) can still name a LIVE chunk: its epoch
+            // computed the entry when the conversation was smaller.
+            let keep: std::collections::HashSet<&str> =
+                stamp.keep_ids.iter().map(String::as_str).collect();
+            stale_ids.extend(ids.into_iter().filter(|id| !keep.contains(id.as_str())));
         }
         stale_ids.sort();
         stale_ids.dedup();

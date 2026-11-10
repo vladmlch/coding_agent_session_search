@@ -2351,6 +2351,433 @@ fn search_regions_stale_queue_retires_shrunk_session_chunks() -> Result<()> {
     bridge.shutdown()
 }
 
+/// GH #457 (full-rebuild doc-count refusal), minimized to the queue
+/// contract that causes it. The marks queue rides forward across a
+/// republish, and the ride-forward filter used to protect only
+/// REGION-doc identities: a queued session×scope identity the CURRENT
+/// derivation keeps — stale when an earlier epoch queued it, LIVE after
+/// the conversation grew — survived the filter, the staged commit
+/// executed it against the fresh candidate, and the fresh reader then
+/// counted fewer documents than the run had staged (the owner's real
+/// archive: 1,085,152 counted, 1,085,145 live, exit 9). The republish
+/// must reclaim every live keep identity while still riding genuinely
+/// stale entries forward — the ride-forward is the only path a queued
+/// delete survives, so over-filtering would strand stale documents.
+#[test]
+fn pending_queue_riding_forward_never_deletes_a_live_session_doc() -> Result<()> {
+    use coding_agent_search::viewer_extensions::search_regions::{
+        SESSION_DOC_BASE, SESSION_DOC_SCOPE_SHIFT, session_scope_docs, session_scope_ordinal,
+        stage_region_docs, stamp_region_docs_published,
+    };
+
+    // Session 8's chat packs TWO chunks; the first carries the probe
+    // token. The pre-run archive state is injected verbatim: a pending
+    // queue holding a LIVE keep identity plus a phantom beyond the keep.
+    let long_z: &'static str =
+        Box::leak(format!("ridemarkercero {}", "z".repeat(40_000)).into_boxed_str());
+    let long_w: &'static str = Box::leak("w".repeat(40_000).into_boxed_str());
+    let mut fixture = gold_fixture();
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-ride",
+        source_path: "/sessions/s-8-ride.jsonl",
+        workspace: None,
+        title: "gh457 ride forward session",
+        started_at: Some(6_500),
+        ended_at: Some(9_500),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            (0, MessageRole::User, long_z, None),
+            (1, MessageRole::User, long_w, None),
+        ],
+    });
+
+    let archive = tempfile::tempdir()?;
+    let data_dir = archive.path().join("data");
+    std::fs::create_dir(&data_dir)?;
+    let db = data_dir.join("archive.db");
+    let writer = gold_seed(&fixture, &db)?;
+    let index_path = expected_index_dir(&data_dir);
+
+    // Generation 1 — the real lane's stage → commit → stamp order.
+    {
+        let mut docs = Vec::new();
+        for session in &fixture {
+            for (idx, _role, content, _extra) in &session.messages {
+                docs.push(CassDocument {
+                    agent: session.agent.to_owned(),
+                    workspace: session.workspace.map(str::to_owned),
+                    workspace_original: session.workspace.map(str::to_owned),
+                    source_path: session.source_path.to_owned(),
+                    msg_idx: *idx as u64,
+                    created_at: session.started_at.map(|base| base + idx),
+                    title: Some(session.title.to_owned()),
+                    content: (*content).to_owned(),
+                    source_id: session.source_id.to_owned(),
+                    origin_kind: "local".to_owned(),
+                    origin_host: session.origin_host.map(str::to_owned),
+                    conversation_id: Some(session.id),
+                });
+            }
+        }
+        let mut index = QuillCassIndex::open_or_create(&index_path)?;
+        index.add_cass_documents(&docs)?;
+        let mut stamps = Vec::new();
+        for session in &fixture {
+            let (_docs, stamp) = stage_region_docs(&mut index, &writer, session.id)?;
+            if let Some(stamp) = stamp {
+                stamps.push(stamp);
+            }
+        }
+        index.commit()?;
+        stamp_region_docs_published(&writer, &stamps)?;
+        std::fs::write(
+            index_path.join("schema_hash.json"),
+            serde_json::to_vec(&json!({
+                "schema_hash": coding_agent_search::search::tantivy::SCHEMA_HASH,
+            }))?,
+        )?;
+    }
+
+    let chat_ordinal = session_scope_ordinal("chat");
+    let chat_slot = |seq: u64| SESSION_DOC_BASE + (chat_ordinal << SESSION_DOC_SCOPE_SHIFT) + seq;
+    let doc_identity = |slot: u64| {
+        frankensearch::quill::cass::cass_document_identity(
+            "local",
+            frankensearch::quill::cass::CassConversationKey {
+                source_path: "/sessions/s-8-ride.jsonl",
+                id: Some(8),
+            },
+            slot,
+        )
+    };
+    let docs = session_scope_docs(&writer, 8)?.expect("session 8 owns session docs");
+    let mut live_slots: Vec<u64> = docs.iter().map(|doc| doc.slot).collect();
+    live_slots.sort_unstable();
+    ensure!(
+        live_slots == vec![SESSION_DOC_BASE, chat_slot(0), chat_slot(1)],
+        "80k chat chars pack two chat chunks plus the title doc: {live_slots:?}"
+    );
+
+    // The pre-run state: an earlier epoch's queue left pending — its
+    // chat seq 0 entry was stale against THAT epoch's smaller keep and
+    // is LIVE against the current one; chat seq 9 is a phantom.
+    let pre_run_queue = serde_json::to_string(&vec![
+        doc_identity(chat_slot(0)),
+        doc_identity(chat_slot(9)),
+    ])?;
+    writer.execute_with_params(
+        "UPDATE viewer_search_region_marks SET docs_state = 'pending', \
+         pending_doc_deletes = ?1 WHERE conversation_id = 8",
+        &param_slice_to_values(params![pre_run_queue]),
+    )?;
+
+    // The full rebuild's republish: same conversation, same content —
+    // exactly what `cass index --full` does for every session.
+    let spec = fixture.iter().find(|s| s.id == 8).expect("session 8 spec");
+    let conv = gold_conversation(spec);
+    let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+        &writer, &conv, 8,
+    )?;
+    coding_agent_search::viewer_extensions::search_regions::publish_search_regions(
+        &writer,
+        8,
+        &generation.packet,
+        &generation.structure,
+    )?;
+
+    // The queue contract: no LIVE keep identity may stay queued (the
+    // stamped commit would delete it from the fresh candidate — the
+    // GH #457 deficit), and the phantom must ride forward untouched.
+    let row = writer.query_row(
+        "SELECT docs_state, pending_doc_deletes FROM viewer_search_region_marks \
+         WHERE conversation_id = 8",
+    )?;
+    ensure!(
+        row.get_typed::<String>(0)? == "pending",
+        "the republish re-pends the marks row"
+    );
+    let pending_raw = row.get_typed::<String>(1)?;
+    let mut queued: Vec<String> = serde_json::from_str(&pending_raw)?;
+    let keep: Vec<String> = docs.iter().map(|doc| doc_identity(doc.slot)).collect();
+    let live_queued: Vec<&String> = queued.iter().filter(|id| keep.contains(id)).collect();
+    ensure!(
+        live_queued.is_empty(),
+        "GH #457: the republish queued {live_queued:?} — identities the \
+         current derivation KEEPS; the stamped commit would delete live \
+         documents the run already counted: {pending_raw}"
+    );
+    let mut want = vec![doc_identity(chat_slot(9))];
+    queued.sort();
+    want.sort();
+    ensure!(
+        queued == want,
+        "only the phantom stale entry may ride forward: {pending_raw}"
+    );
+
+    // The production converge lane: one pass stages the re-pended
+    // session, then the stamped commit executes the queue against the
+    // live archive.
+    let mut index =
+        coding_agent_search::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+    let converged = index.converge_pending_search_region_docs(&writer, i64::MAX)?;
+    ensure!(
+        converged == 1,
+        "only the re-pended session 8 converges: {converged}"
+    );
+    index.commit_with_region_doc_stamps(&writer)?;
+    let row = writer.query_row(
+        "SELECT docs_state, pending_doc_deletes FROM viewer_search_region_marks \
+         WHERE conversation_id = 8",
+    )?;
+    ensure!(
+        row.get_typed::<String>(0)? == "published" && row.get_typed::<String>(1)? == "[]",
+        "the stamp publishes and clears the queue"
+    );
+
+    // The user-visible consequence (GH #457's fresh-reader deficit): the
+    // live chunk's posting set must answer after the stamped commit.
+    drop(writer);
+    let mut bridge =
+        BridgeHarness::spawn_fixture(tempfile::tempdir()?, data_dir.clone(), db.clone(), &[])?;
+    let page = search(&mut bridge, json!({"query":"ridemarkercero"}))?;
+    assert_members(&page, &[8])?;
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "the live chunk answers on the session-scope-doc lane: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// The meta-replacement lane rides the same marks queue forward
+/// (`replace_meta_regions`) and must respect the same contract: a queued
+/// LIVE session×scope identity is reclaimed, phantom stale entries ride
+/// on. The meta lane rewrites only `meta:*` rows, so the session keep it
+/// must honor is the one derived from the surviving rows.
+#[test]
+fn meta_replacement_riding_forward_never_deletes_a_live_session_doc() -> Result<()> {
+    use coding_agent_search::viewer_extensions::search_regions::{
+        SESSION_DOC_BASE, SESSION_DOC_SCOPE_SHIFT, replace_meta_regions, session_scope_docs,
+        session_scope_ordinal,
+    };
+
+    let temp = tempfile::tempdir()?;
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir(&data_dir)?;
+    let db = data_dir.join("archive.db");
+    let writer = gold_seed(&gold_fixture(), &db)?;
+
+    let chat_ordinal = session_scope_ordinal("chat");
+    let chat_slot = |seq: u64| SESSION_DOC_BASE + (chat_ordinal << SESSION_DOC_SCOPE_SHIFT) + seq;
+    let doc_identity = |slot: u64| {
+        frankensearch::quill::cass::cass_document_identity(
+            "local",
+            frankensearch::quill::cass::CassConversationKey {
+                source_path: "/sessions/s-1-chat.jsonl",
+                id: Some(1),
+            },
+            slot,
+        )
+    };
+
+    // S1's chat scope keeps exactly one chunk; the pre-run queue wants
+    // that LIVE chunk dead plus a phantom.
+    let pre_run_queue = serde_json::to_string(&vec![
+        doc_identity(chat_slot(0)),
+        doc_identity(chat_slot(9)),
+    ])?;
+    writer.execute_with_params(
+        "UPDATE viewer_search_region_marks SET docs_state = 'pending', \
+         pending_doc_deletes = ?1 WHERE conversation_id = 1",
+        &param_slice_to_values(params![pre_run_queue]),
+    )?;
+
+    replace_meta_regions(&writer, 1)?;
+
+    let row = writer.query_row(
+        "SELECT docs_state, pending_doc_deletes FROM viewer_search_region_marks \
+         WHERE conversation_id = 1",
+    )?;
+    ensure!(
+        row.get_typed::<String>(0)? == "meta_pending",
+        "the meta replacement re-pends the marks row: {:?}",
+        row.get_typed::<String>(0)?
+    );
+    let pending_raw = row.get_typed::<String>(1)?;
+    let queued: Vec<String> = serde_json::from_str(&pending_raw)?;
+    let keep: Vec<String> = session_scope_docs(&writer, 1)?
+        .expect("S1 owns session docs")
+        .iter()
+        .map(|doc| doc_identity(doc.slot))
+        .collect();
+    let live_queued: Vec<&String> = queued.iter().filter(|id| keep.contains(id)).collect();
+    ensure!(
+        live_queued.is_empty(),
+        "GH #457 (meta lane): the replacement queued {live_queued:?} — \
+         identities the current derivation KEEPS: {pending_raw}"
+    );
+    ensure!(
+        queued.contains(&doc_identity(chat_slot(9))),
+        "the phantom stale entry must ride forward: {pending_raw}"
+    );
+    Ok(())
+}
+
+/// GH #457, Layer 2: a crash-left pending queue — or one left by a
+/// conversation the receipt-guarded full scan skipped — is replayed by
+/// the terminal converge WITHOUT any republish ever re-filtering it: the
+/// rebuild stages the current docs, commits, and the stamp replay
+/// executes the queue verbatim against the fresh candidate. An identity
+/// the staged generation KEEPS is live in the just-committed candidate by
+/// construction, so deleting it makes the fresh reader count fewer
+/// documents than the run staged (the owner's real archive: 1,085,152
+/// counted, 1,085,145 live, exit 9). The stamp's keep set — the exact
+/// identities the stage upserted — is the only filter this path has, so
+/// the replay must never delete a keep identity while still retiring
+/// every genuinely stale one.
+#[test]
+fn pending_queue_without_republish_never_deletes_a_live_session_doc() -> Result<()> {
+    use coding_agent_search::viewer_extensions::search_regions::{
+        SESSION_DOC_BASE, SESSION_DOC_SCOPE_SHIFT, session_scope_ordinal, stage_region_docs,
+        stamp_region_docs_published,
+    };
+
+    // Session 8's chat packs TWO chunks; the first carries the probe
+    // token — the LIVE chunk a stale epoch's queue wants dead.
+    let long_z: &'static str =
+        Box::leak(format!("ridemarkercero {}", "z".repeat(40_000)).into_boxed_str());
+    let long_w: &'static str = Box::leak("w".repeat(40_000).into_boxed_str());
+    let mut fixture = gold_fixture();
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-crash",
+        source_path: "/sessions/s-8-crash.jsonl",
+        workspace: None,
+        title: "gh457 crash-left queue session",
+        started_at: Some(6_500),
+        ended_at: Some(9_500),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            (0, MessageRole::User, long_z, None),
+            (1, MessageRole::User, long_w, None),
+        ],
+    });
+
+    let archive = tempfile::tempdir()?;
+    let data_dir = archive.path().join("data");
+    std::fs::create_dir(&data_dir)?;
+    let db = data_dir.join("archive.db");
+    let writer = gold_seed(&fixture, &db)?;
+    let index_path = expected_index_dir(&data_dir);
+
+    // Generation 1 — the real lane's stage → commit → stamp order.
+    {
+        let mut docs = Vec::new();
+        for session in &fixture {
+            for (idx, _role, content, _extra) in &session.messages {
+                docs.push(CassDocument {
+                    agent: session.agent.to_owned(),
+                    workspace: session.workspace.map(str::to_owned),
+                    workspace_original: session.workspace.map(str::to_owned),
+                    source_path: session.source_path.to_owned(),
+                    msg_idx: *idx as u64,
+                    created_at: session.started_at.map(|base| base + idx),
+                    title: Some(session.title.to_owned()),
+                    content: (*content).to_owned(),
+                    source_id: session.source_id.to_owned(),
+                    origin_kind: "local".to_owned(),
+                    origin_host: session.origin_host.map(str::to_owned),
+                    conversation_id: Some(session.id),
+                });
+            }
+        }
+        let mut index = QuillCassIndex::open_or_create(&index_path)?;
+        index.add_cass_documents(&docs)?;
+        let mut stamps = Vec::new();
+        for session in &fixture {
+            let (_docs, stamp) = stage_region_docs(&mut index, &writer, session.id)?;
+            if let Some(stamp) = stamp {
+                stamps.push(stamp);
+            }
+        }
+        index.commit()?;
+        stamp_region_docs_published(&writer, &stamps)?;
+        std::fs::write(
+            index_path.join("schema_hash.json"),
+            serde_json::to_vec(&json!({
+                "schema_hash": coding_agent_search::search::tantivy::SCHEMA_HASH,
+            }))?,
+        )?;
+    }
+
+    let chat_ordinal = session_scope_ordinal("chat");
+    let chat_slot = |seq: u64| SESSION_DOC_BASE + (chat_ordinal << SESSION_DOC_SCOPE_SHIFT) + seq;
+    let doc_identity = |slot: u64| {
+        frankensearch::quill::cass::cass_document_identity(
+            "local",
+            frankensearch::quill::cass::CassConversationKey {
+                source_path: "/sessions/s-8-crash.jsonl",
+                id: Some(8),
+            },
+            slot,
+        )
+    };
+
+    // The crash-left state: an earlier epoch's queue holds a LIVE keep
+    // identity (chat chunk 0 — stale when that epoch wrote it, live now)
+    // plus a phantom, and NO republish runs to re-filter it — exactly the
+    // receipt-skipped conversation of a full rebuild whose terminal
+    // converge still replays the pending queue.
+    let stale_queue = serde_json::to_string(&vec![
+        doc_identity(chat_slot(0)),
+        doc_identity(chat_slot(9)),
+    ])?;
+    writer.execute_with_params(
+        "UPDATE viewer_search_region_marks SET docs_state = 'pending', \
+         pending_doc_deletes = ?1 WHERE conversation_id = 8",
+        &param_slice_to_values(params![stale_queue]),
+    )?;
+
+    // The terminal converge stages the CURRENT docs and commits; the
+    // stamp replay then executes the queue against the fresh candidate.
+    let mut index =
+        coding_agent_search::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+    let converged = index.converge_pending_search_region_docs(&writer, i64::MAX)?;
+    ensure!(
+        converged == 1,
+        "only the re-pended session 8 converges: {converged}"
+    );
+    index.commit_with_region_doc_stamps(&writer)?;
+    let row = writer.query_row(
+        "SELECT docs_state, pending_doc_deletes FROM viewer_search_region_marks \
+         WHERE conversation_id = 8",
+    )?;
+    ensure!(
+        row.get_typed::<String>(0)? == "published" && row.get_typed::<String>(1)? == "[]",
+        "the stamp publishes and clears the queue"
+    );
+
+    // The user-visible consequence (GH #457's fresh-reader deficit): the
+    // LIVE chunk's posting set must still answer after the stamped commit
+    // executed the stale queue.
+    drop(writer);
+    let mut bridge =
+        BridgeHarness::spawn_fixture(tempfile::tempdir()?, data_dir.clone(), db.clone(), &[])?;
+    let page = search(&mut bridge, json!({"query":"ridemarkercero"}))?;
+    assert_members(&page, &[8])?;
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "the live chunk answers on the session-scope-doc lane: {page}"
+    );
+    bridge.shutdown()
+}
+
 /// The live region-doc bound counts ONLY doc-backed rows — chat regions
 /// (canonical `quill_idx`, `indexed_text` NULL) own no document — plus,
 /// since Stage 1, the session×scope chunks every marked conversation

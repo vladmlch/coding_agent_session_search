@@ -1526,7 +1526,12 @@ fn region_doc_identity_parts(
     }))
 }
 
-fn stale_doc_ids_json(db: &impl FactsDb, conversation_id: i64, keep: &[String]) -> Result<String> {
+fn stale_doc_ids_json(
+    db: &impl FactsDb,
+    conversation_id: i64,
+    keep: &[String],
+    session_keep: Option<&std::collections::HashSet<String>>,
+) -> Result<String> {
     // Existing pending deletes ride forward minus ids the new set reclaims.
     let current: Vec<Option<String>> = db.facts_query_map(
         "SELECT pending_doc_deletes FROM viewer_search_region_marks \
@@ -1539,7 +1544,19 @@ fn stale_doc_ids_json(db: &impl FactsDb, conversation_id: i64, keep: &[String]) 
         .and_then(|raw| raw.as_deref().map(str::to_owned))
         .and_then(|raw| serde_json::from_str::<Vec<String>>(&raw).ok())
         .unwrap_or_default();
-    pending.retain(|id| !keep.contains(id));
+    // GH #457: the riding queue predates this publication, so its entries
+    // were computed against a session×scope keep that may have MOVED — a
+    // chunk stale when an earlier epoch queued it can be LIVE under the
+    // current derivation (the conversation grew). Filter against BOTH
+    // keeps: the region identities above, and the session×scope
+    // identities the CURRENT derivation keeps — a live keep identity that
+    // rides forward is deleted by the stamped commit AFTER the run counted
+    // it, so a fresh reader sees fewer documents than the accounting
+    // staged (the full-rebuild doc-count refusal). `None` (derivation
+    // bail) keeps the old conservative ride-forward: the staging lane
+    // bails on the same derivation, so no live session document can exist
+    // for this conversation in a fresh candidate.
+    pending.retain(|id| !keep.contains(id) && session_keep.is_none_or(|live| !live.contains(id)));
     Ok(serde_json::to_string(&pending).unwrap_or_else(|_| "[]".to_owned()))
 }
 
@@ -1646,7 +1663,32 @@ pub fn publish_search_regions(
         .filter(|r| r.quill_idx >= REGION_DOC_BASE as i64)
         .map(|r| doc_identity(r.quill_idx))
         .collect();
-    let mut pending = stale_doc_ids_json(db, conversation_id, &keep_ids)?;
+
+    db.facts_execute(
+        "DELETE FROM viewer_search_regions WHERE conversation_id = ?1",
+        &[ParamValue::from(conversation_id)],
+    )?;
+    for region in &regions {
+        insert_region(db, conversation_id, region)?;
+    }
+
+    // GH #457: the session×scope keep set derives from the JUST-INSERTED
+    // rows through the same function the staging lane materializes
+    // documents with, and the previous marks queue rides forward AFTER
+    // the row replacement so the filter sees the CURRENT derivation: a
+    // queued identity that was stale when an earlier epoch wrote the
+    // queue can be LIVE now (the conversation grew), and the staged
+    // commit would delete it after the run already counted it. `None`
+    // (derivation bail) keeps the ride-forward conservative.
+    let session_chunks = session_scope_docs(db, conversation_id)?;
+    let session_keep: Option<std::collections::HashSet<String>> =
+        session_chunks.as_deref().map(|chunks| {
+            chunks
+                .iter()
+                .map(|chunk| doc_identity(chunk.slot as i64))
+                .collect()
+        });
+    let mut pending = stale_doc_ids_json(db, conversation_id, &keep_ids, session_keep.as_ref())?;
     {
         let new_slots: std::collections::HashSet<i64> =
             regions.iter().map(|r| r.quill_idx).collect();
@@ -1659,14 +1701,6 @@ pub fn publish_search_regions(
         list.append(&mut dropped);
         pending = serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_owned());
     }
-
-    db.facts_execute(
-        "DELETE FROM viewer_search_regions WHERE conversation_id = ?1",
-        &[ParamValue::from(conversation_id)],
-    )?;
-    for region in &regions {
-        insert_region(db, conversation_id, region)?;
-    }
     // Stage 1: queue the session×scope stale identities. The keep set is
     // derived from the just-inserted rows through the SAME function the
     // staging lane materializes documents with, so a live keep identity
@@ -1674,7 +1708,7 @@ pub fn publish_search_regions(
     // pre-delete per-scope region counts (see above); identities that
     // never existed are ignored by the post-commit delete.
     let session_stale =
-        session_doc_stale_identities(db, conversation_id, &old_scope_counts, &doc_identity)?;
+        session_doc_stale_identities(&old_scope_counts, &doc_identity, session_chunks.as_deref());
     if !session_stale.is_empty() {
         let mut list: Vec<String> = serde_json::from_str(&pending).unwrap_or_default();
         list.extend(session_stale);
@@ -1757,15 +1791,16 @@ fn is_meta_region_key(region_key: &str) -> bool {
 /// time (a re-ingest already replaced the message rows), which is why the
 /// queue is conservative — the post-commit delete ignores identities that
 /// never existed, and the keep filter (derived through the same function
-/// the staging lane materializes with) protects every live chunk.
+/// the staging lane materializes with) protects every live chunk. The
+/// caller passes the chunks it ALREADY derived for the ride-forward keep
+/// set, so the publication's two session-doc views cannot disagree.
 fn session_doc_stale_identities(
-    db: &impl FactsDb,
-    conversation_id: i64,
     old_scope_counts: &[(String, i64)],
     doc_identity: &dyn Fn(i64) -> String,
-) -> Result<Vec<String>> {
-    let Some(chunks) = session_scope_docs(db, conversation_id)? else {
-        return Ok(Vec::new());
+    chunks: Option<&[SessionScopeDoc]>,
+) -> Vec<String> {
+    let Some(chunks) = chunks else {
+        return Vec::new();
     };
     let keep: std::collections::HashSet<String> = chunks
         .iter()
@@ -1782,7 +1817,7 @@ fn session_doc_stale_identities(
             }
         }
     }
-    Ok(stale)
+    stale
 }
 
 /// Targeted metadata-region replacement for annotation/tag edits and
@@ -1869,7 +1904,25 @@ pub fn replace_meta_regions(db: &impl FactsDb, conversation_id: i64) -> Result<(
         // remove a live document after the commit counted it, as
         // `stale_doc_ids_json` already prevents on full republication.
         let keep_ids: Vec<String> = keep.iter().map(|slot| doc_identity(*slot)).collect();
-        pending.retain(|id| !keep_ids.contains(id));
+        // GH #457: the session×scope keep set — the identities the CURRENT
+        // derivation keeps — filters this ride-forward too: a queued
+        // session chunk that was stale when an earlier epoch wrote the
+        // queue can be LIVE now (the conversation grew), and the stamped
+        // commit would delete a document the run already counted. `None`
+        // (derivation bail) keeps the old conservative ride-forward: the
+        // staging lane bails on the same derivation, so no live session
+        // document can exist for this conversation in a fresh candidate.
+        let session_chunks = session_scope_docs(db, conversation_id)?;
+        let session_keep: Option<std::collections::HashSet<String>> =
+            session_chunks.as_deref().map(|chunks| {
+                chunks
+                    .iter()
+                    .map(|chunk| doc_identity(chunk.slot as i64))
+                    .collect()
+            });
+        pending.retain(|id| {
+            !keep_ids.contains(id) && session_keep.as_ref().is_none_or(|live| !live.contains(id))
+        });
         for slot in old_meta.iter().filter(|slot| !keep.contains(slot)) {
             pending.push(doc_identity(*slot));
         }
@@ -1878,8 +1931,11 @@ pub fn replace_meta_regions(db: &impl FactsDb, conversation_id: i64) -> Result<(
         // staging lane materializes with), the old slots are bounded by the
         // pre-delete per-scope counts, and identities that never existed
         // are ignored by the post-commit delete.
-        let session_stale =
-            session_doc_stale_identities(db, conversation_id, &old_scope_counts, &doc_identity)?;
+        let session_stale = session_doc_stale_identities(
+            &old_scope_counts,
+            &doc_identity,
+            session_chunks.as_deref(),
+        );
         pending.extend(session_stale);
     }
     db.facts_execute(
@@ -2687,6 +2743,17 @@ pub struct RegionDocStamp {
     /// Raw stored JSON — compared byte-for-byte so a republished delete
     /// queue (even a reordered one) is never silently overwritten.
     pub pending_doc_deletes: String,
+    /// The identities this stage upserted — the keep set the post-commit
+    /// replay never deletes. Every one of them is live in the candidate
+    /// the stamp's commit publishes, so executing a queued delete against
+    /// one is exactly the fresh-reader deficit GH #457's certification
+    /// refuses to publish. A queue is data from ANOTHER epoch — a
+    /// crash-left pending marks row no republish ever re-filters can
+    /// still name a LIVE chunk — so the delete path guards by
+    /// construction, whatever put a live identity in the queue. Empty
+    /// unless the marks row carried queued deletes (nothing to filter
+    /// then).
+    pub keep_ids: Vec<String>,
 }
 
 /// Stage one session's region documents on the uncommitted index writer:
@@ -2760,6 +2827,27 @@ pub fn region_doc_stage(
     if let Some(session_docs) = session_scope_cass_documents(db, conversation_id)? {
         docs.extend(session_docs);
     }
+    // GH #457 (Layer 2): snapshot the keep set — the identities this stage
+    // is upserting — so the post-commit replay can refuse to delete a
+    // queued identity the fresh candidate holds live. Built only when the
+    // marks row carries queued deletes: nothing to filter otherwise.
+    let keep_ids: Vec<String> =
+        if serde_json::from_str::<Vec<String>>(&pending_json).is_ok_and(|q| !q.is_empty()) {
+            docs.iter()
+                .map(|doc| {
+                    frankensearch::quill::cass::cass_document_identity(
+                        &doc.source_id,
+                        frankensearch::quill::cass::CassConversationKey {
+                            source_path: &doc.source_path,
+                            id: doc.conversation_id,
+                        },
+                        doc.msg_idx,
+                    )
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
     Ok(Some((
         docs,
         RegionDocStamp {
@@ -2768,6 +2856,7 @@ pub fn region_doc_stage(
             source_revision,
             docs_state,
             pending_doc_deletes: pending_json,
+            keep_ids,
         },
     )))
 }
