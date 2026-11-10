@@ -7,8 +7,10 @@ use anyhow::Result;
 use frankensearch::quill::query::CassQueryFilters;
 use serde_json::{Value, json};
 
+use super::deadline::Deadline;
 use super::protocol::{
-    BridgeFilters, MAX_CURSORS, PAGE_LIMIT, ScanBudget, TIMEOUT_MS, encode_line, page_limit, refuse,
+    BridgeFilters, MAX_CURSORS, PAGE_LIMIT, ScanBudget, TIMEOUT_MS, encode_line, page_limit,
+    refuse, refuse_retryable,
 };
 use super::reader::{ArchiveStamp, StrictArchive};
 use super::search::{
@@ -43,9 +45,16 @@ struct RankCursor {
 impl RankCursor {
     fn check(&mut self, archive: &mut StrictArchive) -> Result<()> {
         if Instant::now() >= self.deadline {
-            return Err(refuse(
-                "ranking_budget_exceeded",
-                "Raw enumeration exceeded its scan deadline",
+            // Deadline expiry is load-proportional and retryable — the same
+            // typed, retryable refusal the search lane answers with. The
+            // OTHER budget refusals on this lane (scan cap, cursor
+            // capacity, wire budget) stay `ranking_budget_exceeded`.
+            return Err(refuse_retryable(
+                "deadline_exceeded",
+                format!(
+                    "Raw enumeration exceeded its scan deadline ({} of {} raw hits scanned)",
+                    self.scanned, self.total
+                ),
             ));
         }
         if self.last_used.elapsed() >= IDLE_TTL || archive.stamp != self.archive_stamp {
@@ -171,6 +180,7 @@ impl CursorStore {
         query: String,
         filters: BridgeFilters,
         budget: ScanBudget,
+        request_deadline: &Deadline,
     ) -> Result<Value> {
         filters.validate()?;
         budget.validate()?;
@@ -191,7 +201,11 @@ impl CursorStore {
                 "Eight raw enumeration leases are already active",
             ));
         }
-        let deadline = Instant::now() + Duration::from_millis(budget.deadline_ms);
+        // The cursor's scan deadline never outlives the request's own
+        // cooperative deadline (`rank_next` shares it through
+        // `remaining_timeout_ms`).
+        let deadline =
+            (Instant::now() + Duration::from_millis(budget.deadline_ms)).min(request_deadline.at());
         let revision = archive.observe()?;
         // Pin the logical canonical revision only when the observer triggers
         // make it content-complete; otherwise the physical token rules.
@@ -203,11 +217,15 @@ impl CursorStore {
             None
         };
         let (mut totals, mut total) = (Vec::new(), 0_usize);
-        for reader in &readers.readers {
+        for (i, reader) in readers.readers.iter().enumerate() {
             if Instant::now() >= deadline {
-                return Err(refuse(
-                    "ranking_budget_exceeded",
-                    "Raw count deadline exceeded",
+                return Err(refuse_retryable(
+                    "deadline_exceeded",
+                    format!(
+                        "Raw count deadline exceeded ({} of {} readers counted)",
+                        i,
+                        readers.readers.len()
+                    ),
                 ));
             }
             let page = raw_page_canonical(reader, &query, &compiled_filters, 0, 1)?;

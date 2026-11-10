@@ -5099,3 +5099,117 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
     );
     bridge.shutdown()
 }
+
+// ---------------------------------------------------------------------------
+// Cooperative deadline: typed, retryable refusal — never exit(70)
+// ---------------------------------------------------------------------------
+
+/// An expired request deadline must answer THAT request with the typed
+/// `deadline_exceeded` refusal — `retryable: true`, honest about the
+/// incomplete enumeration, naming the phase it died in — and the same
+/// bridge process must keep serving the next requests normally. The
+/// refusal is a per-request answer; the process-killing watchdog stays
+/// only as the last-resort backstop (see
+/// `hard_backstop_still_kills_a_genuinely_stuck_request` in
+/// viewer_bridge_extensions.rs). `budget.deadline_ms: 0` is the
+/// wire-native way to force expiry: it refuses at the first cooperative
+/// boundary, deterministically.
+#[test]
+fn search_sessions_deadline_refusal_is_typed_retryable_and_process_survives() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    let refused = search(
+        &mut bridge,
+        json!({"query":"foo","budget":{"deadline_ms":0}}),
+    )?;
+    ensure!(
+        refused["ok"] == false,
+        "an expired deadline must refuse, never answer partially: {refused}"
+    );
+    ensure!(
+        refused["error"]["kind"] == "deadline_exceeded",
+        "expected the typed deadline_exceeded refusal, got {refused}"
+    );
+    ensure!(
+        refused["error"]["retryable"] == true,
+        "a deadline refusal is load-proportional and must be retryable: {refused}"
+    );
+    ensure!(
+        refused["error"]["enumeration_complete"] == false,
+        "a deadline refusal must never claim a complete enumeration: {refused}"
+    );
+    let message = refused["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    ensure!(
+        message.contains("phase"),
+        "the refusal must name the phase and completed work: {refused}"
+    );
+    // Process survival: the very next requests on the SAME stdio session
+    // must succeed — one slow search must not take down catalog polling,
+    // session reads or the other search lane (the exit-70 behavior this
+    // replaces killed every lane until the supervisor restarted the bridge).
+    let hello = bridge.exchange(json!({"op":"hello"}))?;
+    ensure!(
+        hello["ok"] == true,
+        "hello must serve after a refusal: {hello}"
+    );
+    let catalog = bridge.exchange(json!({"op":"catalog_page","limit":10}))?;
+    ensure!(
+        catalog["ok"] == true,
+        "catalog polling must serve after a refusal: {catalog}"
+    );
+    let session = bridge.exchange(json!({"op":"session","conversation_id":1}))?;
+    ensure!(
+        session["ok"] == true,
+        "session reads must serve after a refusal: {session}"
+    );
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    assert_members(&page, &[1, 2])?;
+    let rank = bridge.exchange(json!({"op":"rank_begin","query":"foo"}))?;
+    ensure!(
+        rank["ok"] == true,
+        "rank must serve after a refusal: {rank}"
+    );
+    // The handshake documents the deadline contract: the backstop margin
+    // and the retryable refusal kinds are client-visible.
+    let limits = &hello["result"]["limits"];
+    ensure!(
+        limits["hard_backstop_grace_ms"].as_u64().is_some(),
+        "hello limits must document the backstop margin: {hello}"
+    );
+    ensure!(
+        limits["retryable_refusal_kinds"]
+            .as_array()
+            .is_some_and(|kinds| kinds.iter().any(|kind| kind == "deadline_exceeded")),
+        "hello limits must document the retryable refusal kinds: {hello}"
+    );
+    bridge.shutdown()
+}
+
+/// The `search_sessions` deadline budget may only LOWER the profile limit:
+/// a budget above `TIMEOUT_MS` is refused as `invalid_request`, while the
+/// full `TIMEOUT_MS` budget answers normally. `0` (first-boundary refusal)
+/// is legal — see the survival test above.
+#[test]
+fn search_sessions_deadline_budget_only_lowers_the_profile_limit() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    let too_big = search(
+        &mut bridge,
+        json!({"query":"foo","budget":{"deadline_ms":10_001}}),
+    )?;
+    ensure!(
+        too_big["ok"] == false,
+        "an over-profile deadline budget must refuse: {too_big}"
+    );
+    ensure!(
+        too_big["error"]["kind"] == "invalid_request",
+        "over-profile budget must refuse as invalid_request, got {too_big}"
+    );
+    let full = search(
+        &mut bridge,
+        json!({"query":"foo","budget":{"deadline_ms":10_000}}),
+    )?;
+    assert_members(&full, &[1, 2])?;
+    bridge.shutdown()
+}

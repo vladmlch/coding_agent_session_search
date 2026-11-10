@@ -1,4 +1,12 @@
 //! Separate additive Viewer adapter. All existing CASS files remain untouched.
+//!
+//! Request deadlines are cooperative first: the long ops (`search_sessions`,
+//! `rank_begin`/`rank_next`) check the request's [`deadline::Deadline`] at
+//! their loop boundaries and answer THAT request with the typed, retryable
+//! `deadline_exceeded` refusal — the process keeps serving the next request.
+//! The watchdog remains only as the last-resort backstop for a request that
+//! stops making progress: it fires [`deadline::BACKSTOP_GRACE_MS`] past the
+//! same deadline and exits 70.
 mod analytics;
 mod annotations;
 mod catalog;
@@ -406,6 +414,12 @@ struct Session {
     /// `search_sessions` (`--text-verification-budget-bytes`, default
     /// [`search_sessions::MAX_TEXT_VERIFICATION_BYTES`]).
     verification_budget_bytes: usize,
+    /// Test-only stuck-op hook (`CASS_TEST_VIEWER_BRIDGE_STUCK_OP`): when
+    /// set, `handle` parks the serve thread before the named op runs, so
+    /// the pinned backstop test can prove a request that stops making
+    /// progress still dies with exit(70). Production callers never set
+    /// this variable (and it stays `None` in every production session).
+    test_stuck_op: Option<String>,
 }
 
 impl Session {
@@ -705,7 +719,13 @@ impl Session {
             "limits":{"request_bytes":protocol::REQUEST_BYTES,"response_bytes":protocol::RESPONSE_BYTES,
                 "page_limit":protocol::PAGE_LIMIT,"max_active_cursors":protocol::MAX_CURSORS,
                 "default_timeout_ms":protocol::TIMEOUT_MS,"max_raw_hits":protocol::MAX_RAW_HITS,
-                "cursor_idle_ttl_ms":60000,"max_readers":32},
+                "cursor_idle_ttl_ms":60000,"max_readers":32,
+                // The deadline contract, client-visible: how long the
+                // backstop waits past a request's cooperative deadline
+                // before it kills the process, and which refusal kinds
+                // are honestly retryable.
+                "hard_backstop_grace_ms":deadline::BACKSTOP_GRACE_MS,
+                "retryable_refusal_kinds":protocol::RETRYABLE_REFUSAL_KINDS},
         }))
     }
 
@@ -912,7 +932,17 @@ impl Session {
         Ok(page)
     }
 
-    fn handle(&mut self, request: Request) -> Result<(Value, bool)> {
+    fn handle(&mut self, request: Request, deadline: &deadline::Deadline) -> Result<(Value, bool)> {
+        // Test-only stuck-op hook (`CASS_TEST_VIEWER_BRIDGE_STUCK_OP`): park
+        // the serve thread before the op starts, so the pinned regression
+        // test can prove the hard backstop still kills a request that
+        // stops making progress. Never returns; production callers never
+        // set this variable.
+        if let Some(stuck) = self.test_stuck_op.as_deref()
+            && stuck == request.op_name()
+        {
+            std::thread::park();
+        }
         // Observable-invariant preservation: before the deferral, every op
         // following a patch saw the converged publication because the
         // patch paid it inline. Joining the in-flight pass here restores
@@ -962,7 +992,7 @@ impl Session {
                     .as_mut()
                     .ok_or_else(|| refuse("canonical_db_missing", "Archive not loaded"))?;
                 self.cursors
-                    .begin(readers, archive, query, filters, budget)?
+                    .begin(readers, archive, query, filters, budget, deadline)?
             }
             Request::RankNext {
                 cursor, max_hits, ..
@@ -1086,9 +1116,11 @@ impl Session {
                 cursor,
                 limit,
                 max_matches_per_session,
+                budget,
                 ..
             } => {
                 protocol::page_limit(limit)?;
+                budget.validate()?;
                 let max_matches = max_matches_per_session.unwrap_or(32).min(64);
                 self.archive()?;
                 // Immediate-visibility contract: the very next search must
@@ -1117,6 +1149,7 @@ impl Session {
                         limit,
                         max_matches,
                         self.verification_budget_bytes,
+                        deadline,
                     )
                 })?;
                 page["archive_stamp"] = serde_json::to_value(&archive.stamp)?;
@@ -1250,10 +1283,20 @@ fn serve(session: &mut Session, input: &mut impl BufRead, output: &mut impl Writ
             // A continuation shares the initial scan deadline, including an
             // engine call that cannot reach the cooperative cursor checks.
             Request::RankNext { cursor, .. } => session.cursors.remaining_timeout_ms(cursor),
+            // The search op's own budget may only lower the profile limit;
+            // an over-profile budget is refused inside `handle` by
+            // `SearchBudget::validate` with the typed invalid_request.
+            Request::SearchSessions { budget, .. } => budget.effective_deadline_ms(),
             _ => protocol::TIMEOUT_MS,
         };
         watchdog.begin(timeout);
-        let (response, stop) = match session.handle(request) {
+        // The cooperative deadline: the long ops check it at their loop
+        // boundaries and answer THIS request with the typed, retryable
+        // `deadline_exceeded` refusal. The watchdog armed above stays only
+        // as the last-resort backstop for a request that stops making
+        // progress (no boundary reached again within the grace).
+        let deadline = deadline::Deadline::from_millis(timeout);
+        let (response, stop) = match session.handle(request, &deadline) {
             Ok((result, stop)) => (protocol::success(id, result), stop),
             Err(error) => {
                 if error
@@ -1375,6 +1418,12 @@ pub fn run(args: Vec<OsString>) -> ExitCode {
             .text_verification_budget_bytes
             .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
             .unwrap_or(search_sessions::MAX_TEXT_VERIFICATION_BYTES),
+        // Test-only stuck-op hook: pins the hard-backstop regression.
+        // Production callers never set CASS_TEST_VIEWER_BRIDGE_STUCK_OP.
+        test_stuck_op: dotenvy::var("CASS_TEST_VIEWER_BRIDGE_STUCK_OP")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty()),
     };
     let result = serve(
         &mut session,
