@@ -29,6 +29,61 @@
 //!    canonical tail-precedence formula. `complete=false` only under the
 //!    explicit `allow_partial` opt-in; `semantic`/`hybrid` are
 //!    `capability_not_granted`.
+//! 7. **Stage 1 session×scope fast lane (owner decision 2026-11-10).**
+//!    Plans whose every literal is a single ASCII token and whose shape
+//!    composes over per-session truth (see [`classify_fast_shape`]) answer
+//!    from the published session×scope documents — one Quill doc per
+//!    (conversation, scope) chunk staged through the same marks-
+//!    disciplined region-doc lane. Membership is the per-literal posting
+//!    set; NOT/AND/OR keep the three-valued set algebra; witnesses are
+//!    discovered textually for the EMITTED page only. The lane engages
+//!    only when EVERY universe session's marks are `published` at the
+//!    current REGION_VERSION — one unconverged session keeps the whole
+//!    query on the per-region lane with today's exact semantics, and
+//!    `membership_source` (`session_scope_docs` | `region_literals`)
+//!    receipts which lane answered. Pending marks and not-read coverage
+//!    gaps refuse exactly as before. The ONE deliberate relaxation
+//!    (approved): a doc-claimed member whose regions cannot textually
+//!    reproduce the literal (analyzer n-gram drift) is EMITTED with
+//!    `witness_count=0` plus the `witnesses_not_reproduced` warning —
+//!    never silently dropped, never a whole-page refusal. Region
+//!    fragments (`indexed_text`) hydrate LAZILY: the universe load is
+//!    structural-only, one read per conversation on first touch
+//!    (receipted as `fragments_loaded`), and the one predicate arm that
+//!    reads fragments (`mcp`) keeps eager semantics through a chunked
+//!    prefetch. Stage 1b plans the region READ the request spends
+//!    through [`plan_region_load_mode`] — `emitted_page_sessions`
+//!    (fast lane: the emitted page's conversations only, loaded at page
+//!    time), `gated_quill_seeks` (legacy: per-literal Quill gates) or
+//!    the `universe_structural` fallback — receipted as
+//!    `region_load_mode`/`region_load_reason`/`region_rows_loaded`.
+//!    Receipt semantics (review I-2): `witness_count` is the DELIVERED
+//!    witness count — textual witnesses the page could prove and
+//!    deep-link, 0 under the §6.4 annotation — not a claim that the
+//!    doc's membership was fully reproduced; `score_domain`
+//!    (`session_docs` | `region_documents`) receipts which document set
+//!    scored the page. Budget exhaustion is NEVER drift: when §6.4
+//!    discovery exhausts the request's whole-body verification budget
+//!    (`--text-verification-budget-bytes`), the page refuses with the
+//!    typed `verification_budget_exceeded` kind naming the legacy lane's
+//!    `verification_bytes_budget_exceeded` reason — never a member with
+//!    `complete:true`; `witnesses_not_reproduced` stays reserved for
+//!    regions that were consulted and disagreed. Bare (unquoted)
+//!    literals claim membership through the engine's prefix-n-gram field,
+//!    which frankensearch-quill builds from only the first
+//!    `CONTENT_PREFIX_MAX_BYTES` = 4 KiB of each 64-KiB chunk's packed
+//!    text (`cass_prefix_source`): a bare term whose only occurrences
+//!    sit past that window is not claimed — §8.3, owner decision option
+//!    1: accepted, pending an engine-side fix; exact-quoted literals
+//!    match the full chunk text and are unaffected. Because the window
+//!    can only UNDER-claim bare-term members, a NOT over the same
+//!    literal correspondingly over-includes its complement: a session
+//!    the window cannot see as a member may still carry the term
+//!    past-window, and the complement keeps it. The session docs are
+//!    a MEMBERSHIP source, not a text substitute: every emitted witness
+//!    is still proven from the canonical region rows, and a doc claim
+//!    the regions cannot reproduce is the §6.4 annotation, never a
+//!    silent substitution.
 //!
 //! Forbidden here (plan): no `cass_facts` FTS5, no unbounded corpus
 //! regex, no silent `max_hits` truncation, no first-20-hits ⇒ first-20-
@@ -47,7 +102,7 @@ use super::identity;
 use super::protocol::{ListFilters, PAGE_LIMIT, RESPONSE_BYTES, refuse};
 use super::query;
 use super::revisions;
-use super::search::{ReaderSet, decode_hit, engine_filters, raw_page};
+use super::search::{ReaderSet, decode_hit, engine_filters, raw_page, raw_page_session_docs};
 use coding_agent_search::viewer_extensions::facts::is_source_absent_gap;
 
 // ---------------------------------------------------------------------------
@@ -1134,16 +1189,26 @@ impl LiteralMatcher {
 /// fields and the hydration pointer. `quill_idx` is the region's Quill
 /// document slot: the canonical `messages.idx` for chat regions (the
 /// message document itself), or `2^40 + ordinal` — the synthetic slot the
-/// region document published for derived/meta scopes. `indexed_text`
-/// carries the bounded fragment for `derived`/`meta` lanes; `chat`
-/// regions leave it NULL and hydrate the canonical row on demand — the
-/// ONLY message read the indexed path performs.
+/// region document published for derived/meta scopes. `has_fragment` is
+/// the structural bit `indexed_text IS NOT NULL`; the fragment TEXT
+/// itself hydrates lazily (Stage 1 §6.3): [`region_text`] memoizes one
+/// per-session read on first touch, `indexed_text` is populated in place
+/// only by the `mcp`-predicate prefetch (the one predicate arm that
+/// reads fragments for the whole universe). `chat` regions without a
+/// fragment hydrate the canonical row on demand — the ONLY message read
+/// the indexed path performs.
 #[derive(Debug)]
 struct Region {
     key: String,
     scope: String,
     scope_known: bool,
     quill_idx: i64,
+    /// The owning conversation — the lazy fragment memo is keyed
+    /// `(conversation_id, region_ordinal)`.
+    conversation_id: i64,
+    region_ordinal: i64,
+    /// Structural `indexed_text IS NOT NULL` bit from the universe load.
+    has_fragment: bool,
     /// Canonical `messages.idx` anchoring this region (deep-link).
     message_idx: Option<i64>,
     message_id: Option<i64>,
@@ -1159,6 +1224,8 @@ struct Region {
     has_error: Option<bool>,
     error_type: Option<String>,
     text_source: String,
+    /// The persisted fragment — `None` at load (lazy); `Some` only after
+    /// the `mcp`-predicate prefetch filled it in place.
     indexed_text: Option<String>,
 }
 
@@ -1170,7 +1237,7 @@ impl Region {
     /// the canonical row, and only they can hold a hit past the 64 KiB
     /// returned-text window.
     fn hydrates_canonical_row(&self) -> bool {
-        self.indexed_text.is_none()
+        !self.has_fragment
             && self.message_id.is_some()
             && self.text_source
                 == coding_agent_search::viewer_extensions::search_regions::TEXT_SOURCE_CHAT
@@ -1215,6 +1282,20 @@ struct HydrateStats {
     /// stays proportional to what verification actually escalated, not to
     /// the gated candidate set. `None` memoizes a proven-miss anchor.
     full_text_memo: HashMap<i64, Option<String>>,
+    /// Stage 1 §6.3 lazy fragments: the persisted `indexed_text`
+    /// fragments, keyed `(conversation_id, region_ordinal)`, fetched by
+    /// [`hydrate_session_fragments`] on the FIRST fragment touch of a
+    /// conversation — one read per session, never one per region — so a
+    /// request's resident fragment text is proportional to the sessions
+    /// whose evidence was actually consulted (the emitted page, the
+    /// gated candidates), never to the universe.
+    fragment_memo: HashMap<(i64, i64), String>,
+    /// Conversations whose fragment read already ran (memo provenance).
+    fragment_sessions: HashSet<i64>,
+    /// Fragment reads spent this request (diagnostics:
+    /// `fragments_loaded`) — one per first-touch session plus one per
+    /// chunk of the `mcp`-predicate prefetch.
+    fragments_loaded: usize,
     /// Whole-body text bytes scanned by literal verification this
     /// request — the meter [`MAX_TEXT_VERIFICATION_BYTES`] ceilings.
     verification_bytes: usize,
@@ -1286,7 +1367,7 @@ fn prefetch_gated_message_texts(
             };
             for region in &session.regions {
                 if gate.contains(&region.quill_idx)
-                    && region.indexed_text.is_none()
+                    && !region.has_fragment
                     && region.text_source
                         == coding_agent_search::viewer_extensions::search_regions::TEXT_SOURCE_CHAT
                     && let Some(message_id) = region.message_id
@@ -1330,10 +1411,224 @@ fn prefetch_gated_message_texts(
     Ok(())
 }
 
+/// Whether the plan evaluates the one predicate arm that reads persisted
+/// fragments across the WHOLE universe (`mcp` binds tool servers to the
+/// fragment surface — see the pinned `mcp` arm in [`region_value`]). Such
+/// plans keep today's eager fragment availability: the structural
+/// universe load (Stage 1 §6.3) is followed by one chunked set read that
+/// fills `indexed_text` in place, so the arm's semantics are byte-for-byte
+/// what the eager loader fed it. Every other plan — the entire fast lane
+/// included — never pays for fragments it did not consult.
+fn plan_reads_fragments(node: &PlanNode) -> bool {
+    match node {
+        PlanNode::Predicate { field, .. } => field == "mcp",
+        PlanNode::Not(child) => plan_reads_fragments(child),
+        PlanNode::And(children) | PlanNode::Or(children) => {
+            children.iter().any(plan_reads_fragments)
+        }
+        PlanNode::Literal { .. } | PlanNode::All => false,
+    }
+}
+
+/// Stage 1b (owner decision 2026-11-10): which region rows the plan's
+/// evaluation can actually consult — decided from the plan alone, before
+/// the universe read, so the whole-universe region load only happens for
+/// the plans that need it.
+///
+/// `universe_structural` — today's eager load, for that plan only:
+/// - any Predicate with a block-domain field (BLOCK_FIELDS) or `has_mcp`:
+///   `collection` iterates the WHOLE region set and its Unknown verdicts
+///   hinge on per-session coverage × per-region scope (`unknown_field`) —
+///   state no index seek can reproduce — and the tool/file/mcp matchers
+///   fold case, expand synonym classes and glob, so they are not
+///   seek-expressible either. The brief's explicit fallback path.
+/// - any non-ASCII literal that is not a `never` matcher: the analyzer
+///   cannot prove the negative, so `eval_literal`'s ungated branch
+///   consults EVERY region under MAX_UNGATED_CHAT_HYDRATIONS.
+///
+/// `on_demand` — every other plan: literals are all gated (ASCII,
+/// index-provable) and predicates are all session-domain, so region rows
+/// are consulted only where the Quill gates pointed (legacy lane:
+/// `gated_quill_seeks`; fast lane: the emitted page's sessions,
+/// `emitted_page_sessions`). False regions are provable no-ops in both
+/// consumers (`collection` counts only True/Unknown rows; gated
+/// `eval_literal` skips every non-gated row), which is what makes loading
+/// exactly the consulted rows byte-identical to loading all of them.
+enum RegionLoadMode {
+    /// (reason) — today's eager structural universe load; the reason is
+    /// receipted in diagnostics.
+    UniverseStructural(&'static str),
+    /// Region rows load on demand, scaled to hit/page size.
+    OnDemand,
+}
+
+fn plan_region_load_mode(
+    node: &PlanNode,
+    matchers: &HashMap<(String, bool), LiteralMatcher>,
+) -> RegionLoadMode {
+    match node {
+        PlanNode::Literal { value, exact, .. } => {
+            let never = matchers
+                .get(&(value.clone(), *exact))
+                .is_some_and(|matcher| matcher.never);
+            if !value.is_ascii() && !never {
+                RegionLoadMode::UniverseStructural("ungated_literal")
+            } else {
+                RegionLoadMode::OnDemand
+            }
+        }
+        PlanNode::Predicate { field, .. } => {
+            if field == "has_mcp" || BLOCK_FIELDS.contains(&field.as_str()) {
+                RegionLoadMode::UniverseStructural("region_domain_predicate")
+            } else {
+                RegionLoadMode::OnDemand
+            }
+        }
+        PlanNode::Not(child) => plan_region_load_mode(child, matchers),
+        PlanNode::And(children) | PlanNode::Or(children) => children
+            .iter()
+            .map(|child| plan_region_load_mode(child, matchers))
+            .find_map(|mode| match mode {
+                RegionLoadMode::UniverseStructural(reason) => {
+                    Some(RegionLoadMode::UniverseStructural(reason))
+                }
+                RegionLoadMode::OnDemand => None,
+            })
+            .unwrap_or(RegionLoadMode::OnDemand),
+        PlanNode::All => RegionLoadMode::OnDemand,
+    }
+}
+
+/// Fill every universe region's persisted fragment in place (the
+/// `mcp`-predicate plan's eager lane): chunked `IN()` reads over the
+/// conversation set — the same shape as [`prefetch_gated_message_texts`]
+/// — so a fragment-reading predicate keeps its exact eager-loaded
+/// semantics on the structural universe load. Counted in
+/// `fragments_loaded` (diagnostics), never in `messages_hydrated`.
+fn prefetch_region_fragments(
+    connection: &Connection,
+    sessions: &mut [SessionCtx],
+    stats: &mut HydrateStats,
+) -> Result<()> {
+    let ids: Vec<i64> = sessions
+        .iter()
+        .filter(|session| session.regions.iter().any(|region| region.has_fragment))
+        .map(|session| session.conversation_id)
+        .collect();
+    let mut by_session: HashMap<i64, HashMap<i64, String>> = HashMap::new();
+    for chunk in ids.chunks(HYDRATE_CHUNK) {
+        if chunk.is_empty() {
+            continue;
+        }
+        stats.fragments_loaded += 1;
+        let placeholders = (1..=chunk.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let params: Vec<SqliteValue> = chunk.iter().map(|id| SqliteValue::Integer(*id)).collect();
+        let rows = connection.query_with_params(
+            &format!(
+                "SELECT conversation_id, region_ordinal, indexed_text \
+                 FROM viewer_search_regions WHERE conversation_id IN ({placeholders}) \
+                 AND indexed_text IS NOT NULL"
+            ),
+            &params,
+        )?;
+        for row in &rows {
+            let cid: i64 = row.get_typed(0)?;
+            let ordinal: i64 = row.get_typed(1)?;
+            let text: String = row.get_typed(2)?;
+            by_session.entry(cid).or_default().insert(ordinal, text);
+        }
+    }
+    for session in sessions {
+        let Some(fragments) = by_session.remove(&session.conversation_id) else {
+            continue;
+        };
+        for region in &mut session.regions {
+            if region.has_fragment
+                && let Some(text) = fragments.get(&region.region_ordinal)
+            {
+                region.indexed_text = Some(text.clone());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Stage 1b gated lane: attach ONLY the region rows the plan's Quill hit
+/// gates can consult — the union, per conversation, of every gated
+/// literal's `(conversation_id, quill_idx)` set (the same gate maps
+/// `prefetch_gated_message_texts` and `eval_literal` filter by), read
+/// through one indexed seek per conversation chunk
+/// ([`regions_for_quill_slots`]). Every consumer of `session.regions` on
+/// this lane is gate-filtered (`eval_literal` skips non-gated rows;
+/// `prefetch_gated_message_texts` re-checks each literal's own gate;
+/// witnesses and snippets only reference gated members), so a session with
+/// no gated hits for any plan literal reads NOTHING — and the rows that do
+/// load evaluate byte-identically to the eager universe load, in the same
+/// `region_ordinal` order.
+///
+/// Non-ASCII and `never` literals contribute no slots: the former keep
+/// the eager structural lane (see [`plan_region_load_mode`]), the latter
+/// return from `eval_literal` before ever touching a region.
+fn attach_gated_regions(
+    connection: &Connection,
+    sessions: &mut [SessionCtx],
+    plan: &Plan,
+    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    quill_possible: &HashMap<String, HashMap<i64, HashSet<i64>>>,
+    stats: &mut HydrateStats,
+) -> Result<()> {
+    let mut slots: HashMap<i64, Vec<i64>> = HashMap::new();
+    for (value, exact) in &plan.literals {
+        if !value.is_ascii()
+            || matchers
+                .get(&(value.clone(), *exact))
+                .is_some_and(|matcher| matcher.never)
+        {
+            continue;
+        }
+        let Some(gates) = quill_possible.get(&format!("{value}|{exact}")) else {
+            continue;
+        };
+        for (cid, quill_idxs) in gates {
+            slots
+                .entry(*cid)
+                .or_default()
+                .extend(quill_idxs.iter().copied());
+        }
+    }
+    if slots.is_empty() {
+        return Ok(());
+    }
+    let rows = coding_agent_search::viewer_extensions::search_regions::regions_for_quill_slots(
+        connection, &slots,
+    )?;
+    let mut by_cid: HashMap<i64, usize> = HashMap::with_capacity(sessions.len());
+    for (index, session) in sessions.iter().enumerate() {
+        by_cid.insert(session.conversation_id, index);
+    }
+    for (cid, rows) in rows {
+        let Some(&index) = by_cid.get(&cid) else {
+            continue;
+        };
+        let session = &mut sessions[index];
+        session.regions = rows.into_iter().map(|row| region_from(cid, row)).collect();
+        stats.regions_loaded += session.regions.len();
+    }
+    Ok(())
+}
+
 /// Bounded text for one persisted region — `chat` reads the canonical
 /// `messages.content` row it anchors (memoized per request; the gated
 /// prefetch already materialized every gated candidate in one chunked set
-/// read); `derived`/`meta` return the persisted fragment.
+/// read); `derived`/`meta`/noise-chat return the persisted fragment,
+/// which hydrates LAZILY (Stage 1 §6.3): one read per conversation on
+/// first fragment touch, memoized by `(conversation_id, region_ordinal)`
+/// in [`HydrateStats::fragment_memo`]. `has_fragment` is the structural
+/// bit the universe load persisted, so a region that never carried a
+/// fragment answers `None` without a read.
 fn region_text(
     connection: &Connection,
     region: &Region,
@@ -1342,7 +1637,7 @@ fn region_text(
     stats.regions_hydrated += 1;
     if region.text_source
         == coding_agent_search::viewer_extensions::search_regions::TEXT_SOURCE_CHAT
-        && region.indexed_text.is_none()
+        && !region.has_fragment
     {
         stats.messages_hydrated += 1;
         let Some(message_id) = region.message_id else {
@@ -1372,7 +1667,47 @@ fn region_text(
         stats.text_memo.insert(message_id, bounded.clone());
         return Ok(bounded);
     }
-    Ok(region.indexed_text.clone())
+    if !region.has_fragment {
+        return Ok(None);
+    }
+    // The mcp-predicate prefetch fills fragments in place (that arm has
+    // no memo access); prefer it so the bytes are never fetched twice.
+    if let Some(text) = region.indexed_text.clone() {
+        return Ok(Some(text));
+    }
+    hydrate_session_fragments(connection, region.conversation_id, stats)?;
+    Ok(stats
+        .fragment_memo
+        .get(&(region.conversation_id, region.region_ordinal))
+        .cloned())
+}
+
+/// Fetch every persisted fragment of one conversation into the request
+/// memo — the ONE read the lazy-fragment lane spends per conversation on
+/// first touch (`fragments_loaded` receipts it). `has_fragment` is
+/// exactly `indexed_text IS NOT NULL`, so the read answers every fragment
+/// region of the conversation and no proven-miss bookkeeping is needed.
+fn hydrate_session_fragments(
+    connection: &Connection,
+    conversation_id: i64,
+    stats: &mut HydrateStats,
+) -> Result<()> {
+    if stats.fragment_sessions.contains(&conversation_id) {
+        return Ok(());
+    }
+    stats.fragment_sessions.insert(conversation_id);
+    stats.fragments_loaded += 1;
+    let rows = connection.query_with_params(
+        "SELECT region_ordinal, indexed_text FROM viewer_search_regions \
+         WHERE conversation_id = ?1 AND indexed_text IS NOT NULL",
+        &[SqliteValue::Integer(conversation_id)],
+    )?;
+    for row in &rows {
+        let ordinal: i64 = row.get_typed(0)?;
+        let text: String = row.get_typed(1)?;
+        stats.fragment_memo.insert((conversation_id, ordinal), text);
+    }
+    Ok(())
 }
 
 /// The FULL canonical row text for one canonical-row chat region — the
@@ -1444,6 +1779,12 @@ struct SessionCtx {
     source_text_absent: Vec<String>,
     /// `true` when the message inventory was truncated by budget.
     inventory_partial: bool,
+    /// `true` when the persisted publication mark is fully converged —
+    /// `docs_state == published` AND the mark's `region_version` equals
+    /// the current REGION_VERSION. The session×scope fast lane engages
+    /// only when EVERY universe member sets this (one stale session keeps
+    /// the whole query on the legacy region-literal lane).
+    session_docs_current: bool,
 }
 
 impl SessionCtx {
@@ -1544,6 +1885,7 @@ fn session_ctx_from_parts(
     fact: FactParts,
     activity_ms: Option<i64>,
     docs_state: Option<&str>,
+    docs_version: Option<i64>,
     workspace_path: Option<String>,
     agent_slug: Option<String>,
 ) -> Result<SessionCtx> {
@@ -1588,6 +1930,14 @@ fn session_ctx_from_parts(
     // pending coverage instead of silently missing hits.
     let docs_pending =
         docs_state != Some(coding_agent_search::viewer_extensions::search_regions::DOCS_PUBLISHED);
+    // Fast-lane convergence: `published` marks under the CURRENT
+    // REGION_VERSION. A version-skew mark means the persisted region rows
+    // predate the current chunking/packing contract, so their session×scope
+    // documents are not trustworthy membership evidence — the session keeps
+    // the whole query on the legacy lane (see [`search_sessions`]).
+    let session_docs_current = !docs_pending
+        && docs_version
+            == Some(coding_agent_search::viewer_extensions::search_regions::REGION_VERSION);
     let inventory_partial = docs_pending;
     if inventory_partial {
         coverage.insert("block_inventory".to_owned(), "pending".to_owned());
@@ -1662,15 +2012,22 @@ fn session_ctx_from_parts(
         coverage_reasons,
         source_text_absent,
         inventory_partial,
+        session_docs_current,
     })
 }
 
-fn region_from(row: coding_agent_search::viewer_extensions::search_regions::RegionRow) -> Region {
+fn region_from(
+    conversation_id: i64,
+    row: coding_agent_search::viewer_extensions::search_regions::RegionRow,
+) -> Region {
     Region {
         key: row.region_key,
         scope: row.scope,
         scope_known: row.scope_known,
         quill_idx: row.quill_idx,
+        conversation_id,
+        region_ordinal: row.region_ordinal,
+        has_fragment: row.has_fragment,
         message_idx: row.message_idx,
         message_id: row.message_id,
         step_index: row.step_index,
@@ -1703,6 +2060,7 @@ fn load_sessions_indexed(
     id_subquery: &str,
     id_params: &[SqliteValue],
     stats: &mut HydrateStats,
+    load_universe_regions: bool,
 ) -> Result<Vec<SessionCtx>> {
     let conv_rows = connection.query_with_params(
         &format!(
@@ -1791,14 +2149,15 @@ fn load_sessions_indexed(
     }
     let mark_rows = connection.query_with_params(
         &format!(
-            "SELECT conversation_id, docs_state FROM viewer_search_region_marks \
+            "SELECT conversation_id, docs_state, region_version \
+             FROM viewer_search_region_marks \
              WHERE conversation_id IN ({id_subquery})"
         ),
         id_params,
     )?;
-    let mut marks: HashMap<i64, String> = HashMap::new();
+    let mut marks: HashMap<i64, (String, i64)> = HashMap::new();
     for row in &mark_rows {
-        marks.insert(row.get_typed(0)?, row.get_typed(1)?);
+        marks.insert(row.get_typed(0)?, (row.get_typed(1)?, row.get_typed(2)?));
     }
     // Agent/workspace slugs: small lookup tables, read once — the LEFT
     // JOIN equivalent without a probe per universe row.
@@ -1826,12 +2185,23 @@ fn load_sessions_indexed(
             .or_default()
             .push(row.get_typed::<String>(1)?);
     }
-    let region_rows =
-        coding_agent_search::viewer_extensions::search_regions::regions_for_universe_subquery(
-            connection,
-            id_subquery,
-            id_params,
-        )?;
+    // Stage 1b: the whole-universe region read only happens for plans that
+    // can consult ANY region (see [`plan_region_load_mode`]). On-demand
+    // plans attach regions later — the gated (conversation, quill_idx)
+    // seeks on the legacy lane, the emitted page's sessions on the fast
+    // lane — so a zero-hit or rare-term request never pays the archive-
+    // sized read (762k rows on the 6k-session archive).
+    let region_rows = if load_universe_regions {
+        Some(
+            coding_agent_search::viewer_extensions::search_regions::regions_for_universe_subquery(
+                connection,
+                id_subquery,
+                id_params,
+            )?,
+        )
+    } else {
+        None
+    };
     let mut ordered = Vec::with_capacity(universe_ids.len());
     for cid in universe_ids {
         let Some(conv_p) = conv.remove(cid) else {
@@ -1853,22 +2223,35 @@ fn load_sessions_indexed(
         let agent_slug = conv_p
             .agent_id
             .and_then(|id| agents.get(&id).cloned().flatten());
+        let (docs_state, docs_version) = marks
+            .remove(cid)
+            .map(|(state, version)| (Some(state), Some(version)))
+            .unwrap_or((None, None));
         let mut session = session_ctx_from_parts(
             *cid,
             conv_p,
             ann.remove(cid).unwrap_or_default(),
             facts.remove(cid).unwrap_or_default(),
             activity_ms,
-            marks.get(cid).map(String::as_str),
+            docs_state.as_deref(),
+            docs_version,
             workspace_path,
             agent_slug,
         )?;
         session.tags = tags.remove(cid).unwrap_or_default();
         session.regions = region_rows
-            .get(cid)
-            .map(|rows| rows.iter().cloned().map(region_from).collect())
+            .as_ref()
+            .and_then(|rows| rows.get(cid))
+            .map(|rows| {
+                rows.iter()
+                    .cloned()
+                    .map(|row| region_from(*cid, row))
+                    .collect()
+            })
             .unwrap_or_default();
-        stats.regions_loaded += session.regions.len();
+        if load_universe_regions {
+            stats.regions_loaded += session.regions.len();
+        }
         ordered.push(session);
     }
     Ok(ordered)
@@ -2657,25 +3040,12 @@ fn eval_literal(
             "quill_hit_not_reproduced",
         ));
     }
-    // Unseen: an inventory gap that could still hide a matching region.
-    // Source-absent gaps (text provably non-existent in any local record,
-    // owner decision 2026-11-07) cannot hide anything, so they stop
-    // contributing `unseen` — the session's existing text answers exactly.
-    // `inventory_partial` (docs not converged) is never source-absent.
-    let unseen = session.inventory_partial
-        || session.field_blocks_strict("block_inventory")
-        || session.field_blocks_strict("text_inventory");
-    if unseen {
-        out.unseen = true;
-        for field in ["block_inventory", "text_inventory"] {
-            if session.inventory_partial || session.field_blocks_strict(field) {
-                out.reasons.insert(format!(
-                    "{field}:{}:inventory_incomplete",
-                    session.coverage_of(field)
-                ));
-            }
-        }
-    }
+    // Unseen tail: the shared inventory-gap verdict (see
+    // [`unseen_inventory_result`]) — identical bytes for the legacy and
+    // fast lanes so an Unknown classifies the same refusal either way.
+    let tail = unseen_inventory_result(session);
+    out.unseen = out.unseen || tail.unseen;
+    out.reasons.extend(tail.reasons);
     Ok(out)
 }
 
@@ -2923,10 +3293,21 @@ fn encode_cursor(
     digest: &str,
 ) -> String {
     json!({
-        "k": "ss1",
+        // ss2: value travels as its f64 bit pattern (see the comment below);
+        // ss1 cursors (decimal float "v") are refused as cursor_expired.
+        "k": "ss2",
         "s": sort,
         "nf": cursor.null_flag,
-        "v": cursor.value,
+        // The sort value travels as its exact f64 bit pattern, never as a
+        // decimal float: serde_json's float PARSE is not correctly rounded
+        // for every f64 (the significand x pow10 path can land one ULP off),
+        // and a keyset bound even one ULP below the true key makes the walk
+        // strand every entry that ties the bound score — 302 members of
+        // `cargo` on the owner archive were never emitted by a full
+        // cursor walk (a one-ULP-HIGH bound instead re-emits ties forever,
+        // the cycling the incumbent binary showed). Integer parse of the
+        // bit pattern is exact, so encode -> decode is bit-identical.
+        "v": cursor.value.map(f64::to_bits),
         "id": cursor.id,
         "g": generation,
         "q": digest,
@@ -2946,7 +3327,7 @@ fn decode_cursor(
     }
     let value: Value = serde_json::from_str(raw).map_err(|_| expired())?;
     let object = value.as_object().ok_or_else(expired)?;
-    if object.get("k").and_then(Value::as_str) != Some("ss1")
+    if object.get("k").and_then(Value::as_str) != Some("ss2")
         || object.get("s").and_then(Value::as_str) != Some(sort)
         || object.get("q").and_then(Value::as_str) != Some(digest)
     {
@@ -2972,12 +3353,14 @@ fn decode_cursor(
     let value = if null_flag {
         None
     } else {
-        Some(
+        // Mirror of encode_cursor: "v" is the f64 bit pattern (u64), so the
+        // decode never passes through serde_json's inexact float parse.
+        Some(f64::from_bits(
             object
                 .get("v")
-                .and_then(Value::as_f64)
+                .and_then(Value::as_u64)
                 .ok_or_else(expired)?,
-        )
+        ))
     };
     Ok(SearchCursor {
         value,
@@ -2992,6 +3375,14 @@ fn decode_cursor(
 
 /// Per-literal message evidence: `(conversation_id -> idx -> best score)`.
 type LiteralHits = HashMap<i64, HashMap<i64, f32>>;
+
+/// The per-literal `possible` gate map `eval_literal` consults:
+/// `value|exact` -> (conversation -> candidate `quill_idx` set).
+type LiteralGate = HashMap<String, HashMap<i64, HashSet<i64>>>;
+
+/// One fast-lane expected witness: `(branch_id, (literal value, exact))`
+/// — a positive branch whose session-doc posting set contains the session.
+type FastClaim = (String, (String, bool));
 
 /// Enumerate ALL Quill hits for one literal query across the pinned reader
 /// set (bounded by MAX_LITERAL_HITS — an honest budget, never a silent
@@ -3050,13 +3441,396 @@ fn literal_query_text(value: &str, exact: bool) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Strict search Stage 1: the session×scope-docs fast lane
+// (owner decision 2026-11-10)
+// ---------------------------------------------------------------------------
+
+/// The witness key the fast lane places in a literal's `known` set. It is
+/// deliberately not a region key: membership on this lane is proven by the
+/// conversation's aggregated session×scope documents, and the textual
+/// witnesses are discovered later (page time, emitted sessions only). The
+/// set algebra only ever compares keys for equality/intersection, so one
+/// stable sentinel per literal verdict carries the truth through
+/// [`combine`] exactly like a real region key does.
+const SESSION_DOC_WITNESS_KEY: &str = "\u{0}session_scope_doc";
+
+/// A literal the session×scope documents can decide: one ASCII token the
+/// analyzer can see (never `never` — a token-less literal matches nothing
+/// and keeps its matcher-only semantics on the legacy lane).
+fn literal_session_doc_eligible(
+    value: &str,
+    exact: bool,
+    matchers: &HashMap<(String, bool), LiteralMatcher>,
+) -> bool {
+    value.is_ascii()
+        && matchers
+            .get(&(value.to_owned(), exact))
+            .is_some_and(|matcher| !matcher.never && matcher.tokens.len() == 1)
+}
+
+/// Composition shape for the fast-lane eligibility guard (Stage 1).
+///
+/// `safe` — the node's three-valued truth is expressible over the
+/// session-doc posting sets: single-token literals are per-session
+/// membership; NOT is per-arm complement; OR is per-arm union; session-
+/// domain predicates read the same `SessionCtx`. AND additionally admits
+/// at most ONE region-atom — two atoms under AND demand same-block
+/// co-occurrence the aggregated documents cannot prove.
+///
+/// `region_atom` — the node's truth hinges on WHICH regions exist or
+/// match: a single-token literal, or a block-domain predicate. OR/NOT
+/// keep per-arm truth, so an atom under them stays decidable; an OR of
+/// atoms nested under an AND counts as one atom (it needs one block, not
+/// the same block for two conjuncts) but two such atoms under one AND do
+/// not compose.
+#[derive(Debug, Clone, Copy)]
+struct FastShape {
+    safe: bool,
+    region_atom: bool,
+}
+
+fn classify_fast_shape(
+    node: &PlanNode,
+    matchers: &HashMap<(String, bool), LiteralMatcher>,
+) -> FastShape {
+    match node {
+        PlanNode::Literal { value, exact, .. } => {
+            let eligible = literal_session_doc_eligible(value, *exact, matchers);
+            FastShape {
+                safe: eligible,
+                region_atom: eligible,
+            }
+        }
+        PlanNode::Predicate { field, domain, .. } => FastShape {
+            // `mcp` binds tool servers to the persisted fragment surface —
+            // it stays on the legacy lane so its eager fragment semantics
+            // (see [`plan_reads_fragments`]) are never lazily starved.
+            // Every other predicate reads structural fields or the
+            // `SessionCtx`, which both lanes see identically.
+            safe: field != "mcp",
+            region_atom: *domain == Domain::Block,
+        },
+        PlanNode::Not(child) => {
+            let inner = classify_fast_shape(child, matchers);
+            FastShape {
+                safe: inner.safe,
+                region_atom: false,
+            }
+        }
+        PlanNode::Or(children) => {
+            let shapes: Vec<FastShape> = children
+                .iter()
+                .map(|child| classify_fast_shape(child, matchers))
+                .collect();
+            FastShape {
+                safe: shapes.iter().all(|shape| shape.safe),
+                region_atom: shapes.iter().any(|shape| shape.region_atom),
+            }
+        }
+        PlanNode::And(children) => {
+            let shapes: Vec<FastShape> = children
+                .iter()
+                .map(|child| classify_fast_shape(child, matchers))
+                .collect();
+            FastShape {
+                safe: shapes.iter().all(|shape| shape.safe)
+                    && shapes.iter().filter(|shape| shape.region_atom).count() <= 1,
+                region_atom: shapes.iter().any(|shape| shape.region_atom),
+            }
+        }
+        PlanNode::All => FastShape {
+            safe: true,
+            region_atom: false,
+        },
+    }
+}
+
+/// Membership posting set for one literal over the session×scope
+/// documents: `(conversation_id -> best chunk score)` — the fast lane's
+/// whole evidence for that literal. Enumerated exactly like
+/// [`enumerate_literal`] (per-reader paged, honest `MAX_LITERAL_HITS`
+/// refusal) but over [`raw_page_session_docs`], so the posting set
+/// contains conversations, never per-region coordinates.
+fn enumerate_session_doc_hits(
+    readers: &ReaderSet,
+    literal: (&str, bool),
+    filters: &frankensearch::quill::query::CassQueryFilters,
+) -> Result<HashMap<i64, f32>> {
+    let text = literal_query_text(literal.0, literal.1);
+    let mut hits: HashMap<i64, f32> = HashMap::new();
+    for (reader_index, reader) in readers.readers.iter().enumerate() {
+        let mut offset = 0_usize;
+        loop {
+            let page = raw_page_session_docs(reader, &text, filters, offset, PAGE_LIMIT)?;
+            let total = page.total_count.ok_or_else(|| {
+                refuse(
+                    "ranking_budget_exceeded",
+                    "Engine supplied no exact raw count",
+                )
+            })?;
+            if total > MAX_LITERAL_HITS {
+                return Err(refuse(
+                    "ranking_budget_exceeded",
+                    "Session-doc match count exceeds the enumeration cap",
+                ));
+            }
+            for hit in &page.hits {
+                let decoded = decode_hit(reader, hit, &readers.keys[reader_index])?;
+                let entry = hits.entry(decoded.conversation_id).or_insert(decoded.score);
+                if decoded.score > *entry {
+                    *entry = decoded.score;
+                }
+            }
+            offset += page.hits.len();
+            if page.hits.is_empty() || offset >= total {
+                break;
+            }
+        }
+    }
+    Ok(hits)
+}
+
+/// The legacy lane's per-literal Quill evidence bundle.
+struct LegacyLiteralEvidence {
+    /// `(value, exact)` hit maps for witness scoring.
+    scores: HashMap<(String, bool), LiteralHits>,
+    /// The `possible` gate map `eval_literal` consults.
+    possible: LiteralGate,
+}
+
+/// Per-literal Quill evidence over the per-REGION documents — the exact
+/// enumeration the legacy lane runs (the loop `search_sessions` carried
+/// inline before Stage 1, byte-for-byte).
+fn legacy_literal_evidence(
+    readers: &ReaderSet,
+    plan: &Plan,
+    engine_filters: &frankensearch::quill::query::CassQueryFilters,
+) -> Result<LegacyLiteralEvidence> {
+    let mut scores: HashMap<(String, bool), LiteralHits> = HashMap::new();
+    let mut possible: LiteralGate = HashMap::new();
+    for (value, exact) in &plan.literals {
+        let hits = if value.is_ascii() {
+            let text = literal_query_text(value, *exact);
+            enumerate_literal(readers, &text, engine_filters)?.0
+        } else {
+            // The Quill analyzer emits no tokens for non-ASCII input —
+            // skip the engine call; `eval_node` gates such literals on
+            // `None` (evaluate every region) instead of trusting a
+            // guaranteed-empty hit set.
+            LiteralHits::new()
+        };
+        possible.insert(
+            format!("{value}|{exact}"),
+            hits.iter()
+                .map(|(cid, m)| (*cid, m.keys().copied().collect()))
+                .collect(),
+        );
+        scores.insert((value.clone(), *exact), hits);
+    }
+    Ok(LegacyLiteralEvidence { scores, possible })
+}
+
+/// The inventory-tail verdict shared by both literal evaluators: a
+/// session whose region inventory is not fully read cannot prove a
+/// miss — `unseen` with today's reason strings, exactly what
+/// [`eval_literal`]'s tail produces, so a fast-lane Unknown classifies
+/// `facts_pending` identically to a legacy one.
+fn unseen_inventory_result(session: &SessionCtx) -> NodeResult {
+    let mut out = NodeResult::default();
+    // Unseen: an inventory gap that could still hide a matching region.
+    // Source-absent gaps (text provably non-existent in any local record,
+    // owner decision 2026-11-07) cannot hide anything, so they stop
+    // contributing `unseen` — the session's existing text answers exactly.
+    // `inventory_partial` (docs not converged) is never source-absent.
+    let unseen = session.inventory_partial
+        || session.field_blocks_strict("block_inventory")
+        || session.field_blocks_strict("text_inventory");
+    if unseen {
+        out.unseen = true;
+        for field in ["block_inventory", "text_inventory"] {
+            if session.inventory_partial || session.field_blocks_strict(field) {
+                out.reasons.insert(format!(
+                    "{field}:{}:inventory_incomplete",
+                    session.coverage_of(field)
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// [`eval_node`] over the session×scope posting sets (the fast lane).
+/// Literals are per-session membership: a doc hit is proven membership
+/// (the aggregated document's tokenization decided it); a miss keeps
+/// today's inventory-tail Unknown semantics through
+/// [`unseen_inventory_result`]; predicates read the same `SessionCtx` and
+/// region rows as the legacy lane. Witnesses are NOT discovered here —
+/// they are a page-time concern on this lane (emitted sessions only).
+fn eval_node_fast(
+    node: &PlanNode,
+    session: &SessionCtx,
+    session_doc_hits: &HashMap<(String, bool), HashMap<i64, f32>>,
+) -> NodeResult {
+    match node {
+        PlanNode::All => NodeResult::constant(Truth::True, BTreeSet::new()),
+        PlanNode::Literal { value, exact, .. } => {
+            if session_doc_hits
+                .get(&(value.clone(), *exact))
+                .is_some_and(|hits| hits.contains_key(&session.conversation_id))
+            {
+                let mut out = NodeResult::default();
+                out.known.insert(SESSION_DOC_WITNESS_KEY.to_owned());
+                out.possible.insert(SESSION_DOC_WITNESS_KEY.to_owned());
+                out
+            } else {
+                unseen_inventory_result(session)
+            }
+        }
+        PlanNode::Predicate {
+            field,
+            op,
+            value,
+            domain,
+        } => eval_predicate(field, op, value, *domain, session),
+        PlanNode::Not(child) => eval_node_fast(child, session, session_doc_hits).negate(),
+        PlanNode::And(children) => {
+            let mut result = NodeResult::constant(Truth::True, BTreeSet::new());
+            for child in children {
+                let next = eval_node_fast(child, session, session_doc_hits);
+                result = combine(&result, &next, true);
+                if result.truth() == Truth::False {
+                    break;
+                }
+            }
+            result
+        }
+        PlanNode::Or(children) => {
+            let mut result = NodeResult::constant(Truth::False, BTreeSet::new());
+            for child in children {
+                let next = eval_node_fast(child, session, session_doc_hits);
+                result = combine(&result, &next, false);
+            }
+            result
+        }
+    }
+}
+
+/// The fast lane's best score and expected-witness claims for one accepted
+/// session: every positive literal branch whose posting set contains the
+/// session contributes its best chunk score, and its literal rides the
+/// page-time witness discovery. Sessions admitted without any literal
+/// claim (a NOT complement, a predicate-only OR arm) carry no score and
+/// expect no witnesses — exactly the legacy lane's treatment of
+/// witness-less members.
+fn fast_score_and_claims(
+    plan: &Plan,
+    conversation_id: i64,
+    session_doc_hits: &HashMap<(String, bool), HashMap<i64, f32>>,
+) -> (Option<f64>, Vec<FastClaim>) {
+    let mut best_score: Option<f64> = None;
+    let mut claims: Vec<FastClaim> = Vec::new();
+    for (branch, (value, exact)) in &plan.positive_branches {
+        let Some(score) = session_doc_hits
+            .get(&(value.clone(), *exact))
+            .and_then(|hits| hits.get(&conversation_id))
+        else {
+            continue;
+        };
+        claims.push((branch.clone(), (value.clone(), *exact)));
+        let score = *score as f64;
+        best_score = Some(best_score.map_or(score, |best: f64| best.max(score)));
+    }
+    (best_score, claims)
+}
+
+/// Page-time textual witness discovery for one emitted fast-lane session
+/// (Stage 1 §6.4): the doc-claimed member's regions are verified
+/// textually, bounded by `max_matches`, through the same
+/// [`verify_region_text`] the legacy lane used at eval time — so an
+/// emitted witness binds canonical coordinates and a snippet exactly as
+/// before. The region slice is the Stage 1b page-time load: the EMITTED
+/// session's full structural row set (one indexed read, same
+/// `region_ordinal` order the eager universe load produced), so discovery
+/// consults exactly the region set it always saw. A claim no region
+/// reproduces (analyzer n-gram drift) returns an empty list; the caller
+/// annotates `witness_count=0` with the `witnesses_not_reproduced`
+/// warning instead of refusing the page — that warning therefore names
+/// ONLY regions that were consulted and disagreed. A verification budget
+/// exhaustion is NOT drift: discovery reports [`FastWitnesses::BudgetExhausted`]
+/// and the caller refuses the whole page with the typed
+/// `verification_budget_exceeded` kind (design §7), never a member
+/// emitted with `complete:true`.
+fn discover_fast_witnesses(
+    connection: &Connection,
+    regions: &[Region],
+    claims: &[FastClaim],
+    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    max_matches: usize,
+    stats: &mut HydrateStats,
+) -> Result<FastWitnesses> {
+    let mut discovered: Vec<(String, String)> = Vec::new();
+    for (branch, (value, exact)) in claims {
+        if discovered.len() >= max_matches {
+            break;
+        }
+        let Some(matcher) = matchers.get(&(value.clone(), *exact)) else {
+            continue;
+        };
+        if matcher.never {
+            continue;
+        }
+        for region in regions {
+            if discovered.len() >= max_matches {
+                break;
+            }
+            match verify_region_text(connection, region, matcher, None, stats)? {
+                RegionMatch::Member => {
+                    discovered.push((region.key.clone(), branch.clone()));
+                }
+                RegionMatch::BudgetExceeded => {
+                    return Ok(FastWitnesses::BudgetExhausted);
+                }
+                RegionMatch::NoText | RegionMatch::NonMember => {}
+            }
+        }
+    }
+    Ok(FastWitnesses::Found(discovered))
+}
+
+/// The §6.4 discovery outcome for one emitted fast-lane session.
+enum FastWitnesses {
+    /// Discovery ran to its bounded end (or found `max_matches`): the
+    /// (region key, branch) witnesses proven from the region rows. An
+    /// empty list here is genuine consulted-and-disagreed drift.
+    Found(Vec<(String, String)>),
+    /// The request's whole-body verification budget ran out mid-discovery.
+    /// Honest unavailability per design §7 — the page must refuse with
+    /// the typed `verification_budget_exceeded` kind, mirroring the legacy
+    /// lane's `verification_bytes_budget_exceeded` reason, and must never
+    /// degrade into the drift annotation or a `complete:true` member.
+    BudgetExhausted,
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 struct EvaluatedSession {
     session: SessionCtx,
+    /// Eval-time proven witnesses (legacy lane). The fast lane leaves
+    /// this empty and discovers textual witnesses at PAGE time, for the
+    /// emitted sessions only (Stage 1 §6.4).
     witnesses: Vec<(String, String)>,
     score: Option<f64>,
+    /// `true` when membership came from the session×scope documents
+    /// (Stage 1 §6.1). Receipts as `membership_source` and steers the
+    /// page loop between delivered witnesses and page-time discovery.
+    fast_lane: bool,
+    /// The fast lane's expected witnesses: every positive literal branch
+    /// whose session-doc posting set contains the session. Drives
+    /// [`discover_fast_witnesses`] and the `witnesses_not_reproduced`
+    /// annotation when a claim no region reproduces.
+    fast_claims: Vec<FastClaim>,
 }
 
 /// `search_sessions(ast, query, filters, scopes, sort, mode, allow_partial,
@@ -3140,27 +3914,31 @@ pub fn search_sessions(
         source_id: filters.source_id.clone(),
         ..Default::default()
     });
-    let mut quill_scores: HashMap<(String, bool), LiteralHits> = HashMap::new();
-    let mut quill_possible: HashMap<String, HashMap<i64, HashSet<i64>>> = HashMap::new();
-    for (value, exact) in &plan.literals {
-        let hits = if value.is_ascii() {
-            let text = literal_query_text(value, *exact);
-            enumerate_literal(readers, &text, &engine_filters)?.0
-        } else {
-            // The Quill analyzer emits no tokens for non-ASCII input —
-            // skip the engine call; `eval_node` gates such literals on
-            // `None` (evaluate every region) instead of trusting a
-            // guaranteed-empty hit set.
-            LiteralHits::new()
-        };
-        quill_possible.insert(
-            format!("{value}|{exact}"),
-            hits.iter()
-                .map(|(cid, m)| (*cid, m.keys().copied().collect()))
-                .collect(),
-        );
-        quill_scores.insert((value.clone(), *exact), hits);
-    }
+    // Stage 1 lane shape (owner decision 2026-11-10): a plan whose every
+    // node is fast-safe and which carries at least one literal can answer
+    // from the published session×scope documents — per-session membership
+    // posting sets instead of the per-region enumeration. The lane only
+    // ENGAGES when every universe session's marks are converged (the gate
+    // below, after the universe load); one unconverged session keeps the
+    // whole query on the legacy lane with today's exact semantics.
+    let fast_eligible =
+        classify_fast_shape(&plan.root, &matchers).safe && !plan.literals.is_empty();
+
+    // Per-literal Quill evidence, per lane. The legacy lane enumerates the
+    // per-region documents right here (today's order — before the universe
+    // read); the fast lane defers to `enumerate_session_doc_hits` until
+    // the marks gate has proven the session documents converged.
+    let LegacyLiteralEvidence {
+        scores: mut quill_scores,
+        possible: mut quill_possible,
+    } = if fast_eligible {
+        LegacyLiteralEvidence {
+            scores: HashMap::new(),
+            possible: HashMap::new(),
+        }
+    } else {
+        legacy_literal_evidence(readers, &plan, &engine_filters)?
+    };
 
     // 2) Universe: SQL-narrowed candidate sessions. The indexed path
     // evaluates the whole universe against persisted rows — never silently
@@ -3188,9 +3966,24 @@ pub fn search_sessions(
     let mut unknown_sessions = 0_usize;
     // Per-table set reads for the whole universe — the indexed path must
     // never degrade to a per-session query storm (a >50k universe still
-    // evaluates inside the request deadline).
-    let sessions =
-        load_sessions_indexed(connection, &universe, &id_subquery, &id_params, &mut stats)?;
+    // evaluates inside the request deadline). `mut`: the legacy lane's
+    // fragment prefetch (mcp plans) fills `indexed_text` in place.
+    //
+    // Stage 1b: the whole-universe REGION read rides along only for plans
+    // that can consult any region (block-domain predicates, ungated
+    // literals — see [`plan_region_load_mode`]); every other plan loads
+    // its region rows on demand, scaled to hit/page size instead of
+    // archive size.
+    let region_load = plan_region_load_mode(&plan.root, &matchers);
+    let load_universe_regions = matches!(region_load, RegionLoadMode::UniverseStructural(_));
+    let mut sessions = load_sessions_indexed(
+        connection,
+        &universe,
+        &id_subquery,
+        &id_params,
+        &mut stats,
+        load_universe_regions,
+    )?;
     // How many of the evaluated sessions carry source-absent (b) gaps —
     // counted over the WHOLE candidate universe, not just result items:
     // a (b) session excluded by proven absence (a NOT-match or a
@@ -3200,65 +3993,149 @@ pub fn search_sessions(
         .iter()
         .filter(|session| !session.source_text_absent.is_empty())
         .count();
-    // One chunked set read for every `messages.content` row the gated
-    // literals can touch — replacing a point read per gated region with an
-    // O(1)-queries-per-request hydration memo.
-    prefetch_gated_message_texts(
-        connection,
-        &sessions,
-        &plan.literals,
-        &matchers,
-        &quill_possible,
-        &mut stats,
-    )?;
+    // Stage 1 marks gate: the session×scope documents are trusted as
+    // membership evidence only when EVERY universe session's marks row is
+    // `published` at the current REGION_VERSION. One pending or
+    // version-stale mark falls the whole query back to the legacy
+    // per-region lane — answers and refusals stay byte-identical to
+    // today, and `membership_source` receipts the lane that ran.
+    let fast_lane = fast_eligible && sessions.iter().all(|session| session.session_docs_current);
+    let mut session_doc_hits: HashMap<(String, bool), HashMap<i64, f32>> = HashMap::new();
+    if fast_lane {
+        // §6.1: one posting set per literal — `(conversation_id -> best
+        // session-doc score)`. No gated-message prefetch, no fragment
+        // prefetch: the fast lane never touches region text at eval time
+        // (witnesses are page-time work for the emitted sessions only).
+        for (value, exact) in &plan.literals {
+            let hits =
+                enumerate_session_doc_hits(readers, (value.as_str(), *exact), &engine_filters)?;
+            session_doc_hits.insert((value.clone(), *exact), hits);
+        }
+    } else {
+        if fast_eligible {
+            // The marks-gate fallback: the legacy per-region enumeration
+            // runs here instead of before the universe read. For every
+            // answerable query the two reads have no coupling, so the
+            // reordering is unobservable — with one honest corner
+            // (review M-1): a plan BOTH over the literal enumeration cap
+            // and over the universe ceiling refuses
+            // `search_budget_exceeded` here (the ceiling check ran
+            // first), where a non-fast plan with the same literal and
+            // universe refuses `ranking_budget_exceeded` (it enumerated
+            // first). Both are honest typed refusals of the same query;
+            // only the reported kind differs by lane. Pinning the corner
+            // needs a >HARD_UNIVERSE_CEILING-session fixture carrying a
+            // >MAX_LITERAL_HITS literal (both hard constants, no test
+            // knobs) — deferred as disproportionate to the divergence.
+            let LegacyLiteralEvidence { scores, possible } =
+                legacy_literal_evidence(readers, &plan, &engine_filters)?;
+            quill_scores = scores;
+            quill_possible = possible;
+        }
+        // Stage 1b gated lane: attach ONLY the region rows the Quill hit
+        // gates can consult (one indexed seek per conversation chunk) —
+        // a session with no gated hits for any plan literal reads
+        // nothing. Byte-identical evaluation: every consumer on this
+        // lane is gate-filtered (see [`attach_gated_regions`]).
+        if !load_universe_regions {
+            attach_gated_regions(
+                connection,
+                &mut sessions,
+                &plan,
+                &matchers,
+                &quill_possible,
+                &mut stats,
+            )?;
+        }
+        // One chunked set read for every `messages.content` row the gated
+        // literals can touch — replacing a point read per gated region
+        // with an O(1)-queries-per-request hydration memo.
+        prefetch_gated_message_texts(
+            connection,
+            &sessions,
+            &plan.literals,
+            &matchers,
+            &quill_possible,
+            &mut stats,
+        )?;
+        // The one predicate arm that reads persisted fragments (`mcp`)
+        // keeps its eager fragment availability under the lazy load
+        // (Stage 1 §6.3 caller audit): one chunked set read fills every
+        // fragment in place before evaluation.
+        if plan_reads_fragments(&plan.root) {
+            prefetch_region_fragments(connection, &mut sessions, &mut stats)?;
+        }
+    }
     for session in sessions {
         let conversation_id = session.conversation_id;
-        let mut result = combine(
-            &control_result(filters, &session),
-            &eval_node(
+        let evidence = if fast_lane {
+            // §6.1: membership from the session×scope posting sets. The
+            // sentinel witness in the `known` set carries the verdict
+            // through the same set algebra; region text is never touched.
+            eval_node_fast(&plan.root, &session, &session_doc_hits)
+        } else {
+            eval_node(
                 &plan.root,
                 &session,
                 connection,
                 &mut stats,
                 &matchers,
                 &quill_possible,
-            )?,
-            true,
-        );
+            )?
+        };
+        let result = combine(&control_result(filters, &session), &evidence, true);
         match result.truth() {
             Truth::True => {
-                // Admitted witness scores: positive branches only, best
-                // Quill hit bound to the witness region's message.
-                let mut best_score: Option<f64> = None;
-                for (region_key, branch) in &result.witnesses {
-                    let Some((literal, exact)) = plan
-                        .positive_branches
-                        .get(branch)
-                        .map(|(v, e)| (v.clone(), *e))
-                    else {
-                        continue;
-                    };
-                    let region = session
-                        .regions
-                        .iter()
-                        .find(|region| &region.key == region_key);
-                    let Some(idx) = region.map(|r| r.quill_idx) else {
-                        continue;
-                    };
-                    if let Some(hit_map) = quill_scores.get(&(literal, exact))
-                        && let Some(scores) = hit_map.get(&conversation_id)
-                        && let Some(score) = scores.get(&idx)
-                    {
-                        let score = *score as f64;
-                        best_score = Some(best_score.map_or(score, |best: f64| best.max(score)));
+                if fast_lane {
+                    // Scores and witness claims derive from the same
+                    // posting sets; the textual witnesses themselves are
+                    // discovered at page time, for the emitted sessions
+                    // only (Stage 1 §6.4).
+                    let (score, claims) =
+                        fast_score_and_claims(&plan, conversation_id, &session_doc_hits);
+                    accepted.push(EvaluatedSession {
+                        session,
+                        witnesses: Vec::new(),
+                        score,
+                        fast_lane: true,
+                        fast_claims: claims,
+                    });
+                } else {
+                    // Admitted witness scores: positive branches only, best
+                    // Quill hit bound to the witness region's message.
+                    let mut best_score: Option<f64> = None;
+                    for (region_key, branch) in &result.witnesses {
+                        let Some((literal, exact)) = plan
+                            .positive_branches
+                            .get(branch)
+                            .map(|(v, e)| (v.clone(), *e))
+                        else {
+                            continue;
+                        };
+                        let region = session
+                            .regions
+                            .iter()
+                            .find(|region| &region.key == region_key);
+                        let Some(idx) = region.map(|r| r.quill_idx) else {
+                            continue;
+                        };
+                        if let Some(hit_map) = quill_scores.get(&(literal, exact))
+                            && let Some(scores) = hit_map.get(&conversation_id)
+                            && let Some(score) = scores.get(&idx)
+                        {
+                            let score = *score as f64;
+                            best_score =
+                                Some(best_score.map_or(score, |best: f64| best.max(score)));
+                        }
                     }
+                    accepted.push(EvaluatedSession {
+                        session,
+                        witnesses: result.witnesses,
+                        score: best_score,
+                        fast_lane: false,
+                        fast_claims: Vec::new(),
+                    });
                 }
-                let _ = &mut result;
-                accepted.push(EvaluatedSession {
-                    session,
-                    witnesses: result.witnesses,
-                    score: best_score,
-                });
             }
             Truth::Unknown => {
                 unknown_sessions += 1;
@@ -3317,8 +4194,15 @@ pub fn search_sessions(
         // witness evidence exists iff the score loop bound a hit. An
         // accepted session whose witnesses produced no hit (predicate-
         // only proof, e.g. `has:tag` controls) contributes no score —
-        // the honest "ranking incomplete" signal survives unchanged.
-        let has_positive_witness = !entry.witnesses.is_empty();
+        // the honest "ranking incomplete" signal survives unchanged. On
+        // the fast lane the expected-witness claims play the witness
+        // role: a claim always carries its posting-set score, so the
+        // incomplete signal stays honest there too.
+        let has_positive_witness = if entry.fast_lane {
+            !entry.fast_claims.is_empty()
+        } else {
+            !entry.witnesses.is_empty()
+        };
         if has_positive_witness && entry.score.is_none() {
             ranking_incomplete = true;
         }
@@ -3428,7 +4312,7 @@ pub fn search_sessions(
         }
         emitted += 1;
         let session = &entry.session;
-        let item = json!({
+        let mut item = json!({
             "conversation_id": session.conversation_id,
             "public_id": session.public_id,
             "provider": session.provider,
@@ -3451,6 +4335,13 @@ pub fn search_sessions(
             // coverage is incomplete. Always present; empty when every
             // gap is a read-recoverable one.
             "source_text_absent": session.source_text_absent,
+            // Stage 1 §6.4: the delivered textual-witness count for this
+            // session (both lanes). Set to its final value below, once
+            // the page's witness work has run; 0 with the page-level
+            // `witnesses_not_reproduced` warning names the ONE
+            // deliberate relaxation — a doc-claimed member whose regions
+            // cannot reproduce the literal textually.
+            "witness_count": 0,
         });
         // Public identity is resolved lazily and stays nullable on failure
         // (a search page must not die on one unverifiable row).
@@ -3459,14 +4350,85 @@ pub fn search_sessions(
             break;
         }
         bytes += item_bytes;
-        // Witnesses → bounded deep-link matches.
+        // Witnesses → bounded deep-link matches. The fast lane discovers
+        // its textual witnesses HERE (§6.4) — for the emitted session only,
+        // bounded by max_matches, through the same verify_region_text the
+        // legacy lane ran at eval time.
+        //
+        // Stage 1b `emitted_page_sessions`: this emitted session's full
+        // structural row set is THE region read the fast lane spends — one
+        // indexed per-conversation read, the same rows in the same
+        // `region_ordinal` order the eager universe load attached before
+        // Stage 1b, so §6.4 discovery and the witness/snippet lookups
+        // below consult exactly the evidence they always saw. Sessions
+        // past the byte budget (the `break` above) never load.
+        let page_regions: Vec<Region> = if entry.fast_lane {
+            let rows = coding_agent_search::viewer_extensions::search_regions::regions_for_conversation_structural(
+                connection,
+                session.conversation_id,
+            )?;
+            let regions: Vec<Region> = rows
+                .into_iter()
+                .map(|row| region_from(session.conversation_id, row))
+                .collect();
+            stats.regions_loaded += regions.len();
+            regions
+        } else {
+            Vec::new()
+        };
+        let fast_discovered: Vec<(String, String)> = if entry.fast_lane {
+            match discover_fast_witnesses(
+                connection,
+                &page_regions,
+                &entry.fast_claims,
+                &matchers,
+                max_matches,
+                &mut stats,
+            )? {
+                FastWitnesses::Found(discovered) => discovered,
+                FastWitnesses::BudgetExhausted => {
+                    // Design §7: budget exhaustion is honest
+                    // unavailability — not §6.4 drift and never a
+                    // silently-truncated member with `complete:true`.
+                    // Refuse the whole page with the typed kind, naming
+                    // the same verification_bytes_budget_exceeded reason
+                    // the legacy lane's refusal carries.
+                    return Err(refuse(
+                        "verification_budget_exceeded",
+                        format!(
+                            "Witness verification for conversation {} exhausted the \
+                             request's {}-byte text-verification budget mid-discovery \
+                             (verification_bytes_budget_exceeded) — honest unavailability, \
+                             never a complete answer. Raise --text-verification-budget-bytes \
+                             and retry.",
+                            session.conversation_id, stats.verification_budget
+                        ),
+                    ));
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        let witnesses: &[(String, String)] = if entry.fast_lane {
+            &fast_discovered
+        } else {
+            &entry.witnesses
+        };
         let mut session_matches = Vec::new();
-        for (region_key, branch) in &entry.witnesses {
+        // The fast lane resolves witness regions against its page-time
+        // load; the legacy lane against the session's (eager or gated)
+        // resident rows — either way exactly the set the witnesses were
+        // proven from.
+        let regions_lookup: &[Region] = if entry.fast_lane {
+            &page_regions
+        } else {
+            &entry.session.regions
+        };
+        for (region_key, branch) in witnesses {
             if session_matches.len() >= max_matches {
                 break;
             }
-            let Some(region) = session
-                .regions
+            let Some(region) = regions_lookup
                 .iter()
                 .find(|region| &region.key == region_key)
             else {
@@ -3490,9 +4452,20 @@ pub fn search_sessions(
                 "score": Value::Null,
             }));
         }
+        if entry.fast_lane && !entry.fast_claims.is_empty() && fast_discovered.is_empty() {
+            // The §6.4 annotation: the session documents claimed the
+            // member but no consulted region reproduced the literal
+            // textually (analyzer n-gram drift). Emitted with
+            // witness_count=0 and named — never silently dropped, never
+            // a whole-page refusal. Budget exhaustion never reaches
+            // here: it refuses the page above, so this warning names
+            // ONLY consulted-and-disagreed drift.
+            warnings.push("witnesses_not_reproduced".to_owned());
+        }
         if !session_matches.is_empty() {
             matches_out.insert(session.conversation_id.to_string(), json!(session_matches));
         }
+        item["witness_count"] = json!(session_matches.len());
         last = Some(key);
         items.push(item);
     }
@@ -3515,6 +4488,17 @@ pub fn search_sessions(
         }
     }
     let complete = unknown_sessions == 0;
+    // Stage 1b receipts, hoisted for the json! macro below: which
+    // region-read strategy ran, and — for the structural fallback — why.
+    let region_load_mode = match (&region_load, fast_lane) {
+        (RegionLoadMode::UniverseStructural(_), _) => "universe_structural",
+        (RegionLoadMode::OnDemand, true) => "emitted_page_sessions",
+        (RegionLoadMode::OnDemand, false) => "gated_quill_seeks",
+    };
+    let region_load_reason = match region_load {
+        RegionLoadMode::UniverseStructural(reason) => json!(reason),
+        RegionLoadMode::OnDemand => Value::Null,
+    };
     let next_cursor = if has_more {
         last.map(|cursor| encode_cursor(sort_name, &cursor, &generation, &query_digest))
             .map(Value::String)
@@ -3537,6 +4521,14 @@ pub fn search_sessions(
         // are provably text absent at the source (see the per-item
         // `source_text_absent` annotation).
         "source_absent_sessions": source_absent_sessions,
+        // Stage 1 §6.1 receipt: which membership evidence answered the
+        // query — the aggregated session×scope documents or the per-region
+        // lane (including the marks-gate fallback). Always present.
+        "membership_source": if fast_lane {
+            "session_scope_docs"
+        } else {
+            "region_literals"
+        },
         "generation": generation,
         "index_epoch": readers.index_epoch,
         "warnings": warnings,
@@ -3544,15 +4536,176 @@ pub fn search_sessions(
         // Explicit diagnostics required by Task 5: candidate + hydration
         // counts prove the indexed path never re-reads the corpus. The
         // verification meters prove whole-body scanning stays inside the
-        // request's byte ceiling.
+        // request's byte ceiling. `fragments_loaded` receipts the lazy
+        // fragment reads (§6.3: first touch per session plus mcp-plan
+        // prefetch chunks); `score_domain` names the document space the
+        // scores came from.
         "diagnostics": {
             "candidate_sessions": universe_size,
             "region_rows_loaded": stats.regions_loaded,
+            // Stage 1b receipts: which region-read strategy ran and — for
+            // the structural fallback — why. `region_rows_loaded` above now
+            // counts ONLY what the request actually read (gated seeks,
+            // emitted-page loads, or the full structural load for
+            // fallback plans), never a fixed archive-sized floor.
+            "region_load_mode": region_load_mode,
+            "region_load_reason": region_load_reason,
             "regions_hydrated": stats.regions_hydrated,
             "messages_hydrated": stats.messages_hydrated,
             "full_text_messages_hydrated": stats.full_messages_hydrated,
+            "fragments_loaded": stats.fragments_loaded,
             "verification_bytes_scanned": stats.verification_bytes,
             "verification_budget_bytes": stats.verification_budget,
+            "score_domain": if fast_lane { "session_docs" } else { "region_documents" },
         },
     }))
+}
+
+#[cfg(test)]
+mod cursor_bit_roundtrip_tests {
+    use super::*;
+    use crate::viewer_bridge::protocol::Generation;
+
+    fn generation() -> Generation {
+        Generation {
+            canonical_revision: 7,
+            annotation_revision: 3,
+            projection_revision: 5,
+            lexical_generation: 9,
+        }
+    }
+
+    /// encode -> decode must be BIT-EXACT for every sort value. The keyset
+    /// after-predicate resumes inside tie groups via exact f64 equality, so
+    /// a bound even one ULP off the encoded key either strands the whole tie
+    /// suffix (bound low: `cargo` on the owner archive lost 302 of 1907
+    /// members — the decoded bound 1.590656280517578 never equals the scores
+    /// 1.5906562805175781) or re-emits ties forever (bound high: the cycling
+    /// the incumbent binary's walk showed). Decimal floats cannot be trusted
+    /// here because serde_json's float parse is not correctly rounded for
+    /// every f64, so `v` carries the raw bit pattern instead.
+    #[test]
+    fn cursor_value_roundtrips_bit_exactly() {
+        let cur_gen = generation();
+        let digest = "d473e0e4cf3a6b1c";
+        // The f32-widened relevance scores the fast lane emits: exactly the
+        // 17-significant-digit f64 class a decimal roundtrip can miss.
+        let f32_widened: Vec<f32> = vec![
+            1.5906563, 3.9335427, 27.335167, 29.436178, 1.5365977, 1.4536486, 0.0, 1043.9766,
+        ];
+        let mut values: Vec<f64> = f32_widened.iter().map(|v| f64::from(*v)).collect();
+        // Millisecond epoch keys (created/activity sorts): exact in f64.
+        values.push(1_762_000_000_123_f64);
+        // Hostile f64s: if the encoding ever degrades to a decimal string,
+        // these are the first shapes to lose a ULP or worse.
+        values.extend([
+            0.1 + 0.2,
+            -2.75,
+            f64::EPSILON,
+            f64::MIN_POSITIVE,
+            f64::MAX,
+            f64::INFINITY,
+            f64::NAN,
+        ]);
+        for v in values {
+            for sort in ["relevance", "created_asc"] {
+                let cursor = SearchCursor {
+                    value: Some(v),
+                    null_flag: false,
+                    id: 42,
+                };
+                let raw = encode_cursor(sort, &cursor, &cur_gen, digest);
+                let decoded = decode_cursor(&raw, sort, &cur_gen, digest)
+                    .unwrap_or_else(|e| panic!("sort={sort} value={v:?}: {e:?}"));
+                assert!(!decoded.null_flag, "sort={sort} value={v:?}");
+                assert_eq!(decoded.id, 42, "sort={sort} value={v:?}");
+                let got = decoded.value.expect("value must decode present");
+                assert_eq!(
+                    got.to_bits(),
+                    v.to_bits(),
+                    "sort={sort}: decoded bits differ from encoded bits"
+                );
+            }
+        }
+    }
+
+    /// Null sort keys (sessions without created/activity metadata) must
+    /// roundtrip as null_flag, never as a numeric value.
+    #[test]
+    fn cursor_null_value_roundtrips() {
+        let cur_gen = generation();
+        let cursor = SearchCursor {
+            value: None,
+            null_flag: true,
+            id: 7,
+        };
+        let raw = encode_cursor("created_asc", &cursor, &cur_gen, "digest");
+        let decoded = decode_cursor(&raw, "created_asc", &cur_gen, "digest").unwrap();
+        assert!(decoded.null_flag);
+        assert_eq!(decoded.value, None);
+        assert_eq!(decoded.id, 7);
+    }
+
+    /// ss1 cursors (decimal-float `v`) are the lossy format this fix retires:
+    /// they must refuse honestly as cursor_expired, never silently decode a
+    /// 1-ULP-off bound. A float-typed `v` inside an ss2 cursor is refused the
+    /// same way — the bit-pattern lane only accepts integers.
+    #[test]
+    fn legacy_and_forged_cursors_refuse() {
+        use crate::viewer_bridge::protocol::Refusal;
+        let refusal_kind = |err: anyhow::Error| -> &'static str {
+            err.downcast_ref::<Refusal>()
+                .map(|refusal| refusal.kind)
+                .unwrap_or("non-refusal error")
+        };
+        let cur_gen = generation();
+        let digest = "d473e0e4cf3a6b1c";
+        let legacy = json!({
+            "k": "ss1",
+            "s": "relevance",
+            "nf": false,
+            "v": 1.5906562805175781_f64,
+            "id": 42,
+            "g": cur_gen,
+            "q": digest,
+        })
+        .to_string();
+        let err = decode_cursor(&legacy, "relevance", &cur_gen, digest).unwrap_err();
+        assert_eq!(
+            refusal_kind(err),
+            "cursor_expired",
+            "ss1 (decimal-float v) must refuse as cursor_expired"
+        );
+
+        let forged = json!({
+            "k": "ss2",
+            "s": "relevance",
+            "nf": false,
+            "v": 1.5906562805175781_f64,
+            "id": 42,
+            "g": cur_gen,
+            "q": digest,
+        })
+        .to_string();
+        let err = decode_cursor(&forged, "relevance", &cur_gen, digest).unwrap_err();
+        assert_eq!(
+            refusal_kind(err),
+            "cursor_expired",
+            "float-typed v inside an ss2 cursor must refuse as cursor_expired"
+        );
+
+        // Bound integrity: a different query digest, a different sort, or a
+        // different generation must never resume another query's walk.
+        let cursor = SearchCursor {
+            value: Some(1.5_f64),
+            null_flag: false,
+            id: 42,
+        };
+        let raw = encode_cursor("relevance", &cursor, &cur_gen, digest);
+        assert!(decode_cursor(&raw, "relevance", &cur_gen, "other-digest").is_err());
+        assert!(decode_cursor(&raw, "created_asc", &cur_gen, digest).is_err());
+        let mut other = cur_gen;
+        other.lexical_generation += 1;
+        assert!(decode_cursor(&raw, "relevance", &other, digest).is_err());
+    }
 }

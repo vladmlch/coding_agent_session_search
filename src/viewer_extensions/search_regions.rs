@@ -36,7 +36,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use frankensearch::quill::cass::CassDocument;
 use serde_json::{Map, Value};
 
@@ -79,13 +79,79 @@ use super::providers::{gemini_call_result_text, gemini_status_verdict, scan_copi
 /// fallback stays suppressed when the parts array is present (the facts
 /// lane classifies the same shapes — providers/copilot.rs,
 /// `scan_copilot_parts`).
-pub const REGION_VERSION: i64 = 5;
+/// v6: v5 plus session×scope documents — every marked conversation also
+/// publishes one aggregated lexical document per (scope, chunk) packed from
+/// its whole region inventory (`session_scope_docs`), minted at
+/// `SESSION_DOC_BASE + (scope_ordinal << SESSION_DOC_SCOPE_SHIFT) +
+/// chunk_seq`, so single-token strict plans answer membership from posting
+/// sets instead of the capped message-lane enumeration (Stage 1 of the
+/// 2026-11-10 strict-common-terms report, §6.1/§6.2). The bump forces one
+/// republish of every existing marks row — the fast path refuses to trust
+/// session docs stamped at any older version. Transition note (review
+/// M-2): that first republish queues session-doc stale slots bounded by
+/// each conversation's OLD per-scope region-row count — slots that never
+/// held a live document under v5, when session docs did not exist.
+/// Harmless (the retire DELETE ignores absent ids) but the one-time
+/// `pending_doc_deletes` JSON and live-bound contribution across a full
+/// reindex is proportional to region counts, not to real stale chunks.
+pub const REGION_VERSION: i64 = 6;
 
 /// Synthetic `msg_idx` space for region documents: `REGION_DOC_BASE +
 /// region_ordinal`. Below `i64::MAX` so `decode_hit` accepts them; far above
 /// any real message index so a consumer that treats the slot as a message
 /// coordinate misses honestly instead of hydrating the wrong message.
 pub const REGION_DOC_BASE: u64 = 1 << 40;
+
+/// Synthetic `msg_idx` space for session×scope documents:
+/// `SESSION_DOC_BASE + (scope_ordinal << SESSION_DOC_SCOPE_SHIFT) +
+/// chunk_seq`. Above every region slot (region ordinals stay far below
+/// `1 << 41`), below `i64::MAX`, and never colliding with
+/// [`REGION_DOC_BASE`] slots. Far above any real message index for the
+/// same honest-miss reason.
+pub const SESSION_DOC_BASE: u64 = 1 << 41;
+
+/// Per-scope chunk width of the session-doc slot space (the report's
+/// `(scope_ordinal << 20) + chunk_seq`). A scope packing this many chunks
+/// is refused loudly at derivation — a single conversation×scope that big
+/// is an archive anomaly, not something to silently mis-slot.
+pub const SESSION_DOC_SCOPE_SHIFT: u64 = 20;
+
+/// Hard per-scope chunk ceiling: `chunk_seq < 1 << SESSION_DOC_SCOPE_SHIFT`.
+pub const SESSION_DOC_MAX_CHUNKS_PER_SCOPE: u64 = 1 << SESSION_DOC_SCOPE_SHIFT;
+
+/// Session×scope chunks pack WHOLE regions (never mid-region) until the
+/// next region would push the chunk past this many CHARACTERS — an
+/// oversized region takes a chunk of its own. Chars, not bytes, because
+/// the count derivation reads SQL `LENGTH()` (characters for TEXT), so the
+/// staging packer and the SQL-side count agree exactly; 65,536 chars is
+/// ≤ 256 KiB of UTF-8 for every text (max 4 bytes per scalar).
+pub const SESSION_DOC_CHUNK_CHAR_CAP: usize = 64 * 1024;
+
+/// Fixed scope→ordinal mapping for session-doc slots. The six canonical
+/// scopes get stable ordinals; any unknown scope string shares the 6
+/// bucket so the mapping is total and deterministic from the rows alone.
+pub fn session_scope_ordinal(scope: &str) -> u64 {
+    match scope {
+        "title" => 0,
+        "chat" => 1,
+        "tools" => 2,
+        "thinking" => 3,
+        "artifacts" => 4,
+        "subagents" => 5,
+        _ => 6,
+    }
+}
+
+/// One region's session-doc text contribution in characters INCLUDING the
+/// trailing `'\n'` separator that keeps the last token of one region from
+/// merging with the first token of the next (`text.chars().count() + 1`).
+/// The SQL-side count derivation must add the same `+ 1` per region.
+///
+/// The SQL twin of the Rust text selection — `indexed_text` when present
+/// (fragment wins: noise-chat and every derived/meta row), else the
+/// anchored message content for `chat` rows, else the empty string:
+pub const SESSION_REGION_TEXT_SQL: &str = "COALESCE(r.indexed_text, CASE WHEN r.text_source = 'chat' \
+     THEN COALESCE(m.content, '') ELSE '' END)";
 
 /// Same bound the query-time derivation applied to one region's text.
 pub const MAX_REGION_TEXT: usize = 64 * 1024;
@@ -125,6 +191,10 @@ pub struct RegionRow {
     pub has_error: Option<bool>,
     pub error_type: Option<String>,
     pub text_source: String,
+    /// Whether a persisted fragment exists (`indexed_text IS NOT NULL`) —
+    /// carried by the structural universe load, which never materializes
+    /// the text itself (Stage 1 lazy fragments).
+    pub has_fragment: bool,
     /// Persisted bounded fragment for `derived`/`meta` lanes.
     pub indexed_text: Option<String>,
     pub source_revision: i64,
@@ -1197,6 +1267,7 @@ pub fn derive_message_regions(
             has_error: is_error,
             error_type: is_error.map(|_| "tool".to_owned()),
             text_source: TEXT_SOURCE_DERIVED.to_owned(),
+            has_fragment: true,
             indexed_text: Some(bounded(&text)),
             source_revision,
         });
@@ -1217,6 +1288,7 @@ pub fn derive_message_regions(
             has_error: result.is_error,
             error_type: result.is_error.map(|_| "tool".to_owned()),
             text_source: TEXT_SOURCE_DERIVED.to_owned(),
+            has_fragment: true,
             indexed_text: Some(bounded(&result.text)),
             source_revision,
             tool_name: None,
@@ -1494,6 +1566,20 @@ pub fn publish_search_regions(
         ],
         |row| row.get_typed::<i64>(0),
     )?;
+    // Stage 1: the previous generation's session×scope chunk count per
+    // scope is bounded by its region count (region-boundary packing makes
+    // at most one chunk per region). The OLD chat chunk count itself is
+    // NOT derivable here — a re-ingest already replaced the message rows
+    // this transaction reads — so the stale queue conservatively covers
+    // every slot under that bound; the post-commit delete ignores
+    // identities that never existed, and the keep filter below protects
+    // every chunk the new generation owns. Read BEFORE the row DELETE.
+    let old_scope_counts: Vec<(String, i64)> = db.facts_query_map(
+        "SELECT scope, COUNT(*) FROM viewer_search_regions \
+         WHERE conversation_id = ?1 GROUP BY scope",
+        &[ParamValue::from(conversation_id)],
+        |row| Ok((row.get_typed::<String>(0)?, row.get_typed::<i64>(1)?)),
+    )?;
     // Region documents are minted from the canonical conversation row
     // (`region_docs`), so their queued identities must be too. A packet can
     // name the session by another path than the row it merged into; ids
@@ -1543,6 +1629,19 @@ pub fn publish_search_regions(
     for region in &regions {
         insert_region(db, conversation_id, region)?;
     }
+    // Stage 1: queue the session×scope stale identities. The keep set is
+    // derived from the just-inserted rows through the SAME function the
+    // staging lane materializes documents with, so a live keep identity
+    // can never be queued. Old slots are conservatively bounded by the
+    // pre-delete per-scope region counts (see above); identities that
+    // never existed are ignored by the post-commit delete.
+    let session_stale =
+        session_doc_stale_identities(db, conversation_id, &old_scope_counts, &doc_identity)?;
+    if !session_stale.is_empty() {
+        let mut list: Vec<String> = serde_json::from_str(&pending).unwrap_or_default();
+        list.extend(session_stale);
+        pending = serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_owned());
+    }
     db.facts_execute(
         "INSERT INTO viewer_search_region_marks \
          (conversation_id, region_version, source_revision, region_count, \
@@ -1573,6 +1672,43 @@ pub fn publish_search_regions(
     Ok(())
 }
 
+/// The conservative session×scope stale-identity queue for one
+/// conversation (Stage 1): every session-doc slot under the pre-delete
+/// per-scope region-count bound that the CURRENT rows' derivation does not
+/// keep. Region-boundary packing makes at most one chunk per region, so
+/// the old per-scope region count bounds the previous generation's chunk
+/// count; the old chat chunk count itself is not derivable at publication
+/// time (a re-ingest already replaced the message rows), which is why the
+/// queue is conservative — the post-commit delete ignores identities that
+/// never existed, and the keep filter (derived through the same function
+/// the staging lane materializes with) protects every live chunk.
+fn session_doc_stale_identities(
+    db: &impl FactsDb,
+    conversation_id: i64,
+    old_scope_counts: &[(String, i64)],
+    doc_identity: &dyn Fn(i64) -> String,
+) -> Result<Vec<String>> {
+    let Some(chunks) = session_scope_docs(db, conversation_id)? else {
+        return Ok(Vec::new());
+    };
+    let keep: std::collections::HashSet<String> = chunks
+        .iter()
+        .map(|chunk| doc_identity(chunk.slot as i64))
+        .collect();
+    let mut stale = Vec::new();
+    for (scope, count) in old_scope_counts {
+        let ordinal = session_scope_ordinal(scope);
+        for seq in 0..(*count).max(0).min(SESSION_DOC_MAX_CHUNKS_PER_SCOPE as i64) as u64 {
+            let slot = SESSION_DOC_BASE + (ordinal << SESSION_DOC_SCOPE_SHIFT) + seq;
+            let identity = doc_identity(slot as i64);
+            if !keep.contains(&identity) {
+                stale.push(identity);
+            }
+        }
+    }
+    Ok(stale)
+}
+
 /// Targeted metadata-region replacement for annotation/tag edits and
 /// child-link fixups: only `meta:*` rows are re-derived, preserving the
 /// message-bound ordinals. Marks the session's docs `meta_pending` until
@@ -1599,6 +1735,17 @@ pub fn replace_meta_regions(db: &impl FactsDb, conversation_id: i64) -> Result<(
          WHERE conversation_id = ?1 AND region_key LIKE 'meta:%'",
         &[ParamValue::from(conversation_id)],
         |row| row.get_typed::<i64>(0),
+    )?;
+    // Stage 1: the meta replacement rewrites text that rides the
+    // session×scope chunks (notes live in the chat scope, children in
+    // subagents), so the session-doc stale queue needs the pre-delete
+    // per-scope row counts as its conservative old-slot bound — read
+    // BEFORE the meta DELETE, exactly like the full republication.
+    let old_scope_counts: Vec<(String, i64)> = db.facts_query_map(
+        "SELECT scope, COUNT(*) FROM viewer_search_regions \
+         WHERE conversation_id = ?1 GROUP BY scope",
+        &[ParamValue::from(conversation_id)],
+        |row| Ok((row.get_typed::<String>(0)?, row.get_typed::<i64>(1)?)),
     )?;
     let meta = derive_meta_regions(
         db,
@@ -1646,6 +1793,14 @@ pub fn replace_meta_regions(db: &impl FactsDb, conversation_id: i64) -> Result<(
         for slot in old_meta.iter().filter(|slot| !keep.contains(slot)) {
             pending.push(doc_identity(*slot));
         }
+        // Stage 1: session×scope stale queue — the keep set is derived from
+        // the rows the replacement just wrote (the same function the
+        // staging lane materializes with), the old slots are bounded by the
+        // pre-delete per-scope counts, and identities that never existed
+        // are ignored by the post-commit delete.
+        let session_stale =
+            session_doc_stale_identities(db, conversation_id, &old_scope_counts, &doc_identity)?;
+        pending.extend(session_stale);
     }
     db.facts_execute(
         "UPDATE viewer_search_region_marks SET docs_state = ?2, \
@@ -1665,6 +1820,7 @@ pub fn replace_meta_regions(db: &impl FactsDb, conversation_id: i64) -> Result<(
 // ---------------------------------------------------------------------------
 
 fn row_to_region(row: &Row) -> Result<RegionRow, crate::franken_sync::FrankenError> {
+    let indexed_text: Option<String> = row.get_typed(15)?;
     Ok(RegionRow {
         region_ordinal: row.get_typed(0)?,
         region_key: row.get_typed(1)?,
@@ -1681,8 +1837,37 @@ fn row_to_region(row: &Row) -> Result<RegionRow, crate::franken_sync::FrankenErr
         has_error: row.get_typed::<Option<i64>>(12)?.map(|v| v != 0),
         error_type: row.get_typed(13)?,
         text_source: row.get_typed(14)?,
-        indexed_text: row.get_typed(15)?,
+        has_fragment: indexed_text.is_some(),
+        indexed_text,
         source_revision: row.get_typed(16)?,
+    })
+}
+
+/// Column-shifted `RegionRow` read for the STRUCTURAL universe load: same
+/// column layout as [`region_row_shifted`] except position 16 carries the
+/// `indexed_text IS NOT NULL` bit instead of the fragment itself — the
+/// universe load never materializes fragment text (Stage 1 lazy fragments)
+/// and only records whether a fragment exists to read on demand.
+fn region_row_structural(row: &Row) -> Result<RegionRow, crate::franken_sync::FrankenError> {
+    Ok(RegionRow {
+        region_ordinal: row.get_typed(1)?,
+        region_key: row.get_typed(2)?,
+        scope: row.get_typed(3)?,
+        scope_known: row.get_typed::<i64>(4)? != 0,
+        quill_idx: row.get_typed(5)?,
+        message_idx: row.get_typed(6)?,
+        message_id: row.get_typed(7)?,
+        step_index: row.get_typed(8)?,
+        turn_index: row.get_typed(9)?,
+        tool_name: row.get_typed(10)?,
+        file_path: row.get_typed(11)?,
+        exit_code: row.get_typed(12)?,
+        has_error: row.get_typed::<Option<i64>>(13)?.map(|v| v != 0),
+        error_type: row.get_typed(14)?,
+        text_source: row.get_typed(15)?,
+        has_fragment: row.get_typed::<i64>(16)? != 0,
+        indexed_text: None,
+        source_revision: row.get_typed(17)?,
     })
 }
 
@@ -1737,6 +1922,7 @@ pub fn regions_for_conversations(
 /// Column-shifted `RegionRow` read for a `conversation_id`-prefixed
 /// SELECT (columns 1..=17 of the batch loaders).
 fn region_row_shifted(row: &Row) -> Result<RegionRow, crate::franken_sync::FrankenError> {
+    let indexed_text: Option<String> = row.get_typed(16)?;
     Ok(RegionRow {
         region_ordinal: row.get_typed(1)?,
         region_key: row.get_typed(2)?,
@@ -1753,7 +1939,8 @@ fn region_row_shifted(row: &Row) -> Result<RegionRow, crate::franken_sync::Frank
         has_error: row.get_typed::<Option<i64>>(13)?.map(|v| v != 0),
         error_type: row.get_typed(14)?,
         text_source: row.get_typed(15)?,
-        indexed_text: row.get_typed(16)?,
+        has_fragment: indexed_text.is_some(),
+        indexed_text,
         source_revision: row.get_typed(17)?,
     })
 }
@@ -1762,6 +1949,13 @@ fn region_row_shifted(row: &Row) -> Result<RegionRow, crate::franken_sync::Frank
 /// bound by the search lane's `IN (universe subquery)` so archives whose
 /// id-list chunking cannot fit the request deadline still load in one
 /// statement.
+///
+/// Stage 1 lazy fragments (§6.3): the load is STRUCTURAL-ONLY —
+/// `indexed_text` never rides it. Position 16 carries the
+/// `indexed_text IS NOT NULL` bit instead ([`region_row_structural`]), so
+/// the universe load stops paying one fragment transfer per region
+/// (~6 s on a 762k-region archive); the query lane reads fragments on
+/// demand, only for the regions its witnesses and snippets actually need.
 ///
 /// Takes `&Connection`/`&[SqliteValue]` (not `&impl FactsDb`/
 /// `&[ParamValue]`) because the caller already holds the ordered universe
@@ -1774,9 +1968,9 @@ pub fn regions_for_universe_subquery(
     let sql = format!(
         "SELECT conversation_id, region_ordinal, region_key, scope, scope_known, \
          quill_idx, message_idx, message_id, step_index, turn_index, tool_name, \
-         file_path, exit_code, has_error, error_type, text_source, indexed_text, \
-         source_revision FROM viewer_search_regions WHERE conversation_id IN \
-         ({id_subquery}) ORDER BY conversation_id, region_ordinal"
+         file_path, exit_code, has_error, error_type, text_source, \
+         indexed_text IS NOT NULL, source_revision FROM viewer_search_regions \
+         WHERE conversation_id IN ({id_subquery}) ORDER BY conversation_id, region_ordinal"
     );
     let rows = connection
         .query_with_params(&sql, params)
@@ -1784,8 +1978,114 @@ pub fn regions_for_universe_subquery(
     let mut out: HashMap<i64, Vec<RegionRow>> = HashMap::new();
     for row in &rows {
         let cid = row.get_typed::<i64>(0)?;
-        let region = region_row_shifted(row)?;
+        let region = region_row_structural(row)?;
         out.entry(cid).or_default().push(region);
+    }
+    Ok(out)
+}
+
+/// The structural column list shared by the Stage 1b on-demand region
+/// reads — the same 18 positions [`regions_for_universe_subquery`] selects,
+/// with `indexed_text IS NOT NULL` at position 16 so the fragment TEXT
+/// itself never rides a query-lane read (Stage 1 §6.3 lazy fragments).
+const REGION_STRUCTURAL_COLUMNS: &str = "SELECT conversation_id, region_ordinal, region_key, \
+     scope, scope_known, quill_idx, message_idx, message_id, step_index, turn_index, \
+     tool_name, file_path, exit_code, has_error, error_type, text_source, \
+     indexed_text IS NOT NULL, source_revision FROM viewer_search_regions";
+
+/// Every structural region row of ONE conversation, ordinal order — the
+/// Stage 1b fast lane's page-time load (`emitted_page_sessions` mode): one
+/// indexed read per EMITTED session, the same rows in the same order the
+/// universe load attached before Stage 1b, so page-time witness discovery
+/// (Stage 1 §6.4) consults exactly the region set it always saw.
+pub fn regions_for_conversation_structural(
+    connection: &crate::franken_sync::Connection,
+    conversation_id: i64,
+) -> Result<Vec<RegionRow>> {
+    let sql = format!(
+        "{REGION_STRUCTURAL_COLUMNS} \
+         WHERE conversation_id = ?1 ORDER BY region_ordinal"
+    );
+    let rows = connection
+        .query_with_params(
+            &sql,
+            &[crate::franken_sync::SqliteValue::Integer(conversation_id)],
+        )
+        .context("loading one session's search regions")?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        out.push(region_row_structural(row)?);
+    }
+    Ok(out)
+}
+
+/// Chunk bound for the gated per-conversation `quill_idx IN (...)` seeks —
+/// 501 bound parameters per statement stays well inside the engine's
+/// variable ceiling while keeping one indexed seek per conversation chunk.
+const QUILL_SLOT_CHUNK: usize = 500;
+
+/// Structural region rows for an explicit batch of (conversation,
+/// `quill_idx`) slots — the Stage 1b legacy lane's gated read
+/// (`gated_quill_seeks` mode). One `conversation_id = ? AND quill_idx IN
+/// (...)` statement per conversation chunk seeks
+/// `idx_viewer_search_regions_quill` directly; the caller's slot sets are
+/// exactly the Quill hit gates the search lane already holds in memory, so
+/// a session with no gated hits for any plan literal reads nothing at all.
+/// Rows come back per conversation in `region_ordinal` order (chunk results
+/// are re-sorted because chunks split the SORTED `quill_idx` list, not the
+/// ordinal run), matching the iteration order the eager universe load
+/// produced — byte-identical evaluation depends on that order.
+pub fn regions_for_quill_slots(
+    connection: &crate::franken_sync::Connection,
+    slots: &HashMap<i64, Vec<i64>>,
+) -> Result<HashMap<i64, Vec<RegionRow>>> {
+    let mut out: HashMap<i64, Vec<RegionRow>> = HashMap::with_capacity(slots.len());
+    // Deterministic conversation order (queries are independent; the sort
+    // only stabilizes diagnostics-visible query sequencing).
+    let mut cids: Vec<i64> = slots.keys().copied().collect();
+    cids.sort_unstable();
+    for cid in cids {
+        let wanted: Vec<i64> = slots
+            .get(&cid)
+            .map(|slots| {
+                slots
+                    .iter()
+                    .copied()
+                    .collect::<std::collections::BTreeSet<i64>>()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let mut rows: Vec<RegionRow> = Vec::new();
+        for chunk in wanted.chunks(QUILL_SLOT_CHUNK) {
+            if chunk.is_empty() {
+                continue;
+            }
+            let mut placeholders = Vec::with_capacity(chunk.len() + 1);
+            placeholders.push("?1".to_owned());
+            for index in 0..chunk.len() {
+                placeholders.push(format!("?{}", index + 2));
+            }
+            let sql = format!(
+                "{REGION_STRUCTURAL_COLUMNS} WHERE conversation_id = ?1 \
+                 AND quill_idx IN ({}) ORDER BY region_ordinal",
+                placeholders.join(",")
+            );
+            let mut params: Vec<crate::franken_sync::SqliteValue> =
+                Vec::with_capacity(chunk.len() + 1);
+            params.push(crate::franken_sync::SqliteValue::Integer(cid));
+            for slot in chunk {
+                params.push(crate::franken_sync::SqliteValue::Integer(*slot));
+            }
+            let chunk_rows = connection
+                .query_with_params(&sql, &params)
+                .context("loading gated search regions")?;
+            for row in &chunk_rows {
+                rows.push(region_row_structural(row)?);
+            }
+        }
+        rows.sort_by_key(|row| row.region_ordinal);
+        out.insert(cid, rows);
     }
     Ok(out)
 }
@@ -1806,16 +2106,37 @@ fn has_region_marks_table(db: &impl FactsDb) -> Result<bool> {
         .is_empty())
 }
 
-/// Upper bound on live region documents across the archive: only
-/// persisted rows that actually own a document count — the synthetic-slot
-/// rows (`quill_idx >= REGION_DOC_BASE`) carrying a bounded
-/// `indexed_text` fragment, i.e. exactly the rows [`region_docs`]
+/// Upper bound on live NON-canonical documents across the archive: the
+/// region documents plus the Stage 1 session×scope documents.
+///
+/// Region share: only persisted rows that actually own a document count —
+/// the synthetic-slot rows (`quill_idx >= REGION_DOC_BASE`) carrying a
+/// bounded `indexed_text` fragment, i.e. exactly the rows [`region_docs`]
 /// materializes. Chat regions (canonical `quill_idx`, `indexed_text`
 /// NULL) map onto the message document and own none, so counting
 /// `marks.region_count` here over-bounded the region share and
 /// under-counted the observed canonical-message share, breaking watch
 /// checkpoint refreshes and the early-exit equality.
-/// `pending_doc_deletes` bounds stale identities still awaiting removal.
+///
+/// Session×scope share (Stage 1): every (conversation, scope) chunk the
+/// current rows pack into under [`pack_region_boundaries`] — the same
+/// greedy packer the staging lane materializes documents with, fed the
+/// same per-region char contributions (`LENGTH(text) + 1`), so the bound
+/// is exact-or-OVER at convergence, never exact (review M-3): the fold
+/// counts every marked conversation's region rows, while staging also
+/// requires a resolvable doc identity (`source_path`) — a marked
+/// conversation without one contributes to the bound but publishes
+/// nothing. Over is the safe direction for a bound (the gh473 watch
+/// can only over-report), and that slack is exactly where a real
+/// runaway could hide, so drift through it must be investigated, not
+/// amortized. This streams one row per region and evaluates `LENGTH()`
+/// over every chat region's message content — the one deliberate cost of
+/// keeping the bound SQL-free of a persisted length column (no DDL is
+/// allowed for Stage 1); it runs on indexer-side certification paths
+/// only, never on the query lane.
+///
+/// `pending_doc_deletes` bounds stale identities still awaiting removal
+/// (region drops and the conservative session-doc queue alike).
 /// `0` on archives without the extension profile (no marks table). The
 /// lexical publication receipt uses this to split the total indexed-doc
 /// count back into its canonical-message share so the
@@ -1849,7 +2170,50 @@ pub fn live_region_doc_bound(db: &impl FactsDb) -> Result<u64> {
         let deletes: Vec<Value> = serde_json::from_str(&deletes_json).unwrap_or_default();
         bound = bound.saturating_add(deletes.len() as u64);
     }
-    Ok(bound)
+    // Session×scope share: stream every marked conversation's per-region
+    // char contributions (region-ordinal order within each scope) and
+    // pack them with the SAME greedy chunker the staging lane uses. The
+    // INNER JOIN drops marks rows with no regions (they pack zero
+    // chunks); the ORDER BY keeps each (conversation, scope) group
+    // contiguous so the fold below never buffers more than one scope.
+    let mut session_docs = 0_u64;
+    let mut lengths: Vec<u64> = Vec::new();
+    let mut current: Option<(i64, String)> = None;
+    let flush = |key: &Option<(i64, String)>, lengths: &mut Vec<u64>, session_docs: &mut u64| {
+        if key.is_some() {
+            *session_docs = session_docs.saturating_add(
+                pack_region_boundaries(lengths, SESSION_DOC_CHUNK_CHAR_CAP as u64).len() as u64,
+            );
+        }
+        lengths.clear();
+    };
+    for (cid, scope, chars) in db.facts_query_map(
+        "SELECT r.conversation_id, r.scope, \
+                LENGTH(COALESCE(r.indexed_text, CASE WHEN r.text_source = 'chat' \
+                 THEN COALESCE(m.content, '') ELSE '' END)) + 1 \
+         FROM viewer_search_region_marks mk \
+         JOIN conversations c ON c.id = mk.conversation_id \
+         JOIN viewer_search_regions r ON r.conversation_id = mk.conversation_id \
+         LEFT JOIN messages m ON m.id = r.message_id \
+         ORDER BY r.conversation_id, r.scope, r.region_ordinal",
+        &[],
+        |row| {
+            Ok((
+                row.get_typed::<i64>(0)?,
+                row.get_typed::<String>(1)?,
+                row.get_typed::<i64>(2)?,
+            ))
+        },
+    )? {
+        let key = (cid, scope);
+        if current.as_ref() != Some(&key) {
+            flush(&current, &mut lengths, &mut session_docs);
+            current = Some(key);
+        }
+        lengths.push(chars.max(0) as u64);
+    }
+    flush(&current, &mut lengths, &mut session_docs);
+    Ok(bound.saturating_add(session_docs))
 }
 
 /// `(region_version, source_revision, region_count, docs_state)` for a
@@ -1954,15 +2318,31 @@ pub fn marked_region_doc_sessions(db: &impl FactsDb, limit: i64) -> Result<Vec<i
     .context("listing sessions carrying search-region marks")
 }
 
-/// Build the Quill `CassDocument` set for one session's persisted regions:
-/// every synthetic-slot region (derived/meta/noise-chat) becomes one doc
-/// whose content is the persisted `indexed_text` fragment.
-pub fn region_docs(db: &impl FactsDb, conversation_id: i64) -> Result<Vec<CassDocument>> {
+/// The canonical identity fields every synthetic-slot Quill document for a
+/// conversation is minted from — shared by the per-region docs
+/// ([`region_docs`]) and the session×scope docs ([`session_scope_docs`])
+/// so both lanes agree on `source_path`/`source_id`/`title`/`created_at`.
+struct RegionDocIdentity {
+    source_path: String,
+    source_id: String,
+    title: Option<String>,
+    started_at: Option<i64>,
+    agent: String,
+    workspace: Option<String>,
+}
+
+/// Read the identity a conversation's synthetic-slot documents are minted
+/// from. `None` when the conversation row is missing or carries an empty
+/// `source_path` — the same honesty guard [`region_docs`] always applied:
+/// a session that cannot be named cannot own documents.
+fn region_doc_identity(
+    db: &impl FactsDb,
+    conversation_id: i64,
+) -> Result<Option<RegionDocIdentity>> {
     let identity_rows = db.facts_query_map(
         "SELECT c.source_path, c.source_id, c.title, c.started_at, \
                 COALESCE((SELECT a.slug FROM agents a WHERE a.id = c.agent_id), 'unknown'), \
-                (SELECT w.path FROM workspaces w WHERE w.id = c.workspace_id), \
-                c.metadata_json, c.origin_host \
+                (SELECT w.path FROM workspaces w WHERE w.id = c.workspace_id) \
          FROM conversations c WHERE c.id = ?1 LIMIT 1",
         &[ParamValue::from(conversation_id)],
         |row| {
@@ -1973,19 +2353,188 @@ pub fn region_docs(db: &impl FactsDb, conversation_id: i64) -> Result<Vec<CassDo
                 row.get_typed::<Option<i64>>(3)?,
                 row.get_typed::<Option<String>>(4)?,
                 row.get_typed::<Option<String>>(5)?,
-                row.get_typed::<Option<String>>(6)?,
-                row.get_typed::<Option<String>>(7)?,
             ))
         },
     )?;
-    let Some((Some(source_path), source_id_col, title, started_at, agent, workspace, _meta, _host)) =
+    let Some((Some(source_path), source_id_col, title, started_at, agent, workspace)) =
         identity_rows.into_iter().next()
     else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     if source_path.is_empty() {
-        return Ok(Vec::new());
+        return Ok(None);
     }
+    Ok(Some(RegionDocIdentity {
+        source_path,
+        source_id: source_id_col.unwrap_or_else(|| "local".to_owned()),
+        title,
+        started_at,
+        agent: agent.unwrap_or_else(|| "unknown".to_owned()),
+        workspace,
+    }))
+}
+
+/// One packed session×scope chunk: its synthetic slot and full text.
+pub struct SessionScopeDoc {
+    pub slot: u64,
+    pub text: String,
+}
+
+/// Greedy region-boundary packing — the ONE authoritative session-doc
+/// chunker, shared by staging ([`session_scope_docs`]), the publication
+/// keep set and the live-doc bound, so the three can never disagree on a
+/// slot. Whole regions accumulate into a chunk until the next region
+/// would push it past `cap` characters; an oversized region takes a chunk
+/// of its own. `lengths` are per-region char contributions INCLUDING the
+/// `'\n'` separator ([`SESSION_REGION_TEXT_SQL`]'s `+ 1`); the returned
+/// `(start, end)` ranges are half-open index ranges over `lengths`.
+pub(crate) fn pack_region_boundaries(lengths: &[u64], cap: u64) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0_usize;
+    let mut total = 0_u64;
+    for (index, &len) in lengths.iter().enumerate() {
+        if index > start && total.saturating_add(len) > cap {
+            ranges.push((start, index));
+            start = index;
+            total = 0;
+        }
+        total = total.saturating_add(len);
+    }
+    if start < lengths.len() {
+        ranges.push((start, lengths.len()));
+    }
+    ranges
+}
+
+/// The authoritative session×scope doc derivation for one conversation
+/// (Stage 1 §6.1/§6.2): reads the committed region inventory, groups the
+/// regions by scope in region-ordinal order, and packs each scope's texts
+/// into whole-region chunks of at most [`SESSION_DOC_CHUNK_CHAR_CAP`]
+/// characters. Every region contributes its text (`indexed_text` when a
+/// fragment exists — noise-chat and every derived/meta row — else the
+/// anchored message content for `chat` rows, else the empty string) plus
+/// one `'\n'` separator, so no token ever merges across a region
+/// boundary. The same function runs at staging (documents to upsert) and
+/// at publication (the keep set that filters the conservative stale
+/// queue), which is what keeps their slot sets identical. `None` when the
+/// conversation cannot own documents at all (missing row, empty
+/// `source_path`).
+pub fn session_scope_docs(
+    db: &impl FactsDb,
+    conversation_id: i64,
+) -> Result<Option<Vec<SessionScopeDoc>>> {
+    // The identity guard mirrors `region_docs`: a conversation that cannot
+    // own region documents cannot own session documents either.
+    if region_doc_identity(db, conversation_id)?.is_none() {
+        return Ok(None);
+    }
+    let regions = regions_for_conversation(db, conversation_id)?;
+    // Chat regions hydrate their anchored message content in one read.
+    let mut message_texts: HashMap<i64, String> = HashMap::new();
+    if regions
+        .iter()
+        .any(|r| r.text_source == TEXT_SOURCE_CHAT && r.indexed_text.is_none())
+    {
+        for (id, content) in db.facts_query_map(
+            "SELECT id, content FROM messages WHERE conversation_id = ?1",
+            &[ParamValue::from(conversation_id)],
+            |row| {
+                Ok((
+                    row.get_typed::<i64>(0)?,
+                    row.get_typed::<Option<String>>(1)?,
+                ))
+            },
+        )? {
+            if let Some(content) = content {
+                message_texts.insert(id, content);
+            }
+        }
+    }
+    // Group texts by scope, preserving region-ordinal order.
+    let mut scopes: Vec<(String, Vec<(String, u64)>)> = Vec::new();
+    for region in &regions {
+        let text: String = match region.indexed_text.as_ref() {
+            Some(fragment) => fragment.clone(),
+            None if region.text_source == TEXT_SOURCE_CHAT => region
+                .message_id
+                .and_then(|id| message_texts.get(&id).cloned())
+                .unwrap_or_default(),
+            None => String::new(),
+        };
+        let chars = (text.chars().count() + 1) as u64; // + '\n' separator
+        match scopes.iter_mut().find(|(scope, _)| scope == &region.scope) {
+            Some((_, texts)) => texts.push((text, chars)),
+            None => scopes.push((region.scope.clone(), vec![(text, chars)])),
+        }
+    }
+    let mut docs = Vec::new();
+    for (scope, texts) in &scopes {
+        let lengths: Vec<u64> = texts.iter().map(|(_, chars)| *chars).collect();
+        let ordinal = session_scope_ordinal(scope);
+        let ranges = pack_region_boundaries(&lengths, SESSION_DOC_CHUNK_CHAR_CAP as u64);
+        if ranges.len() >= SESSION_DOC_MAX_CHUNKS_PER_SCOPE as usize {
+            bail!(
+                "conversation {conversation_id} scope {scope:?} packs {} session-doc chunks, \
+                 beyond the 2^{} per-scope slot space (SESSION_DOC_BASE)",
+                ranges.len(),
+                SESSION_DOC_SCOPE_SHIFT
+            );
+        }
+        for (chunk_seq, (start, end)) in ranges.iter().enumerate() {
+            let mut text = String::new();
+            for (piece, _) in &texts[*start..*end] {
+                text.push_str(piece);
+                text.push('\n');
+            }
+            docs.push(SessionScopeDoc {
+                slot: SESSION_DOC_BASE + (ordinal << SESSION_DOC_SCOPE_SHIFT) + chunk_seq as u64,
+                text,
+            });
+        }
+    }
+    Ok(Some(docs))
+}
+
+/// Build the Quill `CassDocument` set for one session's session×scope
+/// chunks ([`session_scope_docs`]) — the Stage 1 fast path's membership
+/// surface. `None` when the conversation cannot own documents.
+pub fn session_scope_cass_documents(
+    db: &impl FactsDb,
+    conversation_id: i64,
+) -> Result<Option<Vec<CassDocument>>> {
+    let Some(identity) = region_doc_identity(db, conversation_id)? else {
+        return Ok(None);
+    };
+    let Some(chunks) = session_scope_docs(db, conversation_id)? else {
+        return Ok(None);
+    };
+    let docs = chunks
+        .into_iter()
+        .map(|chunk| CassDocument {
+            agent: identity.agent.clone(),
+            workspace: identity.workspace.clone(),
+            workspace_original: None,
+            source_path: identity.source_path.clone(),
+            msg_idx: chunk.slot,
+            created_at: identity.started_at,
+            title: identity.title.clone(),
+            content: chunk.text,
+            source_id: identity.source_id.clone(),
+            origin_kind: "local".to_owned(),
+            origin_host: None,
+            conversation_id: Some(conversation_id),
+        })
+        .collect();
+    Ok(Some(docs))
+}
+
+/// Build the Quill `CassDocument` set for one session's persisted regions:
+/// every synthetic-slot region (derived/meta/noise-chat) becomes one doc
+/// whose content is the persisted `indexed_text` fragment.
+pub fn region_docs(db: &impl FactsDb, conversation_id: i64) -> Result<Vec<CassDocument>> {
+    let Some(identity) = region_doc_identity(db, conversation_id)? else {
+        return Ok(Vec::new());
+    };
     let regions = regions_for_conversation(db, conversation_id)?;
     let mut docs = Vec::new();
     for region in regions
@@ -1996,15 +2545,15 @@ pub fn region_docs(db: &impl FactsDb, conversation_id: i64) -> Result<Vec<CassDo
             continue;
         };
         docs.push(CassDocument {
-            agent: agent.clone().unwrap_or_else(|| "unknown".to_owned()),
-            workspace: workspace.clone(),
+            agent: identity.agent.clone(),
+            workspace: identity.workspace.clone(),
             workspace_original: None,
-            source_path: source_path.clone(),
+            source_path: identity.source_path.clone(),
             msg_idx: region.quill_idx as u64,
-            created_at: started_at,
-            title: title.clone(),
+            created_at: identity.started_at,
+            title: identity.title.clone(),
             content: content.to_owned(),
-            source_id: source_id_col.clone().unwrap_or_else(|| "local".to_owned()),
+            source_id: identity.source_id.clone(),
             origin_kind: "local".to_owned(),
             origin_host: None,
             conversation_id: Some(conversation_id),
@@ -2096,7 +2645,14 @@ pub fn region_doc_stage(
     // of the real batch boundary. The stamp keeps the exact
     // `pending_doc_deletes` JSON so the post-commit stamp pass can retire
     // them and then compare-and-swap the queue away.
-    let docs = region_docs(db, conversation_id)?;
+    //
+    // Stage 1: the session×scope documents ride the same staging lane, so
+    // the bridge writer, the indexer and the test harness all publish them
+    // under the same marks discipline.
+    let mut docs = region_docs(db, conversation_id)?;
+    if let Some(session_docs) = session_scope_cass_documents(db, conversation_id)? {
+        docs.extend(session_docs);
+    }
     Ok(Some((
         docs,
         RegionDocStamp {
@@ -2230,7 +2786,11 @@ mod tests {
          WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.id = m.conversation_id)";
 
     /// Same accumulation as production: doc rows plus the length of the
-    /// `pending_doc_deletes` JSON array, unparseable JSON counting as zero.
+    /// `pending_doc_deletes` JSON array, unparseable JSON counting as zero,
+    /// plus the Stage 1 session×scope chunk count — here in the slow,
+    /// obviously-correct per-conversation form (one `session_scope_docs`
+    /// call per marked conversation), which the streaming GROUP-BY-fold
+    /// query in production must match exactly.
     fn oracle_bound(db: &impl FactsDb) -> Result<u64> {
         let mut bound = 0_u64;
         for (doc_rows, deletes_json) in db.facts_query_map(
@@ -2241,6 +2801,16 @@ mod tests {
             bound = bound.saturating_add(doc_rows.max(0) as u64);
             let deletes: Vec<Value> = serde_json::from_str(&deletes_json).unwrap_or_default();
             bound = bound.saturating_add(deletes.len() as u64);
+        }
+        for conversation_id in db.facts_query_map(
+            "SELECT m.conversation_id FROM viewer_search_region_marks m \
+             WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.id = m.conversation_id)",
+            &[],
+            |row| row.get_typed::<i64>(0),
+        )? {
+            if let Some(chunks) = session_scope_docs(db, conversation_id)? {
+                bound = bound.saturating_add(chunks.len() as u64);
+            }
         }
         Ok(bound)
     }
@@ -2322,6 +2892,88 @@ mod tests {
         REGION_DOC_BASE as i64 + offset
     }
 
+    /// The session×scope chunk slot `session_doc_stale_identities`
+    /// conservatively covers for `scope`'s `chunk`-th old chunk.
+    fn session_slot(scope: &str, chunk: u64) -> i64 {
+        (SESSION_DOC_BASE + (session_scope_ordinal(scope) << SESSION_DOC_SCOPE_SHIFT) + chunk)
+            as i64
+    }
+
+    /// Review I-3(a): the ONE authoritative chunker multi-chunk packs.
+    /// Every case re-proves the invariants the three consumers (staging,
+    /// publication keep set, live-doc bound) all rely on: half-open
+    /// contiguous cover of the region list, multi-region chunks within
+    /// the cap, oversized regions isolated, no arithmetic overflow.
+    #[test]
+    fn pack_region_boundaries_multi_chunk_and_edge_cases() {
+        fn assert_cover(lengths: &[u64], cap: u64) -> Vec<(usize, usize)> {
+            let ranges = pack_region_boundaries(lengths, cap);
+            let mut cursor = 0_usize;
+            for &(start, end) in &ranges {
+                assert_eq!(start, cursor, "ranges must be contiguous: {ranges:?}");
+                assert!(start < end, "no empty ranges: {ranges:?}");
+                cursor = end;
+            }
+            assert_eq!(
+                cursor,
+                lengths.len(),
+                "the cover must end at the last region: {ranges:?}"
+            );
+            for &(start, end) in &ranges {
+                let sum: u64 = lengths[start..end].iter().sum();
+                if end - start > 1 {
+                    assert!(
+                        sum <= cap,
+                        "a multi-region chunk must fit the cap ({sum} > {cap}): {ranges:?}"
+                    );
+                }
+            }
+            ranges
+        }
+
+        // Empty input: no chunks, no panic.
+        assert_eq!(
+            pack_region_boundaries(&[], 64 * 1024),
+            Vec::<(usize, usize)>::new()
+        );
+
+        // Single region: exactly one chunk however small or oversized.
+        assert_eq!(pack_region_boundaries(&[7], 10), vec![(0, 1)]);
+        assert_eq!(pack_region_boundaries(&[100], 10), vec![(0, 1)]);
+
+        // Multi-chunk packing: five regions of 5 chars under cap 12 pack
+        // two-per-chunk (5+5=10 fits, +5 overflows), last chunk alone.
+        let lengths = [5_u64, 5, 5, 5, 5];
+        assert_eq!(assert_cover(&lengths, 12), vec![(0, 2), (2, 4), (4, 5)]);
+
+        // Inclusive boundary: exactly `cap` characters still pack together
+        // (the boundary is `> cap`, so 6+6=12 under cap 12 is ONE chunk).
+        assert_eq!(assert_cover(&[6, 6], 12), vec![(0, 2)]);
+
+        // Oversized region takes a chunk of its own and does not drag
+        // neighbors into it: [5, 100, 5] under cap 12 isolates the 100.
+        assert_eq!(assert_cover(&[5, 100, 5], 12), vec![(0, 1), (1, 2), (2, 3)]);
+        // ...even in the middle of the run: [100, 5, 5] leaves the two
+        // small regions packed together after it.
+        assert_eq!(assert_cover(&[100, 5, 5], 12), vec![(0, 1), (1, 3)]);
+
+        // Zero-length regions cost only their separator and pack freely.
+        assert_eq!(assert_cover(&[0, 0, 0], 1), vec![(0, 3)]);
+
+        // Saturation: near-u64::MAX contributions never overflow — the
+        // oversized-isolation rule keeps saturating_add inaudible.
+        assert_cover(&[u64::MAX, u64::MAX, 3], 10);
+
+        // Realistic shape: 200 regions of 1000 chars under the production
+        // 64-KiB cap → 65 regions per chunk (65_000 ≤ 65_536; 66_000
+        // overflows), 4 chunks with a 5-region tail.
+        let realistic: Vec<u64> = std::iter::repeat_n(1000, 200).collect();
+        let ranges = assert_cover(&realistic, SESSION_DOC_CHUNK_CHAR_CAP as u64);
+        assert_eq!(ranges.len(), 4, "65+65+65+5 regions: {ranges:?}");
+        assert_eq!(ranges[0], (0, 65));
+        assert_eq!(ranges[3], (195, 200));
+    }
+
     #[test]
     fn live_region_doc_bound_matches_correlated_oracle_and_hand_count() -> Result<()> {
         let (_temp, storage) = fixture();
@@ -2370,11 +3022,17 @@ mod tests {
         // conv 7: unparseable deletes JSON contributes zero. Hand count: 0.
         insert_marks(db, 7, "not json");
 
+        // Session×scope share (Stage 1): every marked conversation with
+        // regions packs its 'block' rows into ONE chunk (all fixture texts
+        // are far under the 65,536-char cap) — conv 1 (6 regions), conv 3
+        // (2 regions) and conv 6 (2 regions) add one chunk each; conv 2 and
+        // conv 7 own no regions and conv 4/conv 5 are excluded exactly as
+        // their region share is. Hand count: 7 + 3 = 10.
         let oracle = oracle_bound(db)?;
         let set_based = live_region_doc_bound(db)?;
-        assert_eq!(oracle, 7, "oracle drifted from the hand count");
+        assert_eq!(oracle, 10, "oracle drifted from the hand count");
         assert_eq!(set_based, oracle, "set-based bound must equal the oracle");
-        assert_eq!(set_based, 7);
+        assert_eq!(set_based, 10);
         Ok(())
     }
 
@@ -2406,8 +3064,9 @@ mod tests {
 
         // Only the marks row's own conversation contributes live regions.
         insert_marks(db, 2, "[]");
-        assert_eq!(live_region_doc_bound(db)?, 3);
-        assert_eq!(oracle_bound(db)?, 3);
+        // conv 2 now owns its region doc AND one session×scope chunk.
+        assert_eq!(live_region_doc_bound(db)?, 4);
+        assert_eq!(oracle_bound(db)?, 4);
         Ok(())
     }
 
@@ -2510,9 +3169,12 @@ mod tests {
         }
         let index_path = temp.path().join("index");
         let mut index = crate::search::tantivy::TantivyIndex::open_or_create(&index_path)?;
+        // Stage 1: each conversation now ships 2 region documents plus 1
+        // session×scope chunk (its two 'block' regions pack into one
+        // 28-char chunk) — 3 documents per session.
         assert_eq!(
             index.converge_all_search_region_docs(db, i64::MAX)?,
-            (sessions as usize, 2 * sessions as usize)
+            (sessions as usize, 3 * sessions as usize)
         );
         index.commit()?;
         drop(index);
@@ -2522,7 +3184,7 @@ mod tests {
         let segments_before = resumed.segment_count();
         assert_eq!(
             resumed.converge_all_search_region_docs(db, i64::MAX)?,
-            (sessions as usize, 2 * sessions as usize)
+            (sessions as usize, 3 * sessions as usize)
         );
         resumed.commit()?;
         let published = resumed.segment_count().saturating_sub(segments_before);
@@ -2533,7 +3195,7 @@ mod tests {
         );
         assert_eq!(
             resumed.doc_count()?,
-            2 * sessions as u64,
+            3 * sessions as u64,
             "replacement must leave one live document per identity"
         );
         Ok(())
@@ -2596,9 +3258,18 @@ mod tests {
         let pending = pending_deletes(db, 1)?;
         assert_eq!(
             pending,
-            vec![still_stale, fixture_doc_identity(1, base(3))],
-            "the reclaimed live slot leaves the queue, and the dropped slot is \
-             queued under the row identity its live document carries"
+            vec![
+                still_stale,
+                fixture_doc_identity(1, base(3)),
+                fixture_doc_identity(1, session_slot("block", 0)),
+            ],
+            "the reclaimed live slot leaves the queue, the dropped slot is \
+             queued under the row identity its live document carries, and the \
+             old inventory's one 'block' region conservatively bounds one old \
+             session-doc chunk (unknown ordinal 6, chunk 0) that the new \
+             chat-scope generation no longer keeps — it never held a live \
+             document here, and the post-commit delete ignores absent \
+             identities"
         );
         Ok(())
     }

@@ -121,6 +121,35 @@ pub fn raw_page(
     limit: usize,
 ) -> Result<QuillLexicalPage> {
     let (query, _) = parse_lexical_query(text, filters)?;
+    // Stage 1: the aggregated session×scope documents (msg_idx >=
+    // SESSION_DOC_BASE) share the index but carry no region coordinates —
+    // the per-region lane must never enumerate them as phantom hits.
+    let query = coding_agent_search::search::quill_bridge::region_documents_query(query);
+    search_paginated(reader, &query, limit, offset, true).map_err(|error| {
+        if coding_agent_search::search::quill_bridge::is_query_fuel_exhausted(&error) {
+            refuse(
+                "ranking_budget_exceeded",
+                "Quill query fuel exhausted; no complete ranking receipt",
+            )
+        } else {
+            error
+        }
+    })
+}
+
+/// [`raw_page`] over the Stage 1 session×scope documents only — the fast
+/// lane's membership posting set. Every hit decodes to the conversation
+/// whose (scope, chunk) document carries the literal; region documents and
+/// canonical messages stay out of the page and the exact total.
+pub fn raw_page_session_docs(
+    reader: &QuillSearchIndex,
+    text: &str,
+    filters: &CassQueryFilters,
+    offset: usize,
+    limit: usize,
+) -> Result<QuillLexicalPage> {
+    let (query, _) = parse_lexical_query(text, filters)?;
+    let query = coding_agent_search::search::quill_bridge::session_scope_documents_query(query);
     search_paginated(reader, &query, limit, offset, true).map_err(|error| {
         if coding_agent_search::search::quill_bridge::is_query_fuel_exhausted(&error) {
             refuse(
@@ -141,8 +170,10 @@ pub fn raw_page(
 /// `msg_idx >= REGION_DOC_BASE` space (Task 5) and would surface here as
 /// phantom chat hits, so the enumeration wraps the parsed query in the
 /// canonical-message guard. `search_sessions` deliberately keeps region
-/// documents in scope through [`raw_page`], which is why the exclusion
-/// lives in a sibling entry point rather than inside `raw_page` itself.
+/// documents in scope through [`raw_page`] (which itself excludes the
+/// Stage 1 session×scope documents at `msg_idx >= SESSION_DOC_BASE`
+/// through its own guard), which is why the exclusion lives in sibling
+/// entry points rather than inside `raw_page` itself.
 pub fn raw_page_canonical(
     reader: &QuillSearchIndex,
     text: &str,
