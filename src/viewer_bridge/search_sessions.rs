@@ -85,6 +85,17 @@
 //!    the regions cannot reproduce is the §6.4 annotation, never a
 //!    silent substitution.
 //!
+//! 8. **Cooperative deadline.** The request's deadline (hello's
+//!    `limits.default_timeout_ms`, lowerable per request through
+//!    `budget.deadline_ms`) is checked at every stage boundary — plan
+//!    compile, literal enumeration, universe load, the hydration reads,
+//!    the per-session eval loop, the page loop and page-time witness
+//!    discovery. Expiry answers with the typed, retryable
+//!    `deadline_exceeded` refusal naming the phase and the completed
+//!    work; the answer is never a partial page stamped complete, and
+//!    the process keeps serving (the watchdog's exit-70 backstop fires
+//!    only for a request that stops making progress).
+//!
 //! Forbidden here (plan): no `cass_facts` FTS5, no unbounded corpus
 //! regex, no silent `max_hits` truncation, no first-20-hits ⇒ first-20-
 //! sessions assumption.
@@ -98,6 +109,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::annotations;
+use super::deadline::Deadline;
 use super::identity;
 use super::protocol::{ListFilters, PAGE_LIMIT, RESPONSE_BYTES, refuse};
 use super::query;
@@ -1339,6 +1351,7 @@ fn prefetch_gated_message_texts(
     matchers: &HashMap<(String, bool), LiteralMatcher>,
     quill_possible: &HashMap<String, HashMap<i64, HashSet<i64>>>,
     stats: &mut HydrateStats,
+    deadline: &Deadline,
 ) -> Result<()> {
     // Literal-scoped work hoisted out of the session×literal loop: the
     // ASCII check, the `matcher.never` verdict and the
@@ -1383,6 +1396,10 @@ fn prefetch_gated_message_texts(
     let ids: Vec<i64> = pending.into_iter().collect();
     let mut seen: HashSet<i64> = HashSet::with_capacity(ids.len());
     for chunk in ids.chunks(HYDRATE_CHUNK) {
+        deadline.check(
+            "hydrate",
+            format!("message-text chunk of {} id(s)", chunk.len()),
+        )?;
         let placeholders = (1..=chunk.len())
             .map(|i| format!("?{i}"))
             .collect::<Vec<_>>()
@@ -1509,6 +1526,7 @@ fn prefetch_region_fragments(
     connection: &Connection,
     sessions: &mut [SessionCtx],
     stats: &mut HydrateStats,
+    deadline: &Deadline,
 ) -> Result<()> {
     let ids: Vec<i64> = sessions
         .iter()
@@ -1520,6 +1538,10 @@ fn prefetch_region_fragments(
         if chunk.is_empty() {
             continue;
         }
+        deadline.check(
+            "hydrate",
+            format!("fragment chunk of {} conversation(s)", chunk.len()),
+        )?;
         stats.fragments_loaded += 1;
         let placeholders = (1..=chunk.len())
             .map(|i| format!("?{i}"))
@@ -1579,6 +1601,7 @@ fn attach_gated_regions(
     matchers: &HashMap<(String, bool), LiteralMatcher>,
     quill_possible: &HashMap<String, HashMap<i64, HashSet<i64>>>,
     stats: &mut HydrateStats,
+    deadline: &Deadline,
 ) -> Result<()> {
     let mut slots: HashMap<i64, Vec<i64>> = HashMap::new();
     for (value, exact) in &plan.literals {
@@ -1602,6 +1625,10 @@ fn attach_gated_regions(
     if slots.is_empty() {
         return Ok(());
     }
+    deadline.check(
+        "hydrate",
+        format!("gated region seeks for {} session(s)", slots.len()),
+    )?;
     let rows = coding_agent_search::viewer_extensions::search_regions::regions_for_quill_slots(
         connection, &slots,
     )?;
@@ -2061,7 +2088,9 @@ fn load_sessions_indexed(
     id_params: &[SqliteValue],
     stats: &mut HydrateStats,
     load_universe_regions: bool,
+    deadline: &Deadline,
 ) -> Result<Vec<SessionCtx>> {
+    deadline.check("hydrate", "conversations read")?;
     let conv_rows = connection.query_with_params(
         &format!(
             "SELECT c.id, c.title, c.started_at, c.ended_at, \
@@ -2098,6 +2127,7 @@ fn load_sessions_indexed(
             ));
         }
     }
+    deadline.check("hydrate", "viewer_annotations read")?;
     let ann_rows = connection.query_with_params(
         &format!(
             "SELECT conversation_id, is_pinned, custom_title, notes \
@@ -2116,6 +2146,7 @@ fn load_sessions_indexed(
             },
         );
     }
+    deadline.check("hydrate", "viewer_session_facts read")?;
     let fact_rows = connection.query_with_params(
         &format!(
             "SELECT conversation_id, is_subagent, task_category, coverage_state, \
@@ -2136,6 +2167,7 @@ fn load_sessions_indexed(
             },
         );
     }
+    deadline.check("hydrate", "conversation_tail_state read")?;
     let tail_rows = connection.query_with_params(
         &format!(
             "SELECT conversation_id, last_message_created_at \
@@ -2147,6 +2179,7 @@ fn load_sessions_indexed(
     for row in &tail_rows {
         tail.insert(row.get_typed(0)?, row.get_typed(1)?);
     }
+    deadline.check("hydrate", "region marks read")?;
     let mark_rows = connection.query_with_params(
         &format!(
             "SELECT conversation_id, docs_state, region_version \
@@ -2161,16 +2194,19 @@ fn load_sessions_indexed(
     }
     // Agent/workspace slugs: small lookup tables, read once — the LEFT
     // JOIN equivalent without a probe per universe row.
+    deadline.check("hydrate", "workspaces read")?;
     let workspace_rows = connection.query("SELECT id, path FROM workspaces")?;
     let mut workspaces: HashMap<i64, Option<String>> = HashMap::new();
     for row in &workspace_rows {
         workspaces.insert(row.get_typed(0)?, row.get_typed(1)?);
     }
+    deadline.check("hydrate", "agents read")?;
     let agent_rows = connection.query("SELECT id, slug FROM agents")?;
     let mut agents: HashMap<i64, Option<String>> = HashMap::new();
     for row in &agent_rows {
         agents.insert(row.get_typed(0)?, row.get_typed(1)?);
     }
+    deadline.check("hydrate", "viewer_tags read")?;
     let tag_rows = connection.query_with_params(
         &format!(
             "SELECT conversation_id, tag FROM viewer_tags \
@@ -2191,6 +2227,12 @@ fn load_sessions_indexed(
     // seeks on the legacy lane, the emitted page's sessions on the fast
     // lane — so a zero-hit or rare-term request never pays the archive-
     // sized read (762k rows on the 6k-session archive).
+    // The single biggest read on the eager lane — the whole-universe
+    // region scan (~831k rows on the 4.9 GB owner archive). Uninterruptible
+    // (lib-side, one statement), so it is bounded by the backstop grace
+    // when it starts before expiry; the checks around it refuse
+    // cooperatively before and after.
+    deadline.check("hydrate", "universe region rows read")?;
     let region_rows = if load_universe_regions {
         Some(
             coding_agent_search::viewer_extensions::search_regions::regions_for_universe_subquery(
@@ -2203,7 +2245,11 @@ fn load_sessions_indexed(
         None
     };
     let mut ordered = Vec::with_capacity(universe_ids.len());
-    for cid in universe_ids {
+    for (index, cid) in universe_ids.iter().enumerate() {
+        deadline.check(
+            "hydrate",
+            format!("{index} of {} sessions assembled", universe_ids.len()),
+        )?;
         let Some(conv_p) = conv.remove(cid) else {
             return Err(refuse(
                 "canonical_coordinates_invalid",
@@ -3391,11 +3437,16 @@ fn enumerate_literal(
     readers: &ReaderSet,
     literal_text: &str,
     filters: &frankensearch::quill::query::CassQueryFilters,
+    deadline: &Deadline,
 ) -> Result<(LiteralHits, Vec<String>)> {
     let mut hits: LiteralHits = HashMap::new();
     for (reader_index, reader) in readers.readers.iter().enumerate() {
         let mut offset = 0_usize;
         loop {
+            deadline.check(
+                "literal_enumeration",
+                format!("reader {reader_index}: {offset} raw hits paged"),
+            )?;
             let page = raw_page(reader, literal_text, filters, offset, PAGE_LIMIT)?;
             let total = page.total_count.ok_or_else(|| {
                 refuse(
@@ -3555,12 +3606,17 @@ fn enumerate_session_doc_hits(
     readers: &ReaderSet,
     literal: (&str, bool),
     filters: &frankensearch::quill::query::CassQueryFilters,
+    deadline: &Deadline,
 ) -> Result<HashMap<i64, f32>> {
     let text = literal_query_text(literal.0, literal.1);
     let mut hits: HashMap<i64, f32> = HashMap::new();
     for (reader_index, reader) in readers.readers.iter().enumerate() {
         let mut offset = 0_usize;
         loop {
+            deadline.check(
+                "literal_enumeration",
+                format!("reader {reader_index}: {offset} session-doc hits paged"),
+            )?;
             let page = raw_page_session_docs(reader, &text, filters, offset, PAGE_LIMIT)?;
             let total = page.total_count.ok_or_else(|| {
                 refuse(
@@ -3605,13 +3661,22 @@ fn legacy_literal_evidence(
     readers: &ReaderSet,
     plan: &Plan,
     engine_filters: &frankensearch::quill::query::CassQueryFilters,
+    deadline: &Deadline,
 ) -> Result<LegacyLiteralEvidence> {
     let mut scores: HashMap<(String, bool), LiteralHits> = HashMap::new();
     let mut possible: LiteralGate = HashMap::new();
-    for (value, exact) in &plan.literals {
+    for (index, (value, exact)) in plan.literals.iter().enumerate() {
+        deadline.check(
+            "literal_enumeration",
+            format!(
+                "{} of {} plan literals enumerated",
+                index,
+                plan.literals.len()
+            ),
+        )?;
         let hits = if value.is_ascii() {
             let text = literal_query_text(value, *exact);
-            enumerate_literal(readers, &text, engine_filters)?.0
+            enumerate_literal(readers, &text, engine_filters, deadline)?.0
         } else {
             // The Quill analyzer emits no tokens for non-ASCII input —
             // skip the engine call; `eval_node` gates such literals on
@@ -3767,6 +3832,7 @@ fn discover_fast_witnesses(
     matchers: &HashMap<(String, bool), LiteralMatcher>,
     max_matches: usize,
     stats: &mut HydrateStats,
+    deadline: &Deadline,
 ) -> Result<FastWitnesses> {
     let mut discovered: Vec<(String, String)> = Vec::new();
     for (branch, (value, exact)) in claims {
@@ -3779,10 +3845,17 @@ fn discover_fast_witnesses(
         if matcher.never {
             continue;
         }
-        for region in regions {
+        for (region_index, region) in regions.iter().enumerate() {
             if discovered.len() >= max_matches {
                 break;
             }
+            deadline.check(
+                "page",
+                format!(
+                    "witness discovery: region {region_index} of {}",
+                    regions.len()
+                ),
+            )?;
             match verify_region_text(connection, region, matcher, None, stats)? {
                 RegionMatch::Member => {
                     discovered.push((region.key.clone(), branch.clone()));
@@ -3834,9 +3907,13 @@ struct EvaluatedSession {
 }
 
 /// `search_sessions(ast, query, filters, scopes, sort, mode, allow_partial,
-/// cursor, limit, max_matches, verification_budget_bytes)` — one bounded,
-/// generation-bound page. `verification_budget_bytes` is the request's
-/// whole-body scan ceiling (see [`MAX_TEXT_VERIFICATION_BYTES`]).
+/// cursor, limit, max_matches, verification_budget_bytes, deadline)` — one
+/// bounded, generation-bound page. `verification_budget_bytes` is the
+/// request's whole-body scan ceiling (see
+/// [`MAX_TEXT_VERIFICATION_BYTES`]); `deadline` is the request's
+/// cooperative deadline, checked at every stage boundary and answered with
+/// the typed, retryable `deadline_exceeded` refusal — never a partial
+/// answer labelled complete, never a process kill.
 #[allow(clippy::too_many_arguments)]
 pub fn search_sessions(
     connection: &Connection,
@@ -3852,6 +3929,7 @@ pub fn search_sessions(
     limit: usize,
     max_matches: usize,
     verification_budget_bytes: usize,
+    deadline: &Deadline,
 ) -> Result<Value> {
     if !revisions::extensions_installed(connection)? {
         return Err(refuse(
@@ -3902,6 +3980,16 @@ pub fn search_sessions(
         },
     };
     let plan = compile_plan(ast_root, scopes)?;
+    // The cooperative deadline: every long stage below checks it at its
+    // boundaries; expiry is the typed, retryable `deadline_exceeded`
+    // refusal naming the phase and the completed work — never a partial
+    // answer labelled complete, never a process kill (the watchdog stays
+    // armed only as the backstop). `budget.deadline_ms: 0` refuses here,
+    // at the very first boundary.
+    deadline.check(
+        "plan_compile",
+        format!("{} literal(s) planned", plan.literals.len()),
+    )?;
 
     // Literal matchers + Quill evidence.
     let mut matchers: HashMap<(String, bool), LiteralMatcher> = HashMap::new();
@@ -3937,13 +4025,14 @@ pub fn search_sessions(
             possible: HashMap::new(),
         }
     } else {
-        legacy_literal_evidence(readers, &plan, &engine_filters)?
+        legacy_literal_evidence(readers, &plan, &engine_filters, deadline)?
     };
 
     // 2) Universe: SQL-narrowed candidate sessions. The indexed path
     // evaluates the whole universe against persisted rows — never silently
     // truncated. Universes beyond the hard ceiling are an explicit
     // refusal, not a clipped answer.
+    deadline.check("universe_load", "universe SQL narrow")?;
     let (universe, id_subquery, id_params) = load_universe(connection, filters)?;
     let universe_size = universe.len();
     if universe_size > HARD_UNIVERSE_CEILING {
@@ -3983,6 +4072,7 @@ pub fn search_sessions(
         &id_params,
         &mut stats,
         load_universe_regions,
+        deadline,
     )?;
     // How many of the evaluated sessions carry source-absent (b) gaps —
     // counted over the WHOLE candidate universe, not just result items:
@@ -4007,8 +4097,12 @@ pub fn search_sessions(
         // prefetch: the fast lane never touches region text at eval time
         // (witnesses are page-time work for the emitted sessions only).
         for (value, exact) in &plan.literals {
-            let hits =
-                enumerate_session_doc_hits(readers, (value.as_str(), *exact), &engine_filters)?;
+            let hits = enumerate_session_doc_hits(
+                readers,
+                (value.as_str(), *exact),
+                &engine_filters,
+                deadline,
+            )?;
             session_doc_hits.insert((value.clone(), *exact), hits);
         }
     } else {
@@ -4028,7 +4122,7 @@ pub fn search_sessions(
             // >MAX_LITERAL_HITS literal (both hard constants, no test
             // knobs) — deferred as disproportionate to the divergence.
             let LegacyLiteralEvidence { scores, possible } =
-                legacy_literal_evidence(readers, &plan, &engine_filters)?;
+                legacy_literal_evidence(readers, &plan, &engine_filters, deadline)?;
             quill_scores = scores;
             quill_possible = possible;
         }
@@ -4045,6 +4139,7 @@ pub fn search_sessions(
                 &matchers,
                 &quill_possible,
                 &mut stats,
+                deadline,
             )?;
         }
         // One chunked set read for every `messages.content` row the gated
@@ -4057,16 +4152,21 @@ pub fn search_sessions(
             &matchers,
             &quill_possible,
             &mut stats,
+            deadline,
         )?;
         // The one predicate arm that reads persisted fragments (`mcp`)
         // keeps its eager fragment availability under the lazy load
         // (Stage 1 §6.3 caller audit): one chunked set read fills every
         // fragment in place before evaluation.
         if plan_reads_fragments(&plan.root) {
-            prefetch_region_fragments(connection, &mut sessions, &mut stats)?;
+            prefetch_region_fragments(connection, &mut sessions, &mut stats, deadline)?;
         }
     }
-    for session in sessions {
+    for (index, session) in sessions.into_iter().enumerate() {
+        deadline.check(
+            "evaluate",
+            format!("{index} of {universe_size} sessions evaluated"),
+        )?;
         let conversation_id = session.conversation_id;
         let evidence = if fast_lane {
             // §6.1: membership from the session×scope posting sets. The
@@ -4283,6 +4383,10 @@ pub fn search_sessions(
     let mut iter = accepted.iter().peekable();
     let mut has_more = false;
     for entry in iter.by_ref() {
+        deadline.check(
+            "page",
+            format!("emitted {emitted} of limit {limit} page items"),
+        )?;
         let key = key_of(entry);
         if let Some(bound) = &start {
             let after = match (bound.null_flag, key.null_flag) {
@@ -4384,6 +4488,7 @@ pub fn search_sessions(
                 &matchers,
                 max_matches,
                 &mut stats,
+                deadline,
             )? {
                 FastWitnesses::Found(discovered) => discovered,
                 FastWitnesses::BudgetExhausted => {

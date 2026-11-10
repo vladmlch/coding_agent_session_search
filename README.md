@@ -1496,6 +1496,20 @@ a guess.
   (`--text-verification-budget-bytes`). If discovery exhausts it mid-page, the
   page refuses with the typed `verification_budget_exceeded` error — never a
   silently truncated member list stamped `complete`.
+- **Deadline refusals are typed and retryable — the process survives.** Every
+  long op (`search_sessions` and the `rank_begin`/`rank_next` raw lane) checks
+  its request deadline at loop boundaries and answers with the typed
+  `deadline_exceeded` refusal (`retryable: true`, `enumeration_complete:
+  false`, the phase and progress counts in the message) — the bridge keeps
+  serving the next request on the same session; one slow search no longer
+  takes down catalog polling or session reads. A `search_sessions` request may
+  carry `budget.deadline_ms` (0..=10000, default the full 10 s; `0` refuses at
+  the first boundary), and `rank_begin` keeps its `ScanBudget.deadline_ms` —
+  both may only *lower* the profile limit. The process-killing watchdog
+  remains only as a last-resort backstop for a request that stops making
+  progress: it fires `hard_backstop_grace_ms` (15 s, published in hello's
+  `limits`, along with `retryable_refusal_kinds`) past the same deadline and
+  exits 70 — a progressing request always refuses cooperatively first.
 - Region rows are read on demand (`region_load_mode`, `region_load_reason`,
   `region_rows_loaded`, `fragments_loaded` receipts), so a query's cost scales
   with its result size, not the archive; `score_domain`

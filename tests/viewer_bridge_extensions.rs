@@ -7759,3 +7759,121 @@ fn meta_token_probe_earns_and_denies_the_fast_path() -> Result<()> {
     std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755))?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Cooperative deadline + hard backstop (typed refusal instead of exit(70))
+// ---------------------------------------------------------------------------
+
+/// The rank lane's deadline expiry is the same typed, retryable refusal as
+/// `search_sessions` — and the bridge keeps serving the next rank job on
+/// the same stdio session. `budget.deadline_ms: 0` refuses at the first
+/// cooperative boundary, deterministically.
+#[test]
+fn rank_deadline_expiry_is_a_typed_retryable_refusal_and_process_survives() -> Result<()> {
+    let mut bridge = BridgeHarness::with_conversations(&[FixtureConversation::repeated(
+        1, "local", "needle", 3,
+    )])?;
+    let refused = bridge.exchange(json!({
+        "op":"rank_begin","query":"needle","budget":{"max_raw_hits":100,"deadline_ms":0}
+    }))?;
+    ensure!(
+        refused["ok"] == false,
+        "an expired deadline must refuse, never answer partially: {refused}"
+    );
+    ensure!(
+        refused["error"]["kind"] == "deadline_exceeded",
+        "expected the typed deadline_exceeded refusal, got {refused}"
+    );
+    ensure!(
+        refused["error"]["retryable"] == true,
+        "a deadline refusal is load-proportional and must be retryable: {refused}"
+    );
+    ensure!(
+        refused["error"]["enumeration_complete"] == false,
+        "a deadline refusal must never claim a complete enumeration: {refused}"
+    );
+    let next = bridge.exchange(json!({"op":"rank_begin","query":"needle"}))?;
+    ensure!(
+        next["ok"] == true,
+        "the rank lane must serve the next job after a deadline refusal: {next}"
+    );
+    ensure!(
+        next["result"]["enumeration_complete"] == true,
+        "the next job must answer completely: {next}"
+    );
+    bridge.shutdown()
+}
+
+/// The process-killing watchdog survives ONLY as the last-resort backstop:
+/// a request that blocks inside the armed watchdog window (test hook
+/// `CASS_TEST_VIEWER_BRIDGE_STUCK_OP`) never reaches any cooperative
+/// boundary, so the backstop — the request deadline plus the generous
+/// grace (`CASS_TEST_VIEWER_BRIDGE_BACKSTOP_GRACE_MS` test override,
+/// 400 ms here) — still kills the process with exit(70) and the backstop
+/// message. Production callers never set these test-only variables.
+#[test]
+fn hard_backstop_still_kills_a_genuinely_stuck_request() -> Result<()> {
+    use std::io::{Read, Write as _};
+    use std::time::{Duration, Instant};
+
+    let temp = tempfile::tempdir()?;
+    let data_dir = temp.path().join("data");
+    std::fs::create_dir(&data_dir)?;
+    let db = data_dir.join("archive.db");
+    let storage = FrankenStorage::open(&db)?;
+    drop(storage);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cass-viewer-bridge"))
+        .arg("--stdio")
+        .arg("--data-dir")
+        .arg(&data_dir)
+        .arg("--db")
+        .arg(&db)
+        .env("CASS_TEST_VIEWER_BRIDGE_STUCK_OP", "rank_begin")
+        .env("CASS_TEST_VIEWER_BRIDGE_BACKSTOP_GRACE_MS", "400")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    {
+        let mut stdin = child.stdin.take().expect("child stdin");
+        serde_json::to_writer(
+            &mut stdin,
+            &json!({"op":"rank_begin","id":7,"query":"needle",
+                    "budget":{"max_raw_hits":100,"deadline_ms":0}}),
+        )?;
+        stdin.write_all(b"\n")?;
+        stdin.flush()?;
+    }
+    // The stuck request never replies; the backstop must exit(70) within
+    // the bounded wait. stdin is already closed (the block above dropped
+    // it) so a HEALTHY bridge could never hang this test: it would answer
+    // or see EOF and exit long before the 10 s bound.
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None if started.elapsed() < Duration::from_secs(10) => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            None => {
+                let _ = child.kill();
+                anyhow::bail!("the hard backstop did not kill the stuck request within 10 s");
+            }
+        }
+    };
+    ensure!(
+        status.code() == Some(70),
+        "the backstop must keep the exit(70) contract for a stuck request, got {status}"
+    );
+    let mut stderr = String::new();
+    child
+        .stderr
+        .take()
+        .expect("child stderr")
+        .read_to_string(&mut stderr)?;
+    ensure!(
+        stderr.contains("hard backstop exceeded"),
+        "the backstop must announce itself on stderr, got: {stderr}"
+    );
+    Ok(())
+}

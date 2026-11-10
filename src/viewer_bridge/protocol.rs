@@ -127,12 +127,34 @@ impl AnnotationPatch {
 pub struct Refusal {
     pub kind: &'static str,
     pub message: String,
+    /// Present only on refusals carrying an explicit retry verdict. A
+    /// `deadline_exceeded` refusal is load-proportional — the same
+    /// request may succeed under less load — so the envelope reports
+    /// `retryable: true`; every other refusal leaves the field absent
+    /// so its wire shape stays byte-identical.
+    pub retryable: Option<bool>,
 }
+
+/// Refusal kinds answered with `retryable: true` — mirrored into hello's
+/// `limits` so a client can discover retry semantics from the handshake
+/// instead of hardcoding kind names.
+pub const RETRYABLE_REFUSAL_KINDS: &[&str] = &["deadline_exceeded"];
 
 pub fn refuse(kind: &'static str, message: impl Into<String>) -> anyhow::Error {
     Refusal {
         kind,
         message: message.into(),
+        retryable: None,
+    }
+    .into()
+}
+
+/// A refusal the client may honestly retry (see [`Refusal::retryable`]).
+pub fn refuse_retryable(kind: &'static str, message: impl Into<String>) -> anyhow::Error {
+    Refusal {
+        kind,
+        message: message.into(),
+        retryable: Some(true),
     }
     .into()
 }
@@ -263,15 +285,54 @@ impl Default for ScanBudget {
 
 impl ScanBudget {
     pub fn validate(&self) -> anyhow::Result<()> {
-        if !(1..=MAX_RAW_HITS).contains(&self.max_raw_hits)
-            || !(1..=TIMEOUT_MS).contains(&self.deadline_ms)
-        {
+        // `deadline_ms: 0` is legal: it refuses at the first cooperative
+        // boundary (the wire-native way to force expiry, e.g. for pinned
+        // regression tests). Budgets may only LOWER the profile limits.
+        if !(1..=MAX_RAW_HITS).contains(&self.max_raw_hits) || self.deadline_ms > TIMEOUT_MS {
             return Err(refuse(
                 "invalid_request",
                 "Scan budgets may only lower the profile limits",
             ));
         }
         Ok(())
+    }
+}
+
+/// Per-request cooperative deadline for `search_sessions`: the request's
+/// own time budget, checked at the op's loop boundaries and answered with
+/// the typed, retryable `deadline_exceeded` refusal (never a partial
+/// answer, never a process kill). The budget may only LOWER the profile
+/// limit — `TIMEOUT_MS` is both the default and the ceiling — and `0`
+/// refuses at the first cooperative boundary, deterministically.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SearchBudget {
+    #[serde(default = "default_timeout")]
+    pub deadline_ms: u64,
+}
+
+impl Default for SearchBudget {
+    fn default() -> Self {
+        Self {
+            deadline_ms: TIMEOUT_MS,
+        }
+    }
+}
+
+impl SearchBudget {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.deadline_ms > TIMEOUT_MS {
+            return Err(refuse(
+                "invalid_request",
+                "Search budgets may only lower the profile limit",
+            ));
+        }
+        Ok(())
+    }
+
+    /// The effective cooperative deadline: never above the profile limit.
+    pub fn effective_deadline_ms(&self) -> u64 {
+        self.deadline_ms.min(TIMEOUT_MS)
     }
 }
 
@@ -408,7 +469,9 @@ pub enum Request {
     /// `created_desc`/`created_asc` also served; `mode` is `lexical` —
     /// `semantic`/`hybrid` are separate ungranted capabilities.
     /// `allow_partial` is the explicit opt-in that permits `complete:false`
-    /// receipts when the candidate/evaluation budgets exhaust.
+    /// receipts when the candidate/evaluation budgets exhaust. `budget`
+    /// bounds the request's cooperative deadline (may only lower
+    /// `TIMEOUT_MS`; 0 refuses at the first boundary).
     SearchSessions {
         id: u64,
         #[serde(default)]
@@ -428,6 +491,8 @@ pub enum Request {
         limit: usize,
         #[serde(default)]
         max_matches_per_session: Option<usize>,
+        #[serde(default)]
+        budget: SearchBudget,
     },
     /// `cass_owned_queries_v1` read op: per-workspace aggregate over
     /// canonical + extension facts — GROUP BY workspace with per-metric
@@ -500,6 +565,33 @@ impl Request {
             | Self::Shutdown { id } => *id,
         }
     }
+
+    /// The wire name of this op (the `op` tag), used by the test-only
+    /// stuck-op hook and diagnostics.
+    pub fn op_name(&self) -> &'static str {
+        match self {
+            Self::Hello { .. } => "hello",
+            Self::Status { .. } => "status",
+            Self::CatalogPage { .. } => "catalog_page",
+            Self::Session { .. } => "session",
+            Self::MessagesPage { .. } => "messages_page",
+            Self::RankBegin { .. } => "rank_begin",
+            Self::RankNext { .. } => "rank_next",
+            Self::RankCancel { .. } => "rank_cancel",
+            Self::Reload { .. } => "reload",
+            Self::GetAnnotations { .. } => "get_annotations",
+            Self::PatchAnnotations { .. } => "patch_annotations",
+            Self::ListSessions { .. } => "list_sessions",
+            Self::SearchSessions { .. } => "search_sessions",
+            Self::GetSessionDetails { .. } => "get_session_details",
+            Self::GetToolOutput { .. } => "get_tool_output",
+            Self::Projects { .. } => "projects",
+            Self::Dashboard { .. } => "dashboard",
+            Self::Health { .. } => "health",
+            Self::ChangesSince { .. } => "changes_since",
+            Self::Shutdown { .. } => "shutdown",
+        }
+    }
 }
 
 pub fn page_limit(limit: usize) -> anyhow::Result<()> {
@@ -514,16 +606,21 @@ pub fn success(id: u64, result: Value) -> Value {
 }
 
 pub fn failure(id: u64, error: &anyhow::Error) -> Value {
-    let kind = error
-        .downcast_ref::<Refusal>()
-        .map_or("backend_read_failed", |e| e.kind);
+    let refusal = error.downcast_ref::<Refusal>();
+    let kind = refusal.map_or("backend_read_failed", |e| e.kind);
     let incomplete = matches!(
         kind,
-        "ranking_budget_exceeded" | "stale_snapshot" | "unmappable_hit"
+        "ranking_budget_exceeded" | "stale_snapshot" | "unmappable_hit" | "deadline_exceeded"
     );
-    json!({"schema_version":1,"id":id,"ok":false,"error":{
+    let mut envelope = json!({"schema_version":1,"id":id,"ok":false,"error":{
         "kind":kind,"message":error.to_string(),"enumeration_complete":if incomplete { Some(false) } else { None },
-    }})
+    }});
+    // `retryable` rides only the refusals that carry a retry verdict, so
+    // every other error envelope keeps its exact wire shape.
+    if let Some(retryable) = refusal.and_then(|e| e.retryable) {
+        envelope["error"]["retryable"] = json!(retryable);
+    }
+    envelope
 }
 
 pub enum Frame {
