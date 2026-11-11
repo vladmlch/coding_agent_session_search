@@ -1121,6 +1121,39 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
              AND region_key LIKE 'meta:%'",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_bridge/search_sessions.rs
+        // `seek_region_keys_by_values` — the strict-search seek lane's
+        // tool-predicate value seek (one IN() chunk of the matched
+        // vocabulary; SEEK_VALUE_CHUNK=500 wide in production, the pin is
+        // the one-value chunk verbatim). Must SEEK idx_viewer_search_regions_tool.
+        (
+            "strict seek lane tool value seek",
+            "SELECT conversation_id, region_key FROM viewer_search_regions \
+             WHERE tool_name IN (?1)",
+            &[SqliteValue::Text("Bash".into())],
+        ),
+        // Production: viewer_bridge/search_sessions.rs
+        // `seek_region_keys_by_values` — the file-predicate value seek.
+        // Must SEEK idx_viewer_search_regions_file.
+        (
+            "strict seek lane file value seek",
+            "SELECT conversation_id, region_key FROM viewer_search_regions \
+             WHERE file_path IN (?1)",
+            &[SqliteValue::Text("fixture/parent.jsonl".into())],
+        ),
+        // Production: viewer_bridge/search_sessions.rs
+        // `seek_distinct_conversations` — has_mcp's `named` existence
+        // seek over the MCP-naming tool vocabulary: the same seeking
+        // `(conversation_id, region_key)` projection as the tool/file
+        // value seeks above (deduped in Rust), NOT the `SELECT DISTINCT
+        // conversation_id` variant — that one plans as a full-table SCAN
+        // at the pinned fork rev and is pinned below as a planner gap.
+        (
+            "strict seek lane mcp named seek",
+            "SELECT conversation_id, region_key FROM viewer_search_regions \
+             WHERE tool_name IN (?1)",
+            &[SqliteValue::Text("mcp__fsquery".into())],
+        ),
     ];
     // The fork's SELECT collect-gate gap reproducers — the original SQL of
     // the four republish-lane shapes the production queries were rewritten
@@ -1160,6 +1193,96 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
              WHERE f2.parent_conversation_id = ?1 ORDER BY c2.id LIMIT 64",
             &[SqliteValue::Integer(99031)],
         ),
+        // Production: viewer_bridge/search_sessions.rs — the strict seek
+        // lane's unindexed value comparisons. `exit_code`, `has_error` and
+        // `error_type` carry NO index in the production schema
+        // (src/viewer_extensions/schema.rs), so these are full-table
+        // narrow scans BY DESIGN — one 2-column scan per distinct
+        // predicate, not per session. If a future schema adds an index
+        // and the fork seeks it, graduate the entry into seek_shapes.
+        (
+            "gap: strict seek lane exit_code equality (no index)",
+            "SELECT conversation_id, region_key FROM viewer_search_regions \
+             WHERE exit_code = ?1",
+            &[SqliteValue::Integer(0)],
+        ),
+        (
+            "gap: strict seek lane has_error equality (no index)",
+            "SELECT conversation_id, region_key FROM viewer_search_regions \
+             WHERE has_error = ?1",
+            &[SqliteValue::Integer(1)],
+        ),
+        (
+            "gap: strict seek lane error_type equality (no index)",
+            "SELECT conversation_id, region_key FROM viewer_search_regions \
+             WHERE error_type = ?1",
+            &[SqliteValue::Text("tool".into())],
+        ),
+        // Production: viewer_bridge/search_sessions.rs
+        // `seek_distinct_conversations` — the REJECTED alternative shape
+        // (observed planning as a full-table SCAN at the pinned fork rev
+        // 898c4361, 2026-11-11): `SELECT DISTINCT` defeats the IN() seek
+        // even though the same predicate without DISTINCT SEARCHes
+        // idx_viewer_search_regions_tool, so production reads the
+        // `(conversation_id, region_key)` projection and dedupes in Rust
+        // (the "strict seek lane mcp named seek" pin above). A fork fix
+        // that seeks this shape graduates it into seek_shapes and lets
+        // production consider the DISTINCT form again.
+        (
+            "gap: DISTINCT defeats the mcp named seek (production dedupes in Rust)",
+            "SELECT DISTINCT conversation_id FROM viewer_search_regions \
+             WHERE tool_name IN (?1)",
+            &[SqliteValue::Text("mcp__fsquery".into())],
+        ),
+    ];
+    // Production: viewer_bridge/search_sessions.rs — the strict seek
+    // lane's parameterless reads (no bound values, so they live in their
+    // own array): the two DISTINCT-vocabulary reads
+    // (`read_distinct_column`) and the five NULL-candidate probes
+    // (`block_probe_sql`) that decide which conversations can hold a
+    // predicate-Unknown region. Every one plans as a table SCAN at the
+    // pinned fork rev (observed 2026-11-11 — even `file_path IS NULL`
+    // does not seek the index), so each is pinned as a SCAN below: a
+    // fork fix that turns one into a SEARCH fails this gate BY NAME
+    // (the seek lane's fixed overhead gets cheaper — record the rev).
+    // Against the optional real-archive copy they also execute, giving
+    // the vocabulary sizes, probe cardinalities and one-shot costs.
+    let unparameterized_shapes: &[(&str, &str)] = &[
+        (
+            "vocab read: distinct tool_name",
+            "SELECT DISTINCT tool_name FROM viewer_search_regions \
+             WHERE tool_name IS NOT NULL",
+        ),
+        (
+            "vocab read: distinct file_path",
+            "SELECT DISTINCT file_path FROM viewer_search_regions \
+             WHERE file_path IS NOT NULL",
+        ),
+        (
+            "probe: tool NULL candidates",
+            "SELECT DISTINCT conversation_id FROM viewer_search_regions \
+             WHERE tool_name IS NULL AND (scope_known = 0 OR scope = 'tools')",
+        ),
+        (
+            "probe: file NULL candidates",
+            "SELECT DISTINCT conversation_id FROM viewer_search_regions \
+             WHERE file_path IS NULL",
+        ),
+        (
+            "probe: exit NULL candidates",
+            "SELECT DISTINCT conversation_id FROM viewer_search_regions \
+             WHERE exit_code IS NULL AND (scope_known = 0 OR scope = 'tools')",
+        ),
+        (
+            "probe: error_type NULL candidates",
+            "SELECT DISTINCT conversation_id FROM viewer_search_regions \
+             WHERE error_type IS NULL",
+        ),
+        (
+            "probe: has_error NULL candidates",
+            "SELECT DISTINCT conversation_id FROM viewer_search_regions \
+             WHERE has_error IS NULL",
+        ),
     ];
     let explain = |sql: &str, params: &[SqliteValue]| -> String {
         conn.query_with_params(&format!("EXPLAIN QUERY PLAN {sql}"), params)
@@ -1195,6 +1318,18 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
              2.45 s / 2.40 s / 75 ms per call on the 6k-session archive, \
              report.md 2026-11-10); if it now SEARCHes, move it into \
              seek_shapes above and record the fork rev"
+        );
+    }
+    for (label, sql) in unparameterized_shapes {
+        let details = explain(sql, &[]);
+        println!("[unparameterized-plan] {label}: {details}");
+        assert!(
+            details.contains("SCAN"),
+            "{label}: the fork plans this read as a SCAN today (observed \
+             2026-11-11: the vocabulary reads and every NULL-candidate probe \
+             SCAN the table even where an index exists — file_path IS NULL \
+             does not seek); if it now SEARCHes, the strict seek lane's \
+             fixed overhead just got cheaper — record the fork rev"
         );
     }
 
@@ -1287,6 +1422,27 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
             let tag = if is_production { "shape" } else { "gap-shape" };
             println!(
                 "[probe-{tag}] {label}: rows={rows} {:?} plan: {details}",
+                start.elapsed()
+            );
+        }
+        // The strict seek lane's parameterless reads: vocabulary sizes,
+        // NULL-candidate probe cardinalities and one-shot costs on the
+        // real archive — the (A) seek lane's fixed overhead receipts.
+        for (label, sql) in unparameterized_shapes {
+            let details = probe
+                .query_with_params(&format!("EXPLAIN QUERY PLAN {sql}"), &[])
+                .expect("explain on the copy")
+                .iter()
+                .map(|row| row.get_typed::<String>(3).expect("query plan detail"))
+                .collect::<Vec<_>>()
+                .join(" | ");
+            let start = std::time::Instant::now();
+            let rows = probe
+                .query_with_params(sql, &[])
+                .expect("execute unparameterized shape on the copy")
+                .len();
+            println!(
+                "[probe-vocab] {label}: rows={rows} {:?} plan: {details}",
                 start.elapsed()
             );
         }

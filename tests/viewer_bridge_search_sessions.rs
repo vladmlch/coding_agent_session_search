@@ -5508,7 +5508,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
     let corpus = vec![
         CorpusPin {
             request: json!({"query":"foo"}),
-            digest: "caa65845df7682165531627427dc463a680becd5cf04c56b1c5f1479e77d6b76",
+            digest: "4d2333b27872f0b1cb934401af0e286fca4abb729cf388b1cc273c7abaf9e76f",
             mode: Some("emitted_page_sessions"),
             reason: None,
             rows: Some(9),
@@ -5519,7 +5519,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
         },
         CorpusPin {
             request: json!({"query":"NOT quux"}),
-            digest: "32e437ebd303e86a0ac4df7cc1ef55f6e942215f5c0996d943ffd76d14eb4a01",
+            digest: "bf524b0ce5c324a9900b4aadba5408d6e993ec2452ceaef0a63e6ed35b798c80",
             mode: Some("emitted_page_sessions"),
             reason: None,
             rows: Some(16),
@@ -5530,7 +5530,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
         },
         CorpusPin {
             request: json!({"query":"fluxcap"}),
-            digest: "928ebd1e1aee0de8c012d29992bbd4da73e4bce1dda755bc6617a528fe4f5c32",
+            digest: "388baa7c176771f6fd8ba94052e654401e08991d55a5d7f5c9e590046d6cf5e6",
             mode: Some("emitted_page_sessions"),
             reason: None,
             rows: Some(6),
@@ -5543,7 +5543,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
             // Refused before evaluation: the typed error envelope is the
             // pinned answer; no diagnostics object exists to pin.
             request: json!({"query":"foo","limit":0}),
-            digest: "1eaee749bab222766e058d37ab95fa890daee9038d4dc185656d3cdbea564ee0",
+            digest: "0245e06d26c32690ebb232b6328e30b64824cda5df17b0f9f3f178699ea19297",
             mode: None,
             reason: None,
             rows: None,
@@ -5554,7 +5554,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
         },
         CorpusPin {
             request: json!({"query":"quux","limit":1,"sort":"updated_desc"}),
-            digest: "be734c14513f473f421739046e57fcf98b3e0c74ea543e89adf07fa376d1b080",
+            digest: "152296651769cd7de5ced3cf40d89f9764b1757b8d9a15f458088bbc7e48ebb2",
             mode: Some("emitted_page_sessions"),
             reason: None,
             rows: Some(2),
@@ -5567,7 +5567,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
             // Two single-token conjuncts are not fast-lane composable:
             // the legacy lane reads ONLY the gated rows.
             request: json!({"query":"foo bar"}),
-            digest: "0fcbcab50dec943dffc7cb3dbaf2a1007f89ff0e0026a867586b28dbc6d9c5b6",
+            digest: "8ffdad9cbe1dc6952010c3ae41ea85e43cc16b6c20efcb45429ac08a90433b86",
             mode: Some("gated_quill_seeks"),
             reason: None,
             rows: Some(3),
@@ -5578,7 +5578,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
         },
         CorpusPin {
             request: json!({"query":"\"combined request\""}),
-            digest: "2b0c671b7698b43442866a13a2d972dca9cbbc5adfaea003b6ee97ce5b0d6974",
+            digest: "38efbed035f58a43d4bf4b801ded4417e381a6536b48d76bb9cb5a1f1e13d86d",
             mode: Some("gated_quill_seeks"),
             reason: None,
             rows: Some(1),
@@ -5589,7 +5589,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
         },
         CorpusPin {
             request: json!({"query":"in:thinking zeta"}),
-            digest: "0ed2ff840a4fb0105724196b958b31208f323d9a59688ff9e5ab7a9cbfa91e43",
+            digest: "629cf0da4f4cad4b251a5502ac2d405cebe913cc347f3aaa01dbad4ba4c78f10",
             mode: Some("universe_structural"),
             reason: Some("region_domain_predicate"),
             rows: Some(23),
@@ -5599,35 +5599,48 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
             verification_bytes: Some(0),
         },
         CorpusPin {
+            // 2026-11-11 (A): `tool:Bash ∧ quux` seeks — the quux gates load
+            // their resident rows (3: S3's m2:chat + S3's tool region + S5's
+            // chat region) and the tool predicate's seek re-reads S3's Bash
+            // row (1) — `region_rows_loaded` counts reads, not distinct
+            // rows. The answer (digest) is the Stage 1 capture,
+            // byte-identical.
             request: json!({"ast":{"type":"and","children":[
                 {"type":"filter","field":"tool","op":"EQ","value":"Bash"},
                 {"type":"term","value":"quux"}]}}),
-            digest: "53adcb99e534ad9cb81951bc72a2e7435c953ddd3f2bdc5c988f108f05f0a5b7",
-            mode: Some("universe_structural"),
-            reason: Some("region_domain_predicate"),
-            rows: Some(23),
+            digest: "585abc2da1b038f2ad113adbe5a4f94990e7c2bb613bdd12c763946bac3e41a2",
+            mode: Some("block_predicate_seeks"),
+            reason: None,
+            rows: Some(4),
             regions_hydrated: Some(3),
             messages_hydrated: Some(1),
             fragments_loaded: Some(1),
             verification_bytes: Some(0),
         },
         CorpusPin {
+            // 2026-11-11 (A): exit:2 — one filtered read over the
+            // unindexed exit_code column (the seek's SQL applies the
+            // comparison) returning S3's single exit row.
             request: json!({"ast":{"type":"filter","field":"exit","op":"EQ","value":2}}),
-            digest: "a8db0ed48e437687a42e49790a66e5aefe06b482bcb264e35fd2231cdb5a26cd",
-            mode: Some("universe_structural"),
-            reason: Some("region_domain_predicate"),
-            rows: Some(23),
+            digest: "a8e7f6fde3072ce81662cc2ab23330a268e4833b07ea8b43b53c57185afddb93",
+            mode: Some("block_predicate_seeks"),
+            reason: None,
+            rows: Some(1),
             regions_hydrated: Some(0),
             messages_hydrated: Some(0),
             fragments_loaded: Some(0),
             verification_bytes: Some(0),
         },
         CorpusPin {
+            // 2026-11-11 (A): has_mcp — the mcp-named vocabulary seek over
+            // tool_name returns zero rows on this fixture (no mcp/`/`
+            // tool name; S1's membership rides its `mcp-server` tag, so
+            // named-reads are zero and NO probe exists for has_mcp).
             request: json!({"ast":{"type":"filter","field":"has_mcp","op":"EQ","value":true}}),
-            digest: "a2084341361a4c5920156429cc358cebb1223010415113b7b8d53551e63a4fa4",
-            mode: Some("universe_structural"),
-            reason: Some("region_domain_predicate"),
-            rows: Some(23),
+            digest: "4817f5d0dcc866e43c5acc2e9ebe8cb998d384d15eef81374dcd218b52125eb2",
+            mode: Some("block_predicate_seeks"),
+            reason: None,
+            rows: Some(0),
             regions_hydrated: Some(0),
             messages_hydrated: Some(0),
             fragments_loaded: Some(0),
@@ -5637,7 +5650,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
             // A non-ASCII literal cannot be index-gated: the whole region
             // inventory stays honest evidence (ungated structural path).
             request: json!({"query":"жжж"}),
-            digest: "2beaeb1af94a3732d3684507c086531aa1a7a0d99a47db7f6cc776b5be5d85bc",
+            digest: "9798dfd5f20aea62b1ffb2f2e846b70a4b0fafc216e4e0b7b77ca6816b3736b6",
             mode: Some("universe_structural"),
             reason: Some("ungated_literal"),
             rows: Some(23),
@@ -5650,7 +5663,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
             // Zero hits: NO region row is read at all — the request's
             // region cost is zero, not the universe size.
             request: json!({"query":"wumpus"}),
-            digest: "a0ae8e1263e446fc2ac5dd78382233cbd522dbea9b6e915592c0d08dd4fe8c66",
+            digest: "f00b3478e8790d67250cfd0a88e93acf7d59548a48ae44915c097a4622e75963",
             mode: Some("emitted_page_sessions"),
             reason: None,
             rows: Some(0),
@@ -5662,7 +5675,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
         CorpusPin {
             // No literals at all: nothing is gated, nothing is read.
             request: json!({"query":null}),
-            digest: "a32ebe8cefffc6933f97ed9b232da181c2dcf329aebc28dccb76a88f39529169",
+            digest: "209414278977ba923879c4054d3797f887eca11d0583c5aa9abf58c5c488d230",
             mode: Some("gated_quill_seeks"),
             reason: None,
             rows: Some(0),
@@ -5673,7 +5686,128 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
         },
         CorpusPin {
             request: json!({"query":"foo","filters":{"tag":"release-blocker"}}),
-            digest: "5b374fec6d0abebbe00dcf65ec511592b614fdf5cc61115393e272756f477a5d",
+            digest: "f2869af8d370d4e8ba525bba30ad1d7888d80d0c1ffd6d3f798ae118af171674",
+            mode: Some("emitted_page_sessions"),
+            reason: None,
+            rows: Some(6),
+            regions_hydrated: Some(6),
+            messages_hydrated: Some(1),
+            fragments_loaded: Some(1),
+            verification_bytes: Some(24),
+        },
+        // -----------------------------------------------------------------
+        // 2026-11-11 strict-search-seeks (A): block-domain predicates seek
+        // instead of scanning. Every pin below keeps its Stage 1 ANSWER
+        // byte-for-byte (the digest is the pre-change capture); only the
+        // region-read strategy moves: `region_load_mode` becomes
+        // `block_predicate_seeks` and `region_rows_loaded` drops from the
+        // whole universe (23 rows) to the rows the predicates' SQL seeks
+        // returned — the RED assertion that failed before the change.
+        // -----------------------------------------------------------------
+        CorpusPin {
+            // Session-domain tool predicate, no literals: no gates, no
+            // probes (no session blocks tools coverage on this fixture) —
+            // the only rows read are the tool_name-seek's Bash rows (S3's
+            // one tool region).
+            request: json!({"query":"tool:Bash"}),
+            digest: "a8e7f6fde3072ce81662cc2ab23330a268e4833b07ea8b43b53c57185afddb93",
+            mode: Some("block_predicate_seeks"),
+            reason: None,
+            rows: Some(1),
+            regions_hydrated: Some(0),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            // file: — vocabulary-distinct paths matched by the unchanged
+            // like_match, then one file_path seek: S7's attachment region.
+            request: json!({"query":"file:evidence.png"}),
+            digest: "8f076b0d07c16c6cda6855c898e6d1d7cc0b8734c9de2e048a9e780f3e275e88",
+            mode: Some("block_predicate_seeks"),
+            reason: None,
+            rows: Some(1),
+            regions_hydrated: Some(0),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            request: json!({"query":"has:error"}),
+            digest: "a8e7f6fde3072ce81662cc2ab23330a268e4833b07ea8b43b53c57185afddb93",
+            mode: Some("block_predicate_seeks"),
+            reason: None,
+            rows: Some(1),
+            regions_hydrated: Some(0),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            request: json!({"query":"error:tool"}),
+            digest: "a8e7f6fde3072ce81662cc2ab23330a268e4833b07ea8b43b53c57185afddb93",
+            mode: Some("block_predicate_seeks"),
+            reason: None,
+            rows: Some(1),
+            regions_hydrated: Some(0),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            // Negated tool predicate: the inner predicate's seek is the
+            // whole region read; the Not collapses the sets, so the answer
+            // is the complement verdict byte-for-byte.
+            request: json!({"query":"NOT tool:Bash"}),
+            digest: "7c0e00134812ec8a4a06d4b6ef41922ec99a0fa9ce92dc7431e69c91308c693b",
+            mode: Some("block_predicate_seeks"),
+            reason: None,
+            rows: Some(1),
+            regions_hydrated: Some(0),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            // OR mix: two distinct predicates, two seeks, both hitting the
+            // same S3 region — the receipt counts the rows each seek
+            // returned (2 reads of 1 physical row).
+            request: json!({"query":"tool:Bash OR has:error"}),
+            digest: "a8e7f6fde3072ce81662cc2ab23330a268e4833b07ea8b43b53c57185afddb93",
+            mode: Some("block_predicate_seeks"),
+            reason: None,
+            rows: Some(2),
+            regions_hydrated: Some(0),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            // Same-block AND of TWO positive seekable predicates stays on
+            // the eager structural lane: the narrowed sets are exact under
+            // AND only for at most one predicate atom per AND node (the
+            // UP∩K cross terms of a second predicate cannot be proven by
+            // value seeks), so the shape falls back and receipts why.
+            request: json!({"query":"tool:Bash AND error:tool"}),
+            digest: "a8e7f6fde3072ce81662cc2ab23330a268e4833b07ea8b43b53c57185afddb93",
+            mode: Some("universe_structural"),
+            reason: Some("block_predicate_same_block_and"),
+            rows: Some(23),
+            regions_hydrated: Some(0),
+            messages_hydrated: Some(0),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
+        },
+        CorpusPin {
+            // has_mcp joined with a literal rides the FAST lane: the
+            // seek lane replaces the eager universe load underneath it
+            // (has_mcp's `named` evidence comes from the mcp-named seek;
+            // no probe — its Unknown is coverage-conditional), so the
+            // region rows read are the emitted page's structural load
+            // alone, and the fast-lane receipt stays
+            // `emitted_page_sessions`.
+            request: json!({"query":"has:mcp foo"}),
+            digest: "5dd4eb83dd11db182bdd0cc42914c67ab48ad46431ef9bccf0f5a75db92ff737",
             mode: Some("emitted_page_sessions"),
             reason: None,
             rows: Some(6),
@@ -5686,6 +5820,19 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
     let mut bridge = gold_harness()?;
     let digest_of = |page: &Value| -> Result<String> {
         let mut stripped = page.clone();
+        // The top-level `id` is the harness's sequential request counter —
+        // transport plumbing, not answer content. Covering it made every
+        // digest depend on its POSITION in the corpus: adding the
+        // block-predicate pins shifted the quux page-2 walk's id 116 -> 124
+        // and broke the committed page-2 pin on a byte-identical answer
+        // (reproduced on the pre-change tree: both computed
+        // 78e0d8a0ac9d9d5bb0d14e01db4859da0ba0a099e3550c1cf1d030fa9cf0f2a4).
+        // A reply-id echo divergence cannot hide here: `search` matches
+        // replies by id, so a broken echo fails the test by timeout long
+        // before any digest is compared.
+        if let Some(object) = stripped.as_object_mut() {
+            object.remove("id");
+        }
         if let Some(result) = stripped.get_mut("result").and_then(|r| r.as_object_mut()) {
             result.remove("diagnostics");
             result.remove("archive_stamp");
@@ -5756,7 +5903,9 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
     )?;
     let digest2 = digest_of(&page2)?;
     ensure!(
-        digest2 == "61ec50b44414ca972066be4298ca78e9f3bfa6e153864565b0dcd9912cbb7a4e",
+        // 2026-11-11 (A): re-pinned id-free (the digest_of change above) —
+        // the answer content is the committed Stage 1 page-2 capture.
+        digest2 == "b193d1fca4f8ee9c9810ca473c2dc2731427230e0fd0afe08ac378b04f90b6e5",
         "Stage 1b diverged from the Stage 1 page-2 answer (computed {digest2}): {page2}"
     );
     ensure!(
