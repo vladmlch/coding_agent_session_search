@@ -6333,6 +6333,28 @@ fn run_cass_index(fixture: &IngestFixture, extra_env: &[(&str, &str)]) -> Result
     Ok(())
 }
 
+/// Production incremental ingest: plain `cass index` — the mtime watermark
+/// and source ledger skip already-ingested sources, and a source deleted
+/// since the last run is not re-scanned at all, so the only writer that
+/// can converge a stale conversation is the region re-projection lane
+/// replaying the persisted archive.
+fn run_cass_index_incremental(fixture: &IngestFixture, extra_env: &[(&str, &str)]) -> Result<()> {
+    let mut cmd = cass_cmd(fixture);
+    cmd.arg("index").arg("--json").arg("--no-progress-events");
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    let output = cmd.stdin(Stdio::null()).output()?;
+    ensure!(
+        output.status.success(),
+        "cass index failed: {}\nstdout: {}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
 /// Production `--init-extensions` writer pass (schema + canonical
 /// observers), the same flag an operator runs.
 fn run_init_extensions(fixture: &IngestFixture) -> Result<()> {
@@ -6728,17 +6750,30 @@ fn ingest_removal_drops_extension_rows_and_receipt() -> Result<()> {
 /// Interrupted publication: the receipt rides the generation transaction,
 /// so a crash before that commit leaves the pre-attempt state — NO receipt
 /// and NO rows, never a falsely complete archive (nothing claims coverage
-/// the rows do not have). The explicit resumable backfill converges it to
-/// `complete` with no loss or duplication.
+/// the rows do not have). The crash leg pins that rollback with the region
+/// re-projection lane disabled (`CASS_REGION_REPROJECT=0`): with the lane
+/// on (the default) the SAME `cass index` run converges the crashed session
+/// afterwards, because the lane replays the persisted archive for every
+/// session whose marks/facts/projection sit below the current versions.
+/// The deleted-source leg pins that convergence — the scan cannot
+/// republish a source that no longer exists, so only the lane completes
+/// the generation — and the explicit backfill over the converged
+/// generation is a no-op that adds nothing.
 #[test]
 fn ingest_interrupted_publication_leaves_no_false_state_and_backfill_completes() -> Result<()> {
     let fixture = ingest_fixture()?;
-    seed_codex_rollout(&fixture, "gen-codex-5", "crash mid publication")?;
+    let rollout = seed_codex_rollout(&fixture, "gen-codex-5", "crash mid publication")?;
 
     // Crash injection: the process "dies" before the generation transaction
     // commits — with the receipt folded in, that means nothing durable was
-    // written this attempt.
-    run_cass_index(&fixture, &[("CASS_TEST_VIEWER_GENERATION_CRASH", "1")])?;
+    // written this attempt. The lane stays off so the crash is observable.
+    run_cass_index(
+        &fixture,
+        &[
+            ("CASS_TEST_VIEWER_GENERATION_CRASH", "1"),
+            ("CASS_REGION_REPROJECT", "0"),
+        ],
+    )?;
     run_init_extensions(&fixture)?;
 
     let conn = ingest_conn(&fixture)?;
@@ -6760,8 +6795,32 @@ fn ingest_interrupted_publication_leaves_no_false_state_and_backfill_completes()
     );
     drop(conn);
 
+    // The source disappears, so the incremental scan cannot republish the
+    // conversation — the only writer that can converge it is the region
+    // re-projection lane replaying the persisted archive, the same lane
+    // every plain `cass index` runs after its scan. A crashed session no
+    // longer waits for an explicit repair.
+    std::fs::remove_file(&rollout)?;
+    run_cass_index_incremental(&fixture, &[])?;
+
+    let conn = ingest_conn(&fixture)?;
+    assert_generation_coherent(&conn, conversation_id)?;
+    let (facts_n, projection_n, steps_n) = extension_row_counts(&conn, conversation_id)?;
+    ensure!(
+        facts_n == 1 && projection_n == 1 && steps_n > 0,
+        "the archive replay must complete the generation exactly once: \
+         {facts_n}/{projection_n}/{steps_n}"
+    );
+    let receipt = ingest_receipt(&conn, conversation_id)?.expect("receipt");
+    ensure!(
+        receipt["state"] == "complete",
+        "the converged generation must carry a truthful complete receipt: {receipt}"
+    );
+    drop(conn);
+
     // Restart + explicit resumable backfill converges without loss or
-    // duplication.
+    // duplication — over the lane-converged generation it must be a
+    // no-op.
     run_backfill(&fixture)?;
 
     let conn = ingest_conn(&fixture)?;
@@ -6769,7 +6828,7 @@ fn ingest_interrupted_publication_leaves_no_false_state_and_backfill_completes()
     let (facts_n, projection_n, steps_n) = extension_row_counts(&conn, conversation_id)?;
     ensure!(
         facts_n == 1 && projection_n == 1 && steps_n > 0,
-        "backfill must complete the generation exactly once: \
+        "backfill must not duplicate the converged generation: \
          {facts_n}/{projection_n}/{steps_n}"
     );
     let receipt = ingest_receipt(&conn, conversation_id)?.expect("receipt");
@@ -6789,13 +6848,23 @@ fn ingest_interrupted_publication_leaves_no_false_state_and_backfill_completes()
 /// the whole conversation back — no facts row without its structure — and
 /// the durable receipt records `failed` with the exact reason. A plain
 /// re-ingest of unchanged content does NOT silently repair it; only the
-/// explicit backfill converges it.
+/// explicit backfill converges it. Both faulted legs run with the region
+/// re-projection lane disabled (`CASS_REGION_REPROJECT=0`) so the ingest
+/// publication's own semantics stay observable — with the lane on, the
+/// same run heals the failed receipt by replaying the archive, which
+/// `ingest_lane_replays_failed_publication_from_persisted_archive` pins.
 #[test]
 fn ingest_failed_publication_records_reason_and_stays_incomplete() -> Result<()> {
     let fixture = ingest_fixture()?;
     seed_codex_rollout(&fixture, "gen-codex-6", "fails mid transaction")?;
 
-    run_cass_index(&fixture, &[("CASS_TEST_VIEWER_GENERATION_FAIL", "1")])?;
+    run_cass_index(
+        &fixture,
+        &[
+            ("CASS_TEST_VIEWER_GENERATION_FAIL", "1"),
+            ("CASS_REGION_REPROJECT", "0"),
+        ],
+    )?;
     run_init_extensions(&fixture)?;
 
     let conn = ingest_conn(&fixture)?;
@@ -6822,7 +6891,13 @@ fn ingest_failed_publication_records_reason_and_stays_incomplete() -> Result<()>
     // An unchanged re-ingest is the same generation the receipt already
     // marks attempted — it retries the publication but this injected fault
     // is deterministic, so it stays failed and never advertises complete.
-    run_cass_index(&fixture, &[("CASS_TEST_VIEWER_GENERATION_FAIL", "1")])?;
+    run_cass_index(
+        &fixture,
+        &[
+            ("CASS_TEST_VIEWER_GENERATION_FAIL", "1"),
+            ("CASS_REGION_REPROJECT", "0"),
+        ],
+    )?;
     let conn = ingest_conn(&fixture)?;
     let receipt = ingest_receipt(&conn, conversation_id)?.expect("receipt");
     ensure!(
@@ -6842,6 +6917,59 @@ fn ingest_failed_publication_records_reason_and_stays_incomplete() -> Result<()>
     ensure!(
         facts::list_incomplete_ingest_receipts(&conn)?.is_empty(),
         "reconcile must drain every incomplete receipt"
+    );
+    drop(conn);
+    Ok(())
+}
+
+/// The re-projection lane self-heals a FAILED publication from the
+/// persisted archive: with the source deleted (so the scan cannot
+/// republish it) a plain incremental `cass index` converges the failed
+/// receipt — a `failed` receipt never masks the retry. This is the
+/// convergence the `ingest_failed_publication_records_reason_and_stays_incomplete`
+/// test observes with the lane on, pinned here in isolation.
+#[test]
+fn ingest_lane_replays_failed_publication_from_persisted_archive() -> Result<()> {
+    let fixture = ingest_fixture()?;
+    let rollout = seed_codex_rollout(&fixture, "gen-codex-7", "lane heals the receipt")?;
+
+    // The publication fails durably — receipt `failed`, no rows — with the
+    // lane off so the fault's own state is observable.
+    run_cass_index(
+        &fixture,
+        &[
+            ("CASS_TEST_VIEWER_GENERATION_FAIL", "1"),
+            ("CASS_REGION_REPROJECT", "0"),
+        ],
+    )?;
+    run_init_extensions(&fixture)?;
+    let conn = ingest_conn(&fixture)?;
+    let conversation_id = canonical_id(&conn, "rollout-")?;
+    let receipt = ingest_receipt(&conn, conversation_id)?.expect("failure receipt");
+    ensure!(receipt["state"] == "failed", "{receipt}");
+    drop(conn);
+
+    // Source removed: only the lane can converge it, by replaying the
+    // persisted archive.
+    std::fs::remove_file(&rollout)?;
+    run_cass_index_incremental(&fixture, &[])?;
+
+    let conn = ingest_conn(&fixture)?;
+    assert_generation_coherent(&conn, conversation_id)?;
+    let (facts_n, projection_n, steps_n) = extension_row_counts(&conn, conversation_id)?;
+    ensure!(
+        facts_n == 1 && projection_n == 1 && steps_n > 0,
+        "the lane must converge the failed publication from the archive: \
+         {facts_n}/{projection_n}/{steps_n}"
+    );
+    let receipt = ingest_receipt(&conn, conversation_id)?.expect("receipt");
+    ensure!(
+        receipt["state"] == "complete",
+        "the failed receipt must not mask the lane's retry: {receipt}"
+    );
+    ensure!(
+        facts::list_incomplete_ingest_receipts(&conn)?.is_empty(),
+        "the converged receipt must leave no incomplete receipts"
     );
     drop(conn);
     Ok(())
