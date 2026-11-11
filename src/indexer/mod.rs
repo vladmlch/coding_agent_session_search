@@ -1041,6 +1041,32 @@ pub struct SemanticWatchOnceStats {
     pub reason: String,
 }
 
+/// Incremental extension-version re-projection accounting, reported under
+/// `indexing_stats.region_reproject` (see [`run_region_reprojection_lane`]).
+///
+/// * `stale_sessions` — sessions detected below the current
+///   extractor/region/projection versions this run.
+/// * `reprojected` — sessions the lane re-projected from the PERSISTED
+///   archive: a full coherent generation (facts/projection rows, search
+///   regions and the region mark, and the receipt) republished in one
+///   savepoint, whether or not the row sets came out unchanged. This is
+///   the drain signal — every one of these carries a fresh
+///   DOCS_PENDING region mark for the post-lane drain.
+/// * `skipped_unchanged` — sessions the lane visited without
+///   republishing anything: the receipt-and-markers skip key already
+///   saw them current (a receipt current while a row drifted). The
+///   steady re-run marker.
+/// * `failed` — sessions whose re-projection failed and rolled back to
+///   their savepoint; each keeps a durable `failed` receipt naming the
+///   reason and is retried by the next run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct RegionReprojectStats {
+    pub stale_sessions: usize,
+    pub reprojected: usize,
+    pub skipped_unchanged: usize,
+    pub failed: usize,
+}
+
 /// Aggregate indexing statistics for JSON output (T7.4).
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct IndexingStats {
@@ -1100,6 +1126,16 @@ pub struct IndexingStats {
     /// The first `DEFERRED_ACTIVE_SOURCE_SAMPLE` of those paths, sorted.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub deferred_active_source_sample: Vec<String>,
+    /// Extension-version re-projection accounting: the incremental pass
+    /// that replays stale sessions (marks/facts/projection below the
+    /// current versions) from the PERSISTED archive through the
+    /// per-conversation backfill lane and converges their search-region
+    /// docs. Present only on non-watch runs of archives carrying the
+    /// extension profile; omitted when the lane could not run (watch
+    /// mode, env disabled, no marks table) or when its accounting itself
+    /// failed after a successful run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region_reproject: Option<RegionReprojectStats>,
     #[serde(skip)]
     deferred_active_source_paths: BTreeSet<PathBuf>,
 }
@@ -16442,6 +16478,115 @@ fn filter_disabled_connector_factories<F>(
     filtered
 }
 
+/// Whether the incremental REGION_VERSION re-projection pass is enabled.
+/// Off for watch runs (their chunks converge per event) and for
+/// `--watch-once` paths; `CASS_REGION_REPROJECT=0` is the explicit
+/// operator off switch.
+fn region_reproject_enabled(opts: &IndexOptions) -> bool {
+    if opts.watch || opts.watch_once_paths.is_some() {
+        return false;
+    }
+    dotenvy::var("CASS_REGION_REPROJECT")
+        .map(|value| value.trim() != "0")
+        .unwrap_or(true)
+}
+
+/// Run the incremental extension-version re-projection lane.
+///
+/// After a REGION_VERSION (or facts-extractor / projection) bump, the
+/// sessions below the current versions converge by re-projecting them
+/// from the PERSISTED archive through the same ordered per-conversation
+/// lane the bridge backfill uses ([`backfill::backfill_viewer_extensions`]):
+/// canonical conversation+message+snippet hydration (message extras
+/// included — raw tool records, response parts and other identity
+/// provenance live in the extras columns), facts extraction, projection,
+/// region build and region-doc skip-key publication — all bounded
+/// (one savepoint per conversation, batched commits) and idempotent
+/// (the marks-aware generation skip-key republishes only what changed).
+///
+/// NO source re-scan is involved: the stale set comes from one indexed
+/// detection query over the extension tables (marks/facts/projection
+/// below the current versions), so a session whose source file is gone
+/// converges exactly like a live one and the Stage-1 marks gate lifts
+/// for the whole archive.
+///
+/// The lane runs BEFORE the scan-side drain decisions and converges
+/// its OWN region docs: the caller drains when `reprojected > 0`.
+/// A crash between the lane and that drain leaves honest
+/// DOCS_PENDING marks that the next run's detection (marks at the
+/// current version are not stale) plus the existing drain machinery
+/// converge.
+///
+/// `Ok(None)` when the lane cannot run: watch, env-disabled, or an
+/// archive without the extension profile (a fresh archive's first
+/// ingest installs it — nothing to converge toward yet). An EMPTY
+/// stale set still returns `Some(RegionReprojectStats::default())` so
+/// a steady run reports the zero-work plan.
+fn run_region_reprojection_lane(
+    storage: &FrankenStorage,
+    opts: &IndexOptions,
+) -> Result<Option<RegionReprojectStats>> {
+    if !region_reproject_enabled(opts) {
+        return Ok(None);
+    }
+    let db = storage.raw();
+    if !crate::viewer_extensions::search_regions::has_region_marks_table(db)? {
+        return Ok(None);
+    }
+    let stale_ids =
+        crate::viewer_extensions::search_regions::region_reproject_stale_session_ids(db)?;
+    if stale_ids.is_empty() {
+        return Ok(Some(RegionReprojectStats::default()));
+    }
+    tracing::info!(
+        stale_sessions = stale_ids.len(),
+        "region re-projection lane: replaying stale sessions from the persisted archive"
+    );
+    let backfill_stats =
+        persist::with_ephemeral_writer(storage, true, "region re-projection lane", |writer| {
+            let connection = writer.raw();
+            // Additive idempotent schema ensure: an archive whose
+            // profile predates the current extension schema upgrades
+            // here, before any publication depends on the new columns.
+            crate::viewer_extensions::schema::ensure_profile_for_ingest(connection)?;
+            let stats = crate::viewer_extensions::backfill::backfill_viewer_extensions(
+                connection,
+                &crate::viewer_extensions::backfill::BackfillOptions {
+                    selection:
+                        crate::viewer_extensions::backfill::BackfillSelection::ConversationIds(
+                            stale_ids.clone(),
+                        ),
+                    ..crate::viewer_extensions::backfill::BackfillOptions::default()
+                },
+                |stats| {
+                    tracing::info!(
+                        scanned = stats.conversations_scanned,
+                        published = stats.facts_published,
+                        skipped = stats.facts_skipped_unchanged,
+                        failed = stats.failures,
+                        "region re-projection lane progress"
+                    );
+                },
+            )?;
+            // One coherent post-publication journal pass, mirroring the
+            // bridge backfill entry's publication contract.
+            crate::viewer_extensions::changes::notify_committed_change_best_effort(connection);
+            Ok(stats)
+        })?;
+    Ok(Some(RegionReprojectStats {
+        stale_sessions: stale_ids.len(),
+        reprojected: backfill_stats.generations_republished,
+        // The outer receipt+markers skip — conversations the lane
+        // visited without republishing anything (a receipt current
+        // while a row drifted). Failures already counted above.
+        skipped_unchanged: backfill_stats
+            .conversations_scanned
+            .saturating_sub(backfill_stats.generations_republished)
+            .saturating_sub(backfill_stats.failures),
+        failed: backfill_stats.failures,
+    }))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_streaming_index_with_connector_factories<F>(
     storage: &FrankenStorage,
@@ -19260,6 +19405,37 @@ fn run_index_with_storage_ownership(
                 performed_scan = true;
                 stale_index_ingest_quarantine_retry_attempted =
                     stale_index_ingest_quarantine_retry.is_some();
+
+                // Extension-version re-projection lane: replay the stale
+                // set from the PERSISTED archive (no source re-scan), then
+                // converge the replayed sessions' region docs through
+                // the same batched drain the scan lanes use. Under a
+                // deferred lexical strategy `t_index` is `None` here, so
+                // the lane's DOCS_PENDING marks converge through the
+                // deferred rebuild or the next run's drain — crash-honest
+                // either way. A lane failure never fails the run (the
+                // scan converged what it could), but the stats object is
+                // omitted rather than reporting fabricated numbers.
+                match run_region_reprojection_lane(&storage, &opts) {
+                    Ok(Some(stats)) => {
+                        if stats.reprojected > 0
+                            && let Some(index) = t_index.as_mut()
+                        {
+                            index.converge_pending_search_region_docs(storage.raw(), i64::MAX)?;
+                            index.commit_with_region_doc_stamps(storage.raw())?;
+                        }
+                        if let Some(progress) = opts.progress.as_ref()
+                            && let Ok(mut progress_stats) = progress.stats.lock()
+                        {
+                            progress_stats.region_reproject = Some(stats);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => tracing::warn!(
+                        error = %format!("{error:#}"),
+                        "region re-projection lane failed; the run's stats omit region_reproject"
+                    ),
+                }
 
                 if scan_lexical_update_deferred {
                     tracing::warn!(
@@ -42161,6 +42337,108 @@ pub mod persist {
             assert!(
                 !index.region_doc_convergence_deferred_to_final_drain(),
                 "three stale marks must not latch the deferral"
+            );
+        }
+
+        /// Detection feeds the re-projection lane from the PERSISTED
+        /// extension tables alone: every staleness arm — stale marks, a
+        /// MISSING marks row, stale facts, and both projection versions —
+        /// is detected while a current session is not, and there is NO
+        /// source-side gating at all: a session without a source path
+        /// and a remote-mirror session stay detected, because the lane
+        /// replays the persisted archive, not the source.
+        #[test]
+        fn reproject_detection_covers_marks_facts_and_projection_staleness() {
+            use crate::viewer_extensions::facts::FACTS_EXTRACTOR_VERSION;
+            use crate::viewer_extensions::projection::PROJECTION_VERSION;
+            use crate::viewer_extensions::search_regions::{
+                REGION_VERSION, region_reproject_stale_session_ids,
+            };
+
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("detect.db"));
+            let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
+            let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+            let convs: Vec<_> = (0..6i64)
+                .map(|ordinal| grind_region_session(dir.path(), ordinal))
+                .collect();
+            persist_conversations_batched(
+                &storage,
+                Some(&mut index),
+                &convs,
+                LexicalPopulationStrategy::IncrementalInline,
+                false,
+            )
+            .unwrap();
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+            let db = storage.raw();
+
+            // One staleness arm per conversation (ids are 1..=6 in insert
+            // order on the fresh archive); conversation 6 stays current.
+            let old_version = REGION_VERSION - 1;
+            db.execute_compat(
+                "UPDATE viewer_search_region_marks SET region_version = ?1 \
+                 WHERE conversation_id = 1",
+                &[ParamValue::from(old_version)],
+            )
+            .unwrap();
+            db.execute_compat(
+                "UPDATE viewer_session_facts SET extractor_version = ?1 \
+                 WHERE conversation_id = 2",
+                &[ParamValue::from(FACTS_EXTRACTOR_VERSION - 1)],
+            )
+            .unwrap();
+            db.execute_compat(
+                "UPDATE viewer_session_projection SET projection_version = ?1 \
+                 WHERE conversation_id = 3",
+                &[ParamValue::from(PROJECTION_VERSION - 1)],
+            )
+            .unwrap();
+            db.execute_compat(
+                "UPDATE viewer_session_projection SET extractor_version = ?1 \
+                 WHERE conversation_id = 4",
+                &[ParamValue::from(FACTS_EXTRACTOR_VERSION - 1)],
+            )
+            .unwrap();
+            db.execute("DELETE FROM viewer_search_region_marks WHERE conversation_id = 5")
+                .unwrap();
+
+            let detected = region_reproject_stale_session_ids(db).unwrap();
+            assert_eq!(detected, vec![1, 2, 3, 4, 5]);
+
+            // No source-side gating at all: a session without a source
+            // path stays detected — the lane replays the persisted
+            // archive, not the source.
+            db.execute("UPDATE conversations SET source_path = '' WHERE id = 5")
+                .unwrap();
+            assert_eq!(
+                region_reproject_stale_session_ids(db).unwrap(),
+                vec![1, 2, 3, 4, 5],
+                "a session without a source path is still a re-projection target"
+            );
+
+            // Remote-mirror sessions converge through the same archive
+            // replay — they are detected too. (`conversations.source_id`
+            // carries a foreign key into the `sources` table, so the
+            // fixture needs the row.)
+            db.execute(
+                "INSERT OR REPLACE INTO sources \
+                 (id, kind, host_label, created_at, updated_at) \
+                 VALUES ('remote', 'ssh', 'remote fixture', 0, 0)",
+            )
+            .unwrap();
+            db.execute_compat(
+                "UPDATE viewer_search_region_marks SET region_version = ?1 \
+                 WHERE conversation_id = 6",
+                &[ParamValue::from(old_version)],
+            )
+            .unwrap();
+            db.execute("UPDATE conversations SET source_id = 'remote' WHERE id = 6")
+                .unwrap();
+            assert_eq!(
+                region_reproject_stale_session_ids(db).unwrap(),
+                vec![1, 2, 3, 4, 5, 6],
+                "a remote session is still a re-projection target"
             );
         }
 

@@ -6124,6 +6124,7 @@ fn backfill_batches_and_limit_are_bounded_and_resumable() -> Result<()> {
     let options = backfill::BackfillOptions {
         batch_size: 1,
         limit: None,
+        ..backfill::BackfillOptions::default()
     };
     let mut batches = 0_usize;
     let stats = backfill::backfill_viewer_extensions(&connection, &options, |_| batches += 1)?;
@@ -6137,6 +6138,7 @@ fn backfill_batches_and_limit_are_bounded_and_resumable() -> Result<()> {
     let limited = backfill::BackfillOptions {
         batch_size: 256,
         limit: Some(1),
+        ..backfill::BackfillOptions::default()
     };
     // Reset so the limit path re-derives on a clean state.
     connection.execute("DELETE FROM viewer_session_facts")?;

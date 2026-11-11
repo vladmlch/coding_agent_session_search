@@ -2270,7 +2270,9 @@ pub fn regions_for_quill_slots(
 /// the viewer profile ever installed) legitimately lack it; every
 /// marks-listing helper treats that as an empty inventory rather than a
 /// query error, matching [`live_region_doc_bound`]'s documented `0`.
-fn has_region_marks_table(db: &impl FactsDb) -> Result<bool> {
+/// The re-projection planner uses this as its archive gate: a
+/// non-extension archive has no fast lane to converge toward.
+pub(crate) fn has_region_marks_table(db: &impl FactsDb) -> Result<bool> {
     Ok(!db
         .facts_query_map(
             "SELECT 1 FROM sqlite_master WHERE type='table' \
@@ -2518,6 +2520,51 @@ pub fn stale_region_version_session_count(db: &impl FactsDb) -> Result<i64> {
         )
         .context("counting sessions with stale-region-version marks")?;
     Ok(rows.first().copied().unwrap_or(0))
+}
+
+/// The stale set for the incremental re-projection lane: every
+/// conversation whose region marks are missing or at an older
+/// [`REGION_VERSION`], or whose facts row is missing or at an older
+/// [`super::facts::FACTS_EXTRACTOR_VERSION`], or whose projection row is
+/// missing or at an older [`super::projection::PROJECTION_VERSION`] /
+/// extractor version. The lane re-projects EXACTLY these conversations
+/// from the PERSISTED archive (never from their sources), so the sweep
+/// deliberately carries no source-path, source-id or attempts gating: a
+/// session whose source file is gone converges through the archive
+/// exactly like a live one, and the Stage-1 fast-lane gate counts every
+/// conversation, so the lane must too.
+///
+/// Deliberately a LEFT JOIN over PK-anchored rows, not correlated
+/// subqueries: frankensqlite evaluates correlated probes through its
+/// in-memory fallback (the same shape `live_region_doc_bound` documents
+/// as pathologically slow at archive scale), while these joins are the
+/// index-seek shape that helper proved at 6k sessions. Marks at the
+/// CURRENT version with a non-`published` `docs_state` are NOT stale:
+/// the pending sweep (the run's final drain) already converges those.
+/// Empty on archives without the extension profile — a non-extension
+/// archive has no fast lane to converge toward, and its first ingest
+/// installs the profile anyway.
+pub fn region_reproject_stale_session_ids(db: &impl FactsDb) -> Result<Vec<i64>> {
+    if !has_region_marks_table(db)? {
+        return Ok(Vec::new());
+    }
+    let sql = "SELECT c.id \
+         FROM conversations c \
+         LEFT JOIN viewer_search_region_marks m ON m.conversation_id = c.id \
+         LEFT JOIN viewer_session_facts f ON f.conversation_id = c.id \
+         LEFT JOIN viewer_session_projection p ON p.conversation_id = c.id \
+         WHERE COALESCE(m.region_version, -1) != ?1 \
+           OR COALESCE(f.extractor_version, -1) != ?2 \
+           OR COALESCE(p.projection_version, -1) != ?3 \
+           OR COALESCE(p.extractor_version, -1) != ?2 \
+         ORDER BY c.id";
+    let params = [
+        ParamValue::from(REGION_VERSION),
+        ParamValue::from(super::facts::FACTS_EXTRACTOR_VERSION),
+        ParamValue::from(super::projection::PROJECTION_VERSION),
+    ];
+    db.facts_query_map(sql, &params, |row| row.get_typed::<i64>(0))
+        .context("listing sessions needing region re-projection")
 }
 
 /// The canonical identity fields every synthetic-slot Quill document for a
