@@ -386,6 +386,21 @@ the background or with a generous timeout instead of retrying in a loop. An
 orchestrator schedules delegated work so that at most one agent is compiling,
 and tells every delegated agent to use the lock.
 
+### Long builds and full test suites run on Colab (owner rule, 2026-11-11)
+
+Standing Colab VMs (high-RAM CPU, 8 cores, GCS sccache), one per repo: `cass-main`,
+`fad-main`, `fs-main` (frankensearch), `fsq-main` (frankensqlite). The owner rule is to
+never stop them: no `colab stop`, no `colab run`, no `mise run stop`. The recipe for
+running a suite there (detached script + rc file + polling; exit codes through
+`colab exec` are not trusted) is in `~/.pw-devin/AGENTS.md`, section "Running a build or
+test suite on a VM". The branch must be pushed to the owner fork first.
+
+- **On a VM:** full test suites (`scripts/gate.sh`, the lib suite, integration batches,
+  fork test suites), workspace-wide clippy, post-merge verification.
+- **On the Mac only:** anything that reads the owner's cass archive (it never leaves the
+  Mac), building the installed macOS `cass`/`cass-viewer-bridge`, and quick edit-loop
+  checks (`cargo check`, a single test), all under the one-compilation lock.
+
 ### Do not pay for LTO unless the result needs it (owner rule, 2026-11-07)
 
 All three optimized profiles above inherit the release profile's thin LTO over
