@@ -145,7 +145,6 @@ fn gh538_unencodable_ledger_identity_keeps_real_source_parsing_without_ack() -> 
         local_since_ts_by_connector: Arc::new(HashMap::new()),
         progress: None,
         active_source_filter: Arc::new(ActiveSessionSourceFilter::default()),
-        region_reproject_sources: Arc::new(HashSet::new()),
     };
     let connector = crate::connectors::claude_code::ClaudeCodeConnector::new();
     let (control, mut entries) = collect_ledger_scan(&connector, &ctx, &config, "claude")?;
@@ -626,7 +625,6 @@ fn gh512_real_connectors_complete_during_growth_without_redundant_discovery() ->
             local_since_ts_by_connector: Arc::new(HashMap::new()),
             progress: None,
             active_source_filter: Arc::new(ActiveSessionSourceFilter::default()),
-            region_reproject_sources: Arc::new(HashSet::new()),
         };
         let connector = LedgerDiscoveryCounter {
             inner: factory(),
@@ -960,7 +958,6 @@ fn gh512_real_sidecar_appearance_before_admission_cannot_certify_an_untracked_fi
         local_since_ts_by_connector: Arc::new(HashMap::new()),
         progress: None,
         active_source_filter: Arc::new(ActiveSessionSourceFilter::default()),
-        region_reproject_sources: Arc::new(HashSet::new()),
     };
     let connector = GrokSummaryAtAdmission {
         summary: directory.join("summary.json"),

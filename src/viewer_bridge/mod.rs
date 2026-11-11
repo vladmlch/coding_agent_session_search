@@ -161,6 +161,7 @@ fn backfill_viewer_extensions(db: &Path, limit: Option<u64>) -> Result<()> {
     let options = backfill::BackfillOptions {
         batch_size: backfill::DEFAULT_BATCH_SIZE,
         limit: limit.map(|n| usize::try_from(n).unwrap_or(usize::MAX)),
+        ..backfill::BackfillOptions::default()
     };
     let stats = backfill::backfill_viewer_extensions(&connection, &options, |stats| {
         eprintln!(

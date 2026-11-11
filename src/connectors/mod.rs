@@ -408,30 +408,5 @@ pub(crate) fn archive_provider_slug(connector_name: &str) -> &str {
         .map_or(connector_name, |registration| registration.source_slug)
 }
 
-/// The registry connector name an archive agent slug belongs to — the
-/// inverse of [`archive_provider_slug`], resolved from the same
-/// registrations (initialized once, not once per re-projection target).
-/// `claude_code` sessions register under the `claude` connector; every
-/// other slug is the registry name itself. `None` for an unregistered
-/// slug: the re-projection plan must know it could not route the session
-/// to a scanning connector rather than silently guessing one.
-pub(crate) fn connector_name_for_archive_slug(archive_slug: &str) -> Option<&'static str> {
-    static REGISTRY_BY_SLUG: std::sync::OnceLock<
-        std::collections::HashMap<&'static str, &'static str>,
-    > = std::sync::OnceLock::new();
-    REGISTRY_BY_SLUG
-        .get_or_init(|| {
-            let mut by_slug = std::collections::HashMap::new();
-            for registration in get_connector_registrations() {
-                by_slug
-                    .entry(registration.source_slug)
-                    .or_insert(registration.name);
-            }
-            by_slug
-        })
-        .get(archive_slug)
-        .copied()
-}
-
 #[cfg(test)]
 mod preflight_tests;

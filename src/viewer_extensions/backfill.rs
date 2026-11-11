@@ -50,6 +50,21 @@ use super::projection::{self, ProjectionPublishOutcome};
 /// transaction's WAL footprint and the work a crash has to redo.
 pub const DEFAULT_BATCH_SIZE: usize = 256;
 
+/// Which conversations a backfill run covers.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum BackfillSelection {
+    /// Every conversation in the archive, ascending by canonical id (the
+    /// `--backfill-viewer-extensions` default).
+    #[default]
+    All,
+    /// Exactly these canonical ids (the incremental re-projection lane's
+    /// stale set). Duplicated or unsorted ids are normalized on entry;
+    /// ids absent from the archive hydrate to nothing and the run
+    /// continues past them — a deleted-since-detection id must not
+    /// truncate the pass.
+    ConversationIds(Vec<i64>),
+}
+
 /// Per-run controls for [`backfill_viewer_extensions`].
 #[derive(Debug, Clone)]
 pub struct BackfillOptions {
@@ -60,6 +75,8 @@ pub struct BackfillOptions {
     /// resumable: committed rows keep their idempotence keys and the next
     /// run skips them as `SkippedUnchanged`.
     pub limit: Option<usize>,
+    /// Which conversations this run covers (see [`BackfillSelection`]).
+    pub selection: BackfillSelection,
 }
 
 impl Default for BackfillOptions {
@@ -67,6 +84,7 @@ impl Default for BackfillOptions {
         Self {
             batch_size: DEFAULT_BATCH_SIZE,
             limit: None,
+            selection: BackfillSelection::default(),
         }
     }
 }
@@ -78,6 +96,14 @@ impl Default for BackfillOptions {
 pub struct BackfillStats {
     /// Canonical conversations scanned (attempted), including failures.
     pub conversations_scanned: usize,
+    /// Conversations whose coherent generation was (re)published this
+    /// run — the full republish path (`publish_ingest_generation_in_tx`:
+    /// facts/projection rows, search regions and the region mark, and the
+    /// receipt all rewritten in one savepoint), regardless of whether the
+    /// individual facts/projection row sets came out unchanged. The
+    /// complement of the outer receipt+markers skip, which counts a
+    /// conversation without republishing anything.
+    pub generations_republished: usize,
     /// `viewer_session_facts` rows inserted or deterministically replaced.
     pub facts_published: usize,
     /// Facts rows skipped because `(extractor_version, source_revision)`
@@ -229,17 +255,11 @@ fn role_from_str(role: &str) -> MessageRole {
     }
 }
 
-/// Keyset-paged canonical conversation rows — same column mapping as
-/// `FrankenStorage::list_conversations` (correlated dimension lookups
-/// instead of a JOIN, tail-state-preferred `ended_at`, `unknown` agent
-/// sentinel) but ordered by `id` so bounded batches page through the
-/// archive without OFFSET.
-fn list_conversation_page(
-    db: &impl FactsDb,
-    after_id: i64,
-    limit: i64,
-    tail_state: bool,
-) -> Result<Vec<Conversation>> {
+/// The canonical conversation SELECT shared by both paging flavors — same
+/// column mapping as `FrankenStorage::list_conversations` (correlated
+/// dimension lookups instead of a JOIN, tail-state-preferred `ended_at`,
+/// `unknown` agent sentinel). Callers append their `WHERE`/`ORDER BY`.
+fn conversation_select(tail_state: bool) -> String {
     let ended_at_projection = if tail_state {
         "COALESCE(\
              (SELECT ts.ended_at FROM conversation_tail_state ts \
@@ -249,43 +269,89 @@ fn list_conversation_page(
     } else {
         "c.ended_at"
     };
+    format!(
+        "SELECT c.id, \
+             COALESCE((SELECT a.slug FROM agents a WHERE a.id = c.agent_id), 'unknown'), \
+             (SELECT w.path FROM workspaces w WHERE w.id = c.workspace_id), \
+             c.external_id, c.title, c.source_path, c.started_at, \
+             {ended_at_projection}, c.approx_tokens, \
+             c.metadata_json, c.source_id, c.origin_host, c.metadata_bin \
+         FROM conversations c"
+    )
+}
+
+/// The row mapper for [`conversation_select`] — column indexes are the
+/// SELECT's, identical in both paging flavors.
+fn map_conversation_row(row: &Row) -> Result<Conversation, crate::franken_sync::FrankenError> {
+    let workspace_path: Option<String> = row.get_typed(2)?;
+    let source_path: String = row.get_typed(5)?;
+    let metadata_json = read_metadata(row, 9, 12);
+    let (source_id, origin_host) = provenance_from_metadata(&metadata_json);
+    Ok(Conversation {
+        id: Some(row.get_typed(0)?),
+        agent_slug: row.get_typed(1)?,
+        workspace: workspace_path.map(PathBuf::from),
+        external_id: row.get_typed(3)?,
+        title: row.get_typed(4)?,
+        source_path: PathBuf::from(source_path),
+        started_at: row.get_typed(6)?,
+        ended_at: row.get_typed(7)?,
+        approx_tokens: row.get_typed(8)?,
+        metadata_json,
+        messages: Vec::new(),
+        source_id,
+        origin_host,
+    })
+}
+
+/// Keyset-paged canonical conversation rows — ordered by `id` so bounded
+/// batches page through the archive without OFFSET.
+fn list_conversation_page(
+    db: &impl FactsDb,
+    after_id: i64,
+    limit: i64,
+    tail_state: bool,
+) -> Result<Vec<Conversation>> {
     db.facts_query_map(
         &format!(
-            "SELECT c.id, \
-                 COALESCE((SELECT a.slug FROM agents a WHERE a.id = c.agent_id), 'unknown'), \
-                 (SELECT w.path FROM workspaces w WHERE w.id = c.workspace_id), \
-                 c.external_id, c.title, c.source_path, c.started_at, \
-                 {ended_at_projection}, c.approx_tokens, \
-                 c.metadata_json, c.source_id, c.origin_host, c.metadata_bin \
-             FROM conversations c \
-             WHERE c.id > ?1 \
-             ORDER BY c.id \
-             LIMIT ?2"
+            "{} WHERE c.id > ?1 ORDER BY c.id LIMIT ?2",
+            conversation_select(tail_state)
         ),
         &[ParamValue::from(after_id), ParamValue::from(limit)],
-        |row| {
-            let workspace_path: Option<String> = row.get_typed(2)?;
-            let source_path: String = row.get_typed(5)?;
-            let metadata_json = read_metadata(row, 9, 12);
-            let (source_id, origin_host) = provenance_from_metadata(&metadata_json);
-            Ok(Conversation {
-                id: Some(row.get_typed(0)?),
-                agent_slug: row.get_typed(1)?,
-                workspace: workspace_path.map(PathBuf::from),
-                external_id: row.get_typed(3)?,
-                title: row.get_typed(4)?,
-                source_path: PathBuf::from(source_path),
-                started_at: row.get_typed(6)?,
-                ended_at: row.get_typed(7)?,
-                approx_tokens: row.get_typed(8)?,
-                metadata_json,
-                messages: Vec::new(),
-                source_id,
-                origin_host,
-            })
-        },
+        map_conversation_row,
     )
     .context("listing canonical conversations for extension backfill")
+}
+
+/// The exact-id paging flavor ([`BackfillSelection::ConversationIds`]):
+/// one bounded `IN` query per chunk, ascending, so the driver's batch
+/// shape stays identical to the archive-wide flavor. Ids absent from the
+/// archive hydrate to nothing here; the caller continues past the chunk.
+fn list_conversations_by_ids(
+    db: &impl FactsDb,
+    ids: &[i64],
+    tail_state: bool,
+) -> Result<Vec<Conversation>> {
+    debug_assert!(!ids.is_empty(), "id chunks are never empty");
+    let placeholders = (1..=ids.len())
+        .map(|ordinal| format!("?{ordinal}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let params: Vec<ParamValue> = ids.iter().map(|id| ParamValue::from(*id)).collect();
+    db.facts_query_map(
+        &format!(
+            "{} WHERE c.id IN ({placeholders}) ORDER BY c.id",
+            conversation_select(tail_state)
+        ),
+        &params,
+        map_conversation_row,
+    )
+    .with_context(|| {
+        format!(
+            "listing {} conversations by id for extension backfill",
+            ids.len()
+        )
+    })
 }
 
 /// Committed messages for one conversation — the `fetch_messages` column
@@ -446,6 +512,7 @@ fn publish_one(
                 bail!("viewer_session_projection missing inside an installed profile")
             }
         }
+        stats.generations_republished += 1;
         if was_incomplete {
             stats.reconciled += 1;
         }
@@ -522,20 +589,48 @@ pub fn backfill_viewer_extensions(
 
     let mut stats = BackfillStats::default();
     let mut after_id = 0_i64;
+    // The exact-id flavor's normalized, ascending id list; the archive-wide
+    // flavor leaves it empty and pages by keyset instead.
+    let selection_ids: Vec<i64> = match options.selection {
+        BackfillSelection::All => Vec::new(),
+        BackfillSelection::ConversationIds(ref ids) => {
+            let mut ids = ids.clone();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        }
+    };
+    let mut ids_consumed = 0_usize;
     loop {
-        let remaining = options
-            .limit
-            .map(|limit| limit.saturating_sub(stats.conversations_scanned));
-        if remaining == Some(0) {
-            stats.limit_reached = true;
-            break;
-        }
-        let fetch = remaining.map_or(batch_size, |rest| rest.min(batch_size)) as i64;
-        let page = list_conversation_page(connection, after_id, fetch, tail_state)?;
-        if page.is_empty() {
-            break;
-        }
-        after_id = page.last().and_then(|conv| conv.id).unwrap_or(after_id);
+        let page: Vec<Conversation> = match options.selection {
+            BackfillSelection::All => {
+                let remaining = options
+                    .limit
+                    .map(|limit| limit.saturating_sub(stats.conversations_scanned));
+                if remaining == Some(0) {
+                    stats.limit_reached = true;
+                    break;
+                }
+                let fetch = remaining.map_or(batch_size, |rest| rest.min(batch_size)) as i64;
+                let page = list_conversation_page(connection, after_id, fetch, tail_state)?;
+                if page.is_empty() {
+                    break;
+                }
+                after_id = page.last().and_then(|conv| conv.id).unwrap_or(after_id);
+                page
+            }
+            BackfillSelection::ConversationIds(_) => {
+                if ids_consumed >= selection_ids.len() {
+                    break;
+                }
+                let end = (ids_consumed + batch_size).min(selection_ids.len());
+                let chunk = selection_ids[ids_consumed..end].to_vec();
+                ids_consumed = end;
+                // An all-deleted chunk hydrates to zero rows; that is not
+                // the end of the pass — continue past it.
+                list_conversations_by_ids(connection, &chunk, tail_state)?
+            }
+        };
 
         // Hydrate outside the write transaction: the reads pay no WAL
         // footprint and the commit window stays short.
