@@ -155,6 +155,10 @@ fn scoped_context(ctx: &ScanContext, source: &DiscoveredSourceFile) -> ScanConte
     // could silently skip a selected file after its metadata changes.
     let mut scoped = ScanContext::with_roots(ctx.data_dir.clone(), vec![root], None);
     scoped.progress_tick.clone_from(&ctx.progress_tick);
+    // Preserve the parent's local-default stance (FAD 0.3.11's hermeticity
+    // flag, issue #174) — the codex connector never consults it, but a
+    // scoped recovery context must not silently flip the scan's semantics.
+    scoped.allow_local_default_stores = ctx.allow_local_default_stores;
     scoped
 }
 

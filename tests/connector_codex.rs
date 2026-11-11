@@ -302,6 +302,7 @@ fn codex_connector_scans_explicit_rollout_file_root() {
         scan_roots: vec![ScanRoot::local(file.clone())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = connector.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);

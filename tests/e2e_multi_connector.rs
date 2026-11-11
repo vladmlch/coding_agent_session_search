@@ -797,7 +797,8 @@ fn gh513_a_compressed_rollout_scans_and_enriches_like_its_plain_form() {
             dir.path().join("cass-data"),
             vec![ScanRoot::local(home)],
             None,
-        );
+        )
+        .without_local_default_stores();
         let conversations = if enrich {
             CodexConnector::new().scan(&ctx).unwrap()
         } else {

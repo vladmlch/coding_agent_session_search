@@ -32,6 +32,7 @@ fn scan_nonexistent_directory_handles_gracefully() {
         scan_roots: vec![ScanRoot::local(nonexistent)],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     // Should not panic or fall back to scanning the developer's real ~/.claude tree.
@@ -67,6 +68,7 @@ fn file_deleted_mid_scan_handles_gracefully() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     // Should handle missing file gracefully
@@ -91,6 +93,7 @@ fn empty_directory_returns_no_conversations() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let result = conn.scan(&ctx);
@@ -112,6 +115,7 @@ fn missing_session_file_in_project() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let result = conn.scan(&ctx);
@@ -150,6 +154,7 @@ fn symlink_to_valid_file_is_followed() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     // Test that symlink doesn't cause a panic - actual behavior depends on
@@ -178,6 +183,7 @@ fn broken_symlink_is_handled_gracefully() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     // Should handle broken symlink gracefully
@@ -214,6 +220,7 @@ fn symlink_to_directory_is_followed() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     // Test that symlinked directory doesn't cause a panic - actual behavior
@@ -245,6 +252,7 @@ fn directory_named_like_session_file() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     // Should not crash when encountering directory with file-like name
@@ -271,6 +279,7 @@ fn zero_byte_file_handles_gracefully() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let result = conn.scan(&ctx);
@@ -294,6 +303,7 @@ fn newlines_only_file_handles_gracefully() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let result = conn.scan(&ctx);
@@ -327,6 +337,7 @@ fn path_with_spaces_is_handled() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let result = conn.scan(&ctx);
@@ -354,6 +365,7 @@ fn path_with_unicode_is_handled() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let result = conn.scan(&ctx);
@@ -386,6 +398,7 @@ fn deeply_nested_directory_is_handled() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let result = conn.scan(&ctx);
@@ -415,6 +428,7 @@ fn gemini_handles_missing_chats_dir() {
         scan_roots: vec![ScanRoot::local(hash_dir)],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     // Gemini connector should not panic even with incomplete directory structure
@@ -442,6 +456,7 @@ fn codex_handles_missing_sessions_dir() {
         scan_roots: vec![ScanRoot::local(codex_home)],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let result = conn.scan(&ctx);
@@ -470,6 +485,7 @@ fn error_contains_path_context() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let result = conn.scan(&ctx);
@@ -515,6 +531,7 @@ fn multiple_bad_files_dont_prevent_good_file_processing() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let result = conn.scan(&ctx);
@@ -561,6 +578,7 @@ fn file_readable_with_other_handle() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     // Should still be able to read the file

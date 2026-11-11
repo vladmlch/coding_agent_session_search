@@ -60,6 +60,11 @@ impl<'a> SourceContexts<'a> {
                 // Source admission, not a second timestamp cutoff, owns resume.
                 since_ts: None,
                 progress_tick: ctx.progress_tick.clone(),
+                // The narrowed context must keep the parent's local-default
+                // stance (FAD 0.3.11's hermeticity flag, issue #174): a
+                // production scan that unions opencode's local default store
+                // stays unioned when it scopes down to one source.
+                allow_local_default_stores: ctx.allow_local_default_stores,
             },
             active: None,
         }

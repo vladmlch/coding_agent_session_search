@@ -82,6 +82,7 @@ fn amp_connector_emits_scan_span() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     // The amp fixture under tests/fixtures/amp/ is a committed

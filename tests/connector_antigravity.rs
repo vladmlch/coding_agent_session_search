@@ -33,6 +33,7 @@ fn fixture_ctx() -> ScanContext {
         scan_roots: vec![ScanRoot::local(base)],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     }
 }
 
@@ -215,6 +216,7 @@ fn antigravity_ignores_legacy_gemini_layout_under_shared_dot_gemini() {
         scan_roots: vec![ScanRoot::local(base)],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = AntigravityConnector::new().scan(&ctx).expect("scan");
     assert_eq!(convs.len(), 1, "only the agy conversation should be found");
@@ -230,6 +232,7 @@ fn legacy_gemini_connector_still_indexes() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = GeminiConnector::new().scan(&ctx).expect("gemini scan");
     assert!(!convs.is_empty(), "legacy gemini fixture must still index");
@@ -245,6 +248,7 @@ fn antigravity_keeps_planner_tool_calls_and_does_not_invent_generic() {
         scan_roots: vec![ScanRoot::local(base)],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = AntigravityConnector::new().scan(&ctx).expect("scan");
     assert_eq!(convs.len(), 1);

@@ -13,6 +13,7 @@ fn gemini_parses_jsonl_fixture() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(
@@ -50,6 +51,7 @@ fn gemini_replays_current_jsonl_session_format() {
             scan_roots: Vec::new(),
             since_ts: None,
             progress_tick: None,
+            allow_local_default_stores: false,
         })
         .expect("scan current Gemini JSONL");
 
@@ -71,6 +73,7 @@ fn gemini_maps_model_role_to_assistant() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty());
@@ -91,6 +94,7 @@ fn gemini_extracts_metadata() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty());
@@ -113,6 +117,7 @@ fn gemini_parses_timestamps() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty());
@@ -209,6 +214,7 @@ fn gemini_includes_all_messages_when_file_modified() {
         scan_roots: Vec::new(),
         since_ts: Some(since_ts),
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty());
@@ -257,6 +263,7 @@ fn gemini_extracts_workspace_from_agents_md_content() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty());
@@ -299,6 +306,7 @@ fn gemini_extracts_workspace_from_working_directory() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty());
@@ -348,6 +356,7 @@ fn gemini_filters_empty_messages() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty());
@@ -395,6 +404,7 @@ fn gemini_skips_malformed_json() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     // Should not panic, should return only the valid session
@@ -428,6 +438,7 @@ fn gemini_skips_sessions_without_messages() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let convs = conn.scan(&ctx).expect("scan");
@@ -470,6 +481,7 @@ fn gemini_extracts_title_from_first_user_message() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty());
@@ -522,6 +534,7 @@ fn gemini_assigns_sequential_message_indices() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty());
@@ -543,6 +556,7 @@ fn gemini_sets_agent_slug() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty());
@@ -562,6 +576,7 @@ fn gemini_sets_source_path() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty());
@@ -605,6 +620,7 @@ fn gemini_handles_multiple_sessions() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert_eq!(convs.len(), 3);
@@ -642,6 +658,7 @@ fn gemini_falls_back_to_hash_directory_for_workspace() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty());

@@ -18,11 +18,14 @@ fn write_jsonl(dir: &Path, rel_path: &str, lines: &[&str]) -> std::path::PathBuf
 }
 
 fn explicit_scan_ctx(root: &Path, since_ts: Option<i64>) -> ScanContext {
+    // Explicit-roots harness: never union the developer's real default agent
+    // stores (FAD 0.3.11 hermeticity, issue #174).
     ScanContext::with_roots(
         std::path::PathBuf::new(),
         vec![ScanRoot::local(root.to_path_buf())],
         since_ts,
     )
+    .without_local_default_stores()
 }
 
 // ============================================================================

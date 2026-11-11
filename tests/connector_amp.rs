@@ -25,6 +25,7 @@ fn amp_parses_minimal_cache() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert!(!convs.is_empty(), "expected at least one conversation");
@@ -66,6 +67,7 @@ fn amp_includes_all_messages_when_file_modified() {
         scan_roots: Vec::new(),
         since_ts: Some(1_700_000_000_000),
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert_eq!(convs.len(), 1);
@@ -114,6 +116,7 @@ fn amp_skips_malformed_json() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     // Should not panic, should return only the valid session
@@ -160,6 +163,7 @@ fn amp_parses_alternate_fields() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -208,6 +212,7 @@ fn amp_handles_timestamp_formats() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -256,6 +261,7 @@ fn amp_extracts_workspace() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 2);
@@ -306,6 +312,7 @@ fn amp_handles_nested_structure() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -346,6 +353,7 @@ fn amp_extracts_title() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
 
@@ -385,6 +393,7 @@ fn amp_detects_valid_files() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
 
@@ -417,6 +426,7 @@ fn amp_normalizes_roles() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -460,6 +470,7 @@ fn amp_extracts_external_id() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
 
@@ -512,6 +523,7 @@ fn amp_filters_empty_content() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -548,6 +560,7 @@ fn amp_extracts_author_field() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -575,6 +588,7 @@ fn amp_handles_empty_directory() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert!(convs.is_empty());
@@ -601,6 +615,7 @@ fn amp_sets_correct_agent_slug() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -625,6 +640,7 @@ fn amp_sets_source_path() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -656,6 +672,7 @@ fn amp_computes_started_ended_at() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -691,6 +708,7 @@ fn amp_assigns_sequential_indices() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -768,6 +786,7 @@ fn amp_workspace_from_alternate_keys() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 5);
@@ -840,6 +859,7 @@ fn amp_skips_json_without_messages() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
 
@@ -876,6 +896,7 @@ fn amp_handles_camel_case_timestamps() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -916,6 +937,7 @@ fn amp_scans_nested_directories() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
 
@@ -957,6 +979,7 @@ fn amp_filters_whitespace_content() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -1003,6 +1026,7 @@ fn amp_skips_empty_content_conversations() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
 

@@ -44,6 +44,10 @@ fn assert_same(actual: &ScanContext, expected: &ScanContext) {
         (Some(actual), Some(expected)) => assert!(Arc::ptr_eq(actual, expected)),
         _ => panic!("narrowing changed the progress hook"),
     }
+    assert_eq!(
+        actual.allow_local_default_stores, expected.allow_local_default_stores,
+        "narrowing changed the local-default stance (FAD 0.3.11, issue #174)"
+    );
 }
 
 #[test]

@@ -31,6 +31,7 @@ fn aider_parses_chat_history() {
         scan_roots: vec![ScanRoot::local(fixture_root)],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -76,6 +77,7 @@ fn aider_sets_agent_slug() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -95,6 +97,7 @@ fn aider_sets_source_path() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -114,6 +117,7 @@ fn aider_sets_external_id_from_filename() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -136,6 +140,7 @@ fn aider_title_includes_path() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -172,6 +177,7 @@ fn aider_sets_workspace_to_parent() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -196,6 +202,7 @@ fn aider_timestamps_from_mtime() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -233,6 +240,7 @@ fn aider_since_ts_filters_old_files() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: Some(future_ts),
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -252,6 +260,7 @@ fn aider_no_since_ts_includes_all() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -278,6 +287,7 @@ fn aider_message_indices_sequential() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -306,6 +316,7 @@ fn aider_author_matches_role() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -331,6 +342,7 @@ fn aider_user_messages_from_prefix() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -361,6 +373,7 @@ fn aider_multiline_user_input() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -391,6 +404,7 @@ fn aider_assistant_after_user() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -419,6 +433,7 @@ fn aider_multiple_turns() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -453,6 +468,7 @@ fn aider_empty_file() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -472,6 +488,7 @@ fn aider_whitespace_only_file() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -495,6 +512,7 @@ fn aider_only_user_messages() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -521,6 +539,7 @@ fn aider_no_user_prefix_content() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -563,6 +582,7 @@ fn aider_scans_subdirectories() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -586,6 +606,7 @@ fn aider_only_scans_chat_history_files() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -614,6 +635,7 @@ fn aider_multiple_projects() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -648,6 +670,7 @@ fn aider_preserves_commands() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -674,6 +697,7 @@ fn aider_code_blocks_in_response() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -702,6 +726,7 @@ fn aider_markdown_formatting() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -732,6 +757,7 @@ fn aider_gt_in_code_not_user_input() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -880,6 +906,7 @@ fn aider_metadata_is_empty() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -899,6 +926,7 @@ fn aider_message_extra_is_empty() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -920,6 +948,7 @@ fn aider_message_created_at_is_none() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -941,6 +970,7 @@ fn aider_message_snippets_empty() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -965,6 +995,7 @@ fn aider_nonexistent_directory() {
         scan_roots: vec![ScanRoot::local(nonexistent)],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -982,6 +1013,7 @@ fn aider_empty_directory() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -1005,6 +1037,7 @@ fn aider_long_user_input() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -1030,6 +1063,7 @@ fn aider_special_characters() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -1056,6 +1090,7 @@ fn aider_blank_lines_between_messages() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -1081,6 +1116,7 @@ fn aider_consecutive_user_lines_combined() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 
@@ -1111,6 +1147,7 @@ fn aider_trailing_whitespace() {
         scan_roots: vec![ScanRoot::local(tmp.path().to_path_buf())],
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
 

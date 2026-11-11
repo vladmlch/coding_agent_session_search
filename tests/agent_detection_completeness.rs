@@ -713,7 +713,8 @@ mod prime_ingestion {
             home.path().to_path_buf(),
             vec![ScanRoot::local(sessions)],
             None,
-        );
+        )
+        .without_local_default_stores();
         let conversations = factory().scan(&ctx).expect("Prime scan");
         assert_eq!(conversations.len(), 1);
         let conversation = &conversations[0];
@@ -957,7 +958,8 @@ mod devin_ingestion {
             home.path().to_path_buf(),
             vec![ScanRoot::local(db.clone())],
             None,
-        );
+        )
+        .without_local_default_stores();
         let conversations = factory().scan(&ctx).expect("real Devin scan");
         assert_eq!(
             conversations.len(),
@@ -1004,7 +1006,8 @@ mod devin_ingestion {
             home.path().to_path_buf(),
             vec![ScanRoot::local(db.clone())],
             None,
-        );
+        )
+        .without_local_default_stores();
         assert!(factory().scan(&ctx).is_err());
     }
 
@@ -1165,7 +1168,8 @@ mod devin_ingestion {
                 home.path().to_path_buf(),
                 vec![ScanRoot::local(db.clone())],
                 None,
-            );
+            )
+            .without_local_default_stores();
             assert_eq!(
                 factory().scan(&ctx).expect("both visible controls").len(),
                 2

@@ -28,6 +28,7 @@ fn claude_parses_project_fixture() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert_eq!(convs.len(), 1);
@@ -79,6 +80,7 @@ fn claude_connector_parses_jsonl_format() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -127,6 +129,7 @@ fn claude_connector_indexes_prompts_queued_mid_turn() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -167,6 +170,7 @@ fn claude_connector_parses_message_type_entries() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -200,6 +204,7 @@ fn claude_connector_filters_summary_entries() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -231,6 +236,7 @@ fn claude_connector_extracts_model_as_author() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -258,6 +264,7 @@ fn claude_connector_flattens_tool_use() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -287,6 +294,7 @@ fn claude_connector_extracts_title_from_user() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -312,6 +320,7 @@ fn claude_connector_title_fallback_to_workspace() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -340,6 +349,7 @@ also not json
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -366,6 +376,7 @@ fn claude_connector_filters_empty_content() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -394,6 +405,7 @@ fn claude_connector_assigns_sequential_indices() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -427,6 +439,7 @@ fn claude_connector_handles_multiple_files() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 3);
@@ -455,6 +468,7 @@ fn claude_connector_parses_json_format() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -486,6 +500,7 @@ fn claude_connector_parses_claude_extension() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -505,6 +520,7 @@ fn claude_connector_handles_empty_directory() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert!(convs.is_empty());
@@ -528,6 +544,7 @@ fn claude_connector_sets_external_id() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -555,6 +572,7 @@ fn claude_connector_sets_source_path() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -580,6 +598,7 @@ fn claude_connector_parses_timestamps() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -636,6 +655,7 @@ fn claude_connector_truncates_long_title() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -673,6 +693,7 @@ fn claude_connector_ignores_other_extensions() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -696,6 +717,7 @@ fn claude_connector_handles_nested_projects() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -721,6 +743,7 @@ fn claude_connector_uses_entry_type_as_role() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -753,6 +776,7 @@ fn connector_handles_various_timezone_formats() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -793,6 +817,7 @@ fn connector_handles_epoch_and_iso_timestamps() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -831,6 +856,7 @@ fn connector_symlinked_directories_not_followed_by_default() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     // Current behavior: symlinks are not followed, so directory symlinks result in empty scan
@@ -868,6 +894,7 @@ fn connector_follows_symlinked_files() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     // File symlinks are typically followed when reading, but walkdir may not report them as files
@@ -912,6 +939,7 @@ fn connector_handles_unreadable_files() {
                 scan_roots: Vec::new(),
                 since_ts: None,
                 progress_tick: None,
+                allow_local_default_stores: false,
             };
             // Should not panic, just skip the unreadable file
             let result = conn.scan(&ctx);
@@ -955,6 +983,7 @@ fn connector_handles_long_file_paths() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -980,6 +1009,7 @@ fn connector_handles_special_chars_in_paths() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -1003,6 +1033,7 @@ fn connector_handles_unicode_in_paths() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -1023,6 +1054,7 @@ fn connector_handles_empty_project_dirs() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert!(convs.is_empty());
@@ -1056,6 +1088,7 @@ fn connector_respects_since_ts_filter() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -1066,6 +1099,7 @@ fn connector_respects_since_ts_filter() {
         scan_roots: Vec::new(),
         since_ts: Some(mtime_millis + 3_600_000), // 1 hour in the future
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert!(convs.is_empty(), "Future since_ts should skip the file");
@@ -1076,6 +1110,7 @@ fn connector_respects_since_ts_filter() {
         scan_roots: Vec::new(),
         since_ts: Some(mtime_millis - 3_600_000), // 1 hour in the past
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1, "Past since_ts should include the file");
@@ -1177,6 +1212,7 @@ fn claude_scan(jsonl: &str) -> Vec<coding_agent_search::connectors::NormalizedCo
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = ClaudeCodeConnector::new().scan(&ctx).expect("scan");
     drop(tmp);

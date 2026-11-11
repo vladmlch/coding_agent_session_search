@@ -17,6 +17,7 @@ fn cline_parses_fixture_task() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).expect("scan");
     assert_eq!(
@@ -73,6 +74,7 @@ fn cline_respects_since_ts_and_resequences_indices() {
         scan_roots: Vec::new(),
         since_ts: Some(1_500),
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let convs = connector.scan(&ctx).unwrap();
@@ -142,6 +144,7 @@ fn cline_skips_unmodified_files_for_since_ts() {
         scan_roots: Vec::new(),
         since_ts: Some(modified_ms.saturating_add(2_000)),
         progress_tick: None,
+        allow_local_default_stores: false,
     };
 
     let convs = connector.scan(&ctx).unwrap();
@@ -188,6 +191,7 @@ fn cline_prefers_ui_messages() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(
@@ -223,6 +227,7 @@ fn cline_fallback_to_api_history() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(
@@ -255,6 +260,7 @@ fn cline_handles_multiple_tasks() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(
@@ -285,6 +291,7 @@ fn cline_skips_task_history_json() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(
@@ -316,6 +323,7 @@ fn cline_extracts_title_from_metadata() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(
@@ -348,6 +356,7 @@ fn cline_title_fallback_to_first_message() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(
@@ -380,6 +389,7 @@ fn cline_extracts_workspace_from_rootpath() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(
@@ -412,6 +422,7 @@ fn cline_extracts_workspace_from_cwd() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -440,6 +451,7 @@ fn cline_filters_empty_content() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -467,6 +479,7 @@ fn cline_sorts_messages_by_timestamp() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -498,6 +511,7 @@ fn cline_sets_external_id_from_directory() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -520,6 +534,7 @@ fn cline_sets_source_path_to_selected_file() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -537,6 +552,7 @@ fn cline_handles_empty_directory() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert!(convs.is_empty());
@@ -555,6 +571,7 @@ fn cline_skips_task_without_messages() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert!(convs.is_empty());
@@ -578,6 +595,7 @@ fn cline_sets_started_and_ended_at() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -600,6 +618,7 @@ fn cline_sets_agent_slug() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -624,6 +643,7 @@ fn cline_parses_alternate_content_fields() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -654,6 +674,7 @@ fn cline_parses_alternate_timestamp_fields() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -678,6 +699,7 @@ fn cline_uses_type_as_role_fallback() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -702,6 +724,7 @@ fn cline_truncates_long_title() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -732,6 +755,7 @@ fn cline_sets_metadata_source() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -761,6 +785,7 @@ fn cline_ignores_files_in_root() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);
@@ -783,6 +808,7 @@ fn cline_parses_iso_timestamps() {
         scan_roots: Vec::new(),
         since_ts: None,
         progress_tick: None,
+        allow_local_default_stores: false,
     };
     let convs = conn.scan(&ctx).unwrap();
     assert_eq!(convs.len(), 1);

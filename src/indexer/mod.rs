@@ -47020,6 +47020,46 @@ mod tests {
         assert!(result.is_some_and(|detection| !detection.detected));
     }
 
+    /// FAD 0.3.11 added `ScanContext::allow_local_default_stores` (upstream
+    /// issue #174): connectors may union their ambient local default stores
+    /// only while it is set. cass's production scans must keep reading the
+    /// same local default stores as before the FAD pin move, so every
+    /// constructor the src/indexer scan sites use yields `true`, the
+    /// with_scan_tick progress chain (src/indexer/mod.rs: `with_progress_tick`)
+    /// preserves it, and only the explicit hermeticity opt-out flips it.
+    #[test]
+    fn scan_context_production_constructors_keep_local_default_stores() {
+        let with_roots_ctx = ScanContext::with_roots(
+            std::path::PathBuf::from("cass-data"),
+            vec![ScanRoot::local(std::path::PathBuf::from("selected-root"))],
+            None,
+        );
+        assert!(
+            with_roots_ctx.allow_local_default_stores,
+            "production with_roots scans must keep reading local default stores"
+        );
+
+        let local_default_ctx =
+            ScanContext::local_default(std::path::PathBuf::from("cass-data"), None);
+        assert!(
+            local_default_ctx.allow_local_default_stores,
+            "production local_default scans must keep reading local default stores"
+        );
+
+        // with_scan_tick's Some(tick) arm must not silently flip the stance.
+        let tick: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        let ticked = with_roots_ctx.with_progress_tick(Arc::clone(&tick));
+        assert!(
+            ticked.allow_local_default_stores,
+            "attaching a progress tick must not flip the local-default stance"
+        );
+
+        // The hermeticity opt-out is the only sanctioned way to disable
+        // local default store reads (test harnesses; never production scans).
+        let hermetic = local_default_ctx.without_local_default_stores();
+        assert!(!hermetic.allow_local_default_stores);
+    }
+
     /// #366: waiting↔waiting park flaps are scheduler churn a livelocked
     /// pipeline can sustain forever; they must not reset the stall clock.
     /// Every transition through a working site is genuine progress.

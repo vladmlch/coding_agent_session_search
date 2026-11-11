@@ -1824,8 +1824,8 @@ dependencies = [
 
 [[package]]
 name = "franken-agent-detection"
-version = "0.3.10"
-source = "git+https://github.com/vladmlch/franken_agent_detection?rev=0d972a98077d7748bce43f7e9902af9cd357ebb8#0d972a98077d7748bce43f7e9902af9cd357ebb8"
+version = "0.3.11"
+source = "git+https://github.com/vladmlch/franken_agent_detection?rev=832a81222a706e7db92d1e65577abee2ff89de61#832a81222a706e7db92d1e65577abee2ff89de61"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -2169,7 +2169,7 @@ dependencies = [
 [[package]]
 name = "fsqlite"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "asupersync",
  "fsqlite-ast",
@@ -2191,7 +2191,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-ast"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "fsqlite-types",
  "smallvec",
@@ -2200,7 +2200,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-btree"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "foldhash 0.2.0",
  "fsqlite-error",
@@ -2217,7 +2217,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-core"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "asupersync",
  "blake3",
@@ -2256,7 +2256,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-error"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -2264,7 +2264,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-ext-fts5"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "fsqlite-error",
  "fsqlite-func",
@@ -2276,7 +2276,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-ext-icu"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "fsqlite-error",
  "fsqlite-func",
@@ -2287,7 +2287,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-ext-json"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "fsqlite-error",
  "fsqlite-func",
@@ -2300,7 +2300,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-ext-misc"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "fsqlite-error",
  "fsqlite-func",
@@ -2313,7 +2313,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-ext-rtree"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "fsqlite-error",
  "fsqlite-func",
@@ -2323,7 +2323,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-func"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "chrono",
  "fsqlite-error",
@@ -2335,7 +2335,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-mvcc"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "asupersync",
  "blake3",
@@ -2360,7 +2360,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-observability"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "fsqlite-types",
  "parking_lot",
@@ -2371,7 +2371,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-pager"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "argon2 0.6.0",
  "asupersync",
@@ -2396,7 +2396,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-parser"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "fsqlite-ast",
  "fsqlite-error",
@@ -2409,7 +2409,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-planner"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "blake3",
  "fsqlite-ast",
@@ -2426,7 +2426,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-types"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "asupersync",
  "bitflags 2.13.1",
@@ -2445,7 +2445,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-vdbe"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "asupersync",
  "crossbeam-deque",
@@ -2468,7 +2468,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-vfs"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "advisory-lock",
  "asupersync",
@@ -2486,7 +2486,7 @@ dependencies = [
 [[package]]
 name = "fsqlite-wal"
 version = "0.4.13"
-source = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457"
+source = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00"
 dependencies = [
  "asupersync",
  "blake3",

@@ -60,7 +60,10 @@ fn scan_codex_collected(scan_roots: Vec<ScanRoot>, data_dir: &Path) -> Vec<Norma
         .find(|(slug, _)| *slug == "codex")
         .expect("codex factory registered");
     let connector = build_codex();
-    let ctx = ScanContext::with_roots(data_dir.to_path_buf(), scan_roots, None);
+    // Explicit-roots harness: never union the developer's real default agent
+    // stores (FAD 0.3.11 hermeticity, issue #174).
+    let ctx = ScanContext::with_roots(data_dir.to_path_buf(), scan_roots, None)
+        .without_local_default_stores();
     let mut found = Vec::new();
     connector
         .scan_with_callback(&ctx, &mut |conv| {

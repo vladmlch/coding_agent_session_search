@@ -104,20 +104,32 @@ const CONTRACTS: &[DependencyContract] = &[
         // doctrine exist.
         // Since the 2026-11-07 owner decision the whole family resolves
         // from the owner's fork github.com/vladmlch/frankensqlite (branch
-        // cass-local-fixes-0413-ro since the 2026-11-09 rev move) at rev
-        // 898c43612b36301168b97644a89df2fb933ca457 — v0.4.13
-        // (upstream tag e4137af3) plus the vdbe range seeks (10eadc63
-        // seeks the single-column index range when the WHERE carries
-        // residual conjuncts; d9414f97 lets rowid range seeks take
+        // merge/cass-into-main since the 2026-11-11 rev move) at rev
+        // 2d55ddbd6f630f4036f53629c9c0f080dc5a1f00 — upstream main at
+        // v0.4.13-22 (22 commits past the v0.4.13 tag e4137af3: WAL size
+        // limits honored under write pressure bd-5lw60, cached SHM
+        // mappings revalidated after truncation bd-7do1d, window rows
+        // numbered independently of aggregate frames, wrapped ORDER BY
+        // parameters kept from becoming ordinals, correlated RETURNING
+        // evaluated at the DML/FK boundary, malformed catalog columns
+        // and virtual-table triggers rejected, self-read cursor images
+        // kept coherent across writes and rollback, plus the #531
+        // grouped-aggregate perf series) plus the fork's commits rebased
+        // onto that lineage — the vdbe range seeks (e4c17486 seeks the
+        // single-column index range when the WHERE carries residual
+        // conjuncts; aed53a33 lets rowid range seeks take
         // numbered-placeholder bounds), the DML equality-prefix index
-        // seeks (bd-j9gub: a DELETE or UPDATE whose equality conjuncts
-        // pin an index prefix SEARCHes the leading-column index instead
-        // of scanning, proven against stock SQLite; removes cass's
-        // O(N^2) per-conversation viewer DELETEs) and the strict
-        // read-only open mode (SQLITE_OPEN_STRICT_READ_ONLY: an open
-        // that never writes or creates any sidecar of the store it
-        // reads, refusing every WAL-index state that needs recovery
-        // with the typed BusyRecovery) — so the manifest keeps
+        // seeks (bd-j9gub as db5d846e+1fcc81e8: a DELETE or UPDATE
+        // whose equality conjuncts pin an index prefix SEARCHes the
+        // leading-column index instead of scanning, proven against
+        // stock SQLite; removes cass's O(N^2) per-conversation viewer
+        // DELETEs) and the strict read-only open mode
+        // (SQLITE_OPEN_STRICT_READ_ONLY: an open that never writes or
+        // creates any sidecar of the store it reads, refusing every
+        // WAL-index state that needs recovery with the typed
+        // BusyRecovery), merged into the lineage by 9ead2d35 with
+        // 2d55ddbd as the tip; the 2026-11-09 branch
+        // cass-local-fixes-0413-ro stays as rollback — so the manifest keeps
         // registry-shaped `=0.4.13` requirements and the committed
         // [patch.crates-io] table redirects every family crate
         // (including FAD's `^0.4.1` ask) to that rev. Empty
@@ -224,8 +236,9 @@ const CONTRACTS: &[DependencyContract] = &[
         // entries for the Claude, Pi and Codex readers (cass 0f1k0).
         // 0.3.10 exposes SQLite connector runtime shutdown before Windows
         // process teardown (cass#519) and preserves the full read-error chain.
-        // GH#520 needs the post-0.3.10 mirror-root metadata API. Keep the
-        // source contract exact until a registry release carries this fix.
+        // GH#520's remote-mirror metadata reached upstream 0.3.11, but the
+        // git pin stays: the merged F7–F18 wave and the hermetic
+        // allow_local_default_stores flag below are fork-only.
         // LOCAL FORK (review 2026-11-08): cass-agy-passthrough branch of
         // ../franken_agent_detection (the F9 cass-sqlite-snapshot-fallback
         // branch merged with F10, on top of the cass-local-fixes F7+F8 tip),
@@ -253,15 +266,32 @@ const CONTRACTS: &[DependencyContract] = &[
         // 0.4.13 — the typed BusyRecovery refusal engages the F9 snapshot
         // fallback instead and the originals stay byte- and
         // mtime-identical — and repoints FAD's own [patch.crates-io] table
-        // at the pushed fork rev 898c4361 (the same source cass pins through
-        // its committed patch table). F18 caps that snapshot fallback at
-        // 2 GiB of db + -wal and checks temp-dir free space, refusing with a
-        // typed scan error instead of copying a huge store.
+        // at the fork rev 898c4361 (FAD-internal table; cass's own committed
+        // patch table governs cass's resolution). F18 caps that snapshot
+        // fallback at 2 GiB of db + -wal and checks temp-dir free space,
+        // refusing with a typed scan error instead of copying a huge store.
+        // 0.3.11 (fork master 832a812, merged 2026-11-11) unifies upstream's
+        // v0.3.11 release wave — public canonical_connector_slug with
+        // alias-aware agent rewrites, 34-connector token/model/invocation
+        // attribution, Continue IDE/CLI and Cline SDK sessions, Qwen
+        // subagents, Copilot/Amp/Crush usage, Vibe native turns,
+        // 15-provider remote-mirror discovery (GH#520), 18-provider
+        // CASS_EXCLUDE_PATHS + per-source boundary hooks, mirrored-store
+        // discovery with ambiguous-fallback refusal and qualified streaming
+        // roots, and mid-read failures discarding the whole incomplete
+        // transcript instead of yielding a partial session — with the merged
+        // F7–F18 wave above and the hermetic scan flag:
+        // ScanContext.allow_local_default_stores is true in both
+        // constructors (the issue #174 local default-store behavior cass's
+        // production scan sites rely on) with a without_local_default_stores()
+        // opt-out hermetic harnesses use so in-process tests can never read
+        // the developer's real agent stores; only the opencode connector
+        // consults it today.
         // See that repo's LOCAL_FIXES.md. Return to the upstream URL/rev
         // once upstream carries every row there.
         expected_git: "https://github.com/vladmlch/franken_agent_detection",
-        expected_rev: "0d972a98077d7748bce43f7e9902af9cd357ebb8",
-        expected_version: "0.3.10",
+        expected_rev: "832a81222a706e7db92d1e65577abee2ff89de61",
+        expected_version: "0.3.11",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.
         expected_features: &[
@@ -653,22 +683,29 @@ fn validate_fsqlite_source_pin(manifest_dir: &Path, manifest: &Value, packaged_m
     // frankensqlite fork at the exact rev below, at the uniform published
     // 0.4.13 family version, including the shared types (owner decision,
     // 2026-11-07; rev moved to the DML-seek tip 2026-11-08, then to the
-    // 0.4.13 strict-read-only tip 2026-11-09). The fork rev is v0.4.13
-    // (upstream tag e4137af3) plus the vdbe range-seek commits (10eadc63:
+    // 0.4.13 strict-read-only tip 2026-11-09, then to the merged main
+    // lineage 2026-11-11). The fork rev is upstream main at v0.4.13-22
+    // (22 commits past the v0.4.13 tag e4137af3, carrying the WAL
+    // size-limit, SHM-revalidation, window-row, ORDER BY-parameter,
+    // correlated-RETURNING, catalog-column and cursor-image fixes plus
+    // the #531 grouped-aggregate perf series) plus the fork's commits
+    // rebased onto that lineage: the vdbe range-seek commits (e4c17486:
     // seek the single-column index range when the WHERE carries residual
-    // conjuncts; d9414f97: rowid range seeks accept numbered placeholder
-    // bounds), the DML equality-prefix index seeks (bd-j9gub:
-    // DELETE/UPDATE equality conjuncts pinning an index prefix SEARCH the
-    // leading-column index instead of scanning) and the strict read-only
-    // open mode (SQLITE_OPEN_STRICT_READ_ONLY: never write or create any
-    // sidecar of the store being read; refuse every WAL-index state that
-    // needs recovery with the typed BusyRecovery), so
+    // conjuncts; aed53a33: rowid range seeks accept numbered placeholder
+    // bounds), the DML equality-prefix index seeks (bd-j9gub as
+    // db5d846e+1fcc81e8: DELETE/UPDATE equality conjuncts pinning an
+    // index prefix SEARCH the leading-column index instead of scanning)
+    // and the strict read-only open mode
+    // (SQLITE_OPEN_STRICT_READ_ONLY: never write or create any sidecar
+    // of the store being read; refuse every WAL-index state that needs
+    // recovery with the typed BusyRecovery), merged into the lineage by
+    // 9ead2d35 with 2d55ddbd as the tip, so
     // the fork's crates keep version 0.4.13 and satisfy the registry-shaped
     // `=0.4.13` requirements in [dependencies]/[dev-dependencies] through
     // the committed [patch.crates-io] table. One source per package remains
     // load-bearing for read-only integrity.
     const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensqlite";
-    const EXPECTED_FORK_REV: &str = "898c43612b36301168b97644a89df2fb933ca457";
+    const EXPECTED_FORK_REV: &str = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00";
     // A `rev = "<full-sha>"` git source serializes in Cargo.lock as
     // `git+<url>?rev=<rev>#<resolved-commit>`; with a full-sha rev the
     // resolved commit equals the rev.

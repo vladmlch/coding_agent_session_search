@@ -45,12 +45,14 @@ fn rusqlite_is_dev_dependency_only() {
 /// The fsqlite engine family resolves exclusively from the owner's
 /// frankensqlite fork through the committed [patch.crates-io] table (owner
 /// decision, 2026-11-07; rev moved to the DML-seek tip 2026-11-08, then to
-/// the 0.4.13 strict-read-only tip 2026-11-09): every
+/// the 0.4.13 strict-read-only tip 2026-11-09, then to the merged main
+/// lineage 2026-11-11): every
 /// member is redirected to `https://github.com/vladmlch/frankensqlite`
-/// (branch cass-local-fixes-0413-ro) at rev
-/// `898c43612b36301168b97644a89df2fb933ca457` (v0.4.13 plus the two vdbe
-/// range-seek commits, the DML equality-prefix index seeks bd-j9gub, and
-/// the strict read-only open mode SQLITE_OPEN_STRICT_READ_ONLY),
+/// (branch merge/cass-into-main) at rev
+/// `2d55ddbd6f630f4036f53629c9c0f080dc5a1f00` (upstream main at v0.4.13-22
+/// plus the two rebased vdbe range-seek commits, the DML equality-prefix
+/// index seeks bd-j9gub, and the strict read-only open mode
+/// SQLITE_OPEN_STRICT_READ_ONLY),
 /// while [dependencies] keep registry-shaped `=0.4.13`
 /// requirements so every consumer — including franken-agent-detection's
 /// `^0.4.1` ask — converges on that one fork resolution per package.
@@ -65,8 +67,8 @@ fn frankensqlite_fork_source_identity_is_exact_and_coherent() {
     const FACADE_REQUIREMENT: &str = "=0.4.13";
     const TYPES_REQUIREMENT: &str = "=0.4.13";
     const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensqlite";
-    const EXPECTED_FORK_REV: &str = "898c43612b36301168b97644a89df2fb933ca457";
-    const EXPECTED_FORK_LOCK_SOURCE: &str = "git+https://github.com/vladmlch/frankensqlite?rev=898c43612b36301168b97644a89df2fb933ca457#898c43612b36301168b97644a89df2fb933ca457";
+    const EXPECTED_FORK_REV: &str = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00";
+    const EXPECTED_FORK_LOCK_SOURCE: &str = "git+https://github.com/vladmlch/frankensqlite?rev=2d55ddbd6f630f4036f53629c9c0f080dc5a1f00#2d55ddbd6f630f4036f53629c9c0f080dc5a1f00";
     const EXPECTED_FACADE_FEATURES: &[&str] = &["fts5", "async-api"];
 
     let manifest: toml::Table =
@@ -1032,6 +1034,24 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
             "SELECT scope FROM viewer_search_regions WHERE conversation_id = ?1",
             &[SqliteValue::Integer(99031)],
         ),
+        // GRADUATED from planner_gap_shapes at rev
+        // `2d55ddbd6f630f4036f53629c9c0f080dc5a1f00` (2026-11-11): upstream
+        // #531's grouped-aggregate planner series (`c5d04545`) feeds the
+        // group-by sorter from the equality-prefix seek, so `GROUP BY`
+        // no longer defeats the covering (conversation_id, scope) index —
+        // observed `SEARCH viewer_search_regions USING INDEX
+        // sqlite_autoindex_viewer_search_regions_1 (conversation_id=?)`
+        // against the pinned rev. The pin
+        // now guards the seek: a fork or upstream regression back to a
+        // full-table SCAN fails this gate BY NAME. Production keeps the
+        // Rust run-length count (`old scope counts` above); this pins the
+        // engine class, not a live production query.
+        (
+            "graduated: GROUP BY over the covering (conversation_id, scope) index seeks",
+            "SELECT scope, COUNT(*) FROM viewer_search_regions \
+             WHERE conversation_id = ?1 GROUP BY scope",
+            &[SqliteValue::Integer(99031)],
+        ),
         // Production: viewer_extensions/search_regions.rs
         // `region_doc_identity_parts`
         (
@@ -1156,12 +1176,15 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
         ),
     ];
     // The fork's SELECT collect-gate gap reproducers — the original SQL of
-    // the four republish-lane shapes the production queries were rewritten
-    // away from (kept verbatim). Equality conjuncts pin an index prefix,
+    // three of the four republish-lane shapes the production queries were
+    // rewritten away from (kept verbatim; the fourth, the GROUP BY scope
+    // count, graduated into seek_shapes at rev 2d55ddbd — upstream #531's
+    // grouped-aggregate seek made the group-by sorter feed from the
+    // equality-prefix seek). Equality conjuncts pin an index prefix,
     // yet a second conjunct touching an indexed column (range, NOT LIKE)
-    // or a GROUP BY / JOIN makes the fork SCAN instead of SEEK — the same
+    // or a JOIN makes the fork SCAN instead of SEEK — the same
     // class bd-j9gub fixed for DML, open for SELECT at the pinned fork rev
-    // 898c4361. Each is pinned as a SCAN: a fork fix turns one into a
+    // 2d55ddbd. Each is pinned as a SCAN: a fork fix turns one into a
     // SEARCH and fails this gate BY NAME (graduate it into seek_shapes
     // and record the rev); a fork regression turns a seek_shapes entry
     // into one of these and fails there by name. The per-conversation
@@ -1172,12 +1195,6 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
             "SELECT quill_idx FROM viewer_search_regions \
              WHERE conversation_id = ?1 AND quill_idx >= ?2",
             &[SqliteValue::Integer(99031), SqliteValue::Integer(4096)],
-        ),
-        (
-            "gap: GROUP BY defeats the covering (conversation_id, scope) index",
-            "SELECT scope, COUNT(*) FROM viewer_search_regions \
-             WHERE conversation_id = ?1 GROUP BY scope",
-            &[SqliteValue::Integer(99031)],
         ),
         (
             "gap: NOT LIKE residual defeats the seek (the LIKE variant seeks)",
@@ -1221,7 +1238,8 @@ fn republish_lane_per_conversation_selects_seek_leading_column_indexes() {
         // Production: viewer_bridge/search_sessions.rs
         // `seek_distinct_conversations` — the REJECTED alternative shape
         // (observed planning as a full-table SCAN at the pinned fork rev
-        // 898c4361, 2026-11-11): `SELECT DISTINCT` defeats the IN() seek
+        // 898c4361, observed 2026-11-11 and still open at 2d55ddbd):
+        // `SELECT DISTINCT` defeats the IN() seek
         // even though the same predicate without DISTINCT SEARCHes
         // idx_viewer_search_regions_tool, so production reads the
         // `(conversation_id, region_key)` projection and dedupes in Rust
