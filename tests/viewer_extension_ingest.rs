@@ -898,51 +898,59 @@ fn codex_interrupted_call_followed_by_next_task_marks_source_absent() {
     );
 }
 
-/// §5.5a (owner decision, 2026-11-10): a codex call whose tool type NEVER
-/// carries exit status at the source gets the source-absent verdict on the
-/// exit/error scopes. The corpus proof (2,520 local rollouts, every
-/// `function_call_output` scanned): `exec_command` outputs — 10,622
-/// records — never carry `exit_code`/`is_error`; the OpenAI-shaped
-/// `function_call_output` record has no status fields at all (19,249
-/// records, 0 with status). So for such a call the missing exit status
-/// never existed in any local record, and the strict gate evaluates
-/// `exit:`/`has:error` as a proven False instead of refusing.
+/// Follow-up 1 fixtures (owner decision, 2026-11-11): one user turn, one
+/// named `function_call`, one paired `function_call_output` whose `output`
+/// string rides verbatim. The per-name census
+/// (`.scratch/glm/2026-11-10-tool-coverage-fixes/census_text_receipt.txt`,
+/// 2,521 local rollouts, every output classified by exit-rendering shape)
+/// replaces §5.5a's every-`function_call` rule: `exec_command` and
+/// `write_stdin` DO render the exit status as text (`Process exited with
+/// code N` in 9,785 of 10,622 and 633 of 1,329 outputs), so their verdicts
+/// come from the rendered trailer; names with zero renderings of ANY shape
+/// keep the source-absent swap; every other name stays not-read.
+fn codex_function_io_packet(name: &str, output: &str) -> ConversationPacket {
+    packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "run the checks",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "run the checks"}}),
+            ),
+            msg(
+                1,
+                "assistant",
+                &format!("[Tool: {name}]"),
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_exec",
+                                   "name": name,
+                                   "arguments": "{\"cmd\": \"made-up check\"}",
+                                   "id": "resp-1"}}),
+            ),
+            msg(
+                2,
+                "tool",
+                output,
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call_output", "call_id": "call_exec",
+                                   "output": output, "id": "resp-2"}}),
+            ),
+        ],
+    )
+}
+
+/// Follow-up 1: `exec_command` outputs render the exit status at the
+/// source (census: 9,839 of 10,622 outputs carry a rendering), so an
+/// output WITHOUT the rendered trailer is a not-read gap — the status
+/// page provably exists for this tool, this record just does not carry
+/// it. It keeps `tool_exit_not_recorded` and blocks strict.
 #[test]
-fn codex_facts_proven_no_exit_tool_marks_source_absent_verdicts() {
+fn codex_facts_exec_command_without_rendered_status_stays_not_read() {
     let publication = extract_session_facts(
-        &packet(
-            "codex",
-            json!({"source": "rollout"}),
-            vec![
-                msg(
-                    0,
-                    "user",
-                    "run the checks",
-                    json!({"type": "event_msg",
-                           "payload": {"type": "user_message", "message": "run the checks"}}),
-                ),
-                msg(
-                    1,
-                    "assistant",
-                    "[Tool: exec_command]",
-                    json!({"type": "response_item",
-                           "payload": {"type": "function_call", "call_id": "call_exec",
-                                       "name": "exec_command",
-                                       "arguments": "{\"cmd\": \"made-up check\"}",
-                                       "id": "resp-1"}}),
-                ),
-                // Paired output WITHOUT status fields — the proven source
-                // shape for this tool type.
-                msg(
-                    2,
-                    "tool",
-                    "made-up check output",
-                    json!({"type": "response_item",
-                           "payload": {"type": "function_call_output", "call_id": "call_exec",
-                                       "output": "made-up check output", "id": "resp-2"}}),
-                ),
-            ],
-        ),
+        &codex_function_io_packet("exec_command", "made-up check output"),
         "codex",
     );
 
@@ -950,11 +958,44 @@ fn codex_facts_proven_no_exit_tool_marks_source_absent_verdicts() {
     assert!(publication.tools[0].has_result);
     assert_eq!(publication.tools[0].exit_code, None);
     assert_eq!(publication.tools[0].is_error, None);
-    let tools = coverage(&publication, "tools").expect("tools");
-    assert_eq!(tools.state, "complete", "{tools:?}");
+    let expected = [
+        ("tool_exit", "tool_exit_not_recorded"),
+        ("tool_error", "tool_error_not_recorded"),
+    ];
+    for (field, reason) in expected {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_ne!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == reason),
+            "{field} keeps the not-read verdict: {entry:?}"
+        );
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "codex_tool_status_absent_at_source"),
+            "exec_command renders exit status at the source, so its gaps are never source-absent: {entry:?}"
+        );
+        assert!(
+            !is_source_absent_gap(entry.state.as_str(), &entry.reasons),
+            "{field} must stay a strict-blocking not-read gap: {entry:?}"
+        );
+    }
+}
 
-    // The exit/error scopes carry the allowlisted source-absent reason
-    // ONLY — a pure gap, so strict `exit:`/`has:error` evaluate.
+/// Follow-up 1: `wait_agent` outputs NEVER render exit status in ANY
+/// shape (census: 1,385 outputs, zero field/`Process exited with code`/
+/// `Exit code:` renderings), so its status-less output keeps the
+/// allowlisted source-absent verdict — strict `exit:`/`has:error`
+/// evaluate a proven False instead of refusing.
+#[test]
+fn codex_facts_wait_agent_status_absent_marks_source_absent() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet("wait_agent", "made-up agent finished"),
+        "codex",
+    );
+
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
     for field in ["tool_exit", "tool_error"] {
         let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
         assert_ne!(entry.state, "complete", "{field}: {entry:?}");
@@ -966,15 +1007,119 @@ fn codex_facts_proven_no_exit_tool_marks_source_absent_verdicts() {
             "{field}: {entry:?}"
         );
         assert!(
+            is_source_absent_gap(entry.state.as_str(), &entry.reasons),
+            "{field} must classify as source-absent: {entry:?}"
+        );
+    }
+}
+
+/// Follow-up 1: the rendered `Process exited with code 0` trailer is a
+/// recorded exit verdict — the facts carry exit_code 0 / is_error false
+/// and the exit/error scopes go complete, so strict `exit:0` can answer
+/// True and `has:error` False for the session.
+#[test]
+fn codex_facts_exec_command_rendered_trailer_records_exit() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet(
+            "exec_command",
+            "made-up checks passed\nProcess exited with code 0\n",
+        ),
+        "codex",
+    );
+
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    assert_eq!(publication.tools[0].exit_code, Some(0));
+    assert_eq!(publication.tools[0].is_error, Some(false));
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+    }
+}
+
+/// Follow-up 1: a nonzero rendered trailer is a recorded error verdict —
+/// exit_code 1, is_error true, both scopes complete.
+#[test]
+fn codex_facts_exec_command_rendered_trailer_nonzero_is_error() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet(
+            "exec_command",
+            "made-up checks failed\nProcess exited with code 1\n",
+        ),
+        "codex",
+    );
+
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    assert_eq!(publication.tools[0].exit_code, Some(1));
+    assert_eq!(publication.tools[0].is_error, Some(true));
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+    }
+}
+
+/// Follow-up 1: a command may echo the trailer line in its own stdout
+/// before codex appends the real one, so the LAST rendered line is the
+/// verdict (corpus probe: 20 of 9,785 trailer-bearing exec_command
+/// outputs carry more than one match; the last is the trailer).
+#[test]
+fn codex_facts_exec_command_trailer_last_match_wins() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet(
+            "exec_command",
+            "made-up echo: Process exited with code 7\n\
+             made-up real trailer follows\nProcess exited with code 0\n",
+        ),
+        "codex",
+    );
+
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    assert_eq!(publication.tools[0].exit_code, Some(0));
+    assert_eq!(publication.tools[0].is_error, Some(false));
+}
+
+/// Follow-up 1: `write_stdin` renders the same trailer (census: 633 of
+/// 1,329 outputs), so it extracts exactly like exec_command.
+#[test]
+fn codex_facts_write_stdin_rendered_trailer_records_exit() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet(
+            "write_stdin",
+            "made-up stdin sent\nProcess exited with code 2\n",
+        ),
+        "codex",
+    );
+
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    assert_eq!(publication.tools[0].exit_code, Some(2));
+    assert_eq!(publication.tools[0].is_error, Some(true));
+}
+
+/// Follow-up 1: a name the census has NOT proven (never observed, or
+/// observed WITH a rendering) never gets the source-absent swap — its
+/// status-less outputs keep the not-read verdict and block strict.
+#[test]
+fn codex_facts_uncensused_name_status_absence_stays_not_read() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet("mcp__future__probe", "made-up probe result"),
+        "codex",
+    );
+
+    let expected = [
+        ("tool_exit", "tool_exit_not_recorded"),
+        ("tool_error", "tool_error_not_recorded"),
+    ];
+    for (field, reason) in expected {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert!(
+            entry.reasons.iter().any(|r| r == reason),
+            "{field} keeps the not-read verdict: {entry:?}"
+        );
+        assert!(
             !entry
                 .reasons
                 .iter()
-                .any(|r| r == "tool_exit_not_recorded" || r == "tool_error_not_recorded"),
-            "the proven type must not keep the not-read verdict: {entry:?}"
-        );
-        assert!(
-            is_source_absent_gap(entry.state.as_str(), &entry.reasons),
-            "{field} must classify as source-absent: {entry:?}"
+                .any(|r| r == "codex_tool_status_absent_at_source"),
+            "an uncensused name has no source-absent proof: {entry:?}"
         );
     }
 }

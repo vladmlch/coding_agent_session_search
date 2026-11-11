@@ -24,6 +24,10 @@ mod gemini;
 mod opencode;
 mod pi_agent;
 
+/// Codex census-proven names whose outputs render the exit-status trailer
+/// `Process exited with code N`, shared with the search-regions codex arm
+/// so the facts verdicts and the region rows stay identical.
+pub(crate) use codex::RENDERED_EXIT_NAMES;
 /// Copilot archived-response-part classification, shared with the
 /// search-regions copilot arm so the completeness claims and the indexed
 /// surface stay identical.
@@ -294,6 +298,42 @@ pub(crate) fn text_id(value: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The codex-rendered process-exit trailer: `Process exited with code N`.
+/// The LAST match in the text is the verdict — a command may legitimately
+/// echo the same line in its own stdout before codex appends the real
+/// trailer (corpus probe: 20 of 9,785 trailer-bearing `exec_command`
+/// outputs carry more than one match; the last is always the trailer).
+/// The code must end at a non-code boundary, so `…code 12abc` never
+/// parses as 12, and a non-numeric tail never parses at all.
+pub(crate) fn rendered_exit_code(text: &str) -> Option<i64> {
+    const MARKER: &str = "Process exited with code ";
+    let mut code = None;
+    let mut from = 0_usize;
+    while let Some(found) = text[from..].find(MARKER) {
+        let start = from + found + MARKER.len();
+        let bytes = &text.as_bytes()[start..];
+        let mut end = 0_usize;
+        if end < bytes.len() && bytes[end] == b'-' {
+            end += 1;
+        }
+        let digits_start = end;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        let boundary = end == bytes.len()
+            || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' || bytes[end] == b'.');
+        if end > digits_start && boundary {
+            // The marker and the digit run are ASCII, so the slice is a
+            // char boundary; an overflowing run just does not parse.
+            if let Ok(parsed) = text[start + digits_start..start + end].parse::<i64>() {
+                code = Some(parsed);
+            }
+        }
+        from = start;
+    }
+    code
+}
+
 /// Explicit recorded status: an integer exit code can establish an error;
 /// a generic error flag never invents `exit=1` (oracle `explicit_status`).
 pub(crate) fn explicit_status(payload: &Value) -> (Option<i64>, Option<bool>) {
@@ -425,13 +465,22 @@ pub(crate) struct ToolCollector {
     /// the verdict gap on the exit/error scopes.
     synthesized: BTreeSet<String>,
     /// Call ids whose exit status is PROVEN absent at the source (codex
-    /// only — `providers/codex.rs` proves it from the record type, never
-    /// from a parse failure or unknown shape): `finish()` swaps the not-read
-    /// `tool_exit_not_recorded`/`tool_error_not_recorded` verdicts for the
-    /// allowlisted `codex_tool_status_absent_at_source` for these ids, and
-    /// only when the recorded verdict really is missing (self-correcting
-    /// per record).
+    /// only — `providers/codex.rs` proves it per NAME from the corpus
+    /// census, never from a parse failure or unknown shape): `finish()`
+    /// swaps the not-read `tool_exit_not_recorded`/`tool_error_not_recorded`
+    /// verdicts for the allowlisted `codex_tool_status_absent_at_source`
+    /// for these ids, and only when the recorded verdict really is missing
+    /// (self-correcting per record).
     exit_absent_at_source: BTreeSet<String>,
+    /// Codex only: tool names whose outputs systematically RENDER the
+    /// process exit status as the trailer text
+    /// `Process exited with code N` (`providers/codex.rs` census-proven
+    /// `RENDERED_EXIT_NAMES`). `finish()` parses the last rendered trailer
+    /// of a paired result into `exit_code`/`is_error` when the payload
+    /// carried no explicit status fields — the rendered line IS a status
+    /// record at the source. An output of these names WITHOUT the trailer
+    /// keeps the not-read verdict.
+    rendered_exit_names: &'static [&'static str],
 }
 
 impl ToolCollector {
@@ -443,6 +492,7 @@ impl ToolCollector {
             interrupted: BTreeSet::new(),
             synthesized: BTreeSet::new(),
             exit_absent_at_source: BTreeSet::new(),
+            rendered_exit_names: &[],
         }
     }
 
@@ -490,6 +540,16 @@ impl ToolCollector {
     /// `tools` partial but leaves the text inventory complete.
     pub fn unpaired_results_carry_no_text(mut self) -> Self {
         self.result_missing_scopes = &["tools"];
+        self
+    }
+
+    /// Codex only: register the census-proven rendered-exit tool names
+    /// (`providers/codex.rs::RENDERED_EXIT_NAMES`) whose outputs render
+    /// `Process exited with code N` — `finish()` parses the last rendered
+    /// trailer of a paired result into `exit_code`/`is_error` when the
+    /// payload carried no explicit status fields.
+    pub fn with_rendered_exit_names(mut self, names: &'static [&'static str]) -> Self {
+        self.rendered_exit_names = names;
         self
     }
 
@@ -596,8 +656,27 @@ impl ToolCollector {
                 };
                 coverage.mark(self.result_missing_scopes, reason, "partial");
             }
-            let exit_code = result.and_then(|r| r.exit_code);
-            let is_error = result.and_then(|r| r.is_error);
+            let mut exit_code = result.and_then(|r| r.exit_code);
+            let mut is_error = result.and_then(|r| r.is_error);
+            // Follow-up 1 (owner decision, 2026-11-11): a renderer tool's
+            // output text IS a status record — the census-proven rendered
+            // trailer (`Process exited with code N`, see
+            // `providers/codex.rs::RENDERED_EXIT_NAMES`) parses exactly like
+            // an explicit status field, so the exit/error verdicts exist
+            // and neither the not-read mark nor the source-absent swap
+            // fires. An output of a renderer name WITHOUT the trailer
+            // keeps the not-read verdict and keeps blocking strict.
+            if exit_code.is_none()
+                && self.rendered_exit_names.contains(&call.name.as_str())
+                && let Some(code) = result
+                    .and_then(|r| r.text.as_deref())
+                    .and_then(rendered_exit_code)
+            {
+                exit_code = Some(code);
+                if is_error.is_none() {
+                    is_error = Some(code != 0);
+                }
+            }
             // Same for the exit/error verdicts: a synthesized id's verdict
             // gap is already named by the identity partial on both scopes,
             // so the not-read verdicts would only duplicate it — and raise

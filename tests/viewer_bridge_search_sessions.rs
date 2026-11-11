@@ -4296,23 +4296,23 @@ fn search_sessions_devin_archived_invocations_answer_strict_file_predicates() ->
     bridge.shutdown()
 }
 
-/// §5.5a end-to-end (owner decision, 2026-11-10): a REAL codex session
-/// whose `exec_command` output carries no exit status — the proven source
-/// shape for that tool type (corpus census: 10,622 exec_command outputs,
-/// 0 with status; the `function_call_output` record has no status fields
-/// at all). Pre-§5.5a the not-read `tool_exit_not_recorded` made every
-/// status-less region `Unknown`, so strict `exit:`/`has:error` refused;
-/// with the allowlisted `codex_tool_status_absent_at_source` the gap is
-/// provably source-absent and the page evaluates a proven False.
-fn codex_proven_no_exit_session() -> GoldSession {
+/// Follow-up 1 end-to-end (owner decision, 2026-11-11): a REAL codex
+/// session whose `exec_command` output carries NO rendered trailer — the
+/// shape of 773 of 10,622 corpus outputs. `exec_command` is a proven
+/// status renderer (9,785 outputs carry `Process exited with code N`), so
+/// the missing trailer is a not-read gap: the exit/error scopes keep
+/// `tool_exit_not_recorded`/`tool_error_not_recorded` and strict
+/// `exit:`/`has:error` REFUSE with `data_unavailable` instead of
+/// evaluating a fabricated False.
+fn codex_exec_command_no_rendered_status_session() -> GoldSession {
     GoldSession {
         id: 8,
         agent: "codex",
         source_id: "local",
-        external_id: "s-8-codex-no-exit",
-        source_path: "/sessions/s-8-codex-no-exit.jsonl",
+        external_id: "s-8-codex-no-rendered-exit",
+        source_path: "/sessions/s-8-codex-no-rendered-exit.jsonl",
         workspace: None,
-        title: "codex proven no-exit tool",
+        title: "codex exec_command without rendered status",
         started_at: Some(9_000),
         ended_at: Some(9_900),
         origin_host: None,
@@ -4350,9 +4350,9 @@ fn codex_proven_no_exit_session() -> GoldSession {
 }
 
 #[test]
-fn search_sessions_codex_proven_no_exit_answers_strict_exit_predicates() -> Result<()> {
+fn search_sessions_codex_exec_command_without_rendered_status_blocks_strict() -> Result<()> {
     let mut sessions = gold_fixture();
-    sessions.push(codex_proven_no_exit_session());
+    sessions.push(codex_exec_command_no_rendered_status_session());
     let mut bridge = gold_harness_full(&sessions, &[])?;
 
     let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
@@ -4364,18 +4364,25 @@ fn search_sessions_codex_proven_no_exit_answers_strict_exit_predicates() -> Resu
     )?;
     drop(writer);
     let facts = generation.facts;
-    for field in ["tool_exit", "tool_error"] {
+    for (field, reason) in [
+        ("tool_exit", "tool_exit_not_recorded"),
+        ("tool_error", "tool_error_not_recorded"),
+    ] {
         let entry = facts
             .coverage
             .iter()
             .find(|entry| entry.field == field)
             .unwrap_or_else(|| panic!("{field}"));
         ensure!(
-            entry
+            entry.reasons.iter().any(|r| r == reason),
+            "the real manifest must carry the not-read verdict on {field}: {entry:?}"
+        );
+        ensure!(
+            !entry
                 .reasons
                 .iter()
                 .any(|r| r == "codex_tool_status_absent_at_source"),
-            "the real manifest must carry the source-absent verdict on {field}: {entry:?}"
+            "exec_command renders exit status at the source, so the gap is never source-absent: {entry:?}"
         );
     }
     set_facts_coverage(
@@ -4385,20 +4392,197 @@ fn search_sessions_codex_proven_no_exit_answers_strict_exit_predicates() -> Resu
         real_facts_manifest(&facts),
     )?;
 
-    // exit:0 — S3 records exit_code 2 (True for nothing here); S8's
-    // status-less exec_command evaluates a PROVEN False, so the strict
-    // page answers with no member.
+    // Strict exit:0 — S8's status-less exec_command is a not-read gap, so
+    // the strict page refuses instead of evaluating a fabricated False.
     let page = search(&mut bridge, json!({"query": "exit:0"}))?;
-    ensure!(page["ok"] == true, "strict exit: must not refuse: {page}");
     ensure!(
-        !ids(&page).contains(&8),
-        "S8 provably has no exit_code 0: {page}"
+        page["ok"] == false,
+        "the not-read exit verdict must block strict: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "the refusal is honest-unavailable: {page}"
+    );
+    let message = page["error"]["message"].as_str().unwrap_or_default();
+    ensure!(
+        message.contains("tool_exit"),
+        "the refusal must name the tool_exit scope: {page}"
     );
 
-    // has:error — S3's erroring result is the one True; S8 evaluates a
-    // proven False.
+    // allow_partial — S8 stays unknown, so it never appears as a member.
+    let page = search(
+        &mut bridge,
+        json!({"query": "exit:0", "allow_partial": true}),
+    )?;
+    ensure!(page["ok"] == true, "partial must answer: {page}");
+    ensure!(
+        !ids(&page).contains(&8),
+        "S8's exit verdict is not read, so partial must exclude it: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// Follow-up 1 fixtures: the per-name census pins two verdict regimes for
+/// strict exit predicates. `exec_command` renders its exit status as text
+/// (`Process exited with code N`; 9,785 of 10,622 outputs) — the rendered
+/// line IS the recorded verdict, so strict `exit:`/`has:error` answer
+/// True/False exactly. `wait_agent` never renders status in any shape
+/// (1,385 outputs, zero renderings) — its gap keeps the allowlisted
+/// source-absent verdict and the strict page still answers, evaluating
+/// the session as a proven False.
+fn codex_exec_trailer_session(
+    id: i64,
+    external: &'static str,
+    title: &'static str,
+    output: &'static str,
+) -> GoldSession {
+    GoldSession {
+        id,
+        agent: "codex",
+        source_id: "local",
+        external_id: external,
+        // Native rollout shape with the external UUID embedded: once the
+        // region pairing records the rendered exit code, the session
+        // becomes an `exit:`/`has:error` evaluation candidate and the
+        // strict codex identity lane (`viewer_bridge/identity.rs::
+        // codex_native_id`) demands a rollout filename or bare-UUID
+        // external whose UUIDs agree.
+        source_path: Box::leak(
+            format!("/codex/sessions/2026/11/11/rollout-2026-11-11T00-00-00-{external}.jsonl")
+                .into_boxed_str(),
+        ),
+        workspace: None,
+        title,
+        started_at: Some(9_000),
+        ended_at: Some(9_900),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            (
+                0,
+                MessageRole::User,
+                "run the checks",
+                Some(json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "run the checks"}})),
+            ),
+            (
+                1,
+                MessageRole::Agent,
+                "[Tool: exec_command]",
+                Some(json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_exec",
+                                   "name": "exec_command",
+                                   "arguments": "{\"cmd\": \"made-up check\"}",
+                                   "id": "resp-1"}})),
+            ),
+            (
+                2,
+                MessageRole::Tool,
+                "made-up check output",
+                Some(json!({"type": "response_item",
+                       "payload": {"type": "function_call_output", "call_id": "call_exec",
+                                   "output": output, "id": "resp-2"}})),
+            ),
+        ],
+    }
+}
+
+fn codex_wait_agent_session() -> GoldSession {
+    GoldSession {
+        id: 10,
+        agent: "codex",
+        source_id: "local",
+        // Rollout-shaped identity (see the trailer fixture note): the
+        // wait_agent gap evaluates False via the source-absent swap, and
+        // the strict codex identity lane runs for every evaluated
+        // candidate.
+        external_id: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+        source_path: "/codex/sessions/2026/11/11/rollout-2026-11-11T00-00-02-bbbbbbbb-cccc-dddd-eeee-ffffffffffff.jsonl",
+        workspace: None,
+        title: "codex wait_agent status-less",
+        started_at: Some(9_000),
+        ended_at: Some(9_900),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            (
+                0,
+                MessageRole::User,
+                "wait for the agent",
+                Some(json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "wait for the agent"}})),
+            ),
+            (
+                1,
+                MessageRole::Agent,
+                "[Tool: wait_agent]",
+                Some(json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_wait",
+                                   "name": "wait_agent",
+                                   "arguments": "{\"agent\": \"made-up agent\"}",
+                                   "id": "resp-1"}})),
+            ),
+            (
+                2,
+                MessageRole::Tool,
+                "made-up agent finished",
+                Some(json!({"type": "response_item",
+                       "payload": {"type": "function_call_output", "call_id": "call_wait",
+                                   "output": "made-up agent finished", "id": "resp-2"}})),
+            ),
+        ],
+    }
+}
+
+#[test]
+fn search_sessions_codex_rendered_exit_trailer_answers_strict_predicates() -> Result<()> {
+    let mut sessions = gold_fixture();
+    sessions.push(codex_exec_trailer_session(
+        8,
+        "11111111-2222-3333-4444-555555555555",
+        "codex exec_command rendered exit 0",
+        "made-up checks passed\nProcess exited with code 0\n",
+    ));
+    sessions.push(codex_exec_trailer_session(
+        9,
+        "66666666-7777-8888-9999-aaaaaaaaaaaa",
+        "codex exec_command rendered exit 1",
+        "made-up checks failed\nProcess exited with code 1\n",
+    ));
+    sessions.push(codex_wait_agent_session());
+    let mut bridge = gold_harness_full(&sessions, &[])?;
+
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let wait = sessions.pop().expect("the wait_agent session");
+    let failed = sessions.pop().expect("the exit-1 session");
+    let ok = sessions.pop().expect("the exit-0 session");
+    for session in [&wait, &failed, &ok] {
+        let generation =
+            coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+                &writer,
+                &gold_conversation(session),
+                session.id,
+            )?;
+        let facts = generation.facts;
+        set_facts_coverage(
+            &bridge,
+            session.id,
+            facts.coverage_state.as_str(),
+            real_facts_manifest(&facts),
+        )?;
+    }
+    drop(writer);
+
+    // exit:0 — S8's rendered `Process exited with code 0` is the recorded
+    // verdict (True); S9's is 1 (False); S10's wait_agent gap is proven
+    // source-absent (False). Strict answers.
+    let page = search(&mut bridge, json!({"query": "exit:0"}))?;
+    assert_members(&page, &[8])?;
+
+    // has:error — S9's nonzero render is True (with the base S3 error);
+    // S8 (exit 0) and S10 (absent) evaluate False.
     let page = search(&mut bridge, json!({"query": "has:error"}))?;
-    assert_members(&page, &[3])?;
+    assert_members(&page, &[3, 9])?;
     bridge.shutdown()
 }
 

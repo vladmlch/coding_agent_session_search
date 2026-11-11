@@ -142,7 +142,13 @@ pub use providers::classification::SessionQualityMetrics;
 /// status swap the not-read verdict for the allowlisted
 /// `codex_tool_status_absent_at_source`. REGION_VERSION stays 6;
 /// `cass index --full` converges pre-existing rows onto v13.
-pub const FACTS_EXTRACTOR_VERSION: i64 = 13;
+/// v14: v13 with the §5.5a exit rule narrowed per NAME (owner
+/// follow-up, 2026-11-11): only census-proven zero-rendering names keep
+/// the source-absent swap, and the renderer names (`exec_command`,
+/// `write_stdin`) parse the `Process exited with code N` trailer into
+/// recorded exit/error verdicts (facts + regions; REGION_VERSION moves
+/// to 7); `cass index --full` converges pre-existing rows onto v14.
+pub const FACTS_EXTRACTOR_VERSION: i64 = 14;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
@@ -345,18 +351,26 @@ pub struct CoverageEntry {
 ///   `body_available == false` — a sidecar without the marker, or any
 ///   other unknown shape, keeps `claude_shape_unknown`, a not-read gap.
 /// - `codex_tool_status_absent_at_source` (owner decision, 2026-11-10,
-///   §5.5a): a codex call whose output record type NEVER carries exit
-///   status at the source, so the missing `tool_exit`/`tool_error` verdict
-///   never existed in any local record. `proven_no_exit` in
-///   `providers/codex.rs` proves it from the record type — a
-///   format-level proof (the OpenAI-shaped `function_call_output` has no
-///   status fields; 0 of 19,249 corpus outputs carry status, and pairing
-///   is kind-homogeneous, so every `function_call` name including all
-///   `mcp__*` calls is covered) plus one name-level proof (custom `exec`:
-///   0 of 63,517). `apply_patch` (611 of 734 custom outputs DO record
-///   `exit_code`) and every unlisted custom name stay not-read. The mark
-///   fires only when the call's recorded verdict really is missing, so a
-///   later record carrying status overrides it per record.
+///   §5.5a; per-NAME narrowing 2026-11-11): a codex call whose NAME is
+///   census-proven to never carry exit status in ANY shape (fields,
+///   `Process exited with code N`, `Exit code: N`, `exit_code` inside a
+///   JSON string — zero renderings across all 2,521 local rollouts), so
+///   the missing `tool_exit`/`tool_error` verdict never existed in any
+///   local record. `proven_no_exit` in `providers/codex.rs` checks the
+///   per-kind name lists (custom `exec`: 0 of 63,546 outputs; every
+///   zero-rendering `function_call` name, e.g. `wait` 0 of 3,041,
+///   `wait_agent` 0 of 1,385). The renderer names `exec_command`
+///   (9,785 of 10,622 outputs render the trailer; 9,839 carry a
+///   rendering of some shape) and `write_stdin` (633
+///   of 1,329) are NOT absent-proven — their trailer-bearing outputs
+///   record the verdict from the rendered text, and their trailer-less
+///   outputs keep the not-read verdict. `apply_patch` (692 of 710 custom
+///   outputs carry status), the thin-evidence names the census observed
+///   WITH a rendering (`read_file`, `mcp__glean__search`,
+///   `_search_issues`, `_fetch_issue`) and every uncensused name stay
+///   not-read. The mark fires only when the call's recorded verdict
+///   really is missing, so a later record carrying status overrides it
+///   per record.
 ///
 /// NOT here on purpose:
 /// - `agy_status_dropped_by_connector` / `agy_status_unpaired`: tool
@@ -1516,21 +1530,21 @@ mod source_absent_tests {
 
     #[test]
     fn codex_proven_no_exit_status_marker_is_source_absent() {
-        // The codex proven-never-exit tool types (owner decision,
-        // 2026-11-10): the rollout corpus (2,520 files, every
-        // `function_call_output` and `custom_tool_call_output` scanned)
-        // proves named tool types — `exec`, `exec_command`, `wait`, …
-        // every observed name except `apply_patch` — NEVER record
-        // `exit_code`/`is_error` on their output records (e.g. `exec`:
-        // 63,517 outputs, 0 with status; the OpenAI-shaped
-        // `function_call_output` record has no status fields at all:
-        // 19,249 records, 0 with status). For such a call the missing
-        // exit/error status never existed in any local record.
-        // `call()` in `providers/codex.rs` notes the qualified call id only
-        // when the recorded name is on that proven list — `apply_patch`
-        // (611 of 734 outputs carry `exit_code`) and unknown names keep
-        // `tool_exit_not_recorded`/`tool_error_not_recorded`, not-read
-        // gaps.
+        // The codex proven-never-exit names (owner decision, 2026-11-10;
+        // per-NAME narrowing 2026-11-11): the rollout corpus (2,521
+        // files, every output classified by exit-rendering SHAPE) proves
+        // named tools — custom `exec` (63,546 outputs), `wait` (3,041),
+        // `wait_agent` (1,385), … every name with zero renderings of any
+        // shape — NEVER carry exit status in any local record. For such a
+        // call the missing exit/error status never existed. `call()` in
+        // `providers/codex.rs` notes the qualified call id only when the
+        // recorded name is on the per-kind proven lists — the renderer
+        // names (`exec_command`, `write_stdin`, whose outputs render
+        // `Process exited with code N`), names observed WITH a rendering
+        // (`apply_patch`: 692 of 710 outputs carry status; `read_file`,
+        // `mcp__glean__search`, `_search_issues`, `_fetch_issue`) and
+        // unknown names keep `tool_exit_not_recorded`/
+        // `tool_error_not_recorded`, not-read gaps.
         assert!(is_source_absent_gap(
             "partial",
             &reasons(&["codex_tool_status_absent_at_source"])
