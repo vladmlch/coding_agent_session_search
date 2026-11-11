@@ -286,11 +286,15 @@ const CONTRACTS: &[DependencyContract] = &[
         // production scan sites rely on) with a without_local_default_stores()
         // opt-out hermetic harnesses use so in-process tests can never read
         // the developer's real agent stores; only the opencode connector
-        // consults it today.
+        // consults it today. Fork master 46c4760 (2026-11-12) adds the
+        // WAL-sidecar fix (F19): devin, crush, goose, hermes and openclaw
+        // declare their live -wal/-shm in source boundaries, as shelley
+        // does, so cass's durable-source ledger never skips a WAL-only
+        // commit (upstream 27a5429 turned boundaries on without them).
         // See that repo's LOCAL_FIXES.md. Return to the upstream URL/rev
         // once upstream carries every row there.
         expected_git: "https://github.com/vladmlch/franken_agent_detection",
-        expected_rev: "832a81222a706e7db92d1e65577abee2ff89de61",
+        expected_rev: "46c47608bf81a2b101b8f6d2ca8685ce5f527b55",
         expected_version: "0.3.11",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.
