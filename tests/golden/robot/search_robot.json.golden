@@ -9,7 +9,7 @@
       "title": "Aider Chat: coding_agent_session_search",
       "snippet": "[RESULT_SNIPPET]",
       "content": "[RESULT_CONTENT]",
-      "score": 2.355482339859009,
+      "score": 1.3554823398590088,
       "source_path": "[REPO]/.aider.chat.history.md",
       "agent": "aider",
       "workspace": "[REPO]",
