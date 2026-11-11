@@ -1850,13 +1850,22 @@ pub fn is_user_data_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Connectors whose reader learned a source form that can already be on disk
-/// with an old modification time, which an incremental scan skips. Until a
-/// scan of the connector under its current contract succeeds, the connector
-/// is scanned without a cutoff; durable source reuse still skips unchanged
-/// files. codex: a rollout Codex compresses to `.jsonl.zst` keeps the plain
-/// rollout's modification time (GH #513).
-const CONNECTOR_SCAN_CONTRACTS: &[(&str, &str)] = &[("codex", "rollout-jsonl-zst")];
+/// Connectors whose current build must re-read sources an incremental scan
+/// would skip, either because the reader learned a source form that can
+/// already be on disk with an old modification time, or because the persist
+/// layer changed which records a re-parse keeps. Until a scan of the
+/// connector under its current contract succeeds, the connector is scanned
+/// without a cutoff; durable source reuse still skips unchanged files.
+/// codex: a rollout Codex compresses to `.jsonl.zst` keeps the plain
+/// rollout's modification time (GH #513). devin: the replay dedupe only
+/// learned devin's top-level `tool_call_id` record identity with the
+/// `tool-call-id-native-identity` contract — archives ingested before it
+/// collapsed duplicate-text tool results at ingest, so every devin session
+/// must re-parse from source once for the dropped rows to refill.
+const CONNECTOR_SCAN_CONTRACTS: &[(&str, &str)] = &[
+    ("codex", "rollout-jsonl-zst"),
+    ("devin", "tool-call-id-native-identity"),
+];
 
 /// The scan contract a connector's watermark must be recorded under.
 pub fn connector_scan_contract(connector_name: &str) -> Option<&'static str> {
@@ -8630,11 +8639,19 @@ fn message_replay_core(msg: &Message) -> MessageReplayCore {
 /// falling back to `payload.id` — the same resolution order
 /// franken-agent-detection applies to tool calls. Tool and skill call
 /// messages additionally archive `cass.invocations[0].call_id` (indexer
-/// invocation merge). Any connector that exposes one of these shapes
-/// participates in native-id replay disambiguation; timestamped messages
-/// without a native id keep the legacy four-tuple replay semantics, while
-/// untimestamped ones (see [`MessageReplayFingerprintSet`]) replay only
-/// through a shared id.
+/// invocation merge). Sparse tool-result connectors (devin, hermes,
+/// openhands) archive the tool call identity as a top-level `tool_call_id` —
+/// often the only per-record identity their rows carry. Any connector that
+/// exposes one of these shapes participates in native-id replay
+/// disambiguation; timestamped messages without a native id keep the legacy
+/// four-tuple replay semantics, while untimestamped ones (see
+/// [`MessageReplayFingerprintSet`]) replay only through a shared id.
+///
+/// Devin tool rows are turn-timestamped, so duplicate-text results of one
+/// turn share the whole replay core; before the top-level `tool_call_id` was
+/// read here they collapsed through the timestamped wildcard branch and the
+/// archive silently lost the 2nd..Nth result (62 sessions, 507 unpaired
+/// calls on the owner archive at the time).
 fn message_native_id(msg: &Message) -> Option<String> {
     native_id_from_extra(&msg.extra_json)
 }
@@ -8643,6 +8660,7 @@ fn native_id_from_extra(extra: &serde_json::Value) -> Option<String> {
     extra
         .pointer("/payload/call_id")
         .or_else(|| extra.pointer("/payload/id"))
+        .or_else(|| extra.get("tool_call_id"))
         .or_else(|| extra.pointer("/cass/invocations/0/call_id"))
         .and_then(serde_json::Value::as_str)
         .filter(|native_id| !native_id.is_empty())
@@ -35130,6 +35148,310 @@ sys.exit('stock writer does not own WAL_WRITE_LOCK')
             .unwrap();
         assert_eq!(third.inserted_indices, vec![12]);
         assert_eq!(stored_message_count(&storage, first.conversation_id), 3);
+    }
+
+    #[test]
+    fn insert_conversation_tree_keeps_distinct_timestamped_tool_results_with_distinct_tool_call_ids()
+     {
+        use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+        use std::path::PathBuf;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = SqliteStorage::open(&db_path).unwrap();
+
+        let agent = Agent {
+            id: None,
+            slug: "devin".into(),
+            name: "Devin".into(),
+            version: None,
+            kind: AgentKind::Cli,
+        };
+        let agent_id = storage.ensure_agent(&agent).unwrap();
+
+        // Devin's sparse tool rows carry their call identity ONLY as a
+        // top-level `tool_call_id` in extras, and every row of one turn
+        // shares the turn's `created_at` (second-granularity node
+        // timestamps). Two identical reads in one turn therefore share the
+        // whole replay core; their distinct ids are the only native
+        // identity the records carry, so the native-id resolution must
+        // read the top-level key — or every duplicate-text result after
+        // the first is silently dropped at ingest (62 devin sessions, 507
+        // unpaired calls on the owner archive).
+        let make_conv = |messages: Vec<Message>| Conversation {
+            id: None,
+            agent_slug: "devin".into(),
+            workspace: None,
+            external_id: Some("devin-session-285".into()),
+            title: Some("Devin duplicate reads".into()),
+            source_path: PathBuf::from("/tmp/devin-sessions.db"),
+            started_at: Some(1_700_000_000_000),
+            ended_at: Some(1_700_000_000_000),
+            approx_tokens: None,
+            metadata_json: serde_json::Value::Null,
+            messages,
+            source_id: "local".into(),
+            origin_host: None,
+        };
+        let turn_ts = 1_700_000_000_000i64;
+        let user_prompt = Message {
+            id: None,
+            idx: 0,
+            role: MessageRole::User,
+            author: None,
+            created_at: Some(turn_ts),
+            content: "check both configs".into(),
+            extra_json: serde_json::json!({"message_id": "m0", "is_user_input": true}),
+            snippets: Vec::new(),
+        };
+        let assistant_call = Message {
+            id: None,
+            idx: 1,
+            role: MessageRole::Agent,
+            author: None,
+            created_at: Some(turn_ts),
+            content: "[tool_call: read_file]\n[tool_call: read_file]".into(),
+            extra_json: serde_json::json!({
+                "message_id": "m1",
+                "cass": {"invocations": [
+                    {"kind": "tool", "name": "read_file", "call_id": "tc_a",
+                     "arguments": {"path": "/repo/a.toml"}},
+                    {"kind": "tool", "name": "read_file", "call_id": "tc_b",
+                     "arguments": {"path": "/repo/b.toml"}}]}
+            }),
+            snippets: Vec::new(),
+        };
+        let tool_result = |idx: i64, call_id: &str| Message {
+            id: None,
+            idx,
+            role: MessageRole::Tool,
+            author: None,
+            created_at: Some(turn_ts),
+            content: "0 matches\n".into(),
+            extra_json: serde_json::json!({
+                "message_id": format!("m{idx}"),
+                "tool_call_id": call_id
+            }),
+            snippets: Vec::new(),
+        };
+
+        fn stored_message_count(storage: &SqliteStorage, conversation_id: i64) -> i64 {
+            storage
+                .conn
+                .query_row_map(
+                    "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                    fparams![conversation_id],
+                    |row| row.get_typed(0),
+                )
+                .unwrap()
+        }
+
+        // First ingest: both duplicate-text results persist as distinct
+        // records because their top-level ids are distinct identities.
+        let first = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![
+                    user_prompt.clone(),
+                    assistant_call.clone(),
+                    tool_result(2, "tc_a"),
+                    tool_result(3, "tc_b"),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(first.inserted_indices, vec![0, 1, 2, 3]);
+        assert_eq!(stored_message_count(&storage, first.conversation_id), 4);
+
+        // Identical re-ingest: every record still stored exactly once.
+        let second = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![
+                    user_prompt,
+                    assistant_call,
+                    tool_result(2, "tc_a"),
+                    tool_result(3, "tc_b"),
+                ]),
+            )
+            .unwrap();
+        assert!(second.inserted_indices.is_empty());
+        assert_eq!(stored_message_count(&storage, first.conversation_id), 4);
+    }
+
+    #[test]
+    fn insert_conversation_tree_replays_timestamped_tool_results_through_shared_tool_call_ids() {
+        use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+        use std::path::PathBuf;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = SqliteStorage::open(&db_path).unwrap();
+
+        let agent = Agent {
+            id: None,
+            slug: "devin".into(),
+            name: "Devin".into(),
+            version: None,
+            kind: AgentKind::Cli,
+        };
+        let agent_id = storage.ensure_agent(&agent).unwrap();
+
+        let make_conv = |messages: Vec<Message>| Conversation {
+            id: None,
+            agent_slug: "devin".into(),
+            workspace: None,
+            external_id: Some("devin-session-286".into()),
+            title: Some("Devin same-id replay".into()),
+            source_path: PathBuf::from("/tmp/devin-sessions.db"),
+            started_at: Some(1_700_000_000_000),
+            ended_at: Some(1_700_000_000_000),
+            approx_tokens: None,
+            metadata_json: serde_json::Value::Null,
+            messages,
+            source_id: "local".into(),
+            origin_host: None,
+        };
+        let turn_ts = 1_700_000_000_000i64;
+        let tool_result = |idx: i64, call_id: &str| Message {
+            id: None,
+            idx,
+            role: MessageRole::Tool,
+            author: None,
+            created_at: Some(turn_ts),
+            content: "0 matches\n".into(),
+            extra_json: serde_json::json!({
+                "message_id": format!("m{idx}"),
+                "tool_call_id": call_id
+            }),
+            snippets: Vec::new(),
+        };
+
+        fn stored_message_count(storage: &SqliteStorage, conversation_id: i64) -> i64 {
+            storage
+                .conn
+                .query_row_map(
+                    "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                    fparams![conversation_id],
+                    |row| row.get_typed(0),
+                )
+                .unwrap()
+        }
+
+        // Two timestamped rows sharing the core AND the top-level id: the
+        // second is a genuine replay of the first, never a second record.
+        let first = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![tool_result(0, "tc_same"), tool_result(1, "tc_same")]),
+            )
+            .unwrap();
+        assert_eq!(first.inserted_indices, vec![0]);
+        assert_eq!(stored_message_count(&storage, first.conversation_id), 1);
+
+        // Re-ingest at a shifted idx with the same id: still one row.
+        let second = storage
+            .insert_conversation_tree(agent_id, None, &make_conv(vec![tool_result(10, "tc_same")]))
+            .unwrap();
+        assert!(second.inserted_indices.is_empty());
+        assert_eq!(stored_message_count(&storage, first.conversation_id), 1);
+
+        // A distinct top-level id is a distinct record, even at a shifted
+        // idx with an identical (created_at, role, content) core.
+        let third = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![tool_result(11, "tc_other")]),
+            )
+            .unwrap();
+        assert_eq!(third.inserted_indices, vec![11]);
+        assert_eq!(stored_message_count(&storage, first.conversation_id), 2);
+    }
+
+    #[test]
+    fn insert_conversation_tree_refills_holes_left_by_the_legacy_timestamped_replay_skip() {
+        use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+        use std::path::PathBuf;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let storage = SqliteStorage::open(&db_path).unwrap();
+
+        let agent = Agent {
+            id: None,
+            slug: "devin".into(),
+            name: "Devin".into(),
+            version: None,
+            kind: AgentKind::Cli,
+        };
+        let agent_id = storage.ensure_agent(&agent).unwrap();
+
+        // An archive written before the top-level `tool_call_id` was read
+        // carries only the first row of a duplicate-text burst (the legacy
+        // wildcard replay skip collapsed the rest). A re-parse from source
+        // re-offers the full tree; the holes must refill because the stored
+        // sibling's id no longer anchors a record with a distinct id.
+        let make_conv = |messages: Vec<Message>| Conversation {
+            id: None,
+            agent_slug: "devin".into(),
+            workspace: None,
+            external_id: Some("devin-session-278".into()),
+            title: Some("Devin burst heal".into()),
+            source_path: PathBuf::from("/tmp/devin-sessions.db"),
+            started_at: Some(1_700_000_000_000),
+            ended_at: Some(1_700_000_000_000),
+            approx_tokens: None,
+            metadata_json: serde_json::Value::Null,
+            messages,
+            source_id: "local".into(),
+            origin_host: None,
+        };
+        let turn_ts = 1_700_000_000_000i64;
+        let tool_result = |idx: i64, call_id: &str| Message {
+            id: None,
+            idx,
+            role: MessageRole::Tool,
+            author: None,
+            created_at: Some(turn_ts),
+            content: "0 matches\n".into(),
+            extra_json: serde_json::json!({
+                "message_id": format!("m{idx}"),
+                "tool_call_id": call_id
+            }),
+            snippets: Vec::new(),
+        };
+
+        // The legacy-archive shape: the burst collapsed to its first row.
+        let first = storage
+            .insert_conversation_tree(agent_id, None, &make_conv(vec![tool_result(2, "tc_a")]))
+            .unwrap();
+        assert_eq!(first.inserted_indices, vec![2]);
+
+        // The re-parse offers the full burst at the source's idx values.
+        let second = storage
+            .insert_conversation_tree(
+                agent_id,
+                None,
+                &make_conv(vec![
+                    tool_result(2, "tc_a"),
+                    tool_result(3, "tc_b"),
+                    tool_result(4, "tc_c"),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(second.inserted_indices, vec![3, 4]);
+        let stored: Vec<i64> = storage
+            .conn
+            .query_map_collect(
+                "SELECT idx FROM messages WHERE conversation_id = ?1 ORDER BY idx",
+                fparams![first.conversation_id],
+                |row| row.get_typed(0),
+            )
+            .unwrap();
+        assert_eq!(stored, vec![2, 3, 4]);
     }
 
     #[test]
