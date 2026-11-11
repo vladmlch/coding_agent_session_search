@@ -1811,6 +1811,120 @@ fn devin_invocation_arguments_reach_tools_regions() {
 }
 
 #[test]
+fn devin_duplicate_text_tool_results_pair_through_archive_replay() -> Result<()> {
+    // Devin's sparse tool rows carry the call identity ONLY as a top-level
+    // `tool_call_id`, and one turn's rows share `created_at`
+    // (second-granularity node timestamps) — so repeated identical reads in
+    // one turn differ only by that id. The persist replay-dedupe must read
+    // it, or the archive silently loses the 2nd..Nth duplicate-text results
+    // and every replay from the archived rows marks their calls
+    // `tool_result_missing` (62 devin sessions, 507 unpaired calls on the
+    // owner archive; the ingest hook's pre-persist facts stay complete and
+    // the two verdicts flap by convergence path forever).
+    let db = db()?;
+    let devin_agent_id = db.storage.ensure_agent(&Agent {
+        id: None,
+        slug: "devin".into(),
+        name: "devin".into(),
+        version: None,
+        kind: AgentKind::Cli,
+    })?;
+    let turn_ts = 1_700_000_000_000i64;
+    let devin_msg = |idx: i64, role: MessageRole, content: &str, extra: Value| Message {
+        id: None,
+        idx,
+        role,
+        author: None,
+        created_at: Some(turn_ts),
+        content: content.to_string(),
+        extra_json: extra,
+        snippets: Vec::new(),
+    };
+    let conv = canonical_conversation(
+        "devin",
+        "devin-dup-tool-results",
+        json!({"source": "sqlite", "session_id": "made-up-devin-dup"}),
+        vec![
+            devin_msg(
+                0,
+                MessageRole::User,
+                "check both configs",
+                json!({"message_id": "m0", "is_user_input": true}),
+            ),
+            devin_msg(
+                1,
+                MessageRole::Agent,
+                "[tool_call: read_file]",
+                json!({"message_id": "m1", "cass": {"invocations": [
+                    {"kind": "tool", "name": "read_file", "call_id": "tc_a",
+                     "arguments": {"path": "/made/up/a.toml"}},
+                    {"kind": "tool", "name": "read_file", "call_id": "tc_b",
+                     "arguments": {"path": "/made/up/b.toml"}}]}}),
+            ),
+            devin_msg(
+                2,
+                MessageRole::Tool,
+                "0 matches",
+                json!({"message_id": "m2", "tool_call_id": "tc_a"}),
+            ),
+            devin_msg(
+                3,
+                MessageRole::Tool,
+                "0 matches",
+                json!({"message_id": "m3", "tool_call_id": "tc_b"}),
+            ),
+        ],
+    );
+    let conversation_id = db
+        .storage
+        .insert_conversation_tree(devin_agent_id, None, &conv)?
+        .conversation_id;
+
+    // The pre-persist packet (what the ingest hook extracts) pairs both
+    // calls — this lane was never broken.
+    let packet =
+        ConversationPacket::from_canonical_replay(&conv, ConversationPacketProvenance::local());
+    let live = extract_session_facts(&packet, "devin");
+    for call_id in ["tc_a", "tc_b"] {
+        let call = live
+            .tools
+            .iter()
+            .find(|t| t.raw_call_id == call_id)
+            .unwrap_or_else(|| panic!("{call_id} must pair pre-persist: {:?}", live.tools));
+        assert!(call.has_result, "{call_id} has_result: {call:?}");
+    }
+
+    // The archived tree must carry the same evidence: the two
+    // duplicate-text results are DISTINCT records with distinct ids.
+    let mut archived = conv.clone();
+    archived.messages = db.storage.fetch_messages(conversation_id)?;
+    ensure!(
+        archived.messages.len() == 4,
+        "archive must keep all four rows, kept idx: {:?}",
+        archived.messages.iter().map(|m| m.idx).collect::<Vec<_>>()
+    );
+    let replay =
+        ConversationPacket::from_canonical_replay(&archived, ConversationPacketProvenance::local());
+    let facts = extract_session_facts(&replay, "devin");
+    for call_id in ["tc_a", "tc_b"] {
+        let call = facts
+            .tools
+            .iter()
+            .find(|t| t.raw_call_id == call_id)
+            .unwrap_or_else(|| panic!("{call_id} must survive replay: {:?}", facts.tools));
+        assert!(call.has_result, "{call_id} has_result: {call:?}");
+    }
+    for field in ["tools", "text_inventory"] {
+        let entry = coverage(&facts, field).unwrap_or_else(|| panic!("{field} coverage"));
+        assert_eq!(
+            entry.state, "complete",
+            "replayed {field} coverage must be complete: {entry:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn claude_raw_tool_blocks_are_not_double_indexed_from_invocations() {
     // A non-compacted claude record carries the raw `message.content`
     // tool_use blocks AND the merged `cass.invocations` copy. The
