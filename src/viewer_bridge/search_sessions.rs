@@ -4425,6 +4425,75 @@ fn enumerate_session_doc_hits(
     Ok(hits)
 }
 
+/// (B) Page-time witness gates, memoized once per request:
+/// `(value, exact)` -> `Some(conversation -> quill_idx set)` when the
+/// literal's raw Quill hits enumerated completely under
+/// [`MAX_LITERAL_HITS`]; `None` when the literal is too common to
+/// enumerate or the engine refused — that claim's witness discovery
+/// degrades to the ungated structural scan.
+type WitnessGates = HashMap<(String, bool), Option<HashMap<i64, HashSet<i64>>>>;
+
+/// Enumerate one claim literal's raw Quill hits — message docs + region
+/// docs through the same `literal_query_text` -> [`raw_page`] lowering the
+/// legacy lane's [`enumerate_literal`] uses, so the quill fork's
+/// content-glob prefix arm is respected — into the conversation ->
+/// `quill_idx` witness gate the page-time discovery consults.
+///
+/// The gate is an optimization with a hard floor, never a contract
+/// surface: a literal too common to enumerate honestly, an engine refusal
+/// of any kind (fuel, glob expansion), a page without an exact count or a
+/// hit without unambiguous coordinates all return `Ok(None)` — the claim's
+/// discovery then runs ungated, today's semantics verbatim. Only the
+/// cooperative deadline propagates: it is honest unavailability, not an
+/// enumeration outcome.
+fn enumerate_witness_gate(
+    readers: &ReaderSet,
+    literal: (&str, bool),
+    filters: &frankensearch::quill::query::CassQueryFilters,
+    deadline: &Deadline,
+) -> Result<Option<HashMap<i64, HashSet<i64>>>> {
+    let text = literal_query_text(literal.0, literal.1);
+    let mut gate: HashMap<i64, HashSet<i64>> = HashMap::new();
+    for (reader_index, reader) in readers.readers.iter().enumerate() {
+        let mut offset = 0_usize;
+        loop {
+            deadline.check(
+                "witness_gate_enumeration",
+                format!("reader {reader_index}: {offset} raw hits paged"),
+            )?;
+            // Any engine refusal degrades the gate (see the doc comment):
+            // `?` is reserved for the deadline alone. Paged in
+            // SESSION_DOC_ENUM_PAGE chunks — the 256-doc PAGE_LIMIT
+            // multiplies the engine's per-call lowering cost (see the
+            // SESSION_DOC_ENUM_PAGE doc comment).
+            let Some(page) = raw_page(reader, &text, filters, offset, SESSION_DOC_ENUM_PAGE).ok()
+            else {
+                return Ok(None);
+            };
+            let Some(total) = page.total_count else {
+                return Ok(None);
+            };
+            if total > MAX_LITERAL_HITS {
+                return Ok(None);
+            }
+            for hit in &page.hits {
+                let decoded = match decode_hit(reader, hit, &readers.keys[reader_index]) {
+                    Ok(decoded) => decoded,
+                    Err(_) => return Ok(None),
+                };
+                gate.entry(decoded.conversation_id)
+                    .or_default()
+                    .insert(decoded.message_index_zero_based as i64);
+            }
+            offset += page.hits.len();
+            if page.hits.is_empty() || offset >= total {
+                break;
+            }
+        }
+    }
+    Ok(Some(gate))
+}
+
 /// The legacy lane's per-literal Quill evidence bundle.
 struct LegacyLiteralEvidence {
     /// `(value, exact)` hit maps for witness scoring.
@@ -4605,17 +4674,19 @@ fn fast_score_and_claims(
 /// and the caller refuses the whole page with the typed
 /// `verification_budget_exceeded` kind (design §7), never a member
 /// emitted with `complete:true`.
+#[allow(clippy::too_many_arguments)]
 fn discover_fast_witnesses(
     connection: &Connection,
     regions: &[Region],
     claims: &[FastClaim],
+    claim_gates: &[Option<&HashSet<i64>>],
     matchers: &HashMap<(String, bool), LiteralMatcher>,
     max_matches: usize,
     stats: &mut HydrateStats,
     deadline: &Deadline,
 ) -> Result<FastWitnesses> {
     let mut discovered: Vec<(String, String)> = Vec::new();
-    for (branch, (value, exact)) in claims {
+    for ((branch, (value, exact)), claim_gate) in claims.iter().zip(claim_gates) {
         if discovered.len() >= max_matches {
             break;
         }
@@ -4636,7 +4707,23 @@ fn discover_fast_witnesses(
                     regions.len()
                 ),
             )?;
-            match verify_region_text(connection, region, matcher, None, stats)? {
+            // (B) The claim's witness gate: only regions whose Quill
+            // document slot produced a hit for this literal can hold a
+            // witness — the same pruning `eval_literal` applies on the
+            // legacy lane, over the same gate source. `claim_gate = None`
+            // (the ungated fallback) evaluates every region — today's
+            // semantics verbatim.
+            if let Some(gate) = claim_gate
+                && !gate.contains(&region.quill_idx)
+            {
+                continue;
+            }
+            // `Some(gate)` only unlocks the bounded-window shortcut in
+            // `verify_region_text` — the Member/NonMember/NoText/Budget
+            // verdicts are identical to the ungated call (a bounded-window
+            // match implies a full-text match), so the gated and fallback
+            // passes prove the same witnesses.
+            match verify_region_text(connection, region, matcher, *claim_gate, stats)? {
                 RegionMatch::Member => {
                     discovered.push((region.key.clone(), branch.clone()));
                 }
@@ -4662,6 +4749,46 @@ enum FastWitnesses {
     /// lane's `verification_bytes_budget_exceeded` reason, and must never
     /// degrade into the drift annotation or a `complete:true` member.
     BudgetExhausted,
+}
+
+/// (B) The pre-(B) page-time path, verbatim: this conversation's full
+/// structural region load + ungated discovery over every region. Serves
+/// both fallbacks — a gated pass that found zero witnesses (§6.4 drift or
+/// an out-of-gate witness) and a session one of whose claims cannot be
+/// gated for it (literal over the enumeration cap, engine refusal, or no
+/// raw hit in this conversation — a shared region load must not shrink an
+/// ungated claim's candidate set). Returns the loaded regions alongside
+/// the discovery outcome so the caller keeps ONE budget-refusal site.
+fn ungated_fast_witnesses(
+    connection: &Connection,
+    conversation_id: i64,
+    claims: &[FastClaim],
+    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    max_matches: usize,
+    stats: &mut HydrateStats,
+    deadline: &Deadline,
+) -> Result<(Vec<Region>, FastWitnesses)> {
+    let rows = coding_agent_search::viewer_extensions::search_regions::regions_for_conversation_structural(
+        connection,
+        conversation_id,
+    )?;
+    let regions: Vec<Region> = rows
+        .into_iter()
+        .map(|row| region_from(conversation_id, row))
+        .collect();
+    stats.regions_loaded += regions.len();
+    let ungated: Vec<Option<&HashSet<i64>>> = vec![None; claims.len()];
+    let outcome = discover_fast_witnesses(
+        connection,
+        &regions,
+        claims,
+        &ungated,
+        matchers,
+        max_matches,
+        stats,
+        deadline,
+    )?;
+    Ok((regions, outcome))
 }
 
 // ---------------------------------------------------------------------------
@@ -5174,6 +5301,10 @@ pub fn search_sessions(
     let mut bytes = 0_usize;
     let mut last: Option<SearchCursor> = None;
     let mut emitted = 0_usize;
+    // (B) Page-time witness gates, memoized once per request and shared by
+    // every emitted fast-lane session: one raw enumeration per distinct
+    // claim literal, however many sessions the page hydrates.
+    let mut witness_gates: WitnessGates = HashMap::new();
     let mut iter = accepted.iter().peekable();
     let mut has_more = false;
     for entry in iter.by_ref() {
@@ -5253,45 +5384,136 @@ pub fn search_sessions(
         // bounded by max_matches, through the same verify_region_text the
         // legacy lane ran at eval time.
         //
-        // Stage 1b `emitted_page_sessions`: this emitted session's full
-        // structural row set is THE region read the fast lane spends — one
-        // indexed per-conversation read, the same rows in the same
-        // `region_ordinal` order the eager universe load attached before
-        // Stage 1b, so §6.4 discovery and the witness/snippet lookups
-        // below consult exactly the evidence they always saw. Sessions
-        // past the byte budget (the `break` above) never load.
-        let page_regions: Vec<Region> = if entry.fast_lane {
-            let rows = coding_agent_search::viewer_extensions::search_regions::regions_for_conversation_structural(
-                connection,
-                session.conversation_id,
-            )?;
-            let regions: Vec<Region> = rows
-                .into_iter()
-                .map(|row| region_from(session.conversation_id, row))
-                .collect();
-            stats.regions_loaded += regions.len();
-            regions
+        // (B) Gated page-time witness discovery. The page's region read is
+        // gated by the claims' raw Quill slots: only regions whose literal
+        // produced a hit in this conversation's region/message documents
+        // can hold a witness, so the page seeks exactly those rows
+        // (`regions_for_quill_slots`, `region_ordinal` order — an
+        // order-preserving subsequence of the structural load, so witness
+        // order and choice are today's for every gated witness). A session
+        // one of whose claims cannot be gated for it, and a gated pass
+        // that finds ZERO witnesses, fall back to
+        // [`ungated_fast_witnesses`] — the pre-(B) structural load +
+        // ungated discovery, §6.4's contract verbatim; claims-empty
+        // entries (`NOT quux`) load nothing at all. Sessions past the
+        // byte budget (the `break` above) never load.
+        let page_outcome: (Vec<Region>, FastWitnesses) = if !entry.fast_lane
+            || entry.fast_claims.is_empty()
+        {
+            (Vec::new(), FastWitnesses::Found(Vec::new()))
         } else {
-            Vec::new()
+            // Fill the request-memoized witness gates for this entry's
+            // claims first — one raw enumeration per distinct literal per
+            // request, shared by every emitted session.
+            for (_, (value, exact)) in &entry.fast_claims {
+                let key = (value.clone(), *exact);
+                if let std::collections::hash_map::Entry::Vacant(slot) = witness_gates.entry(key) {
+                    // `?` propagates BEFORE the insert, so a deadline hit
+                    // leaves the memo unfilled — the next request retries.
+                    let gate = enumerate_witness_gate(
+                        readers,
+                        (value.as_str(), *exact),
+                        &engine_filters,
+                        deadline,
+                    )?;
+                    slot.insert(gate);
+                }
+            }
+            let mut claim_gates: Vec<Option<&HashSet<i64>>> =
+                Vec::with_capacity(entry.fast_claims.len());
+            for (_, (value, exact)) in &entry.fast_claims {
+                claim_gates.push(
+                    witness_gates
+                        .get(&(value.clone(), *exact))
+                        .and_then(|gate| gate.as_ref())
+                        .and_then(|per_conversation| {
+                            per_conversation.get(&session.conversation_id)
+                        }),
+                );
+            }
+            if claim_gates.iter().all(|gate| gate.is_some()) {
+                // Every claim enumerated AND hit in this conversation: the
+                // union of its slots is the exact candidate set for the
+                // page's witnesses.
+                let slots: Vec<i64> = claim_gates
+                    .iter()
+                    .filter_map(|gate| *gate)
+                    .flat_map(|gate| gate.iter().copied())
+                    .collect();
+                let mut slot_map: HashMap<i64, Vec<i64>> = HashMap::new();
+                slot_map.insert(session.conversation_id, slots);
+                let mut rows = coding_agent_search::viewer_extensions::search_regions::regions_for_quill_slots(
+                    connection,
+                    &slot_map,
+                )?;
+                let gated_regions: Vec<Region> = rows
+                    .remove(&session.conversation_id)
+                    .map(|found| {
+                        found
+                            .into_iter()
+                            .map(|row| region_from(session.conversation_id, row))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                stats.regions_loaded += gated_regions.len();
+                match discover_fast_witnesses(
+                    connection,
+                    &gated_regions,
+                    &entry.fast_claims,
+                    &claim_gates,
+                    &matchers,
+                    max_matches,
+                    &mut stats,
+                    deadline,
+                )? {
+                    FastWitnesses::Found(discovered) if !discovered.is_empty() => {
+                        (gated_regions, FastWitnesses::Found(discovered))
+                    }
+                    FastWitnesses::Found(_) => {
+                        // Zero gated witnesses — §6.4 drift or a witness
+                        // outside every gate: the fallback reproduces the
+                        // pre-(B) witness list (and the
+                        // `witnesses_not_reproduced` annotation) verbatim.
+                        ungated_fast_witnesses(
+                            connection,
+                            session.conversation_id,
+                            &entry.fast_claims,
+                            &matchers,
+                            max_matches,
+                            &mut stats,
+                            deadline,
+                        )?
+                    }
+                    FastWitnesses::BudgetExhausted => {
+                        (gated_regions, FastWitnesses::BudgetExhausted)
+                    }
+                }
+            } else {
+                // Some claim cannot be gated for this session (literal
+                // over the cap, engine refusal, or no raw hit here): a
+                // shared region load must not shrink that claim's
+                // candidate set, so the session keeps today's path.
+                ungated_fast_witnesses(
+                    connection,
+                    session.conversation_id,
+                    &entry.fast_claims,
+                    &matchers,
+                    max_matches,
+                    &mut stats,
+                    deadline,
+                )?
+            }
         };
-        let fast_discovered: Vec<(String, String)> = if entry.fast_lane {
-            match discover_fast_witnesses(
-                connection,
-                &page_regions,
-                &entry.fast_claims,
-                &matchers,
-                max_matches,
-                &mut stats,
-                deadline,
-            )? {
-                FastWitnesses::Found(discovered) => discovered,
-                FastWitnesses::BudgetExhausted => {
-                    // Design §7: budget exhaustion is honest
-                    // unavailability — not §6.4 drift and never a
-                    // silently-truncated member with `complete:true`.
-                    // Refuse the whole page with the typed kind, naming
-                    // the same verification_bytes_budget_exceeded reason
-                    // the legacy lane's refusal carries.
+        let (page_regions, fast_discovered): (Vec<Region>, Vec<(String, String)>) =
+            match page_outcome {
+                (regions, FastWitnesses::Found(discovered)) => (regions, discovered),
+                // Design §7: budget exhaustion is honest unavailability —
+                // not §6.4 drift and never a silently-truncated member
+                // with `complete:true`. Refuse the whole page with the
+                // typed kind, naming the same
+                // verification_bytes_budget_exceeded reason the legacy
+                // lane's refusal carries.
+                (_, FastWitnesses::BudgetExhausted) => {
                     return Err(refuse(
                         "verification_budget_exceeded",
                         format!(
@@ -5304,10 +5526,7 @@ pub fn search_sessions(
                         ),
                     ));
                 }
-            }
-        } else {
-            Vec::new()
-        };
+            };
         let witnesses: &[(String, String)] = if entry.fast_lane {
             &fast_discovered
         } else {

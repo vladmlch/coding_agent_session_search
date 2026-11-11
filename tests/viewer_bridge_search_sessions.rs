@@ -921,8 +921,14 @@ fn search_sessions_indexed_hydration_is_bounded() -> Result<()> {
         .expect("regions_hydrated diagnostic");
     ensure!(regions <= 8, "region hydration stays bounded: {diag}");
     ensure!(
-        diag["region_rows_loaded"].as_u64().unwrap() >= regions,
-        "row loads count the persisted inventory, not hydration: {diag}"
+        // 2026-11-11 (B): the page load is gated by foo's raw Quill slots —
+        // exactly S1+S2's two chat regions — while hydration counts text
+        // loads (verify + snippet per witness: 4), which legitimately
+        // exceeds the row count: rows count reads of the persisted
+        // inventory, hydration counts text reads over those rows. The
+        // corpus-scan regression guards stay the bounds above.
+        diag["region_rows_loaded"].as_u64() == Some(2),
+        "the gated page load reads exactly foo's two chat regions: {diag}"
     );
 
     // A meta-only literal never touches `messages` at all: notes ride the
@@ -1406,9 +1412,34 @@ fn search_sessions_verification_budget_refusal_is_typed() -> Result<()> {
 /// honest unavailability — never §6.4 analyzer drift, and never a
 /// doc-claimed member emitted with `complete:true` under the drift
 /// warning.
+///
+/// 2026-11-11 (B) rebase: the page's witness discovery is gated by the
+/// claim's raw Quill slots, and a gated candidate whose bounded window
+/// (`bound_region_text`, 64 KiB) reproduces the marker verifies through
+/// the window at ZERO verification bytes — the same proof the legacy
+/// gated lane has used since Stage 1b. The original fixture put the
+/// marker inside the window, so the gated pass never needed the
+/// whole-body scan the budget meters and the page honestly completed.
+/// This gate keeps gating exactly what it gated — "a discovery that NEEDS
+/// whole-body scans it cannot pay for refuses the page" — by moving both
+/// gated regions' markers PAST the window: the shortcut cannot fire, the
+/// first region's full scan overdrafts the 1-byte budget, and the SECOND
+/// region's verify hits BudgetExceeded mid-discovery. The (B) improvement
+/// (a window-proven member needs no whole-body budget) is pinned
+/// explicitly on session 9 below — the pre-(B) discovery refused that
+/// page, the gated pass proves both witnesses through the window.
 #[test]
 fn search_sessions_fast_lane_budget_exhaustion_is_typed_refusal() -> Result<()> {
     let mut fixture = gold_fixture();
+    // ~70 KB of filler: the marker lands past the 64 KiB bounded window,
+    // so no bounded read can prove it — only the whole-body scan can.
+    let past_window_body: &'static str = Box::leak(
+        format!(
+            "{} budgetmarker9 past-window body",
+            "filler ".repeat(10_000)
+        )
+        .into_boxed_str(),
+    );
     fixture.push(GoldSession {
         id: 8,
         agent: "claude_code",
@@ -1421,28 +1452,52 @@ fn search_sessions_fast_lane_budget_exhaustion_is_typed_refusal() -> Result<()> 
         ended_at: Some(9_400),
         origin_host: None,
         metadata: json!({"cass":{"origin":{"kind":"local"}}}),
-        // Two canonical chat regions: the marker sits at the very start of
-        // message 0 (inside the session doc's content-prefix window, so
-        // the fast lane claims membership), and message 1 is the second
-        // region discovery reaches after the budget overdrafts.
+        // Two canonical chat regions, both gated (both contents carry the
+        // marker, so both region documents hit the query) and both
+        // window-UNPROVEN (the marker is past `bound_region_text`'s 64
+        // KiB): discovery must whole-body-scan the first — overdrafting
+        // the budget by design (the ceiling gates every scan AFTER the
+        // running total reaches it) — and the SECOND region's verify
+        // then hits BudgetExceeded mid-discovery.
+        messages: vec![
+            (0, MessageRole::User, past_window_body, None),
+            (1, MessageRole::Agent, past_window_body, None),
+        ],
+    });
+    fixture.push(GoldSession {
+        id: 9,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-9-window-budget",
+        source_path: "/sessions/s-9-window-budget.jsonl",
+        workspace: None,
+        title: "window-proven budget session",
+        started_at: Some(10_000),
+        ended_at: Some(13_000),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        // Both regions carry the marker INSIDE the bounded window: the
+        // gated pass proves both witnesses through the window (0
+        // verification bytes). The pre-(B) ungated discovery whole-body
+        // scanned the first region (26 bytes over the 1-byte budget) and
+        // refused the page on the second — the delta this fixture pins.
         messages: vec![
             (
                 0,
                 MessageRole::User,
-                "budgetmarker9 early window body",
+                "windowmarker7 early window body",
                 None,
             ),
             (
                 1,
                 MessageRole::Agent,
-                "second canonical region without the marker",
+                "windowmarker7 second early window body",
                 None,
             ),
         ],
     });
     // Budget 1 byte: discovery's first whole-body scan overdrafts by
-    // design (the ceiling gates every scan AFTER the running total
-    // reaches it), so the SECOND region's verify hits BudgetExceeded
+    // design, so the SECOND region's verify hits BudgetExceeded
     // mid-discovery.
     let mut bridge = gold_harness_full(&fixture, &["--text-verification-budget-bytes", "1"])?;
     let page = search(&mut bridge, json!({"query":"budgetmarker9"}))?;
@@ -1459,12 +1514,40 @@ fn search_sessions_fast_lane_budget_exhaustion_is_typed_refusal() -> Result<()> 
         message.contains("verification_bytes_budget_exceeded"),
         "the refusal must name the same typed reason as the legacy lane: {page}"
     );
+    // The (B) improvement, pinned on the same 1-byte bridge: a member the
+    // bounded window proves needs no whole-body budget.
+    let page = search(&mut bridge, json!({"query":"windowmarker7"}))?;
+    ensure!(
+        page["ok"] == true,
+        "the window-proven member must not need the whole-body budget: {page}"
+    );
+    assert_members(&page, &[9])?;
+    ensure!(
+        page["result"]["complete"] == true,
+        "the window-proven page stays complete: {page}"
+    );
+    let window_matches = page["result"]["matches"]["9"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure!(
+        window_matches.len() == 2
+            && window_matches[0]["message_idx"].as_i64() == Some(0)
+            && window_matches[1]["message_idx"].as_i64() == Some(1),
+        "both regions are window-proven witnesses: {page}"
+    );
+    ensure!(
+        page["result"]["diagnostics"]["verification_bytes_scanned"].as_u64() == Some(0),
+        "the bounded-window shortcut spends zero verification bytes: {page}"
+    );
     bridge.shutdown()?;
 
     // Control, default budget: the same query answers with the verified
-    // witness — proving the refusal above is budget-driven, not a
+    // witnesses — proving the refusal above is budget-driven, not a
     // fixture artifact, and that discovery normally reproduces the
-    // claim without the drift annotation.
+    // claim without the drift annotation. Both of S8's regions carry the
+    // past-window marker, so the whole-body scans verify BOTH witnesses
+    // within the default budget.
     let mut bridge = gold_harness_full(&fixture, &[])?;
     let page = search(&mut bridge, json!({"query":"budgetmarker9"}))?;
     ensure!(page["ok"] == true, "the default budget must answer: {page}");
@@ -1478,8 +1561,10 @@ fn search_sessions_fast_lane_budget_exhaustion_is_typed_refusal() -> Result<()> 
         .cloned()
         .unwrap_or_default();
     ensure!(
-        matches.len() == 1 && matches[0]["message_idx"].as_i64() == Some(0),
-        "message 0's region is the one verified witness: {page}"
+        matches.len() == 2
+            && matches[0]["message_idx"].as_i64() == Some(0)
+            && matches[1]["message_idx"].as_i64() == Some(1),
+        "both past-window regions are the whole-body-verified witnesses: {page}"
     );
     let item = page["result"]["items"]
         .as_array()
@@ -1489,7 +1574,7 @@ fn search_sessions_fast_lane_budget_exhaustion_is_typed_refusal() -> Result<()> 
         .find(|it| it["conversation_id"].as_i64() == Some(8))
         .unwrap_or(Value::Null);
     ensure!(
-        item["witness_count"].as_i64() == Some(1),
+        item["witness_count"].as_i64() == Some(2),
         "the witness count mirrors the verified matches: {page}"
     );
     let warnings = page["result"]["warnings"]
@@ -5391,20 +5476,24 @@ fn search_sessions_lazy_fragments_equivalence() -> Result<()> {
     );
 
     // Stage 1b receipts. "foo" rides the fast lane, so its region read is
-    // the EMITTED page's sessions only (S1 + S2) — `region_rows_loaded`
-    // reflects exactly what was read, and `region_load_mode` names the
-    // strategy. A zero-hit or deeper page never pays for sessions it did
-    // not emit.
-    let page_rows: i64 = {
+    // the EMITTED page's sessions only (S1 + S2) — and since 2026-11-11
+    // (B), gated further by foo's raw Quill slots: exactly the two chat
+    // regions carrying foo, a strict subset of the emitted sessions'
+    // structural rows (the COUNT(*) below). `region_rows_loaded` reflects
+    // exactly what was read, and `region_load_mode` names the strategy.
+    // A zero-hit or deeper page never pays for sessions it did not emit.
+    let structural_rows: i64 = {
         let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
         writer
             .query_row("SELECT COUNT(*) FROM viewer_search_regions WHERE conversation_id IN (1,2)")?
             .get_typed(0)?
     };
     let page = search(&mut bridge, json!({"query":"foo"}))?;
+    let gated_rows = page["result"]["diagnostics"]["region_rows_loaded"].as_u64();
     ensure!(
-        page["result"]["diagnostics"]["region_rows_loaded"].as_u64() == Some(page_rows as u64),
-        "the page-mode load must count exactly the emitted sessions' rows: {page}"
+        gated_rows == Some(2) && gated_rows <= Some(structural_rows as u64),
+        "the gated page load reads foo's two chat regions, never the full \
+         structural set ({structural_rows}): {page}"
     );
     ensure!(
         page["result"]["diagnostics"]["region_load_mode"] == json!("emitted_page_sessions"),
@@ -5465,14 +5554,21 @@ fn search_sessions_lazy_fragments_equivalence() -> Result<()> {
 /// so members, witnesses, snippets, scores, verdicts, warnings and cursor
 /// resumption all ride the pin.
 ///
-/// The hydration counters (`regions_hydrated`, `messages_hydrated`,
-/// `fragments_loaded`, `verification_bytes_scanned`) must be IDENTICAL to
-/// Stage 1's: on-demand loading changes WHICH rows are resident, never
-/// which regions evaluation consults. `region_rows_loaded` is the NEW
-/// contract — only what was read — and `region_load_mode`/`
+/// The pinned DIGESTS are the unchanging contract: members, witnesses,
+/// snippets, scores, verdicts, warnings and cursor resumption must be
+/// byte-identical across every region-read strategy change. The counters
+/// (`region_rows_loaded`, `regions_hydrated`, `messages_hydrated`,
+/// `fragments_loaded`, `verification_bytes_scanned`) are per-strategy
+/// RECEIPTS — only what was actually read. 2026-11-11 (B) gates the fast
+/// lane's page-time witness discovery by the claims' raw Quill slots: a
+/// fast-lane pin reads only its claim-gated rows (structural rows ->
+/// gated rows; verification bytes -> 0 where the bounded-window shortcut
+/// proves the member), while every legacy-lane pin keeps its receipts
+/// unchanged. `region_load_mode`/`
 /// `region_load_reason` name the strategy (fast lane:
-/// `emitted_page_sessions`; legacy lane: `gated_quill_seeks`; fallback
-/// plans: `universe_structural` + reason).
+/// `emitted_page_sessions`; legacy lane: `gated_quill_seeks`; seek lane:
+/// `block_predicate_seeks`; fallback plans: `universe_structural` +
+/// reason).
 ///
 /// 2026-11-11, fork rev bb7d899a (literal-drop, pinned by the committed
 /// `[patch.crates-io]` table): the fork still lowers every non-CJK bare-term
@@ -5507,37 +5603,53 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
     }
     let corpus = vec![
         CorpusPin {
+            // 2026-11-11 (B): the page load is gated by foo's raw Quill
+            // slots — S1+S2's two chat regions alone (was 9 structural
+            // rows). Both witnesses verify through the bounded-window
+            // shortcut (0 verification bytes) and the snippets re-hydrate
+            // the same two canonical regions (verify + snippet = 2
+            // regions x 2 sessions). The answer digest is the pre-(B)
+            // capture, byte-identical.
             request: json!({"query":"foo"}),
             digest: "4d2333b27872f0b1cb934401af0e286fca4abb729cf388b1cc273c7abaf9e76f",
             mode: Some("emitted_page_sessions"),
             reason: None,
-            rows: Some(9),
-            regions_hydrated: Some(8),
-            messages_hydrated: Some(2),
-            fragments_loaded: Some(2),
-            verification_bytes: Some(51),
+            rows: Some(2),
+            regions_hydrated: Some(4),
+            messages_hydrated: Some(4),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
         },
         CorpusPin {
+            // 2026-11-11 (B): claims-empty (a pure NOT carries no positive
+            // literal claim) — the page loads NOTHING (was 16 structural
+            // rows). The digest is unchanged: matches, witnesses and
+            // verdicts never depended on the load.
             request: json!({"query":"NOT quux"}),
             digest: "bf524b0ce5c324a9900b4aadba5408d6e993ec2452ceaef0a63e6ed35b798c80",
             mode: Some("emitted_page_sessions"),
             reason: None,
-            rows: Some(16),
+            rows: Some(0),
             regions_hydrated: Some(0),
             messages_hydrated: Some(0),
             fragments_loaded: Some(0),
             verification_bytes: Some(0),
         },
         CorpusPin {
+            // 2026-11-11 (B): fluxcap's slot is S1's notes region alone
+            // (was 6 structural rows); it is fragment-backed, so it is
+            // verified and snippet-hydrated through the fragment read
+            // (no bounded-window shortcut for non-canonical regions, but
+            // fragment-backed regions never pay verification bytes).
             request: json!({"query":"fluxcap"}),
             digest: "388baa7c176771f6fd8ba94052e654401e08991d55a5d7f5c9e590046d6cf5e6",
             mode: Some("emitted_page_sessions"),
             reason: None,
-            rows: Some(6),
-            regions_hydrated: Some(6),
+            rows: Some(1),
+            regions_hydrated: Some(2),
             messages_hydrated: Some(0),
             fragments_loaded: Some(1),
-            verification_bytes: Some(24),
+            verification_bytes: Some(0),
         },
         CorpusPin {
             // Refused before evaluation: the typed error envelope is the
@@ -5553,15 +5665,20 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
             verification_bytes: None,
         },
         CorpusPin {
+            // 2026-11-11 (B): the emitted page-1 session's quux slot is its
+            // chat region alone (was 2 structural rows); the bounded-window
+            // shortcut proves the member without full-text bytes, and the
+            // snippet re-hydrates the same canonical region (verify +
+            // snippet = 2 region reads, 2 message reads).
             request: json!({"query":"quux","limit":1,"sort":"updated_desc"}),
             digest: "152296651769cd7de5ced3cf40d89f9764b1757b8d9a15f458088bbc7e48ebb2",
             mode: Some("emitted_page_sessions"),
             reason: None,
-            rows: Some(2),
+            rows: Some(1),
             regions_hydrated: Some(2),
-            messages_hydrated: Some(1),
-            fragments_loaded: Some(1),
-            verification_bytes: Some(17),
+            messages_hydrated: Some(2),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
         },
         CorpusPin {
             // Two single-token conjuncts are not fast-lane composable:
@@ -5685,15 +5802,18 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
             verification_bytes: Some(0),
         },
         CorpusPin {
+            // 2026-11-11 (B): the tag filter narrows the page to S1, whose
+            // foo slot is its chat region alone (was 6 structural rows);
+            // shortcut-verified (0 bytes) + snippet re-hydration.
             request: json!({"query":"foo","filters":{"tag":"release-blocker"}}),
             digest: "f2869af8d370d4e8ba525bba30ad1d7888d80d0c1ffd6d3f798ae118af171674",
             mode: Some("emitted_page_sessions"),
             reason: None,
-            rows: Some(6),
-            regions_hydrated: Some(6),
-            messages_hydrated: Some(1),
-            fragments_loaded: Some(1),
-            verification_bytes: Some(24),
+            rows: Some(1),
+            regions_hydrated: Some(2),
+            messages_hydrated: Some(2),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
         },
         // -----------------------------------------------------------------
         // 2026-11-11 strict-search-seeks (A): block-domain predicates seek
@@ -5807,14 +5927,17 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
             // alone, and the fast-lane receipt stays
             // `emitted_page_sessions`.
             request: json!({"query":"has:mcp foo"}),
+            // 2026-11-11 (B): same shape as the foo+tag pin — the page
+            // narrows to S1 and foo's slot is its chat region (was 6
+            // structural rows); shortcut-verified + snippet re-hydrated.
             digest: "5dd4eb83dd11db182bdd0cc42914c67ab48ad46431ef9bccf0f5a75db92ff737",
             mode: Some("emitted_page_sessions"),
             reason: None,
-            rows: Some(6),
-            regions_hydrated: Some(6),
-            messages_hydrated: Some(1),
-            fragments_loaded: Some(1),
-            verification_bytes: Some(24),
+            rows: Some(1),
+            regions_hydrated: Some(2),
+            messages_hydrated: Some(2),
+            fragments_loaded: Some(0),
+            verification_bytes: Some(0),
         },
     ];
     let mut bridge = gold_harness()?;
@@ -5910,8 +6033,12 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
     );
     ensure!(
         page2["result"]["diagnostics"]["region_load_mode"] == json!("emitted_page_sessions")
-            && page2["result"]["diagnostics"]["region_rows_loaded"].as_u64() == Some(5),
-        "page 2 must load only its own session's regions: {page2}"
+            // 2026-11-11 (B): page 2's emitted session reads only its
+            // quux-gated rows — the chat region + the tool region (was 5
+            // structural rows). The resumption answer (digest2) is
+            // unchanged.
+            && page2["result"]["diagnostics"]["region_rows_loaded"].as_u64() == Some(2),
+        "page 2 must load only its own session's gated regions: {page2}"
     );
     bridge.shutdown()
 }
