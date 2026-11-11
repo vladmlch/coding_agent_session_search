@@ -900,6 +900,9 @@ fn bd_j9gub_viewer_conversation_dml_seeks_index_prefixes_instead_of_scanning() {
 /// for DML, still open for SELECT on this fork rev), pinned as SCANs so
 /// a fork fix — or regression — fails this gate by name; when one turns
 /// into a SEARCH, move it into `seek_shapes` and record the fork rev.
+/// The per-scope GROUP BY did exactly that at rev `2d55ddbd` (upstream
+/// #531's `c5d04545` grouped-aggregate seek; see the graduated entry in
+/// `seek_shapes`), leaving three SCAN pins here.
 ///
 /// `CASS_TEST_REGION_SELECT_PLAN_DB` (optional) points this gate at a
 /// scratch COPY of a real archive: the gate then also prints each
