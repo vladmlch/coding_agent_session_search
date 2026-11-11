@@ -2270,7 +2270,9 @@ pub fn regions_for_quill_slots(
 /// the viewer profile ever installed) legitimately lack it; every
 /// marks-listing helper treats that as an empty inventory rather than a
 /// query error, matching [`live_region_doc_bound`]'s documented `0`.
-fn has_region_marks_table(db: &impl FactsDb) -> Result<bool> {
+/// The re-projection planner uses this as its archive gate: a
+/// non-extension archive has no fast lane to converge toward.
+pub(crate) fn has_region_marks_table(db: &impl FactsDb) -> Result<bool> {
     Ok(!db
         .facts_query_map(
             "SELECT 1 FROM sqlite_master WHERE type='table' \
@@ -2518,6 +2520,144 @@ pub fn stale_region_version_session_count(db: &impl FactsDb) -> Result<i64> {
         )
         .context("counting sessions with stale-region-version marks")?;
     Ok(rows.first().copied().unwrap_or(0))
+}
+
+/// Whether this archive carries the re-projection attempts table
+/// (VIEWER_SCHEMA_V10+). A v9-profile archive has not installed the loop
+/// guard yet; the detection helpers below fall back to the marker-blind
+/// query shape there, and the re-projection plan's schema ensure upgrades
+/// the profile before the first marker is ever needed.
+pub(crate) fn has_region_reproject_attempts_table(db: &impl FactsDb) -> Result<bool> {
+    Ok(!db
+        .facts_query_map(
+            "SELECT 1 FROM sqlite_master WHERE type='table' \
+             AND name='viewer_region_reproject_attempts' LIMIT 1",
+            &[],
+            |row| row.get_typed::<i64>(0),
+        )?
+        .is_empty())
+}
+
+/// A session the incremental re-projection pass must revisit: local,
+/// named by a still-recorded source path, and carrying at least one
+/// persisted viewer artifact that is missing or below the current
+/// extractor/region/projection version.
+pub struct RegionReprojectCandidate {
+    pub conversation_id: i64,
+    /// `agents.slug` as persisted (the archive provider slug, e.g.
+    /// `claude_code` — NOT the connector registry name).
+    pub agent_slug: String,
+    /// Raw `conversations.source_path` as persisted.
+    pub source_path: String,
+}
+
+/// The shared staleness sweep for the re-projection pass: every local
+/// conversation whose region marks are missing or at an older
+/// [`REGION_VERSION`], or whose facts row is missing or at an older
+/// [`super::facts::FACTS_EXTRACTOR_VERSION`], or whose projection row is
+/// missing or at an older
+/// [`super::projection::PROJECTION_VERSION`]/extractor version.
+///
+/// Deliberately a LEFT JOIN over PK-anchored rows, not correlated
+/// subqueries: frankensqlite evaluates correlated probes through its
+/// in-memory fallback (the same shape `live_region_doc_bound` documents
+/// as pathologically slow at archive scale), while these joins are the
+/// index-seek shape that helper proved at 6k sessions. Marks at the
+/// CURRENT version with a non-`published` `docs_state` are NOT stale:
+/// the pending sweep (the run's final drain) already converges those —
+/// re-scanning them would revisit sources for work a commit is about to
+/// finish. The attempts arm is a correlated NOT EXISTS over the tiny
+/// marker table only (vanished-source sessions), never over the large
+/// ones.
+///
+/// `exclude_attempted` drops sessions carrying an attempts marker at the
+/// current REGION_VERSION — proven unresolvable at this version (source
+/// gone); a version bump re-admits them because the marker no longer
+/// matches. When the attempts table is missing (a v9 archive before the
+/// schema ensure runs) the marker-blind shape is used.
+fn region_reproject_stale_rows(
+    db: &impl FactsDb,
+    exclude_attempted: bool,
+) -> Result<Vec<RegionReprojectCandidate>> {
+    let attempts_present = exclude_attempted && has_region_reproject_attempts_table(db)?;
+    let attempts_arm = if attempts_present {
+        "AND NOT EXISTS (SELECT 1 FROM viewer_region_reproject_attempts t \
+                  WHERE t.conversation_id = c.id AND t.region_version = ?4)"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT c.id, COALESCE(a.slug, 'unknown'), COALESCE(c.source_path, '') \
+         FROM conversations c \
+         LEFT JOIN agents a ON a.id = c.agent_id \
+         LEFT JOIN viewer_search_region_marks m ON m.conversation_id = c.id \
+         LEFT JOIN viewer_session_facts f ON f.conversation_id = c.id \
+         LEFT JOIN viewer_session_projection p ON p.conversation_id = c.id \
+         WHERE c.source_id = 'local' \
+           AND COALESCE(c.source_path, '') != '' \
+           AND (COALESCE(m.region_version, -1) != ?1 \
+             OR COALESCE(f.extractor_version, -1) != ?2 \
+             OR COALESCE(p.projection_version, -1) != ?3 \
+             OR COALESCE(p.extractor_version, -1) != ?2) \
+           {attempts_arm} \
+         ORDER BY c.id"
+    );
+    let mut params = vec![
+        ParamValue::from(REGION_VERSION),
+        ParamValue::from(super::facts::FACTS_EXTRACTOR_VERSION),
+        ParamValue::from(super::projection::PROJECTION_VERSION),
+    ];
+    if attempts_present {
+        params.push(ParamValue::from(REGION_VERSION));
+    }
+    db.facts_query_map(&sql, &params, |row| {
+        Ok(RegionReprojectCandidate {
+            conversation_id: row.get_typed::<i64>(0)?,
+            agent_slug: row.get_typed::<String>(1)?,
+            source_path: row.get_typed::<String>(2)?,
+        })
+    })
+    .context("listing sessions needing region re-projection")
+}
+
+/// The re-projection plan's target set: sessions detected as stale with
+/// proven-unresolvable ones (attempts markers at the current version)
+/// excluded. Empty on archives without the extension profile — a
+/// non-extension archive has no fast lane to converge toward, and its
+/// first ingest installs the profile anyway.
+pub fn region_reproject_candidates(db: &impl FactsDb) -> Result<Vec<RegionReprojectCandidate>> {
+    if !has_region_marks_table(db)? {
+        return Ok(Vec::new());
+    }
+    region_reproject_stale_rows(db, true)
+}
+
+/// Count of sessions the re-projection pass will actually attempt
+/// (the same marker-excluded detection, as one COUNT): the whole-archive
+/// republish estimate the deferral latch consumes. Zero on archives
+/// without the extension profile.
+pub fn region_reproject_target_count(db: &impl FactsDb) -> Result<i64> {
+    if !has_region_marks_table(db)? {
+        return Ok(0);
+    }
+    let rows = region_reproject_stale_rows(db, true)?;
+    Ok(rows.len() as i64)
+}
+
+/// The marker-INCLUSIVE stale id set — every session still below the
+/// current extractor/region/projection versions after a run, whether or
+/// not it holds an attempts marker. This is the honest residue the run
+/// reports as `unresolved_after_run`, and the accounting pass uses it
+/// to decide which markers to keep (still stale) and which to drop
+/// (converged since they were written).
+pub fn region_reproject_unresolved_session_ids(db: &impl FactsDb) -> Result<Vec<i64>> {
+    if !has_region_marks_table(db)? {
+        return Ok(Vec::new());
+    }
+    Ok(region_reproject_stale_rows(db, false)?
+        .into_iter()
+        .map(|candidate| candidate.conversation_id)
+        .collect())
 }
 
 /// The canonical identity fields every synthetic-slot Quill document for a

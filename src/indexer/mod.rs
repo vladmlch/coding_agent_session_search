@@ -105,6 +105,7 @@ use crate::storage::sqlite::{
     LEXICAL_REBUILD_PLANNER_ESTIMATED_BYTES_PER_MESSAGE, SemanticIdentityTier,
     seed_canonical_from_best_historical_bundle,
 };
+use crate::viewer_extensions::facts::FactsDb;
 use semantic::{
     EmbeddingInput, SemanticIndexer, packet_embedding_inputs_from_storage_since,
     semantic_doc_id_for_input, visit_packet_embedding_inputs_from_storage,
@@ -1041,6 +1042,35 @@ pub struct SemanticWatchOnceStats {
     pub reason: String,
 }
 
+/// Incremental REGION_VERSION re-projection accounting, reported under
+/// `indexing_stats.region_reproject` (see [`plan_region_reproject`]).
+///
+/// * `stale_sessions` — sessions detected below the current
+///   extractor/region/projection versions this run, excluding the ones a
+///   previous run already proved unresolvable (attempts markers at the
+///   current version).
+/// * `live_sources` / `vanished_sources` — the detected sessions whose
+///   source files still exist (and were therefore re-visited through the
+///   scan bypasses) versus the ones whose sources are gone (Claude Code
+///   culls old sessions) and can never converge.
+/// * `connectors_bypassed` — registry connector names whose scan skips
+///   (mtime watermark and/or source-ingest ledger) were bypassed for the
+///   live re-projection targets.
+/// * `unresolved_after_run` — EVERY session still stale after the run,
+///   marker-inclusive: the honest residue, reported on every later run
+///   even once the plan is empty.
+/// * `marked_vanished` — attempts markers written this run for
+///   vanished-source sessions the run proved unresolvable.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct RegionReprojectStats {
+    pub stale_sessions: usize,
+    pub live_sources: usize,
+    pub vanished_sources: usize,
+    pub connectors_bypassed: Vec<String>,
+    pub unresolved_after_run: usize,
+    pub marked_vanished: usize,
+}
+
 /// Aggregate indexing statistics for JSON output (T7.4).
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct IndexingStats {
@@ -1100,6 +1130,13 @@ pub struct IndexingStats {
     /// The first `DEFERRED_ACTIVE_SOURCE_SAMPLE` of those paths, sorted.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub deferred_active_source_sample: Vec<String>,
+    /// Incremental REGION_VERSION re-projection accounting (the
+    /// `region_reproject` pass). Present only on non-watch runs of
+    /// archives carrying the extension profile; omitted when the pass
+    /// could not run (watch mode, env disabled, no marks table) or when
+    /// its accounting query itself failed after a successful run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region_reproject: Option<RegionReprojectStats>,
     #[serde(skip)]
     deferred_active_source_paths: BTreeSet<PathBuf>,
 }
@@ -1182,6 +1219,73 @@ impl CanonicalMutationCounts {
     }
 }
 
+/// One session the re-projection plan will try to converge this run
+/// (see [`plan_region_reproject`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RegionReprojectTarget {
+    conversation_id: i64,
+    /// Registry connector name for the session's agent slug — `None`
+    /// when the slug maps to no registered connector, in which case no
+    /// scan bypass is installed and the session is never marked
+    /// (its re-attempt stays possible).
+    connector_name: Option<&'static str>,
+    /// Raw source path as persisted in `conversations.source_path`.
+    source_path: PathBuf,
+    /// `false` when the source no longer exists on disk: the session
+    /// can never converge and the accounting pass may mark it.
+    source_alive: bool,
+}
+
+/// The re-projection pass's per-lane fragment: detected targets and the
+/// connector bypasses this lane installed. Lanes (streaming, batch
+/// boundary, batch fallback) each plan over their own connector set and
+/// the fragments merge through [`NonWatchIngestOutcome::accumulate`];
+/// `run_index_inner` runs ONE accounting pass over the merged fragment
+/// after the final drain.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RegionReprojectLaneReport {
+    /// ALL detected stale sessions this lane's plan covers (live and
+    /// vanished), marker-excluded.
+    targets: Vec<RegionReprojectTarget>,
+    /// Registry connector names whose scan skips were bypassed.
+    bypassed_connector_names: BTreeSet<String>,
+}
+
+impl RegionReprojectLaneReport {
+    fn detected(&self) -> usize {
+        self.targets.len()
+    }
+
+    fn live_sources(&self) -> usize {
+        self.targets.iter().filter(|t| t.source_alive).count()
+    }
+
+    fn vanished_sources(&self) -> usize {
+        self.targets.iter().filter(|t| !t.source_alive).count()
+    }
+
+    /// Merge another lane's fragment (the batch flavor's boundary and
+    /// fallback halves). Targets are unioned by conversation id — the
+    /// connector sets are disjoint by construction, so this is defensive
+    /// dedup, not a correctness crutch.
+    fn merged(mut self, other: Self) -> Self {
+        let mut seen = self
+            .targets
+            .iter()
+            .map(|target| target.conversation_id)
+            .collect::<std::collections::HashSet<_>>();
+        self.targets.extend(
+            other
+                .targets
+                .into_iter()
+                .filter(|target| seen.insert(target.conversation_id)),
+        );
+        self.bypassed_connector_names
+            .extend(other.bypassed_connector_names);
+        self
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct NonWatchIngestOutcome {
     canonical_mutations: CanonicalMutationCounts,
@@ -1190,6 +1294,14 @@ struct NonWatchIngestOutcome {
     scanned_connectors: BTreeSet<String>,
     scan_had_errors: bool,
     deferred_sources: BTreeSet<PathBuf>,
+    /// This lane's re-projection plan fragment; `None` when the pass did
+    /// not run (watch, env-disabled, no marks table). Merged by
+    /// `accumulate` so `run_index_inner` can account for the union once.
+    region_reproject: Option<RegionReprojectLaneReport>,
+    /// Connectors whose scan errored this run — the accounting pass
+    /// exempts their sessions from attempts markers so a transient scan
+    /// failure retries next run instead of freezing.
+    failed_scan_connectors: BTreeSet<String>,
 }
 
 impl NonWatchIngestOutcome {
@@ -1198,6 +1310,13 @@ impl NonWatchIngestOutcome {
         scanned_connectors.extend(other.scanned_connectors);
         let mut deferred_sources = self.deferred_sources;
         deferred_sources.extend(other.deferred_sources);
+        let mut failed_scan_connectors = self.failed_scan_connectors;
+        failed_scan_connectors.extend(other.failed_scan_connectors);
+        let region_reproject = match (self.region_reproject, other.region_reproject) {
+            (None, None) => None,
+            (Some(report), None) | (None, Some(report)) => Some(report),
+            (Some(left), Some(right)) => Some(left.merged(right)),
+        };
         Self {
             canonical_mutations: self
                 .canonical_mutations
@@ -1209,6 +1328,8 @@ impl NonWatchIngestOutcome {
             scanned_connectors,
             scan_had_errors: self.scan_had_errors || other.scan_had_errors,
             deferred_sources,
+            region_reproject,
+            failed_scan_connectors,
         }
     }
 }
@@ -14930,8 +15051,22 @@ fn scan_with_durable_source_boundaries(
         // an untracked sidecar appearing between discovery and admission.
         *before.borrow_mut() = dependencies_before.parent_for(&source.source_path).cloned();
         *primary_before.borrow_mut() = source_file_observation(&source.source_path);
+        // REGION_VERSION re-projection bypass: a stale-version session's
+        // source must never be ledger-skipped — the skip is version-blind
+        // and the persist lane's receipt skip is exactly what re-projects
+        // it once the source is re-read. Raw form first; the canonical
+        // form covers connectors that discover through the resolved path
+        // (macOS `/var` vs `/private/var`).
+        let region_reproject_bypass = config
+            .region_reproject_sources
+            .contains(&source.source_path)
+            || config.region_reproject_sources.contains(
+                &dunce::canonicalize(&source.source_path)
+                    .unwrap_or_else(|_| source.source_path.clone()),
+            );
         let skip = env!("CASS_SOURCE_INGEST_REUSE") == "true"
             && !filtered.get()
+            && !region_reproject_bypass
             && source_ledger_key(source, &ctx)
                 .and_then(|key| config.source_ledger.get(&key))
                 .is_some_and(|saved| {
@@ -15250,6 +15385,10 @@ struct StreamingProducerConfig {
     local_since_ts_by_connector: Arc<HashMap<&'static str, Option<i64>>>,
     progress: Option<Arc<IndexingProgress>>,
     active_source_filter: Arc<ActiveSessionSourceFilter>,
+    /// REGION_VERSION re-projection bypass: source paths the ledger skip
+    /// must never cut (stale-version sessions whose sources still exist,
+    /// in raw and canonicalized form). Empty when the pass is inactive.
+    region_reproject_sources: Arc<HashSet<PathBuf>>,
 }
 
 /// Spawn a producer thread that scans a connector and sends batches through the channel.
@@ -16363,6 +16502,11 @@ fn run_streaming_consumer(
         "streaming_indexing_complete"
     );
 
+    // The re-projection accounting pass needs to know which connectors
+    // failed so their sessions are exempted from attempts markers (a
+    // transient scan failure retries next run instead of freezing).
+    ingest_outcome.failed_scan_connectors = failed_scan_connectors;
+
     Ok((discovered_names, ingest_outcome))
 }
 
@@ -16442,6 +16586,239 @@ fn filter_disabled_connector_factories<F>(
     filtered
 }
 
+/// Whether the incremental REGION_VERSION re-projection pass is enabled.
+/// Off for watch runs (their chunks converge per event) and for
+/// `--watch-once` paths; `CASS_REGION_REPROJECT=0` is the explicit
+/// operator off switch.
+fn region_reproject_enabled(opts: &IndexOptions) -> bool {
+    if opts.watch || opts.watch_once_paths.is_some() {
+        return false;
+    }
+    dotenvy::var("CASS_REGION_REPROJECT")
+        .map(|value| value.trim() != "0")
+        .unwrap_or(true)
+}
+
+/// Plan this lane's REGION_VERSION re-projection pass.
+///
+/// After a REGION_VERSION (or extractor/projection version) bump, the
+/// sessions below the current versions can only converge by
+/// re-projecting from their sources — but both scan-side skips are
+/// version-blind: the mtime watermark cuts non-boundary connectors and
+/// the source-ingest ledger cuts boundary ones, so unchanged sources
+/// never reach the persist lane whose receipt skip would re-project
+/// them. This plan detects those sessions (one indexed query), stats
+/// their sources, and returns the target set plus the connector
+/// bypasses the lane must install:
+///
+/// * live-target connectors get `None` mtime cutoffs (inserted into the
+///   per-connector cutoff map after [`connector_local_scan_since_ts_map`]);
+/// * live-target source paths go into the producers'
+///   `region_reproject_sources` set, exempting them from the ledger
+///   skip in [`should_scan`].
+///
+/// The pass is connector-scoped to `connector_names` (this lane's
+/// factories), so the batch flavor's boundary and fallback halves plan
+/// independently. The bypass is connector-wide for non-boundary
+/// connectors (FAD's scan context has no per-path exemption); the
+/// within-connector over-visit is honest, bounded by that connector's
+/// ordinary scan, and reported under `connectors_bypassed`.
+///
+/// `Ok(None)` when the pass cannot run: watch, env-disabled, or an
+/// archive without the extension profile (a fresh archive's first
+/// ingest installs it — nothing to converge toward yet). The plan
+/// otherwise exists even when EMPTY so the run still reports the
+/// unresolved residue.
+///
+/// The schema ensure at the top matters: a v9-profile archive upgrades
+/// to v10 (the attempts table) here, BEFORE any persist batch — the
+/// accounting pass at the end of the run writes markers, and a run
+/// whose every target vanished never persists anything that would have
+/// upgraded the schema mid-run.
+fn plan_region_reproject(
+    storage: &FrankenStorage,
+    opts: &IndexOptions,
+    connector_names: &[&'static str],
+) -> Result<Option<RegionReprojectLaneReport>> {
+    if !region_reproject_enabled(opts) {
+        return Ok(None);
+    }
+    let db = storage.raw();
+    if !crate::viewer_extensions::search_regions::has_region_marks_table(db)? {
+        return Ok(None);
+    }
+    // Upgrade a v9 profile to v10 (the attempts table) before the scan:
+    // the accounting pass writes markers, and no persist batch is
+    // guaranteed to run first. Idempotent; the ingest hook's own probe
+    // then sees the current version and skips.
+    crate::viewer_extensions::schema::ensure_profile_for_ingest(db)?;
+    let candidates = crate::viewer_extensions::search_regions::region_reproject_candidates(db)?;
+    let lane_connector_names: HashSet<&'static str> = connector_names.iter().copied().collect();
+    let mut targets = Vec::new();
+    let mut bypassed_connector_names = BTreeSet::new();
+    for candidate in candidates {
+        let connector_name =
+            crate::connectors::connector_name_for_archive_slug(&candidate.agent_slug);
+        // A target whose connector is not in this lane still counts as
+        // detected (the other lane plans it); a target whose slug maps
+        // to no registered connector is reported but never bypassed or
+        // marked — the next run re-attempts it.
+        let source_path = PathBuf::from(&candidate.source_path);
+        let source_alive = source_path.is_file();
+        if let Some(name) = connector_name
+            && lane_connector_names.contains(name)
+            && source_alive
+        {
+            bypassed_connector_names.insert((*name).to_string());
+        }
+        targets.push(RegionReprojectTarget {
+            conversation_id: candidate.conversation_id,
+            connector_name,
+            source_path,
+            source_alive,
+        });
+    }
+    tracing::info!(
+        detected = targets.len(),
+        live = targets.iter().filter(|t| t.source_alive).count(),
+        vanished = targets.iter().filter(|t| !t.source_alive).count(),
+        bypassed = ?bypassed_connector_names,
+        "region re-projection plan"
+    );
+    Ok(Some(RegionReprojectLaneReport {
+        targets,
+        bypassed_connector_names,
+    }))
+}
+
+/// The live re-projection source paths for the producers' ledger
+/// bypass: the raw persisted form plus the canonicalized form, because
+/// the connector may discover either (macOS `/var` vs `/private/var`).
+fn region_reproject_source_set(report: &RegionReprojectLaneReport) -> Arc<HashSet<PathBuf>> {
+    let mut sources = HashSet::new();
+    for target in &report.targets {
+        if !target.source_alive {
+            continue;
+        }
+        sources.insert(target.source_path.clone());
+        if let Ok(canonical) = dunce::canonicalize(&target.source_path) {
+            sources.insert(canonical);
+        }
+    }
+    Arc::new(sources)
+}
+
+/// Post-run accounting for the REGION_VERSION re-projection pass:
+/// markers in, stats out. Runs ONCE per index run, after the final
+/// region-doc drain, over the merged lane fragments.
+///
+/// * still-stale sessions (the marker-inclusive detection) become
+///   `unresolved_after_run` — the honest residue, reported on every
+///   later run even once the plan is empty;
+/// * a run target that is still stale, whose source is proven gone
+///   (`stat` fails), and whose connector did not fail this run gets an
+///   attempts marker at the current REGION_VERSION: the loop guard that
+///   keeps vanished-source sessions out of every later plan until a
+///   version bump re-admits them;
+/// * a live-but-still-stale target is NEVER marked — an exclusion, a
+///   failed scan or a quarantine may be transient, so the next run
+///   re-attempts it (one source `stat` plus that connector's ordinary
+///   scan);
+/// * markers held by sessions that are no longer stale are dropped —
+///   a `--full` run converges marked sessions without knowing about
+///   markers, and the next incremental must not keep converged sessions
+///   excluded forever;
+/// * connectors that failed this run are exempt from marker writes so
+///   their sessions retry next run.
+fn finalize_region_reproject_accounting(
+    storage: &FrankenStorage,
+    lane: &RegionReprojectLaneReport,
+    failed_scan_connectors: &BTreeSet<String>,
+) -> Result<RegionReprojectStats> {
+    let db = storage.raw();
+    let region_version = crate::viewer_extensions::search_regions::REGION_VERSION;
+    let still_stale: HashSet<i64> =
+        crate::viewer_extensions::search_regions::region_reproject_unresolved_session_ids(db)?
+            .into_iter()
+            .collect();
+    let mut stats = RegionReprojectStats {
+        stale_sessions: lane.detected(),
+        live_sources: lane.live_sources(),
+        vanished_sources: lane.vanished_sources(),
+        connectors_bypassed: lane.bypassed_connector_names.iter().cloned().collect(),
+        unresolved_after_run: still_stale.len(),
+        marked_vanished: 0,
+    };
+    // Every target that stayed stale with a gone source is a marker
+    // candidate; a target that converged (or never got its scan) is not.
+    let mut markers_to_write: Vec<i64> = Vec::new();
+    for target in &lane.targets {
+        if !still_stale.contains(&target.conversation_id) || target.source_alive {
+            continue;
+        }
+        match target.connector_name {
+            Some(name) if !failed_scan_connectors.contains(name) => {
+                markers_to_write.push(target.conversation_id);
+            }
+            // An unmapped slug or a failed connector stays unmarked so
+            // the next run re-attempts the session.
+            _ => {}
+        }
+    }
+    let attempts_rows: Vec<i64> = db
+        .facts_query_map(
+            "SELECT conversation_id FROM viewer_region_reproject_attempts \
+             WHERE region_version = ?1",
+            &[ParamValue::from(region_version)],
+            |row| row.get_typed::<i64>(0),
+        )
+        .context("listing region re-projection attempts markers")?;
+    // Markers whose sessions are no longer stale are stale rows: drop
+    // them so a converged session (typically via `--full`, which
+    // converges without knowing about markers) is never kept excluded.
+    let dropped_markers: Vec<i64> = attempts_rows
+        .iter()
+        .copied()
+        .filter(|id| !still_stale.contains(id))
+        .collect();
+    if markers_to_write.is_empty() && dropped_markers.is_empty() {
+        return Ok(stats);
+    }
+    let attempted_at_ms = lexical_generation::now_ms();
+    persist::with_ephemeral_writer(
+        storage,
+        true,
+        "recording region re-projection attempts markers",
+        |writer| {
+            let db = writer.raw();
+            for conversation_id in &markers_to_write {
+                db.execute_compat(
+                    "INSERT OR REPLACE INTO viewer_region_reproject_attempts \
+                     (conversation_id, region_version, attempted_at_ms) \
+                     VALUES (?1, ?2, ?3)",
+                    &[
+                        ParamValue::from(*conversation_id),
+                        ParamValue::from(region_version),
+                        ParamValue::from(attempted_at_ms),
+                    ],
+                )
+                .context("recording a region re-projection attempts marker")?;
+            }
+            for conversation_id in &dropped_markers {
+                db.execute_compat(
+                    "DELETE FROM viewer_region_reproject_attempts \
+                     WHERE conversation_id = ?1",
+                    &[ParamValue::from(*conversation_id)],
+                )
+                .context("dropping a region re-projection attempts marker")?;
+            }
+            Ok(())
+        },
+    )?;
+    stats.marked_vanished = markers_to_write.len();
+    Ok(stats)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_streaming_index_with_connector_factories<F>(
     storage: &FrankenStorage,
@@ -16503,6 +16880,22 @@ where
 
     // Create bounded channel for backpressure
     let (tx, rx) = bounded::<IndexMessage>(STREAMING_CHANNEL_SIZE);
+    // REGION_VERSION re-projection: plan over this lane's connectors,
+    // then bypass both version-blind scan skips for the live targets'
+    // connectors — the mtime cutoff (None = no watermark cut) and the
+    // source-ingest ledger (the per-source set below).
+    let connector_names: Vec<&'static str> =
+        connector_factories.iter().map(|(name, _)| *name).collect();
+    let region_reproject_plan = plan_region_reproject(storage, opts, &connector_names)?;
+    let mut local_since_ts_by_connector =
+        connector_local_scan_since_ts_map(storage, since_ts, &connector_factories)?;
+    if let Some(plan) = &region_reproject_plan {
+        for name in &connector_names {
+            if plan.bypassed_connector_names.contains(*name) {
+                local_since_ts_by_connector.insert(*name, None);
+            }
+        }
+    }
     let producer_config = StreamingProducerConfig {
         raw_source_exclusions: Arc::new(RawSourceExclusions::load(storage)?),
         source_ledger: Arc::new(
@@ -16520,15 +16913,15 @@ where
         additional_scan_roots: additional_scan_roots.clone(),
         local_connector_roots: local_connector_roots.clone(),
         since_ts,
-        local_since_ts_by_connector: Arc::new(connector_local_scan_since_ts_map(
-            storage,
-            since_ts,
-            &connector_factories,
-        )?),
+        local_since_ts_by_connector: Arc::new(local_since_ts_by_connector),
         progress: opts.progress.clone(),
         active_source_filter: Arc::new(ActiveSessionSourceFilter::new(
             opts.watch && opts.watch_once_paths.as_ref().is_none_or(Vec::is_empty),
         )),
+        region_reproject_sources: region_reproject_plan
+            .as_ref()
+            .map(region_reproject_source_set)
+            .unwrap_or_default(),
     };
 
     // Spawn producer threads for each connector
@@ -16604,6 +16997,10 @@ where
     let active_deferred = producer_config.active_source_filter.take_deferred_sources();
     record_deferred_active_sources(opts.progress.as_ref(), &active_deferred);
     ingest_outcome.deferred_sources.extend(active_deferred);
+    // The lane's re-projection fragment rides the outcome to
+    // `run_index_inner`, which accounts for the merged fragments once,
+    // after the final drain.
+    ingest_outcome.region_reproject = region_reproject_plan;
 
     // Update discovered agent names in progress tracker
     if let Some(p) = &opts.progress
@@ -16823,11 +17220,25 @@ where
     let active_source_filter = Arc::new(ActiveSessionSourceFilter::new(
         opts.watch && opts.watch_once_paths.as_ref().is_none_or(Vec::is_empty),
     ));
-    let local_since_ts_by_connector = Arc::new(connector_local_scan_since_ts_map(
-        storage,
-        since_ts,
-        &connector_factories,
-    )?);
+    // REGION_VERSION re-projection: plan over this fallback half's
+    // connectors (the boundary half planned inside its streaming
+    // sub-lane above) and bypass the mtime watermark for the live
+    // targets' connectors. The batch fallback has no source-ingest
+    // ledger (only boundary connectors use it, and those live in the
+    // streaming sub-lane), so the cutoff override is the whole bypass.
+    let fallback_connector_names: Vec<&'static str> =
+        connector_factories.iter().map(|(name, _)| *name).collect();
+    let region_reproject_plan = plan_region_reproject(storage, opts, &fallback_connector_names)?;
+    let mut local_since_ts_by_connector =
+        connector_local_scan_since_ts_map(storage, since_ts, &connector_factories)?;
+    if let Some(plan) = &region_reproject_plan {
+        for name in &fallback_connector_names {
+            if plan.bypassed_connector_names.contains(*name) {
+                local_since_ts_by_connector.insert(*name, None);
+            }
+        }
+    }
+    let local_since_ts_by_connector = Arc::new(local_since_ts_by_connector);
     let scan_progress_tick: Option<Arc<dyn Fn() + Send + Sync>> =
         opts.progress.as_ref().map(|progress| {
             let progress = Arc::clone(progress);
@@ -17105,6 +17516,14 @@ where
     let scan_had_errors = pending_batches
         .iter()
         .any(|pending| !pending.scan_succeeded);
+    // The re-projection accounting pass exempts these connectors'
+    // sessions from attempts markers (a transient scan failure retries
+    // next run instead of freezing).
+    let failed_scan_connectors: BTreeSet<String> = pending_batches
+        .iter()
+        .filter(|pending| !pending.scan_succeeded)
+        .map(|pending| pending.name.to_string())
+        .collect();
 
     let total_conversations: usize = pending_batches
         .iter()
@@ -17230,6 +17649,12 @@ where
     let active_deferred = active_source_filter.take_deferred_sources();
     record_deferred_active_sources(opts.progress.as_ref(), &active_deferred);
     ingest_outcome.deferred_sources.extend(active_deferred);
+    // This fallback half's re-projection fragment and its failed
+    // connectors ride the outcome to `run_index_inner`'s accounting
+    // pass (the boundary half's fragment arrived through the streaming
+    // sub-lane's outcome and `accumulate`).
+    ingest_outcome.region_reproject = region_reproject_plan;
+    ingest_outcome.failed_scan_connectors = failed_scan_connectors;
 
     Ok(ingest_outcome)
 }
@@ -18404,6 +18829,13 @@ fn run_index_with_storage_ownership(
     let mut scan_had_errors = false;
     let mut stale_index_ingest_quarantine_retry_attempted = false;
     let mut deferred_watch_sources = BTreeSet::new();
+    // REGION_VERSION re-projection: the lane fragments (plan + failed
+    // connectors) ride the scan outcome; the ONE accounting pass after
+    // the final drain turns them into markers and the run's reported
+    // `region_reproject` stats. Both scan branches below assign the
+    // lane before the accounting pass reads it.
+    let mut scan_region_reproject_lane: Option<RegionReprojectLaneReport>;
+    let mut scan_failed_scan_connectors = BTreeSet::new();
 
     let mut tantivy_requires_rebuild = false;
     let mut observed_tantivy_docs = None;
@@ -19217,6 +19649,8 @@ fn run_index_with_storage_ownership(
                     scanned_connectors.extend(scan_outcome.scanned_connectors);
                     scan_had_errors |= scan_outcome.scan_had_errors;
                     deferred_watch_sources.extend(scan_outcome.deferred_sources);
+                    scan_region_reproject_lane = scan_outcome.region_reproject;
+                    scan_failed_scan_connectors.extend(scan_outcome.failed_scan_connectors);
                 } else {
                     tracing::info!(
                         "using batch indexing (streaming disabled via CASS_STREAMING_INDEX=0)"
@@ -19239,6 +19673,8 @@ fn run_index_with_storage_ownership(
                     scanned_connectors.extend(scan_outcome.scanned_connectors);
                     scan_had_errors |= scan_outcome.scan_had_errors;
                     deferred_watch_sources.extend(scan_outcome.deferred_sources);
+                    scan_region_reproject_lane = scan_outcome.region_reproject;
+                    scan_failed_scan_connectors.extend(scan_outcome.failed_scan_connectors);
                 }
                 // #372: persist remote mirror fingerprints only after an
                 // error-free scan (the same signal that gates last_scan_ts), so
@@ -19344,6 +19780,34 @@ fn run_index_with_storage_ownership(
                             progress.tick_activity();
                             progress.finalizing.store(false, Ordering::Relaxed);
                         }
+                    }
+                }
+
+                // REGION_VERSION re-projection accounting: one pass after
+                // the final drain, over the merged lane fragments. Writes
+                // attempts markers for vanished-source sessions the run
+                // proved unresolvable, drops markers of since-converged
+                // sessions, and reports the run's `region_reproject`
+                // stats. A failure here never fails the run — the scan
+                // converged what it could — but the stats object is
+                // omitted rather than reporting fabricated numbers.
+                if let Some(lane) = scan_region_reproject_lane.take() {
+                    match finalize_region_reproject_accounting(
+                        &storage,
+                        &lane,
+                        &scan_failed_scan_connectors,
+                    ) {
+                        Ok(stats) => {
+                            if let Some(progress) = opts.progress.as_ref()
+                                && let Ok(mut progress_stats) = progress.stats.lock()
+                            {
+                                progress_stats.region_reproject = Some(stats);
+                            }
+                        }
+                        Err(error) => tracing::warn!(
+                            error = %format!("{error:#}"),
+                            "region re-projection accounting failed; the run's stats omit region_reproject"
+                        ),
                     }
                 }
 
@@ -29258,6 +29722,8 @@ fn ingest_batch_detailed_with_source_completion(
         scanned_connectors: BTreeSet::new(),
         scan_had_errors: false,
         deferred_sources: BTreeSet::new(),
+        region_reproject: None,
+        failed_scan_connectors: BTreeSet::new(),
     })
 }
 
@@ -29492,6 +29958,8 @@ fn ingest_non_watch_oom_retry_or_quarantine(
             scanned_connectors: BTreeSet::new(),
             scan_had_errors: true,
             deferred_sources: BTreeSet::from([conv.source_path.clone()]),
+            region_reproject: None,
+            failed_scan_connectors: BTreeSet::new(),
         });
     }
 
@@ -29524,6 +29992,8 @@ fn ingest_non_watch_oom_retry_or_quarantine(
         scanned_connectors: BTreeSet::new(),
         scan_had_errors: true,
         deferred_sources: BTreeSet::from([conv.source_path.clone()]),
+        region_reproject: None,
+        failed_scan_connectors: BTreeSet::new(),
     })
 }
 
@@ -38113,7 +38583,11 @@ pub mod persist {
     pub(super) const REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS: i64 = 512;
 
     /// Latch whole-archive republish deferral onto the run's lexical writer
-    /// when the stale-version marks a REGION_VERSION bump leaves exceed
+    /// when the sessions the re-projection pass will actually attempt
+    /// (region marks OR facts OR projection below their current versions,
+    /// excluding proven-unresolvable attempts markers —
+    /// [`crate::viewer_extensions::search_regions::region_reproject_target_count`])
+    /// exceed
     /// [`REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS`]. The non-watch
     /// incremental lane calls this before its first persist batch (the scan
     /// entry and the streaming consumer's prologue, each behind the scan
@@ -38138,7 +38612,7 @@ pub mod persist {
             return Ok(());
         }
         let stale_sessions =
-            crate::viewer_extensions::search_regions::stale_region_version_session_count(db)?;
+            crate::viewer_extensions::search_regions::region_reproject_target_count(db)?;
         if stale_sessions > REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS {
             index.defer_region_doc_convergence_to_final_drain();
             tracing::info!(
@@ -42161,6 +42635,575 @@ pub mod persist {
             assert!(
                 !index.region_doc_convergence_deferred_to_final_drain(),
                 "three stale marks must not latch the deferral"
+            );
+        }
+
+        // The re-projection pass lives in the indexer module (this test
+        // module's grandparent); bring its items in explicitly.
+        use crate::indexer::IndexOptions;
+        use crate::indexer::RegionReprojectLaneReport;
+        use crate::indexer::RegionReprojectStats;
+        use crate::indexer::RegionReprojectTarget;
+        use crate::indexer::finalize_region_reproject_accounting;
+        use crate::indexer::plan_region_reproject;
+        use crate::indexer::region_reproject_source_set;
+
+        /// Test-only [`IndexOptions`] for the re-projection plan: a plain
+        /// incremental run over a scratch data dir.
+        fn reproject_test_opts(dir: &std::path::Path) -> IndexOptions {
+            IndexOptions {
+                full: false,
+                watch: false,
+                force_rebuild: false,
+                watch_once_paths: None,
+                db_path: dir.join("index.db"),
+                data_dir: dir.to_path_buf(),
+                semantic: false,
+                build_hnsw: false,
+                embedder: "fastembed".to_string(),
+                progress: None,
+                watch_interval_secs: 30,
+            }
+        }
+
+        /// Detection must cover every staleness arm — stale marks, missing
+        /// marks, stale facts, and both projection versions — while
+        /// excluding current sessions, remote sessions, sessions without a
+        /// source path, and sessions already attempted at the CURRENT
+        /// region version (an old-version marker never excludes).
+        #[test]
+        fn reproject_detection_covers_marks_facts_and_projection_staleness() {
+            use crate::viewer_extensions::facts::FACTS_EXTRACTOR_VERSION;
+            use crate::viewer_extensions::projection::PROJECTION_VERSION;
+            use crate::viewer_extensions::search_regions::{
+                REGION_VERSION, region_reproject_candidates, region_reproject_target_count,
+                region_reproject_unresolved_session_ids, stale_region_version_session_count,
+            };
+
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("detect.db"));
+            let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
+            let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+            let convs: Vec<_> = (0..6i64)
+                .map(|ordinal| grind_region_session(dir.path(), ordinal))
+                .collect();
+            persist_conversations_batched(
+                &storage,
+                Some(&mut index),
+                &convs,
+                LexicalPopulationStrategy::IncrementalInline,
+                false,
+            )
+            .unwrap();
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+            let db = storage.raw();
+
+            // One staleness arm per conversation (ids are 1..=6 in insert
+            // order on the fresh archive); conversation 6 stays current.
+            let old_version = REGION_VERSION - 1;
+            db.execute_compat(
+                "UPDATE viewer_search_region_marks SET region_version = ?1 \
+                 WHERE conversation_id = 1",
+                &[ParamValue::from(old_version)],
+            )
+            .unwrap();
+            db.execute_compat(
+                "UPDATE viewer_session_facts SET extractor_version = ?1 \
+                 WHERE conversation_id = 2",
+                &[ParamValue::from(FACTS_EXTRACTOR_VERSION - 1)],
+            )
+            .unwrap();
+            db.execute_compat(
+                "UPDATE viewer_session_projection SET projection_version = ?1 \
+                 WHERE conversation_id = 3",
+                &[ParamValue::from(PROJECTION_VERSION - 1)],
+            )
+            .unwrap();
+            db.execute_compat(
+                "UPDATE viewer_session_projection SET extractor_version = ?1 \
+                 WHERE conversation_id = 4",
+                &[ParamValue::from(FACTS_EXTRACTOR_VERSION - 1)],
+            )
+            .unwrap();
+            db.execute("DELETE FROM viewer_search_region_marks WHERE conversation_id = 5")
+                .unwrap();
+
+            let detected: Vec<i64> = region_reproject_candidates(db)
+                .unwrap()
+                .into_iter()
+                .map(|candidate| candidate.conversation_id)
+                .collect();
+            assert_eq!(detected, vec![1, 2, 3, 4, 5]);
+            for candidate in region_reproject_candidates(db).unwrap() {
+                assert_eq!(candidate.agent_slug, "claude_code");
+                assert_eq!(
+                    candidate.source_path,
+                    convs[(candidate.conversation_id - 1) as usize]
+                        .source_path
+                        .to_string_lossy()
+                        .to_string()
+                );
+            }
+            assert_eq!(region_reproject_target_count(db).unwrap(), 5);
+            assert_eq!(
+                region_reproject_unresolved_session_ids(db).unwrap(),
+                vec![1, 2, 3, 4, 5]
+            );
+
+            // A marker at the CURRENT region version excludes its session
+            // from the plan and the latch count, but never from the
+            // marker-inclusive residue.
+            db.execute_compat(
+                "INSERT OR REPLACE INTO viewer_region_reproject_attempts \
+                 (conversation_id, region_version, attempted_at_ms) \
+                 VALUES (?1, ?2, ?3)",
+                &[
+                    ParamValue::from(1),
+                    ParamValue::from(REGION_VERSION),
+                    ParamValue::from(0),
+                ],
+            )
+            .unwrap();
+            assert_eq!(
+                region_reproject_candidates(db)
+                    .unwrap()
+                    .into_iter()
+                    .map(|candidate| candidate.conversation_id)
+                    .collect::<Vec<_>>(),
+                vec![2, 3, 4, 5],
+                "a current-version attempts marker must exclude its session"
+            );
+            assert_eq!(region_reproject_target_count(db).unwrap(), 4);
+            assert_eq!(
+                region_reproject_unresolved_session_ids(db).unwrap(),
+                vec![1, 2, 3, 4, 5],
+                "the unresolved residue stays marker-inclusive"
+            );
+            // An OLD-version marker is a different run's record: it never
+            // excludes its session from this version's plan.
+            db.execute_compat(
+                "INSERT OR REPLACE INTO viewer_region_reproject_attempts \
+                 (conversation_id, region_version, attempted_at_ms) \
+                 VALUES (?1, ?2, ?3)",
+                &[
+                    ParamValue::from(2),
+                    ParamValue::from(old_version),
+                    ParamValue::from(0),
+                ],
+            )
+            .unwrap();
+            assert_eq!(region_reproject_target_count(db).unwrap(), 4);
+
+            // No source path: nothing on disk to re-visit, so the session
+            // leaves the plan even though its marks row is missing.
+            db.execute("UPDATE conversations SET source_path = '' WHERE id = 5")
+                .unwrap();
+            assert_eq!(
+                region_reproject_candidates(db)
+                    .unwrap()
+                    .into_iter()
+                    .map(|candidate| candidate.conversation_id)
+                    .collect::<Vec<_>>(),
+                vec![2, 3, 4],
+                "a session without a source path must not be a target"
+            );
+
+            // Remote-mirror sessions are re-projected by their own source's
+            // pipeline, not by the local pass — and the marks-only count
+            // still sees them, proving the exclusion is the detection's.
+            // (`conversations.source_id` carries a foreign key into the
+            // `sources` table, so the fixture needs the row.)
+            db.execute(
+                "INSERT OR REPLACE INTO sources \
+                 (id, kind, host_label, created_at, updated_at) \
+                 VALUES ('remote', 'ssh', 'remote fixture', 0, 0)",
+            )
+            .unwrap();
+            db.execute_compat(
+                "UPDATE viewer_search_region_marks SET region_version = ?1 \
+                 WHERE conversation_id = 6",
+                &[ParamValue::from(old_version)],
+            )
+            .unwrap();
+            db.execute("UPDATE conversations SET source_id = 'remote' WHERE id = 6")
+                .unwrap();
+            assert_eq!(
+                region_reproject_candidates(db)
+                    .unwrap()
+                    .into_iter()
+                    .map(|candidate| candidate.conversation_id)
+                    .collect::<Vec<_>>(),
+                vec![2, 3, 4],
+                "a remote session must not be a local re-projection target"
+            );
+            assert_eq!(
+                stale_region_version_session_count(db).unwrap(),
+                2,
+                "the marks-only count still sees the remote and marked sessions"
+            );
+        }
+
+        /// The plan maps archive slugs to registry connectors
+        /// (`claude_code` -> `claude`), bypasses only live in-lane sources,
+        /// reports vanished sources without bypassing them, and exists
+        /// (empty) on a current archive. Watch runs never plan.
+        #[test]
+        fn reproject_plan_bypasses_live_lane_sources_and_reports_vanished() {
+            use crate::viewer_extensions::search_regions::REGION_VERSION;
+
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("plan.db"));
+            let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
+            let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+            let convs: Vec<_> = (0..4i64)
+                .map(|ordinal| grind_region_session(dir.path(), ordinal))
+                .collect();
+            persist_conversations_batched(
+                &storage,
+                Some(&mut index),
+                &convs,
+                LexicalPopulationStrategy::IncrementalInline,
+                false,
+            )
+            .unwrap();
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+            let db = storage.raw();
+            db.execute_compat(
+                "UPDATE viewer_search_region_marks SET region_version = ?1",
+                &[ParamValue::from(REGION_VERSION - 1)],
+            )
+            .unwrap();
+            // Sessions 1 and 2 keep live sources; 3 and 4 lose theirs.
+            std::fs::write(&convs[0].source_path, b"{}\n").unwrap();
+            std::fs::write(&convs[1].source_path, b"{}\n").unwrap();
+
+            let opts = reproject_test_opts(dir.path());
+            // Watch runs converge per event: no re-projection plan at all.
+            let mut watch_opts = reproject_test_opts(dir.path());
+            watch_opts.watch = true;
+            assert!(
+                plan_region_reproject(&storage, &watch_opts, &["claude"])
+                    .unwrap()
+                    .is_none()
+            );
+            let mut once_opts = reproject_test_opts(dir.path());
+            once_opts.watch_once_paths = Some(vec![convs[0].source_path.clone()]);
+            assert!(
+                plan_region_reproject(&storage, &once_opts, &["claude"])
+                    .unwrap()
+                    .is_none()
+            );
+
+            // Targets in a lane the plan's connectors do not cover are still
+            // reported, but no bypass is installed for them.
+            let plan = plan_region_reproject(&storage, &opts, &["codex"])
+                .unwrap()
+                .expect("a plain incremental run plans");
+            assert_eq!(plan.detected(), 4);
+            assert!(plan.bypassed_connector_names.is_empty());
+
+            // Live in-lane targets install the connector-wide bypass
+            // (`claude_code` sessions register under `claude`).
+            let plan = plan_region_reproject(&storage, &opts, &["claude"])
+                .unwrap()
+                .expect("a plain incremental run plans");
+            assert_eq!(plan.detected(), 4);
+            assert_eq!(plan.live_sources(), 2);
+            assert_eq!(plan.vanished_sources(), 2);
+            assert_eq!(
+                plan.bypassed_connector_names,
+                BTreeSet::from(["claude".to_string()])
+            );
+            // The ledger bypass set carries the live sources' raw and
+            // canonical forms, never the vanished ones.
+            let sources = region_reproject_source_set(&plan);
+            for live in [&convs[0], &convs[1]] {
+                assert!(sources.contains(&live.source_path));
+                assert!(sources.contains(
+                    &dunce::canonicalize(&live.source_path).expect("canonical live source")
+                ));
+            }
+            for vanished in [&convs[2], &convs[3]] {
+                assert!(
+                    !sources.contains(&vanished.source_path),
+                    "a vanished source must not bypass the ledger skip"
+                );
+            }
+
+            // A slug no registered connector owns stays a reported target,
+            // maps to no connector, and never contributes a bypass.
+            db.execute(
+                "INSERT INTO agents (slug, name, kind, created_at, updated_at) \
+                 VALUES ('mystery_agent', 'Mystery', 'agent', 0, 0)",
+            )
+            .unwrap();
+            db.execute(
+                "UPDATE conversations SET agent_id = \
+                 (SELECT id FROM agents WHERE slug = 'mystery_agent') WHERE id = 4",
+            )
+            .unwrap();
+            let plan = plan_region_reproject(&storage, &opts, &["claude", "codex"])
+                .unwrap()
+                .expect("a plain incremental run plans");
+            let mystery = plan
+                .targets
+                .iter()
+                .find(|target| target.conversation_id == 4)
+                .expect("the unmapped-slug session stays a target");
+            assert_eq!(mystery.connector_name, None);
+            assert_eq!(
+                plan.bypassed_connector_names,
+                BTreeSet::from(["claude".to_string()])
+            );
+
+            // A current archive plans EMPTY — the run still exists so the
+            // accounting pass can report the residue.
+            db.execute_compat(
+                "UPDATE viewer_search_region_marks SET region_version = ?1",
+                &[ParamValue::from(REGION_VERSION)],
+            )
+            .unwrap();
+            let plan = plan_region_reproject(&storage, &opts, &["claude"])
+                .unwrap()
+                .expect("a plain incremental run plans");
+            assert_eq!(plan.detected(), 0);
+            assert!(plan.bypassed_connector_names.is_empty());
+        }
+
+        /// Accounting writes markers only for proven-vanished, still-stale
+        /// targets whose connector did not fail; it drops markers whose
+        /// sessions converged (typically via `--full`), and a failed
+        /// connector's sessions retry on the next run.
+        #[test]
+        fn reproject_accounting_marks_vanished_skips_failed_and_drops_converged() {
+            use crate::viewer_extensions::search_regions::{
+                REGION_VERSION, region_reproject_candidates,
+                region_reproject_unresolved_session_ids,
+            };
+
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("accounting.db"));
+            let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
+            let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+            let convs: Vec<_> = (0..4i64)
+                .map(|ordinal| grind_region_session(dir.path(), ordinal))
+                .collect();
+            persist_conversations_batched(
+                &storage,
+                Some(&mut index),
+                &convs,
+                LexicalPopulationStrategy::IncrementalInline,
+                false,
+            )
+            .unwrap();
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+            let db = storage.raw();
+            db.execute_compat(
+                "UPDATE viewer_search_region_marks SET region_version = ?1",
+                &[ParamValue::from(REGION_VERSION - 1)],
+            )
+            .unwrap();
+            // Conversation 4 converged later (the `--full` shape: current
+            // again, while still holding a current-version marker from an
+            // older run) — its marker must be dropped, not kept forever.
+            db.execute_compat(
+                "UPDATE viewer_search_region_marks SET region_version = ?1 \
+                 WHERE conversation_id = 4",
+                &[ParamValue::from(REGION_VERSION)],
+            )
+            .unwrap();
+            db.execute_compat(
+                "INSERT OR REPLACE INTO viewer_region_reproject_attempts \
+                 (conversation_id, region_version, attempted_at_ms) VALUES (?1, ?2, ?3)",
+                &[
+                    ParamValue::from(4),
+                    ParamValue::from(REGION_VERSION),
+                    ParamValue::from(0),
+                ],
+            )
+            .unwrap();
+            // An old-version marker belongs to a previous version's attempt
+            // — it must survive this run untouched.
+            db.execute_compat(
+                "INSERT OR REPLACE INTO viewer_region_reproject_attempts \
+                 (conversation_id, region_version, attempted_at_ms) VALUES (?1, ?2, ?3)",
+                &[
+                    ParamValue::from(2),
+                    ParamValue::from(REGION_VERSION - 1),
+                    ParamValue::from(0),
+                ],
+            )
+            .unwrap();
+
+            let lane = RegionReprojectLaneReport {
+                targets: vec![
+                    RegionReprojectTarget {
+                        conversation_id: 1,
+                        connector_name: Some("claude"),
+                        source_path: convs[0].source_path.clone(),
+                        source_alive: false,
+                    },
+                    RegionReprojectTarget {
+                        conversation_id: 2,
+                        connector_name: Some("qwen"),
+                        source_path: convs[1].source_path.clone(),
+                        source_alive: false,
+                    },
+                    RegionReprojectTarget {
+                        conversation_id: 3,
+                        connector_name: Some("claude"),
+                        source_path: convs[2].source_path.clone(),
+                        source_alive: true,
+                    },
+                    RegionReprojectTarget {
+                        conversation_id: 4,
+                        connector_name: Some("claude"),
+                        source_path: convs[3].source_path.clone(),
+                        source_alive: true,
+                    },
+                ],
+                bypassed_connector_names: BTreeSet::new(),
+            };
+            let failed: BTreeSet<String> = ["qwen".to_string()].into();
+
+            let stats = finalize_region_reproject_accounting(&storage, &lane, &failed).unwrap();
+            assert_eq!(
+                stats,
+                RegionReprojectStats {
+                    stale_sessions: 4,
+                    live_sources: 2,
+                    vanished_sources: 2,
+                    connectors_bypassed: Vec::new(),
+                    unresolved_after_run: 3,
+                    marked_vanished: 1,
+                },
+                "only the proven-vanished claude session is marked; the failed \
+                 qwen connector and the live sessions are not"
+            );
+            let attempts: Vec<(i64, i64)> = db
+                .query_map_collect(
+                    "SELECT conversation_id, region_version \
+                     FROM viewer_region_reproject_attempts ORDER BY conversation_id",
+                    &[] as &[ParamValue],
+                    |row| Ok((row.get_typed::<i64>(0)?, row.get_typed::<i64>(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                attempts,
+                vec![(1, REGION_VERSION), (2, REGION_VERSION - 1)],
+                "the converged session's marker is dropped; the old-version \
+                 marker survives; only session 1 gains a current marker"
+            );
+
+            // The next run: qwen's scan recovered, so its session is
+            // markable now — the transient failure retried instead of
+            // being recorded as unresolvable.
+            let stats =
+                finalize_region_reproject_accounting(&storage, &lane, &BTreeSet::new()).unwrap();
+            assert_eq!(stats.marked_vanished, 2);
+            assert_eq!(stats.unresolved_after_run, 3);
+            let attempts: Vec<(i64, i64)> = db
+                .query_map_collect(
+                    "SELECT conversation_id, region_version \
+                     FROM viewer_region_reproject_attempts ORDER BY conversation_id",
+                    &[] as &[ParamValue],
+                    |row| Ok((row.get_typed::<i64>(0)?, row.get_typed::<i64>(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                attempts,
+                vec![(1, REGION_VERSION), (2, REGION_VERSION)],
+                "the recovered connector's vanished session is marked at the \
+                 current version, replacing its old-version marker"
+            );
+            // Marked sessions leave the plan but stay in the residue; the
+            // live still-stale session stays planned for the next run.
+            assert_eq!(
+                region_reproject_candidates(db)
+                    .unwrap()
+                    .into_iter()
+                    .map(|candidate| candidate.conversation_id)
+                    .collect::<Vec<_>>(),
+                vec![3]
+            );
+            assert_eq!(
+                region_reproject_unresolved_session_ids(db).unwrap(),
+                vec![1, 2, 3]
+            );
+        }
+
+        /// The republish latch counts the sessions the re-projection pass
+        /// will actually attempt (marker-excluded), not the raw stale count:
+        /// 600 stale sessions with 550 proven-vanished markers must NOT
+        /// latch the whole-archive drain.
+        #[test]
+        fn reproject_latch_counts_marker_excluded_targets_only() {
+            use crate::viewer_extensions::search_regions::{
+                REGION_VERSION, region_reproject_target_count, stale_region_version_session_count,
+            };
+
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("latch.db"));
+            let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
+            let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+            let session_count = REGION_DOC_REPUBLISH_DEFER_MIN_STALE_SESSIONS + 88;
+            let convs: Vec<_> = (0..session_count)
+                .map(|ordinal| grind_region_session(dir.path(), ordinal))
+                .collect();
+            persist_conversations_batched(
+                &storage,
+                Some(&mut index),
+                &convs,
+                LexicalPopulationStrategy::IncrementalInline,
+                false,
+            )
+            .unwrap();
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+            let db = storage.raw();
+            db.execute_compat(
+                "UPDATE viewer_search_region_marks SET region_version = ?1",
+                &[ParamValue::from(REGION_VERSION - 1)],
+            )
+            .unwrap();
+            // Prove 550 of the 600 stale sessions unresolvable (vanished
+            // sources attempted at the current version).
+            db.execute_compat(
+                "INSERT OR REPLACE INTO viewer_region_reproject_attempts \
+                 (conversation_id, region_version, attempted_at_ms) \
+                 SELECT conversation_id, ?1, ?2 FROM viewer_search_region_marks \
+                 WHERE region_version = ?3 LIMIT 550",
+                &[
+                    ParamValue::from(REGION_VERSION),
+                    ParamValue::from(0),
+                    ParamValue::from(REGION_VERSION - 1),
+                ],
+            )
+            .unwrap();
+            assert_eq!(region_reproject_target_count(db).unwrap(), 50);
+            assert_eq!(
+                stale_region_version_session_count(db).unwrap(),
+                session_count,
+                "the raw stale count stays marker-blind — the swap is what keeps \
+                 the latch honest"
+            );
+            // Below the threshold: no whole-archive drain.
+            let mut fresh_index =
+                TantivyIndex::open_or_create(&dir.path().join("latch-below")).unwrap();
+            maybe_defer_region_doc_convergence_for_republish(db, &mut fresh_index).unwrap();
+            assert!(
+                !fresh_index.region_doc_convergence_deferred_to_final_drain(),
+                "50 attemptable targets must not latch the deferral"
+            );
+            // Without the markers the 600 stale sessions do latch.
+            db.execute("DELETE FROM viewer_region_reproject_attempts")
+                .unwrap();
+            assert_eq!(region_reproject_target_count(db).unwrap(), session_count);
+            let mut latched_index =
+                TantivyIndex::open_or_create(&dir.path().join("latch-above")).unwrap();
+            maybe_defer_region_doc_convergence_for_republish(db, &mut latched_index).unwrap();
+            assert!(
+                latched_index.region_doc_convergence_deferred_to_final_drain(),
+                "600 attemptable targets must latch the deferral"
             );
         }
 
@@ -61409,6 +62452,7 @@ mod tests {
                 local_since_ts_by_connector: Arc::new(HashMap::new()),
                 progress: Some(progress.clone()),
                 active_source_filter: Arc::new(ActiveSessionSourceFilter::default()),
+                region_reproject_sources: Arc::new(HashSet::new()),
             },
         );
 
@@ -62331,6 +63375,7 @@ mod tests {
                 local_since_ts_by_connector: Arc::new(HashMap::new()),
                 progress: None,
                 active_source_filter: Arc::new(ActiveSessionSourceFilter::default()),
+                region_reproject_sources: Arc::new(HashSet::new()),
             },
         );
 

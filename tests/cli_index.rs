@@ -5473,3 +5473,485 @@ fn index_full_variable_width_corpus_passes_stock_sqlite_verification() {
     altered[1_000].push('!');
     assert_eq!(payload_mismatches(&altered, &stored), (1, 1));
 }
+
+// ---------------------------------------------------------------------------
+// REGION_VERSION re-projection on plain incremental runs (region reproject)
+// ---------------------------------------------------------------------------
+
+/// Pin a fixture file's mtime 60 s into the past. FAD's
+/// `file_modified_since` grants a 1-second grace (`since_ts - 1_000`), and
+/// the child `cass` process's startup (~0.8 s from fixture write to the
+/// scan's start) races that grace: depending on machine load a freshly
+/// written fixture can land inside the window and be re-discovered by a
+/// later run's mtime cutoff, flipping the unchanged-source assertions.
+/// 60 s clears every grace with margin while staying "recent" for every
+/// other consumer.
+fn rvt_pin_mtime_past(path: &std::path::Path) {
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(past)
+        .unwrap();
+}
+
+/// One Claude Code session file — the boundary-connector fixture (its
+/// unchanged sources are cut by the source-ingest ledger, not the mtime
+/// watermark).
+fn rvt_claude_session(
+    home: &std::path::Path,
+    session_id: &str,
+    needle: &str,
+) -> std::path::PathBuf {
+    let project = home.join(".claude/projects/rvt-probe");
+    fs::create_dir_all(&project).unwrap();
+    let file = project.join(format!("session-{session_id}.jsonl"));
+    let line = serde_json::json!({
+        "type": "user", "sessionId": session_id,
+        "uuid": format!("{session_id}-u0"),
+        "timestamp": "2026-11-10T10:00:00.000Z",
+        "cwd": home.to_string_lossy(),
+        "message": {"role": "user", "content": format!("{needle} question")}
+    });
+    fs::write(
+        &file,
+        format!("{}\n", serde_json::to_string(&line).unwrap()),
+    )
+    .unwrap();
+    rvt_pin_mtime_past(&file);
+    file
+}
+
+/// One Aider chat history — the non-boundary-connector fixture (its
+/// unchanged sources are cut by the mtime watermark).
+fn rvt_aider_history(dir: &std::path::Path, needle: &str) -> std::path::PathBuf {
+    fs::create_dir_all(dir).unwrap();
+    let file = dir.join(".aider.chat.history.md");
+    fs::write(&file, format!("> {needle} question\n\n{needle} response\n")).unwrap();
+    rvt_pin_mtime_past(&file);
+    file
+}
+
+/// One Qwen Code session — the non-boundary control connector whose marks
+/// stay at the current REGION_VERSION, proving unchanged-current sessions
+/// are never re-visited by the re-projection plan.
+fn rvt_qwen_session(home: &std::path::Path, needle: &str) -> std::path::PathBuf {
+    let project = home.join(".qwen/tmp/rvt-hash/chats");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        home.join(".qwen/tmp/rvt-hash/config.json"),
+        r#"{"workspace":"/workspace/rvt-qwen"}"#,
+    )
+    .unwrap();
+    let file = project.join("session-1762643950138-rvt.json");
+    let session = serde_json::json!({
+        "sessionId": "qwen-rvt-control",
+        "projectHash": "rvt-hash",
+        "startTime": "2026-11-10T09:00:00.000Z",
+        "lastUpdated": "2026-11-10T09:00:01.000Z",
+        "messages": [
+            {"id": "m1", "timestamp": "2026-11-10T09:00:00.000Z",
+             "type": "user", "content": format!("{needle} question")}
+        ]
+    });
+    fs::write(&file, serde_json::to_string(&session).unwrap()).unwrap();
+    rvt_pin_mtime_past(&file);
+    file
+}
+
+/// Read `(conversation_id, source_path)` rows from the archive.
+fn rvt_conversations(db_path: &std::path::Path) -> Vec<(i64, String)> {
+    use coding_agent_search::storage::sqlite::FrankenStorage;
+    use frankensqlite::compat::RowExt;
+    let storage = FrankenStorage::open_readonly(db_path).unwrap();
+    let rows = storage
+        .raw()
+        .query("SELECT id, source_path FROM conversations")
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            (
+                row.get_typed::<i64>(0).unwrap(),
+                row.get_typed::<Option<String>>(1)
+                    .unwrap()
+                    .unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>();
+    storage.close_without_checkpoint().unwrap();
+    rows
+}
+
+/// Read the region-marks rows as `(conversation_id -> (region_version,
+/// docs_state))`.
+fn rvt_region_marks(db_path: &std::path::Path) -> std::collections::HashMap<i64, (i64, String)> {
+    use coding_agent_search::storage::sqlite::FrankenStorage;
+    use frankensqlite::compat::RowExt;
+    let storage = FrankenStorage::open_readonly(db_path).unwrap();
+    let rows = storage
+        .raw()
+        .query(
+            "SELECT conversation_id, region_version, docs_state \
+             FROM viewer_search_region_marks",
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            (
+                row.get_typed::<i64>(0).unwrap(),
+                (
+                    row.get_typed::<i64>(1).unwrap(),
+                    row.get_typed::<String>(2).unwrap(),
+                ),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+    storage.close_without_checkpoint().unwrap();
+    rows
+}
+
+/// Run `cass index --json` (a plain incremental — never `--full`) and return
+/// the parsed payload.
+fn rvt_run_incremental(home: &std::path::Path, data_dir: &std::path::Path) -> serde_json::Value {
+    let mut cmd = base_cmd(home);
+    cmd.env("CASS_AUTO_REFRESH", "0");
+    cmd.env("CASS_RAW_MIRROR", "0");
+    // The Aider connector's default roots are cwd + HOME, and on macOS the
+    // raw temp path (/var/folders/...) canonicalizes (/private/var/...), so
+    // both roots walk the same history files and emit duplicate
+    // conversations with different source paths. A single explicit root
+    // (the house pattern from e2e_index_resume) keeps the fixture at one
+    // conversation per history file.
+    cmd.env("CASS_AIDER_DATA_ROOT", home);
+    cmd.args(["index", "--json"])
+        .arg("--data-dir")
+        .arg(data_dir);
+    let output = cmd.output().expect("run cass index");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "cass index should succeed. stdout: {stdout} stderr: {stderr}"
+    );
+    serde_json::from_slice(&output.stdout).expect("index --json emits valid JSON")
+}
+
+/// Per-connector conversation counter from an index payload.
+fn rvt_connector_conversations(payload: &serde_json::Value, name: &str) -> i64 {
+    payload["indexing_stats"]["connectors"]
+        .as_array()
+        .and_then(|connectors| {
+            connectors
+                .iter()
+                .find(|connector| connector["name"] == name)
+                .and_then(|connector| connector["conversations"].as_i64())
+        })
+        .unwrap_or(0)
+}
+
+/// The global `last_scan_ts` marker is persisted best-effort (bead zz8ni):
+/// `persist_final_index_run_metadata` swallows a final write that exhausts
+/// its BEGIN-CONCURRENT retries, so a lost writer race never fails a
+/// completed run. When the marker is absent, the next run's cutoff
+/// machinery (`connector_local_scan_since_ts_from_state`) loses every
+/// connector cutoff and rescans the whole universe. That pre-existing
+/// behavior would make the unchanged-source assertions below flake for
+/// reasons outside the re-projection lane, so repair the marker exactly as
+/// the next successful run would: seed the global row from the
+/// per-connector watermark this run did persist (the wall clock if even
+/// that was lost).
+fn rvt_repair_global_scan_watermark(db_path: &std::path::Path) {
+    use coding_agent_search::franken_sync::compat::ConnectionExt;
+    use coding_agent_search::storage::sqlite::FrankenStorage;
+    use frankensqlite::compat::RowExt;
+    let storage = FrankenStorage::open_readonly(db_path).unwrap();
+    let rows = storage
+        .raw()
+        .query(
+            "SELECT key, value FROM meta \
+             WHERE key IN ('last_scan_ts', 'last_scan_ts:connector:qwen')",
+        )
+        .unwrap();
+    let mut meta = std::collections::HashMap::new();
+    for row in &rows {
+        meta.insert(
+            row.get_typed::<String>(0).unwrap(),
+            row.get_typed::<String>(1).unwrap(),
+        );
+    }
+    storage.close_without_checkpoint().unwrap();
+    if meta
+        .get("last_scan_ts")
+        .is_some_and(|value| value.parse::<i64>().is_ok())
+    {
+        return;
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let seed = meta
+        .get("last_scan_ts:connector:qwen")
+        .cloned()
+        .unwrap_or_else(|| now_ms.to_string());
+    let conn =
+        coding_agent_search::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
+            .unwrap();
+    conn.execute_compat(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES('last_scan_ts', ?1)",
+        coding_agent_search::franken_sync::params![seed],
+    )
+    .unwrap();
+}
+
+/// A REGION_VERSION bump must converge on a PLAIN incremental run. Neither
+/// scan skip is version-aware today: the mtime watermark cuts non-boundary
+/// connectors (aider) and the source-ingest ledger cuts boundary ones
+/// (claude), so stale-mark sessions never reach the persist lane that would
+/// re-project them. The run must detect stale/missing marks, re-visit
+/// exactly those sessions' sources, and converge them through the ordinary
+/// persist + final-drain machinery. A session whose source vanished (Claude
+/// Code culls old sessions) must not loop forever and must not be marked
+/// current: it keeps its honest stale mark, is reported in the run's JSON,
+/// and never re-triggers connector rescans on later runs.
+#[test]
+fn incremental_reprojects_stale_region_marks_and_reports_vanished_sources() {
+    use coding_agent_search::franken_sync::Connection as FrankenConnection;
+    use coding_agent_search::franken_sync::compat::ConnectionExt;
+    use coding_agent_search::viewer_extensions::search_regions::REGION_VERSION;
+
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    fs::write(home.join(".env"), "").unwrap();
+    let data_dir = home.join("data");
+    fs::create_dir_all(&data_dir).unwrap();
+    let db_path = data_dir.join("agent_search.db");
+
+    let claude_a = rvt_claude_session(home, "rvt-claude-a", "rvt claude alpha probe");
+    let claude_b = rvt_claude_session(home, "rvt-claude-b", "rvt claude beta probe");
+    let aider_a = rvt_aider_history(home, "rvt aider alpha probe");
+    let aider_b = rvt_aider_history(&home.join("project-rvt"), "rvt aider beta probe");
+    let qwen = rvt_qwen_session(home, "rvt qwen control probe");
+    for source in [&claude_a, &claude_b, &aider_a, &aider_b, &qwen] {
+        assert!(source.exists(), "fixture {} must exist", source.display());
+    }
+
+    // Run 1: a plain incremental on a fresh archive indexes everything and
+    // publishes every mark at the current REGION_VERSION.
+    let run1 = rvt_run_incremental(home, &data_dir);
+    assert_eq!(run1["success"], true, "run 1 payload: {run1}");
+    assert_eq!(
+        run1["conversations"], 5,
+        "run 1 must index all five fixture sessions: {run1}"
+    );
+    let conversations = rvt_conversations(&db_path);
+    let find = |needle: &str| {
+        let (id, _) = conversations
+            .iter()
+            .find(|(_, path)| path.contains(needle))
+            .unwrap_or_else(|| panic!("no conversation for {needle}: {conversations:?}"));
+        *id
+    };
+    let ids = (
+        find("rvt-claude-a"),
+        find("rvt-claude-b"),
+        find("project-rvt"),
+        find("rvt-hash"),
+    );
+    let claude_a_id = ids.0;
+    let claude_b_id = ids.1;
+    let aider_b_id = ids.2;
+    let qwen_id = ids.3;
+    let aider_a_id = conversations
+        .iter()
+        .find(|(_, path)| path.ends_with(".aider.chat.history.md") && !path.contains("project-rvt"))
+        .map(|(id, _)| *id)
+        .expect("home aider conversation");
+    let stale_ids = [claude_a_id, claude_b_id, aider_a_id, aider_b_id];
+
+    let marks = rvt_region_marks(&db_path);
+    assert_eq!(marks.len(), 5, "every session must carry a marks row");
+    for &id in &stale_ids {
+        assert_eq!(
+            marks.get(&id),
+            Some(&(REGION_VERSION, "published".to_string())),
+            "run 1 must publish session {id} at the current version: {marks:?}"
+        );
+    }
+
+    // Fake the durable state a REGION_VERSION bump leaves: the four probe
+    // sessions' marks carry the previous version. The qwen control keeps
+    // its current-version mark.
+    {
+        let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
+        for &id in &stale_ids {
+            conn.execute_compat(
+                "UPDATE viewer_search_region_marks SET region_version = ?1 \
+                 WHERE conversation_id = ?2",
+                coding_agent_search::franken_sync::params![REGION_VERSION - 1, id],
+            )
+            .unwrap();
+        }
+        drop(conn);
+    }
+    // Run 1's best-effort global watermark write can lose the writer race
+    // (see rvt_repair_global_scan_watermark); repair it so the control
+    // connector's ordinary skip stays live for run 2.
+    rvt_repair_global_scan_watermark(&db_path);
+    // Claude Code culled the beta sessions' sources.
+    fs::remove_file(&claude_b).unwrap();
+    fs::remove_file(&aider_b).unwrap();
+
+    // Run 2: a plain incremental — never --full — must re-visit exactly the
+    // stale sessions' sources and converge every one whose source survives.
+    let run2 = rvt_run_incremental(home, &data_dir);
+    let marks = rvt_region_marks(&db_path);
+    let published = (REGION_VERSION, "published".to_string());
+    let stale = (REGION_VERSION - 1, "published".to_string());
+    assert_eq!(
+        marks.get(&claude_a_id),
+        Some(&published),
+        "the live boundary session must converge through the ledger bypass: {marks:?}"
+    );
+    assert_eq!(
+        marks.get(&aider_a_id),
+        Some(&published),
+        "the live non-boundary session must converge through the watermark bypass: {marks:?}"
+    );
+    assert_eq!(
+        marks.get(&claude_b_id),
+        Some(&stale),
+        "the vanished boundary session must keep its honest stale mark: {marks:?}"
+    );
+    assert_eq!(
+        marks.get(&aider_b_id),
+        Some(&stale),
+        "the vanished non-boundary session must keep its honest stale mark: {marks:?}"
+    );
+    assert_eq!(
+        marks.get(&qwen_id),
+        Some(&published),
+        "the current-version control session must stay published: {marks:?}"
+    );
+
+    // The run must report what it detected, what it re-visited, and what it
+    // could not converge.
+    let report = &run2["indexing_stats"]["region_reproject"];
+    assert!(
+        !report.is_null(),
+        "run 2 must report region_reproject stats: {run2}"
+    );
+    assert_eq!(report["stale_sessions"], 4, "run 2 report: {report}");
+    assert_eq!(report["live_sources"], 2, "run 2 report: {report}");
+    assert_eq!(report["vanished_sources"], 2, "run 2 report: {report}");
+    assert_eq!(report["unresolved_after_run"], 2, "run 2 report: {report}");
+    assert_eq!(report["marked_vanished"], 2, "run 2 report: {report}");
+    let bypassed = report["connectors_bypassed"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        bypassed.iter().any(|name| name == "claude"),
+        "the claude connector's skips must be bypassed: {report}"
+    );
+    assert!(
+        bypassed.iter().any(|name| name == "aider"),
+        "the aider connector's skips must be bypassed: {report}"
+    );
+
+    // The bypass re-parsed the stale connectors but left the control alone.
+    assert!(
+        rvt_connector_conversations(&run2, "claude") >= 1,
+        "run 2 must re-parse the stale claude session: {run2}"
+    );
+    assert!(
+        rvt_connector_conversations(&run2, "aider") >= 1,
+        "run 2 must re-parse the stale aider session: {run2}"
+    );
+    assert_eq!(
+        rvt_connector_conversations(&run2, "qwen"),
+        0,
+        "the current-version control connector must not be re-parsed: {run2}"
+    );
+
+    // Run 2's own best-effort global watermark write can lose the same
+    // writer race; repair it before the settled-state run.
+    rvt_repair_global_scan_watermark(&db_path);
+
+    // Run 3: the vanished sessions must not loop. Their unresolved markers
+    // keep them out of the re-projection plan, so nothing is re-scanned and
+    // no connector is bypassed — while the honest stale marks and the
+    // unresolved report stay visible.
+    let run3 = rvt_run_incremental(home, &data_dir);
+    assert_eq!(
+        rvt_connector_conversations(&run3, "claude"),
+        0,
+        "run 3 must not re-scan claude: {run3}"
+    );
+    assert_eq!(
+        rvt_connector_conversations(&run3, "aider"),
+        0,
+        "run 3 must not re-scan aider: {run3}"
+    );
+    assert_eq!(
+        rvt_connector_conversations(&run3, "qwen"),
+        0,
+        "run 3 must not re-scan qwen: {run3}"
+    );
+    let report = &run3["indexing_stats"]["region_reproject"];
+    assert_eq!(
+        report["stale_sessions"], 0,
+        "marked sessions must not re-enter the plan: {report}"
+    );
+    assert_eq!(
+        report["unresolved_after_run"], 2,
+        "the unresolved sessions must stay reported: {report}"
+    );
+    let marks = rvt_region_marks(&db_path);
+    assert_eq!(marks.get(&claude_b_id), Some(&stale));
+    assert_eq!(marks.get(&aider_b_id), Some(&stale));
+    assert_eq!(marks.get(&claude_a_id), Some(&published));
+    assert_eq!(marks.get(&aider_a_id), Some(&published));
+
+    // The unresolved-session markers are durable: a REGION_VERSION bump
+    // (or any future re-projection) must re-attempt them, so they carry the
+    // version they gave up at.
+    {
+        use coding_agent_search::storage::sqlite::FrankenStorage;
+        use frankensqlite::compat::RowExt;
+        let storage = FrankenStorage::open_readonly(&db_path).unwrap();
+        let rows = storage
+            .raw()
+            .query(
+                "SELECT conversation_id, region_version \
+                 FROM viewer_region_reproject_attempts",
+            )
+            .unwrap()
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get_typed::<i64>(0).unwrap(),
+                    row.get_typed::<i64>(1).unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        storage.close_without_checkpoint().unwrap();
+        let mut marked: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
+        marked.sort_unstable();
+        let mut expected = [claude_b_id, aider_b_id];
+        expected.sort_unstable();
+        assert_eq!(
+            rows.len(),
+            2,
+            "exactly the two vanished sessions hold unresolved markers: {rows:?}"
+        );
+        for (_id, version) in &rows {
+            assert_eq!(
+                *version, REGION_VERSION,
+                "the marker names the version it gave up at: {rows:?}"
+            );
+        }
+        assert_eq!(marked, expected, "marker rows: {rows:?}");
+    }
+}

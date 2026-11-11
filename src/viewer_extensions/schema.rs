@@ -62,7 +62,15 @@ use crate::franken_sync::compat::RowExt;
 /// instead of an archive-wide `LIKE` scan per published conversation.
 /// Replaces the v3 `idx_viewer_session_facts_parent_ext` index, which no
 /// query could ever seek (all its readers match suffix `LIKE` patterns).
-pub const EXTENSION_SCHEMA_VERSION: i64 = 9;
+/// v10: `viewer_region_reproject_attempts` — the loop guard for the
+/// incremental REGION_VERSION re-projection pass. A session whose source
+/// is gone (Claude Code culls old sessions) can never converge, so every
+/// plain incremental would re-attempt it forever; the pass writes one
+/// version-keyed marker per proven-unresolvable session at the end of a
+/// run, and the next run's plan excludes it until REGION_VERSION moves
+/// again (a new bump re-attempts every marked session) or a `--full`
+/// re-scan converges it.
+pub const EXTENSION_SCHEMA_VERSION: i64 = 10;
 
 /// Additive viewer schema. Every statement is idempotent so re-running the
 /// profile on an initialized archive is a no-op.
@@ -816,6 +824,32 @@ INSERT OR REPLACE INTO viewer_meta (key, value)
 VALUES ('extension_schema_version', '9');
 ";
 
+/// Schema v10 — the re-projection loop guard.
+///
+/// `viewer_region_reproject_attempts` records, per conversation, the
+/// REGION_VERSION at which the incremental re-projection pass gave up on
+/// it because its source file is gone (stat fails). The next run's
+/// detection query excludes rows carrying a marker at the CURRENT
+/// REGION_VERSION, so a vanished-source session is re-attempted once per
+/// version bump instead of once per run — while a later bump (or a
+/// `--full` re-scan that converges the session) naturally clears the
+/// gate, because the marker's version no longer matches or the session
+/// stops being stale. `ON DELETE CASCADE` keeps the marker inside the
+/// conversation's lifetime; the accounting pass deletes markers of
+/// sessions that are no longer stale so a converged session never keeps
+/// a stale marker row.
+const VIEWER_SCHEMA_V10: &str = r"
+CREATE TABLE IF NOT EXISTS viewer_region_reproject_attempts (
+    conversation_id INTEGER PRIMARY KEY
+        REFERENCES conversations(id) ON DELETE CASCADE,
+    region_version INTEGER NOT NULL,
+    attempted_at_ms INTEGER NOT NULL
+);
+
+INSERT OR REPLACE INTO viewer_meta (key, value)
+VALUES ('extension_schema_version', '10');
+";
+
 /// Guarded v3 column migration: `parent_external_id` cannot ride the
 /// `CREATE TABLE` statement (existing v2 archives keep their table), so it
 /// lands as an `ALTER TABLE` only when the column is absent — inside the
@@ -982,6 +1016,7 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
         connection.execute_batch(VIEWER_SCHEMA_V8)?;
         migrate_facts_parent_lookup_key(connection)?;
         connection.execute_batch(VIEWER_SCHEMA_V9)?;
+        connection.execute_batch(VIEWER_SCHEMA_V10)?;
         Ok(())
     })();
     match applied {
