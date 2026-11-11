@@ -154,6 +154,14 @@ fn frankensqlite_fork_source_identity_is_exact_and_coherent() {
         .expect("[patch.crates-io] must redirect the fsqlite family to the owner fork");
     for (dependency, spec) in patch_crates_io {
         let dependency = dependency.as_str();
+        // The one sanctioned non-fsqlite redirect: the owner's local
+        // frankensearch-quill prefix-expansion fork (owner decision
+        // 2026-11-10). Its exact git URL + rev and its lockfile convergence
+        // are enforced by build.rs (the frankensearch-quill pin guard), so
+        // this fsqlite-family gate only steps over it.
+        if dependency == "frankensearch-quill" {
+            continue;
+        }
         assert!(
             dependency == "fsqlite" || dependency.starts_with("fsqlite-"),
             "unexpected non-family key `{dependency}` in [patch.crates-io]"
