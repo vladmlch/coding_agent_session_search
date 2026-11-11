@@ -42,6 +42,22 @@ Three principles decide whether a reported result here is real:
 
 ---
 
+## All development lives in the owner's forks (owner rule, 2026-11-11)
+
+cass and its forked dependencies are developed only in the owner's GitHub forks:
+
+| Repo | Local checkout | `origin` (push here) |
+|------|----------------|----------------------|
+| cass | `coding_agent_session_search` | https://github.com/vladmlch/coding_agent_session_search |
+| FAD | `../franken_agent_detection` | https://github.com/vladmlch/franken_agent_detection |
+| frankensearch | `../frankensearch` | https://github.com/vladmlch/frankensearch |
+| frankensqlite | `../frankensqlite` | https://github.com/vladmlch/frankensqlite |
+
+In every checkout `origin` is the owner fork and `upstream` is Dicklesworthstone's repo with its
+push URL disabled. Push work branches to `origin`; cass pins fork revs by GitHub URL (never
+`file://`). Merged fork work goes into the fork's `main`/`master`; the cass-pinned branches stay
+as they are until cass moves its pin.
+
 ## Git Branch: ONLY Use `main`, NEVER `master`
 
 **The default branch is `main`. The `master` branch exists only for legacy URL compatibility.**
