@@ -259,7 +259,7 @@ const CONTRACTS: &[DependencyContract] = &[
         // typed scan error instead of copying a huge store.
         // See that repo's LOCAL_FIXES.md. Return to the upstream URL/rev
         // once upstream carries every row there.
-        expected_git: "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection",
+        expected_git: "https://github.com/vladmlch/franken_agent_detection",
         expected_rev: "0d972a98077d7748bce43f7e9902af9cd357ebb8",
         expected_version: "0.3.10",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
@@ -814,7 +814,7 @@ fn validate_fsqlite_source_pin(manifest_dir: &Path, manifest: &Value, packaged_m
 }
 
 fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_manifest: bool) {
-    // `frankensearch-quill` resolves exclusively from the owner's LOCAL
+    // `frankensearch-quill` resolves exclusively from the owner's
     // frankensearch fork at the exact rev below (owner decision,
     // 2026-11-10; rev moved 2026-11-11 for the follow-up cost fix, then
     // again the same day for the measured parity fix). The rev is
@@ -842,10 +842,9 @@ fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_man
     // keeps version 0.4.1 and the CASS schema hash stays v9-quill, so
     // the registry-shaped frankensearch requirements still converge and
     // no reindex is needed. Every other frankensearch family crate
-    // keeps its crates.io resolution; the fork is local-only (never
-    // pushed).
-    const EXPECTED_FORK_GIT: &str =
-        "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/frankensearch";
+    // keeps its crates.io resolution. The fork is the owner's pushed
+    // GitHub fork (branch cass-prefix-expansion, pushed 2026-11-11).
+    const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensearch";
     const EXPECTED_FORK_REV: &str = "bb7d899a176a2de3d6106449448d020fe3f1e6e5";
     const EXPECTED_VERSION: &str = "0.4.1";
     // A full-sha `rev = "<sha>"` git source serializes in Cargo.lock as
@@ -856,7 +855,7 @@ fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_man
 
     // 1. The [patch.crates-io] table must carry exactly one
     //    frankensearch-family redirect: `frankensearch-quill` as a table
-    //    pinning exactly the fork's file:// URL and rev — never a path
+    //    pinning exactly the fork's git URL and rev — never a path
     //    source, another remote, a floating branch/tag, or a stale rev.
     //    Any other family member in the table means the family stopped
     //    resolving from crates.io; a missing quill entry is not caught
@@ -887,7 +886,7 @@ fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_man
             let Some(spec) = spec.as_table() else {
                 violations.push(format!(
                     "dependency source contract violation for {dependency}: the \
-                     [patch.crates-io] entry must be a table pinning the local fork"
+                     [patch.crates-io] entry must be a table pinning the owner fork"
                 ));
                 continue;
             };
@@ -901,7 +900,7 @@ fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_man
             {
                 violations.push(format!(
                     "dependency source contract violation for {dependency}: \
-                     frankensearch-quill resolves from the local fork at git = \
+                     frankensearch-quill resolves from the owner fork at git = \
                      `{EXPECTED_FORK_GIT}`, rev = `{EXPECTED_FORK_REV}`; found git = \
                      `{actual_git}`, rev = `{actual_rev}`"
                 ));
@@ -953,7 +952,7 @@ fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_man
         if source.starts_with(&fork_git_prefix) && name != "frankensearch-quill" {
             violations.push(format!(
                 "`{name}` resolves from the frankensearch fork's git source; only \
-                 frankensearch-quill may resolve from the local fork"
+                 frankensearch-quill may resolve from the owner fork"
             ));
         }
         if name != "frankensearch-quill" {
@@ -964,14 +963,14 @@ fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_man
         if version != EXPECTED_VERSION {
             violations.push(format!(
                 "`frankensearch-quill` resolves at `{version}`, expected \
-                 `{EXPECTED_VERSION}`; the local fork must publish 0.4.1 so the \
+                 `{EXPECTED_VERSION}`; the owner fork must publish 0.4.1 so the \
                  frankensearch family requirements converge on one resolution"
             ));
         }
         if source != expected_lock_source {
             violations.push(format!(
                 "`frankensearch-quill` resolves from `{source}`, expected the pinned \
-                 local fork (`{expected_lock_source}`)"
+                 owner fork (`{expected_lock_source}`)"
             ));
         }
     }

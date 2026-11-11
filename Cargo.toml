@@ -198,7 +198,9 @@ frankensearch = { version = "=0.7.1", default-features = false, features = ["has
 # 0d972a9 (cass-snapshot-cap, F18) caps that snapshot fallback at 2 GiB of
 # db + -wal and refuses a copy the temp dir has no room for, reporting a
 # typed scan error instead (a crashed 27 GB Devin store is not copied).
-franken-agent-detection = { version = "=0.3.10", git = "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/franken_agent_detection", rev = "0d972a98077d7748bce43f7e9902af9cd357ebb8", features = ["connectors", "cursor", "chatgpt", "opencode", "crush", "goose", "hermes", "devin", "shelley", "grok-bot", "openclaw-sqlite", "copilot-vscdb", "codebuff", "codex-zstd", "pi-durable", "pi-sqlite"] }
+# Source: the owner's pushed FAD fork https://github.com/vladmlch/franken_agent_detection
+# (branch cass-snapshot-cap; every cass-* branch is pushed there, 2026-11-11).
+franken-agent-detection = { version = "=0.3.10", git = "https://github.com/vladmlch/franken_agent_detection", rev = "0d972a98077d7748bce43f7e9902af9cd357ebb8", features = ["connectors", "cursor", "chatgpt", "opencode", "crush", "goose", "hermes", "devin", "shelley", "grok-bot", "openclaw-sqlite", "copilot-vscdb", "codebuff", "codex-zstd", "pi-durable", "pi-sqlite"] }
 wide = "1.4.0"  # Portable SIMD for P0 Opt 2: SIMD dot product
 arrayvec = "0.7.6"  # Stack-based arrays for P1 Opt 1.4: Edge N-gram optimization
 bloomfilter = "3.0.1"  # Probabilistic membership testing for P2 Opt 3.3: Workspace Cache
@@ -435,8 +437,9 @@ fsqlite-types = { git = "https://github.com/vladmlch/frankensqlite", rev = "898c
 fsqlite-vdbe = { git = "https://github.com/vladmlch/frankensqlite", rev = "898c43612b36301168b97644a89df2fb933ca457" }
 fsqlite-vfs = { git = "https://github.com/vladmlch/frankensqlite", rev = "898c43612b36301168b97644a89df2fb933ca457" }
 fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "898c43612b36301168b97644a89df2fb933ca457" }
-# frankensearch-quill resolves from the owner's LOCAL frankensearch fork
-# (branch cass-prefix-expansion) by exact rev (owner decision, 2026-11-10;
+# frankensearch-quill resolves from the owner's frankensearch fork
+# https://github.com/vladmlch/frankensearch (branch cass-prefix-expansion,
+# pushed 2026-11-11) by exact rev (owner decision, 2026-11-10;
 # rev moved 2026-11-11 for the follow-up cost fix, then again the same day
 # for the measured parity fix). The rev is upstream
 # frankensearch-quill-v0.4.1 (735701af) plus the query-side
@@ -465,8 +468,7 @@ fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "898c43
 # redirected entry, a branch/tag/path pin, a duplicate or off-source
 # lockfile resolution, and any other family crate resolving from the
 # fork's git source. Rollback: delete the entry and re-run `cargo fetch`.
-# The fork is local-only — never pushed.
-frankensearch-quill = { git = "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/frankensearch", rev = "bb7d899a176a2de3d6106449448d020fe3f1e6e5" }
+frankensearch-quill = { git = "https://github.com/vladmlch/frankensearch", rev = "bb7d899a176a2de3d6106449448d020fe3f1e6e5" }
 
 # The dependency graph is pinned to the asupersync 0.5.x line (0.5.0). Keep
 # the frankensqlite (owner-fork), frankensearch, and franken-agent-detection
