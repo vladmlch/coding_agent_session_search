@@ -54,8 +54,11 @@
 //!    prefetch. Stage 1b plans the region READ the request spends
 //!    through [`plan_region_load_mode`] — `emitted_page_sessions`
 //!    (fast lane: the emitted page's conversations only, loaded at page
-//!    time), `gated_quill_seeks` (legacy: per-literal Quill gates) or
-//!    the `universe_structural` fallback — receipted as
+//!    time), `gated_quill_seeks` (legacy: per-literal Quill gates),
+//!    `block_predicate_seeks` (value-provable block predicates answer
+//!    through request-wide SQL value seeks + NULL-candidate probes, see
+//!    [`BlockSeekEvidence`]) or the `universe_structural` fallback —
+//!    receipted as
 //!    `region_load_mode`/`region_load_reason`/`region_rows_loaded`.
 //!    Receipt semantics (review I-2): `witness_count` is the DELIVERED
 //!    witness count — textual witnesses the page could prove and
@@ -1472,15 +1475,29 @@ fn plan_reads_fragments(node: &PlanNode) -> bool {
 /// the plans that need it.
 ///
 /// `universe_structural` — today's eager load, for that plan only:
-/// - any Predicate with a block-domain field (BLOCK_FIELDS) or `has_mcp`:
-///   `collection` iterates the WHOLE region set and its Unknown verdicts
-///   hinge on per-session coverage × per-region scope (`unknown_field`) —
-///   state no index seek can reproduce — and the tool/file/mcp matchers
-///   fold case, expand synonym classes and glob, so they are not
-///   seek-expressible either. The brief's explicit fallback path.
+/// - any Predicate over a block field the seek lane cannot prove
+///   (`scope`, whose Unknown candidates are unconditional on coverage;
+///   `mcp`, whose True arm reads persisted fragments; `exit` with a
+///   non-comparison op or a non-i64 expected value), or `has_mcp` mixed
+///   into a plan that needs the eager load for another reason: `collection`
+///   iterates the WHOLE region set and its Unknown verdicts hinge on
+///   per-session coverage × per-region scope (`unknown_field`) — state no
+///   index seek can reproduce. The brief's explicit fallback path.
+/// - two positive block predicates under one AND (see
+///   `block_predicate_same_block_and`).
 /// - any non-ASCII literal that is not a `never` matcher: the analyzer
 ///   cannot prove the negative, so `eval_literal`'s ungated branch
 ///   consults EVERY region under MAX_UNGATED_CHAT_HYDRATIONS.
+///
+/// `seek_block_domain` — plans whose block predicates are all
+/// value-provable (tool/file/exit/error_type/has_error/has_mcp, at most
+/// one positive predicate atom per AND): the exact True key sets come
+/// from request-wide SQL value seeks over the region columns plus
+/// NULL-candidate probes for the Unknown discharge (see
+/// [`BlockSeekEvidence`]); region rows attach only where literal gates
+/// pointed (the predicates never need resident rows). Receipts as
+/// `block_predicate_seeks` (or `emitted_page_sessions` under the fast
+/// lane, whose page strategy is unchanged).
 ///
 /// `on_demand` — every other plan: literals are all gated (ASCII,
 /// index-provable) and predicates are all session-domain, so region rows
@@ -1494,8 +1511,66 @@ enum RegionLoadMode {
     /// (reason) — today's eager structural universe load; the reason is
     /// receipted in diagnostics.
     UniverseStructural(&'static str),
+    /// Block-domain predicates answer through request-wide SQL value seeks
+    /// over the region columns (see [`BlockSeekEvidence`]); region rows are
+    /// read only where the predicates' values point (plus any literal
+    /// gates), never as an eager universe load.
+    SeekBlockDomain,
     /// Region rows load on demand, scaled to hit/page size.
     OnDemand,
+}
+
+/// Block-predicate fields whose per-region truth (`region_value`) is a pure
+/// function of one persisted column, so the exact True key set is provable
+/// by SQL value reads (tool/file through their dedicated indexes,
+/// exit/error_type/has_error through a comparison-filtered narrow
+/// projection — no index exists for them, but the engine-side filter still
+/// returns only matching rows). `scope` is NOT here: its Unknown candidates
+/// (scope_known = 0 rows) are unconditional on coverage and a value seek
+/// cannot prove their absence cheaply. `mcp` is NOT here: its True arm
+/// reads persisted fragments. `has_mcp` is: its only region consult is the
+/// `named` existence check, which the tool_name vocabulary seek proves
+/// exactly (see [`build_block_seek_evidence`]).
+fn seekable_block_field(field: &str) -> bool {
+    matches!(
+        field,
+        "tool" | "file" | "exit" | "error_type" | "has_error" | "has_mcp"
+    )
+}
+
+/// Does this subtree bear a POSITIVE seekable block predicate — one whose
+/// evaluation produces a region-set [`NodeResult`] that participates in AND
+/// set algebra? `has_mcp` never bears (its result is a collapsed constant,
+/// and constants compose under AND without key surfaces); a predicate
+/// under a `Not` does not bear either (the `Not` collapses the child's sets
+/// before any sibling intersection can consult them). An `Or` of atoms
+/// counts as ONE atom at its parent AND (it needs one matching region, not
+/// the same region for two conjuncts) — the same composition rule
+/// [`classify_fast_shape`] applies to fast-lane region atoms.
+fn bears_positive_block_predicate(node: &PlanNode) -> bool {
+    match node {
+        PlanNode::Predicate { field, .. } => {
+            matches!(
+                field.as_str(),
+                "tool" | "file" | "exit" | "error_type" | "has_error"
+            )
+        }
+        PlanNode::Not(_) => false,
+        PlanNode::And(children) | PlanNode::Or(children) => {
+            children.iter().any(bears_positive_block_predicate)
+        }
+        PlanNode::Literal { .. } | PlanNode::All => false,
+    }
+}
+
+/// An exit predicate is seek-expressible only when the SQL comparison
+/// `exit_code <op> ?N` is exactly the Rust `compare_numbers(exit as f64,
+/// expected, op)` over the stored integers: a comparison op the Rust arm
+/// knows (anything else makes every region Unknown) and an i64-shaped
+/// expected value (a float-shaped AST value like `2.0` keeps the eager
+/// lane — conservative and correct, never a silently narrowed comparison).
+fn exit_predicate_seekable(op: &str, expected: &Value) -> bool {
+    matches!(op, "EQ" | "NEQ" | "GT" | "GTE" | "LT" | "LTE") && expected.as_i64().is_some()
 }
 
 fn plan_region_load_mode(
@@ -1513,26 +1588,94 @@ fn plan_region_load_mode(
                 RegionLoadMode::OnDemand
             }
         }
-        PlanNode::Predicate { field, .. } => {
-            if field == "has_mcp" || BLOCK_FIELDS.contains(&field.as_str()) {
+        PlanNode::Predicate {
+            field, op, value, ..
+        } => {
+            // Eager for every region-consulting predicate the seek lane
+            // cannot express (scope, mcp) and for exit comparisons the
+            // seek cannot mirror (`compare_numbers` returns Unknown for
+            // any other op or a non-integer expected value).
+            if !seekable_block_field(field)
+                || (field == "exit" && !exit_predicate_seekable(op, value))
+            {
                 RegionLoadMode::UniverseStructural("region_domain_predicate")
+            } else {
+                RegionLoadMode::SeekBlockDomain
+            }
+        }
+        PlanNode::Not(child) => plan_region_load_mode(child, matchers),
+        PlanNode::And(children) => {
+            let modes: Vec<RegionLoadMode> = children
+                .iter()
+                .map(|child| plan_region_load_mode(child, matchers))
+                .collect();
+            if let Some(RegionLoadMode::UniverseStructural(reason)) =
+                modes.iter().find_map(|mode| match mode {
+                    RegionLoadMode::UniverseStructural(reason) => {
+                        Some(RegionLoadMode::UniverseStructural(reason))
+                    }
+                    _ => None,
+                })
+            {
+                return reason_mode(reason);
+            }
+            if modes
+                .iter()
+                .any(|mode| matches!(mode, RegionLoadMode::SeekBlockDomain))
+            {
+                // The narrowed predicate sets are exact under AND only while
+                // at most ONE positive block predicate atom participates:
+                // a second predicate's unknown-candidate keys (UP ∩ K cross
+                // terms) are not provable by value seeks, so the shape falls
+                // back to the eager lane and receipts why.
+                let atoms = children
+                    .iter()
+                    .filter(|child| bears_positive_block_predicate(child))
+                    .count();
+                if atoms > 1 {
+                    return RegionLoadMode::UniverseStructural("block_predicate_same_block_and");
+                }
+                RegionLoadMode::SeekBlockDomain
             } else {
                 RegionLoadMode::OnDemand
             }
         }
-        PlanNode::Not(child) => plan_region_load_mode(child, matchers),
-        PlanNode::And(children) | PlanNode::Or(children) => children
-            .iter()
-            .map(|child| plan_region_load_mode(child, matchers))
-            .find_map(|mode| match mode {
-                RegionLoadMode::UniverseStructural(reason) => {
-                    Some(RegionLoadMode::UniverseStructural(reason))
-                }
-                RegionLoadMode::OnDemand => None,
-            })
-            .unwrap_or(RegionLoadMode::OnDemand),
+        PlanNode::Or(children) => {
+            // An Or evaluates EVERY arm, so any child that needs the eager
+            // load (scope/mcp predicates, ungated literals) forces the eager
+            // lane for the whole plan — the seek mode must never shadow a
+            // later sibling's eager requirement.
+            let modes: Vec<RegionLoadMode> = children
+                .iter()
+                .map(|child| plan_region_load_mode(child, matchers))
+                .collect();
+            if let Some(RegionLoadMode::UniverseStructural(reason)) =
+                modes.iter().find_map(|mode| match mode {
+                    RegionLoadMode::UniverseStructural(reason) => {
+                        Some(RegionLoadMode::UniverseStructural(reason))
+                    }
+                    _ => None,
+                })
+            {
+                return reason_mode(reason);
+            }
+            if modes
+                .iter()
+                .any(|mode| matches!(mode, RegionLoadMode::SeekBlockDomain))
+            {
+                RegionLoadMode::SeekBlockDomain
+            } else {
+                RegionLoadMode::OnDemand
+            }
+        }
         PlanNode::All => RegionLoadMode::OnDemand,
     }
+}
+
+/// Return the eager mode for `reason`, keeping the existing
+/// `UniverseStructural` spelling in one place.
+fn reason_mode(reason: &'static str) -> RegionLoadMode {
+    RegionLoadMode::UniverseStructural(reason)
 }
 
 /// Fill every universe region's persisted fragment in place (the
@@ -1664,6 +1807,490 @@ fn attach_gated_regions(
         stats.regions_loaded += session.regions.len();
     }
     Ok(())
+}
+
+/// Sentinel `possible` key for a narrowed predicate's non-resident Unknown
+/// candidates (see [`BlockSeekEvidence`]). A region key it can never be
+/// (region keys never contain NUL), so it never survives an intersection
+/// with a literal's member keys — it exists to keep the predicate node's
+/// own verdict `Unknown` exactly where the eager lane's per-region Unknown
+/// keys would have, when those regions are precisely the rows the seek lane
+/// did not attach. Consumers that only read set membership through
+/// `combine`/`negate`/`truth` see byte-identical verdicts and reasons.
+const UNKNOWN_PREDICATE_SENTINEL: &str = "\u{0}predicate_unknown";
+
+/// `IN()` chunk width for the value seeks (SQL placeholder budget).
+const SEEK_VALUE_CHUNK: usize = 500;
+
+/// Per-request SQL value-seek evidence for one [`RegionLoadMode::SeekBlockDomain`]
+/// plan. Built once after the region attach, consulted by every predicate
+/// evaluation. Three exactness pillars (the report's equivalence argument):
+///
+/// 1. **True keys** — per distinct predicate, the seek reads the WHOLE
+///    `viewer_search_regions` table by value (the DISTINCT vocabulary is
+///    filtered through the SAME Rust matcher the eager per-region arm
+///    uses, then sought through `IN()`; exit/error_type/has_error compare
+///    the stored column directly), so `known` is the exact resident-True
+///    key set per conversation — identical to the eager `collection`'s,
+///    without loading any of those rows.
+/// 2. **Resident Unknown keys** — the narrowed collection still evaluates
+///    `region_value` over the attached (literal-gated) residents, so every
+///    Unknown key the eager lane would intersect with literal member keys
+///    is present (literal members are always residents — the Quill gate
+///    attached them).
+/// 3. **Non-resident Unknown existence** — one NULL-candidate probe per
+///    predicate field, run only when some universe session's coverage
+///    actually blocks that field, answers "could a non-attached region
+///    discharge Unknown here"; the sentinel key turns that into the same
+///    `Unknown` verdict with the same `value_unknown` reason the eager
+///    lane produced per region.
+///
+/// The probe conditions mirror `unknown_field` exactly: `tool`/`exit` add
+/// the scope discharge (`scope_known = 0 OR scope = 'tools'`), `file`/
+/// `error_type`/`has_error` probe the bare NULL column. Vocabulary reads
+/// (DISTINCT column values) are index-only and NOT counted in
+/// `regions_loaded`; seek and probe result rows ARE counted.
+struct BlockSeekEvidence {
+    /// (field, op, json(expected)) → conversation → the exact True region
+    /// keys. Inserted for EVERY seekable predicate of the plan (possibly
+    /// empty), so a lookup can never silently miss.
+    predicates: HashMap<(String, String, String), HashMap<i64, BTreeSet<String>>>,
+    /// field → conversations holding a region whose NULL value can
+    /// discharge Unknown (the probe rows). `has_mcp` never appears: its
+    /// Unknown is coverage-conditional only.
+    probes: HashMap<String, HashSet<i64>>,
+    /// Conversations with any tool name that names an MCP server
+    /// (`has_mcp`'s `named` arm: ascii-fold contains "mcp", or contains
+    /// '/') — proven table-wide by the same tool_name vocabulary seek.
+    mcp_named: HashSet<i64>,
+}
+
+fn block_predicate_key(field: &str, op: &str, expected: &Value) -> (String, String, String) {
+    (
+        field.to_owned(),
+        op.to_owned(),
+        serde_json::to_string(expected).unwrap_or_default(),
+    )
+}
+
+impl BlockSeekEvidence {
+    fn keys_for(
+        &self,
+        field: &str,
+        op: &str,
+        expected: &Value,
+    ) -> Option<&HashMap<i64, BTreeSet<String>>> {
+        self.predicates
+            .get(&block_predicate_key(field, op, expected))
+    }
+
+    /// Does this conversation hold a region whose NULL value can discharge
+    /// Unknown for `field`? `None` when no probe ran (no blocking session
+    /// existed — nothing can discharge Unknown).
+    fn probe_hit(&self, field: &str, conversation_id: i64) -> bool {
+        self.probes
+            .get(field)
+            .is_some_and(|candidates| candidates.contains(&conversation_id))
+    }
+}
+
+/// Collect every seekable block predicate of the plan (any nesting, any
+/// polarity — a `Not` child still evaluates the predicate node itself).
+fn collect_seek_predicates(node: &PlanNode, out: &mut Vec<(String, String, Value)>) {
+    match node {
+        PlanNode::Predicate {
+            field, op, value, ..
+        } => {
+            if seekable_block_field(field) {
+                out.push((field.clone(), op.clone(), value.clone()));
+            }
+        }
+        PlanNode::Not(child) => collect_seek_predicates(child, out),
+        PlanNode::And(children) | PlanNode::Or(children) => {
+            for child in children {
+                collect_seek_predicates(child, out);
+            }
+        }
+        PlanNode::Literal { .. } | PlanNode::All => {}
+    }
+}
+
+/// DISTINCT non-NULL vocabulary of one region column — the value set the
+/// per-field Rust matcher folds over, read once per request per column
+/// (memoized by the caller). Index-only: never counted in `regions_loaded`.
+fn read_distinct_column(
+    connection: &Connection,
+    column: &str,
+    deadline: &Deadline,
+) -> Result<Vec<String>> {
+    deadline.check("seek", format!("DISTINCT {column} vocabulary read"))?;
+    let rows = connection.query_with_params(
+        &format!(
+            "SELECT DISTINCT {column} FROM viewer_search_regions \
+             WHERE {column} IS NOT NULL"
+        ),
+        &[],
+    )?;
+    let mut values = Vec::with_capacity(rows.len());
+    for row in &rows {
+        values.push(row.get_typed(0)?);
+    }
+    Ok(values)
+}
+
+/// Seek `(conversation_id, region_key)` pairs by an `IN()` chunk of
+/// matched column values; group the keys per conversation, filtered to the
+/// request's universe. Counts every returned row in `regions_loaded` —
+/// the receipt means "region rows read by this request".
+fn seek_region_keys_by_values(
+    connection: &Connection,
+    column: &str,
+    values: &[&str],
+    universe: &HashSet<i64>,
+    stats: &mut HydrateStats,
+    deadline: &Deadline,
+) -> Result<HashMap<i64, BTreeSet<String>>> {
+    let mut per_conversation: HashMap<i64, BTreeSet<String>> = HashMap::new();
+    for chunk in values.chunks(SEEK_VALUE_CHUNK) {
+        if chunk.is_empty() {
+            continue;
+        }
+        deadline.check(
+            "seek",
+            format!("{column} value seek over {} value(s)", chunk.len()),
+        )?;
+        let placeholders = (1..=chunk.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let params: Vec<SqliteValue> = chunk
+            .iter()
+            .map(|value| SqliteValue::Text((*value).into()))
+            .collect();
+        let rows = connection.query_with_params(
+            &format!(
+                "SELECT conversation_id, region_key FROM viewer_search_regions \
+                 WHERE {column} IN ({placeholders})"
+            ),
+            &params,
+        )?;
+        stats.regions_loaded += rows.len();
+        for row in &rows {
+            let cid: i64 = row.get_typed(0)?;
+            let key: String = row.get_typed(1)?;
+            if universe.contains(&cid) {
+                per_conversation.entry(cid).or_default().insert(key);
+            }
+        }
+    }
+    Ok(per_conversation)
+}
+
+/// The NULL-candidate probe SQL for one field — exactly `unknown_field`'s
+/// discharge condition in SQL: the region's value column is NULL and, for
+/// the tools-scope fields, the scope cannot prove the region is not a
+/// tools block (`scope_known = 0 OR scope = 'tools'`). One table-wide
+/// bounded pass per field, only run when some universe session's coverage
+/// actually blocks that field.
+fn block_probe_sql(field: &str) -> &'static str {
+    match field {
+        "tool" => {
+            "SELECT DISTINCT conversation_id FROM viewer_search_regions \
+                  WHERE tool_name IS NULL AND (scope_known = 0 OR scope = 'tools')"
+        }
+        "exit" => {
+            "SELECT DISTINCT conversation_id FROM viewer_search_regions \
+                   WHERE exit_code IS NULL AND (scope_known = 0 OR scope = 'tools')"
+        }
+        "file" => {
+            "SELECT DISTINCT conversation_id FROM viewer_search_regions \
+                   WHERE file_path IS NULL"
+        }
+        "error_type" => {
+            "SELECT DISTINCT conversation_id FROM viewer_search_regions \
+                        WHERE error_type IS NULL"
+        }
+        "has_error" => {
+            "SELECT DISTINCT conversation_id FROM viewer_search_regions \
+                        WHERE has_error IS NULL"
+        }
+        // has_mcp needs no probe: its Unknown is coverage-conditional only.
+        _ => "",
+    }
+}
+
+/// Build the [`BlockSeekEvidence`] for a [`RegionLoadMode::SeekBlockDomain`]
+/// plan. `None` for every other mode (no cost).
+fn build_block_seek_evidence(
+    connection: &Connection,
+    sessions: &[SessionCtx],
+    plan: &Plan,
+    region_load: &RegionLoadMode,
+    stats: &mut HydrateStats,
+    deadline: &Deadline,
+) -> Result<Option<BlockSeekEvidence>> {
+    if !matches!(region_load, RegionLoadMode::SeekBlockDomain) {
+        return Ok(None);
+    }
+    let universe: HashSet<i64> = sessions
+        .iter()
+        .map(|session| session.conversation_id)
+        .collect();
+    let mut predicates: Vec<(String, String, Value)> = Vec::new();
+    collect_seek_predicates(&plan.root, &mut predicates);
+    let mut evidence = BlockSeekEvidence {
+        predicates: HashMap::new(),
+        probes: HashMap::new(),
+        mcp_named: HashSet::new(),
+    };
+    let mut tool_vocabulary: Option<Vec<String>> = None;
+    let mut file_vocabulary: Option<Vec<String>> = None;
+    let mut mcp_named_done = false;
+    let mut seen: HashSet<(String, String, String)> = HashSet::new();
+    for (field, op, expected) in &predicates {
+        let key = block_predicate_key(field, op, expected);
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        match field.as_str() {
+            "tool" => {
+                if tool_vocabulary.is_none() {
+                    tool_vocabulary =
+                        Some(read_distinct_column(connection, "tool_name", deadline)?);
+                }
+                let vocabulary = tool_vocabulary.as_deref().unwrap_or(&[]);
+                let pattern = expected.as_str().unwrap_or_default();
+                let matched: Vec<&str> = vocabulary
+                    .iter()
+                    .filter(|value| tool_match(value, pattern, op))
+                    .map(String::as_str)
+                    .collect();
+                let per_conversation = seek_region_keys_by_values(
+                    connection,
+                    "tool_name",
+                    &matched,
+                    &universe,
+                    stats,
+                    deadline,
+                )?;
+                evidence.predicates.insert(key, per_conversation);
+            }
+            "file" => {
+                if file_vocabulary.is_none() {
+                    file_vocabulary =
+                        Some(read_distinct_column(connection, "file_path", deadline)?);
+                }
+                let vocabulary = file_vocabulary.as_deref().unwrap_or(&[]);
+                let pattern = expected.as_str().unwrap_or_default();
+                let matched: Vec<&str> = vocabulary
+                    .iter()
+                    .filter(|value| like_match(value, pattern, false, !pattern.contains('*')))
+                    .map(String::as_str)
+                    .collect();
+                let per_conversation = seek_region_keys_by_values(
+                    connection,
+                    "file_path",
+                    &matched,
+                    &universe,
+                    stats,
+                    deadline,
+                )?;
+                evidence.predicates.insert(key, per_conversation);
+            }
+            "exit" => {
+                // Planner guarantee: comparison op + i64 expected, so the
+                // SQL comparison is exactly the Rust compare_numbers over
+                // the stored integers (NULL never matches a SQL comparison,
+                // matching the Rust unknown_field discharge).
+                let sql_op = match op.as_str() {
+                    "EQ" => "=",
+                    "NEQ" => "!=",
+                    "GT" => ">",
+                    "GTE" => ">=",
+                    "LT" => "<",
+                    _ => "<=",
+                };
+                let bound = SqliteValue::Integer(expected.as_i64().unwrap_or_default());
+                let rows = connection.query_with_params(
+                    &format!(
+                        "SELECT conversation_id, region_key FROM viewer_search_regions \
+                         WHERE exit_code {sql_op} ?1"
+                    ),
+                    &[bound],
+                )?;
+                stats.regions_loaded += rows.len();
+                let mut per_conversation: HashMap<i64, BTreeSet<String>> = HashMap::new();
+                for row in &rows {
+                    let cid: i64 = row.get_typed(0)?;
+                    let key: String = row.get_typed(1)?;
+                    if universe.contains(&cid) {
+                        per_conversation.entry(cid).or_default().insert(key);
+                    }
+                }
+                evidence.predicates.insert(key, per_conversation);
+            }
+            "error_type" => {
+                let bound = SqliteValue::Text(expected.as_str().unwrap_or_default().into());
+                let rows = connection.query_with_params(
+                    "SELECT conversation_id, region_key FROM viewer_search_regions \
+                     WHERE error_type = ?1",
+                    &[bound],
+                )?;
+                stats.regions_loaded += rows.len();
+                let mut per_conversation: HashMap<i64, BTreeSet<String>> = HashMap::new();
+                for row in &rows {
+                    let cid: i64 = row.get_typed(0)?;
+                    let key: String = row.get_typed(1)?;
+                    if universe.contains(&cid) {
+                        per_conversation.entry(cid).or_default().insert(key);
+                    }
+                }
+                evidence.predicates.insert(key, per_conversation);
+            }
+            "has_error" => {
+                // The eager arm ignores the op (plain bool equality), so
+                // the seek mirrors it with `=`.
+                let wanted = expected.as_bool().unwrap_or(false);
+                let bound = SqliteValue::Integer(i64::from(wanted));
+                let rows = connection.query_with_params(
+                    "SELECT conversation_id, region_key FROM viewer_search_regions \
+                     WHERE has_error = ?1",
+                    &[bound],
+                )?;
+                stats.regions_loaded += rows.len();
+                let mut per_conversation: HashMap<i64, BTreeSet<String>> = HashMap::new();
+                for row in &rows {
+                    let cid: i64 = row.get_typed(0)?;
+                    let key: String = row.get_typed(1)?;
+                    if universe.contains(&cid) {
+                        per_conversation.entry(cid).or_default().insert(key);
+                    }
+                }
+                evidence.predicates.insert(key, per_conversation);
+            }
+            "has_mcp" => {
+                // The `named` arm: any region tool_name that ascii-folds
+                // to contain "mcp" or contains '/'. Table-wide vocabulary
+                // seek, computed once for the whole request.
+                if !mcp_named_done {
+                    mcp_named_done = true;
+                    if tool_vocabulary.is_none() {
+                        tool_vocabulary =
+                            Some(read_distinct_column(connection, "tool_name", deadline)?);
+                    }
+                    let vocabulary = tool_vocabulary.as_deref().unwrap_or(&[]);
+                    let matched: Vec<&str> = vocabulary
+                        .iter()
+                        .filter(|value| {
+                            let folded = ascii_fold(value);
+                            folded.contains("mcp") || value.contains('/')
+                        })
+                        .map(String::as_str)
+                        .collect();
+                    if !matched.is_empty() {
+                        evidence.mcp_named = seek_distinct_conversations(
+                            connection,
+                            "tool_name",
+                            &matched,
+                            &universe,
+                            stats,
+                            deadline,
+                        )?;
+                    }
+                }
+                // has_mcp evaluates to a constant; no per-key entry is
+                // consulted, but insert one so `keys_for` can never miss.
+                evidence.predicates.insert(key, HashMap::new());
+            }
+            _ => {
+                // Unreachable: collect_seek_predicates only collects
+                // seekable fields.
+            }
+        }
+    }
+    // NULL-candidate probes, one bounded pass per DISTINCT field (the
+    // probe question is field-level, not per-op) that some universe
+    // session's coverage actually blocks.
+    let mut fields: BTreeSet<&str> = BTreeSet::new();
+    for (field, _, _) in &predicates {
+        if !matches!(field.as_str(), "has_mcp") {
+            fields.insert(field.as_str());
+        }
+    }
+    for field in fields {
+        let coverage = coverage_field(field);
+        if !sessions
+            .iter()
+            .any(|session| session.field_blocks_strict(coverage))
+        {
+            continue;
+        }
+        let sql = block_probe_sql(field);
+        if sql.is_empty() {
+            continue;
+        }
+        deadline.check("seek", format!("{field} NULL-candidate probe"))?;
+        let rows = connection.query_with_params(sql, &[])?;
+        stats.regions_loaded += rows.len();
+        let mut candidates: HashSet<i64> = HashSet::new();
+        for row in &rows {
+            candidates.insert(row.get_typed(0)?);
+        }
+        evidence.probes.insert(field.to_owned(), candidates);
+    }
+    Ok(Some(evidence))
+}
+
+/// Conversations owning a region whose column is IN the matched values —
+/// the has_mcp `named` existence set. Same seeking shape as
+/// [`seek_region_keys_by_values`] (the `(conversation_id, region_key)`
+/// projection SEEKs `idx_viewer_search_regions_*`; a `SELECT DISTINCT
+/// conversation_id` variant plans as a full-table SCAN in the pinned fork
+/// rev, pinned as a planner gap in tests/frankensqlite_compat_gates.rs),
+/// deduped here in Rust. Counts every returned row in `regions_loaded` —
+/// the receipt means "region rows read by this request", not "distinct
+/// conversations found".
+fn seek_distinct_conversations(
+    connection: &Connection,
+    column: &str,
+    values: &[&str],
+    universe: &HashSet<i64>,
+    stats: &mut HydrateStats,
+    deadline: &Deadline,
+) -> Result<HashSet<i64>> {
+    let mut found: HashSet<i64> = HashSet::new();
+    for chunk in values.chunks(SEEK_VALUE_CHUNK) {
+        if chunk.is_empty() {
+            continue;
+        }
+        deadline.check(
+            "seek",
+            format!("{column} conversation seek over {} value(s)", chunk.len()),
+        )?;
+        let placeholders = (1..=chunk.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let params: Vec<SqliteValue> = chunk
+            .iter()
+            .map(|value| SqliteValue::Text((*value).into()))
+            .collect();
+        let rows = connection.query_with_params(
+            &format!(
+                "SELECT conversation_id, region_key FROM viewer_search_regions \
+                 WHERE {column} IN ({placeholders})"
+            ),
+            &params,
+        )?;
+        stats.regions_loaded += rows.len();
+        for row in &rows {
+            let cid: i64 = row.get_typed(0)?;
+            if universe.contains(&cid) {
+                found.insert(cid);
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// Bounded text for one persisted region — `chat` reads the canonical
@@ -2767,6 +3394,79 @@ fn collection(field: &str, op: &str, expected: &Value, session: &SessionCtx) -> 
     out
 }
 
+/// The seek lane's `collection` — byte-identical [`NodeResult`] without the
+/// eager region load (see [`BlockSeekEvidence`] for the exactness
+/// argument). True keys come from the request-wide value seek (the
+/// resident scan re-derives any resident True for belt-and-suspenders
+/// parity, since the seek is table-wide exact anyway); resident Unknown
+/// candidates come from `region_value` over the literal-gated rows —
+/// exactly the Unknown keys that can intersect literal member keys, since
+/// literal members are always gated residents; non-resident Unknown
+/// existence comes from the NULL-candidate probe, discharged through the
+/// sentinel key so the verdict and reasons stay identical to the eager
+/// lane's per-region Unknowns.
+fn collection_narrowed(
+    field: &str,
+    op: &str,
+    expected: &Value,
+    session: &SessionCtx,
+    evidence: &BlockSeekEvidence,
+    keys: &HashMap<i64, BTreeSet<String>>,
+) -> NodeResult {
+    let mut out = NodeResult::default();
+    let coverage = coverage_field(field);
+    if let Some(known) = keys.get(&session.conversation_id) {
+        for key in known {
+            out.known.insert(key.clone());
+            out.possible.insert(key.clone());
+        }
+    }
+    let mut any_unknown = false;
+    for region in &session.regions {
+        match region_value(field, op, expected, session, region) {
+            Truth::True => {
+                out.known.insert(region.key.clone());
+                out.possible.insert(region.key.clone());
+            }
+            Truth::Unknown => {
+                out.possible.insert(region.key.clone());
+                any_unknown = true;
+            }
+            Truth::False => {}
+        }
+    }
+    // Non-resident Unknown existence: the probe row proves some region of
+    // this conversation could discharge Unknown; only a session whose
+    // coverage actually blocks the field can ever discharge it.
+    if session.field_blocks_strict(coverage) && evidence.probe_hit(field, session.conversation_id) {
+        any_unknown = true;
+    }
+    if any_unknown {
+        out.reasons
+            .insert(missing_reason(session, coverage, "value_unknown"));
+        if out.known.is_empty() {
+            out.possible.insert(UNKNOWN_PREDICATE_SENTINEL.to_owned());
+        }
+    }
+    // Unseen tail: the identical formula to `collection`.
+    let unseen = (session.field_blocks_strict("block_inventory")
+        && session.field_blocks_strict(coverage))
+        || session.inventory_partial
+        || (field == "scope"
+            && expected.as_str() == Some("chat")
+            && session.coverage_of("title") != "complete"
+            && session.coverage_of("block_inventory") != "complete");
+    if unseen {
+        out.unseen = true;
+        out.reasons.insert(missing_reason(
+            session,
+            coverage,
+            "block_inventory_incomplete",
+        ));
+    }
+    out
+}
+
 /// `_session_value`: session-domain predicate truth.
 fn session_value(field: &str, op: &str, expected: &Value, session: &SessionCtx) -> Truth {
     let expected_str = expected.as_str().unwrap_or_default();
@@ -2844,17 +3544,24 @@ fn eval_predicate(
     expected: &Value,
     domain: Domain,
     session: &SessionCtx,
+    seek: Option<&BlockSeekEvidence>,
 ) -> NodeResult {
     if field == "has_mcp" {
         let tagged = session
             .tags
             .iter()
             .any(|tag| ascii_fold(tag).contains("mcp"));
-        let named = session.regions.iter().any(|r| {
-            r.tool_name
-                .as_deref()
-                .is_some_and(|n| ascii_fold(n).contains("mcp") || n.contains('/'))
-        });
+        // The seek lane proves `named` table-wide (the tool_name vocabulary
+        // seek covers every region, resident or not); the eager lane
+        // iterates the resident rows — the same fact either way.
+        let named = match seek {
+            Some(evidence) => evidence.mcp_named.contains(&session.conversation_id),
+            None => session.regions.iter().any(|r| {
+                r.tool_name
+                    .as_deref()
+                    .is_some_and(|n| ascii_fold(n).contains("mcp") || n.contains('/'))
+            }),
+        };
         let mut value = if tagged || named {
             Truth::True
         } else if !session.field_blocks_strict("tools") {
@@ -2896,7 +3603,14 @@ fn eval_predicate(
             BTreeSet::new(),
         );
     }
-    let mut out = collection(field, op, expected, session);
+    let mut out = match seek.and_then(|evidence| {
+        evidence
+            .keys_for(field, op, expected)
+            .map(|keys| (evidence, keys))
+    }) {
+        Some((evidence, keys)) => collection_narrowed(field, op, expected, session, evidence, keys),
+        None => collection(field, op, expected, session),
+    };
     if domain == Domain::Session {
         // Non-term heuristics: explicit project path + metadata markers.
         if field == "file"
@@ -3124,6 +3838,7 @@ fn eval_node(
     stats: &mut HydrateStats,
     matchers: &HashMap<(String, bool), LiteralMatcher>,
     quill_possible: &HashMap<String, HashMap<i64, HashSet<i64>>>,
+    seek: Option<&BlockSeekEvidence>,
 ) -> Result<NodeResult> {
     match node {
         PlanNode::All => Ok(NodeResult::constant(Truth::True, BTreeSet::new())),
@@ -3160,14 +3875,29 @@ fn eval_node(
             op,
             value,
             domain,
-        } => Ok(eval_predicate(field, op, value, *domain, session)),
-        PlanNode::Not(child) => {
-            Ok(eval_node(child, session, connection, stats, matchers, quill_possible)?.negate())
-        }
+        } => Ok(eval_predicate(field, op, value, *domain, session, seek)),
+        PlanNode::Not(child) => Ok(eval_node(
+            child,
+            session,
+            connection,
+            stats,
+            matchers,
+            quill_possible,
+            seek,
+        )?
+        .negate()),
         PlanNode::And(children) => {
             let mut result = NodeResult::constant(Truth::True, BTreeSet::new());
             for child in children {
-                let next = eval_node(child, session, connection, stats, matchers, quill_possible)?;
+                let next = eval_node(
+                    child,
+                    session,
+                    connection,
+                    stats,
+                    matchers,
+                    quill_possible,
+                    seek,
+                )?;
                 result = combine(&result, &next, true);
                 if result.truth() == Truth::False {
                     break;
@@ -3178,7 +3908,15 @@ fn eval_node(
         PlanNode::Or(children) => {
             let mut result = NodeResult::constant(Truth::False, BTreeSet::new());
             for child in children {
-                let next = eval_node(child, session, connection, stats, matchers, quill_possible)?;
+                let next = eval_node(
+                    child,
+                    session,
+                    connection,
+                    stats,
+                    matchers,
+                    quill_possible,
+                    seek,
+                )?;
                 result = combine(&result, &next, false);
             }
             Ok(result)
@@ -3687,6 +4425,75 @@ fn enumerate_session_doc_hits(
     Ok(hits)
 }
 
+/// (B) Page-time witness gates, memoized once per request:
+/// `(value, exact)` -> `Some(conversation -> quill_idx set)` when the
+/// literal's raw Quill hits enumerated completely under
+/// [`MAX_LITERAL_HITS`]; `None` when the literal is too common to
+/// enumerate or the engine refused — that claim's witness discovery
+/// degrades to the ungated structural scan.
+type WitnessGates = HashMap<(String, bool), Option<HashMap<i64, HashSet<i64>>>>;
+
+/// Enumerate one claim literal's raw Quill hits — message docs + region
+/// docs through the same `literal_query_text` -> [`raw_page`] lowering the
+/// legacy lane's [`enumerate_literal`] uses, so the quill fork's
+/// content-glob prefix arm is respected — into the conversation ->
+/// `quill_idx` witness gate the page-time discovery consults.
+///
+/// The gate is an optimization with a hard floor, never a contract
+/// surface: a literal too common to enumerate honestly, an engine refusal
+/// of any kind (fuel, glob expansion), a page without an exact count or a
+/// hit without unambiguous coordinates all return `Ok(None)` — the claim's
+/// discovery then runs ungated, today's semantics verbatim. Only the
+/// cooperative deadline propagates: it is honest unavailability, not an
+/// enumeration outcome.
+fn enumerate_witness_gate(
+    readers: &ReaderSet,
+    literal: (&str, bool),
+    filters: &frankensearch::quill::query::CassQueryFilters,
+    deadline: &Deadline,
+) -> Result<Option<HashMap<i64, HashSet<i64>>>> {
+    let text = literal_query_text(literal.0, literal.1);
+    let mut gate: HashMap<i64, HashSet<i64>> = HashMap::new();
+    for (reader_index, reader) in readers.readers.iter().enumerate() {
+        let mut offset = 0_usize;
+        loop {
+            deadline.check(
+                "witness_gate_enumeration",
+                format!("reader {reader_index}: {offset} raw hits paged"),
+            )?;
+            // Any engine refusal degrades the gate (see the doc comment):
+            // `?` is reserved for the deadline alone. Paged in
+            // SESSION_DOC_ENUM_PAGE chunks — the 256-doc PAGE_LIMIT
+            // multiplies the engine's per-call lowering cost (see the
+            // SESSION_DOC_ENUM_PAGE doc comment).
+            let Some(page) = raw_page(reader, &text, filters, offset, SESSION_DOC_ENUM_PAGE).ok()
+            else {
+                return Ok(None);
+            };
+            let Some(total) = page.total_count else {
+                return Ok(None);
+            };
+            if total > MAX_LITERAL_HITS {
+                return Ok(None);
+            }
+            for hit in &page.hits {
+                let decoded = match decode_hit(reader, hit, &readers.keys[reader_index]) {
+                    Ok(decoded) => decoded,
+                    Err(_) => return Ok(None),
+                };
+                gate.entry(decoded.conversation_id)
+                    .or_default()
+                    .insert(decoded.message_index_zero_based as i64);
+            }
+            offset += page.hits.len();
+            if page.hits.is_empty() || offset >= total {
+                break;
+            }
+        }
+    }
+    Ok(Some(gate))
+}
+
 /// The legacy lane's per-literal Quill evidence bundle.
 struct LegacyLiteralEvidence {
     /// `(value, exact)` hit maps for witness scoring.
@@ -3776,6 +4583,7 @@ fn eval_node_fast(
     node: &PlanNode,
     session: &SessionCtx,
     session_doc_hits: &HashMap<(String, bool), HashMap<i64, f32>>,
+    seek: Option<&BlockSeekEvidence>,
 ) -> NodeResult {
     match node {
         PlanNode::All => NodeResult::constant(Truth::True, BTreeSet::new()),
@@ -3797,12 +4605,12 @@ fn eval_node_fast(
             op,
             value,
             domain,
-        } => eval_predicate(field, op, value, *domain, session),
-        PlanNode::Not(child) => eval_node_fast(child, session, session_doc_hits).negate(),
+        } => eval_predicate(field, op, value, *domain, session, seek),
+        PlanNode::Not(child) => eval_node_fast(child, session, session_doc_hits, seek).negate(),
         PlanNode::And(children) => {
             let mut result = NodeResult::constant(Truth::True, BTreeSet::new());
             for child in children {
-                let next = eval_node_fast(child, session, session_doc_hits);
+                let next = eval_node_fast(child, session, session_doc_hits, seek);
                 result = combine(&result, &next, true);
                 if result.truth() == Truth::False {
                     break;
@@ -3813,7 +4621,7 @@ fn eval_node_fast(
         PlanNode::Or(children) => {
             let mut result = NodeResult::constant(Truth::False, BTreeSet::new());
             for child in children {
-                let next = eval_node_fast(child, session, session_doc_hits);
+                let next = eval_node_fast(child, session, session_doc_hits, seek);
                 result = combine(&result, &next, false);
             }
             result
@@ -3866,17 +4674,19 @@ fn fast_score_and_claims(
 /// and the caller refuses the whole page with the typed
 /// `verification_budget_exceeded` kind (design §7), never a member
 /// emitted with `complete:true`.
+#[allow(clippy::too_many_arguments)]
 fn discover_fast_witnesses(
     connection: &Connection,
     regions: &[Region],
     claims: &[FastClaim],
+    claim_gates: &[Option<&HashSet<i64>>],
     matchers: &HashMap<(String, bool), LiteralMatcher>,
     max_matches: usize,
     stats: &mut HydrateStats,
     deadline: &Deadline,
 ) -> Result<FastWitnesses> {
     let mut discovered: Vec<(String, String)> = Vec::new();
-    for (branch, (value, exact)) in claims {
+    for ((branch, (value, exact)), claim_gate) in claims.iter().zip(claim_gates) {
         if discovered.len() >= max_matches {
             break;
         }
@@ -3897,7 +4707,23 @@ fn discover_fast_witnesses(
                     regions.len()
                 ),
             )?;
-            match verify_region_text(connection, region, matcher, None, stats)? {
+            // (B) The claim's witness gate: only regions whose Quill
+            // document slot produced a hit for this literal can hold a
+            // witness — the same pruning `eval_literal` applies on the
+            // legacy lane, over the same gate source. `claim_gate = None`
+            // (the ungated fallback) evaluates every region — today's
+            // semantics verbatim.
+            if let Some(gate) = claim_gate
+                && !gate.contains(&region.quill_idx)
+            {
+                continue;
+            }
+            // `Some(gate)` only unlocks the bounded-window shortcut in
+            // `verify_region_text` — the Member/NonMember/NoText/Budget
+            // verdicts are identical to the ungated call (a bounded-window
+            // match implies a full-text match), so the gated and fallback
+            // passes prove the same witnesses.
+            match verify_region_text(connection, region, matcher, *claim_gate, stats)? {
                 RegionMatch::Member => {
                     discovered.push((region.key.clone(), branch.clone()));
                 }
@@ -3923,6 +4749,46 @@ enum FastWitnesses {
     /// lane's `verification_bytes_budget_exceeded` reason, and must never
     /// degrade into the drift annotation or a `complete:true` member.
     BudgetExhausted,
+}
+
+/// (B) The pre-(B) page-time path, verbatim: this conversation's full
+/// structural region load + ungated discovery over every region. Serves
+/// both fallbacks — a gated pass that found zero witnesses (§6.4 drift or
+/// an out-of-gate witness) and a session one of whose claims cannot be
+/// gated for it (literal over the enumeration cap, engine refusal, or no
+/// raw hit in this conversation — a shared region load must not shrink an
+/// ungated claim's candidate set). Returns the loaded regions alongside
+/// the discovery outcome so the caller keeps ONE budget-refusal site.
+fn ungated_fast_witnesses(
+    connection: &Connection,
+    conversation_id: i64,
+    claims: &[FastClaim],
+    matchers: &HashMap<(String, bool), LiteralMatcher>,
+    max_matches: usize,
+    stats: &mut HydrateStats,
+    deadline: &Deadline,
+) -> Result<(Vec<Region>, FastWitnesses)> {
+    let rows = coding_agent_search::viewer_extensions::search_regions::regions_for_conversation_structural(
+        connection,
+        conversation_id,
+    )?;
+    let regions: Vec<Region> = rows
+        .into_iter()
+        .map(|row| region_from(conversation_id, row))
+        .collect();
+    stats.regions_loaded += regions.len();
+    let ungated: Vec<Option<&HashSet<i64>>> = vec![None; claims.len()];
+    let outcome = discover_fast_witnesses(
+        connection,
+        &regions,
+        claims,
+        &ungated,
+        matchers,
+        max_matches,
+        stats,
+        deadline,
+    )?;
+    Ok((regions, outcome))
 }
 
 // ---------------------------------------------------------------------------
@@ -4203,6 +5069,19 @@ pub fn search_sessions(
             prefetch_region_fragments(connection, &mut sessions, &mut stats, deadline)?;
         }
     }
+    // The seek lane's request-wide predicate evidence — one build over the
+    // attached (literal-gated) residents, consulted by every predicate
+    // evaluation on both lanes (a `has:mcp AND literal` plan rides the
+    // fast lane with has_mcp proven from the mcp-named seek). `None` for
+    // every other mode: zero cost.
+    let block_seek = build_block_seek_evidence(
+        connection,
+        &sessions,
+        &plan,
+        &region_load,
+        &mut stats,
+        deadline,
+    )?;
     for (index, session) in sessions.into_iter().enumerate() {
         deadline.check(
             "evaluate",
@@ -4213,7 +5092,7 @@ pub fn search_sessions(
             // §6.1: membership from the session×scope posting sets. The
             // sentinel witness in the `known` set carries the verdict
             // through the same set algebra; region text is never touched.
-            eval_node_fast(&plan.root, &session, &session_doc_hits)
+            eval_node_fast(&plan.root, &session, &session_doc_hits, block_seek.as_ref())
         } else {
             eval_node(
                 &plan.root,
@@ -4222,6 +5101,7 @@ pub fn search_sessions(
                 &mut stats,
                 &matchers,
                 &quill_possible,
+                block_seek.as_ref(),
             )?
         };
         let result = combine(&control_result(filters, &session), &evidence, true);
@@ -4421,6 +5301,10 @@ pub fn search_sessions(
     let mut bytes = 0_usize;
     let mut last: Option<SearchCursor> = None;
     let mut emitted = 0_usize;
+    // (B) Page-time witness gates, memoized once per request and shared by
+    // every emitted fast-lane session: one raw enumeration per distinct
+    // claim literal, however many sessions the page hydrates.
+    let mut witness_gates: WitnessGates = HashMap::new();
     let mut iter = accepted.iter().peekable();
     let mut has_more = false;
     for entry in iter.by_ref() {
@@ -4500,45 +5384,136 @@ pub fn search_sessions(
         // bounded by max_matches, through the same verify_region_text the
         // legacy lane ran at eval time.
         //
-        // Stage 1b `emitted_page_sessions`: this emitted session's full
-        // structural row set is THE region read the fast lane spends — one
-        // indexed per-conversation read, the same rows in the same
-        // `region_ordinal` order the eager universe load attached before
-        // Stage 1b, so §6.4 discovery and the witness/snippet lookups
-        // below consult exactly the evidence they always saw. Sessions
-        // past the byte budget (the `break` above) never load.
-        let page_regions: Vec<Region> = if entry.fast_lane {
-            let rows = coding_agent_search::viewer_extensions::search_regions::regions_for_conversation_structural(
-                connection,
-                session.conversation_id,
-            )?;
-            let regions: Vec<Region> = rows
-                .into_iter()
-                .map(|row| region_from(session.conversation_id, row))
-                .collect();
-            stats.regions_loaded += regions.len();
-            regions
+        // (B) Gated page-time witness discovery. The page's region read is
+        // gated by the claims' raw Quill slots: only regions whose literal
+        // produced a hit in this conversation's region/message documents
+        // can hold a witness, so the page seeks exactly those rows
+        // (`regions_for_quill_slots`, `region_ordinal` order — an
+        // order-preserving subsequence of the structural load, so witness
+        // order and choice are today's for every gated witness). A session
+        // one of whose claims cannot be gated for it, and a gated pass
+        // that finds ZERO witnesses, fall back to
+        // [`ungated_fast_witnesses`] — the pre-(B) structural load +
+        // ungated discovery, §6.4's contract verbatim; claims-empty
+        // entries (`NOT quux`) load nothing at all. Sessions past the
+        // byte budget (the `break` above) never load.
+        let page_outcome: (Vec<Region>, FastWitnesses) = if !entry.fast_lane
+            || entry.fast_claims.is_empty()
+        {
+            (Vec::new(), FastWitnesses::Found(Vec::new()))
         } else {
-            Vec::new()
+            // Fill the request-memoized witness gates for this entry's
+            // claims first — one raw enumeration per distinct literal per
+            // request, shared by every emitted session.
+            for (_, (value, exact)) in &entry.fast_claims {
+                let key = (value.clone(), *exact);
+                if let std::collections::hash_map::Entry::Vacant(slot) = witness_gates.entry(key) {
+                    // `?` propagates BEFORE the insert, so a deadline hit
+                    // leaves the memo unfilled — the next request retries.
+                    let gate = enumerate_witness_gate(
+                        readers,
+                        (value.as_str(), *exact),
+                        &engine_filters,
+                        deadline,
+                    )?;
+                    slot.insert(gate);
+                }
+            }
+            let mut claim_gates: Vec<Option<&HashSet<i64>>> =
+                Vec::with_capacity(entry.fast_claims.len());
+            for (_, (value, exact)) in &entry.fast_claims {
+                claim_gates.push(
+                    witness_gates
+                        .get(&(value.clone(), *exact))
+                        .and_then(|gate| gate.as_ref())
+                        .and_then(|per_conversation| {
+                            per_conversation.get(&session.conversation_id)
+                        }),
+                );
+            }
+            if claim_gates.iter().all(|gate| gate.is_some()) {
+                // Every claim enumerated AND hit in this conversation: the
+                // union of its slots is the exact candidate set for the
+                // page's witnesses.
+                let slots: Vec<i64> = claim_gates
+                    .iter()
+                    .filter_map(|gate| *gate)
+                    .flat_map(|gate| gate.iter().copied())
+                    .collect();
+                let mut slot_map: HashMap<i64, Vec<i64>> = HashMap::new();
+                slot_map.insert(session.conversation_id, slots);
+                let mut rows = coding_agent_search::viewer_extensions::search_regions::regions_for_quill_slots(
+                    connection,
+                    &slot_map,
+                )?;
+                let gated_regions: Vec<Region> = rows
+                    .remove(&session.conversation_id)
+                    .map(|found| {
+                        found
+                            .into_iter()
+                            .map(|row| region_from(session.conversation_id, row))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                stats.regions_loaded += gated_regions.len();
+                match discover_fast_witnesses(
+                    connection,
+                    &gated_regions,
+                    &entry.fast_claims,
+                    &claim_gates,
+                    &matchers,
+                    max_matches,
+                    &mut stats,
+                    deadline,
+                )? {
+                    FastWitnesses::Found(discovered) if !discovered.is_empty() => {
+                        (gated_regions, FastWitnesses::Found(discovered))
+                    }
+                    FastWitnesses::Found(_) => {
+                        // Zero gated witnesses — §6.4 drift or a witness
+                        // outside every gate: the fallback reproduces the
+                        // pre-(B) witness list (and the
+                        // `witnesses_not_reproduced` annotation) verbatim.
+                        ungated_fast_witnesses(
+                            connection,
+                            session.conversation_id,
+                            &entry.fast_claims,
+                            &matchers,
+                            max_matches,
+                            &mut stats,
+                            deadline,
+                        )?
+                    }
+                    FastWitnesses::BudgetExhausted => {
+                        (gated_regions, FastWitnesses::BudgetExhausted)
+                    }
+                }
+            } else {
+                // Some claim cannot be gated for this session (literal
+                // over the cap, engine refusal, or no raw hit here): a
+                // shared region load must not shrink that claim's
+                // candidate set, so the session keeps today's path.
+                ungated_fast_witnesses(
+                    connection,
+                    session.conversation_id,
+                    &entry.fast_claims,
+                    &matchers,
+                    max_matches,
+                    &mut stats,
+                    deadline,
+                )?
+            }
         };
-        let fast_discovered: Vec<(String, String)> = if entry.fast_lane {
-            match discover_fast_witnesses(
-                connection,
-                &page_regions,
-                &entry.fast_claims,
-                &matchers,
-                max_matches,
-                &mut stats,
-                deadline,
-            )? {
-                FastWitnesses::Found(discovered) => discovered,
-                FastWitnesses::BudgetExhausted => {
-                    // Design §7: budget exhaustion is honest
-                    // unavailability — not §6.4 drift and never a
-                    // silently-truncated member with `complete:true`.
-                    // Refuse the whole page with the typed kind, naming
-                    // the same verification_bytes_budget_exceeded reason
-                    // the legacy lane's refusal carries.
+        let (page_regions, fast_discovered): (Vec<Region>, Vec<(String, String)>) =
+            match page_outcome {
+                (regions, FastWitnesses::Found(discovered)) => (regions, discovered),
+                // Design §7: budget exhaustion is honest unavailability —
+                // not §6.4 drift and never a silently-truncated member
+                // with `complete:true`. Refuse the whole page with the
+                // typed kind, naming the same
+                // verification_bytes_budget_exceeded reason the legacy
+                // lane's refusal carries.
+                (_, FastWitnesses::BudgetExhausted) => {
                     return Err(refuse(
                         "verification_budget_exceeded",
                         format!(
@@ -4551,10 +5526,7 @@ pub fn search_sessions(
                         ),
                     ));
                 }
-            }
-        } else {
-            Vec::new()
-        };
+            };
         let witnesses: &[(String, String)] = if entry.fast_lane {
             &fast_discovered
         } else {
@@ -4638,12 +5610,14 @@ pub fn search_sessions(
     // region-read strategy ran, and — for the structural fallback — why.
     let region_load_mode = match (&region_load, fast_lane) {
         (RegionLoadMode::UniverseStructural(_), _) => "universe_structural",
+        (RegionLoadMode::SeekBlockDomain, true) => "emitted_page_sessions",
+        (RegionLoadMode::SeekBlockDomain, false) => "block_predicate_seeks",
         (RegionLoadMode::OnDemand, true) => "emitted_page_sessions",
         (RegionLoadMode::OnDemand, false) => "gated_quill_seeks",
     };
     let region_load_reason = match region_load {
         RegionLoadMode::UniverseStructural(reason) => json!(reason),
-        RegionLoadMode::OnDemand => Value::Null,
+        RegionLoadMode::SeekBlockDomain | RegionLoadMode::OnDemand => Value::Null,
     };
     let next_cursor = if has_more {
         last.map(|cursor| encode_cursor(sort_name, &cursor, &generation, &query_digest))
