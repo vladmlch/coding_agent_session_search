@@ -4785,6 +4785,89 @@ fn search_sessions_fast_path_single_token_membership() -> Result<()> {
     bridge.shutdown()
 }
 
+/// The 4 KiB `content_prefix` window must never hide a prefix-shaped token
+/// from a bare term: `dockerfile` sitting past the window (≈12 KiB of benign
+/// filler before it) is in the message's canonical region document AND in
+/// the packed session×scope chunk, and the bare term `docker` must find it
+/// on BOTH strict lanes — the Stage 1 session×scope fast lane (whose
+/// membership posting set is the aggregated chunk document) and the legacy
+/// per-region lane (forced by staling one session's marks row).
+///
+/// RED on the incumbent engine: a bare term matches only the windowed
+/// edge-gram fields, so a deep-window occurrence silently misses. The
+/// frankensearch fork's two-arm Exact|Prefix lowering adds a `content`
+/// glob arm, which expands against each leaf's own unwindowed term
+/// dictionary; the match set is what matters here, both lanes must carry
+/// it, and an over-broad prefix refuses typed instead of under-matching
+/// (see the raw-lane refusal test in `viewer_bridge::search`).
+#[test]
+fn search_sessions_bare_term_finds_deep_window_prefix_occurrence() -> Result<()> {
+    let mut fixture = gold_fixture();
+    // >4 KiB of filler before the probe, comfortably past the window and
+    // inside the 64 KiB region/chunk text caps.
+    let mut deep_body = "filler ".repeat(2048);
+    deep_body.push_str("dockerfile");
+    let deep_body: &'static str = Box::leak(deep_body.into_boxed_str());
+    fixture.push(GoldSession {
+        id: 8,
+        agent: "claude_code",
+        source_id: "local",
+        external_id: "s-8-deep-window",
+        source_path: "/sessions/s-8-deep-window.jsonl",
+        workspace: Some("/data/projects/gamma"),
+        title: "deep window session",
+        started_at: Some(6_000),
+        ended_at: Some(6_100),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![(0, MessageRole::User, deep_body, None)],
+    });
+    let mut bridge = gold_harness_full(&fixture, &[])?;
+
+    // Fast lane: the session×scope chunk carries the occurrence deep in its
+    // content; the bare term's posting set must include conversation 8.
+    let page = search(&mut bridge, json!({"query":"docker"}))?;
+    ensure!(
+        page["result"]["membership_source"] == "session_scope_docs",
+        "a single-token plan must ride the fast lane: {page}"
+    );
+    assert_members(&page, &[8])?;
+    let matches = page["result"]["matches"]["8"]
+        .as_array()
+        .expect("S8 fast-lane witnesses");
+    ensure!(
+        matches.len() == 1 && matches[0]["message_idx"].as_i64() == Some(0),
+        "the deep-window member carries one witness on message 0: {page}"
+    );
+
+    // Legacy lane: stale conversation 8's marks row so the marks gate falls
+    // the whole query back to the per-region enumeration, and the same bare
+    // term must still find the deep region document.
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    writer.execute_with_params(
+        "UPDATE viewer_search_region_marks SET region_version=?1 \
+         WHERE conversation_id=8",
+        &param_slice_to_values(params![
+            coding_agent_search::viewer_extensions::search_regions::REGION_VERSION - 1
+        ]),
+    )?;
+    drop(writer);
+    let page = search(&mut bridge, json!({"query":"docker"}))?;
+    ensure!(
+        page["result"]["membership_source"] == "region_literals",
+        "the staled mark must force the legacy region lane: {page}"
+    );
+    assert_members(&page, &[8])?;
+    let matches = page["result"]["matches"]["8"]
+        .as_array()
+        .expect("S8 legacy-lane witnesses");
+    ensure!(
+        matches.len() == 1 && matches[0]["message_idx"].as_i64() == Some(0),
+        "the legacy lane must witness the deep region too: {page}"
+    );
+    bridge.shutdown()
+}
+
 /// Stage 1 (ii): NOT is the set complement, OR the union, AND NOT the
 /// intersection-with-complement — all exact over the posting sets, with
 /// source-absent sessions staying exact members under their annotation
@@ -5390,6 +5473,25 @@ fn search_sessions_lazy_fragments_equivalence() -> Result<()> {
 /// `region_load_reason` name the strategy (fast lane:
 /// `emitted_page_sessions`; legacy lane: `gated_quill_seeks`; fallback
 /// plans: `universe_structural` + reason).
+///
+/// 2026-11-11, fork rev bb7d899a (literal-drop, pinned by the committed
+/// `[patch.crates-io]` table): the fork still lowers every non-CJK bare-term
+/// literal to `Term(searchable) OR Glob(content, term*)`, but the glob arm
+/// now drops its own literal from the expansion AFTER the cap — a doc whose
+/// only glob match is the literal itself keeps its stock-quill score. On
+/// this fixture corpus no term has a true prefix extension beyond the
+/// 4-KiB prefix window, so ALL eight bare-term pins (`foo`, `fluxcap`,
+/// `quux` limit-1, `foo bar`, `in:thinking zeta`, the tool=Bash∧quux AST
+/// pin, `foo`+tag and the page-2 cursor walk) reverted byte-for-byte to the
+/// stock-quill Stage 1 digests, verified by a collector re-capture whose
+/// receipts — membership verdicts, hit sets, load mode/reason/rows,
+/// hydration counters — were identical for every pin; only the score lines
+/// had moved under the earlier rev (ce5f1bd6), which scored the self-literal
+/// glob match +1.0. The `search score` golden reverted to main's exact
+/// value in the same motion. Fixtures whose terms DO own prefix extensions
+/// beyond the window will pin genuinely new digests — that is the fork's
+/// recall gain, not drift — so a future pin change must first prove the
+/// hit-set delta is exactly the extension matches.
 #[test]
 fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
     struct CorpusPin {
@@ -5600,7 +5702,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
         let digest = digest_of(&page)?;
         ensure!(
             digest == pin.digest,
-            "Stage 1b diverged from the Stage 1 answer for {:?}: {page}",
+            "Stage 1b diverged from the Stage 1 answer for {:?} (computed {digest}): {page}",
             pin.request
         );
         let diag = &page["result"]["diagnostics"];
@@ -5655,7 +5757,7 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
     let digest2 = digest_of(&page2)?;
     ensure!(
         digest2 == "61ec50b44414ca972066be4298ca78e9f3bfa6e153864565b0dcd9912cbb7a4e",
-        "Stage 1b diverged from the Stage 1 page-2 answer: {page2}"
+        "Stage 1b diverged from the Stage 1 page-2 answer (computed {digest2}): {page2}"
     );
     ensure!(
         page2["result"]["diagnostics"]["region_load_mode"] == json!("emitted_page_sessions")

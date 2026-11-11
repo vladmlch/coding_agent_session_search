@@ -633,6 +633,7 @@ fn validate_path_dependency_contracts(
 ) {
     let strict_enabled = strict_path_dep_validation_enabled();
     validate_fsqlite_source_pin(manifest_dir, manifest, packaged_manifest);
+    validate_quill_source_pin(manifest_dir, manifest, packaged_manifest);
 
     for contract in CONTRACTS {
         validate_manifest_dependency_spec(manifest, contract, packaged_manifest);
@@ -807,6 +808,197 @@ fn validate_fsqlite_source_pin(manifest_dir: &Path, manifest: &Value, packaged_m
                 message.push_str(remediation);
                 message.push('\n');
             }
+        }
+        fatal(message);
+    }
+}
+
+fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_manifest: bool) {
+    // `frankensearch-quill` resolves exclusively from the owner's LOCAL
+    // frankensearch fork at the exact rev below (owner decision,
+    // 2026-11-10; rev moved 2026-11-11 for the follow-up cost fix, then
+    // again the same day for the measured parity fix). The rev is
+    // upstream frankensearch-quill-v0.4.1 (735701af) plus the
+    // query-side prefix-expansion commits — 1c80882f (family-registry
+    // split so a git pin patches only this crate), 1dd678f9 (per-leaf
+    // glob expansion; the typed GlobExpansionLimitExceeded carries the
+    // pattern), ce5f1bd6 (the two-arm Exact/Prefix lowering:
+    // `Term(searchable) OR Glob(content, term*)`, so a bare term finds
+    // tokens past the 4 KiB content_prefix window; an over-broad prefix
+    // refuses typed instead of silently under-matching), ab64bddd
+    // (the bulk glob-arm doc-id merge: the arm's constant score comes
+    // from one ascending k-way merge over the same validated cursors
+    // instead of draining a per-term union, which profiled at ~98% of
+    // the arm's walk on the owner archive) and bb7d899a (the parity fix
+    // the B2 follow-up measured in: the two-arm glob drops its own
+    // literal term — the exact Term arm already matches every document
+    // it names, so decoding it again was the largest posting list of a
+    // common-term expansion — and the merge consumes its smallest head
+    // in place through `peek_mut`, whose sift-down early-exits while
+    // the same stream stays the minimum, where the pop-then-reinsert
+    // loop paid two full heap sifts per posting; the drop changes no
+    // matched document, it removes the arm's flat boost from documents
+    // whose only globset membership was the literal itself). The crate
+    // keeps version 0.4.1 and the CASS schema hash stays v9-quill, so
+    // the registry-shaped frankensearch requirements still converge and
+    // no reindex is needed. Every other frankensearch family crate
+    // keeps its crates.io resolution; the fork is local-only (never
+    // pushed).
+    const EXPECTED_FORK_GIT: &str =
+        "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/frankensearch";
+    const EXPECTED_FORK_REV: &str = "bb7d899a176a2de3d6106449448d020fe3f1e6e5";
+    const EXPECTED_VERSION: &str = "0.4.1";
+    // A full-sha `rev = "<sha>"` git source serializes in Cargo.lock as
+    // `git+<url>?rev=<sha>#<sha>`; with a full-sha rev the resolved
+    // commit equals the rev.
+    let expected_lock_source =
+        format!("git+{EXPECTED_FORK_GIT}?rev={EXPECTED_FORK_REV}#{EXPECTED_FORK_REV}");
+
+    // 1. The [patch.crates-io] table must carry exactly one
+    //    frankensearch-family redirect: `frankensearch-quill` as a table
+    //    pinning exactly the fork's file:// URL and rev — never a path
+    //    source, another remote, a floating branch/tag, or a stale rev.
+    //    Any other family member in the table means the family stopped
+    //    resolving from crates.io; a missing quill entry is not caught
+    //    here — it would resolve from the registry, and check 2 fails on
+    //    the registry source.
+    let mut violations: Vec<String> = Vec::new();
+    if !packaged_manifest
+        && let Some(patch_tables) = manifest.get("patch")
+        && let Some(crates_io) = patch_tables.get("crates-io").and_then(Value::as_table)
+    {
+        for (dependency, spec) in crates_io {
+            let dependency = dependency.as_str();
+            if dependency != "frankensearch-quill"
+                && !dependency.starts_with("frankensearch")
+                && !dependency.starts_with("frankentorch")
+                && dependency != "frankenhnsw"
+            {
+                continue;
+            }
+            if dependency != "frankensearch-quill" {
+                violations.push(format!(
+                    "dependency source contract violation for {dependency}: only \
+                     frankensearch-quill may be redirected; every other frankensearch \
+                     family crate resolves from crates.io"
+                ));
+                continue;
+            }
+            let Some(spec) = spec.as_table() else {
+                violations.push(format!(
+                    "dependency source contract violation for {dependency}: the \
+                     [patch.crates-io] entry must be a table pinning the local fork"
+                ));
+                continue;
+            };
+            let actual_git = spec.get("git").and_then(Value::as_str).unwrap_or("");
+            let actual_rev = spec.get("rev").and_then(Value::as_str).unwrap_or("");
+            let floating = spec.contains_key("branch") || spec.contains_key("tag");
+            if actual_git != EXPECTED_FORK_GIT
+                || actual_rev != EXPECTED_FORK_REV
+                || floating
+                || spec.contains_key("path")
+            {
+                violations.push(format!(
+                    "dependency source contract violation for {dependency}: \
+                     frankensearch-quill resolves from the local fork at git = \
+                     `{EXPECTED_FORK_GIT}`, rev = `{EXPECTED_FORK_REV}`; found git = \
+                     `{actual_git}`, rev = `{actual_rev}`"
+                ));
+            }
+        }
+    }
+
+    // 2. Lockfile convergence: `frankensearch-quill` must resolve exactly
+    //    once, at 0.4.1, from the pinned fork rev, and no other package may
+    //    resolve from the fork's git source (a family sibling accidentally
+    //    added to the patch table would show up here by source). Cargo
+    //    resolves the lockfile before running build scripts, so the
+    //    lockfile is authoritative here. Packaged manifests re-resolve
+    //    into a fresh lockfile that inherits the same requirements.
+    let lock_path = manifest_dir.join("Cargo.lock");
+    println!("cargo:rerun-if-changed={}", lock_path.display());
+    let lock_text = match fs::read_to_string(&lock_path) {
+        Ok(text) => text,
+        Err(err) => {
+            if packaged_manifest {
+                return;
+            }
+            fatal(format!(
+                "dependency source contract: failed to read {}: {err}",
+                lock_path.display()
+            ))
+        }
+    };
+    let lock: Value = match toml::from_str(&lock_text) {
+        Ok(value) => value,
+        Err(err) => fatal(format!(
+            "dependency source contract: failed to parse {}: {err}",
+            lock_path.display()
+        )),
+    };
+    let packages = lock
+        .get("package")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| {
+            fatal("dependency source contract: Cargo.lock has no [[package]] entries")
+        });
+    // Collect every off-pin problem before failing, mirroring the fsqlite
+    // guard: report the whole drift in one build, not one member at a time.
+    let fork_git_prefix = format!("git+{EXPECTED_FORK_GIT}");
+    let mut quill_resolutions = 0_usize;
+    for package in packages {
+        let name = package.get("name").and_then(Value::as_str).unwrap_or("");
+        let source = package.get("source").and_then(Value::as_str).unwrap_or("");
+        if source.starts_with(&fork_git_prefix) && name != "frankensearch-quill" {
+            violations.push(format!(
+                "`{name}` resolves from the frankensearch fork's git source; only \
+                 frankensearch-quill may resolve from the local fork"
+            ));
+        }
+        if name != "frankensearch-quill" {
+            continue;
+        }
+        quill_resolutions += 1;
+        let version = package.get("version").and_then(Value::as_str).unwrap_or("");
+        if version != EXPECTED_VERSION {
+            violations.push(format!(
+                "`frankensearch-quill` resolves at `{version}`, expected \
+                 `{EXPECTED_VERSION}`; the local fork must publish 0.4.1 so the \
+                 frankensearch family requirements converge on one resolution"
+            ));
+        }
+        if source != expected_lock_source {
+            violations.push(format!(
+                "`frankensearch-quill` resolves from `{source}`, expected the pinned \
+                 local fork (`{expected_lock_source}`)"
+            ));
+        }
+    }
+    if quill_resolutions == 0 {
+        violations.push(
+            "Cargo.lock does not resolve `frankensearch-quill`; the lexical engine \
+             dependency is missing"
+                .to_owned(),
+        );
+    }
+    if quill_resolutions > 1 {
+        violations.push(
+            "`frankensearch-quill` resolves more than once; the patch must converge on \
+             a single resolution per package"
+                .to_owned(),
+        );
+    }
+    if !violations.is_empty() {
+        let mut message = format!(
+            "dependency source contract violation: {} frankensearch-quill pin \
+             problem(s):\n",
+            violations.len()
+        );
+        for violation in &violations {
+            message.push_str("  - ");
+            message.push_str(violation);
+            message.push('\n');
         }
         fatal(message);
     }

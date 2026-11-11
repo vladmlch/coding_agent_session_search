@@ -161,6 +161,25 @@ const MAX_REGION_TEXT: usize = 64 * 1024;
 /// the bridge's `--text-verification-budget-bytes`.
 pub(crate) const MAX_TEXT_VERIFICATION_BYTES: usize = 512 * 1024 * 1024;
 const MAX_LITERAL_HITS: usize = 100_000;
+/// Session-doc membership chunk: how many hits one
+/// [`raw_page_session_docs`] call may return before
+/// [`enumerate_session_doc_hits`] re-checks the deadline.
+///
+/// The lane's old 256-doc `PAGE_LIMIT` multiplied the engine's per-call
+/// lowering once per page — the owner-archive B2 profile measured a common
+/// term paying 156 full lowerings of the same query (`test` refused at
+/// "reader 0: 39936 session-doc hits paged"), so every page re-expanded
+/// the two-arm glob from scratch. A 25,000-doc chunk keeps the loop shape
+/// the cooperative deadline was designed around — the deadline still
+/// fires at every chunk boundary, and the worst single uninterruptible
+/// step (one lowering + one union count + one bounded collect) stays far
+/// below the 15 s backstop grace its calibration requires — while
+/// collapsing the multiplicity to at most `MAX_LITERAL_HITS /
+/// SESSION_DOC_ENUM_PAGE + 1` lowerings per reader. The first chunk of
+/// each reader asks for the exact total (the enumeration cap and the
+/// loop's termination both hang on it); later chunks page without
+/// recounting and end on the first short page.
+const SESSION_DOC_ENUM_PAGE: usize = 25_000;
 const CURSOR_MAX_BYTES: usize = 4_096;
 
 // ---------------------------------------------------------------------------
@@ -3601,10 +3620,11 @@ fn classify_fast_shape(
 
 /// Membership posting set for one literal over the session×scope
 /// documents: `(conversation_id -> best chunk score)` — the fast lane's
-/// whole evidence for that literal. Enumerated exactly like
-/// [`enumerate_literal`] (per-reader paged, honest `MAX_LITERAL_HITS`
-/// refusal) but over [`raw_page_session_docs`], so the posting set
-/// contains conversations, never per-region coordinates.
+/// whole evidence for that literal. Enumerated per reader in
+/// [`SESSION_DOC_ENUM_PAGE`]-sized chunks (deadline checked at every
+/// chunk boundary, honest `MAX_LITERAL_HITS` refusal on the first
+/// chunk's exact total) over [`raw_page_session_docs`], so the posting
+/// set contains conversations, never per-region coordinates.
 fn enumerate_session_doc_hits(
     readers: &ReaderSet,
     literal: (&str, bool),
@@ -3614,24 +3634,42 @@ fn enumerate_session_doc_hits(
     let text = literal_query_text(literal.0, literal.1);
     let mut hits: HashMap<i64, f32> = HashMap::new();
     for (reader_index, reader) in readers.readers.iter().enumerate() {
+        // One count walk per reader: the first chunk carries the exact
+        // total (the cap check and the loop's termination both hang on
+        // it); later chunks page without recounting and end on the first
+        // short page, so the engine lowers the query at most
+        // `MAX_LITERAL_HITS / SESSION_DOC_ENUM_PAGE + 1` times per reader
+        // instead of once per 256-doc page.
         let mut offset = 0_usize;
+        let mut total: Option<usize> = None;
         loop {
             deadline.check(
                 "literal_enumeration",
                 format!("reader {reader_index}: {offset} session-doc hits paged"),
             )?;
-            let page = raw_page_session_docs(reader, &text, filters, offset, PAGE_LIMIT)?;
-            let total = page.total_count.ok_or_else(|| {
-                refuse(
-                    "ranking_budget_exceeded",
-                    "Engine supplied no exact raw count",
-                )
-            })?;
-            if total > MAX_LITERAL_HITS {
-                return Err(refuse(
-                    "ranking_budget_exceeded",
-                    "Session-doc match count exceeds the enumeration cap",
-                ));
+            let first_chunk = total.is_none();
+            let page = raw_page_session_docs(
+                reader,
+                &text,
+                filters,
+                offset,
+                SESSION_DOC_ENUM_PAGE,
+                first_chunk,
+            )?;
+            if first_chunk {
+                let exact = page.total_count.ok_or_else(|| {
+                    refuse(
+                        "ranking_budget_exceeded",
+                        "Engine supplied no exact raw count",
+                    )
+                })?;
+                if exact > MAX_LITERAL_HITS {
+                    return Err(refuse(
+                        "ranking_budget_exceeded",
+                        "Session-doc match count exceeds the enumeration cap",
+                    ));
+                }
+                total = Some(exact);
             }
             for hit in &page.hits {
                 let decoded = decode_hit(reader, hit, &readers.keys[reader_index])?;
@@ -3641,7 +3679,7 @@ fn enumerate_session_doc_hits(
                 }
             }
             offset += page.hits.len();
-            if page.hits.is_empty() || offset >= total {
+            if page.hits.is_empty() || total.is_some_and(|exact| offset >= exact) {
                 break;
             }
         }
