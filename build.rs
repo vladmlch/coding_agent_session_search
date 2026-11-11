@@ -816,22 +816,37 @@ fn validate_fsqlite_source_pin(manifest_dir: &Path, manifest: &Value, packaged_m
 fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_manifest: bool) {
     // `frankensearch-quill` resolves exclusively from the owner's LOCAL
     // frankensearch fork at the exact rev below (owner decision,
-    // 2026-11-10). The rev is upstream frankensearch-quill-v0.4.1
-    // (735701af) plus the query-side prefix-expansion commits — 1c80882f
-    // (family-registry split so a git pin patches only this crate),
-    // 1dd678f9 (per-leaf glob expansion; the typed
-    // GlobExpansionLimitExceeded carries the pattern) and ce5f1bd6 (the
-    // two-arm Exact/Prefix lowering: `Term(searchable) OR
-    // Glob(content, term*)`, so a bare term finds tokens past the 4 KiB
-    // content_prefix window; an over-broad prefix refuses typed instead
-    // of silently under-matching). The crate keeps version 0.4.1 and the
-    // CASS schema hash stays v9-quill, so the registry-shaped
-    // frankensearch requirements still converge and no reindex is
-    // needed. Every other frankensearch family crate keeps its
-    // crates.io resolution; the fork is local-only (never pushed).
+    // 2026-11-10; rev moved 2026-11-11 for the follow-up cost fix, then
+    // again the same day for the measured parity fix). The rev is
+    // upstream frankensearch-quill-v0.4.1 (735701af) plus the
+    // query-side prefix-expansion commits — 1c80882f (family-registry
+    // split so a git pin patches only this crate), 1dd678f9 (per-leaf
+    // glob expansion; the typed GlobExpansionLimitExceeded carries the
+    // pattern), ce5f1bd6 (the two-arm Exact/Prefix lowering:
+    // `Term(searchable) OR Glob(content, term*)`, so a bare term finds
+    // tokens past the 4 KiB content_prefix window; an over-broad prefix
+    // refuses typed instead of silently under-matching), ab64bddd
+    // (the bulk glob-arm doc-id merge: the arm's constant score comes
+    // from one ascending k-way merge over the same validated cursors
+    // instead of draining a per-term union, which profiled at ~98% of
+    // the arm's walk on the owner archive) and bb7d899a (the parity fix
+    // the B2 follow-up measured in: the two-arm glob drops its own
+    // literal term — the exact Term arm already matches every document
+    // it names, so decoding it again was the largest posting list of a
+    // common-term expansion — and the merge consumes its smallest head
+    // in place through `peek_mut`, whose sift-down early-exits while
+    // the same stream stays the minimum, where the pop-then-reinsert
+    // loop paid two full heap sifts per posting; the drop changes no
+    // matched document, it removes the arm's flat boost from documents
+    // whose only globset membership was the literal itself). The crate
+    // keeps version 0.4.1 and the CASS schema hash stays v9-quill, so
+    // the registry-shaped frankensearch requirements still converge and
+    // no reindex is needed. Every other frankensearch family crate
+    // keeps its crates.io resolution; the fork is local-only (never
+    // pushed).
     const EXPECTED_FORK_GIT: &str =
         "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/frankensearch";
-    const EXPECTED_FORK_REV: &str = "ce5f1bd633bff8f365f3a0292c18292627cb4c30";
+    const EXPECTED_FORK_REV: &str = "bb7d899a176a2de3d6106449448d020fe3f1e6e5";
     const EXPECTED_VERSION: &str = "0.4.1";
     // A full-sha `rev = "<sha>"` git source serializes in Cargo.lock as
     // `git+<url>?rev=<sha>#<sha>`; with a full-sha rev the resolved

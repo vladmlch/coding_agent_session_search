@@ -2021,7 +2021,7 @@ dependencies = [
 [[package]]
 name = "frankensearch-quill"
 version = "0.4.1"
-source = "git+file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/frankensearch?rev=ce5f1bd633bff8f365f3a0292c18292627cb4c30#ce5f1bd633bff8f365f3a0292c18292627cb4c30"
+source = "git+file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/frankensearch?rev=bb7d899a176a2de3d6106449448d020fe3f1e6e5#bb7d899a176a2de3d6106449448d020fe3f1e6e5"
 dependencies = [
  "ahash",
  "arc-swap",

@@ -436,23 +436,37 @@ fsqlite-vdbe = { git = "https://github.com/vladmlch/frankensqlite", rev = "898c4
 fsqlite-vfs = { git = "https://github.com/vladmlch/frankensqlite", rev = "898c43612b36301168b97644a89df2fb933ca457" }
 fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "898c43612b36301168b97644a89df2fb933ca457" }
 # frankensearch-quill resolves from the owner's LOCAL frankensearch fork
-# (branch cass-prefix-expansion) by exact rev (owner decision, 2026-11-10).
-# The rev is upstream frankensearch-quill-v0.4.1 (735701af) plus the
-# query-side prefix-expansion commits: 1c80882f (family-registry split so a
-# git pin patches only this crate), 1dd678f9 (per-leaf glob expansion; the
-# typed GlobExpansionLimitExceeded carries the pattern) and ce5f1bd6 (the
-# two-arm Exact/Prefix lowering, so bare terms find tokens past the 4 KiB
-# content_prefix window with a typed over-broad-prefix refusal). The
-# version stays 0.4.1 and the CASS schema hash stays v9-quill: query-side
-# only, no index-format change, no reindex. Patching crates.io (rather
-# than rewriting the [dependencies] entry) keeps one resolution per
-# package; every other frankensearch family crate keeps its crates.io
+# (branch cass-prefix-expansion) by exact rev (owner decision, 2026-11-10;
+# rev moved 2026-11-11 for the follow-up cost fix, then again the same day
+# for the measured parity fix). The rev is upstream
+# frankensearch-quill-v0.4.1 (735701af) plus the query-side
+# prefix-expansion commits: 1c80882f (family-registry split so a git pin
+# patches only this crate), 1dd678f9 (per-leaf glob expansion; the typed
+# GlobExpansionLimitExceeded carries the pattern), ce5f1bd6 (the two-arm
+# Exact/Prefix lowering, so bare terms find tokens past the 4 KiB
+# content_prefix window with a typed over-broad-prefix refusal), ab64bddd
+# (the bulk glob-arm doc-id merge: the arm's constant score is built from
+# one ascending k-way merge over the same validated cursors instead of
+# draining a per-term union — owner-archive profile put ~98% of the arm's
+# walk in that drain chain) and bb7d899a (the parity fix the B2 follow-up
+# measured in: the two-arm glob drops its own literal term — the exact
+# Term arm already matches every document it names, so decoding it again
+# was the single largest posting list of a common-term expansion — and
+# the merge consumes its smallest head in place through `peek_mut`, whose
+# sift-down early-exits while the same stream stays the minimum, where
+# the pop-then-reinsert loop paid two full heap sifts per posting; the
+# drop changes no matched document, it removes the arm's flat boost
+# from documents whose only globset membership was the literal itself).
+# The version stays 0.4.1 and the CASS schema hash stays v9-quill:
+# query-side only, no index-format change, no reindex. Patching crates.io
+# (rather than rewriting the [dependencies] entry) keeps one resolution
+# per package; every other frankensearch family crate keeps its crates.io
 # resolution. build.rs (validate_quill_source_pin) refuses a missing or
 # redirected entry, a branch/tag/path pin, a duplicate or off-source
 # lockfile resolution, and any other family crate resolving from the
 # fork's git source. Rollback: delete the entry and re-run `cargo fetch`.
 # The fork is local-only — never pushed.
-frankensearch-quill = { git = "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/frankensearch", rev = "ce5f1bd633bff8f365f3a0292c18292627cb4c30" }
+frankensearch-quill = { git = "file:///Users/vladislav.molchanov/Desktop/Projects_downloaded/frankensearch", rev = "bb7d899a176a2de3d6106449448d020fe3f1e6e5" }
 
 # The dependency graph is pinned to the asupersync 0.5.x line (0.5.0). Keep
 # the frankensqlite (owner-fork), frankensearch, and franken-agent-detection
