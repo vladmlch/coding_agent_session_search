@@ -163,16 +163,23 @@ pub fn raw_page(
 /// lane's membership posting set. Every hit decodes to the conversation
 /// whose (scope, chunk) document carries the literal; region documents and
 /// canonical messages stay out of the page and the exact total.
+///
+/// `exact_count` is the caller's decision, as in
+/// [`search_paginated`]: the fast lane's enumeration asks the first chunk
+/// for the exact total (its cap check and termination hang on it) and
+/// later chunks page without recounting, so one reader pays one count
+/// walk.
 pub fn raw_page_session_docs(
     reader: &QuillSearchIndex,
     text: &str,
     filters: &CassQueryFilters,
     offset: usize,
     limit: usize,
+    exact_count: bool,
 ) -> Result<QuillLexicalPage> {
     let (query, _) = parse_lexical_query(text, filters)?;
     let query = coding_agent_search::search::quill_bridge::session_scope_documents_query(query);
-    search_paginated(reader, &query, limit, offset, true)
+    search_paginated(reader, &query, limit, offset, exact_count)
         .map_err(|error| lexical_page_refusal(error, text))
 }
 
@@ -302,7 +309,7 @@ mod tests {
             ("region", raw_page(&capped, "docker", &filters, 0, 10)),
             (
                 "session_docs",
-                raw_page_session_docs(&capped, "docker", &filters, 0, 10),
+                raw_page_session_docs(&capped, "docker", &filters, 0, 10, true),
             ),
             (
                 "canonical",
