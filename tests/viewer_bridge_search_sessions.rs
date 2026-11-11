@@ -3152,6 +3152,32 @@ fn set_facts_coverage(bridge: &BridgeHarness, id: i64, state: &str, detail: Valu
     Ok(())
 }
 
+/// The bridge-side manifest JSON for a REAL extractor publication — the
+/// shape a real ingest writes to `coverage_detail_json`, so a test that
+/// installs it makes the strict lane evaluate exactly what ingest would
+/// publish (the seeded fixture rows are hand-written complete manifests).
+fn real_facts_manifest(
+    facts: &coding_agent_search::viewer_extensions::facts::FactPublication,
+) -> Value {
+    let mut fields = serde_json::Map::new();
+    for entry in &facts.coverage {
+        fields.insert(
+            entry.field.clone(),
+            json!({"state": entry.state, "reasons": entry.reasons}),
+        );
+    }
+    json!({
+        "extractor": facts.extractor,
+        "extractor_version": facts.extractor_version,
+        "provider": facts.provider,
+        "fields": fields,
+        "counts": {
+            "tool_calls": facts.tools.len(),
+            "paired_calls": facts.tools.iter().filter(|t| t.has_result).count(),
+        }
+    })
+}
+
 /// The manifest the codex extractor publishes for a session whose ONLY
 /// inventory gap is a provider-encrypted `agent_message` handoff — the
 /// exact shape `codex_agent_message_encrypted_payload_is_known_unreadable`
@@ -3474,6 +3500,47 @@ fn search_sessions_interrupted_tool_output_answers_strict_with_annotation() -> R
     // A term S5's existing text lacks is a PROVEN non-member.
     let page = search(&mut bridge, json!({"query":"foo"}))?;
     assert_members(&page, &[1, 2])?;
+    bridge.shutdown()
+}
+
+/// (v-b) `has_mcp` rides the same source-absent classification as the
+/// text lanes: the interrupted manifest's `tools` gap carries ONLY the
+/// allowlisted `tool_output_interrupted` reason, so the tools inventory
+/// is provably exhaustive over every record the rollout ever held — the
+/// session is a PROVEN non-member for `has_mcp` (no tag, no tool name
+/// mentions mcp), never an Unknown that blocks the strict page. The arm
+/// must consult `field_blocks_strict("tools")` (source-absent aware),
+/// not a bare `coverage_of("tools") == "complete"` comparison, which
+/// treats the interrupted session as unread and refuses the query.
+#[test]
+fn search_sessions_has_mcp_treats_interrupted_tools_as_proven_absent() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    set_facts_coverage(&bridge, 5, "partial", codex_interrupted_call_manifest())?;
+
+    // has_mcp=true: S1 carries the `mcp-server` tag; the interrupted S5
+    // is a proven non-member (not unknown), so the page answers strict.
+    let page = search(
+        &mut bridge,
+        json!({"ast":{"type":"filter","field":"has_mcp","op":"EQ","value":true}}),
+    )?;
+    assert_members(&page, &[1])?;
+    ensure!(
+        page["result"]["source_absent_sessions"] == 1,
+        "the interrupted session was evaluated and annotated: {page}"
+    );
+
+    // has_mcp=false: the interrupted session is now a PROVEN member —
+    // its tools inventory is exhaustive, so no MCP call can hide in it.
+    let page = search(
+        &mut bridge,
+        json!({"ast":{"type":"filter","field":"has_mcp","op":"EQ","value":false}}),
+    )?;
+    assert_members(&page, &[2, 3, 4, 5, 7])?;
+    let s5 = result_item(&page, 5)?;
+    ensure!(
+        s5["source_text_absent"] == json!(["tool_output_interrupted"]),
+        "the interrupted session carries its source-absent reason: {s5}"
+    );
     bridge.shutdown()
 }
 
@@ -3885,28 +3952,33 @@ fn search_sessions_claude_sidecar_cull_mixed_with_unknown_still_refuses_strict()
     bridge.shutdown()
 }
 
-/// The manifest the v3 antigravity extractor publishes for a REALISTIC F10
-/// session that also carries truncation markers: the canonical `agy_type`
-/// envelope (block inventory), unrecorded call identities (tools) and the
-/// F10 lifecycle-status verdicts (tool_exit/tool_error partial) sit
-/// alongside the truncation marker. The envelope and identity marks are
-/// honest NOT-READ gaps — structure the connector does not preserve, so
-/// matching regions could still hide behind them.
+/// The manifest the post-§5.2 antigravity extractor publishes for a
+/// REALISTIC F10 session that also carries truncation markers: the
+/// canonical `agy_type` envelope (block inventory) and the F10
+/// lifecycle-status verdicts (tool_exit/tool_error partial) sit alongside
+/// the truncation marker. After §5.2 the name-only planner calls collect
+/// under synthetic ids, so `tools` carries the truncation marker only — a
+/// pure source-absent gap — and the result-identity reason narrows to the
+/// exit/error scopes. The ENVELOPE mark stays an honest NOT-READ gap —
+/// structure the connector does not preserve, so matching regions could
+/// still hide behind it, and strict search keeps refusing.
 fn antigravity_f10_realistic_manifest() -> Value {
     json!({
-        "extractor": "antigravity-facts-v3",
-        "extractor_version": 3,
+        "extractor": "antigravity-facts-v6",
+        "extractor_version": 13,
         "provider": "antigravity",
         "fields": {
             "chat": {"state":"partial","reasons":["agy_source_truncated"]},
-            "tools": {"state":"partial","reasons":[
-                "agy_tool_call_identity_missing",
-                "agy_tool_result_identity_missing",
-                "agy_source_truncated"
-            ]},
+            "tools": {"state":"partial","reasons":["agy_source_truncated"]},
             "thinking": {"state":"partial","reasons":["agy_source_truncated"]},
-            "tool_exit": {"state":"partial","reasons":["agy_status_unpaired"]},
-            "tool_error": {"state":"partial","reasons":["agy_status_unpaired"]},
+            "tool_exit": {"state":"partial","reasons":[
+                "agy_status_unpaired",
+                "agy_tool_result_identity_missing"
+            ]},
+            "tool_error": {"state":"partial","reasons":[
+                "agy_status_unpaired",
+                "agy_tool_result_identity_missing"
+            ]},
             "block_inventory": {"state":"partial","reasons":["agy_canonical_envelope"]},
             "text_inventory": {"state":"partial","reasons":["agy_source_truncated"]},
             "files": {"state":"partial","reasons":["agy_source_truncated"]},
@@ -3924,12 +3996,13 @@ fn antigravity_f10_realistic_manifest() -> Value {
 }
 
 /// (viii) The allowlist member never over-unlocks: a realistic agy session
-/// also carries the canonical-envelope and call-identity marks — NOT-READ
-/// gaps that can still hide matching regions — so strict search keeps its
-/// honest `data_unavailable` refusal even though `agy_source_truncated`
-/// itself is allowlisted. The probe uses `foo`, a term S5's verified text
-/// lacks: a verified positive match would dominate regardless, but S5's
-/// non-membership is exactly what the envelope gap leaves unprovable.
+/// also carries the canonical-envelope mark — a NOT-READ gap that can
+/// still hide matching regions — so strict search keeps its honest
+/// `data_unavailable` refusal even though every mark on the text and
+/// tools scopes (`agy_source_truncated`) is allowlisted. The probe uses
+/// `foo`, a term S5's verified text lacks: a verified positive match would
+/// dominate regardless, but S5's non-membership is exactly what the
+/// envelope gap leaves unprovable.
 #[test]
 fn search_sessions_agy_realistic_marks_still_refuse_strict() -> Result<()> {
     let mut bridge = gold_harness()?;
@@ -3938,7 +4011,7 @@ fn search_sessions_agy_realistic_marks_still_refuse_strict() -> Result<()> {
     let page = search(&mut bridge, json!({"query":"foo"}))?;
     ensure!(
         page["ok"] == false,
-        "the envelope/identity gaps must keep strict search refused: {page}"
+        "the envelope gap must keep strict search refused: {page}"
     );
     ensure!(
         page["error"]["kind"] == "data_unavailable",
@@ -3947,28 +4020,31 @@ fn search_sessions_agy_realistic_marks_still_refuse_strict() -> Result<()> {
     bridge.shutdown()
 }
 
-/// The manifest the post-F15 antigravity extractor publishes for the
-/// dominant real-archive shape once every emitted record archives its raw
-/// source: the block inventory is VERIFIED complete (the raw record is
-/// present and every field accounted for), so the last NOT-READ reason
-/// on the strict-gated fields is gone; only the allowlisted
-/// `agy_source_truncated` remains on the text scopes. Strict search may
-/// evaluate such a session.
+/// The manifest the post-F15, post-§5.2 antigravity extractor publishes
+/// for the dominant real-archive shape once every emitted record archives
+/// its raw source: the block inventory is VERIFIED complete (the raw
+/// record is present and every field accounted for), the name-only
+/// planner calls collect under synthetic ids (§5.2) so `tools` carries
+/// only the allowlisted `agy_source_truncated`, and the result-identity
+/// reason narrows to the exit/error scopes. Strict search may evaluate
+/// such a session.
 fn antigravity_raw_verified_manifest() -> Value {
     json!({
-        "extractor": "antigravity-facts-v5",
-        "extractor_version": 9,
+        "extractor": "antigravity-facts-v6",
+        "extractor_version": 13,
         "provider": "antigravity",
         "fields": {
             "chat": {"state":"partial","reasons":["agy_source_truncated"]},
-            "tools": {"state":"partial","reasons":[
-                "agy_tool_call_identity_missing",
-                "agy_tool_result_identity_missing",
-                "agy_source_truncated"
-            ]},
+            "tools": {"state":"partial","reasons":["agy_source_truncated"]},
             "thinking": {"state":"partial","reasons":["agy_source_truncated"]},
-            "tool_exit": {"state":"partial","reasons":["agy_status_unpaired"]},
-            "tool_error": {"state":"partial","reasons":["agy_status_unpaired"]},
+            "tool_exit": {"state":"partial","reasons":[
+                "agy_status_unpaired",
+                "agy_tool_result_identity_missing"
+            ]},
+            "tool_error": {"state":"partial","reasons":[
+                "agy_status_unpaired",
+                "agy_tool_result_identity_missing"
+            ]},
             "block_inventory": {"state":"complete","reasons":[]},
             "text_inventory": {"state":"partial","reasons":["agy_source_truncated"]},
             "files": {"state":"partial","reasons":["agy_source_truncated"]},
@@ -4006,6 +4082,507 @@ fn search_sessions_agy_raw_verified_no_longer_refuses_strict() -> Result<()> {
         page["ok"] == true,
         "the raw-verified session must not refuse strict search: {page}"
     );
+    bridge.shutdown()
+}
+
+/// §5.2 end-to-end (owner decision, 2026-11-10): a REAL antigravity session
+/// whose planner invocations carry tool names but NO call ids — the exact
+/// archive shape (corpus census: all 10,103 archived calls name-only) —
+/// evaluated through the REAL extractor generation. Pre-§5.2 the
+/// identity-missing partial made every nameless tool-step region
+/// `Unknown`, so strict `tool:` refused the whole page; with the synthetic
+/// `agy-anon:` ids the tools scope certifies complete and the strict page
+/// answers from the region tool-name inventory.
+fn antigravity_synthetic_call_session() -> GoldSession {
+    GoldSession {
+        id: 8,
+        agent: "antigravity",
+        source_id: "local",
+        external_id: "s-8-agy-synthetic",
+        source_path: "/sessions/s-8-agy-synthetic.jsonl",
+        workspace: None,
+        title: "agy synthetic call ids",
+        started_at: Some(9_000),
+        ended_at: Some(9_900),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            // USER_INPUT shape (role user + wrapper-lift keys): a bare
+            // message would classify as connector drift and re-block the
+            // very scopes this test heals.
+            (
+                0,
+                MessageRole::User,
+                "made-up agy user request text",
+                Some(json!({"settings_change": "made-up agy settings change text"})),
+            ),
+            (
+                1,
+                MessageRole::Agent,
+                "made-up agy planner narration",
+                Some(json!({
+                    "thinking": "made-up agy thinking text",
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "view_file",
+                         "arguments": {"TargetFile": "/made/up/agy-syn-target.rs"}}
+                    ]}
+                })),
+            ),
+            // A MODEL-step record: nameless tools-scope region text — the
+            // exact region shape that was `Unknown` while the tools scope
+            // carried the identity gap.
+            (
+                2,
+                MessageRole::Tool,
+                "made-up agy step output",
+                Some(json!({"agy_type": "GENERIC"})),
+            ),
+        ],
+    }
+}
+
+#[test]
+fn search_sessions_agy_synthetic_call_ids_answer_strict_tool_predicates() -> Result<()> {
+    let mut sessions = gold_fixture();
+    sessions.push(antigravity_synthetic_call_session());
+    let mut bridge = gold_harness_full(&sessions, &[])?;
+
+    // Replace the seeded fixture-complete row with the REAL manifest the
+    // ingest generation computes, so the strict lane evaluates exactly
+    // what a real ingest would publish.
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let agy = sessions.pop().expect("the antigravity session");
+    let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+        &writer,
+        &gold_conversation(&agy),
+        agy.id,
+    )?;
+    drop(writer);
+    let facts = generation.facts;
+    ensure!(
+        facts
+            .coverage
+            .iter()
+            .any(|entry| entry.field == "tools" && entry.state == "complete"),
+        "the real manifest must certify the tools scope complete: {:?}",
+        facts.coverage
+    );
+    set_facts_coverage(
+        &bridge,
+        agy.id,
+        facts.coverage_state.as_str(),
+        real_facts_manifest(&facts),
+    )?;
+
+    // Strict tool membership over the nameless step region: with the
+    // tools scope complete the region evaluates (False for a missing
+    // name), so the page answers instead of refusing.
+    let page = search(&mut bridge, json!({"query": "tool:Read"}))?;
+    ensure!(page["ok"] == true, "strict tool: must not refuse: {page}");
+    ensure!(!ids(&page).contains(&8), "S8 has no Read call: {page}");
+
+    // And the synthesized call's name answers as a member from the region
+    // tool-name inventory.
+    let page = search(&mut bridge, json!({"query": "tool:view_file"}))?;
+    assert_members(&page, &[8])?;
+    bridge.shutdown()
+}
+
+/// §5.3 end-to-end (owner decision, 2026-11-10): a REAL devin session whose
+/// sparse records carry the archived `cass.invocations` (the connector's
+/// normalized calls — corpus census: 20,978 records carry both the
+/// rendered `[tool_call:` line and the invocations). Pre-§5.3 the facts
+/// lane could not see the calls: `devin_tool_calls_not_normalized` +
+/// `orphan_tool_result` kept `tools`/`files` partial, so strict `file:` and
+/// `has_mcp` refused. With the invocations collected through the same
+/// `ToolCollector` path, the file path in the call arguments heals `files`
+/// and strict `file:` answers.
+fn devin_archived_invocations_session() -> GoldSession {
+    GoldSession {
+        id: 8,
+        agent: "devin",
+        source_id: "local",
+        external_id: "s-8-devin-invocations",
+        source_path: "/sessions/s-8-devin-invocations.jsonl",
+        workspace: None,
+        title: "devin archived invocations",
+        started_at: Some(9_000),
+        ended_at: Some(9_900),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            // cli_user sparse shape (message_id + is_user_input): a bare
+            // message would classify as drift and re-block the healed scopes.
+            (
+                0,
+                MessageRole::User,
+                "Fix the broken checks.",
+                Some(json!({"message_id": "m2", "is_user_input": true})),
+            ),
+            (
+                1,
+                MessageRole::Agent,
+                "Reading the file.\n[tool_call: read_file]",
+                Some(json!({
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "read_file", "call_id": "inv_1",
+                         "arguments": {"TargetFile": "/made/up/devin-target.rs"}}
+                    ]}
+                })),
+            ),
+            (
+                2,
+                MessageRole::Tool,
+                "made-up devin file body",
+                Some(json!({"tool_call_id": "inv_1"})),
+            ),
+        ],
+    }
+}
+
+#[test]
+fn search_sessions_devin_archived_invocations_answer_strict_file_predicates() -> Result<()> {
+    let mut sessions = gold_fixture();
+    sessions.push(devin_archived_invocations_session());
+    let mut bridge = gold_harness_full(&sessions, &[])?;
+
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let devin = sessions.pop().expect("the devin session");
+    let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+        &writer,
+        &gold_conversation(&devin),
+        devin.id,
+    )?;
+    drop(writer);
+    let facts = generation.facts;
+    for field in ["tools", "files"] {
+        ensure!(
+            facts
+                .coverage
+                .iter()
+                .any(|entry| entry.field == field && entry.state == "complete"),
+            "the real manifest must certify {field} complete: {:?}",
+            facts.coverage
+        );
+    }
+    set_facts_coverage(
+        &bridge,
+        devin.id,
+        facts.coverage_state.as_str(),
+        real_facts_manifest(&facts),
+    )?;
+
+    // The file path carried in the invocation arguments: strict `file:`
+    // answers with S8 as a member instead of refusing on the files gap.
+    let page = search(
+        &mut bridge,
+        json!({"query": "file:/made/up/devin-target.rs"}),
+    )?;
+    assert_members(&page, &[8])?;
+
+    // has_mcp rides the same healed tools scope (§5.1's
+    // source-absent-aware arm consults `field_blocks_strict`): S8
+    // evaluates as a proven False — a member of the negative set —
+    // instead of an Unknown that refuses the whole page.
+    let page = search(
+        &mut bridge,
+        json!({"ast":{"type":"filter","field":"has_mcp","op":"EQ","value":false}}),
+    )?;
+    ensure!(page["ok"] == true, "strict has_mcp must not refuse: {page}");
+    ensure!(
+        ids(&page).contains(&8),
+        "S8 carries no mcp evidence and must evaluate False: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// Follow-up 1 end-to-end (owner decision, 2026-11-11): a REAL codex
+/// session whose `exec_command` output carries NO rendered trailer — the
+/// shape of 773 of 10,622 corpus outputs. `exec_command` is a proven
+/// status renderer (9,785 outputs carry `Process exited with code N`), so
+/// the missing trailer is a not-read gap: the exit/error scopes keep
+/// `tool_exit_not_recorded`/`tool_error_not_recorded` and strict
+/// `exit:`/`has:error` REFUSE with `data_unavailable` instead of
+/// evaluating a fabricated False.
+fn codex_exec_command_no_rendered_status_session() -> GoldSession {
+    GoldSession {
+        id: 8,
+        agent: "codex",
+        source_id: "local",
+        external_id: "s-8-codex-no-rendered-exit",
+        source_path: "/sessions/s-8-codex-no-rendered-exit.jsonl",
+        workspace: None,
+        title: "codex exec_command without rendered status",
+        started_at: Some(9_000),
+        ended_at: Some(9_900),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            // event_msg user_message shape: a bare message would classify
+            // as drift and re-block the healed scopes.
+            (
+                0,
+                MessageRole::User,
+                "run the checks",
+                Some(json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "run the checks"}})),
+            ),
+            (
+                1,
+                MessageRole::Agent,
+                "[Tool: exec_command]",
+                Some(json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_exec",
+                                   "name": "exec_command",
+                                   "arguments": "{\"cmd\": \"made-up check\"}",
+                                   "id": "resp-1"}})),
+            ),
+            (
+                2,
+                MessageRole::Tool,
+                "made-up check output",
+                Some(json!({"type": "response_item",
+                       "payload": {"type": "function_call_output", "call_id": "call_exec",
+                                   "output": "made-up check output", "id": "resp-2"}})),
+            ),
+        ],
+    }
+}
+
+#[test]
+fn search_sessions_codex_exec_command_without_rendered_status_blocks_strict() -> Result<()> {
+    let mut sessions = gold_fixture();
+    sessions.push(codex_exec_command_no_rendered_status_session());
+    let mut bridge = gold_harness_full(&sessions, &[])?;
+
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let codex = sessions.pop().expect("the codex session");
+    let generation = coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+        &writer,
+        &gold_conversation(&codex),
+        codex.id,
+    )?;
+    drop(writer);
+    let facts = generation.facts;
+    for (field, reason) in [
+        ("tool_exit", "tool_exit_not_recorded"),
+        ("tool_error", "tool_error_not_recorded"),
+    ] {
+        let entry = facts
+            .coverage
+            .iter()
+            .find(|entry| entry.field == field)
+            .unwrap_or_else(|| panic!("{field}"));
+        ensure!(
+            entry.reasons.iter().any(|r| r == reason),
+            "the real manifest must carry the not-read verdict on {field}: {entry:?}"
+        );
+        ensure!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "codex_tool_status_absent_at_source"),
+            "exec_command renders exit status at the source, so the gap is never source-absent: {entry:?}"
+        );
+    }
+    set_facts_coverage(
+        &bridge,
+        codex.id,
+        facts.coverage_state.as_str(),
+        real_facts_manifest(&facts),
+    )?;
+
+    // Strict exit:0 — S8's status-less exec_command is a not-read gap, so
+    // the strict page refuses instead of evaluating a fabricated False.
+    let page = search(&mut bridge, json!({"query": "exit:0"}))?;
+    ensure!(
+        page["ok"] == false,
+        "the not-read exit verdict must block strict: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "data_unavailable",
+        "the refusal is honest-unavailable: {page}"
+    );
+    let message = page["error"]["message"].as_str().unwrap_or_default();
+    ensure!(
+        message.contains("tool_exit"),
+        "the refusal must name the tool_exit scope: {page}"
+    );
+
+    // allow_partial — S8 stays unknown, so it never appears as a member.
+    let page = search(
+        &mut bridge,
+        json!({"query": "exit:0", "allow_partial": true}),
+    )?;
+    ensure!(page["ok"] == true, "partial must answer: {page}");
+    ensure!(
+        !ids(&page).contains(&8),
+        "S8's exit verdict is not read, so partial must exclude it: {page}"
+    );
+    bridge.shutdown()
+}
+
+/// Follow-up 1 fixtures: the per-name census pins two verdict regimes for
+/// strict exit predicates. `exec_command` renders its exit status as text
+/// (`Process exited with code N`; 9,785 of 10,622 outputs) — the rendered
+/// line IS the recorded verdict, so strict `exit:`/`has:error` answer
+/// True/False exactly. `wait_agent` never renders status in any shape
+/// (1,385 outputs, zero renderings) — its gap keeps the allowlisted
+/// source-absent verdict and the strict page still answers, evaluating
+/// the session as a proven False.
+fn codex_exec_trailer_session(
+    id: i64,
+    external: &'static str,
+    title: &'static str,
+    output: &'static str,
+) -> GoldSession {
+    GoldSession {
+        id,
+        agent: "codex",
+        source_id: "local",
+        external_id: external,
+        // Native rollout shape with the external UUID embedded: once the
+        // region pairing records the rendered exit code, the session
+        // becomes an `exit:`/`has:error` evaluation candidate and the
+        // strict codex identity lane (`viewer_bridge/identity.rs::
+        // codex_native_id`) demands a rollout filename or bare-UUID
+        // external whose UUIDs agree.
+        source_path: Box::leak(
+            format!("/codex/sessions/2026/11/11/rollout-2026-11-11T00-00-00-{external}.jsonl")
+                .into_boxed_str(),
+        ),
+        workspace: None,
+        title,
+        started_at: Some(9_000),
+        ended_at: Some(9_900),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            (
+                0,
+                MessageRole::User,
+                "run the checks",
+                Some(json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "run the checks"}})),
+            ),
+            (
+                1,
+                MessageRole::Agent,
+                "[Tool: exec_command]",
+                Some(json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_exec",
+                                   "name": "exec_command",
+                                   "arguments": "{\"cmd\": \"made-up check\"}",
+                                   "id": "resp-1"}})),
+            ),
+            (
+                2,
+                MessageRole::Tool,
+                "made-up check output",
+                Some(json!({"type": "response_item",
+                       "payload": {"type": "function_call_output", "call_id": "call_exec",
+                                   "output": output, "id": "resp-2"}})),
+            ),
+        ],
+    }
+}
+
+fn codex_wait_agent_session() -> GoldSession {
+    GoldSession {
+        id: 10,
+        agent: "codex",
+        source_id: "local",
+        // Rollout-shaped identity (see the trailer fixture note): the
+        // wait_agent gap evaluates False via the source-absent swap, and
+        // the strict codex identity lane runs for every evaluated
+        // candidate.
+        external_id: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+        source_path: "/codex/sessions/2026/11/11/rollout-2026-11-11T00-00-02-bbbbbbbb-cccc-dddd-eeee-ffffffffffff.jsonl",
+        workspace: None,
+        title: "codex wait_agent status-less",
+        started_at: Some(9_000),
+        ended_at: Some(9_900),
+        origin_host: None,
+        metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+        messages: vec![
+            (
+                0,
+                MessageRole::User,
+                "wait for the agent",
+                Some(json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "wait for the agent"}})),
+            ),
+            (
+                1,
+                MessageRole::Agent,
+                "[Tool: wait_agent]",
+                Some(json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_wait",
+                                   "name": "wait_agent",
+                                   "arguments": "{\"agent\": \"made-up agent\"}",
+                                   "id": "resp-1"}})),
+            ),
+            (
+                2,
+                MessageRole::Tool,
+                "made-up agent finished",
+                Some(json!({"type": "response_item",
+                       "payload": {"type": "function_call_output", "call_id": "call_wait",
+                                   "output": "made-up agent finished", "id": "resp-2"}})),
+            ),
+        ],
+    }
+}
+
+#[test]
+fn search_sessions_codex_rendered_exit_trailer_answers_strict_predicates() -> Result<()> {
+    let mut sessions = gold_fixture();
+    sessions.push(codex_exec_trailer_session(
+        8,
+        "11111111-2222-3333-4444-555555555555",
+        "codex exec_command rendered exit 0",
+        "made-up checks passed\nProcess exited with code 0\n",
+    ));
+    sessions.push(codex_exec_trailer_session(
+        9,
+        "66666666-7777-8888-9999-aaaaaaaaaaaa",
+        "codex exec_command rendered exit 1",
+        "made-up checks failed\nProcess exited with code 1\n",
+    ));
+    sessions.push(codex_wait_agent_session());
+    let mut bridge = gold_harness_full(&sessions, &[])?;
+
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    let wait = sessions.pop().expect("the wait_agent session");
+    let failed = sessions.pop().expect("the exit-1 session");
+    let ok = sessions.pop().expect("the exit-0 session");
+    for session in [&wait, &failed, &ok] {
+        let generation =
+            coding_agent_search::viewer_extensions::projection::generation_for_canonical(
+                &writer,
+                &gold_conversation(session),
+                session.id,
+            )?;
+        let facts = generation.facts;
+        set_facts_coverage(
+            &bridge,
+            session.id,
+            facts.coverage_state.as_str(),
+            real_facts_manifest(&facts),
+        )?;
+    }
+    drop(writer);
+
+    // exit:0 — S8's rendered `Process exited with code 0` is the recorded
+    // verdict (True); S9's is 1 (False); S10's wait_agent gap is proven
+    // source-absent (False). Strict answers.
+    let page = search(&mut bridge, json!({"query": "exit:0"}))?;
+    assert_members(&page, &[8])?;
+
+    // has:error — S9's nonzero render is True (with the base S3 error);
+    // S8 (exit 0) and S10 (absent) evaluate False.
+    let page = search(&mut bridge, json!({"query": "has:error"}))?;
+    assert_members(&page, &[3, 9])?;
     bridge.shutdown()
 }
 
@@ -4075,24 +4652,12 @@ fn search_sessions_agy_error_field_text_answers_strict_search() -> Result<()> {
     )?;
     drop(writer);
     let facts = generation.facts;
-    let mut fields = serde_json::Map::new();
-    for entry in &facts.coverage {
-        fields.insert(
-            entry.field.clone(),
-            json!({"state": entry.state, "reasons": entry.reasons}),
-        );
-    }
-    let manifest = json!({
-        "extractor": facts.extractor,
-        "extractor_version": facts.extractor_version,
-        "provider": facts.provider,
-        "fields": fields,
-        "counts": {
-            "tool_calls": facts.tools.len(),
-            "paired_calls": facts.tools.iter().filter(|t| t.has_result).count(),
-        }
-    });
-    set_facts_coverage(&bridge, agy.id, facts.coverage_state.as_str(), manifest)?;
+    set_facts_coverage(
+        &bridge,
+        agy.id,
+        facts.coverage_state.as_str(),
+        real_facts_manifest(&facts),
+    )?;
 
     // A word that appears ONLY in the tool-step error text: the strict
     // page answers exactly [8] — the error region is a verified hit.

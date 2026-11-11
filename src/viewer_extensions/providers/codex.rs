@@ -61,6 +61,116 @@ fn qualified_call(segment: Option<&str>, call_id: &str) -> String {
     format!("codex-segment:{digest}")
 }
 
+/// Follow-up 1 (owner decision, 2026-11-11): §5.5a's "every
+/// `function_call`" rule was over-broad — the exit status IS present at
+/// the source for some names as RENDERED TEXT. The per-name census
+/// (`.scratch/glm/2026-11-10-tool-coverage-fixes/census_text_receipt.txt`,
+/// 2,521 local rollouts — sessions, archived sessions and `.jsonl.zst` —
+/// every output record classified by the SHAPE of any exit rendering it
+/// carries: status fields, `Process exited with code N`, `Exit code: N`,
+/// the `exit_code` literal inside a JSON string, any bare `exit` mention)
+/// proves:
+///
+/// - `exec_command` (the trailer in 9,785 of 10,622 outputs, 9,839 with
+///   a rendering of some shape) and `write_stdin` (the trailer in 633 of
+///   1,329) systematically render the trailer `Process exited with code
+///   N` — they are extraction names ([`RENDERED_EXIT_NAMES`]), never
+///   absent-proven: their trailer-less outputs keep the not-read verdict;
+/// - every name listed below has ZERO STRUCTURED renderings across the
+///   whole corpus — no status fields, no `Process exited with code N`,
+///   no `Exit code: N`, no `exit_code` literal (e.g. custom `exec`:
+///   63,546 outputs; `wait`: 3,041; `wait_agent`: 1,385 — its 7 bare
+///   `exit`-word mentions carry no status shape, so they are prose, not
+///   renderings; `js`: 484), so the
+///   missing verdict never existed in any local record — the
+///   source-absent swap is honest for them;
+/// - every name NOT listed and NOT a renderer stays NOT-read — the census
+///   observed it WITH a rendering (`read_file` 1 of 85,
+///   `mcp__glean__search` 4 of 39, `_search_issues` 3 of 16, `_fetch_issue`
+///   1 of 7, `apply_patch` 692 of 710 custom outputs carry status) or not
+///   at all: no proof, no swap, strict keeps blocking.
+///
+/// The lists are per call KIND (the census pairs kind-homogeneously);
+/// `apply_patch` appears as both kinds and is excluded from both by name.
+const PROVEN_NO_EXIT_CUSTOM: &[&str] = &["exec"];
+
+const PROVEN_NO_EXIT_FUNCTION: &[&str] = &[
+    "_fetch_file",
+    "_fetch_issue_comments",
+    "_fetch_pr",
+    "_search",
+    "_search_prs",
+    "_search_repositories",
+    "analyze_calls",
+    "board_list_items",
+    "build_project",
+    "close_agent",
+    "context_explore",
+    "followup_task",
+    "get_issue",
+    "get_python_environment",
+    "get_run_configurations",
+    "interrupt_agent",
+    "js",
+    "list_agents",
+    "list_directory_tree",
+    "list_mcp_resource_templates",
+    "list_mcp_resources",
+    "list_pages",
+    "mcp__glean__chat",
+    "mcp__glean__read_document",
+    "mcp__idea__list_directory_tree",
+    "mcp__idea__read_file",
+    "mcp__idea__search_symbol",
+    "mcp__idea__search_text",
+    "mcp__miro__context_explore",
+    "mcp__miro__context_get",
+    "mcp__youtrack__get_issue",
+    "navigate_page",
+    "new_page",
+    "read_document",
+    "request_user_input",
+    "request_user_input_async",
+    "resume_agent",
+    "search_file",
+    "search_symbol",
+    "search_text",
+    "send_input",
+    "send_message",
+    "sleep",
+    "slack_read_channel",
+    "slack_read_thread",
+    "slack_read_user_profile",
+    "slack_search_public_and_private",
+    "slack_search_users",
+    "slack_send_message",
+    "spawn_agent",
+    "take_snapshot",
+    "update_plan",
+    "view_image",
+    "wait",
+    "wait_agent",
+];
+
+/// Codex tool names whose outputs systematically RENDER the process exit
+/// status as the trailer text `Process exited with code N` (census:
+/// `exec_command` 9,785 of 10,622 outputs, `write_stdin` 633 of 1,329).
+/// `ToolCollector::finish` parses the LAST rendered trailer of a paired
+/// result into `exit_code`/`is_error` (`exit != 0` is the codex error
+/// semantics, the same rule `explicit_status` applies to fields) exactly
+/// as if the payload had carried an explicit status field; the region
+/// lane derives the same verdict for its rows. An output of these names
+/// WITHOUT the trailer keeps the not-read verdict and blocks strict.
+pub(crate) const RENDERED_EXIT_NAMES: &[&str] = &["exec_command", "write_stdin"];
+
+fn proven_no_exit(is_custom: bool, name: &str) -> bool {
+    if is_custom {
+        PROVEN_NO_EXIT_CUSTOM.contains(&name)
+    } else {
+        PROVEN_NO_EXIT_FUNCTION.contains(&name)
+    }
+}
+
 /// `(payload, wrapped)`: response_item/event_msg carry a payload dict;
 /// event_msg with a bare `message` string reads as the record itself.
 fn payload_of(record: &Value) -> (Value, bool) {
@@ -162,28 +272,28 @@ fn call(
         coverage.unknown("codex_tool_identity_missing");
         return;
     };
-    let (arguments, valid) =
-        if payload.get("type").and_then(Value::as_str) == Some("custom_tool_call") {
-            // CASS preserves even JSON-looking freeform input verbatim.
-            (
-                payload.get("input").cloned(),
-                payload.get("input").and_then(Value::as_str).is_some(),
-            )
-        } else {
-            let has_field = payload
-                .as_object()
-                .is_some_and(|m| m.contains_key("arguments") || m.contains_key("args"));
-            let (args, ok) = decode(
-                payload
-                    .get("arguments")
-                    .or(payload.get("args"))
-                    .unwrap_or(&Value::Null),
-            );
-            (
-                if has_field || ok { Some(args) } else { None },
-                ok && has_field,
-            )
-        };
+    let is_custom = payload.get("type").and_then(Value::as_str) == Some("custom_tool_call");
+    let (arguments, valid) = if is_custom {
+        // CASS preserves even JSON-looking freeform input verbatim.
+        (
+            payload.get("input").cloned(),
+            payload.get("input").and_then(Value::as_str).is_some(),
+        )
+    } else {
+        let has_field = payload
+            .as_object()
+            .is_some_and(|m| m.contains_key("arguments") || m.contains_key("args"));
+        let (args, ok) = decode(
+            payload
+                .get("arguments")
+                .or(payload.get("args"))
+                .unwrap_or(&Value::Null),
+        );
+        (
+            if has_field || ok { Some(args) } else { None },
+            ok && has_field,
+        )
+    };
     if !valid {
         coverage.mark(&["files", "mcp"], "tool_arguments_unparsed", "partial");
         if arguments.is_none() {
@@ -195,10 +305,19 @@ fn call(
         }
     }
     coverage.evidence("tools");
+    let qualified = qualified_call(segment, &call_id);
+    if proven_no_exit(is_custom, &name) {
+        // Follow-up 1: this NAME is corpus-proven (zero renderings of any
+        // shape) to never carry exit status at the source. `finish()`
+        // swaps the not-read verdict for the allowlisted source-absent
+        // reason — and only when the recorded verdict really is missing
+        // (self-correcting per record).
+        tools.note_exit_absent_at_source(&qualified);
+    }
     tools.call(RecordedCall {
         event_idx: event.idx,
         message_id: event.message_id,
-        call_id: qualified_call(segment, &call_id),
+        call_id: qualified,
         raw_call_id: call_id,
         name,
         arguments,
@@ -440,7 +559,9 @@ fn event_text(payload: &Value, coverage: &mut CoverageBuilder) {
 pub(crate) fn extract(packet: &ConversationPacket) -> ProviderExtraction {
     let input = events(packet);
     let mut coverage = CoverageBuilder::new();
-    let mut tools = ToolCollector::new();
+    // Renderer names register for the trailer extraction in `finish()` —
+    // census-proven renderers only (see RENDERED_EXIT_NAMES).
+    let mut tools = ToolCollector::new().with_rendered_exit_names(RENDERED_EXIT_NAMES);
     let mut thinking = 0_i64;
     let mut compactions = 0_i64;
     let mut models: BTreeSet<String> = BTreeSet::new();

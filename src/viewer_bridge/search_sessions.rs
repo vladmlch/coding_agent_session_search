@@ -2838,7 +2838,10 @@ fn eval_predicate(
         });
         let mut value = if tagged || named {
             Truth::True
-        } else if session.coverage_of("tools") == "complete" {
+        } else if !session.field_blocks_strict("tools") {
+            // Source-absent tools gaps (allowlisted reasons) prove mcp
+            // absence the same way every other field predicate does —
+            // only a not-read gap may keep this Unknown.
             Truth::False
         } else {
             Truth::Unknown

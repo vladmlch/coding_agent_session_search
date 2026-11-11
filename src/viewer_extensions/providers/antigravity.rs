@@ -168,7 +168,11 @@ const SUPPORTED_KINDS: &[&str] = &[
     "LIST_DIRECTORY",
 ];
 const TOOL_KINDS: &[&str] = &["TOOL_OUTPUT", "VIEW_FILE", "RUN_COMMAND"];
-const PARTIAL_TOOL_FIELDS: &[&str] = &["tools", "tool_exit", "tool_error"];
+/// §5.2: the fields a missing call/result identity keeps partial. The tool
+/// NAME inventory rides the call side and the output text indexes through
+/// the chat/region lanes, so the identity gap only blocks the per-call
+/// exit/error verdicts — never `tools`.
+const PARTIAL_TOOL_FIELDS: &[&str] = &["tool_exit", "tool_error"];
 /// USER_INPUT extra keys: the connector's wrapper lifts, the F10
 /// passthrough keys (`truncated_fields`, `status`, `error`, `media` —
 /// FAD rev 3851a3a inserts each only when the source record carries it)
@@ -366,23 +370,34 @@ fn record_call(
         .or_else(|| value.get("arguments"))
         .or_else(|| value.get("input"))
         .cloned();
-    let Some(call_id) = text_id(
+    // §5.2: a name-only invocation (the connector's archived shape — every
+    // corpus call is name-only) synthesizes a stable local pairing key
+    // `agy-anon:{event}:{n}` so the tool inventory keeps answering `tool:`
+    // and `file:` predicates; `raw_call_id` stays empty (no source identity
+    // is manufactured) and the identity reason narrows to the exit/error
+    // scopes — the tool NAME inventory rides the call side, so nothing
+    // tool-name-shaped can hide in the identity gap.
+    let (call_id, raw_call_id) = match text_id(
         value
             .get("call_id")
             .or_else(|| value.get("id"))
             .or_else(|| value.get("tool_use_id")),
-    ) else {
-        coverage.mark(
-            PARTIAL_TOOL_FIELDS,
-            "agy_tool_call_identity_missing",
-            "partial",
-        );
-        return;
+    ) {
+        Some(id) => (id.clone(), id),
+        None => {
+            let synthetic = tools.next_synthetic_call_id(event.idx);
+            coverage.mark(
+                PARTIAL_TOOL_FIELDS,
+                "agy_tool_call_identity_missing",
+                "partial",
+            );
+            (synthetic, String::new())
+        }
     };
     tools.call(RecordedCall {
         event_idx: event.idx,
         message_id: event.message_id,
-        raw_call_id: call_id.clone(),
+        raw_call_id,
         call_id,
         name,
         arguments,
@@ -400,6 +415,11 @@ fn record_output(
     let text = recorded_output_text(value);
     coverage.evidence("tools");
     let Some(call_id) = text_id(value.get("call_id").or_else(|| value.get("tool_use_id"))) else {
+        // §5.2: the source records outputs as nameless top-level records,
+        // so this is the connector's verified output shape, not drift. The
+        // identity gap only affects the per-call exit/error verdicts; the
+        // output text itself indexes through the chat/region lanes, and
+        // the tool name inventory rides the call side.
         coverage.mark(
             PARTIAL_TOOL_FIELDS,
             "agy_tool_result_identity_missing",
@@ -876,11 +896,16 @@ fn structured_event(
 
     // MODEL-step envelopes outside TOOL_KINDS (GENERIC, CODE_ACTION,
     // LIST_DIRECTORY — the kinds the connector emits for executed steps):
-    // the step text is the message content and lands in chat regions, but
-    // without a recorded call identity the tools scope cannot verify the
-    // step against a call.
+    // the step text is the message content and lands in chat regions; the
+    // missing call identity only blocks the per-call exit/error verdicts —
+    // the tool name inventory rides the call side (§5.2), and the step
+    // text itself is already indexed.
     if event.role == "tool" && !TOOL_KINDS.contains(&kind) && !has_call_identity(extra) {
-        coverage.mark(&["tools"], "agy_tool_result_identity_missing", "partial");
+        coverage.mark(
+            PARTIAL_TOOL_FIELDS,
+            "agy_tool_result_identity_missing",
+            "partial",
+        );
     }
 
     // Raw-transcript arms: `tool_calls`/`tool_outputs` lists survive only

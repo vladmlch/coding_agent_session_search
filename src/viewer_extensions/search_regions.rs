@@ -48,6 +48,7 @@ use crate::search::quill_bridge::QuillCassIndex;
 use super::facts::FactsDb;
 use super::projection::{StepLink, StructuralPublication, ToolCallLink};
 use super::providers::is_compacted_extra;
+use super::providers::{RENDERED_EXIT_NAMES, rendered_exit_code};
 use super::providers::{gemini_call_result_text, gemini_status_verdict, scan_copilot_parts};
 
 /// Region schema revision; bumps when the derivation shape changes so the
@@ -94,7 +95,13 @@ use super::providers::{gemini_call_result_text, gemini_status_verdict, scan_copi
 /// Harmless (the retire DELETE ignores absent ids) but the one-time
 /// `pending_doc_deletes` JSON and live-bound contribution across a full
 /// reindex is proportional to region counts, not to real stale chunks.
-pub const REGION_VERSION: i64 = 6;
+/// v7: v6 plus the follow-up-1 codex rendered-exit trailer — a paired
+/// result of a census-proven renderer name (`exec_command`, `write_stdin`)
+/// whose output text carries `Process exited with code N` now records that
+/// code as the region's `exit_code`/`has_error` (the facts lane extracts
+/// the same verdict), so strict `exit:`/`has:error` answer True/False
+/// exactly for sessions whose status exists only as rendered text.
+pub const REGION_VERSION: i64 = 7;
 
 /// Synthetic `msg_idx` space for region documents: `REGION_DOC_BASE +
 /// region_ordinal`. Below `i64::MAX` so `decode_hit` accepts them; far above
@@ -987,7 +994,19 @@ pub fn derive_message_regions(
             .unwrap_or_else(|| "unknown".to_owned());
             let call_id = extra_string(
                 call.as_object().unwrap_or(&Map::new()),
-                &["id", "call_id", "tool_use_id"],
+                // `call_id` first — the same pairing key the result arm
+                // below (`tool_use_id`, `call_id`, `id`) and the
+                // projection's codex arm (`projection.rs` reads
+                // `payload.call_id` before `payload.id`) already use. A
+                // codex `function_call` carries BOTH: `call_id` pairs it
+                // with its `function_call_output`, `id` is the
+                // response-item id — preferring `id` here left every
+                // codex call unpaired, its output falling to the orphan
+                // lane with the rendered exit status unreachable by the
+                // `exit:`/`has:error` region predicates. Records without
+                // `call_id` (claude `tool_use` blocks) keep the `id` they
+                // always paired by.
+                &["call_id", "id", "tool_use_id"],
             )
             .map(str::to_owned)
             .unwrap_or_else(|| format!("anon:{idx}:{}", calls.len()));
@@ -1230,8 +1249,28 @@ pub fn derive_message_regions(
     }
     for (ordinal, call) in calls.into_iter().enumerate() {
         let linked = results_by_call.remove(&call.call_id).unwrap_or_default();
-        let exit_code = linked.iter().find_map(|r| r.exit_code);
-        let is_error = linked.iter().find_map(|r| r.is_error);
+        let mut exit_code = linked.iter().find_map(|r| r.exit_code);
+        let mut is_error = linked.iter().find_map(|r| r.is_error);
+        // Follow-up 1 (owner decision, 2026-11-11): a codex renderer
+        // tool's output text IS a status record — the census-proven
+        // trailer `Process exited with code N`
+        // (`providers/codex.rs::RENDERED_EXIT_NAMES`) parses like an
+        // explicit field, so the region row carries the same verdict the
+        // facts lane extracts and strict `exit:`/`has:error` answer
+        // exactly. Slug+name gated: only codex renders this trailer, and
+        // an output without it keeps `exit_code` NULL (not-read).
+        if codex && exit_code.is_none() && RENDERED_EXIT_NAMES.contains(&call.name.as_str()) {
+            for result in &linked {
+                let Some(code) = rendered_exit_code(&result.text) else {
+                    continue;
+                };
+                exit_code = Some(code);
+                if is_error.is_none() {
+                    is_error = Some(code != 0);
+                }
+                break;
+            }
+        }
         let result_text_joined = linked
             .iter()
             .map(|r| r.text.as_str())

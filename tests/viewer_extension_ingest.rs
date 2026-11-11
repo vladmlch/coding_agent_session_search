@@ -898,6 +898,296 @@ fn codex_interrupted_call_followed_by_next_task_marks_source_absent() {
     );
 }
 
+/// Follow-up 1 fixtures (owner decision, 2026-11-11): one user turn, one
+/// named `function_call`, one paired `function_call_output` whose `output`
+/// string rides verbatim. The per-name census
+/// (`.scratch/glm/2026-11-10-tool-coverage-fixes/census_text_receipt.txt`,
+/// 2,521 local rollouts, every output classified by exit-rendering shape)
+/// replaces §5.5a's every-`function_call` rule: `exec_command` and
+/// `write_stdin` DO render the exit status as text (`Process exited with
+/// code N` in 9,785 of 10,622 and 633 of 1,329 outputs), so their verdicts
+/// come from the rendered trailer; names with zero renderings of ANY shape
+/// keep the source-absent swap; every other name stays not-read.
+fn codex_function_io_packet(name: &str, output: &str) -> ConversationPacket {
+    packet(
+        "codex",
+        json!({"source": "rollout"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "run the checks",
+                json!({"type": "event_msg",
+                       "payload": {"type": "user_message", "message": "run the checks"}}),
+            ),
+            msg(
+                1,
+                "assistant",
+                &format!("[Tool: {name}]"),
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call", "call_id": "call_exec",
+                                   "name": name,
+                                   "arguments": "{\"cmd\": \"made-up check\"}",
+                                   "id": "resp-1"}}),
+            ),
+            msg(
+                2,
+                "tool",
+                output,
+                json!({"type": "response_item",
+                       "payload": {"type": "function_call_output", "call_id": "call_exec",
+                                   "output": output, "id": "resp-2"}}),
+            ),
+        ],
+    )
+}
+
+/// Follow-up 1: `exec_command` outputs render the exit status at the
+/// source (census: 9,839 of 10,622 outputs carry a rendering), so an
+/// output WITHOUT the rendered trailer is a not-read gap — the status
+/// page provably exists for this tool, this record just does not carry
+/// it. It keeps `tool_exit_not_recorded` and blocks strict.
+#[test]
+fn codex_facts_exec_command_without_rendered_status_stays_not_read() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet("exec_command", "made-up check output"),
+        "codex",
+    );
+
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    assert!(publication.tools[0].has_result);
+    assert_eq!(publication.tools[0].exit_code, None);
+    assert_eq!(publication.tools[0].is_error, None);
+    let expected = [
+        ("tool_exit", "tool_exit_not_recorded"),
+        ("tool_error", "tool_error_not_recorded"),
+    ];
+    for (field, reason) in expected {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_ne!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(
+            entry.reasons.iter().any(|r| r == reason),
+            "{field} keeps the not-read verdict: {entry:?}"
+        );
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "codex_tool_status_absent_at_source"),
+            "exec_command renders exit status at the source, so its gaps are never source-absent: {entry:?}"
+        );
+        assert!(
+            !is_source_absent_gap(entry.state.as_str(), &entry.reasons),
+            "{field} must stay a strict-blocking not-read gap: {entry:?}"
+        );
+    }
+}
+
+/// Follow-up 1: `wait_agent` outputs NEVER render exit status in ANY
+/// shape (census: 1,385 outputs, zero field/`Process exited with code`/
+/// `Exit code:` renderings), so its status-less output keeps the
+/// allowlisted source-absent verdict — strict `exit:`/`has:error`
+/// evaluate a proven False instead of refusing.
+#[test]
+fn codex_facts_wait_agent_status_absent_marks_source_absent() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet("wait_agent", "made-up agent finished"),
+        "codex",
+    );
+
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_ne!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "codex_tool_status_absent_at_source"),
+            "{field}: {entry:?}"
+        );
+        assert!(
+            is_source_absent_gap(entry.state.as_str(), &entry.reasons),
+            "{field} must classify as source-absent: {entry:?}"
+        );
+    }
+}
+
+/// Follow-up 1: the rendered `Process exited with code 0` trailer is a
+/// recorded exit verdict — the facts carry exit_code 0 / is_error false
+/// and the exit/error scopes go complete, so strict `exit:0` can answer
+/// True and `has:error` False for the session.
+#[test]
+fn codex_facts_exec_command_rendered_trailer_records_exit() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet(
+            "exec_command",
+            "made-up checks passed\nProcess exited with code 0\n",
+        ),
+        "codex",
+    );
+
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    assert_eq!(publication.tools[0].exit_code, Some(0));
+    assert_eq!(publication.tools[0].is_error, Some(false));
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+    }
+}
+
+/// Follow-up 1: a nonzero rendered trailer is a recorded error verdict —
+/// exit_code 1, is_error true, both scopes complete.
+#[test]
+fn codex_facts_exec_command_rendered_trailer_nonzero_is_error() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet(
+            "exec_command",
+            "made-up checks failed\nProcess exited with code 1\n",
+        ),
+        "codex",
+    );
+
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    assert_eq!(publication.tools[0].exit_code, Some(1));
+    assert_eq!(publication.tools[0].is_error, Some(true));
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+    }
+}
+
+/// Follow-up 1: a command may echo the trailer line in its own stdout
+/// before codex appends the real one, so the LAST rendered line is the
+/// verdict (corpus probe: 20 of 9,785 trailer-bearing exec_command
+/// outputs carry more than one match; the last is the trailer).
+#[test]
+fn codex_facts_exec_command_trailer_last_match_wins() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet(
+            "exec_command",
+            "made-up echo: Process exited with code 7\n\
+             made-up real trailer follows\nProcess exited with code 0\n",
+        ),
+        "codex",
+    );
+
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    assert_eq!(publication.tools[0].exit_code, Some(0));
+    assert_eq!(publication.tools[0].is_error, Some(false));
+}
+
+/// Follow-up 1: `write_stdin` renders the same trailer (census: 633 of
+/// 1,329 outputs), so it extracts exactly like exec_command.
+#[test]
+fn codex_facts_write_stdin_rendered_trailer_records_exit() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet(
+            "write_stdin",
+            "made-up stdin sent\nProcess exited with code 2\n",
+        ),
+        "codex",
+    );
+
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    assert_eq!(publication.tools[0].exit_code, Some(2));
+    assert_eq!(publication.tools[0].is_error, Some(true));
+}
+
+/// Follow-up 1: a name the census has NOT proven (never observed, or
+/// observed WITH a rendering) never gets the source-absent swap — its
+/// status-less outputs keep the not-read verdict and block strict.
+#[test]
+fn codex_facts_uncensused_name_status_absence_stays_not_read() {
+    let publication = extract_session_facts(
+        &codex_function_io_packet("mcp__future__probe", "made-up probe result"),
+        "codex",
+    );
+
+    let expected = [
+        ("tool_exit", "tool_exit_not_recorded"),
+        ("tool_error", "tool_error_not_recorded"),
+    ];
+    for (field, reason) in expected {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert!(
+            entry.reasons.iter().any(|r| r == reason),
+            "{field} keeps the not-read verdict: {entry:?}"
+        );
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "codex_tool_status_absent_at_source"),
+            "an uncensused name has no source-absent proof: {entry:?}"
+        );
+    }
+}
+
+/// §5.5a boundary: `apply_patch` SOMETIMES carries exit status at the
+/// source (corpus proof: 611 of 734 outputs record `exit_code`), so its
+/// status-less outputs keep the honest not-read `tool_exit_not_recorded`
+/// — never the source-absent swap. Same for any tool name the corpus
+/// proof has not covered.
+#[test]
+fn codex_facts_apply_patch_status_absence_stays_not_read() {
+    let publication = extract_session_facts(
+        &packet(
+            "codex",
+            json!({"source": "rollout"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "apply the change",
+                    json!({"type": "event_msg",
+                           "payload": {"type": "user_message", "message": "apply the change"}}),
+                ),
+                msg(
+                    1,
+                    "assistant",
+                    "[Tool: apply_patch]",
+                    json!({"type": "response_item",
+                           "payload": {"type": "custom_tool_call", "call_id": "call_patch",
+                                       "name": "apply_patch",
+                                       "input": "made-up patch body", "id": "resp-1"}}),
+                ),
+                msg(
+                    2,
+                    "tool",
+                    "made-up patch output",
+                    json!({"type": "response_item",
+                           "payload": {"type": "custom_tool_call_output", "call_id": "call_patch",
+                                       "output": "made-up patch output", "id": "resp-2"}}),
+                ),
+            ],
+        ),
+        "codex",
+    );
+
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "tool_exit_not_recorded" || r == "tool_error_not_recorded"),
+            "a sometimes-status tool keeps the not-read verdict: {entry:?}"
+        );
+        assert!(
+            !entry
+                .reasons
+                .iter()
+                .any(|r| r == "codex_tool_status_absent_at_source"),
+            "the swap is proven per tool type, never blanket: {entry:?}"
+        );
+        assert!(
+            !is_source_absent_gap(entry.state.as_str(), &entry.reasons),
+            "{field} keeps blocking strict search: {entry:?}"
+        );
+    }
+}
+
 /// The cass-side half of FAD F13 (branch cass-last-eight): a
 /// `function_call_output` whose captured output is an image-only part list
 /// carries no text, but the record still links to its call — `recorded_text`
@@ -1725,17 +2015,35 @@ fn antigravity_facts_agy_tools_exit_codes_and_coverage() {
     assert_eq!(publication.parent_external_id, None);
     assert_eq!(publication.compaction_count, None);
 
-    // Coverage: the unlinked output, the canonical agy envelope and the
-    // unverifiable event must surface exact reasons.
+    // Coverage: the identity-less output record (§5.2) is a result-side
+    // verdict gap only — the tool NAME inventory lives on the call side,
+    // which this packet records completely. `tools` keeps ONLY the packet's
+    // deliberate connector-drift record reason (asserted again below); the
+    // identity reason narrows to the exit/error scopes where the unlinked
+    // result leaves its verdicts unprovable.
     let tools = coverage(&publication, "tools").expect("tools coverage");
-    assert_ne!(tools.state, "complete");
-    let reasons = tools.reasons.join(",");
-    assert!(
-        reasons.contains("agy_tool_result_identity_missing"),
-        "tools: {reasons}"
+    assert_eq!(tools.state, "partial", "tools: {tools:?}");
+    assert_eq!(
+        tools.reasons,
+        vec!["agy_record_unknown".to_string()],
+        "the call side is fully collected; only the drift record remains: {tools:?}"
     );
     let exit = coverage(&publication, "tool_exit").expect("tool_exit");
     assert_ne!(exit.state, "complete", "exit: {exit:?}");
+    assert!(
+        exit.reasons
+            .iter()
+            .any(|r| r == "agy_tool_result_identity_missing"),
+        "the identity reason moves to the exit/error verdict scopes: {exit:?}"
+    );
+    let error = coverage(&publication, "tool_error").expect("tool_error");
+    assert!(
+        error
+            .reasons
+            .iter()
+            .any(|r| r == "agy_tool_result_identity_missing"),
+        "the identity reason moves to the exit/error verdict scopes: {error:?}"
+    );
     let relation = coverage(&publication, "parent_relation").expect("parent_relation");
     assert_eq!(relation.state, "unavailable");
     assert!(
@@ -1870,25 +2178,57 @@ fn antigravity_facts_pre_f10_packet_text_scopes_complete_status_unavailable() {
         "{text_inventory:?}"
     );
 
-    // Planner calls without recorded ids stay uncollected, never fabricated;
-    // MODEL-step records without identity keep the result-side reason too.
-    assert!(publication.tools.is_empty(), "{:?}", publication.tools);
+    // §5.2 (owner decision, 2026-11-10): planner calls whose invocations
+    // carry a tool NAME but no call id get a stable cass-side synthetic id
+    // (`agy-anon:{event}:{n}`) instead of being dropped — the corpus
+    // census (10,103 archived antigravity calls) shows EVERY source call
+    // is name-only, so the name inventory is provably complete once the
+    // name-only calls are collected. Both invocations of event 1 collect
+    // with distinct ids; the fabricated id is a projection key, so
+    // `raw_call_id` stays empty (no source identity was manufactured).
+    assert_eq!(publication.tools.len(), 2, "{:?}", publication.tools);
+    let first = &publication.tools[0];
+    assert_eq!(first.call_id, "agy-anon:1:0");
+    assert_eq!(first.raw_call_id, "");
+    assert_eq!(first.name, "view_file");
+    assert!(!first.has_result);
+    assert_eq!(first.file_path.as_deref(), Some("/made/up/target.rs"));
+    let second = &publication.tools[1];
+    assert_eq!(second.call_id, "agy-anon:1:1");
+    assert_eq!(second.raw_call_id, "");
+    assert_eq!(second.name, "run_command");
+    assert!(!second.has_result);
+
+    // The source records antigravity outputs as nameless top-level records
+    // (the corpus probe found ZERO output list items with ids), so a
+    // synthesized call's absent result is not a `tool_result_missing`
+    // not-read gap — `tools` and the text inventory stay complete.
     let tools = coverage(&publication, "tools").expect("tools");
-    assert_eq!(tools.state, "partial", "{tools:?}");
+    assert_eq!(tools.state, "complete", "{tools:?}");
+    assert!(tools.reasons.is_empty(), "{tools:?}");
     assert!(
-        tools
-            .reasons
+        !publication
+            .coverage
             .iter()
-            .any(|r| r == "agy_tool_call_identity_missing"),
-        "{tools:?}"
+            .any(|entry| entry.reasons.iter().any(|r| r == "tool_result_missing")),
+        "no synthesized call may fabricate a missing-result gap: {:?}",
+        publication.coverage
     );
-    assert!(
-        tools
-            .reasons
-            .iter()
-            .any(|r| r == "agy_tool_result_identity_missing"),
-        "{tools:?}"
-    );
+
+    // MODEL-step records without identity keep the result-side reason, but
+    // narrowed to the exit/error verdict scopes (§5.2): the step's text
+    // lands in chat regions and its NAME inventory rides the call side,
+    // so nothing tool-name-shaped can hide in the identity gap.
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "agy_tool_result_identity_missing"),
+            "the MODEL-step identity reason narrows to {field}: {entry:?}"
+        );
+    }
 
     // Pre-F10 packet: the connector dropped the lifecycle `status`, so
     // exit/error evidence is unavailable — never silently complete, and
@@ -1916,6 +2256,95 @@ fn antigravity_facts_pre_f10_packet_text_scopes_complete_status_unavailable() {
     assert_eq!(mcp.state, "complete", "{mcp:?}");
 
     assert_eq!(publication.thinking_block_count, Some(1));
+}
+
+/// §5.2 mechanism pin: synthetic ids are stable, collision-free per event,
+/// and never displace a REAL recorded id — synthesis runs only in the
+/// no-identity branch of `record_call`, so a call whose invocation carries
+/// a call id keeps it verbatim. The synthetic prefix `agy-anon:` is
+/// reserved by cass; the corpus census found zero ids matching it and zero
+/// antigravity output records carrying any id at all, so a synthetic id
+/// can never false-pair with a real output.
+#[test]
+fn antigravity_facts_synthetic_call_ids_are_stable_and_never_displace_real_ids() {
+    let publication = extract_session_facts(
+        &packet(
+            "antigravity",
+            json!({"source": "antigravity"}),
+            vec![
+                // An invocation WITH a recorded call id: the real id wins,
+                // no synthetic id is minted for it.
+                msg(
+                    0,
+                    "assistant",
+                    "made-up planner narration with one named call",
+                    json!({"cass": {"invocations": [
+                        {"kind": "tool", "name": "view_file", "call_id": "call_real",
+                         "arguments": {"TargetFile": "/made/up/syn-real.rs"}}
+                    ]}}),
+                ),
+                // Two IDENTICAL name-only invocations on one event: distinct
+                // stable ids (the per-event counter), never merged by the
+                // signature dedup (which is per-id), never colliding.
+                msg(
+                    1,
+                    "assistant",
+                    "made-up planner narration with twin calls",
+                    json!({"cass": {"invocations": [
+                        {"kind": "tool", "name": "run_command",
+                         "arguments": {"CommandLine": "made-up syn --flag"}},
+                        {"kind": "tool", "name": "run_command",
+                         "arguments": {"CommandLine": "made-up syn --flag"}}
+                    ]}}),
+                ),
+                // The real call's paired output: a REAL id with a result
+                // record pairs normally — only the synthesized calls have
+                // no result, and for them no missing-result mark may fire.
+                msg(
+                    2,
+                    "tool",
+                    "made-up file body",
+                    json!({"agy_type": "TOOL_OUTPUT", "call_id": "call_real",
+                           "output": "made-up file body"}),
+                ),
+            ],
+        ),
+        "antigravity",
+    );
+
+    let ids: Vec<(&str, &str, bool)> = publication
+        .tools
+        .iter()
+        .map(|t| (t.call_id.as_str(), t.raw_call_id.as_str(), t.has_result))
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            ("agy-anon:1:0", "", false),
+            ("agy-anon:1:1", "", false),
+            ("call_real", "call_real", true),
+        ],
+        "tools: {:?}",
+        publication.tools
+    );
+
+    // No synthesized call fabricates a result gap: no missing-result mark
+    // lands anywhere (the source records antigravity outputs as nameless
+    // top-level records — corpus-proven — so the absent result is not a
+    // not-read gap), and the tool inventory certifies complete.
+    assert!(
+        !publication.coverage.iter().any(|entry| entry
+            .reasons
+            .iter()
+            .any(|r| r == "tool_result_missing" || r == "tool_output_interrupted")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+    for field in ["tools", "text_inventory", "files", "mcp"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
 }
 
 #[test]
@@ -2150,22 +2579,30 @@ fn antigravity_f10_clean_session_text_scopes_complete() {
             "{field}: {entry:?}"
         );
     }
+    // §5.2: the name-only planner call synthesizes `agy-anon:1:0`, so the
+    // tool name inventory certifies complete; the identity reasons narrow
+    // to the exit/error scopes, joining `agy_status_unpaired` there (the
+    // F10 lifecycle `status` still never pairs with the planner call).
     let tools = coverage(&publication, "tools").expect("tools");
-    assert_eq!(tools.state, "partial", "{tools:?}");
-    assert!(
-        tools
-            .reasons
-            .iter()
-            .any(|r| r == "agy_tool_call_identity_missing"),
-        "{tools:?}"
+    assert_eq!(tools.state, "complete", "{tools:?}");
+    assert!(tools.reasons.is_empty(), "{tools:?}");
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    assert_eq!(publication.tools[0].call_id, "agy-anon:1:0");
+    assert_eq!(publication.tools[0].name, "view_file");
+    assert_eq!(
+        publication.tools[0].file_path.as_deref(),
+        Some("/made/up/clean/target.rs")
     );
-    assert!(
-        tools
-            .reasons
-            .iter()
-            .any(|r| r == "agy_tool_result_identity_missing"),
-        "{tools:?}"
-    );
+    for field in ["tool_exit", "tool_error"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert!(
+            entry
+                .reasons
+                .iter()
+                .any(|r| r == "agy_tool_result_identity_missing"),
+            "the identity reason narrows to {field}: {entry:?}"
+        );
+    }
 
     // The canonical envelope still loses raw record structure — block
     // inventory only.
@@ -2260,23 +2697,18 @@ fn antigravity_f10_truncated_fields_mark_scopes_source_absent() {
         &text_inventory.reasons
     ));
 
-    // tool_calls truncation marks the tools scope, but the unrecorded call
-    // identities keep their own not-read reason there — a mixed reason
-    // set stays a NOT-READ gap exactly as before.
+    // tool_calls truncation marks the tools scope with the marker ONLY:
+    // after §5.2 the surviving name-only invocation collects under a
+    // synthetic id instead of stacking a not-read identity reason, so the
+    // marker-only reason set is a pure SOURCE-ABSENT gap — the source app
+    // provably cut the calls, strict search answers with the annotation.
     let tools = coverage(&publication, "tools").expect("tools");
     assert_eq!(tools.state, "partial", "{tools:?}");
     assert!(
-        tools.reasons.iter().any(|r| r == "agy_source_truncated"),
+        tools.reasons.iter().all(|r| r == "agy_source_truncated"),
         "{tools:?}"
     );
-    assert!(
-        tools
-            .reasons
-            .iter()
-            .any(|r| r == "agy_tool_call_identity_missing"),
-        "{tools:?}"
-    );
-    assert!(!is_source_absent_gap(tools.state.as_str(), &tools.reasons));
+    assert!(is_source_absent_gap(tools.state.as_str(), &tools.reasons));
 
     // tool_calls truncation also cuts call arguments — file paths ride in
     // those arguments, so the files scope degrades with the same marker-
@@ -2973,26 +3405,23 @@ fn antigravity_facts_raw_record_proves_block_inventory_complete() {
     // The lifted thinking block is still counted. The planner call carries
     // NO call_id at the source (the real archive shape: antigravity
     // `tool_calls` items hold only name/args, and FAD lifts no identity),
-    // so the tools scope keeps its identity-missing partial and the call
-    // never enters the tool facts — yet the archived `tool_calls` still
-    // verified against the lifted invocation above, which is exactly what
-    // retired the envelope taint: block verification is independent of
-    // call identity.
+    // so §5.2 synthesizes the stable `agy-anon:1:0` projection id: the
+    // call ENTERS the tool facts with an empty `raw_call_id` (no source
+    // identity is manufactured) and the tools scope certifies complete —
+    // yet the archived `tool_calls` still verified against the lifted
+    // invocation above, which is exactly what retired the envelope taint:
+    // block verification is independent of call identity.
     assert_eq!(publication.thinking_block_count, Some(1));
     let tools = coverage(&publication, "tools").expect("tools");
-    assert_eq!(tools.state, "partial", "{tools:?}");
-    assert!(
-        tools
-            .reasons
-            .iter()
-            .any(|r| r == "agy_tool_call_identity_missing"),
-        "{tools:?}"
-    );
-    assert!(
-        publication.tools.is_empty(),
-        "a call with no source identity must not enter the tool facts: {:?}",
-        publication.tools
-    );
+    assert_eq!(tools.state, "complete", "{tools:?}");
+    assert!(tools.reasons.is_empty(), "{tools:?}");
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    let call = &publication.tools[0];
+    assert_eq!(call.call_id, "agy-anon:1:0");
+    assert_eq!(call.raw_call_id, "");
+    assert_eq!(call.name, "view_file");
+    assert_eq!(call.file_path.as_deref(), Some("/made/up/raw-target.rs"));
+    assert!(!call.has_result);
 }
 
 #[test]
@@ -3702,6 +4131,200 @@ fn devin_facts_graph_linking_and_sparse_coverage() {
     assert_eq!(publication.task_category.as_deref(), Some("debugging"));
     assert_eq!(publication.model_set, vec!["swe-1-7"]);
     assert_eq!(publication.is_subagent, None);
+}
+
+/// §5.3 (owner decision, 2026-11-10): the facts lane reads the archived
+/// `cass.invocations` the region lane already reads. The FAD connector
+/// normalizes devin's raw `tool_calls` into `extra.cass.invocations`
+/// ({kind:"tool", name, call_id, arguments}) while the rendered message
+/// content keeps only `[tool_call: name]` lines — the archived invocations
+/// ARE the normalized call record (corpus census: 20,978 records carry
+/// both, 27,002 invocation items, all with name+call_id), so collecting
+/// them certifies the tools inventory and retires the
+/// `devin_tool_calls_not_normalized` not-read gap for records whose
+/// invocations produced a call.
+fn devin_sparse_invocations_packet() -> ConversationPacket {
+    packet(
+        "devin",
+        json!({"source": "sqlite", "session_id": "syn-invocations", "model": "swe-1-7"}),
+        vec![
+            msg(
+                0,
+                "user",
+                "Fix the broken checks.",
+                json!({"message_id": "m2", "is_user_input": true}),
+            ),
+            // Sparse cli_assistant record: rendered [tool_call:] line AND
+            // the archived normalized invocations that carry the call.
+            msg(
+                1,
+                "assistant",
+                "Running the command.\n[tool_call: exec]",
+                json!({
+                    "message_id": "m3",
+                    "cass": {"invocations": [
+                        {"kind": "tool", "name": "exec", "call_id": "inv_1",
+                         "arguments": {"command": "made-up check command"}}
+                    ]}
+                }),
+            ),
+            // Sparse cli_tool result pairing with inv_1.
+            msg(
+                2,
+                "tool",
+                "made-up command output",
+                json!({"message_id": "m4", "tool_call_id": "inv_1"}),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn devin_facts_archived_invocations_collect_calls_and_retire_the_not_normalized_mark() {
+    let publication = extract_session_facts(&devin_sparse_invocations_packet(), "devin");
+
+    // The archived invocation collected as a call with its recorded id and
+    // normalized name, and paired with its cli_tool result.
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    let call = &publication.tools[0];
+    assert_eq!(call.call_id, "inv_1");
+    assert_eq!(call.raw_call_id, "inv_1");
+    assert_eq!(call.name, "exec");
+    assert!(call.has_result);
+
+    // The tools scope certifies complete: the record's invocations produced
+    // a call, so the `devin_tool_calls_not_normalized` not-read gap retires
+    // (it stays for records whose calls exist only as rendered text).
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "complete", "{tools:?}");
+    assert!(tools.reasons.is_empty(), "{tools:?}");
+    assert!(
+        !publication.coverage.iter().any(|entry| entry
+            .reasons
+            .iter()
+            .any(|r| r == "devin_tool_calls_not_normalized")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+    // The text scopes stay complete: collecting invocations never degrades
+    // the chat/text verdicts.
+    for field in ["chat", "text_inventory"] {
+        let entry = coverage(&publication, field).unwrap_or_else(|| panic!("{field}"));
+        assert_eq!(entry.state, "complete", "{field}: {entry:?}");
+        assert!(entry.reasons.is_empty(), "{field}: {entry:?}");
+    }
+}
+
+/// §5.3 residue honesty: an archived invocation whose cli_tool output
+/// record is genuinely absent from the store keeps the not-read
+/// `tool_result_missing` — no devin proof exists that the source text was
+/// absent (unlike codex's interrupted calls), so the session keeps blocking
+/// strict. A plain-string invocation argument (the archive's real shape:
+/// 41 of 27,002 items; the region lane reads them verbatim too) is source
+/// text, not JSON to decode — it never flips the `complete` flag, so the
+/// chat/text scopes stay clean.
+#[test]
+fn devin_facts_unpaired_invocation_call_keeps_tool_result_missing() {
+    let publication = extract_session_facts(
+        &packet(
+            "devin",
+            json!({"source": "sqlite", "session_id": "syn-unpaired", "model": "swe-1-7"}),
+            vec![
+                msg(
+                    0,
+                    "user",
+                    "Fix the broken checks.",
+                    json!({"message_id": "m2", "is_user_input": true}),
+                ),
+                msg(
+                    1,
+                    "assistant",
+                    "Running the search.\n[tool_call: web_search]",
+                    json!({
+                        "message_id": "m3",
+                        "cass": {"invocations": [
+                            {"kind": "tool", "name": "web_search", "call_id": "inv_solo",
+                             "arguments": "made-up plain text argument"}
+                        ]}
+                    }),
+                ),
+            ],
+        ),
+        "devin",
+    );
+
+    assert_eq!(publication.tools.len(), 1, "{:?}", publication.tools);
+    assert_eq!(publication.tools[0].call_id, "inv_solo");
+    assert!(!publication.tools[0].has_result);
+
+    // The call itself was collectable, so the not_normalized mark retires —
+    // but the missing RESULT record is an honest not-read gap on the
+    // default scopes (no devin-side proof of source absence exists).
+    assert!(
+        !publication.coverage.iter().any(|entry| entry
+            .reasons
+            .iter()
+            .any(|r| r == "devin_tool_calls_not_normalized")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "partial", "{tools:?}");
+    assert!(
+        tools.reasons.iter().any(|r| r == "tool_result_missing"),
+        "{tools:?}"
+    );
+    let text = coverage(&publication, "text_inventory").expect("text_inventory");
+    assert_eq!(text.state, "partial", "{text:?}");
+    assert!(
+        text.reasons.iter().any(|r| r == "tool_result_missing"),
+        "{text:?}"
+    );
+    assert!(!is_source_absent_gap(text.state.as_str(), &text.reasons));
+
+    // The plain-string argument is source text, never JSON to decode: the
+    // `complete` flag never flips, so no source/graph degradation lands.
+    let chat = coverage(&publication, "chat").expect("chat");
+    assert_eq!(chat.state, "complete", "{chat:?}");
+    assert!(
+        !publication.coverage.iter().any(|entry| entry
+            .reasons
+            .iter()
+            .any(|r| r == "devin_source_or_graph_incomplete")),
+        "coverage: {:?}",
+        publication.coverage
+    );
+}
+
+/// §5.3 boundary: a record whose calls exist ONLY as rendered
+/// `[tool_call:` content lines — no archived invocations (the pre-seam
+/// packets and the 2 census text-only records) — keeps the honest
+/// `devin_tool_calls_not_normalized` not-read gap exactly as before.
+#[test]
+fn devin_facts_rendered_only_tool_call_lines_keep_the_not_normalized_mark() {
+    let publication = extract_session_facts(
+        &packet(
+            "devin",
+            json!({"source": "sqlite", "session_id": "syn-textonly", "model": "swe-1-7"}),
+            vec![msg(
+                1,
+                "assistant",
+                "Reading the file.\n[tool_call: read_file]",
+                json!({"message_id": "m3", "thinking": "I should read it first."}),
+            )],
+        ),
+        "devin",
+    );
+    let tools = coverage(&publication, "tools").expect("tools");
+    assert_eq!(tools.state, "partial", "{tools:?}");
+    assert!(
+        tools
+            .reasons
+            .iter()
+            .any(|r| r == "devin_tool_calls_not_normalized"),
+        "{tools:?}"
+    );
+    assert!(!is_source_absent_gap(tools.state.as_str(), &tools.reasons));
 }
 
 /// Two sparse cli_tool results under one identifier with different content:

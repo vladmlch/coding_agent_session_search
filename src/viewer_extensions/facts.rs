@@ -132,7 +132,23 @@ pub use providers::classification::SessionQualityMetrics;
 /// connector actually drops keeps the partial
 /// (providers/antigravity.rs, antigravity-facts-v6). Pre-v12 rows keep
 /// the v5 verdicts unchanged.
-pub const FACTS_EXTRACTOR_VERSION: i64 = 12;
+/// v13: v12 plus the tool-coverage fixes (owner decision, 2026-11-10,
+/// §5.1–§5.5a): antigravity's name-only invocations synthesize stable
+/// `agy-anon:{event}:{n}` pairing ids so `tool:`/`file:` answer (the
+/// identity reason narrows to the exit/error scopes), the devin facts
+/// lane reads the archived `cass.invocations` verbatim (retiring
+/// `devin_tool_calls_not_normalized` where the calls are carried), and
+/// codex calls whose record type is corpus-proven to never carry exit
+/// status swap the not-read verdict for the allowlisted
+/// `codex_tool_status_absent_at_source`. REGION_VERSION stays 6;
+/// `cass index --full` converges pre-existing rows onto v13.
+/// v14: v13 with the §5.5a exit rule narrowed per NAME (owner
+/// follow-up, 2026-11-11): only census-proven zero-rendering names keep
+/// the source-absent swap, and the renderer names (`exec_command`,
+/// `write_stdin`) parse the `Process exited with code N` trailer into
+/// recorded exit/error verdicts (facts + regions; REGION_VERSION moves
+/// to 7); `cass index --full` converges pre-existing rows onto v14.
+pub const FACTS_EXTRACTOR_VERSION: i64 = 14;
 
 // ---------------------------------------------------------------------------
 // Ingest publication receipts (durable generation state)
@@ -334,10 +350,35 @@ pub struct CoverageEntry {
 ///   `/cass/source == "claude_code_desktop_sidecar"` AND
 ///   `body_available == false` — a sidecar without the marker, or any
 ///   other unknown shape, keeps `claude_shape_unknown`, a not-read gap.
+/// - `codex_tool_status_absent_at_source` (owner decision, 2026-11-10,
+///   §5.5a; per-NAME narrowing 2026-11-11): a codex call whose NAME is
+///   census-proven to never carry exit status in ANY shape (fields,
+///   `Process exited with code N`, `Exit code: N`, `exit_code` inside a
+///   JSON string — zero renderings across all 2,521 local rollouts), so
+///   the missing `tool_exit`/`tool_error` verdict never existed in any
+///   local record. `proven_no_exit` in `providers/codex.rs` checks the
+///   per-kind name lists (custom `exec`: 0 of 63,546 outputs; every
+///   zero-rendering `function_call` name, e.g. `wait` 0 of 3,041,
+///   `wait_agent` 0 of 1,385). The renderer names `exec_command`
+///   (9,785 of 10,622 outputs render the trailer; 9,839 carry a
+///   rendering of some shape) and `write_stdin` (633
+///   of 1,329) are NOT absent-proven — their trailer-bearing outputs
+///   record the verdict from the rendered text, and their trailer-less
+///   outputs keep the not-read verdict. `apply_patch` (692 of 710 custom
+///   outputs carry status), the thin-evidence names the census observed
+///   WITH a rendering (`read_file`, `mcp__glean__search`,
+///   `_search_issues`, `_fetch_issue`) and every uncensused name stay
+///   not-read. The mark fires only when the call's recorded verdict
+///   really is missing, so a later record carrying status overrides it
+///   per record.
 ///
 /// NOT here on purpose:
 /// - `agy_status_dropped_by_connector` / `agy_status_unpaired`: tool
 ///   verdict gaps, not text gaps — text-absence semantics do not apply.
+/// - `agy_tool_call_identity_missing` / `agy_tool_result_identity_missing`
+///   (§5.2): verdict gaps naming the missing call identity — the tool
+///   name inventory and the output text are unaffected, so they are not
+///   text absences.
 /// - Any unknown/new reason code: defaults to NOT-READ. Adding a member
 ///   is an owner decision, never an inference from a state string.
 pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &[
@@ -347,6 +388,7 @@ pub const SOURCE_TEXT_ABSENT_REASONS: &[&str] = &[
     "agy_source_truncated",
     "claude_sidecar_body_culled",
     "tool_output_interrupted",
+    "codex_tool_status_absent_at_source",
 ];
 
 /// `true` when a coverage entry's gap is provably text absent at the
@@ -1413,7 +1455,7 @@ mod source_absent_tests {
         // Mixed with any not-read reason the proof breaks.
         assert!(!is_source_absent_gap(
             "partial",
-            &reasons(&["agy_source_truncated", "agy_tool_call_identity_missing"])
+            &reasons(&["agy_source_truncated", "agy_tool_name_missing"])
         ));
         // The malformed-marker variant stays not-read.
         assert!(!is_source_absent_gap(
@@ -1483,6 +1525,46 @@ mod source_absent_tests {
         assert!(!is_source_absent_gap(
             "partial",
             &reasons(&["tool_result_missing"])
+        ));
+    }
+
+    #[test]
+    fn codex_proven_no_exit_status_marker_is_source_absent() {
+        // The codex proven-never-exit names (owner decision, 2026-11-10;
+        // per-NAME narrowing 2026-11-11): the rollout corpus (2,521
+        // files, every output classified by exit-rendering SHAPE) proves
+        // named tools — custom `exec` (63,546 outputs), `wait` (3,041),
+        // `wait_agent` (1,385), … every name with zero renderings of any
+        // shape — NEVER carry exit status in any local record. For such a
+        // call the missing exit/error status never existed. `call()` in
+        // `providers/codex.rs` notes the qualified call id only when the
+        // recorded name is on the per-kind proven lists — the renderer
+        // names (`exec_command`, `write_stdin`, whose outputs render
+        // `Process exited with code N`), names observed WITH a rendering
+        // (`apply_patch`: 692 of 710 outputs carry status; `read_file`,
+        // `mcp__glean__search`, `_search_issues`, `_fetch_issue`) and
+        // unknown names keep `tool_exit_not_recorded`/
+        // `tool_error_not_recorded`, not-read gaps.
+        assert!(is_source_absent_gap(
+            "partial",
+            &reasons(&["codex_tool_status_absent_at_source"])
+        ));
+        assert!(is_source_absent_gap(
+            "unavailable",
+            &reasons(&["codex_tool_status_absent_at_source"])
+        ));
+        // Mixed with any not-read reason the proof breaks.
+        assert!(!is_source_absent_gap(
+            "partial",
+            &reasons(&[
+                "codex_tool_status_absent_at_source",
+                "tool_exit_not_recorded"
+            ])
+        ));
+        // The unproven per-call verdict stays not-read.
+        assert!(!is_source_absent_gap(
+            "unavailable",
+            &reasons(&["tool_exit_not_recorded"])
         ));
     }
 }

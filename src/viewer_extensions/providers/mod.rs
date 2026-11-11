@@ -24,6 +24,10 @@ mod gemini;
 mod opencode;
 mod pi_agent;
 
+/// Codex census-proven names whose outputs render the exit-status trailer
+/// `Process exited with code N`, shared with the search-regions codex arm
+/// so the facts verdicts and the region rows stay identical.
+pub(crate) use codex::RENDERED_EXIT_NAMES;
 /// Copilot archived-response-part classification, shared with the
 /// search-regions copilot arm so the completeness claims and the indexed
 /// surface stay identical.
@@ -294,6 +298,42 @@ pub(crate) fn text_id(value: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The codex-rendered process-exit trailer: `Process exited with code N`.
+/// The LAST match in the text is the verdict — a command may legitimately
+/// echo the same line in its own stdout before codex appends the real
+/// trailer (corpus probe: 20 of 9,785 trailer-bearing `exec_command`
+/// outputs carry more than one match; the last is always the trailer).
+/// The code must end at a non-code boundary, so `…code 12abc` never
+/// parses as 12, and a non-numeric tail never parses at all.
+pub(crate) fn rendered_exit_code(text: &str) -> Option<i64> {
+    const MARKER: &str = "Process exited with code ";
+    let mut code = None;
+    let mut from = 0_usize;
+    while let Some(found) = text[from..].find(MARKER) {
+        let start = from + found + MARKER.len();
+        let bytes = &text.as_bytes()[start..];
+        let mut end = 0_usize;
+        if end < bytes.len() && bytes[end] == b'-' {
+            end += 1;
+        }
+        let digits_start = end;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            end += 1;
+        }
+        let boundary = end == bytes.len()
+            || !(bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_' || bytes[end] == b'.');
+        if end > digits_start && boundary {
+            // The marker and the digit run are ASCII, so the slice is a
+            // char boundary; an overflowing run just does not parse.
+            if let Ok(parsed) = text[start + digits_start..start + end].parse::<i64>() {
+                code = Some(parsed);
+            }
+        }
+        from = start;
+    }
+    code
+}
+
 /// Explicit recorded status: an integer exit code can establish an error;
 /// a generic error flag never invents `exit=1` (oracle `explicit_status`).
 pub(crate) fn explicit_status(payload: &Value) -> (Option<i64>, Option<bool>) {
@@ -415,6 +455,32 @@ pub(crate) struct ToolCollector {
     /// `finish()` marks them `tool_output_interrupted` (source-absent,
     /// allowlisted) instead of the not-read `tool_result_missing`.
     interrupted: BTreeSet<String>,
+    /// Call ids this extractor SYNTHESIZED because the source record named
+    /// a tool but carried no call id (antigravity's name-only invocations —
+    /// corpus-proven: all 10,103 archived calls are name-only, zero output
+    /// records carry any id, and zero ids anywhere match the `agy-anon:`
+    /// prefix). A synthesized id is a stable local pairing key, never a
+    /// source identity: `raw_call_id` stays empty, and `finish()` skips the
+    /// pairing/verdict marks for it — the identity partial already names
+    /// the verdict gap on the exit/error scopes.
+    synthesized: BTreeSet<String>,
+    /// Call ids whose exit status is PROVEN absent at the source (codex
+    /// only — `providers/codex.rs` proves it per NAME from the corpus
+    /// census, never from a parse failure or unknown shape): `finish()`
+    /// swaps the not-read `tool_exit_not_recorded`/`tool_error_not_recorded`
+    /// verdicts for the allowlisted `codex_tool_status_absent_at_source`
+    /// for these ids, and only when the recorded verdict really is missing
+    /// (self-correcting per record).
+    exit_absent_at_source: BTreeSet<String>,
+    /// Codex only: tool names whose outputs systematically RENDER the
+    /// process exit status as the trailer text
+    /// `Process exited with code N` (`providers/codex.rs` census-proven
+    /// `RENDERED_EXIT_NAMES`). `finish()` parses the last rendered trailer
+    /// of a paired result into `exit_code`/`is_error` when the payload
+    /// carried no explicit status fields — the rendered line IS a status
+    /// record at the source. An output of these names WITHOUT the trailer
+    /// keeps the not-read verdict.
+    rendered_exit_names: &'static [&'static str],
 }
 
 impl ToolCollector {
@@ -424,6 +490,9 @@ impl ToolCollector {
             results: BTreeMap::new(),
             result_missing_scopes: &["tools", "text_inventory"],
             interrupted: BTreeSet::new(),
+            synthesized: BTreeSet::new(),
+            exit_absent_at_source: BTreeSet::new(),
+            rendered_exit_names: &[],
         }
     }
 
@@ -435,6 +504,35 @@ impl ToolCollector {
         self.interrupted.insert(call_id.to_string());
     }
 
+    /// Antigravity only: mint the next synthetic id for a name-only
+    /// invocation on `event_idx` — `agy-anon:{event_idx}:{n}` with the
+    /// smallest `n` whose id is not already held (synthesized, call or
+    /// result). Two name-only invocations on one event therefore never
+    /// merge, and a source-issued id can never be displaced: synthesis
+    /// runs only in the no-identity branch, and any real id that later
+    /// collides with a synthesized string lands in the same candidates
+    /// vector and degrades to an honest `conflicting_event`, never a
+    /// silent pair.
+    pub fn next_synthetic_call_id(&mut self, event_idx: i64) -> String {
+        let candidate = (0u64..)
+            .map(|n| format!("agy-anon:{event_idx}:{n}"))
+            .find(|candidate| {
+                !self.synthesized.contains(candidate)
+                    && !self.calls.contains_key(candidate)
+                    && !self.results.contains_key(candidate)
+            })
+            .expect("a name-only event holds finitely many ids");
+        self.synthesized.insert(candidate.clone());
+        candidate
+    }
+
+    /// Codex only: record that this call's exit status never existed at the
+    /// source — `providers/codex.rs` proves it from the tool's record type
+    /// (corpus census), never from a parse failure or unknown shape.
+    pub fn note_exit_absent_at_source(&mut self, call_id: &str) {
+        self.exit_absent_at_source.insert(call_id.to_string());
+    }
+
     /// claude_code only: its connector drops `tool_result` content with no
     /// `text` part (ToolSearch `tool_reference` results, Read `image`
     /// results), so an unpaired call means the result carried no text —
@@ -442,6 +540,16 @@ impl ToolCollector {
     /// `tools` partial but leaves the text inventory complete.
     pub fn unpaired_results_carry_no_text(mut self) -> Self {
         self.result_missing_scopes = &["tools"];
+        self
+    }
+
+    /// Codex only: register the census-proven rendered-exit tool names
+    /// (`providers/codex.rs::RENDERED_EXIT_NAMES`) whose outputs render
+    /// `Process exited with code N` — `finish()` parses the last rendered
+    /// trailer of a paired result into `exit_code`/`is_error` when the
+    /// payload carried no explicit status fields.
+    pub fn with_rendered_exit_names(mut self, names: &'static [&'static str]) -> Self {
+        self.rendered_exit_names = names;
         self
     }
 
@@ -526,6 +634,7 @@ impl ToolCollector {
                 continue;
             }
             let call = &calls[0];
+            let synthesized = self.synthesized.contains(call_id);
             if results.len() > 1 {
                 self.ambiguous(call_id, coverage);
             }
@@ -534,7 +643,12 @@ impl ToolCollector {
             } else {
                 None
             };
-            if results.is_empty() {
+            // A synthesized id has no source identity to pair against: the
+            // source records antigravity outputs as nameless top-level
+            // records (corpus-proven), so the absent result is not a
+            // missing record, and the identity partial already names the
+            // verdict gap. No pairing mark fires for it.
+            if results.is_empty() && !synthesized {
                 let reason = if self.interrupted.contains(call_id) {
                     "tool_output_interrupted"
                 } else {
@@ -542,13 +656,55 @@ impl ToolCollector {
                 };
                 coverage.mark(self.result_missing_scopes, reason, "partial");
             }
-            let exit_code = result.and_then(|r| r.exit_code);
-            let is_error = result.and_then(|r| r.is_error);
-            if exit_code.is_none() {
-                coverage.mark(&["tool_exit"], "tool_exit_not_recorded", "unavailable");
+            let mut exit_code = result.and_then(|r| r.exit_code);
+            let mut is_error = result.and_then(|r| r.is_error);
+            // Follow-up 1 (owner decision, 2026-11-11): a renderer tool's
+            // output text IS a status record — the census-proven rendered
+            // trailer (`Process exited with code N`, see
+            // `providers/codex.rs::RENDERED_EXIT_NAMES`) parses exactly like
+            // an explicit status field, so the exit/error verdicts exist
+            // and neither the not-read mark nor the source-absent swap
+            // fires. An output of a renderer name WITHOUT the trailer
+            // keeps the not-read verdict and keeps blocking strict.
+            if exit_code.is_none()
+                && self.rendered_exit_names.contains(&call.name.as_str())
+                && let Some(code) = result
+                    .and_then(|r| r.text.as_deref())
+                    .and_then(rendered_exit_code)
+            {
+                exit_code = Some(code);
+                if is_error.is_none() {
+                    is_error = Some(code != 0);
+                }
             }
-            if is_error.is_none() {
-                coverage.mark(&["tool_error"], "tool_error_not_recorded", "unavailable");
+            // Same for the exit/error verdicts: a synthesized id's verdict
+            // gap is already named by the identity partial on both scopes,
+            // so the not-read verdicts would only duplicate it — and raise
+            // the severity past what the source can justify.
+            if exit_code.is_none() && !synthesized {
+                if self.exit_absent_at_source.contains(call_id) {
+                    // Codex only: this tool's record type is corpus-proven
+                    // to never carry exit status, so the missing verdict is
+                    // a source-absent gap, not a not-read one.
+                    coverage.mark(
+                        &["tool_exit"],
+                        "codex_tool_status_absent_at_source",
+                        "unavailable",
+                    );
+                } else {
+                    coverage.mark(&["tool_exit"], "tool_exit_not_recorded", "unavailable");
+                }
+            }
+            if is_error.is_none() && !synthesized {
+                if self.exit_absent_at_source.contains(call_id) {
+                    coverage.mark(
+                        &["tool_error"],
+                        "codex_tool_status_absent_at_source",
+                        "unavailable",
+                    );
+                } else {
+                    coverage.mark(&["tool_error"], "tool_error_not_recorded", "unavailable");
+                }
             }
             let path = argument_path(call.arguments.as_ref());
             if path.is_some() {
