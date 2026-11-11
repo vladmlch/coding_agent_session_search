@@ -1194,7 +1194,13 @@ mod devin_ingestion {
                     .args(["index", "--json"])
                     .assert()
                     .success();
-                for (query, expected) in [("devinneedle", 5), ("priorsecondneedle", 0)] {
+                // FAD 0.3.11's source-boundary contract (upstream 27a5429)
+                // routes devin through the durable-source lane: an unchanged
+                // store is skipped and a changed one re-emits whole, so the
+                // below-cutoff 'prior' control is indexed once on the first
+                // re-scan too — the per-session watermark gate stays pinned
+                // by the direct FAD scan above. Replay must duplicate neither.
+                for (query, expected) in [("devinneedle", 5), ("priorsecondneedle", 1)] {
                     let output = cass(home.path(), &data)
                         .args([
                             "search", query, "--mode", "lexical", "--agent", "devin", "--json",
@@ -1209,7 +1215,7 @@ mod devin_ingestion {
                     assert_eq!(
                         result["budget"]["timed_out"].as_bool(),
                         Some(false),
-                        "a timed-out search cannot prove prior-second exclusion: {result}"
+                        "a timed-out search cannot prove the boundary-second counts: {result}"
                     );
                     assert_eq!(
                         result["hits"].as_array().expect("hits").len(),
