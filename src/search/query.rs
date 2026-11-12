@@ -25945,6 +25945,57 @@ mod tests {
         );
     }
 
+    /// The Colab fuzz crash input (cargo fuzz, `fuzz_query_transpiler`,
+    /// ASan; artifact in
+    /// `.scratch/glm/2026-11-12-query-nesting-depth/crash-input.bin`):
+    /// 3,934 `(` then `oT`, then bytes that are not valid UTF-8. The fuzz
+    /// harness's `&str` input goes through `arbitrary`, which truncates at
+    /// the first invalid byte, so the exact string the target saw is this
+    /// valid-UTF-8 prefix. The recursive-descent parser pays one
+    /// four-frame cycle (`parse_or`/`parse_and`/`parse_unary`/
+    /// `parse_primary`) per `(`, so the unfixed parse drove ~3,900 cycles
+    /// of native recursion into the guard page. This regression runs the
+    /// same input on a deliberately small thread stack (256 KiB) so the
+    /// overflow reproduces here instead of hiding behind the 128 MiB
+    /// `RUST_MIN_STACK` test-thread default: every recursive stage a
+    /// search can reach must survive the input, and no later boundary
+    /// (search entry, lane, renderer, AST drop) may turn it into a crash.
+    #[test]
+    fn fuzz_crash_input_never_overflows_a_small_stack() {
+        let crash_input = format!("{}oT", "(".repeat(3_934));
+        let worker_input = crash_input.clone();
+        let worker = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                // The exact lane the fuzzer hit...
+                let transpiled = transpile_to_fts5(&worker_input);
+                // ...plus every other recursive stage on the search path:
+                // the `_meta.effective` reading, and the `--explain`
+                // analysis (`QueryExplanation::analyze` also parses through
+                // `read_query`).
+                let reading = read_query(&worker_input);
+                let explanation =
+                    QueryExplanation::analyze(&worker_input, &SearchFilters::default());
+                (transpiled, reading, explanation)
+            })
+            .expect("spawning the small-stack parser thread");
+        let (transpiled, reading, explanation) = worker
+            .join()
+            .expect("a deeply parenthesised query must be declined, never a crash");
+        assert_eq!(
+            transpiled, None,
+            "the FTS5 transpiler must decline the too-deep query"
+        );
+        assert!(
+            reading.structure.is_none(),
+            "the query reading must report no structure for a declined query"
+        );
+        assert_eq!(
+            explanation.original_query, crash_input,
+            "the explanation must still round-trip the original query"
+        );
+    }
+
     /// `--explain` lexes the raw query, where grouping parentheses now arrive
     /// as tokens: they add no term, keep implicit-AND adjacency, and the
     /// grouping shows in `structure`.
