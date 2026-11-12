@@ -467,8 +467,100 @@ fn cass_bool_tokens(raw: &str) -> Vec<CassBoolToken> {
     tokens
 }
 
+/// The deepest group nesting a query may carry, as [`cass_bool_tokens`]
+/// reads it (a `(` at the start of a word opens one group).
+///
+/// The bound exists for stack, not semantics: the recursive-descent
+/// boolean parser pays one four-frame cycle (`parse_or` → `parse_and` →
+/// `parse_unary` → `parse_primary`) per nesting level, and the consumers
+/// of its AST (`render_query_structure`, `render_fts5_expr`, the
+/// source-scan `evaluate`, the AST's own recursive `Drop`) each pay one
+/// frame per level after that, so an unbounded query is an unbounded
+/// stack — the fuzz crash input (see the
+/// `fuzz_crash_input_never_overflows_a_small_stack` regression) drove
+/// ~3,900 cycles into the guard page. 128 keeps every admitted query in
+/// a few tens of KB of stack (≈4 small frames per level) while sitting
+/// 2× above the lexical engine's own historical `MAX_QUERY_DEPTH = 64`
+/// line and ~40× above the deepest query cass's metamorphic corpus
+/// generator produces (depth 3, tests/search_metamorphic.rs) — far past
+/// any human-written query.
+pub const MAX_QUERY_NESTING_DEPTH: usize = 128;
+
+/// Group nesting depth of a token stream: the deepest run of [`Open`](CassBoolToken::Open)
+/// tokens minus their matching [`Close`](CassBoolToken::Close) tokens.
+/// Iterative on purpose — this runs before the recursive descent it guards.
+fn cass_bool_token_nesting_depth(tokens: &[CassBoolToken]) -> usize {
+    let mut depth = 0_usize;
+    let mut max = 0_usize;
+    for token in tokens {
+        match token {
+            CassBoolToken::Open => {
+                depth += 1;
+                max = max.max(depth);
+            }
+            CassBoolToken::Close => depth = depth.saturating_sub(1),
+            CassBoolToken::Token(_) => {}
+        }
+    }
+    max
+}
+
+/// A query whose group nesting exceeds [`MAX_QUERY_NESTING_DEPTH`]. The
+/// message names both numbers so every refusal surface (CLI envelope,
+/// bridge refusal, library error) is actionable without extra lookups.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryDepthExceeded {
+    /// The nesting depth the lexer read.
+    pub depth: usize,
+    /// The limit the query exceeded ([`MAX_QUERY_NESTING_DEPTH`]).
+    pub limit: usize,
+}
+
+impl std::fmt::Display for QueryDepthExceeded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "query nesting depth {} exceeds the limit of {} groups",
+            self.depth, self.limit
+        )
+    }
+}
+
+impl std::error::Error for QueryDepthExceeded {}
+
+/// Refuse a query nested deeper than [`MAX_QUERY_NESTING_DEPTH`] before
+/// any search lane runs. [`CassBoolParser::parse`] refuses the same
+/// input at its own entry; this is the user-facing gate the
+/// [`SearchClient`] entries, the CLI handlers and the viewer bridge
+/// share, so a too-deep query surfaces as one typed error instead of a
+/// lane-specific degradation.
+pub fn ensure_query_nesting_depth(query: &str) -> Result<(), QueryDepthExceeded> {
+    let depth = cass_bool_token_nesting_depth(&cass_bool_tokens(query));
+    if depth > MAX_QUERY_NESTING_DEPTH {
+        return Err(QueryDepthExceeded {
+            depth,
+            limit: MAX_QUERY_NESTING_DEPTH,
+        });
+    }
+    Ok(())
+}
+
 /// An operand the lane cannot express: the whole query is declined.
 struct CassBoolUnsupported;
+
+/// Why a query string cannot go through the recursive boolean stages.
+enum CassBoolParseError {
+    /// An operand the lane cannot express (the closure's
+    /// [`CassBoolUnsupported`]): the whole query is declined.
+    Unsupported,
+    /// Group nesting deeper than [`MAX_QUERY_NESTING_DEPTH`]. Refused
+    /// before any recursive descent runs, so the parser and every later
+    /// consumer of its AST stay bounded by the same constant. The
+    /// measured depth and limit live in the user-facing
+    /// [`QueryDepthExceeded`] the boundary gates return; the lanes
+    /// degrade this refusal to `None` like any other declined query.
+    TooDeep,
+}
 
 /// Recursive-descent parser for [`CassBoolExpr`]:
 ///
@@ -491,10 +583,22 @@ where
 {
     /// Parse `tokens`, lowering each term or phrase with `lower`: `Ok(None)`
     /// skips an operand that normalizes to nothing, `Err` declines the query.
+    ///
+    /// A token stream nested deeper than [`MAX_QUERY_NESTING_DEPTH`] is
+    /// refused here, before any recursive descent runs: the parser pays
+    /// one `parse_or`/`parse_and`/`parse_unary`/`parse_primary` cycle per
+    /// nesting level, and refusing up front bounds that cycle count — and
+    /// so the depth of every AST the parser can build, and with it the
+    /// recursion of every later consumer (renderers, scan `evaluate`,
+    /// `Drop`) — by the same constant.
     fn parse(
         tokens: &'a [CassBoolToken],
         lower: F,
-    ) -> Result<Option<CassBoolExpr<T>>, CassBoolUnsupported> {
+    ) -> Result<Option<CassBoolExpr<T>>, CassBoolParseError> {
+        let depth = cass_bool_token_nesting_depth(tokens);
+        if depth > MAX_QUERY_NESTING_DEPTH {
+            return Err(CassBoolParseError::TooDeep);
+        }
         let mut parser = Self {
             tokens,
             position: 0,
@@ -524,7 +628,7 @@ where
         self.tokens.get(self.position)
     }
 
-    fn parse_or(&mut self) -> Result<Option<CassBoolExpr<T>>, CassBoolUnsupported> {
+    fn parse_or(&mut self) -> Result<Option<CassBoolExpr<T>>, CassBoolParseError> {
         let mut operands = Vec::new();
         loop {
             match self.peek() {
@@ -546,7 +650,7 @@ where
         })
     }
 
-    fn parse_and(&mut self) -> Result<Option<CassBoolExpr<T>>, CassBoolUnsupported> {
+    fn parse_and(&mut self) -> Result<Option<CassBoolExpr<T>>, CassBoolParseError> {
         let mut operands = Vec::new();
         loop {
             match self.peek() {
@@ -570,7 +674,7 @@ where
         })
     }
 
-    fn parse_unary(&mut self) -> Result<Option<CassBoolExpr<T>>, CassBoolUnsupported> {
+    fn parse_unary(&mut self) -> Result<Option<CassBoolExpr<T>>, CassBoolParseError> {
         let mut negated = false;
         while let Some(CassBoolToken::Token(FsCassQueryToken::Not)) = self.peek() {
             negated = !negated;
@@ -593,7 +697,7 @@ where
         })
     }
 
-    fn parse_primary(&mut self) -> Result<Option<CassBoolExpr<T>>, CassBoolUnsupported> {
+    fn parse_primary(&mut self) -> Result<Option<CassBoolExpr<T>>, CassBoolParseError> {
         let Some(token) = self.peek() else {
             return Ok(None);
         };
@@ -607,7 +711,9 @@ where
                 }
                 Ok(inner)
             }
-            CassBoolToken::Token(token) => Ok((self.lower)(token)?.map(CassBoolExpr::Operand)),
+            CassBoolToken::Token(token) => (self.lower)(token)
+                .map_err(|_| CassBoolParseError::Unsupported)
+                .map(|operand| operand.map(CassBoolExpr::Operand)),
             CassBoolToken::Close => Ok(None),
         }
     }
@@ -4718,6 +4824,12 @@ impl SearchClient {
         offset: usize,
         field_mask: FieldMask,
     ) -> Result<Vec<SearchHit>> {
+        // A query nested deeper than MAX_QUERY_NESTING_DEPTH is refused
+        // before any lane runs: the recursive boolean stages behind this
+        // entry (and the renderers and AST teardown downstream of them)
+        // must never see it, and the caller gets the limit in a typed
+        // error rather than a lane-specific degradation.
+        ensure_query_nesting_depth(query)?;
         // This is per-search diagnostics, never a sticky property of a reader.
         self.record_lexical_degrade_reason(None);
         // NFC-normalize early so every downstream consumer (Tantivy query
@@ -6976,6 +7088,11 @@ impl SearchClient {
         Vec<SearchHit>,
         Option<crate::search::ann_index::AnnSearchStats>,
     )> {
+        // Same bound as the lexical entry: the semantic lane never parses
+        // the boolean grammar (it embeds the query), but a too-deep query
+        // must get the same typed verdict in every mode, not an answer
+        // here and a refusal there.
+        ensure_query_nesting_depth(query)?;
         let field_mask = effective_field_mask(field_mask);
         let canonical = canonicalize_for_embedding(query);
         if canonical.trim().is_empty() {
@@ -7705,6 +7822,11 @@ impl SearchClient {
         approximate: bool,
         semantic_tier_mode: SemanticTierMode,
     ) -> Result<SearchResult> {
+        // The lexical leg parses the boolean grammar (its own entry gates
+        // too, via `search_with_fallback` → `search`); refusing here keeps
+        // the hybrid verdict typed and first, before any generation
+        // refresh or candidate budgeting runs.
+        ensure_query_nesting_depth(lexical_query)?;
         if semantic_query.trim().is_empty() {
             return self.search_with_fallback(
                 lexical_query,
@@ -25994,6 +26116,170 @@ mod tests {
             explanation.original_query, crash_input,
             "the explanation must still round-trip the original query"
         );
+
+        // The typed gate the user-facing boundaries share: the same input
+        // must be refused with the measured depth and the limit, never a
+        // silent rewrite or a lane-specific degradation.
+        let refusal = ensure_query_nesting_depth(&crash_input)
+            .expect_err("the crash input must exceed the nesting bound");
+        assert_eq!(refusal.limit, MAX_QUERY_NESTING_DEPTH);
+        assert!(
+            refusal.depth >= 3_934,
+            "the crash input's 3,934 groups must all be read: {refusal}"
+        );
+        let message = refusal.to_string();
+        assert!(
+            message.contains(&MAX_QUERY_NESTING_DEPTH.to_string()),
+            "the typed error must name the limit: {message}"
+        );
+    }
+
+    /// Exactly at the bound the deepest admitted query must still work
+    /// end to end — parse, structure reading, FTS5 transpile — on a
+    /// small stack; one past it is refused everywhere, with the measured
+    /// depth and the limit in the typed error.
+    #[test]
+    fn nesting_depth_boundary_is_inclusive_then_typed_refusal() {
+        let at_limit = format!(
+            "{}term{}",
+            "(".repeat(MAX_QUERY_NESTING_DEPTH),
+            ")".repeat(MAX_QUERY_NESTING_DEPTH)
+        );
+        let past_limit = format!("{}term", "(".repeat(MAX_QUERY_NESTING_DEPTH + 1));
+
+        // At the limit: admitted, and every lane still answers on a 256 KiB
+        // stack — the deepest admitted parse costs ~4 small frames per
+        // nesting level, tens of KB in total.
+        let worker_input = at_limit.clone();
+        let worker = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let reading = read_query(&worker_input);
+                let transpiled = transpile_to_fts5(&worker_input);
+                (reading, transpiled)
+            })
+            .expect("spawning the small-stack boundary thread");
+        let (reading, transpiled) = worker
+            .join()
+            .expect("a query at the nesting limit must parse on a small stack");
+        ensure_query_nesting_depth(&at_limit).expect("a query at exactly the limit is admitted");
+        // 128 nested single-operand groups collapse to the operand itself:
+        // the parser wraps only compound groups.
+        assert_eq!(reading.structure.as_deref(), Some("term"));
+        assert_eq!(transpiled.as_deref(), Some("term"));
+
+        // One past the limit: the gate reports the exact numbers, and every
+        // lane declines instead of parsing.
+        let refusal = ensure_query_nesting_depth(&past_limit)
+            .expect_err("one level past the limit must be refused");
+        assert_eq!(refusal.depth, MAX_QUERY_NESTING_DEPTH + 1);
+        assert_eq!(refusal.limit, MAX_QUERY_NESTING_DEPTH);
+        assert!(
+            refusal
+                .to_string()
+                .contains(&MAX_QUERY_NESTING_DEPTH.to_string()),
+            "the typed error must name the limit: {refusal}"
+        );
+        assert_eq!(
+            transpile_to_fts5(&past_limit),
+            None,
+            "the FTS5 transpiler must decline a past-the-limit query"
+        );
+        assert!(
+            read_query(&past_limit).structure.is_none(),
+            "the query reading must report no structure for a refused query"
+        );
+    }
+
+    /// The primary lexical engine's own lowering is ANOTHER recursive
+    /// descent (`parse_or`/`parse_and`/`parse_unary`/`parse_primary` in
+    /// frankensearch-quill, one cycle per `(`) — this campaign's
+    /// small-stack probe caught the fuzz crash input overflowing inside
+    /// the ENGINE, so cass's nesting gate is load-bearing for this lane,
+    /// not contract sugar: every cass entry into that parser
+    /// (`SearchClient::search` → `search_tantivy`, the viewer bridge's
+    /// `parse_lexical_query`, the CLI handlers) sits behind
+    /// `ensure_query_nesting_depth`. This pin proves the admitted range
+    /// fits the engine's stack envelope — a query at exactly
+    /// [`MAX_QUERY_NESTING_DEPTH`] parses on a 4 MiB stack (half the
+    /// 8 MiB default main-thread stack the production lanes run on). If
+    /// a future engine change grows the per-level cost, or a cass change
+    /// lets deeper queries through, this fails instead of shipping a
+    /// latent overflow.
+    #[test]
+    fn quill_lowering_handles_the_gate_admitted_depth_on_a_small_stack() {
+        let deep = format!(
+            "{}term{}",
+            "(".repeat(MAX_QUERY_NESTING_DEPTH),
+            ")".repeat(MAX_QUERY_NESTING_DEPTH)
+        );
+        let worker = std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(move || {
+                frankensearch::quill::query::CassQueryParser::new(
+                    frankensearch::quill::schema::CASS_SEMANTIC_SCHEMA,
+                )
+                .expect("building the CASS query parser")
+                .parse(&deep, &FsCassQueryFilters::default())
+                .query
+            })
+            .expect("spawning the small-stack quill thread");
+        let _ = worker
+            .join()
+            .expect("the gate-admitted depth must fit the engine's stack envelope");
+    }
+
+    /// Every `SearchClient` entry a caller can reach refuses a too-deep
+    /// query with the typed error before any archive work: the refusal
+    /// carries the measured depth and the limit, so the CLI, TUI, serve
+    /// and pack callers can surface it without re-lexing the query.
+    #[test]
+    fn search_entries_refuse_deep_nesting_before_any_archive_work() -> Result<()> {
+        let dir = TempDir::new()?;
+        let mut index = TantivyIndex::open_or_create(dir.path())?;
+        index.commit()?;
+        let client = SearchClient::open(dir.path(), None)?.expect("index present");
+        let deep = format!("{}needle", "(".repeat(MAX_QUERY_NESTING_DEPTH + 1));
+
+        macro_rules! refuse_typed {
+            ($call:expr) => {
+                match $call {
+                    Ok(value) => panic!("a too-deep query must be refused, got {value:?}"),
+                    Err(error) => {
+                        let exceeded =
+                            error
+                                .downcast_ref::<QueryDepthExceeded>()
+                                .unwrap_or_else(|| {
+                                    panic!("expected a typed depth refusal, got: {error:#}")
+                                });
+                        assert_eq!(exceeded.depth, MAX_QUERY_NESTING_DEPTH + 1);
+                        assert_eq!(exceeded.limit, MAX_QUERY_NESTING_DEPTH);
+                    }
+                }
+            };
+        }
+        refuse_typed!(client.search(&deep, SearchFilters::default(), 10, 0, FieldMask::FULL));
+        refuse_typed!(client.search_semantic_with_tier(
+            &deep,
+            SearchFilters::default(),
+            10,
+            0,
+            FieldMask::FULL,
+            false,
+            SemanticTierMode::Single
+        ));
+        refuse_typed!(client.search_hybrid_with_tier(
+            &deep,
+            &deep,
+            SearchFilters::default(),
+            10,
+            0,
+            3,
+            FieldMask::FULL,
+            false,
+            SemanticTierMode::Single
+        ));
+        Ok(())
     }
 
     /// `--explain` lexes the raw query, where grouping parentheses now arrive

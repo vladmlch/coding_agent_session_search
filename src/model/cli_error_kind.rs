@@ -123,6 +123,10 @@ pub enum ErrorKind {
     ParseError,
     PasswordReadError,
     PasswordRequired,
+    /// A query nested deeper than the grammar's stack bound
+    /// (`search::query::MAX_QUERY_NESTING_DEPTH`) — refused before any
+    /// lane runs (query-nesting-depth campaign, 2026-11-12).
+    QueryDepthExceeded,
     RebuildError,
     RepairError,
     /// Emitted when argv names a command, subcommand pair, flag or flag
@@ -236,6 +240,7 @@ impl ErrorKind {
             Self::ParseError => "parse-error",
             Self::PasswordReadError => "password-read-error",
             Self::PasswordRequired => "password-required",
+            Self::QueryDepthExceeded => "query-depth-exceeded",
             Self::RebuildError => "rebuild-error",
             Self::RepairError => "repair-error",
             Self::RemovedCommand => "removed-command",
@@ -343,6 +348,7 @@ impl ErrorKind {
             "parse-error" => Self::ParseError,
             "password-read-error" => Self::PasswordReadError,
             "password-required" => Self::PasswordRequired,
+            "query-depth-exceeded" => Self::QueryDepthExceeded,
             "rebuild-error" => Self::RebuildError,
             "repair-error" => Self::RepairError,
             "removed-command" => Self::RemovedCommand,
@@ -450,6 +456,7 @@ impl ErrorKind {
             Self::ParseError,
             Self::PasswordReadError,
             Self::PasswordRequired,
+            Self::QueryDepthExceeded,
             Self::RebuildError,
             Self::RepairError,
             Self::RemovedCommand,
@@ -548,9 +555,11 @@ mod tests {
         // `index-unavailable` and `no-renderable-messages` (92 -> 97).
         // The local-only conversion's removed-command matrix (dc0286ff) added
         // `removed-command` (97 -> 98).
+        // The query-nesting-depth bound (2026-11-12) added
+        // `query-depth-exceeded` (98 -> 99).
         // If lib.rs grows a new kind, bump this count AND add the variant +
         // arms above.
-        const AUDITED_KIND_COUNT: usize = 98;
+        const AUDITED_KIND_COUNT: usize = 99;
         assert_eq!(
             ErrorKind::all_variants().len(),
             AUDITED_KIND_COUNT,
