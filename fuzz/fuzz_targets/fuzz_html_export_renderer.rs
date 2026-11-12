@@ -108,6 +108,7 @@ fn build_message(input: RendererInput) -> (Message, RenderOptions) {
             .output
             .map(|output| bounded_string(output, MAX_TOOL_BYTES)),
         status: tool.status.map(fuzz_status_to_tool_status),
+        correlation_id: None,
     });
 
     let message = Message {

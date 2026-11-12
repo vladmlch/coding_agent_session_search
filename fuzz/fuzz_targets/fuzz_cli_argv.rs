@@ -189,13 +189,19 @@ fn contains_help_or_version(argv: &[String]) -> bool {
     // clap's DisplayHelp / DisplayVersion branches call `err.exit()`
     // inside parse_cli, which would terminate the fuzzer process.
     // Filter these tokens out so the fuzzer keeps running.
+    // Clap also reads a clustered short-flag token such as `-hra` as `-h`
+    // (the 2026-11-12 campaign's only cli_argv "crash" was exactly that), so
+    // any single-dash cluster carrying `h` or `V` counts too.
     argv.iter().any(|a| {
         let t = a.to_ascii_lowercase();
+        let short_cluster_requests_display =
+            a.starts_with('-') && !a.starts_with("--") && (a.contains('h') || a.contains('V'));
         matches!(
             t.as_str(),
             "--help" | "-h" | "help" | "--version" | "-v" | "--Help" | "-V"
         ) || t.contains("help")
             || t.contains("version")
+            || short_cluster_requests_display
     })
 }
 

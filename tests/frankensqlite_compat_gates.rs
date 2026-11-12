@@ -260,6 +260,33 @@ fn frankensqlite_fork_source_identity_is_exact_and_coherent() {
     );
 }
 
+/// `fuzz/` is its own Cargo workspace, so the root [patch.crates-io] table
+/// does not reach it. When the two drifted, the fuzz build resolved the
+/// crates.io fsqlite family and FAD's fork-only API failed to compile, which
+/// silently disabled every cass fuzz target. The fuzz workspace must carry
+/// the root table entry for entry.
+#[test]
+fn fuzz_workspace_patch_table_matches_root() {
+    let patch_table = |manifest_text: &str, name: &str| -> toml::Table {
+        let manifest: toml::Table =
+            toml::from_str(manifest_text).unwrap_or_else(|err| panic!("parse {name}: {err}"));
+        manifest
+            .get("patch")
+            .and_then(toml::Value::as_table)
+            .and_then(|patch| patch.get("crates-io"))
+            .and_then(toml::Value::as_table)
+            .cloned()
+            .unwrap_or_else(|| panic!("{name} must carry a [patch.crates-io] table"))
+    };
+    let root = patch_table(include_str!("../Cargo.toml"), "Cargo.toml");
+    let fuzz = patch_table(include_str!("../fuzz/Cargo.toml"), "fuzz/Cargo.toml");
+    assert!(!root.is_empty(), "root [patch.crates-io] table is empty");
+    assert_eq!(
+        fuzz, root,
+        "fuzz/Cargo.toml [patch.crates-io] must equal the root table entry for entry"
+    );
+}
+
 /// Exercise the exact API that disappeared from the same-version registry
 /// archive. A missing database must remain missing, while an existing database
 /// must reopen without schema initialization and retain its rows.

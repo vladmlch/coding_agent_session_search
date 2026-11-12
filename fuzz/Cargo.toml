@@ -20,6 +20,35 @@ tempfile = "3"
 [dependencies.coding-agent-search]
 path = ".."
 
+# This crate is its own workspace, so the root manifest's [patch.crates-io]
+# table does not apply here: without this copy the fuzz build resolves the
+# crates.io fsqlite family and FAD's fork-only API (SQLITE_OPEN_STRICT_READ_ONLY)
+# fails to compile. Keep it identical to the root table;
+# tests/frankensqlite_compat_gates.rs (fuzz_workspace_patch_table_matches_root)
+# fails by name when the two drift.
+[patch.crates-io]
+fsqlite = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-ast = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-btree = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-core = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-error = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-ext-fts5 = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-ext-icu = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-ext-json = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-ext-misc = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-ext-rtree = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-func = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-mvcc = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-observability = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-pager = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-parser = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-planner = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-types = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-vdbe = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-vfs = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
+frankensearch-quill = { git = "https://github.com/vladmlch/frankensearch", rev = "bb7d899a176a2de3d6106449448d020fe3f1e6e5" }
+
 # Fuzz targets - each gets its own binary
 
 [[bin]]
