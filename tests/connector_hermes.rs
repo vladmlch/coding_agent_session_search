@@ -171,8 +171,15 @@ fn hermes_happy_path_preserves_session_and_message_fields() {
     assert!(conv.messages[0].content.contains("Hermes state.db"));
     assert_eq!(conv.messages[1].idx, 1);
     assert_eq!(conv.messages[1].role, "assistant");
-    // Assistant author is None at message level (model lives at session level).
-    assert_eq!(conv.messages[1].author, None);
+    // FAD 0.3.11 (ah1 model attribution) carries the session model onto the
+    // assistant message: as its author and as `extra.model`.
+    assert_eq!(
+        conv.messages[1].author.as_deref(),
+        Some("claude-3-5-sonnet")
+    );
+    assert_eq!(conv.messages[1].extra["model"], "claude-3-5-sonnet");
+    // The user message carries no model attribution.
+    assert!(conv.messages[0].extra.get("model").is_none());
     assert!(conv.messages[1].content.contains("SQLite"));
 }
 
