@@ -92,10 +92,15 @@ fn native_databases_are_discovered_and_scanned_by_the_cass_connector() -> Result
     seed(&conn, "native-session", "native question")?;
     conn.close()?;
     let before = snapshot(&path)?;
-    let mut wal_name = path.as_os_str().to_os_string();
-    wal_name.push("-wal");
-    let wal = PathBuf::from(wal_name);
+    let sidecar = |suffix: &str| {
+        let mut name = path.as_os_str().to_os_string();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    let wal = sidecar("-wal");
+    let shm = sidecar("-shm");
     let wal_before = wal.is_file().then(|| snapshot(&wal)).transpose()?;
+    let shm_before = shm.is_file().then(|| snapshot(&shm)).transpose()?;
     let connector = OpenClawConnector::new();
     let ctx = context(temp.path(), None);
     let sources = connector.discover_source_files(&ctx)?;
@@ -110,12 +115,28 @@ fn native_databases_are_discovered_and_scanned_by_the_cass_connector() -> Result
     assert!(sources.iter().any(|source| {
         source.source_path == path && source.role == DiscoveredSourceRole::SqliteDatabase
     }));
-    assert_eq!(sources.len(), 1 + usize::from(wal_before.is_some()));
+    // FAD 0.3.11 declares a live store's sidecars together with the database:
+    // the committed -wal as a required reconstruction input (a WAL-only commit
+    // leaves its reuse evidence there, not in the primary file) and the -shm
+    // as an optional one. The adapter forwards that discovery contract
+    // unchanged instead of re-deriving it, so every sidecar present on disk
+    // appears exactly once, with its upstream reconstruction role.
+    assert_eq!(
+        sources.len(),
+        1 + usize::from(wal_before.is_some()) + usize::from(shm_before.is_some())
+    );
     if wal_before.is_some() {
         assert!(sources.iter().any(|source| {
             source.source_path == wal
                 && source.role == DiscoveredSourceRole::MetadataSidecar
                 && source.required_for_reconstruction
+        }));
+    }
+    if shm_before.is_some() {
+        assert!(sources.iter().any(|source| {
+            source.source_path == shm
+                && source.role == DiscoveredSourceRole::MetadataSidecar
+                && !source.required_for_reconstruction
         }));
     }
     let conversations = connector.scan(&ctx)?;
@@ -153,6 +174,10 @@ fn native_databases_are_discovered_and_scanned_by_the_cass_connector() -> Result
     assert_eq!(
         wal.is_file().then(|| snapshot(&wal)).transpose()?,
         wal_before
+    );
+    assert_eq!(
+        shm.is_file().then(|| snapshot(&shm)).transpose()?,
+        shm_before
     );
     Ok(())
 }
