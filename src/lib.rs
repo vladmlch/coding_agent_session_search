@@ -24223,6 +24223,33 @@ fn maybe_test_force_semantic_dispatch_budget_phase(
     }
 }
 
+/// Refuse a query nested deeper than the grammar's stack bound
+/// ([`crate::search::query::MAX_QUERY_NESTING_DEPTH`]) before any search
+/// or pack lane runs: the recursive boolean stages behind every lane
+/// (parser, renderers, source-scan evaluation, AST teardown) must never
+/// see such a query, and the caller gets the limit in the typed
+/// `query-depth-exceeded` envelope — the same fix-the-input family as
+/// `pack-empty-query`, never a retry.
+fn ensure_cli_query_nesting_depth(query: &str) -> CliResult<()> {
+    if let Err(exceeded) = crate::search::query::ensure_query_nesting_depth(query) {
+        return Err(CliError {
+            code: 2,
+            kind: CliErrorKind::QueryDepthExceeded.kind_str(),
+            message: format!(
+                "query nests {} groups deep; the maximum is {}",
+                exceeded.depth, exceeded.limit
+            ),
+            hint: Some(format!(
+                "Keep the query at or under {} nested groups of parentheses — \
+                 split a deeply nested query into several searches.",
+                exceeded.limit
+            )),
+            retryable: false,
+        });
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_cli_search(
     query: &str,
@@ -24270,6 +24297,12 @@ fn run_cli_search(
     use crate::sources::provenance::SourceFilter;
     use std::collections::HashSet;
     use std::sync::Arc;
+
+    // The depth refusal is a property of the query text, so it fires
+    // before the effective-interpretation reading and every later lane —
+    // none of which may answer a different query or touch an archive for
+    // input the grammar's recursive stages must never see.
+    ensure_cli_query_nesting_depth(query)?;
 
     // Start timing for robot_meta elapsed_ms
     let start_time = Instant::now();
@@ -26238,6 +26271,9 @@ fn run_cli_pack(
             retryable: false,
         });
     }
+    // Same typed refusal as `cass search`, before any pack planning or
+    // archive access runs.
+    ensure_cli_query_nesting_depth(query)?;
     let render_format = resolve_pack_render_format(robot_format, display_format)?;
     let structured_pack = !matches!(render_format, PackRenderFormat::Markdown);
     let pack_budget = crate::robot_budget_envelope::RobotBudget::with_start(

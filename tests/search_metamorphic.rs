@@ -587,6 +587,64 @@ fn agent_filter_typos_fail_before_archive_access_on_all_retrieval_commands() -> 
     Ok(())
 }
 
+/// A query nested deeper than the grammar's stack bound (128 groups,
+/// `search::query::MAX_QUERY_NESTING_DEPTH`) is refused before any lane
+/// runs, on every query-carrying command: the typed
+/// `query-depth-exceeded` envelope (exit 2, not retryable, hint naming
+/// the limit, message naming the measured depth) — never a different
+/// query answered, never a crash. The refusal fires before the archive
+/// is even created, so the bound is checkable with no index at all.
+#[test]
+fn deep_query_nesting_refuses_typed_before_archive_access() -> TestResult {
+    let root = tempfile::TempDir::new()?;
+    let data_dir = root.path().join("missing-archive");
+    let deep = format!("{}kiwiword", "(".repeat(200));
+    for command in ["search", "pack"] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cass"));
+        cmd.current_dir(root.path())
+            .env("HOME", root.path())
+            .env("CASS_DATA_DIR", &data_dir)
+            .env("CASS_AUTO_REFRESH", "0")
+            .env("CASS_IGNORE_SOURCES_CONFIG", "1")
+            .env("RUST_LOG", "error")
+            .env_remove("CASS_DB_PATH")
+            .args([command, deep.as_str(), "--robot"]);
+        let output = cmd.output()?;
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{command} on a 200-group query: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{command} emitted a success payload for a refused query"
+        );
+        let payload: Value = serde_json::from_slice(&output.stderr)?;
+        assert_eq!(
+            payload["error"]["kind"], "query-depth-exceeded",
+            "{command}"
+        );
+        assert_eq!(payload["error"]["code"], 2);
+        assert_eq!(payload["error"]["retryable"], false);
+        let message = payload["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("200"),
+            "{command}: the message must name the measured depth: {message}"
+        );
+        let hint = payload["error"]["hint"].as_str().unwrap_or_default();
+        assert!(
+            hint.contains("128"),
+            "{command}: the hint must name the limit: {hint}"
+        );
+    }
+    assert!(
+        !data_dir.exists(),
+        "the depth refusal must fire before the archive directory is created"
+    );
+    Ok(())
+}
+
 /// README documents NOT > AND > OR precedence and parentheses (2l1b0.52).
 /// The legacy grammar bound OR tighter than AND and read parentheses as word
 /// characters, so the mixed cases here fail on 71759163; they include the
