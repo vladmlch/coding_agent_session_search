@@ -98,10 +98,13 @@ pub fn parse_lexical_query(text: &str, filters: &CassQueryFilters) -> Result<(Qu
     // The one raw-text entry every lexical lane (raw_page*,
     // search_sessions, search_cursor) shares: a query nested deeper than
     // the grammar's bound is refused typed here, before any engine work,
-    // naming the measured depth and the limit. The quill lowering itself
-    // is arena-based (no recursion), so this gate keeps the bridge's
-    // verdict identical to the CLI's `query-depth-exceeded` refusal for
-    // the same query.
+    // naming the measured depth and the limit. The gate is load-bearing,
+    // not contract sugar: the quill expression lowering is recursive
+    // descent (parse_or/parse_and/parse_unary/parse_primary, one cycle
+    // per `(`), and the ~3,900-group fuzz input aborts a 256 KiB stack
+    // inside the engine — measured, not assumed. It also keeps the
+    // bridge's verdict identical to the CLI's `query-depth-exceeded`
+    // refusal for the same query.
     if let Err(exceeded) = coding_agent_search::search::query::ensure_query_nesting_depth(text) {
         return Err(refuse(
             "invalid_request",
@@ -370,10 +373,10 @@ mod tests {
     /// bridge's single raw-text entry, before any engine work: the
     /// `invalid_request` refusal names the measured depth and the limit,
     /// matching the CLI's `query-depth-exceeded` verdict for the same
-    /// query. The engine's arena lowering would not crash on it — the
-    /// gate keeps the contract uniform and the message actionable. A
-    /// query at exactly the bound is admitted, proving the boundary is
-    /// inclusive.
+    /// query. The gate is load-bearing: the engine's expression lowering
+    /// is recursive descent, so the deep query would overflow the stack
+    /// inside the engine if it reached it. A query at exactly the bound
+    /// is admitted, proving the boundary is inclusive.
     #[test]
     fn deep_nesting_refuses_typed_at_the_shared_raw_text_entry() {
         let deep = format!("{}term", "(".repeat(200));
@@ -397,8 +400,8 @@ mod tests {
             refusal.message
         );
 
-        // Exactly at the bound: admitted — the arena lowering parses the
-        // 128-group query, so the refusal above is bound-driven, not
+        // Exactly at the bound: admitted — the recursive lowering parses
+        // the 128-group query, so the refusal above is bound-driven, not
         // data-driven.
         let at_limit = format!(
             "{}term{}",
