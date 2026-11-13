@@ -5338,6 +5338,9 @@ pub fn search_sessions(
     let mut bytes = 0_usize;
     let mut last: Option<SearchCursor> = None;
     let mut emitted = 0_usize;
+    // One cursor per emitted item, parallel to `items`, so a post-enrichment
+    // byte trim can move the resume position back to the last kept session.
+    let mut item_cursors: Vec<SearchCursor> = Vec::new();
     // (B) Page-time witness gates, memoized once per request and shared by
     // every emitted fast-lane session: one raw enumeration per distinct
     // claim literal, however many sessions the page hydrates.
@@ -5635,6 +5638,7 @@ pub fn search_sessions(
             matches_out.insert(session.conversation_id.to_string(), json!(session_matches));
         }
         item["witness_count"] = json!(session_matches.len());
+        item_cursors.push(key.clone());
         last = Some(key);
         items.push(item);
     }
@@ -5655,6 +5659,37 @@ pub fn search_sessions(
                 item["source_id"] = json!(verified.source_id);
             }
         }
+    }
+    // The page cut above budgeted pre-enrichment item bytes; identity
+    // resolution and the per-session `matches` map add bytes it never saw.
+    // Re-measure the payload the response actually carries and drop tail
+    // sessions (with their matches) until it fits the response budget,
+    // moving the cursor back to the last kept session so the walk resumes
+    // exactly where the page stopped — every row still visited once.
+    let mut trimmed = false;
+    loop {
+        let payload_bytes =
+            serde_json::to_vec(&items)?.len() + serde_json::to_vec(&matches_out)?.len();
+        if payload_bytes <= RESPONSE_BYTES - 8192 {
+            break;
+        }
+        if items.len() <= 1 {
+            return Err(refuse(
+                "canonical_payload_too_large",
+                "Page exceeds bridge response budget; request fewer rows",
+            ));
+        }
+        let dropped = items.pop().expect("checked non-empty");
+        let conversation_id = dropped["conversation_id"].as_i64().expect("id");
+        // shift_remove keeps the remaining matches in emission order (the
+        // map preserves insertion order; remove() would swap the last key in).
+        matches_out.shift_remove(&conversation_id.to_string());
+        item_cursors.pop();
+        trimmed = true;
+    }
+    if trimmed {
+        has_more = true;
+        last = item_cursors.last().cloned();
     }
     let complete = unknown_sessions == 0;
     // Stage 1b receipts, hoisted for the json! macro below: which

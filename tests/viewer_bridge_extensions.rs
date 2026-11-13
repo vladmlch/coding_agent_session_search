@@ -2845,6 +2845,92 @@ fn list_sessions_tag_patch_reflected_without_reindex() -> Result<()> {
     bridge.shutdown()
 }
 
+/// Regression: a `list_sessions` page must be cut against the bytes it
+/// actually EMITS. The page budget used to measure each decoded row before
+/// the post-cut overlay filled `public_id`/`provider`/`tags`/`parent_public_id`,
+/// so a page that fit the budget pre-enrichment could overflow once enriched
+/// and the whole response was refused (`response_too_large`) instead of being
+/// cut with a `next_cursor`.
+///
+/// Fixture: 60 claude sessions, each with a 16 KiB title (the preview bound)
+/// and 30 tags. A limit-256 page fits the response budget before the overlay
+/// but not after it. RED: `response_too_large`. GREEN: every page is <= 1 MiB,
+/// carries a `next_cursor` while more rows remain, and the full walk visits
+/// each conversation exactly once.
+#[test]
+fn list_sessions_page_cut_matches_enriched_bytes() -> Result<()> {
+    const ROWS: i64 = 60;
+    const TAGS_PER_ROW: i64 = 30;
+    let title = "t".repeat(16 * 1024);
+    let fixtures: Vec<SeedConversation> = (1..=ROWS)
+        .map(|id| {
+            let mut seed = SeedConversation::new(
+                id,
+                "claude_code",
+                &format!("/missing/big-{id}.jsonl"),
+                &format!("big-{id}"),
+            )
+            .started_at(Some(1_000 + id))
+            .agent_messages(Some(1_000 + id), 1);
+            seed.title = Some(title.clone());
+            seed
+        })
+        .collect();
+    let mut bridge = BridgeHarness::with_seed(&fixtures, &[])?;
+    init_extensions(&bridge)?;
+
+    // Many tags per row: the post-cut overlay serializes them into every
+    // emitted item, the bytes the pre-enrichment budget never counted.
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    for id in 1..=ROWS {
+        for tag in 0..TAGS_PER_ROW {
+            writer.execute_with_params(
+                "INSERT INTO viewer_tags (conversation_id,tag,created_at_ms) \
+                 VALUES (?1,?2,?3)",
+                &param_slice_to_values(params![
+                    id,
+                    format!("tag-{tag}-{}", "g".repeat(24)),
+                    1_700_000_000_000_i64
+                ]),
+            )?;
+        }
+    }
+    drop(writer);
+
+    let mut seen: Vec<i64> = Vec::new();
+    let mut cursor = Value::Null;
+    for page_no in 1..=20 {
+        let request = match cursor.as_str() {
+            Some(cursor) => json!({
+                "op":"list_sessions","filters":{"provider":"claude"},"limit":256,"cursor":cursor}),
+            None => json!({"op":"list_sessions","filters":{"provider":"claude"},"limit":256}),
+        };
+        let page = bridge.exchange(request)?;
+        ensure!(page["ok"] == true, "page {page_no} refused: {page}");
+        let encoded = serde_json::to_vec(&page)?;
+        ensure!(
+            encoded.len() <= 1_048_576,
+            "page {page_no} exceeds the 1 MiB response budget: {} bytes",
+            encoded.len()
+        );
+        for item in page["result"]["items"].as_array().expect("items array") {
+            seen.push(item["conversation_id"].as_i64().expect("conversation_id"));
+        }
+        cursor = page["result"]["next_cursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    ensure!(cursor.is_null(), "walk did not terminate within 20 pages");
+    seen.sort_unstable();
+    let expected: Vec<i64> = (1..=ROWS).collect();
+    ensure!(
+        seen == expected,
+        "the full walk must visit every conversation exactly once: {seen:?}"
+    );
+    bridge.shutdown()
+}
+
 /// Opcode-level plan audit: `EXPLAIN <sql>` returns the VDBE program, so a
 /// page whose order comes from a sorter shows `SorterOpen` (and `TEMP
 /// B-TREE` in the query plan). The persisted sort tuple exists precisely

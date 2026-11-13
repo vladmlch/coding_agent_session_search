@@ -1718,8 +1718,44 @@ pub fn list_sessions(
     let page_ids: Vec<i64> = ordered.iter().take(take_count).map(|row| row.id).collect();
     let by_id = hydrate_rows(connection, &page_ids)?;
 
+    // Resolve the identity/tag/parent overlay for the page's surviving rows
+    // BEFORE the byte cut, so `push_bounded` measures exactly the bytes each
+    // emitted item carries. Budgeting the decoded row first and enriching
+    // afterwards let a page that fit the budget overflow once the overlay
+    // filled `public_id`/`provider`/`tags`/`parent_public_id`, refusing the
+    // whole response instead of cutting it. Rows that vanished between the
+    // order scan and hydration are excluded here (the decode loop consumes
+    // their position without emitting), keeping the racing-delete path
+    // refusal-free.
+    let present_ids: Vec<i64> = page_ids
+        .iter()
+        .copied()
+        .filter(|id| by_id.contains_key(id))
+        .collect();
+    let public_ids = identity::resolve_public_ids(connection, &present_ids)?;
+    let tags = annotations::tags_for(connection, &present_ids)?;
+    // Parent identities resolve through the same canonical identity
+    // machinery — one bounded primary-key probe per distinct parent id
+    // (identity::resolve_public_id recomputes and verifies the public
+    // id; an unresolvable/ambiguous parent stays typed NULL).
+    let mut parent_ids: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    for row in by_id.values() {
+        if let Some(parent_id) = row.get_typed::<Option<i64>>(29)? {
+            parent_ids.insert(parent_id);
+        }
+    }
+    let mut parent_public_ids: std::collections::BTreeMap<i64, String> =
+        std::collections::BTreeMap::new();
+    for parent_id in parent_ids {
+        if let Ok(identity) = identity::resolve_public_id(connection, parent_id) {
+            parent_public_ids.insert(parent_id, identity.public_id);
+        }
+    }
+
     // Decode bounded; a page may serialize fewer rows than the order scan
-    // returned when the response byte budget intervenes.
+    // returned when the response byte budget intervenes. Each item is
+    // enriched before it is budgeted, so the cut reflects the emitted bytes
+    // and a truncated page keeps a correct `next_cursor`.
     let mut items = Vec::new();
     let mut bytes = 0_usize;
     let mut last: Option<Cursor> = None;
@@ -1740,38 +1776,7 @@ pub fn list_sessions(
                 "Canonical row exceeds the strict bridge byte profile",
             ));
         }
-        let item = decode_item(row)?;
-        if !push_bounded(&mut items, item, &mut bytes)? {
-            truncated = true;
-            break;
-        }
-        last = Some(position);
-    }
-
-    // Items keep the order-scan sequence; each carries its canonical
-    // coordinate.
-    let emitted_ids: Vec<i64> = items
-        .iter()
-        .map(|item| item["conversation_id"].as_i64().expect("decoded id"))
-        .collect();
-    let public_ids = identity::resolve_public_ids(connection, &emitted_ids)?;
-    let tags = annotations::tags_for(connection, &emitted_ids)?;
-    // Parent identities resolve through the same canonical identity
-    // machinery — one bounded primary-key probe per distinct parent id
-    // (identity::resolve_public_id recomputes and verifies the public
-    // id; an unresolvable/ambiguous parent stays typed NULL).
-    let parent_ids: std::collections::BTreeSet<i64> = items
-        .iter()
-        .filter_map(|item| item["parent_conversation_id"].as_i64())
-        .collect();
-    let mut parent_public_ids: std::collections::BTreeMap<i64, String> =
-        std::collections::BTreeMap::new();
-    for parent_id in parent_ids {
-        if let Ok(identity) = identity::resolve_public_id(connection, parent_id) {
-            parent_public_ids.insert(parent_id, identity.public_id);
-        }
-    }
-    for item in &mut items {
+        let mut item = decode_item(row)?;
         let id = item["conversation_id"].as_i64().expect("decoded id");
         if let Some(identity) = public_ids.get(&id) {
             item["public_id"] = json!(identity.public_id);
@@ -1781,6 +1786,11 @@ pub fn list_sessions(
             item["parent_public_id"] = json!(parent_public_ids.get(&parent_id));
         }
         item["tags"] = json!(tags.get(&id).cloned().unwrap_or_default());
+        if !push_bounded(&mut items, item, &mut bytes)? {
+            truncated = true;
+            break;
+        }
+        last = Some(position);
     }
 
     let has_more = truncated || ordered.len() > limit;
