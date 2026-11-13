@@ -5209,6 +5209,37 @@ pub fn search_sessions(
     if unknown_sessions > 0 {
         warnings.push("membership_incomplete".to_owned());
     }
+    // Codex continuation rollouts (`rollout-<ts>-<A>_<B>.jsonl`) verify to
+    // the same thread identity `codex:<A>` as the original. Fold every
+    // matched row sharing a verified public id onto the lowest matched
+    // canonical id, so one logical session is sorted, paged and emitted
+    // once. The representative keeps its own witnesses and score (they are
+    // bound to its conversation_id); an unverifiable row keeps its own
+    // identity rather than being dropped or failing the page.
+    {
+        let matched_ids: Vec<i64> = accepted
+            .iter()
+            .map(|entry| entry.session.conversation_id)
+            .collect();
+        let verified = identity::resolve_public_ids_tolerant(connection, &matched_ids)?;
+        let mut representative: BTreeMap<String, i64> = BTreeMap::new();
+        for entry in &accepted {
+            let cid = entry.session.conversation_id;
+            if let Some(Some(identity)) = verified.get(&cid) {
+                representative
+                    .entry(identity.public_id.clone())
+                    .and_modify(|min| *min = (*min).min(cid))
+                    .or_insert(cid);
+            }
+        }
+        accepted.retain(|entry| {
+            let cid = entry.session.conversation_id;
+            match verified.get(&cid) {
+                Some(Some(identity)) => representative.get(&identity.public_id) == Some(&cid),
+                _ => true,
+            }
+        });
+    }
     let mut ranking_incomplete = false;
     for entry in &accepted {
         // Every persisted region owns a Quill document slot, so index

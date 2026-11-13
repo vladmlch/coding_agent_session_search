@@ -840,6 +840,48 @@ pub fn resolve_public_ids_with_evidence(
     Ok(resolved_map)
 }
 
+/// Batch forward resolution that never refuses the whole batch: each row
+/// maps to its verified public identity, or `None` when its canonical
+/// evidence cannot verify (a missing row or a provenance conflict). The
+/// search lane folds matched rows sharing a verified public id onto one
+/// logical session and must keep an unverifiable row as its own session
+/// rather than dropping it or failing the page.
+pub fn resolve_public_ids_tolerant(
+    connection: &Connection,
+    conversation_ids: &[i64],
+) -> Result<std::collections::BTreeMap<i64, Option<VerifiedIdentity>>> {
+    let lookups = load_lookups(connection)?;
+    let mut evidence: std::collections::BTreeMap<i64, Row> = std::collections::BTreeMap::new();
+    for chunk in conversation_ids.chunks(IDENTITY_CHUNK) {
+        let params: Vec<SqliteValue> = chunk.iter().map(|id| SqliteValue::Integer(*id)).collect();
+        let placeholders = (1..=chunk.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT c.id, c.agent_id, c.source_id, c.external_id, c.source_path, \
+             c.origin_host, c.metadata_bin, c.metadata_json \
+             FROM conversations c WHERE c.id IN ({placeholders})"
+        );
+        for row in connection.query_with_params(&sql, &params)? {
+            evidence.insert(row.get_typed(0)?, row);
+        }
+    }
+    let mut resolved_map = std::collections::BTreeMap::new();
+    for &conversation_id in conversation_ids {
+        let verified = evidence
+            .get(&conversation_id)
+            .and_then(|row| resolve_row(row, &lookups).ok())
+            .map(|resolved| VerifiedIdentity {
+                provider: resolved.provider,
+                source_id: resolved.source_id,
+                public_id: resolved.public_id,
+            });
+        resolved_map.insert(conversation_id, verified);
+    }
+    Ok(resolved_map)
+}
+
 enum ParsedPublicId {
     Qualified {
         provider: String,
