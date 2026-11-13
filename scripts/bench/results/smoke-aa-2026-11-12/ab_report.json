@@ -1,0 +1,2133 @@
+{
+  "schema_version": 1,
+  "runner_version": 1,
+  "generated_at": "2026-11-12T01:12:08Z",
+  "label": "A/A null (5k smoke, b4fe3dad)",
+  "null_run": true,
+  "platform": {
+    "system": "Darwin",
+    "release": "27.0.0",
+    "machine": "arm64",
+    "python": "3.14.7"
+  },
+  "builds": {
+    "A": {
+      "label": "A",
+      "cass": "/Volumes/SSD_1TB_M2/work/targets/cass-ab-bench/a/release/cass",
+      "cass_sha256": "90af394ba716cc4cca74a4f73e1f4c230929a87071093d7c2914aaa6d03ff1eb",
+      "bridge": "/Volumes/SSD_1TB_M2/work/targets/cass-ab-bench/a/release/cass-viewer-bridge",
+      "bridge_sha256": "c8b53afd194904a960973e68f76b87d83e6806e0459aa011d315bcbc9b121ecf"
+    },
+    "B": {
+      "label": "B",
+      "cass": "/Volumes/SSD_1TB_M2/work/targets/cass-ab-bench/b/release/cass",
+      "cass_sha256": "90af394ba716cc4cca74a4f73e1f4c230929a87071093d7c2914aaa6d03ff1eb",
+      "bridge": "/Volumes/SSD_1TB_M2/work/targets/cass-ab-bench/b/release/cass-viewer-bridge",
+      "bridge_sha256": "c8b53afd194904a960973e68f76b87d83e6806e0459aa011d315bcbc9b121ecf"
+    }
+  },
+  "binaries_identical": true,
+  "args": {
+    "seed": 42,
+    "messages": 5000,
+    "repeats": 2,
+    "search_rounds": 3,
+    "search_repeats": 3,
+    "search_warmup_rounds": 1,
+    "big_every": 20,
+    "incremental_sessions": 0,
+    "incremental_fraction": 0.01,
+    "raw_mirror": "on"
+  },
+  "archive": {
+    "home": "/private/tmp/cass-ab-smoke-aa/archive/home",
+    "manifest": {
+      "generator_version": 1,
+      "seed": 42,
+      "target_messages": 5000,
+      "big_every": 20,
+      "v1_mtime_epoch": 1794312000.0,
+      "v1": {
+        "total_sessions": 79,
+        "claude_sessions": 48,
+        "codex_sessions": 31,
+        "messages": 5057,
+        "common_sessions": 64,
+        "rare_sessions": 2,
+        "phrase_sessions": 4,
+        "tool_target_sessions": 42,
+        "big_message_sessions": 4
+      },
+      "incremental": {
+        "total_sessions": 3,
+        "claude_sessions": 2,
+        "codex_sessions": 1,
+        "messages": 159,
+        "common_sessions": 2,
+        "rare_sessions": 0,
+        "phrase_sessions": 0,
+        "tool_target_sessions": 0,
+        "big_message_sessions": 1
+      },
+      "expected": {
+        "total_sessions": 82,
+        "common": 66,
+        "rare": 2,
+        "phrase": 4,
+        "not_common": 16,
+        "tool_bash": 42
+      },
+      "vocabulary": {
+        "common_term": "quokka",
+        "rare_term": "axolotl",
+        "phrase": "quantum walrus",
+        "tool_target": "Bash"
+      }
+    }
+  },
+  "index_full": {
+    "runs": [
+      {
+        "build": "A",
+        "phase": "full",
+        "tag": "full-r0",
+        "ok": true,
+        "exit_code": 0,
+        "wall_s": 14.176,
+        "cass_elapsed_ms": 14136,
+        "peak_rss_bytes": 636698624,
+        "conversations": 79,
+        "messages": 5057,
+        "quarantined_conversations": 0,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/index-A-full-r0.log"
+      },
+      {
+        "build": "B",
+        "phase": "full",
+        "tag": "full-r0",
+        "ok": true,
+        "exit_code": 0,
+        "wall_s": 14.356,
+        "cass_elapsed_ms": 13357,
+        "peak_rss_bytes": 522059776,
+        "conversations": 79,
+        "messages": 5057,
+        "quarantined_conversations": 0,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/index-B-full-r0.log"
+      },
+      {
+        "build": "B",
+        "phase": "full",
+        "tag": "full-r1",
+        "ok": true,
+        "exit_code": 0,
+        "wall_s": 13.522,
+        "cass_elapsed_ms": 13487,
+        "peak_rss_bytes": 514015232,
+        "conversations": 79,
+        "messages": 5057,
+        "quarantined_conversations": 0,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/index-B-full-r1.log"
+      },
+      {
+        "build": "A",
+        "phase": "full",
+        "tag": "full-r1",
+        "ok": true,
+        "exit_code": 0,
+        "wall_s": 13.134,
+        "cass_elapsed_ms": 13099,
+        "peak_rss_bytes": 519045120,
+        "conversations": 79,
+        "messages": 5057,
+        "quarantined_conversations": 0,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/index-A-full-r1.log"
+      }
+    ],
+    "aggregate": {
+      "A": {
+        "ok": true,
+        "count": 2,
+        "wall_s_min": 13.134,
+        "wall_s_max": 14.176,
+        "wall_s_mean": 13.655,
+        "peak_rss_bytes_max": 636698624,
+        "conversations": 79,
+        "messages": 5057
+      },
+      "B": {
+        "ok": true,
+        "count": 2,
+        "wall_s_min": 13.522,
+        "wall_s_max": 14.356,
+        "wall_s_mean": 13.939,
+        "peak_rss_bytes_max": 522059776,
+        "conversations": 79,
+        "messages": 5057
+      }
+    }
+  },
+  "index_incremental": {
+    "runs": [
+      {
+        "build": "A",
+        "phase": "incremental",
+        "tag": "incr-r0",
+        "ok": true,
+        "exit_code": 0,
+        "wall_s": 1.75,
+        "cass_elapsed_ms": 1711,
+        "peak_rss_bytes": 583991296,
+        "conversations": 3,
+        "messages": 159,
+        "quarantined_conversations": 0,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/index-A-incr-r0.log"
+      },
+      {
+        "build": "B",
+        "phase": "incremental",
+        "tag": "incr-r0",
+        "ok": true,
+        "exit_code": 0,
+        "wall_s": 1.758,
+        "cass_elapsed_ms": 1722,
+        "peak_rss_bytes": 576667648,
+        "conversations": 3,
+        "messages": 159,
+        "quarantined_conversations": 0,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/index-B-incr-r0.log"
+      },
+      {
+        "build": "B",
+        "phase": "incremental",
+        "tag": "incr-r1",
+        "ok": true,
+        "exit_code": 0,
+        "wall_s": 1.758,
+        "cass_elapsed_ms": 1725,
+        "peak_rss_bytes": 582205440,
+        "conversations": 3,
+        "messages": 159,
+        "quarantined_conversations": 0,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/index-B-incr-r1.log"
+      },
+      {
+        "build": "A",
+        "phase": "incremental",
+        "tag": "incr-r1",
+        "ok": true,
+        "exit_code": 0,
+        "wall_s": 1.847,
+        "cass_elapsed_ms": 1816,
+        "peak_rss_bytes": 577912832,
+        "conversations": 3,
+        "messages": 159,
+        "quarantined_conversations": 0,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/index-A-incr-r1.log"
+      }
+    ],
+    "aggregate": {
+      "A": {
+        "ok": true,
+        "count": 2,
+        "wall_s_min": 1.75,
+        "wall_s_max": 1.847,
+        "wall_s_mean": 1.798,
+        "peak_rss_bytes_max": 583991296,
+        "conversations": 3,
+        "messages": 159
+      },
+      "B": {
+        "ok": true,
+        "count": 2,
+        "wall_s_min": 1.758,
+        "wall_s_max": 1.758,
+        "wall_s_mean": 1.758,
+        "peak_rss_bytes_max": 582205440,
+        "conversations": 3,
+        "messages": 159
+      }
+    }
+  },
+  "search": {
+    "rounds": [
+      {
+        "build": "B",
+        "round": -1,
+        "warmup": true,
+        "samples": [
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0228,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 76,
+            "build": "B",
+            "round": -1,
+            "warmup": true
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0075,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 4,
+            "build": "B",
+            "round": -1,
+            "warmup": true
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0088,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 8,
+            "build": "B",
+            "round": -1,
+            "warmup": true
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0068,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "B",
+            "round": -1,
+            "warmup": true
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0091,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "B",
+            "round": -1,
+            "warmup": true
+          }
+        ],
+        "bridge_peak_rss_bytes": 180125696,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/bridge-B-r-1-warmup.log",
+        "error": null
+      },
+      {
+        "build": "A",
+        "round": -1,
+        "warmup": true,
+        "samples": [
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0154,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 73,
+            "build": "A",
+            "round": -1,
+            "warmup": true
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0058,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 3,
+            "build": "A",
+            "round": -1,
+            "warmup": true
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0058,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 6,
+            "build": "A",
+            "round": -1,
+            "warmup": true
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0051,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "A",
+            "round": -1,
+            "warmup": true
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0085,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "A",
+            "round": -1,
+            "warmup": true
+          }
+        ],
+        "bridge_peak_rss_bytes": 180043776,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/bridge-A-r-1-warmup.log",
+        "error": null
+      },
+      {
+        "build": "A",
+        "round": 0,
+        "warmup": false,
+        "samples": [
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0156,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 73,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0058,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 3,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0064,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 6,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0054,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0083,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0167,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 73,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0054,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 3,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0058,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 6,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0052,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.008,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0142,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 73,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.005,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 3,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0051,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 6,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0046,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0075,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "A",
+            "round": 0,
+            "warmup": false
+          }
+        ],
+        "bridge_peak_rss_bytes": 181075968,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/bridge-A-r0.log",
+        "error": null
+      },
+      {
+        "build": "B",
+        "round": 0,
+        "warmup": false,
+        "samples": [
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0152,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 76,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0054,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 4,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0059,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 8,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0052,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0086,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0157,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 76,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0061,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 4,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.006,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 8,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0059,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0085,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0159,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 76,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0063,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 4,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0068,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 8,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0051,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0085,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "B",
+            "round": 0,
+            "warmup": false
+          }
+        ],
+        "bridge_peak_rss_bytes": 179978240,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/bridge-B-r0.log",
+        "error": null
+      },
+      {
+        "build": "B",
+        "round": 1,
+        "warmup": false,
+        "samples": [
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0148,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 76,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0056,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 4,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0055,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 8,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0047,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.008,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0144,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 76,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0054,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 4,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0056,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 8,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0049,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0081,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0149,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 76,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0057,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 4,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0055,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 8,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0056,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0089,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "B",
+            "round": 1,
+            "warmup": false
+          }
+        ],
+        "bridge_peak_rss_bytes": 180060160,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/bridge-B-r1.log",
+        "error": null
+      },
+      {
+        "build": "A",
+        "round": 1,
+        "warmup": false,
+        "samples": [
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0154,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 73,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0064,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 3,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0057,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 6,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0049,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0081,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0139,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 73,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0051,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 3,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0053,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 6,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0047,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0077,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0147,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 73,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0053,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 3,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0052,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 6,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0044,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0076,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "A",
+            "round": 1,
+            "warmup": false
+          }
+        ],
+        "bridge_peak_rss_bytes": 179994624,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/bridge-A-r1.log",
+        "error": null
+      },
+      {
+        "build": "A",
+        "round": 2,
+        "warmup": false,
+        "samples": [
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0161,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 73,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0062,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 3,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.007,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 6,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0054,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0089,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0159,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 73,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0061,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 3,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0059,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 6,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.005,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0082,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0161,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 73,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0059,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 3,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0057,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 6,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0049,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0079,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "A",
+            "round": 2,
+            "warmup": false
+          }
+        ],
+        "bridge_peak_rss_bytes": 180076544,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/bridge-A-r2.log",
+        "error": null
+      },
+      {
+        "build": "B",
+        "round": 2,
+        "warmup": false,
+        "samples": [
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0157,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 76,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0056,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 4,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0059,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 8,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0049,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0085,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0153,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 76,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0057,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 4,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0055,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 8,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0047,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0078,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0147,
+            "total_sessions": 66,
+            "evaluated_sessions": 66,
+            "complete": true,
+            "items": 50,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 76,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "rare",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0053,
+            "total_sessions": 2,
+            "evaluated_sessions": 2,
+            "complete": true,
+            "items": 2,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 4,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "phrase",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0052,
+            "total_sessions": 4,
+            "evaluated_sessions": 4,
+            "complete": true,
+            "items": 4,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 8,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "not_common",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0046,
+            "total_sessions": 16,
+            "evaluated_sessions": 16,
+            "complete": true,
+            "items": 16,
+            "membership_source": "session_scope_docs",
+            "region_rows_loaded": 0,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          },
+          {
+            "query": "tool_bash",
+            "ok": true,
+            "error_kind": null,
+            "latency_s": 0.0075,
+            "total_sessions": 42,
+            "evaluated_sessions": 42,
+            "complete": true,
+            "items": 42,
+            "membership_source": "region_literals",
+            "region_rows_loaded": 218,
+            "build": "B",
+            "round": 2,
+            "warmup": false
+          }
+        ],
+        "bridge_peak_rss_bytes": 180158464,
+        "log": "/private/tmp/cass-ab-smoke-aa/logs/bridge-B-r2.log",
+        "error": null
+      }
+    ],
+    "aggregate": {
+      "common": {
+        "A": {
+          "samples": 9,
+          "refused": 0,
+          "median_s": 0.0156,
+          "p90_s": 0.0167,
+          "mean_s": 0.0154,
+          "min_s": 0.0139,
+          "max_s": 0.0167,
+          "complete": "True",
+          "total_sessions_values": [
+            66
+          ],
+          "evaluated_sessions_values": [
+            66
+          ]
+        },
+        "B": {
+          "samples": 9,
+          "refused": 0,
+          "median_s": 0.0152,
+          "p90_s": 0.0159,
+          "mean_s": 0.0152,
+          "min_s": 0.0144,
+          "max_s": 0.0159,
+          "complete": "True",
+          "total_sessions_values": [
+            66
+          ],
+          "evaluated_sessions_values": [
+            66
+          ]
+        }
+      },
+      "rare": {
+        "A": {
+          "samples": 9,
+          "refused": 0,
+          "median_s": 0.0058,
+          "p90_s": 0.0064,
+          "mean_s": 0.0057,
+          "min_s": 0.005,
+          "max_s": 0.0064,
+          "complete": "True",
+          "total_sessions_values": [
+            2
+          ],
+          "evaluated_sessions_values": [
+            2
+          ]
+        },
+        "B": {
+          "samples": 9,
+          "refused": 0,
+          "median_s": 0.0056,
+          "p90_s": 0.0063,
+          "mean_s": 0.0057,
+          "min_s": 0.0053,
+          "max_s": 0.0063,
+          "complete": "True",
+          "total_sessions_values": [
+            2
+          ],
+          "evaluated_sessions_values": [
+            2
+          ]
+        }
+      },
+      "phrase": {
+        "A": {
+          "samples": 9,
+          "refused": 0,
+          "median_s": 0.0057,
+          "p90_s": 0.007,
+          "mean_s": 0.0058,
+          "min_s": 0.0051,
+          "max_s": 0.007,
+          "complete": "True",
+          "total_sessions_values": [
+            4
+          ],
+          "evaluated_sessions_values": [
+            4
+          ]
+        },
+        "B": {
+          "samples": 9,
+          "refused": 0,
+          "median_s": 0.0056,
+          "p90_s": 0.0068,
+          "mean_s": 0.0058,
+          "min_s": 0.0052,
+          "max_s": 0.0068,
+          "complete": "True",
+          "total_sessions_values": [
+            4
+          ],
+          "evaluated_sessions_values": [
+            4
+          ]
+        }
+      },
+      "not_common": {
+        "A": {
+          "samples": 9,
+          "refused": 0,
+          "median_s": 0.0049,
+          "p90_s": 0.0054,
+          "mean_s": 0.0049,
+          "min_s": 0.0044,
+          "max_s": 0.0054,
+          "complete": "True",
+          "total_sessions_values": [
+            16
+          ],
+          "evaluated_sessions_values": [
+            16
+          ]
+        },
+        "B": {
+          "samples": 9,
+          "refused": 0,
+          "median_s": 0.0049,
+          "p90_s": 0.0059,
+          "mean_s": 0.0051,
+          "min_s": 0.0046,
+          "max_s": 0.0059,
+          "complete": "True",
+          "total_sessions_values": [
+            16
+          ],
+          "evaluated_sessions_values": [
+            16
+          ]
+        }
+      },
+      "tool_bash": {
+        "A": {
+          "samples": 9,
+          "refused": 0,
+          "median_s": 0.008,
+          "p90_s": 0.0089,
+          "mean_s": 0.008,
+          "min_s": 0.0075,
+          "max_s": 0.0089,
+          "complete": "True",
+          "total_sessions_values": [
+            42
+          ],
+          "evaluated_sessions_values": [
+            42
+          ]
+        },
+        "B": {
+          "samples": 9,
+          "refused": 0,
+          "median_s": 0.0085,
+          "p90_s": 0.0089,
+          "mean_s": 0.0083,
+          "min_s": 0.0075,
+          "max_s": 0.0089,
+          "complete": "True",
+          "total_sessions_values": [
+            42
+          ],
+          "evaluated_sessions_values": [
+            42
+          ]
+        }
+      }
+    },
+    "counts": {
+      "common": {
+        "counts_match": true,
+        "lane": {
+          "A": "completed",
+          "B": "completed"
+        },
+        "expected": 66,
+        "measured": {
+          "A": 66,
+          "B": 66
+        },
+        "expected_match": true,
+        "refused": {
+          "A": 0,
+          "B": 0
+        },
+        "complete": {
+          "A": "True",
+          "B": "True"
+        }
+      },
+      "rare": {
+        "counts_match": true,
+        "lane": {
+          "A": "completed",
+          "B": "completed"
+        },
+        "expected": 2,
+        "measured": {
+          "A": 2,
+          "B": 2
+        },
+        "expected_match": true,
+        "refused": {
+          "A": 0,
+          "B": 0
+        },
+        "complete": {
+          "A": "True",
+          "B": "True"
+        }
+      },
+      "phrase": {
+        "counts_match": true,
+        "lane": {
+          "A": "completed",
+          "B": "completed"
+        },
+        "expected": 4,
+        "measured": {
+          "A": 4,
+          "B": 4
+        },
+        "expected_match": true,
+        "refused": {
+          "A": 0,
+          "B": 0
+        },
+        "complete": {
+          "A": "True",
+          "B": "True"
+        }
+      },
+      "not_common": {
+        "counts_match": true,
+        "lane": {
+          "A": "completed",
+          "B": "completed"
+        },
+        "expected": 16,
+        "measured": {
+          "A": 16,
+          "B": 16
+        },
+        "expected_match": true,
+        "refused": {
+          "A": 0,
+          "B": 0
+        },
+        "complete": {
+          "A": "True",
+          "B": "True"
+        }
+      },
+      "tool_bash": {
+        "counts_match": true,
+        "lane": {
+          "A": "completed",
+          "B": "completed"
+        },
+        "expected": 42,
+        "measured": {
+          "A": 42,
+          "B": 42
+        },
+        "expected_match": true,
+        "refused": {
+          "A": 0,
+          "B": 0
+        },
+        "complete": {
+          "A": "True",
+          "B": "True"
+        }
+      }
+    }
+  },
+  "deltas_pct": {
+    "index_full_wall_pct": 2.04,
+    "index_incr_wall_pct": 2.22,
+    "search_common_median_pct": 2.56,
+    "search_common_p90_pct": 4.79,
+    "search_rare_median_pct": 3.45,
+    "search_rare_p90_pct": 1.56,
+    "search_phrase_median_pct": 1.75,
+    "search_phrase_p90_pct": 2.86,
+    "search_not_common_median_pct": 0.0,
+    "search_not_common_p90_pct": 8.47,
+    "search_tool_bash_median_pct": 5.88,
+    "search_tool_bash_p90_pct": 0.0
+  },
+  "verdict": {
+    "all_runs_ok": true,
+    "all_counts_match": true
+  }
+}
