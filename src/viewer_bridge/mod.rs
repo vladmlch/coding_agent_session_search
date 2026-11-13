@@ -822,11 +822,20 @@ impl Session {
         limit: usize,
     ) -> Result<Value> {
         protocol::page_limit(limit)?;
+        let mut slot = self.identity_index.take();
         let archive = self.archive()?;
-        let (mut page, revision) = archive.snapshot(|connection| {
-            query::list_sessions(connection, filters, sort, pin_first, cursor, limit)
-        })?;
-        page["archive_stamp"] = serde_json::to_value(&archive.stamp)?;
+        let result = archive.snapshot_stamped(|connection, revision| {
+            query::list_sessions(
+                connection, filters, sort, pin_first, cursor, limit, &mut slot, revision,
+            )
+        });
+        let stamp = archive.stamp.clone();
+        // Keep-on-error, the same rule the detail lanes follow: the index
+        // is keyed to the snapshot's `before` token, so a failed page can
+        // never make it serve an identity the archive no longer proves.
+        self.identity_index = slot;
+        let (mut page, revision) = result?;
+        page["archive_stamp"] = serde_json::to_value(&stamp)?;
         page["catalog_revision"] = revision.into();
         Ok(page)
     }

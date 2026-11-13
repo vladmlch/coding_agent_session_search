@@ -1612,6 +1612,7 @@ fn cursor_tuple(row: &OrderRow, pin_first: bool) -> Cursor {
 /// page body: `items` + `next_cursor` + `generation` + `complete` +
 /// `warnings`. `Session::list_sessions` wraps it in the snapshot
 /// discipline (`archive_stamp`/`catalog_revision` come from the caller).
+#[allow(clippy::too_many_arguments)]
 pub fn list_sessions(
     connection: &Connection,
     filters: &ListFilters,
@@ -1619,6 +1620,8 @@ pub fn list_sessions(
     pin_first: Option<bool>,
     cursor: Option<&str>,
     limit: usize,
+    identity_index: &mut Option<identity::ReverseIdentityIndex>,
+    revision: &str,
 ) -> Result<Value> {
     if !revisions::extensions_installed(connection)? {
         return Err(refuse(
@@ -1640,17 +1643,54 @@ pub fn list_sessions(
     // means the order cannot be computed honestly.
     run_tie_probe(connection, &resolved)?;
 
-    // Phase A: the persisted order-key scan — one indexed stream (two
-    // merged streams for pin_first=false) bounded at limit+1 rows.
-    let ordered = run_order_streams(
-        connection,
-        &resolved,
-        key,
-        desc,
-        pin_first,
-        cursor.as_ref(),
-        limit,
-    )?;
+    // Phase A: the persisted order-key scan, folded onto one row per
+    // logical session. Codex continuation rollouts share their thread's
+    // verified public id (the order tie key), so the scan over-fetches and
+    // keeps only each public id's reverse-identity representative — the
+    // lowest canonical id the archive verifies for it, the same row a
+    // public-id detail lookup opens. That representative is a global
+    // property of the public id, so no page repeats it and the choice never
+    // depends on the page window. The reverse index is revision-bound and
+    // cached across requests, so the per-row test is an in-memory lookup
+    // once the queried source scope is filled.
+    let mut ordered: Vec<OrderRow> = Vec::new();
+    let mut fetch_cursor = cursor.clone();
+    let fetch_size = limit.max(1);
+    loop {
+        let batch = run_order_streams(
+            connection,
+            &resolved,
+            key,
+            desc,
+            pin_first,
+            fetch_cursor.as_ref(),
+            fetch_size,
+        )?;
+        let batch_len = batch.len();
+        for row in batch {
+            fetch_cursor = Some(cursor_tuple(&row, pin_first));
+            let representative = if row.tie.is_empty() {
+                true
+            } else {
+                identity::resolve_conversation_id_cached(
+                    connection,
+                    &row.tie,
+                    identity_index,
+                    revision,
+                )?
+                .is_none_or(|id| id == row.id)
+            };
+            if representative {
+                ordered.push(row);
+                if ordered.len() > limit {
+                    break;
+                }
+            }
+        }
+        if ordered.len() > limit || batch_len <= fetch_size {
+            break;
+        }
+    }
 
     let generation = revisions::generation(connection)?;
     if ordered.is_empty() {
