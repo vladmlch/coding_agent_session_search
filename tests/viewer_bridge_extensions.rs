@@ -2181,6 +2181,87 @@ fn list_sessions_default_order_stable_pagination_tail_precedence() -> Result<()>
     bridge.shutdown()
 }
 
+/// A Codex thread continued into a `rollout-<ts>-<thread>_<rollout>.jsonl`
+/// file is ONE logical session: both canonical rows verify to `codex:<thread>`
+/// and reverse identity binds the thread to its lowest canonical row. Browse
+/// must group the continuation onto that representative BEFORE cutting page
+/// boundaries, so no public id repeats anywhere across the pagination (the
+/// frontend's `duplicate_session_page` / 502 `invalid_cass_output` guard).
+#[test]
+fn list_sessions_groups_codex_continuation_rollouts_to_one_public_id() -> Result<()> {
+    const A: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const B: &str = "99999999-8888-7777-6666-555555555555";
+    let original =
+        format!("/home/u/.codex/sessions/2024/05/06/rollout-2024-05-06T10-00-00-{A}.jsonl");
+    let continuation =
+        format!("/home/u/.codex/sessions/2024/05/06/rollout-2024-05-06T11-00-00-{A}_{B}.jsonl");
+    let fixtures = vec![
+        SeedConversation::new(
+            1,
+            "codex",
+            &original,
+            &format!("2024/05/06/rollout-2024-05-06T10-00-00-{A}"),
+        )
+        .started_at(Some(100))
+        .agent_messages(Some(1_000), 1),
+        SeedConversation::new(
+            2,
+            "codex",
+            &continuation,
+            &format!("2024/05/06/rollout-2024-05-06T11-00-00-{A}_{B}"),
+        )
+        .started_at(Some(200))
+        .agent_messages(Some(2_000), 1),
+        SeedConversation::new(3, "gemini", "/missing/fixture-3.jsonl", "fixture-3")
+            .started_at(Some(150))
+            .agent_messages(Some(1_500), 1),
+    ];
+    let mut bridge = BridgeHarness::with_seed(&fixtures, &[])?;
+    init_extensions(&bridge)?;
+
+    let mut seen_ids = Vec::new();
+    let mut seen_public = Vec::new();
+    let mut cursor = Value::Null;
+    for page_no in 0..4 {
+        let request = match cursor.as_str() {
+            Some(cursor) => json!({"op":"list_sessions","limit":2,"cursor":cursor}),
+            None => json!({"op":"list_sessions","limit":2}),
+        };
+        let page = bridge.exchange(request)?;
+        ensure!(page["ok"] == true, "page {page_no} refused: {page}");
+        for item in page["result"]["items"].as_array().expect("items") {
+            seen_ids.push(item["conversation_id"].as_i64().expect("conversation_id"));
+            seen_public.push(item["public_id"].as_str().expect("public_id").to_owned());
+        }
+        cursor = page["result"]["next_cursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+
+    let mut unique = seen_public.clone();
+    unique.sort();
+    unique.dedup();
+    ensure!(
+        unique.len() == seen_public.len(),
+        "a public id repeated across the pagination: {seen_public:?}"
+    );
+    let codex_public = format!("codex:{A}");
+    ensure!(
+        seen_public.iter().filter(|p| **p == codex_public).count() == 1,
+        "the codex thread must surface exactly once: {seen_public:?}"
+    );
+    ensure!(
+        seen_ids.contains(&1),
+        "the representative (lowest canonical id) row must surface: {seen_ids:?}"
+    );
+    ensure!(
+        !seen_ids.contains(&2),
+        "the continuation row must fold into its representative: {seen_ids:?}"
+    );
+    bridge.shutdown()
+}
+
 #[test]
 fn list_sessions_filters_and_typed_refusals() -> Result<()> {
     let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;

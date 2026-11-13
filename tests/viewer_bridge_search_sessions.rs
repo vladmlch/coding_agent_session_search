@@ -491,6 +491,78 @@ fn assert_members(page: &Value, expected: &[i64]) -> Result<()> {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Codex writes a continuation rollout `rollout-<ts>-<A>_<B>.jsonl` beside
+/// the original `rollout-<ts>-<A>.jsonl`; both verify to the one thread
+/// identity `codex:<A>`. When both segments match a query, search must
+/// emit that logical session once — folded onto the lowest matched
+/// canonical id — never two items carrying the same public id.
+#[test]
+fn search_sessions_groups_codex_continuation_rollouts_to_one_public_id() -> Result<()> {
+    let fixture = vec![
+        GoldSession {
+            id: 1,
+            agent: "codex",
+            source_id: "local",
+            external_id: "2024/05/06/rollout-2024-05-06T10-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            source_path: "/home/u/.codex/sessions/2024/05/06/rollout-2024-05-06T10-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl",
+            workspace: Some("/data/projects/alpha"),
+            title: "codex thread",
+            started_at: Some(1_000),
+            ended_at: Some(2_000),
+            origin_host: None,
+            metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+            messages: vec![(0, MessageRole::User, "fluxcap original turn", None)],
+        },
+        GoldSession {
+            id: 2,
+            agent: "codex",
+            source_id: "local",
+            external_id: "2024/05/06/rollout-2024-05-06T11-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee_99999999-8888-7777-6666-555555555555",
+            source_path: "/home/u/.codex/sessions/2024/05/06/rollout-2024-05-06T11-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee_99999999-8888-7777-6666-555555555555.jsonl",
+            workspace: Some("/data/projects/alpha"),
+            title: "codex thread continued",
+            started_at: Some(2_000),
+            ended_at: Some(3_000),
+            origin_host: None,
+            metadata: json!({"cass":{"origin":{"kind":"local"}}}),
+            messages: vec![(0, MessageRole::User, "fluxcap continuation turn", None)],
+        },
+    ];
+    let mut bridge = gold_harness_full(&fixture, &[])?;
+    let page = search(&mut bridge, json!({"query":"fluxcap","limit":10}))?;
+    ensure!(page["ok"] == true, "search refused: {page}");
+    let items = page["result"]["items"].as_array().expect("items array");
+    let public: Vec<&str> = items
+        .iter()
+        .map(|item| item["public_id"].as_str().expect("public_id"))
+        .collect();
+    let mut unique = public.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    ensure!(
+        unique.len() == public.len(),
+        "search repeated a public id across the page: {public:?}"
+    );
+    ensure!(
+        public
+            .iter()
+            .filter(|p| **p == "codex:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+            .count()
+            == 1,
+        "the codex thread must appear exactly once: {public:?}"
+    );
+    ensure!(
+        ids(&page) == [1],
+        "continuation folds onto the lowest matched canonical id: {:?}",
+        ids(&page)
+    );
+    ensure!(
+        page["result"]["total_sessions"] == 1,
+        "total_sessions counts logical sessions, not rollout rows: {page}"
+    );
+    bridge.shutdown()
+}
+
 #[test]
 fn search_sessions_requires_extension_profile() -> Result<()> {
     let mut bridge = BridgeHarness::with_conversations(&[])?;
