@@ -208,7 +208,11 @@ struct FactsRow {
     file_fact_count: Option<i64>,
     compaction_count: Option<i64>,
     model_set: Option<Vec<String>>,
+    model_set_truncated: bool,
+    model_set_bytes: Option<i64>,
     first_prompt: Option<String>,
+    first_prompt_truncated: bool,
+    first_prompt_bytes: Option<i64>,
     /// `false` when the installed extension schema predates the
     /// `first_prompt` column — the value is then reported `unknown`, never
     /// synthesized from messages (native semantics need the projected
@@ -249,9 +253,17 @@ fn read_facts(connection: &Connection, conversation_id: i64) -> Result<Option<Fa
     let coverage: Option<Value> = row
         .get_typed::<Option<String>>(3)?
         .and_then(|text| serde_json::from_str(&text).ok());
-    let model_set: Option<Vec<String>> = row
-        .get_typed::<Option<String>>(16)?
-        .and_then(|text| serde_json::from_str(&text).ok());
+    let model_set_json: Option<String> = row.get_typed(16)?;
+    let (model_set, model_set_truncated, model_set_bytes) = facts_bag::bound_json_preview(
+        model_set_json.clone(),
+        model_set_json.and_then(|text| serde_json::from_str(&text).ok()),
+    );
+    let (first_prompt, first_prompt_truncated, first_prompt_bytes) =
+        facts_bag::bound_text_preview(if first_prompt_column {
+            row.get_typed(18)?
+        } else {
+            None
+        });
     Ok(Some(FactsRow {
         extractor_version: row.get_typed(0)?,
         source_revision: row.get_typed(1)?,
@@ -270,11 +282,11 @@ fn read_facts(connection: &Connection, conversation_id: i64) -> Result<Option<Fa
         file_fact_count: row.get_typed(14)?,
         compaction_count: row.get_typed(15)?,
         model_set,
-        first_prompt: if first_prompt_column {
-            row.get_typed(18)?
-        } else {
-            None
-        },
+        model_set_truncated,
+        model_set_bytes,
+        first_prompt,
+        first_prompt_truncated,
+        first_prompt_bytes,
         first_prompt_column,
         extracted_at_ms: row.get_typed(17)?,
     }))
@@ -282,8 +294,9 @@ fn read_facts(connection: &Connection, conversation_id: i64) -> Result<Option<Fa
 
 impl FactsRow {
     /// The facts half of the shared `metrics` bag — the same field set
-    /// the list/recent lanes emit. `first_prompt` keeps their byte
-    /// guard: an absurd payload stays unknown, never wire bytes.
+    /// the list/recent lanes emit. `first_prompt`/`model_set` are the same
+    /// bounded previews with their truncation facts; the full text stays
+    /// reachable through the message/source lanes.
     fn fact_bag(&self) -> facts_bag::SessionFactBag {
         facts_bag::SessionFactBag {
             turn_count: self.turn_count,
@@ -296,11 +309,11 @@ impl FactsRow {
             file_fact_count: self.file_fact_count,
             compaction_count: self.compaction_count,
             model_set: self.model_set.clone(),
-            first_prompt: self
-                .first_prompt
-                .as_ref()
-                .filter(|text| text.len() as i64 <= TEXT_GUARD_BYTES)
-                .cloned(),
+            model_set_truncated: self.model_set_truncated,
+            model_set_bytes: self.model_set_bytes,
+            first_prompt: self.first_prompt.clone(),
+            first_prompt_truncated: self.first_prompt_truncated,
+            first_prompt_bytes: self.first_prompt_bytes,
             ..Default::default()
         }
     }
@@ -341,14 +354,27 @@ fn read_metrics(
     };
     let tools_used_json: Option<String> = row.get_typed(5)?;
     let task_breakdown_json: Option<String> = row.get_typed(6)?;
+    let (tools_used, tools_used_truncated, tools_used_bytes) = facts_bag::bound_json_preview(
+        tools_used_json.clone(),
+        facts_bag::decode_string_list(tools_used_json.as_deref()),
+    );
+    let (task_breakdown, task_breakdown_truncated, task_breakdown_bytes) =
+        facts_bag::bound_json_preview(
+            task_breakdown_json.clone(),
+            task_breakdown_json.and_then(|text| serde_json::from_str(&text).ok()),
+        );
     Ok(Some(facts_bag::SessionFactBag {
         ttfe_seconds: row.get_typed(0)?,
         one_shot_rate: row.get_typed(1)?,
         retries_count: row.get_typed(2)?,
         self_corrections_count: row.get_typed(3)?,
         user_corrections_count: row.get_typed(4)?,
-        tools_used: facts_bag::decode_string_list(tools_used_json.as_deref()),
-        task_breakdown: task_breakdown_json.and_then(|text| serde_json::from_str(&text).ok()),
+        tools_used,
+        tools_used_truncated,
+        tools_used_bytes,
+        task_breakdown,
+        task_breakdown_truncated,
+        task_breakdown_bytes,
         health_score: row.get_typed(7)?,
         health_grade: row.get_typed(8)?,
         health_issues_count: row.get_typed(9)?,

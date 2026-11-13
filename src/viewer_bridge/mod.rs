@@ -716,9 +716,10 @@ impl Session {
                 "lexical_tracking":"bound",
             },
             "generation":extension.generation,
-            "features":["readonly","catalog_page","session","messages_page","rank_begin","rank_next","rank_cancel","reload","get_annotations","list_sessions","get_session_details","get_tool_output","search_sessions","projects","dashboard","health","changes_since","subscribe_events"],
+            "features":["readonly","catalog_page","session","messages_page","rank_begin","rank_next","rank_cancel","reload","get_annotations","list_sessions","list_annotations","get_session_details","get_tool_output","search_sessions","projects","dashboard","health","changes_since","subscribe_events"],
             "limits":{"request_bytes":protocol::REQUEST_BYTES,"response_bytes":protocol::RESPONSE_BYTES,
-                "page_limit":protocol::PAGE_LIMIT,"max_active_cursors":protocol::MAX_CURSORS,
+                "page_limit":protocol::PAGE_LIMIT,"preview_bytes":protocol::PREVIEW_BYTES,
+                "max_active_cursors":protocol::MAX_CURSORS,
                 "default_timeout_ms":protocol::TIMEOUT_MS,"max_raw_hits":protocol::MAX_RAW_HITS,
                 "cursor_idle_ttl_ms":60000,"max_readers":32,
                 // The deadline contract, client-visible: how long the
@@ -834,6 +835,23 @@ impl Session {
         // is keyed to the snapshot's `before` token, so a failed page can
         // never make it serve an identity the archive no longer proves.
         self.identity_index = slot;
+        let (mut page, revision) = result?;
+        page["archive_stamp"] = serde_json::to_value(&stamp)?;
+        page["catalog_revision"] = revision.into();
+        Ok(page)
+    }
+
+    /// `cass_owned_queries_v1` read op: the annotations-only collection
+    /// read — a keyset page over `viewer_annotations`, never hydrating
+    /// session summary text. Stamped under the same snapshot discipline as
+    /// the list lane so the page and its provenance share one generation.
+    fn list_annotations(&mut self, cursor: Option<&str>, limit: usize) -> Result<Value> {
+        protocol::page_limit(limit)?;
+        let archive = self.archive()?;
+        let result = archive.snapshot_stamped(|connection, _revision| {
+            query::list_annotations(connection, cursor, limit)
+        });
+        let stamp = archive.stamp.clone();
         let (mut page, revision) = result?;
         page["archive_stamp"] = serde_json::to_value(&stamp)?;
         page["catalog_revision"] = revision.into();
@@ -1087,6 +1105,9 @@ impl Session {
                 cursor.as_deref(),
                 limit,
             )?,
+            Request::ListAnnotations { cursor, limit, .. } => {
+                self.list_annotations(cursor.as_deref(), limit)?
+            }
             Request::GetSessionDetails {
                 conversation_id,
                 public_id,

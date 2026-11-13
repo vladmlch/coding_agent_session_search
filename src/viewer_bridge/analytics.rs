@@ -1030,6 +1030,26 @@ fn recent_sessions(
         let model_set_json: Option<String> = row.get_typed(36)?;
         let tools_used_json: Option<String> = row.get_typed(43)?;
         let task_breakdown_json: Option<String> = row.get_typed(44)?;
+        // Bounded previews with truncation facts — the same bag contract
+        // the list/detail lanes emit, so one oversized session never
+        // bloats the recent slice.
+        let (model_set, model_set_truncated, model_set_bytes) = facts_bag::bound_json_preview(
+            model_set_json.clone(),
+            facts_bag::decode_string_list(model_set_json.as_deref()),
+        );
+        let (first_prompt, first_prompt_truncated, first_prompt_bytes) =
+            facts_bag::bound_text_preview(row.get_typed(37)?);
+        let (tools_used, tools_used_truncated, tools_used_bytes) = facts_bag::bound_json_preview(
+            tools_used_json.clone(),
+            facts_bag::decode_string_list(tools_used_json.as_deref()),
+        );
+        let (task_breakdown, task_breakdown_truncated, task_breakdown_bytes) =
+            facts_bag::bound_json_preview(
+                task_breakdown_json.clone(),
+                task_breakdown_json.and_then(|text| serde_json::from_str(&text).ok()),
+            );
+        let (title_preview, title_truncated, title_bytes) =
+            facts_bag::bound_text_preview(row.get_typed(7)?);
         let bag = facts_bag::SessionFactBag {
             turn_count: row.get_typed(27)?,
             step_count: row.get_typed(28)?,
@@ -1040,15 +1060,23 @@ fn recent_sessions(
             tool_calls_with_exit_status: row.get_typed(33)?,
             file_fact_count: row.get_typed(34)?,
             compaction_count: row.get_typed(35)?,
-            model_set: facts_bag::decode_string_list(model_set_json.as_deref()),
-            first_prompt: row.get_typed(37)?,
+            model_set,
+            model_set_truncated,
+            model_set_bytes,
+            first_prompt,
+            first_prompt_truncated,
+            first_prompt_bytes,
             ttfe_seconds: row.get_typed(38)?,
             one_shot_rate: row.get_typed(39)?,
             retries_count: row.get_typed(40)?,
             self_corrections_count: row.get_typed(41)?,
             user_corrections_count: row.get_typed(42)?,
-            tools_used: facts_bag::decode_string_list(tools_used_json.as_deref()),
-            task_breakdown: task_breakdown_json.and_then(|text| serde_json::from_str(&text).ok()),
+            tools_used,
+            tools_used_truncated,
+            tools_used_bytes,
+            task_breakdown,
+            task_breakdown_truncated,
+            task_breakdown_bytes,
             health_score: row.get_typed(45)?,
             health_grade: row.get_typed(46)?,
             health_issues_count: row.get_typed(47)?,
@@ -1063,7 +1091,9 @@ fn recent_sessions(
             "source_path": row.get_typed::<Option<String>>(3)?,
             "origin_host": origin_host,
             "source_kind": row.get_typed::<Option<String>>(5)?,
-            "title": row.get_typed::<Option<String>>(7)?,
+            "title": title_preview,
+            "title_truncated": title_truncated,
+            "title_bytes": title_bytes,
             "custom_title": row.get_typed::<Option<String>>(15)?,
             "is_pinned": row.get_typed::<i64>(14)? != 0,
             "started_at_ms": row.get_typed::<Option<i64>>(8)?,

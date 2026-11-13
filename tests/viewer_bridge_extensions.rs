@@ -8088,3 +8088,216 @@ fn hard_backstop_still_kills_a_genuinely_stuck_request() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Oversized free-text previews must not refuse a whole page (413 fix).
+// One >1 MiB first prompt / title lists with a bounded preview + an explicit
+// truncation fact; annotations are never cut and still refuse typed when they
+// alone exceed the row profile; `list_annotations` reads annotations without
+// hydrating summary text.
+// ---------------------------------------------------------------------------
+
+/// Seed a `viewer_session_facts` row carrying `first_prompt` for one session.
+fn seed_first_prompt(bridge: &BridgeHarness, conversation_id: i64, prompt: &str) -> Result<()> {
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    writer.execute_with_params(
+        "INSERT INTO viewer_session_facts \
+         (conversation_id, extractor_version, source_revision, coverage_state, first_prompt) \
+         VALUES (?1, 1, 42, 'partial', ?2)",
+        &param_slice_to_values(params![conversation_id, prompt]),
+    )?;
+    drop(writer);
+    Ok(())
+}
+
+#[test]
+fn list_sessions_oversized_first_prompt_lists_with_bounded_preview() -> Result<()> {
+    let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
+    init_extensions(&bridge)?;
+    // The live archive condition: one Claude session whose first user message
+    // is >1 MiB refused every unfiltered/claude list page at row 34.
+    let huge_len = 1_365_611_i64;
+    seed_first_prompt(&bridge, 2, &"x".repeat(huge_len as usize))?;
+    seed_first_prompt(&bridge, 1, "short prompt")?;
+
+    let page = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(
+        page["ok"] == true,
+        "one oversized first prompt must not refuse the page: {page}"
+    );
+    let items = page["result"]["items"].as_array().expect("items");
+    ensure!(items.len() == 5, "every row must survive the page: {page}");
+    let big = items
+        .iter()
+        .find(|i| i["conversation_id"] == json!(2))
+        .expect("conv 2 present");
+    let metrics = &big["metrics"];
+    let preview = metrics["first_prompt"].as_str().expect("preview text");
+    ensure!(
+        preview.len() <= 16 * 1024,
+        "preview must be bounded, got {} bytes",
+        preview.len()
+    );
+    ensure!(
+        metrics["first_prompt_truncated"] == json!(true),
+        "truncation fact must be explicit: {metrics}"
+    );
+    ensure!(
+        metrics["first_prompt_bytes"] == json!(huge_len),
+        "original byte length must be reported: {metrics}"
+    );
+    // A normal row keeps its full prompt and reports no truncation.
+    let small = items
+        .iter()
+        .find(|i| i["conversation_id"] == json!(1))
+        .expect("conv 1 present");
+    ensure!(small["metrics"]["first_prompt"] == json!("short prompt"));
+    ensure!(small["metrics"]["first_prompt_truncated"] == json!(false));
+    // The byte fact describes the truncation event: a kept prompt is the
+    // full text, so no original-length fact is emitted.
+    ensure!(small["metrics"]["first_prompt_bytes"] == json!(null));
+    bridge.shutdown()
+}
+
+#[test]
+fn list_sessions_oversized_title_lists_with_bounded_preview() -> Result<()> {
+    let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
+    init_extensions(&bridge)?;
+    let huge_len = 1_200_000_i64;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    writer.execute_with_params(
+        "UPDATE conversations SET title=?1 WHERE id=3",
+        &param_slice_to_values(params!["t".repeat(huge_len as usize)]),
+    )?;
+    drop(writer);
+    let page = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(
+        page["ok"] == true,
+        "oversized title must not refuse: {page}"
+    );
+    let items = page["result"]["items"].as_array().expect("items");
+    let big = items
+        .iter()
+        .find(|i| i["conversation_id"] == json!(3))
+        .expect("conv 3 present");
+    let title = big["title"].as_str().expect("title");
+    ensure!(
+        title.len() <= 16 * 1024,
+        "bounded title, got {}",
+        title.len()
+    );
+    ensure!(big["title_truncated"] == json!(true));
+    ensure!(big["title_bytes"] == json!(huge_len));
+    bridge.shutdown()
+}
+
+#[test]
+fn list_sessions_annotation_overflow_still_refuses_typed() -> Result<()> {
+    let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
+    init_extensions(&bridge)?;
+    // Annotations are never truncated: a note alone past the row profile keeps
+    // the strict typed refusal instead of silently cutting user text.
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    writer.execute_with_params(
+        "INSERT INTO viewer_annotations (conversation_id,is_pinned,notes,revision) \
+         VALUES (4,0,?1,1)",
+        &param_slice_to_values(params!["n".repeat(600 * 1024)]),
+    )?;
+    drop(writer);
+    let page = bridge.exchange(json!({"op":"list_sessions","limit":10}))?;
+    ensure!(
+        page["ok"] == false,
+        "annotation overflow must refuse: {page}"
+    );
+    ensure!(
+        page["error"]["kind"] == "canonical_payload_too_large",
+        "typed refusal stays: {page}"
+    );
+    bridge.shutdown()
+}
+
+#[test]
+fn list_annotations_reads_annotations_without_summary_text() -> Result<()> {
+    let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
+    init_extensions(&bridge)?;
+    seed_annotations(&bridge)?; // pin + tag on conv 4
+    // A huge first prompt must not break the annotations-only collection read.
+    seed_first_prompt(&bridge, 2, &"x".repeat(1_365_611))?;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    writer.execute(
+        "INSERT INTO viewer_annotations (conversation_id,is_pinned,custom_title,notes,revision) \
+         VALUES (2,0,'big prompt session','a note',1)",
+    )?;
+    drop(writer);
+
+    let page = bridge.exchange(json!({"op":"list_annotations","limit":256}))?;
+    ensure!(
+        page["ok"] == true,
+        "annotations read must survive a huge prompt: {page}"
+    );
+    let items = page["result"]["items"].as_array().expect("items");
+    // Only the two annotated rows (2 and 4), never the unannotated ones.
+    let mut ids: Vec<i64> = items
+        .iter()
+        .map(|i| i["conversation_id"].as_i64().expect("id"))
+        .collect();
+    ids.sort_unstable();
+    ensure!(ids == vec![2, 4], "only annotated rows: {ids:?}");
+    let two = items
+        .iter()
+        .find(|i| i["conversation_id"] == json!(2))
+        .expect("conv 2");
+    ensure!(two["notes"] == json!("a note"));
+    ensure!(two["custom_title"] == json!("big prompt session"));
+    ensure!(two["public_id"].as_str().is_some(), "public id resolved");
+    ensure!(
+        two.get("metrics").is_none(),
+        "no summary bag on the annotations lane"
+    );
+    ensure!(
+        two.get("first_prompt").is_none(),
+        "no prompt on the annotations lane"
+    );
+    let four = items
+        .iter()
+        .find(|i| i["conversation_id"] == json!(4))
+        .expect("conv 4");
+    ensure!(four["is_pinned"] == json!(true));
+    ensure!(four["tags"] == json!(["release-blocker"]));
+    bridge.shutdown()
+}
+
+#[test]
+fn list_annotations_paginates_and_refuses_annotation_overflow() -> Result<()> {
+    let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
+    init_extensions(&bridge)?;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    for id in [1_i64, 2, 3] {
+        writer.execute_with_params(
+            "INSERT INTO viewer_annotations (conversation_id,is_pinned,notes,revision) \
+             VALUES (?1,0,'note',1)",
+            &param_slice_to_values(params![id]),
+        )?;
+    }
+    drop(writer);
+    let first = bridge.exchange(json!({"op":"list_annotations","limit":2}))?;
+    ensure!(first["ok"] == true, "{first}");
+    ensure!(first["result"]["items"].as_array().expect("items").len() == 2);
+    let cursor = first["result"]["next_cursor"].as_str().expect("cursor");
+    let second = bridge.exchange(json!({"op":"list_annotations","limit":2,"cursor":cursor}))?;
+    ensure!(second["ok"] == true, "{second}");
+    ensure!(second["result"]["items"].as_array().expect("items").len() == 1);
+    ensure!(second["result"]["next_cursor"].is_null());
+
+    // An annotation alone past the row profile refuses typed (never cut).
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    writer.execute_with_params(
+        "UPDATE viewer_annotations SET notes=?1 WHERE conversation_id=1",
+        &param_slice_to_values(params!["n".repeat(600 * 1024)]),
+    )?;
+    drop(writer);
+    let refused = bridge.exchange(json!({"op":"list_annotations","limit":256}))?;
+    ensure!(refused["ok"] == false, "{refused}");
+    ensure!(refused["error"]["kind"] == "canonical_payload_too_large");
+    bridge.shutdown()
+}
