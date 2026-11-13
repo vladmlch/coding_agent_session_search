@@ -1496,6 +1496,22 @@ a guess.
   (`--text-verification-budget-bytes`). If discovery exhausts it mid-page, the
   page refuses with the typed `verification_budget_exceeded` error — never a
   silently truncated member list stamped `complete`.
+- **Bounded summary previews.** `list_sessions`, `search_sessions` and the
+  dashboard recent slice serve `title` and the metrics bag's `first_prompt`
+  as previews bounded by hello's `limits.preview_bytes` (16 KiB), cut on a
+  UTF-8 char boundary; the JSON-backed previews (`model_set`, `tools_used`,
+  `task_breakdown`) report unknown when the raw cell exceeds the budget
+  (JSON cannot be cut mid-document). Every bounded field carries an
+  explicit `<field>_truncated` flag plus `<field>_bytes` (the original
+  length when truncated), so one oversized session never refuses a whole page and a cut
+  is a visible fact, never a silent loss; the full text stays reachable
+  through the detail/message lanes. Annotations (`custom_title`, `notes`,
+  tags) are never truncated: a row whose annotations alone exceed the
+  512 KiB per-row profile still refuses typed
+  `canonical_payload_too_large`. `list_annotations` is the
+  annotations-only collection read (keyset pages over
+  `viewer_annotations`, no summary text) for clients that need metadata
+  without depending on prompt/title size.
 - **Deadline refusals are typed and retryable — the process survives.** Every
   long op (`search_sessions` and the `rank_begin`/`rank_next` raw lane) checks
   its request deadline at loop boundaries and answers with the typed
