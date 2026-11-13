@@ -474,6 +474,56 @@ fn multi_chunk_same_public_id_collapses_to_lowest_conversation_id() -> Result<()
     Ok(())
 }
 
+/// Codex "paginated" history writes a continuation rollout named
+/// `rollout-<ts>-<thread>_<rollout>.jsonl` beside the original
+/// `rollout-<ts>-<thread>.jsonl`. Source evidence (session_meta.id ==
+/// session_id == thread, history_mode=paginated, no fork/parent fields)
+/// proves the second file continues the SAME thread, so its public identity
+/// is the thread UUID (the first embedded UUID), not the per-file rollout
+/// UUID. Both rows verify to one public ID and reverse binds to the lowest
+/// canonical row — the grouping the browse/search lanes must honor.
+#[test]
+fn codex_two_uuid_continuation_rollout_shares_thread_identity() -> Result<()> {
+    const ROLLOUT_UUID: &str = "99999999-8888-7777-6666-555555555555";
+    let original_path =
+        "/s/2024/05/06/rollout-2024-05-06T10-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl";
+    let continuation_path = "/s/2024/05/06/rollout-2024-05-06T11-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee_99999999-8888-7777-6666-555555555555.jsonl";
+    let fixture = IdentityFixture::build(&[
+        FixtureRow::new(
+            "codex",
+            original_path,
+            Some(
+                "sessions/2024/05/06/rollout-2024-05-06T10-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            ),
+        ),
+        FixtureRow::new(
+            "codex",
+            continuation_path,
+            Some(
+                "sessions/2024/05/06/rollout-2024-05-06T11-00-00-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee_99999999-8888-7777-6666-555555555555",
+            ),
+        ),
+    ])?;
+    let conn = fixture.connect()?;
+    for id in 1..=2 {
+        let resolved = identity::resolve_public_id(&conn, id)?;
+        ensure!(
+            resolved.public_id == format!("codex:{CODEX_UUID}"),
+            "row {id} must verify to the thread UUID, not the rollout UUID: {resolved:?}"
+        );
+    }
+    ensure!(
+        identity::resolve_conversation_id(&conn, &format!("codex:{CODEX_UUID}"))? == Some(1),
+        "the continuation collapses onto the original thread row"
+    );
+    // The per-file rollout UUID is never a public identity on its own.
+    ensure!(
+        identity::resolve_conversation_id(&conn, &format!("codex:{ROLLOUT_UUID}"))?.is_none(),
+        "the rollout UUID must not bind a session"
+    );
+    Ok(())
+}
+
 /// The revision-bound reverse index fills per queried `source_id` scope —
 /// a narrow lookup must pay its provenance range, never the whole catalog.
 /// `rows_scanned` counts the conversation rows every scope build verified:
