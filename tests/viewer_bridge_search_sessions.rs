@@ -6034,6 +6034,24 @@ fn search_sessions_on_demand_regions_equivalence() -> Result<()> {
             result.remove("catalog_revision");
             result.remove("index_epoch");
             result.remove("next_cursor");
+            // 2026-11-13: every item now carries the bounded-preview facts
+            // (`title_truncated`/`title_bytes`). No corpus title exceeds
+            // the preview budget, so each item must report the
+            // not-truncated pair; it is checked here and then removed,
+            // which keeps every Stage 1 digest pinned byte-for-byte over
+            // the rest of the answer.
+            if let Some(items) = result.get_mut("items").and_then(|i| i.as_array_mut()) {
+                for item in items {
+                    let item = item.as_object_mut().expect("search item object");
+                    ensure!(
+                        // shift_remove keeps the remaining key order (the
+                        // map preserves insertion order; remove() swaps).
+                        item.shift_remove("title_truncated") == Some(json!(false))
+                            && item.shift_remove("title_bytes") == Some(Value::Null),
+                        "corpus item must report an untruncated title preview: {item:?}"
+                    );
+                }
+            }
         }
         Ok(blake3::hash(&serde_json::to_vec(&stripped)?)
             .to_hex()
@@ -6226,5 +6244,43 @@ fn search_sessions_deadline_budget_only_lowers_the_profile_limit() -> Result<()>
         json!({"query":"foo","budget":{"deadline_ms":10_000}}),
     )?;
     assert_members(&full, &[1, 2])?;
+    bridge.shutdown()
+}
+
+#[test]
+fn search_sessions_oversized_title_lists_with_bounded_preview() -> Result<()> {
+    let mut bridge = gold_harness()?;
+    // One session whose title is >1 MiB must not stall or refuse the page.
+    let huge_len = 1_200_006_i64;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    writer.execute_with_params(
+        "UPDATE conversations SET title=?1 WHERE id=1",
+        &param_slice_to_values(params![format!("{} alpha", "t".repeat(1_200_000))]),
+    )?;
+    drop(writer);
+    let page = search(&mut bridge, json!({"query":"foo"}))?;
+    ensure!(
+        page["ok"] == true,
+        "oversized title must not refuse/stall: {page}"
+    );
+    let items = page["result"]["items"].as_array().expect("items");
+    let s1 = items
+        .iter()
+        .find(|i| i["conversation_id"] == json!(1))
+        .expect("S1 must survive the page");
+    let title = s1["title"].as_str().expect("title");
+    ensure!(
+        title.len() <= 16 * 1024,
+        "bounded title, got {}",
+        title.len()
+    );
+    ensure!(
+        s1["title_truncated"] == json!(true),
+        "truncation fact: {s1}"
+    );
+    ensure!(
+        s1["title_bytes"] == json!(huge_len),
+        "original length: {s1}"
+    );
     bridge.shutdown()
 }

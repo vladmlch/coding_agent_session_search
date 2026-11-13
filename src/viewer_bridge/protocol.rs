@@ -7,6 +7,17 @@ use serde_json::{Value, json};
 pub const REQUEST_BYTES: usize = 65_536;
 pub const RESPONSE_BYTES: usize = 1_048_576;
 pub const PAGE_LIMIT: usize = 256;
+/// Per-field byte budget for free-text previews on summary rows
+/// (`first_prompt`, `title`) and the JSON-backed preview cells
+/// (`model_set`, `tools_used`, `task_breakdown`). A preview longer than
+/// this is cut on a UTF-8 char boundary (text) or reported unknown (JSON,
+/// which cannot be cut mid-document); either way the row carries an
+/// explicit `<field>_truncated` / `<field>_bytes` fact and the full text
+/// stays reachable through the detail/message lanes. This bounds what a
+/// summary row hydrates so one oversized session never refuses a page;
+/// the per-row (`ROW_BYTES`) and response (`RESPONSE_BYTES`) budgets are
+/// unchanged, and annotation fields are never truncated.
+pub const PREVIEW_BYTES: i64 = 16 * 1024;
 pub const MAX_CURSORS: usize = 8;
 pub const TIMEOUT_MS: u64 = 10_000;
 pub const MAX_RAW_HITS: usize = 100_000;
@@ -420,6 +431,19 @@ pub enum Request {
         #[serde(default = "default_page")]
         limit: usize,
     },
+    /// `cass_owned_queries_v1` read op: the annotations-only collection
+    /// read. A keyset page over `viewer_annotations` (public identity +
+    /// tags resolved for the emitted rows), never hydrating session
+    /// summary text — so a corpus-wide metadata read does not depend on
+    /// `first_prompt`/`title` size. Annotation text is never truncated;
+    /// a row whose annotations alone exceed `ROW_BYTES` refuses typed
+    /// `canonical_payload_too_large`, exactly like the list lane.
+    ListAnnotations {
+        id: u64,
+        cursor: Option<String>,
+        #[serde(default = "default_page")]
+        limit: usize,
+    },
     /// `cass_owned_queries_v1` read op: bounded rich detail for ONE
     /// addressed conversation — canonical summary/messages/raw sections
     /// plus `viewer_*` overlays, with typed `unavailable` for named Native
@@ -555,6 +579,7 @@ impl Request {
             | Self::GetAnnotations { id, .. }
             | Self::PatchAnnotations { id, .. }
             | Self::ListSessions { id, .. }
+            | Self::ListAnnotations { id, .. }
             | Self::SearchSessions { id, .. }
             | Self::GetSessionDetails { id, .. }
             | Self::GetToolOutput { id, .. }
@@ -582,6 +607,7 @@ impl Request {
             Self::GetAnnotations { .. } => "get_annotations",
             Self::PatchAnnotations { .. } => "patch_annotations",
             Self::ListSessions { .. } => "list_sessions",
+            Self::ListAnnotations { .. } => "list_annotations",
             Self::SearchSessions { .. } => "search_sessions",
             Self::GetSessionDetails { .. } => "get_session_details",
             Self::GetToolOutput { .. } => "get_tool_output",

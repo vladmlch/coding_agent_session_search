@@ -1025,6 +1025,9 @@ struct HydratedRow {
     /// `null` when no `viewer_session_facts` row was persisted for this
     /// session; otherwise the merged facts+metrics bag.
     metrics: Value,
+    /// Truncation fact for the bounded `title` preview (cell 7).
+    title_truncated: bool,
+    title_bytes: Option<i64>,
 }
 
 impl HydratedRow {
@@ -1197,16 +1200,21 @@ fn hydrate_rows(
         step_count: Option<i64>,
         artifact_count: Option<i64>,
         parent_conversation_id: Option<i64>,
-        /// Raw `model_set_json`/`first_prompt` cells — kept for the byte
-        /// profile (the bag holds the decoded/guarded values).
-        model_set_json: Option<String>,
-        first_prompt: Option<String>,
         bag: facts_bag::SessionFactBag,
     }
     let mut facts: std::collections::BTreeMap<i64, Facts> = std::collections::BTreeMap::new();
     for row in run_in_probe(connection, HYDRATE_FACTS_SQL, ")", ids)? {
         let model_set_json: Option<String> = row.get_typed(14)?;
-        let first_prompt: Option<String> = row.get_typed(15)?;
+        let first_prompt_raw: Option<String> = row.get_typed(15)?;
+        // Bounded previews: one oversized prompt/model set never refuses a
+        // page; the bag carries the preview plus its truncation fact, and
+        // the byte profile counts the emitted preview, not the raw cell.
+        let (model_set, model_set_truncated, model_set_bytes) = facts_bag::bound_json_preview(
+            model_set_json.clone(),
+            facts_bag::decode_string_list(model_set_json.as_deref()),
+        );
+        let (first_prompt, first_prompt_truncated, first_prompt_bytes) =
+            facts_bag::bound_text_preview(first_prompt_raw);
         facts.insert(
             row.get_typed(0)?,
             Facts {
@@ -1226,17 +1234,14 @@ fn hydrate_rows(
                     tool_calls_with_exit_status: row.get_typed(11)?,
                     file_fact_count: row.get_typed(12)?,
                     compaction_count: row.get_typed(13)?,
-                    model_set: facts_bag::decode_string_list(model_set_json.as_deref()),
-                    // Same per-column guard the canonical text cells get:
-                    // absurd payloads stay unknown, never page bytes.
-                    first_prompt: first_prompt
-                        .as_ref()
-                        .filter(|text| text.len() as i64 <= TEXT_GUARD_BYTES)
-                        .cloned(),
+                    model_set,
+                    model_set_truncated,
+                    model_set_bytes,
+                    first_prompt,
+                    first_prompt_truncated,
+                    first_prompt_bytes,
                     ..Default::default()
                 },
-                model_set_json,
-                first_prompt,
             },
         );
     }
@@ -1251,9 +1256,6 @@ fn hydrate_rows(
         )?
         .is_empty();
     struct Metrics {
-        /// Raw JSON cells kept for the byte profile.
-        tools_used_json: Option<String>,
-        task_breakdown_json: Option<String>,
         bag: facts_bag::SessionFactBag,
     }
     let mut metrics: std::collections::BTreeMap<i64, Metrics> = std::collections::BTreeMap::new();
@@ -1261,20 +1263,31 @@ fn hydrate_rows(
         for row in run_in_probe(connection, HYDRATE_METRICS_SQL, ")", ids)? {
             let tools_used_json: Option<String> = row.get_typed(6)?;
             let task_breakdown_json: Option<String> = row.get_typed(7)?;
+            let (tools_used, tools_used_truncated, tools_used_bytes) =
+                facts_bag::bound_json_preview(
+                    tools_used_json.clone(),
+                    facts_bag::decode_string_list(tools_used_json.as_deref()),
+                );
+            let (task_breakdown, task_breakdown_truncated, task_breakdown_bytes) =
+                facts_bag::bound_json_preview(
+                    task_breakdown_json.clone(),
+                    task_breakdown_json.and_then(|text| serde_json::from_str(&text).ok()),
+                );
             metrics.insert(
                 row.get_typed(0)?,
                 Metrics {
-                    tools_used_json: tools_used_json.clone(),
-                    task_breakdown_json: task_breakdown_json.clone(),
                     bag: facts_bag::SessionFactBag {
                         ttfe_seconds: row.get_typed(1)?,
                         one_shot_rate: row.get_typed(2)?,
                         retries_count: row.get_typed(3)?,
                         self_corrections_count: row.get_typed(4)?,
                         user_corrections_count: row.get_typed(5)?,
-                        tools_used: facts_bag::decode_string_list(tools_used_json.as_deref()),
-                        task_breakdown: task_breakdown_json
-                            .and_then(|text| serde_json::from_str(&text).ok()),
+                        tools_used,
+                        tools_used_truncated,
+                        tools_used_bytes,
+                        task_breakdown,
+                        task_breakdown_truncated,
+                        task_breakdown_bytes,
                         health_score: row.get_typed(8)?,
                         health_grade: row.get_typed(9)?,
                         health_issues_count: row.get_typed(10)?,
@@ -1349,29 +1362,27 @@ fn hydrate_rows(
         // when the facts row was never persisted — the unknown contract.
         let mut bag = fact.map(|f| f.bag.clone()).unwrap_or_default();
         if let Some(entry) = metrics.get(&id) {
-            let metric = &entry.bag;
-            bag.ttfe_seconds = metric.ttfe_seconds;
-            bag.one_shot_rate = metric.one_shot_rate;
-            bag.retries_count = metric.retries_count;
-            bag.self_corrections_count = metric.self_corrections_count;
-            bag.user_corrections_count = metric.user_corrections_count;
-            bag.tools_used = metric.tools_used.clone();
-            bag.task_breakdown = metric.task_breakdown.clone();
-            bag.health_score = metric.health_score;
-            bag.health_grade = metric.health_grade.clone();
-            bag.health_issues_count = metric.health_issues_count;
-            bag.potential_waste_tokens = metric.potential_waste_tokens;
-            bag.potential_savings_usd = metric.potential_savings_usd;
+            bag.merge_metrics(&entry.bag);
         }
         let metrics_bag = bag.emit(fact.is_some());
 
-        // The byte profile sums RAW cell bytes (never the guarded value),
+        // The bounded `title` preview: cut on a UTF-8 char boundary with an
+        // explicit truncation fact, so one oversized title never refuses a
+        // page. Annotation/identity/category/model cells stay RAW-counted.
+        let (title_preview, title_truncated, title_bytes) =
+            facts_bag::bound_text_preview(conv.title.clone());
+
+        // The byte profile sums the EMITTED preview bytes for the bounded
+        // free-text/JSON fields (`title` + the bag's `preview_bytes`) and
+        // RAW cell bytes for annotations, identity, category and model —
         // mirroring the SQL `COALESCE(length(CAST(col AS BLOB)),0)` list.
+        // Annotations are never truncated, so an annotation-only overflow
+        // still trips the strict `ROW_BYTES` refusal below.
         let byte_sum = byte_len(conv.source_id.as_deref())
             + byte_len(conv.external_id.as_deref())
             + byte_len(conv.source_path.as_deref())
             + byte_len(conv.origin_host.as_deref())
-            + byte_len(conv.title.as_deref())
+            + byte_len(title_preview.as_deref())
             + byte_len(conv.primary_model.as_deref())
             + byte_len(annotation.and_then(|a| a.custom_title.as_deref()))
             + byte_len(annotation.and_then(|a| a.notes.as_deref()))
@@ -1379,14 +1390,7 @@ fn hydrate_rows(
             + byte_len(source_kind.as_deref())
             + byte_len(source_label.as_deref())
             + byte_len(fact.and_then(|f| f.task_category.as_deref()))
-            + byte_len(fact.and_then(|f| f.first_prompt.as_deref()))
-            + byte_len(fact.and_then(|f| f.model_set_json.as_deref()))
-            + byte_len(metrics.get(&id).and_then(|m| m.tools_used_json.as_deref()))
-            + byte_len(
-                metrics
-                    .get(&id)
-                    .and_then(|m| m.task_breakdown_json.as_deref()),
-            );
+            + bag.preview_bytes();
 
         let cells = vec![
             SqliteValue::Integer(id), // 0
@@ -1402,7 +1406,9 @@ fn hydrate_rows(
             source_label
                 .clone()
                 .map_or(SqliteValue::Null, |s| SqliteValue::Text(s.into())), // 6
-            guarded_text(conv.title.clone()), // 7
+            title_preview
+                .clone()
+                .map_or(SqliteValue::Null, |s| SqliteValue::Text(s.into())), // 7
             integer_or_null(conv.started_at), // 8
             integer_or_null(ended_at), // 9
             integer_or_null(last_message_idx), // 10
@@ -1440,6 +1446,8 @@ fn hydrate_rows(
             HydratedRow {
                 cells,
                 metrics: metrics_bag,
+                title_truncated,
+                title_bytes,
             },
         );
     }
@@ -1710,8 +1718,44 @@ pub fn list_sessions(
     let page_ids: Vec<i64> = ordered.iter().take(take_count).map(|row| row.id).collect();
     let by_id = hydrate_rows(connection, &page_ids)?;
 
+    // Resolve the identity/tag/parent overlay for the page's surviving rows
+    // BEFORE the byte cut, so `push_bounded` measures exactly the bytes each
+    // emitted item carries. Budgeting the decoded row first and enriching
+    // afterwards let a page that fit the budget overflow once the overlay
+    // filled `public_id`/`provider`/`tags`/`parent_public_id`, refusing the
+    // whole response instead of cutting it. Rows that vanished between the
+    // order scan and hydration are excluded here (the decode loop consumes
+    // their position without emitting), keeping the racing-delete path
+    // refusal-free.
+    let present_ids: Vec<i64> = page_ids
+        .iter()
+        .copied()
+        .filter(|id| by_id.contains_key(id))
+        .collect();
+    let public_ids = identity::resolve_public_ids(connection, &present_ids)?;
+    let tags = annotations::tags_for(connection, &present_ids)?;
+    // Parent identities resolve through the same canonical identity
+    // machinery — one bounded primary-key probe per distinct parent id
+    // (identity::resolve_public_id recomputes and verifies the public
+    // id; an unresolvable/ambiguous parent stays typed NULL).
+    let mut parent_ids: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    for row in by_id.values() {
+        if let Some(parent_id) = row.get_typed::<Option<i64>>(29)? {
+            parent_ids.insert(parent_id);
+        }
+    }
+    let mut parent_public_ids: std::collections::BTreeMap<i64, String> =
+        std::collections::BTreeMap::new();
+    for parent_id in parent_ids {
+        if let Ok(identity) = identity::resolve_public_id(connection, parent_id) {
+            parent_public_ids.insert(parent_id, identity.public_id);
+        }
+    }
+
     // Decode bounded; a page may serialize fewer rows than the order scan
-    // returned when the response byte budget intervenes.
+    // returned when the response byte budget intervenes. Each item is
+    // enriched before it is budgeted, so the cut reflects the emitted bytes
+    // and a truncated page keeps a correct `next_cursor`.
     let mut items = Vec::new();
     let mut bytes = 0_usize;
     let mut last: Option<Cursor> = None;
@@ -1732,38 +1776,7 @@ pub fn list_sessions(
                 "Canonical row exceeds the strict bridge byte profile",
             ));
         }
-        let item = decode_item(row)?;
-        if !push_bounded(&mut items, item, &mut bytes)? {
-            truncated = true;
-            break;
-        }
-        last = Some(position);
-    }
-
-    // Items keep the order-scan sequence; each carries its canonical
-    // coordinate.
-    let emitted_ids: Vec<i64> = items
-        .iter()
-        .map(|item| item["conversation_id"].as_i64().expect("decoded id"))
-        .collect();
-    let public_ids = identity::resolve_public_ids(connection, &emitted_ids)?;
-    let tags = annotations::tags_for(connection, &emitted_ids)?;
-    // Parent identities resolve through the same canonical identity
-    // machinery — one bounded primary-key probe per distinct parent id
-    // (identity::resolve_public_id recomputes and verifies the public
-    // id; an unresolvable/ambiguous parent stays typed NULL).
-    let parent_ids: std::collections::BTreeSet<i64> = items
-        .iter()
-        .filter_map(|item| item["parent_conversation_id"].as_i64())
-        .collect();
-    let mut parent_public_ids: std::collections::BTreeMap<i64, String> =
-        std::collections::BTreeMap::new();
-    for parent_id in parent_ids {
-        if let Ok(identity) = identity::resolve_public_id(connection, parent_id) {
-            parent_public_ids.insert(parent_id, identity.public_id);
-        }
-    }
-    for item in &mut items {
+        let mut item = decode_item(row)?;
         let id = item["conversation_id"].as_i64().expect("decoded id");
         if let Some(identity) = public_ids.get(&id) {
             item["public_id"] = json!(identity.public_id);
@@ -1773,6 +1786,11 @@ pub fn list_sessions(
             item["parent_public_id"] = json!(parent_public_ids.get(&parent_id));
         }
         item["tags"] = json!(tags.get(&id).cloned().unwrap_or_default());
+        if !push_bounded(&mut items, item, &mut bytes)? {
+            truncated = true;
+            break;
+        }
+        last = Some(position);
     }
 
     let has_more = truncated || ordered.len() > limit;
@@ -1795,6 +1813,135 @@ pub fn list_sessions(
         "complete": true,
         "warnings": warnings,
     }))
+}
+
+/// `list_annotations(ListAnnotationsRequest{cursor, limit})` page body:
+/// the annotations-only collection read. A keyset page over
+/// `viewer_annotations` (one indexed `WHERE conversation_id > ? ORDER BY
+/// conversation_id LIMIT ?` statement), with public identity and tags
+/// resolved for the emitted rows only. It never hydrates session summary
+/// text, so a corpus-wide metadata read does not depend on
+/// `first_prompt`/`title` size. Annotation text is never truncated: a row
+/// whose annotations alone exceed `ROW_BYTES` refuses typed
+/// `canonical_payload_too_large`, exactly like the list lane. Rows whose
+/// public identity cannot be verified emit `public_id: null` and are
+/// counted in a `warnings` entry (a client keys records by public id, so
+/// it skips them) — never a silent whole-page refusal.
+pub fn list_annotations(
+    connection: &Connection,
+    cursor: Option<&str>,
+    limit: usize,
+) -> Result<Value> {
+    if !revisions::extensions_installed(connection)? {
+        return Err(refuse(
+            "viewer_extensions_missing",
+            "The viewer extension profile is not installed; run --init-extensions first",
+        ));
+    }
+    let after = match cursor {
+        Some(raw) => decode_annotations_cursor(raw)?,
+        None => 0,
+    };
+    let mut params = Vec::new();
+    let after_bind = bind(&mut params, SqliteValue::Integer(after));
+    let limit_bind = bind(&mut params, SqliteValue::Integer((limit + 1) as i64));
+    let rows = connection.query_with_params(
+        &format!(
+            "SELECT conversation_id, is_pinned, custom_title, notes, revision \
+             FROM viewer_annotations WHERE conversation_id > {after_bind} \
+             ORDER BY conversation_id LIMIT {limit_bind}"
+        ),
+        &params,
+    )?;
+    let has_more = rows.len() > limit;
+    let page_rows = &rows[..rows.len().min(limit)];
+    let ids: Vec<i64> = page_rows
+        .iter()
+        .map(|row| row.get_typed::<i64>(0))
+        .collect::<std::result::Result<Vec<i64>, _>>()?;
+    let tags = annotations::tags_for(connection, &ids)?;
+    let public_ids = identity::resolve_public_ids_tolerant(connection, &ids)?;
+    let generation = revisions::generation(connection)?;
+
+    let mut items = Vec::new();
+    let mut bytes = 0_usize;
+    let mut last: Option<i64> = None;
+    let mut truncated = false;
+    let mut unresolved = 0_usize;
+    for row in page_rows {
+        let id: i64 = row.get_typed(0)?;
+        let is_pinned: i64 = row.get_typed(1)?;
+        let custom_title: Option<String> = row.get_typed(2)?;
+        let notes: Option<String> = row.get_typed(3)?;
+        let revision: i64 = row.get_typed(4)?;
+        let row_tags = tags.get(&id).cloned().unwrap_or_default();
+        // Annotations are never truncated: the row profile counts their RAW
+        // bytes, so an annotation-only overflow keeps the strict refusal.
+        let tag_bytes: i64 = row_tags.iter().map(|tag| tag.len() as i64).sum();
+        let row_bytes = byte_len(custom_title.as_deref()) + byte_len(notes.as_deref()) + tag_bytes;
+        if !(0..=ROW_BYTES).contains(&row_bytes) {
+            return Err(refuse(
+                "canonical_payload_too_large",
+                "Canonical row exceeds the strict bridge byte profile",
+            ));
+        }
+        let identity = public_ids.get(&id).and_then(|entry| entry.as_ref());
+        if identity.is_none() {
+            unresolved += 1;
+        }
+        let item = json!({
+            "conversation_id": id,
+            "public_id": identity.map(|i| i.public_id.clone()),
+            "provider": identity.map(|i| i.provider.clone()),
+            "is_pinned": is_pinned != 0,
+            "custom_title": custom_title,
+            "notes": notes,
+            "tags": row_tags,
+            "annotation_revision": revision,
+        });
+        if !push_bounded(&mut items, item, &mut bytes)? {
+            truncated = true;
+            break;
+        }
+        last = Some(id);
+    }
+    let next_cursor = if has_more || truncated {
+        last.map(|id| Value::String(encode_annotations_cursor(id)))
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    let mut warnings: Vec<String> = Vec::new();
+    if unresolved > 0 {
+        warnings.push(format!("unresolved_identity:{unresolved}"));
+    }
+    Ok(json!({
+        "items": items,
+        "next_cursor": next_cursor,
+        "generation": generation,
+        "complete": true,
+        "warnings": warnings,
+    }))
+}
+
+/// Opaque keyset cursor for `list_annotations`: the last emitted
+/// `conversation_id`. Client-echoed state, bounded like every cursor.
+fn encode_annotations_cursor(id: i64) -> String {
+    format!("a:{id}")
+}
+
+fn decode_annotations_cursor(raw: &str) -> Result<i64> {
+    if raw.len() > CURSOR_MAX_BYTES {
+        return Err(refuse(
+            "cursor_expired",
+            "Annotations cursor exceeds its byte bound",
+        ));
+    }
+    let id = raw
+        .strip_prefix("a:")
+        .and_then(|rest| rest.parse::<i64>().ok())
+        .filter(|id| *id >= 0);
+    id.ok_or_else(|| refuse("cursor_expired", "Malformed annotations cursor"))
 }
 
 /// Bounded item decode — the same coordinates `catalog.rs` serves plus the
@@ -1846,6 +1993,8 @@ fn decode_item(row: &HydratedRow) -> Result<Value> {
     item.insert("workspace_path".into(), json!(workspace_path));
     item.insert("project".into(), json!(project));
     item.insert("title".into(), json!(row.get_typed::<Option<String>>(7)?));
+    item.insert("title_truncated".into(), json!(row.title_truncated));
+    item.insert("title_bytes".into(), json!(row.title_bytes));
     item.insert(
         "custom_title".into(),
         json!(row.get_typed::<Option<String>>(22)?),

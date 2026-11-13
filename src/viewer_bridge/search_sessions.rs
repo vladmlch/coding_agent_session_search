@@ -113,6 +113,7 @@ use serde_json::{Map, Value, json};
 
 use super::annotations;
 use super::deadline::Deadline;
+use super::facts_bag;
 use super::identity;
 use super::protocol::{ListFilters, PAGE_LIMIT, RESPONSE_BYTES, refuse};
 use super::query;
@@ -139,6 +140,11 @@ const HARD_UNIVERSE_CEILING: usize = 200_000;
 /// [`region_text_full`]), because an index hit (or, ungated, any
 /// occurrence) may live past any prefix bound.
 const MAX_REGION_TEXT: usize = 64 * 1024;
+/// Per-row byte profile (the same 512 KiB bound as the list lane): a
+/// search item whose never-truncated annotations alone exceed it refuses
+/// typed instead of stalling the page cursor. Bounded previews keep
+/// summary text far below this bound.
+const ROW_BYTES: usize = 512 * 1024;
 /// Request-total ceiling on whole-body verification scanning — the
 /// `messages.content` bytes one `search_sessions` request may match
 /// against (gated escalations past the bounded window plus every
@@ -5332,6 +5338,9 @@ pub fn search_sessions(
     let mut bytes = 0_usize;
     let mut last: Option<SearchCursor> = None;
     let mut emitted = 0_usize;
+    // One cursor per emitted item, parallel to `items`, so a post-enrichment
+    // byte trim can move the resume position back to the last kept session.
+    let mut item_cursors: Vec<SearchCursor> = Vec::new();
     // (B) Page-time witness gates, memoized once per request and shared by
     // every emitted fast-lane session: one raw enumeration per distinct
     // claim literal, however many sessions the page hydrates.
@@ -5372,6 +5381,8 @@ pub fn search_sessions(
         }
         emitted += 1;
         let session = &entry.session;
+        let (title_preview, title_truncated, title_bytes) =
+            facts_bag::bound_text_preview(session.title.clone());
         let mut item = json!({
             "conversation_id": session.conversation_id,
             "public_id": session.public_id,
@@ -5379,7 +5390,9 @@ pub fn search_sessions(
             "source_id": Value::Null,
             "workspace_path": session.project_path,
             "project": session.project,
-            "title": session.title,
+            "title": title_preview,
+            "title_truncated": title_truncated,
+            "title_bytes": title_bytes,
             "custom_title": session.custom_title,
             "notes": session.notes,
             "is_pinned": session.is_pinned,
@@ -5406,6 +5419,16 @@ pub fn search_sessions(
         // Public identity is resolved lazily and stays nullable on failure
         // (a search page must not die on one unverifiable row).
         let item_bytes = serde_json::to_vec(&item)?.len() + 2;
+        // Annotations are never truncated: a row whose serialized item
+        // alone exceeds the per-row profile refuses typed (the list lane's
+        // contract) rather than silently stalling the cursor on a row no
+        // page can ever emit.
+        if item_bytes > ROW_BYTES {
+            return Err(refuse(
+                "canonical_payload_too_large",
+                "Canonical row exceeds the strict bridge byte profile",
+            ));
+        }
         if bytes + item_bytes > RESPONSE_BYTES - 8192 {
             break;
         }
@@ -5615,6 +5638,7 @@ pub fn search_sessions(
             matches_out.insert(session.conversation_id.to_string(), json!(session_matches));
         }
         item["witness_count"] = json!(session_matches.len());
+        item_cursors.push(key.clone());
         last = Some(key);
         items.push(item);
     }
@@ -5635,6 +5659,37 @@ pub fn search_sessions(
                 item["source_id"] = json!(verified.source_id);
             }
         }
+    }
+    // The page cut above budgeted pre-enrichment item bytes; identity
+    // resolution and the per-session `matches` map add bytes it never saw.
+    // Re-measure the payload the response actually carries and drop tail
+    // sessions (with their matches) until it fits the response budget,
+    // moving the cursor back to the last kept session so the walk resumes
+    // exactly where the page stopped — every row still visited once.
+    let mut trimmed = false;
+    loop {
+        let payload_bytes =
+            serde_json::to_vec(&items)?.len() + serde_json::to_vec(&matches_out)?.len();
+        if payload_bytes <= RESPONSE_BYTES - 8192 {
+            break;
+        }
+        if items.len() <= 1 {
+            return Err(refuse(
+                "canonical_payload_too_large",
+                "Page exceeds bridge response budget; request fewer rows",
+            ));
+        }
+        let dropped = items.pop().expect("checked non-empty");
+        let conversation_id = dropped["conversation_id"].as_i64().expect("id");
+        // shift_remove keeps the remaining matches in emission order (the
+        // map preserves insertion order; remove() would swap the last key in).
+        matches_out.shift_remove(&conversation_id.to_string());
+        item_cursors.pop();
+        trimmed = true;
+    }
+    if trimmed {
+        has_more = true;
+        last = item_cursors.last().cloned();
     }
     let complete = unknown_sessions == 0;
     // Stage 1b receipts, hoisted for the json! macro below: which
