@@ -1177,3 +1177,175 @@ fn codex_sums_distinct_request_token_counts_through_cass_wrapper() {
     assert_eq!(usage["input_tokens"].as_i64(), Some(12));
     assert_eq!(usage["output_tokens"].as_i64(), Some(24));
 }
+
+// --- Codex paginated threads (FAD 18e2ffaf merge) through the real cass path ---
+// Synthetic fixtures only: invented UUIDs/prompts, no personal data. One Codex
+// thread is an original rollout plus a continuation; the bumped FAD merges them
+// into one conversation. These pin that cass's admission, enrichment and
+// recovery layers deliver the merged thread on full AND incremental scans.
+
+const PAG_THREAD_A: &str = "01a1d1b4-5529-7cd3-97db-d52326514bc2";
+const PAG_SEGMENT_B: &str = "01a1d1ba-a4da-7b00-92b0-0368cfada0b2";
+
+/// Write one paginated thread (original + one continuation). The continuation
+/// optionally carries a token_count event so enrichment coverage is observable.
+fn paginated_thread_fixture(
+    continuation_token_count: bool,
+) -> (TempDir, PathBuf, PathBuf, ScanContext) {
+    let dir = TempDir::new().unwrap();
+    let sessions = dir.path().join("sessions/2026/11/12");
+    fs::create_dir_all(&sessions).unwrap();
+    let cwd = dir.path().join("workspace");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd_str = cwd.to_str().unwrap();
+    let a = PAG_THREAD_A;
+    let b = PAG_SEGMENT_B;
+    let original = format!(
+        r#"{{"type":"session_meta","timestamp":"2026-11-12T21:40:18Z","payload":{{"id":"{a}","session_id":"{a}","cwd":"{cwd_str}","history_mode":"paginated","originator":"codex-tui","source":"cli"}}}}
+{{"type":"response_item","timestamp":"2026-11-12T21:40:20Z","payload":{{"type":"message","role":"user","content":"first question"}}}}
+{{"type":"response_item","timestamp":"2026-11-12T21:41:00Z","payload":{{"type":"message","role":"assistant","content":"first answer"}}}}
+"#
+    );
+    let mut continuation = format!(
+        r#"{{"type":"session_meta","timestamp":"2026-11-12T21:47:12Z","payload":{{"id":"{a}","session_id":"{a}","cwd":"{cwd_str}","history_mode":"paginated","originator":"codex-tui","source":"cli"}}}}
+{{"type":"response_item","timestamp":"2026-11-12T21:47:20Z","payload":{{"type":"message","role":"user","content":"second question"}}}}
+{{"type":"response_item","timestamp":"2026-11-12T21:48:00Z","payload":{{"type":"message","role":"assistant","content":"second answer"}}}}
+"#
+    );
+    if continuation_token_count {
+        continuation.push_str(
+            r#"{"type":"event_msg","timestamp":"2026-11-12T21:48:05Z","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":7,"output_tokens":14},"total_token_usage":{"total_tokens":21}}}}
+"#,
+        );
+    }
+    let original_path = sessions.join(format!("rollout-2026-11-12T22-40-18-{a}.jsonl"));
+    let continuation_path = sessions.join(format!("rollout-2026-11-12T22-47-12-{a}_{b}.jsonl"));
+    fs::write(&original_path, original).unwrap();
+    fs::write(&continuation_path, continuation).unwrap();
+    let ctx = ScanContext::with_roots(
+        dir.path().to_path_buf(),
+        vec![ScanRoot::local(dir.path().to_path_buf())],
+        None,
+    );
+    (dir, original_path, continuation_path, ctx)
+}
+
+#[test]
+fn codex_paginated_thread_merges_through_cass_scan() {
+    let (_dir, _original, _continuation, ctx) = paginated_thread_fixture(false);
+    let convs = CodexConnector::new()
+        .scan(&ctx)
+        .expect("merged-thread full scan must succeed");
+    assert_eq!(
+        convs.len(),
+        1,
+        "one conversation per thread, got {}",
+        convs.len()
+    );
+    let texts: Vec<&str> = convs[0]
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert!(
+        texts.iter().any(|t| t.contains("first question")),
+        "{texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t.contains("second question")),
+        "{texts:?}"
+    );
+    assert_eq!(
+        convs[0].metadata["segments"].as_array().map(|a| a.len()),
+        Some(2),
+        "merged metadata must list both segments: {:?}",
+        convs[0].metadata
+    );
+}
+
+/// §7.1: an incremental scan that reuses the original (durable ledger) and
+/// admits a new continuation must still index the merged conversation. The
+/// host predicate models the ledger by refusing the original's path.
+#[test]
+fn codex_paginated_incremental_reused_original_admits_continuation() {
+    let (_dir, original, continuation, ctx) = paginated_thread_fixture(false);
+    let mut admitted = Vec::new();
+    let mut predicate = |source: &franken_agent_detection::DiscoveredSourceFile| {
+        let reuse = source.source_path == original;
+        if !reuse {
+            admitted.push(source.source_path.clone());
+        }
+        !reuse
+    };
+    let mut completed = Vec::new();
+    let mut complete = |done: &franken_agent_detection::SourceCompletion| {
+        completed.push(done.source.source_path.clone());
+        Ok(())
+    };
+    let mut hooks = franken_agent_detection::SourceScanHooks {
+        should_scan_source: Some(&mut predicate),
+        on_source_complete: Some(&mut complete),
+    };
+    let mut delivered = Vec::new();
+    CodexConnector::new()
+        .scan_with_source_boundaries(&ctx, &mut hooks, &mut |conversation| {
+            delivered.push(conversation);
+            Ok(())
+        })
+        .expect("incremental merged-thread scan must succeed when the original is ledger-reused");
+    assert_eq!(
+        delivered.len(),
+        1,
+        "the merged thread is indexed exactly once"
+    );
+    let texts: Vec<&str> = delivered[0]
+        .messages
+        .iter()
+        .map(|m| m.content.as_str())
+        .collect();
+    assert!(
+        texts.iter().any(|t| t.contains("first question")),
+        "{texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t.contains("second question")),
+        "{texts:?}"
+    );
+    assert_eq!(
+        delivered[0].source_path, original,
+        "identity stays the original segment"
+    );
+    assert_eq!(
+        admitted,
+        [continuation],
+        "only the new continuation is admitted"
+    );
+    assert_eq!(
+        completed,
+        [original],
+        "completion certifies the thread identity once"
+    );
+}
+
+/// §7.2: enrichment must read every segment's bytes. The token_count event
+/// lives only in the continuation, so the merged conversation's usage proves
+/// the continuation was enriched, not just the identity snapshot.
+#[test]
+fn codex_paginated_enrichment_covers_continuation_bytes() {
+    let (_dir, _original, _continuation, ctx) = paginated_thread_fixture(true);
+    let convs = CodexConnector::new()
+        .scan(&ctx)
+        .expect("merged-thread scan with continuation token_count must succeed");
+    assert_eq!(convs.len(), 1);
+    let assistant = convs[0]
+        .messages
+        .iter()
+        .find(|m| m.role == "assistant" && m.content.contains("second answer"))
+        .expect("continuation assistant message");
+    let usage = assistant
+        .extra
+        .pointer("/cass/token_usage")
+        .expect("continuation token usage must be enriched onto the merged conversation");
+    assert_eq!(usage["input_tokens"].as_i64(), Some(7));
+    assert_eq!(usage["output_tokens"].as_i64(), Some(14));
+}

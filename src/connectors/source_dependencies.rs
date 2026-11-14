@@ -50,9 +50,16 @@ impl SourceDependencyCapability for super::claude_code::ClaudeCodeConnector {
 }
 
 impl SourceDependencyCapability for super::codex::CodexConnector {
+    // A merged Codex thread is reconstructed from its own rollout segments,
+    // which FAD declares as required_sidecars and offers before parsing. The
+    // indexer captures those explicit segments' observations, so the durable
+    // marker binds exactly the thread's own files. The implicit parent stays
+    // unobserved: an unrelated new sibling in the sessions directory must not
+    // invalidate a single-file thread's reuse (GH #538).
     const SOURCE_DEPENDENCIES: SourceDependencyPolicy = SourceDependencyPolicy::SelfContained;
     // The CASS budget/exclusion adapter rejects the rollout before either
-    // parser pass or the host hook. Archived rollouts use the same admission.
+    // parser pass or the host hook, and one excluded segment withdraws the
+    // whole thread. Archived rollouts use the same admission.
     const WHOLE_SOURCE_EXCLUSIONS: bool = true;
 }
 

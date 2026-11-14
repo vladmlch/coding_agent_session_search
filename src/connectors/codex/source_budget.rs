@@ -197,55 +197,100 @@ pub(crate) fn over_budget_sources(error: &anyhow::Error) -> Option<OverBudgetSou
     })
 }
 
+/// One offered segment of the pending Codex thread. FAD offers a merged
+/// thread's continuations first and its identity last, then emits a single
+/// conversation and a single completion for the whole thread. Admission
+/// therefore tracks every offered segment, not just the most recent one: a
+/// ledger-reused original still belongs to the thread even though the host
+/// predicate declined to reparse it.
+struct SourceOffer {
+    discovered: DiscoveredSourceFile,
+    snapshot: Option<SourceSnapshot>,
+    admitted: bool,
+    over_budget: bool,
+    reconciled: bool,
+}
+
 #[derive(Default)]
 struct ScanState {
     limits: ScanLimits,
-    current_source: Option<PathBuf>,
-    snapshot: Option<SourceSnapshot>,
+    offers: Vec<SourceOffer>,
     preflight_error: Option<anyhow::Error>,
-    withheld_source: Option<PathBuf>,
-    delivered_conversation: bool,
     incomplete: IncompleteScan,
 }
 
 impl ScanState {
-    fn validate_current_source(&self, path: &Path) -> Result<()> {
-        if self.current_source.as_deref() != Some(path) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Codex conversation or completion does not match its admitted source",
-            )
-            .into());
-        }
-        self.snapshot
-            .as_ref()
-            .context("Codex source was not admitted for parsing")?
-            .validate(path)
+    fn offer_index(&self, path: &Path) -> Option<usize> {
+        self.offers
+            .iter()
+            .position(|offer| offer.discovered.source_path == path)
     }
 
-    fn finish_pending_source(
-        &self,
-        progress_tick: Option<&(dyn Fn() + Send + Sync)>,
-    ) -> Result<()> {
-        // No conversation means enrichment never ran. Metadata stability alone
-        // cannot distinguish valid empty history from a swallowed parse/read
-        // failure in the published dependency. Validate that input separately;
-        // do not invent a conversation or a successful source completion.
-        if let Some(path) = self.current_source.as_deref()
-            && self.snapshot.is_some()
-            && self.withheld_source.as_deref() != Some(path)
-        {
-            self.validate_current_source(path)?;
-            if !self.delivered_conversation {
-                empty_source::validate_with_limit(path, progress_tick, self.limits.for_path(path))?;
-                self.validate_current_source(path)?;
+    /// Prompt integrity guard: every admitted, not-yet-reconciled segment must
+    /// still match its pre-parse observation before more work is admitted.
+    fn validate_pending_integrity(&self) -> Result<()> {
+        for offer in &self.offers {
+            if offer.reconciled {
+                continue;
+            }
+            if let Some(snapshot) = &offer.snapshot {
+                snapshot.validate(&offer.discovered.source_path)?;
             }
         }
         Ok(())
     }
 
+    /// Validate an admitted segment that produced no conversation of its own.
+    /// A merged thread's segments are reconciled by the thread conversation, so
+    /// only a genuinely zero-output source reaches the empty-input check.
+    fn reconcile_offer(
+        &mut self,
+        index: usize,
+        progress_tick: Option<&(dyn Fn() + Send + Sync)>,
+    ) -> Result<()> {
+        if self.offers[index].reconciled {
+            return Ok(());
+        }
+        let path = self.offers[index].discovered.source_path.clone();
+        let limit = self.limits.for_path(&path);
+        let offer = &mut self.offers[index];
+        offer.reconciled = true;
+        if !offer.admitted {
+            return Ok(());
+        }
+        let snapshot = offer
+            .snapshot
+            .as_ref()
+            .context("Codex source was not admitted for parsing")?;
+        snapshot.validate(&path)?;
+        empty_source::validate_with_limit(&path, progress_tick, limit)?;
+        snapshot.validate(&path)
+    }
+
+    fn mark_thread_reconciled(&mut self, thread_paths: &[PathBuf]) {
+        for offer in &mut self.offers {
+            if thread_paths.contains(&offer.discovered.source_path) {
+                offer.reconciled = true;
+            }
+        }
+    }
+
+    /// A late enrichment budget rejection withdraws the WHOLE thread, never a
+    /// fragment: every segment's offer is marked over budget so no segment's
+    /// completion can be certified, and the refusal is recorded against the
+    /// segment whose bytes were refused. The conversation was already withheld
+    /// by the caller; this also stops the completion hook from certifying it.
+    fn withdraw_thread(&mut self, thread_paths: &[PathBuf], rejected: &Path, observed_bytes: u64) {
+        self.reject(rejected, observed_bytes);
+        for offer in &mut self.offers {
+            if thread_paths.contains(&offer.discovered.source_path) {
+                offer.over_budget = true;
+                offer.reconciled = true;
+            }
+        }
+    }
+
     fn reject(&mut self, source: &Path, observed_bytes: u64) {
-        self.withheld_source = Some(source.to_path_buf());
         self.incomplete.rejected_source_count =
             self.incomplete.rejected_source_count.saturating_add(1);
         if self.incomplete.rejected_sources.len() < MAX_REJECTION_SAMPLES {
@@ -363,14 +408,10 @@ fn scan_with_admission(
             if state.preflight_error.is_some() {
                 return false;
             }
-            if let Err(error) = state.finish_pending_source(ctx.progress_tick.as_deref()) {
+            if let Err(error) = state.validate_pending_integrity() {
                 state.preflight_error = Some(error);
                 return false;
             }
-            state.current_source = None;
-            state.snapshot = None;
-            state.withheld_source = None;
-            state.delivered_conversation = false;
         }
         // GH #486: filter before host hooks, budget rejection, or either parse.
         // Explicit-file roots pass through this hook too. An excluded oversized
@@ -379,31 +420,59 @@ fn scan_with_admission(
             return false;
         }
         // Preserve durable reuse, operator filters, pending batch flushes and
-        // cancellation decisions. An intentionally excluded source isn't a
-        // failed attempted read.
+        // cancellation decisions. A ledger-reused segment is still part of its
+        // thread: record the offer so the merged conversation can validate and
+        // enrich it, but do not parse-admit it.
         if !should_scan_source
             .as_mut()
             .is_none_or(|predicate| predicate(source))
         {
+            state.borrow_mut().offers.push(SourceOffer {
+                discovered: source.clone(),
+                snapshot: None,
+                admitted: false,
+                over_budget: false,
+                reconciled: false,
+            });
             return false;
         }
-        state.borrow_mut().current_source = Some(source.source_path.clone());
         let limit = admission.limits.for_path(&source.source_path);
         if let Some(size) = observed_over_limit_with_limit(source, limit) {
-            state.borrow_mut().reject(&source.source_path, size);
+            let mut state = state.borrow_mut();
+            state.reject(&source.source_path, size);
+            state.offers.push(SourceOffer {
+                discovered: source.clone(),
+                snapshot: None,
+                admitted: false,
+                over_budget: true,
+                reconciled: false,
+            });
             return false;
         }
         // One observation spans BOTH primary parsing and CASS enrichment.
         // Per-pass checks alone allow a rewrite between the two reads to mix
         // old primary messages with new enrichment in the same conversation.
         match SourceSnapshot::capture_with_limit(&source.source_path, limit) {
-            Ok(snapshot) => state.borrow_mut().snapshot = Some(snapshot),
+            Ok(snapshot) => state.borrow_mut().offers.push(SourceOffer {
+                discovered: source.clone(),
+                snapshot: Some(snapshot),
+                admitted: true,
+                over_budget: false,
+                reconciled: false,
+            }),
             Err(error) => {
                 let mut state = state.borrow_mut();
                 // Capture rechecks the opened object's size after the cheap
                 // path-based preflight, closing the intervening growth race.
                 if let Some(rejection) = error.downcast_ref::<EnrichmentBudgetExceeded>() {
                     state.reject(&source.source_path, rejection.observed_bytes);
+                    state.offers.push(SourceOffer {
+                        discovered: source.clone(),
+                        snapshot: None,
+                        admitted: false,
+                        over_budget: true,
+                        reconciled: false,
+                    });
                 } else {
                     state.preflight_error = Some(error);
                 }
@@ -415,71 +484,238 @@ fn scan_with_admission(
     let mut complete = |completion: &SourceCompletion| {
         {
             let state = state.borrow();
-            if state.withheld_source.as_deref() == Some(completion.source.source_path.as_path()) {
+            let mismatch = || {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "Codex conversation or completion does not match its admitted source",
+                )
+                .into()
+            };
+            let Some(source_index) = state.offer_index(&completion.source.source_path) else {
+                return Err(mismatch());
+            };
+            // A budget-refused thread is never certified.
+            if state.offers[source_index].over_budget {
                 return Ok(());
             }
-            state.validate_current_source(&completion.source.source_path)?;
-            state.finish_pending_source(ctx.progress_tick.as_deref())?;
+            let mut sidecar_indices = Vec::new();
+            for sidecar in &completion.required_sidecars {
+                let Some(index) = state.offer_index(&sidecar.source_path) else {
+                    return Err(mismatch());
+                };
+                if state.offers[index].over_budget {
+                    return Ok(());
+                }
+                sidecar_indices.push(index);
+            }
+            state.offers[source_index]
+                .snapshot
+                .as_ref()
+                .context("Codex source was not admitted for parsing")?
+                .validate(&completion.source.source_path)?;
+            for (sidecar, index) in completion.required_sidecars.iter().zip(sidecar_indices) {
+                state.offers[index]
+                    .snapshot
+                    .as_ref()
+                    .context("Codex source was not admitted for parsing")?
+                    .validate(&sidecar.source_path)?;
+            }
         }
         on_source_complete
             .as_mut()
             .map_or(Ok(()), |sink| sink(completion))?;
-        // Once completion succeeds, later appends to this already-consumed
-        // source are normal live activity, not failure of a subsequent source.
-        let mut state = state.borrow_mut();
-        state.current_source = None;
-        state.snapshot = None;
+        // The thread is certified; its offers no longer guard a later source.
+        state.borrow_mut().offers.clear();
         Ok(())
     };
     let mut forward = |mut conversation: NormalizedConversation| {
-        state
-            .borrow()
-            .validate_current_source(&conversation.source_path)?;
-        let enriched = enrich(&mut conversation).or_else(|error| {
-            let state = state.borrow();
-            let snapshot = state
-                .snapshot
-                .as_ref()
-                .context("Codex source was not admitted for enrichment")?;
-            // The existing enrichment entry point refuses >100 MiB BEFORE
-            // parsing. Only that precise refusal can use the operator's larger
-            // budget. Reuse its actual parser and our retained source handle,
-            // not a reduced alternate parser or a copied/truncated rollout.
-            if error.is::<EnrichmentBudgetExceeded>()
-                && snapshot.len() > MAX_AUGMENT_ROLLOUT_BYTES
-                && admission.limits.for_path(&conversation.source_path) > MAX_AUGMENT_ROLLOUT_BYTES
-            {
-                state.validate_current_source(&conversation.source_path)?;
-                snapshot.enrich(&mut conversation, ctx.progress_tick.as_deref())
-            } else {
-                Err(error)
+        // The merged thread's segment list is authoritative (FAD metadata). A
+        // single-file thread has no segments and keeps the strict one-source
+        // path. Keying on metadata, never on filename patterns.
+        let segment_paths: Option<Vec<PathBuf>> = conversation
+            .metadata
+            .get("segments")
+            .and_then(|value| value.as_array())
+            .map(|array| {
+                array
+                    .iter()
+                    .filter_map(|segment| segment.get("path").and_then(|path| path.as_str()))
+                    .map(PathBuf::from)
+                    .collect()
+            });
+        let merged = segment_paths
+            .as_ref()
+            .is_some_and(|paths| !paths.is_empty());
+        let thread_paths: Vec<PathBuf> = segment_paths
+            .filter(|paths| !paths.is_empty())
+            .unwrap_or_else(|| vec![conversation.source_path.clone()]);
+        {
+            let mut state = state.borrow_mut();
+            // Reconcile any earlier zero-output source before delivering this
+            // conversation, so a swallowed parse failure still stops the scan.
+            for index in 0..state.offers.len() {
+                if state.offers[index].reconciled
+                    || thread_paths.contains(&state.offers[index].discovered.source_path)
+                {
+                    continue;
+                }
+                state.reconcile_offer(index, ctx.progress_tick.as_deref())?;
             }
-        });
+            // Every segment must have been offered. A budget-refused segment
+            // withdraws the whole thread: admitting the rest would publish bytes
+            // this guard never observed (no silent truncation).
+            let mut refused = false;
+            for path in &thread_paths {
+                match state.offer_index(path) {
+                    None => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Codex thread segment was not offered for admission",
+                        )
+                        .into());
+                    }
+                    Some(index) => {
+                        if state.offers[index].over_budget {
+                            refused = true;
+                        }
+                        if !merged && !state.offers[index].admitted {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                "Codex conversation or completion does not match its admitted source",
+                            )
+                            .into());
+                        }
+                    }
+                }
+            }
+            if refused {
+                state.mark_thread_reconciled(&thread_paths);
+                return Ok(());
+            }
+            // Capture snapshots for ledger-reused segments lazily. Their
+            // pre-parse observation must still match before enrichment reads.
+            for path in &thread_paths {
+                let index = state.offer_index(path).unwrap();
+                if state.offers[index].snapshot.is_some() {
+                    continue;
+                }
+                if state.offers[index].discovered.fs_metadata_changed() {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "Codex source changed across parsing or enrichment; retry this source",
+                    )
+                    .into());
+                }
+                let limit = admission.limits.for_path(path);
+                match SourceSnapshot::capture_with_limit(path, limit) {
+                    Ok(snapshot) => state.offers[index].snapshot = Some(snapshot),
+                    Err(error) => {
+                        if let Some(rejection) = error.downcast_ref::<EnrichmentBudgetExceeded>() {
+                            state.reject(path, rejection.observed_bytes);
+                            state.offers[index].over_budget = true;
+                            state.mark_thread_reconciled(&thread_paths);
+                            return Ok(());
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            for path in &thread_paths {
+                let offer = &state.offers[state.offer_index(path).unwrap()];
+                offer
+                    .snapshot
+                    .as_ref()
+                    .context("Codex source was not admitted for parsing")?
+                    .validate(path)?;
+            }
+        }
+        // The segment whose enrichment refused the bytes, when a merged thread
+        // fails mid-enrichment; a single-file source is its own rejected path.
+        let mut rejected_segment: Option<PathBuf> = None;
+        let enriched = if merged {
+            enrich_merged_thread(
+                &mut conversation,
+                &thread_paths,
+                &state,
+                admission,
+                ctx.progress_tick.as_deref(),
+                &mut rejected_segment,
+            )
+        } else {
+            enrich(&mut conversation).or_else(|error| {
+                let state = state.borrow();
+                let index = state.offer_index(&conversation.source_path).context(
+                    "Codex conversation or completion does not match its admitted source",
+                )?;
+                let snapshot = state.offers[index]
+                    .snapshot
+                    .as_ref()
+                    .context("Codex source was not admitted for enrichment")?;
+                // The existing enrichment entry point refuses >100 MiB BEFORE
+                // parsing. Only that precise refusal can use the operator's
+                // larger budget, through the retained source handle.
+                if error.is::<EnrichmentBudgetExceeded>()
+                    && snapshot.len() > MAX_AUGMENT_ROLLOUT_BYTES
+                    && admission.limits.for_path(&conversation.source_path)
+                        > MAX_AUGMENT_ROLLOUT_BYTES
+                {
+                    snapshot.validate(&conversation.source_path)?;
+                    snapshot.enrich(&mut conversation, ctx.progress_tick.as_deref())
+                } else {
+                    Err(error)
+                }
+            })
+        };
         if let Err(error) = enriched {
             // The file may cross the cap after preflight. Contain that specific
             // owned enrichment error only when the enclosing source is known;
             // interpose on completion so FAD cannot certify the discarded data.
             if let Some(rejection) = error.downcast_ref::<EnrichmentBudgetExceeded>() {
                 let mut state = state.borrow_mut();
-                if state.current_source.as_deref() == Some(conversation.source_path.as_path()) {
-                    state.reject(&conversation.source_path, rejection.observed_bytes);
+                if state.offer_index(&conversation.source_path).is_some() {
+                    let rejected =
+                        rejected_segment.unwrap_or_else(|| conversation.source_path.clone());
+                    state.withdraw_thread(&thread_paths, &rejected, rejection.observed_bytes);
                     return Ok(());
                 }
             }
             return Err(error);
         }
-        state
-            .borrow()
-            .validate_current_source(&conversation.source_path)?;
+        // Enrichment must not reassign the conversation to a foreign source.
+        if !thread_paths.contains(&conversation.source_path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Codex conversation or completion does not match its admitted source",
+            )
+            .into());
+        }
+        {
+            let state = state.borrow();
+            for path in &thread_paths {
+                let offer = &state.offers[state.offer_index(path).unwrap()];
+                offer
+                    .snapshot
+                    .as_ref()
+                    .context("Codex source was not admitted for parsing")?
+                    .validate(path)?;
+            }
+        }
         // Deliberately outside the enrichment error match: sink/storage errors
         // must abort even when a caller returns the same concrete error type.
-        let source_path = conversation.source_path.clone();
         on_conversation(conversation)?;
         let mut state = state.borrow_mut();
-        state.delivered_conversation = true;
+        state.mark_thread_reconciled(&thread_paths);
         // A sink can mutate the source too. Delivery cannot be rolled back
         // here, but the scan must fail and must not certify its fingerprint.
-        state.validate_current_source(&source_path)
+        for path in &thread_paths {
+            let offer = &state.offers[state.offer_index(path).unwrap()];
+            offer
+                .snapshot
+                .as_ref()
+                .context("Codex source was not admitted for parsing")?
+                .validate(path)?;
+        }
+        Ok(())
     };
     let mut guarded = SourceScanHooks {
         should_scan_source: Some(&mut should_scan),
@@ -490,10 +726,53 @@ fn scan_with_admission(
     if let Some(error) = state.preflight_error.take() {
         return Err(error);
     }
-    state.finish_pending_source(ctx.progress_tick.as_deref())?;
+    for index in 0..state.offers.len() {
+        state.reconcile_offer(index, ctx.progress_tick.as_deref())?;
+    }
     let incomplete = state.incomplete;
     if incomplete.rejected_source_count > 0 {
         return Err(incomplete.into());
+    }
+    Ok(())
+}
+
+/// Enrich a merged thread by reading EVERY segment's bytes, not only the
+/// identity snapshot. Each segment reuses the existing per-file augmentation
+/// (compressed/legacy handling and its own observable-snapshot guards); a
+/// segment over the default cap but within the operator's raised budget falls
+/// back to its retained admitted handle.
+fn enrich_merged_thread(
+    conversation: &mut NormalizedConversation,
+    thread_paths: &[PathBuf],
+    state: &RefCell<ScanState>,
+    admission: &ScanAdmission,
+    progress_tick: Option<&(dyn Fn() + Send + Sync)>,
+    rejected_segment: &mut Option<PathBuf>,
+) -> Result<()> {
+    for path in thread_paths {
+        match super::augment_modern_codex_source(conversation, path, progress_tick) {
+            Ok(()) => {}
+            Err(error) => {
+                *rejected_segment = Some(path.clone());
+                let state = state.borrow();
+                let index = state
+                    .offer_index(path)
+                    .context("Codex thread segment was not offered for admission")?;
+                let snapshot = state.offers[index]
+                    .snapshot
+                    .as_ref()
+                    .context("Codex source was not admitted for enrichment")?;
+                if error.is::<EnrichmentBudgetExceeded>()
+                    && snapshot.len() > MAX_AUGMENT_ROLLOUT_BYTES
+                    && admission.limits.for_path(path) > MAX_AUGMENT_ROLLOUT_BYTES
+                {
+                    snapshot.validate(path)?;
+                    snapshot.enrich_path(conversation, path, progress_tick)?;
+                } else {
+                    return Err(error);
+                }
+            }
+        }
     }
     Ok(())
 }

@@ -2262,6 +2262,147 @@ fn list_sessions_groups_codex_continuation_rollouts_to_one_public_id() -> Result
     bridge.shutdown()
 }
 
+/// FAD paginated-thread merge, section 7.3: an archive holding the old
+/// per-segment Codex rows retires the continuation row when the merged thread
+/// is persisted, and the viewer bridge list lane then shows exactly one row
+/// for the thread. Runs the real indexer persist path in-process, then reads
+/// the same list_sessions lane the bridge serves. Synthetic fixture only.
+#[test]
+fn codex_merged_thread_retirement_shows_one_list_row() -> Result<()> {
+    use coding_agent_search::connectors::{NormalizedConversation, NormalizedMessage};
+    use coding_agent_search::indexer::persist::persist_conversation;
+    use coding_agent_search::search::tantivy::TantivyIndex;
+
+    let dir = tempfile::TempDir::new()?;
+    let storage = FrankenStorage::open(&dir.path().join("paginated.db"))?;
+    storage.run_migrations()?;
+    schema::ensure_schema(storage.raw())?;
+    revisions::ensure_observers(storage.raw())?;
+    let index_path = coding_agent_search::search::tantivy::index_dir(dir.path())?;
+    let mut index = TantivyIndex::open_or_create(&index_path)?;
+
+    const A: &str = "01a1d1b4-5529-7cd3-97db-d52326514bc2";
+    const B: &str = "01a1d1ba-a4da-7b00-92b0-0368cfada0b2";
+    let sessions = dir.path().join("sessions/2026/11/12");
+    let original = sessions.join(format!("rollout-2026-11-12T22-40-18-{A}.jsonl"));
+    let continuation = sessions.join(format!("rollout-2026-11-12T22-47-12-{A}_{B}.jsonl"));
+    let orig_ext = format!("sessions/2026/11/12/rollout-2026-11-12T22-40-18-{A}");
+    let cont_ext = format!("sessions/2026/11/12/rollout-2026-11-12T22-47-12-{A}_{B}");
+
+    let msg = |idx: i64, role: &str, text: &str| NormalizedMessage {
+        idx,
+        role: role.into(),
+        author: None,
+        created_at: Some(1_762_980_000_000 + idx * 1_000),
+        content: text.into(),
+        extra: json!({}),
+        snippets: Vec::new(),
+        invocations: Vec::new(),
+    };
+    let base = |path: PathBuf, ext: String, msgs: Vec<NormalizedMessage>, meta: Value| {
+        NormalizedConversation {
+            agent_slug: "codex".into(),
+            external_id: Some(ext),
+            title: Some("paginated thread".into()),
+            workspace: Some(dir.path().join("workspace")),
+            source_path: path,
+            started_at: Some(1_762_980_000_000),
+            ended_at: Some(1_762_980_060_000),
+            metadata: meta,
+            messages: msgs,
+        }
+    };
+
+    // Old FAD shape: one conversation per rollout segment.
+    persist_conversation(
+        &storage,
+        &mut index,
+        &base(
+            original.clone(),
+            orig_ext.clone(),
+            vec![
+                msg(0, "user", "first question"),
+                msg(1, "assistant", "first answer"),
+            ],
+            json!({"source":"rollout"}),
+        ),
+    )?;
+    persist_conversation(
+        &storage,
+        &mut index,
+        &base(
+            continuation.clone(),
+            cont_ext.clone(),
+            vec![
+                msg(0, "user", "second question"),
+                msg(1, "assistant", "second answer"),
+            ],
+            json!({"source":"rollout"}),
+        ),
+    )?;
+    index.commit_with_region_doc_stamps(storage.raw())?;
+    let seeded: i64 = storage
+        .raw()
+        .query_row("SELECT COUNT(*) FROM conversations")?
+        .get_typed(0)?;
+    ensure!(
+        seeded == 2,
+        "seeded archive holds one row per segment, got {seeded}"
+    );
+
+    // Merged thread: identity is the original segment; metadata.segments lists
+    // both segments' former external ids (the authoritative retirement key).
+    let merged = base(
+        original.clone(),
+        orig_ext.clone(),
+        vec![
+            msg(0, "user", "first question"),
+            msg(1, "assistant", "first answer"),
+            msg(2, "user", "second question"),
+            msg(3, "assistant", "second answer"),
+        ],
+        json!({
+            "source":"rollout", "thread_id": A, "segment_count": 2,
+            "segments": [
+                {"path": original, "external_id": orig_ext, "kind":"original"},
+                {"path": continuation, "external_id": cont_ext, "kind":"continuation"},
+            ],
+        }),
+    );
+    persist_conversation(&storage, &mut index, &merged)?;
+    index.commit_with_region_doc_stamps(storage.raw())?;
+
+    let remaining: i64 = storage
+        .raw()
+        .query_row("SELECT COUNT(*) FROM conversations")?
+        .get_typed(0)?;
+    ensure!(
+        remaining == 1,
+        "the stale per-segment row must be retired, got {remaining}"
+    );
+
+    // The viewer bridge list lane now shows exactly one row for the thread.
+    let filters = protocol::ListFilters::default();
+    let mut identity_index = None;
+    let page = query::list_sessions(
+        storage.raw(),
+        &filters,
+        None,
+        None,
+        None,
+        50,
+        &mut identity_index,
+        "pag-retire-rev",
+    )?;
+    let items = page["items"].as_array().expect("items");
+    ensure!(items.len() == 1, "viewer bridge list shows one row: {page}");
+    ensure!(
+        items[0]["public_id"].as_str() == Some(format!("codex:{A}").as_str()),
+        "the merged thread's public id surfaces: {page}"
+    );
+    Ok(())
+}
+
 #[test]
 fn list_sessions_filters_and_typed_refusals() -> Result<()> {
     let mut bridge = BridgeHarness::with_seed(&list_fixture_a(), &[])?;
