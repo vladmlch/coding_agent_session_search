@@ -4190,7 +4190,10 @@ fn details_rich_session_bound_reads() -> Result<()> {
     ensure!(summary["tags"] == json!(["detail-tag"]), "{summary}");
     ensure!(summary["is_subagent"] == false);
     ensure!(summary["task_category"] == "bugfix");
-    ensure!(summary["classification_coverage"] == "partial");
+    // The verdict is known (is_subagent=false): classification coverage
+    // is complete even though unrelated scopes leave the facts manifest
+    // partial (the facts section still reports state "partial").
+    ensure!(summary["classification_coverage"] == "complete");
     ensure!(summary["metrics"]["step_count"] == 5, "{summary}");
     ensure!(summary["metrics"]["turn_count"] == 3);
     ensure!(summary["metrics"]["thinking_block_count"] == 1);
@@ -5600,6 +5603,182 @@ fn analytics_recent_sessions_carry_persisted_facts() -> Result<()> {
         .find(|item| item["conversation_id"] == 5)
         .expect("conv5 recent row");
     ensure!(conv5["metrics"].is_null(), "{conv5}");
+    bridge.shutdown()
+}
+
+#[test]
+fn classification_coverage_reflects_relationship_evidence_only() -> Result<()> {
+    // A source-proven subagent verdict is classified even when unrelated
+    // fact scopes (tools, overlays, metrics) leave the overall facts
+    // coverage_state short of complete; only an unknown verdict is
+    // uncertain. The list/detail/recent lanes and the dashboard/project
+    // folds must all read the relationship evidence, never the overall
+    // coverage_state.
+    let proj = tempfile::tempdir()?;
+    let workspace = proj.path().join("alpha").to_string_lossy().into_owned();
+    std::fs::create_dir(&workspace)?;
+    let fixtures = (1..=4_i64)
+        .map(|id| {
+            SeedConversation::new(
+                id,
+                "claude_code",
+                &format!("/missing/fixture-{id}.jsonl"),
+                &format!("fixture-{id}"),
+            )
+            .workspace(&workspace)
+            .agent_messages(Some(id * 1_000), 1)
+        })
+        .collect::<Vec<_>>();
+    let mut bridge = BridgeHarness::with_seed(&fixtures, &[])?;
+    init_extensions(&bridge)?;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    // conv1: known root verdict, unrelated scopes partial.
+    // conv2: known subagent verdict, unrelated scopes unavailable.
+    // conv3: no verdict, unrelated scopes partial — genuinely uncertain.
+    // conv4: no facts row at all — extraction has not run yet.
+    for (id, is_subagent, coverage) in [
+        (1_i64, Some(0_i64), "partial"),
+        (2, Some(1), "unavailable"),
+        (3, None, "partial"),
+    ] {
+        writer.execute_with_params(
+            "INSERT INTO viewer_session_facts \
+             (conversation_id,extractor_version,source_revision,coverage_state,is_subagent) \
+             VALUES (?1,1,1,?2,?3)",
+            &param_slice_to_values(params![id, coverage, is_subagent]),
+        )?;
+    }
+    drop(writer);
+
+    // List lane: known verdicts are classified regardless of the overall
+    // coverage_state; the unknown verdict stays unavailable and the
+    // never-extracted row stays null.
+    let page = bridge.exchange(json!({
+        "op":"list_sessions","filters":{"include_subagents":true},"limit":10}))?;
+    ensure!(page["ok"] == true, "{page}");
+    let items = page["result"]["items"].as_array().expect("items");
+    let coverage_of = |id: i64| -> Value {
+        items
+            .iter()
+            .find(|item| item["conversation_id"] == id)
+            .unwrap_or_else(|| panic!("conv{id} missing from page"))["classification_coverage"]
+            .clone()
+    };
+    ensure!(coverage_of(1) == "complete", "known root verdict: {page}");
+    ensure!(
+        coverage_of(2) == "complete",
+        "known subagent verdict: {page}"
+    );
+    ensure!(coverage_of(3) == "unavailable", "unknown verdict: {page}");
+    ensure!(coverage_of(4).is_null(), "no facts row: {page}");
+
+    // Detail lane: the summary's classification coverage follows the
+    // verdict while the facts section keeps the overall manifest state.
+    let detail = bridge.exchange(json!({
+        "op":"get_session_details","public_id":"claude:fixture-1",
+        "sections":["summary","facts"],"limit":10}))?;
+    ensure!(detail["ok"] == true, "{detail}");
+    let sections = &detail["result"]["sections"];
+    ensure!(
+        sections["summary"]["classification_coverage"] == "complete",
+        "{sections}"
+    );
+    ensure!(sections["facts"]["state"] == "partial", "{sections}");
+
+    // Dashboard fold (subagents included so conv2 rides the universe):
+    // only conv3 (unknown verdict) and conv4 (no facts row) are uncertain.
+    let dashboard = bridge.exchange(json!({
+        "op":"dashboard","scope":{"include_subagents":true}}))?;
+    ensure!(dashboard["ok"] == true, "{dashboard}");
+    ensure!(
+        dashboard["result"]["classification"] == json!({"complete": false, "uncertain_count": 2}),
+        "{dashboard}"
+    );
+    let recents = dashboard["result"]["recent_sessions"]
+        .as_array()
+        .expect("recent_sessions");
+    let recent_coverage = |id: i64| -> Value {
+        recents
+            .iter()
+            .find(|item| item["conversation_id"] == id)
+            .unwrap_or_else(|| panic!("conv{id} missing from recents"))["classification_coverage"]
+            .clone()
+    };
+    ensure!(recent_coverage(1) == "complete", "{recents:?}");
+    ensure!(recent_coverage(3) == "unavailable", "{recents:?}");
+    ensure!(recent_coverage(4).is_null(), "{recents:?}");
+
+    // Project fold: the same relationship-only count.
+    let projects = bridge.exchange(json!({
+        "op":"projects","scope":{"include_subagents":true}}))?;
+    ensure!(projects["ok"] == true, "{projects}");
+    let alpha = projects["result"]["projects"]
+        .as_array()
+        .expect("projects")
+        .iter()
+        .find(|item| item["project_name"] == "alpha")
+        .expect("alpha project");
+    ensure!(
+        alpha["classification"] == json!({"complete": false, "uncertain_count": 2}),
+        "{alpha}"
+    );
+    bridge.shutdown()
+}
+
+#[test]
+fn dashboard_classification_complete_with_known_verdicts_and_partial_coverage() -> Result<()> {
+    // Every verdict is source-proven while unrelated scopes stay
+    // incomplete: the dashboard and project folds must report complete
+    // classification with zero uncertain sessions — the banner condition
+    // is the relationship evidence, not the overall facts coverage.
+    let proj = tempfile::tempdir()?;
+    let workspace = proj.path().join("alpha").to_string_lossy().into_owned();
+    std::fs::create_dir(&workspace)?;
+    let fixtures = (1..=2_i64)
+        .map(|id| {
+            SeedConversation::new(
+                id,
+                "claude_code",
+                &format!("/missing/fixture-{id}.jsonl"),
+                &format!("fixture-{id}"),
+            )
+            .workspace(&workspace)
+            .agent_messages(Some(id * 1_000), 1)
+        })
+        .collect::<Vec<_>>();
+    let mut bridge = BridgeHarness::with_seed(&fixtures, &[])?;
+    init_extensions(&bridge)?;
+    let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
+    for (id, is_subagent, coverage) in [(1_i64, 0_i64, "partial"), (2, 1, "unavailable")] {
+        writer.execute_with_params(
+            "INSERT INTO viewer_session_facts \
+             (conversation_id,extractor_version,source_revision,coverage_state,is_subagent) \
+             VALUES (?1,1,1,?2,?3)",
+            &param_slice_to_values(params![id, coverage, is_subagent]),
+        )?;
+    }
+    drop(writer);
+
+    let dashboard = bridge.exchange(json!({
+        "op":"dashboard","scope":{"include_subagents":true}}))?;
+    ensure!(dashboard["ok"] == true, "{dashboard}");
+    ensure!(
+        dashboard["result"]["classification"] == json!({"complete": true, "uncertain_count": 0}),
+        "{dashboard}"
+    );
+    let projects = bridge.exchange(json!({
+        "op":"projects","scope":{"include_subagents":true}}))?;
+    ensure!(projects["ok"] == true, "{projects}");
+    let alpha = projects["result"]["projects"]
+        .as_array()
+        .expect("projects")
+        .iter()
+        .find(|item| item["project_name"] == "alpha")
+        .expect("alpha project");
+    ensure!(
+        alpha["classification"] == json!({"complete": true, "uncertain_count": 0}),
+        "{alpha}"
+    );
     bridge.shutdown()
 }
 

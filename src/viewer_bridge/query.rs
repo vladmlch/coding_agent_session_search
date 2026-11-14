@@ -901,7 +901,7 @@ fn sql_value(cursor: &Cursor) -> SqliteValue {
 /// grand_total_tokens, estimated_cost_usd, api_call_count,
 /// tool_call_count, user_message_count, assistant_message_count,
 /// is_pinned§, custom_title*, notes*, is_subagent, task_category,
-/// coverage_state, step_count, artifact_count, parent_conversation_id,
+/// classification_coverage, step_count, artifact_count, parent_conversation_id,
 /// workspace_path*, byte_sum∥`
 /// (`*` = TEXT_GUARD_BYTES-guarded, `†` = tail-state precedence,
 /// `‡` = `lmca ?? ended ?? started`, `§` = absent annotation → 0,
@@ -1196,7 +1196,6 @@ fn hydrate_rows(
     struct Facts {
         is_subagent: Option<i64>,
         task_category: Option<String>,
-        coverage_state: Option<String>,
         step_count: Option<i64>,
         artifact_count: Option<i64>,
         parent_conversation_id: Option<i64>,
@@ -1220,7 +1219,9 @@ fn hydrate_rows(
             Facts {
                 is_subagent: row.get_typed(1)?,
                 task_category: row.get_typed(2)?,
-                coverage_state: row.get_typed(3)?,
+                // Column 3 (the overall facts coverage_state) is deliberately
+                // not read: classification coverage derives from the verdict
+                // alone (facts_bag::classification_coverage).
                 step_count: row.get_typed(4)?,
                 artifact_count: row.get_typed(5)?,
                 parent_conversation_id: row.get_typed(6)?,
@@ -1429,7 +1430,7 @@ fn hydrate_rows(
             integer_or_null(fact.and_then(|f| f.is_subagent)), // 24
             fact.and_then(|f| f.task_category.clone())
                 .map_or(SqliteValue::Null, |s| SqliteValue::Text(s.into())), // 25
-            fact.and_then(|f| f.coverage_state.clone())
+            fact.map(|f| facts_bag::classification_coverage(f.is_subagent))
                 .map_or(SqliteValue::Null, |s| SqliteValue::Text(s.into())), // 26
             integer_or_null(fact.and_then(|f| f.step_count)), // 27
             integer_or_null(fact.and_then(|f| f.artifact_count)), // 28

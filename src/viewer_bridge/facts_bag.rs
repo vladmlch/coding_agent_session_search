@@ -12,6 +12,21 @@ use serde_json::{Value, json};
 
 use super::protocol::PREVIEW_BYTES;
 
+/// Classification coverage reports only the relationship (subagent)
+/// evidence: a persisted verdict is classified no matter what unrelated
+/// scopes (tools, overlays, metrics) report in the overall
+/// `coverage_state`; an absent verdict stays unavailable. This matches
+/// the `is_subagent` scope the extractor publishes in the coverage
+/// manifest (complete iff the verdict is known). Callers handle the
+/// no-facts-row case themselves (list/recent: NULL, detail: pending).
+pub(crate) fn classification_coverage(is_subagent: Option<i64>) -> &'static str {
+    if is_subagent.is_some() {
+        "complete"
+    } else {
+        "unavailable"
+    }
+}
+
 /// Bound a free-text preview on a UTF-8 char boundary. Returns
 /// (emitted, truncated, original_bytes): a value within PREVIEW_BYTES is
 /// kept whole (truncated=false, original_bytes=None - the preview IS the

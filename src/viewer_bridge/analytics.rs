@@ -965,15 +965,14 @@ fn fold_provider_model(
     Ok((providers, models, unknown_model))
 }
 
-/// Uncertain-classification fold over the scoped universe: a row whose
-/// facts row was never persisted (`f.is_subagent IS NULL`) or whose
-/// persisted coverage isn't `complete` has no measured verdict yet —
+/// Uncertain-classification fold over the scoped universe: only a row
+/// with no measured subagent verdict (`f.is_subagent IS NULL`, including
+/// a never-persisted facts row) is uncertain. Unrelated fact scopes
+/// (tools, overlays, metrics) never invalidate a known verdict —
 /// `classification_complete` is therefore `uncertain == 0`, never a
 /// constant (Task 7).
 const UNCERTAIN_CLASSIFICATION_SQL: &str = "\
-SUM(CASE WHEN f.is_subagent IS NULL \
-     OR COALESCE(f.coverage_state,'') <> 'complete' \
-THEN 1 ELSE 0 END)";
+SUM(CASE WHEN f.is_subagent IS NULL THEN 1 ELSE 0 END)";
 
 fn recent_sessions(
     connection: &Connection,
@@ -1084,6 +1083,7 @@ fn recent_sessions(
             potential_savings_usd: row.get_typed(49)?,
         };
         let facts_present: Option<i64> = row.get_typed(18)?;
+        let is_subagent: Option<i64> = row.get_typed(17)?;
         items.push(json!({
             "conversation_id": row.get_typed::<i64>(0)?,
             "source_id": row.get_typed::<Option<String>>(1)?,
@@ -1110,8 +1110,11 @@ fn recent_sessions(
             "workspace_path": workspace_path,
             "project": workspace_path.as_deref().map(identity::path_name).filter(|n| !n.is_empty()),
             "task_category": row.get_typed::<Option<String>>(16)?,
-            "is_subagent": row.get_typed::<Option<i64>>(17)?.map(|v| v != 0),
-            "classification_coverage": row.get_typed::<Option<String>>(25)?,
+            "is_subagent": is_subagent.map(|v| v != 0),
+            // Relationship evidence only — the overall coverage_state
+            // (column 25) never invalidates a known verdict.
+            "classification_coverage": facts_present
+                .map(|_| facts_bag::classification_coverage(is_subagent)),
             "parent_conversation_id": row.get_typed::<Option<i64>>(26)?,
             "metrics": bag.emit(facts_present.is_some()),
         }));
