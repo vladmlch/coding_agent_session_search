@@ -1200,7 +1200,7 @@ fn summary_section(
         "classification_coverage".into(),
         json!(
             facts
-                .map(|f| f.coverage_state.as_str())
+                .map(|f| facts_bag::classification_coverage(f.is_subagent))
                 .unwrap_or("pending")
         ),
     );
