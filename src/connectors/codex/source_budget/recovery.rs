@@ -5,9 +5,10 @@
 //! is not a retry loop: changing/unfinished sources are retried on a later scan.
 
 use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use franken_agent_detection::ScanRoot;
 use franken_agent_detection::connectors::codex::rollout_session_path;
@@ -193,6 +194,7 @@ fn directory_session_id(source: &DiscoveredSourceFile) -> Option<String> {
         })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn scan_source(
     inner: &dyn Connector,
     ctx: &ScanContext,
@@ -201,34 +203,46 @@ fn scan_source(
     on_conversation: &mut dyn FnMut(NormalizedConversation) -> Result<()>,
     admission: &ScanAdmission,
     enrich: &mut dyn FnMut(&mut NormalizedConversation) -> Result<()>,
+    inventory: &HashMap<PathBuf, DiscoveredSourceFile>,
+    covered: &mut HashSet<PathBuf>,
 ) -> (Result<()>, bool) {
     let consumer_failed = Cell::new(false);
     let visited = Cell::new(false);
     let scope_changed = Cell::new(false);
-    let directory_id = archives::session_id(ctx, source)
-        .map(Some)
-        .or_else(|| (source.scan_root != source.source_path).then(|| directory_session_id(source)));
     let SourceScanHooks {
         should_scan_source,
         on_source_complete,
     } = hooks;
     let mut before = |observed: &DiscoveredSourceFile| {
-        // A discovered file can become a directory before the explicit scan.
-        // Never let that race broaden the selection to undiscovered children.
         if observed.source_path != source.source_path {
-            scope_changed.set(true);
-            return false;
+            // FAD expands a scoped segment to its whole thread. Thread siblings
+            // are discovered inventory; anything else (e.g. a file that became a
+            // directory hiding undiscovered children) is a scope change.
+            if !inventory.contains_key(&observed.source_path) {
+                scope_changed.set(true);
+                return false;
+            }
+        } else {
+            visited.set(true);
         }
-        visited.set(true);
-        let observed = original_identity(observed.clone(), source);
+        let identity = inventory.get(&observed.source_path).unwrap_or(source);
+        let observed = original_identity(observed.clone(), identity);
         should_scan_source
             .as_mut()
             .is_none_or(|predicate| predicate(&observed))
     };
     let mut complete = |done: &SourceCompletion| {
+        let source_identity = inventory.get(&done.source.source_path).unwrap_or(source);
         let done = SourceCompletion {
-            source: original_identity(done.source.clone(), source),
-            required_sidecars: done.required_sidecars.clone(),
+            source: original_identity(done.source.clone(), source_identity),
+            required_sidecars: done
+                .required_sidecars
+                .iter()
+                .map(|sidecar| {
+                    let identity = inventory.get(&sidecar.source_path).unwrap_or(source);
+                    original_identity(sidecar.clone(), identity)
+                })
+                .collect(),
             conversations_emitted: done.conversations_emitted,
         };
         on_source_complete
@@ -237,8 +251,26 @@ fn scan_source(
             .inspect_err(|_| consumer_failed.set(true))
     };
     let mut deliver = |mut conversation: NormalizedConversation| {
+        // Bind the directory identity to the conversation's identity segment (the
+        // merged thread's original), not to the scoped continuation.
+        let identity = inventory.get(&conversation.source_path).unwrap_or(source);
+        let directory_id = archives::session_id(ctx, identity).map(Some).or_else(|| {
+            (identity.scan_root != identity.source_path).then(|| directory_session_id(identity))
+        });
         if let Some(id) = &directory_id {
             conversation.external_id.clone_from(id);
+        }
+        covered.insert(conversation.source_path.clone());
+        if let Some(segments) = conversation
+            .metadata
+            .get("segments")
+            .and_then(|value| value.as_array())
+        {
+            for segment in segments {
+                if let Some(path) = segment.get("path").and_then(|path| path.as_str()) {
+                    covered.insert(PathBuf::from(path));
+                }
+            }
         }
         on_conversation(conversation).inspect_err(|_| consumer_failed.set(true))
     };
@@ -297,11 +329,21 @@ pub(super) fn scan(
         limits,
     };
     let (sources, discovery_result) = archives::discover_for_scan(ctx)?.into_parts();
+    let inventory: HashMap<PathBuf, DiscoveredSourceFile> = sources
+        .iter()
+        .map(|source| (source.source_path.clone(), source.clone()))
+        .collect();
+    let mut covered: HashSet<PathBuf> = HashSet::new();
     let mut failures = Failures {
         budgets: limits.incomplete(),
         ..Failures::default()
     };
     for source in sources {
+        // A merged thread is indexed once, under its identity; its other segments
+        // are covered by that delivery and must not be re-attempted.
+        if covered.contains(&source.source_path) {
+            continue;
+        }
         if admission.exclusions.excludes(&source.source_path) {
             continue;
         }
@@ -318,6 +360,8 @@ pub(super) fn scan(
             on_conversation,
             &admission,
             &mut enrich,
+            &inventory,
+            &mut covered,
         );
         if let Err(error) = result {
             // Classify by where the error originated, never its type or text:

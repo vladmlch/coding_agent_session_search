@@ -102,7 +102,12 @@ impl Connector for CodexConnector {
         // Runtime indexing binds the receiving archive separately; standalone
         // scans and migration proof parsing retain their supplied context.
         let archive_data_dir = self.archive_data_dir.as_deref().unwrap_or(&ctx.data_dir);
-        let current_source = RefCell::new(None);
+        // Every offered segment is recorded, admitted or ledger-reused. A merged
+        // thread's identity can be refused for reuse while a continuation is
+        // admitted; delivery must still bind to the identity's source boundary,
+        // not to the last admitted file.
+        let offered =
+            RefCell::new(std::collections::HashMap::<PathBuf, DiscoveredSourceFile>::new());
         let franken_agent_detection::SourceScanHooks {
             should_scan_source,
             on_source_complete,
@@ -111,15 +116,44 @@ impl Connector for CodexConnector {
             let admitted = should_scan_source
                 .as_mut()
                 .is_none_or(|predicate| predicate(source));
-            *current_source.borrow_mut() = admitted.then(|| source.clone());
+            offered
+                .borrow_mut()
+                .insert(source.source_path.clone(), source.clone());
             admitted
         };
         let mut deliver = |conversation: NormalizedConversation| {
-            let source = current_source.borrow();
-            let source = source
-                .as_ref()
+            let source = offered
+                .borrow()
+                .get(&conversation.source_path)
+                .cloned()
                 .context("Codex delivery has no admitted source boundary")?;
-            layout_identity::deliver(archive_data_dir, ctx, source, conversation, on_conversation)
+            let mut covered = vec![conversation.source_path.clone()];
+            if let Some(segments) = conversation
+                .metadata
+                .get("segments")
+                .and_then(|value| value.as_array())
+            {
+                covered.extend(
+                    segments
+                        .iter()
+                        .filter_map(|segment| segment.get("path").and_then(|path| path.as_str()))
+                        .map(PathBuf::from),
+                );
+            }
+            let result = layout_identity::deliver(
+                archive_data_dir,
+                ctx,
+                &source,
+                conversation,
+                on_conversation,
+            );
+            if result.is_ok() {
+                let mut offered = offered.borrow_mut();
+                for path in covered {
+                    offered.remove(&path);
+                }
+            }
+            result
         };
         // Recovery normalizes the physical source's directory identity before
         // delivery. Receipt proof and canonicalization must finish before the

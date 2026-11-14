@@ -70,11 +70,10 @@ impl WatchSourceLedger {
             WorkspaceExclusions::from_env()?.bind_contract(env!("CASS_SOURCE_INGEST_CONTRACT"));
         // As in startup, a self-contained provider needs no second inventory
         // merely to prove that it has no sidecars. Unknown policies fail closed.
-        let dependencies = if !crate::connectors::source_dependencies::source_dependency_policy(
-            connector_name,
-        )
-        .observes_parent_directory()
-        {
+        let observes_parent_directory =
+            crate::connectors::source_dependencies::source_dependency_policy(connector_name)
+                .observes_parent_directory();
+        let dependencies = if !observes_parent_directory {
             Default::default()
         } else {
             let mut path_bytes = 0usize;
@@ -90,6 +89,13 @@ impl WatchSourceLedger {
                     }),
             )
         };
+        // A self-contained connector may still declare explicit reconstruction
+        // dependencies: a merged Codex thread's continuation segments are offered
+        // (and observed here) before the connector reads any of them. Capture each
+        // offered segment's first observation so the durable marker binds exactly
+        // the thread's own files. The implicit parent stays unobserved, so an
+        // unrelated new sibling never invalidates a self-contained source's reuse.
+        let sidecars_before = RefCell::new(HashMap::<PathBuf, serde_json::Value>::new());
         let primary_before = RefCell::new(None);
         let parent_before = RefCell::new(None);
         let current_source = RefCell::new(None::<DiscoveredSourceFile>);
@@ -170,7 +176,14 @@ impl WatchSourceLedger {
                     }
                 }
             }
-            *primary_before.borrow_mut() = source_file_observation(&source.source_path);
+            let primary_observation = source_file_observation(&source.source_path);
+            if !observes_parent_directory && let Some(observation) = &primary_observation {
+                sidecars_before
+                    .borrow_mut()
+                    .entry(source.source_path.clone())
+                    .or_insert_with(|| observation.clone());
+            }
+            *primary_before.borrow_mut() = primary_observation;
             *parent_before.borrow_mut() = dependencies.parent_for(&source.source_path).cloned();
             *current_source.borrow_mut() = Some(source.clone());
             true
@@ -185,19 +198,25 @@ impl WatchSourceLedger {
             let Some(key) = source_ledger_key(&completion.source, &ctx) else {
                 return Ok(());
             };
+            let self_contained_sidecars = sidecars_before.borrow();
+            let dependency_observations = if observes_parent_directory {
+                &dependencies.files
+            } else {
+                &self_contained_sidecars
+            };
             let Some((primary, dependencies)) = source_observations_after_scan(
                 &completion.source,
                 &completion.required_sidecars,
                 primary_before.borrow().as_ref(),
                 parent_before.borrow().as_ref(),
-                &dependencies.files,
+                dependency_observations,
             ) else {
                 if super::watch_source_stability::observed_source_changed(
                     &completion.source,
                     &completion.required_sidecars,
                     primary_before.borrow().as_ref(),
                     parent_before.borrow().as_ref(),
-                    &dependencies.files,
+                    dependency_observations,
                 ) {
                     ledger.borrow_mut().unstable_sources = true;
                 }

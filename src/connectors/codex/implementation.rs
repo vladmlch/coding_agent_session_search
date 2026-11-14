@@ -114,10 +114,22 @@ fn augment_modern_codex_messages(
     conversation: &mut NormalizedConversation,
     progress_tick: Option<&(dyn Fn() + Send + Sync)>,
 ) -> Result<()> {
-    let compressed = codex_rollouts::is_compressed_rollout(&conversation.source_path);
+    let path = conversation.source_path.clone();
+    augment_modern_codex_source(conversation, &path, progress_tick)
+}
+
+/// Enrich one rollout file's bytes into the conversation. A merged Codex thread
+/// calls this once per segment so continuation records (linked textless tool
+/// outputs, raw-record archives, token usage) are enriched too, not only the
+/// identity segment's. The observable-snapshot guards are per file.
+fn augment_modern_codex_source(
+    conversation: &mut NormalizedConversation,
+    path: &std::path::Path,
+    progress_tick: Option<&(dyn Fn() + Send + Sync)>,
+) -> Result<()> {
+    let compressed = codex_rollouts::is_compressed_rollout(path);
     if !compressed
-        && conversation
-            .source_path
+        && path
             .extension()
             .and_then(|ext| ext.to_str())
             .is_none_or(|ext| !ext.eq_ignore_ascii_case("jsonl"))
@@ -125,12 +137,8 @@ fn augment_modern_codex_messages(
         return Ok(());
     }
 
-    let file = File::open(&conversation.source_path).with_context(|| {
-        format!(
-            "open Codex enrichment source {}",
-            conversation.source_path.display()
-        )
-    })?;
+    let file = File::open(path)
+        .with_context(|| format!("open Codex enrichment source {}", path.display()))?;
     let before = file.metadata().context("inspect Codex enrichment source")?;
     if !before.is_file() {
         return Err(io::Error::new(
@@ -173,8 +181,7 @@ fn augment_modern_codex_messages(
     let after = file
         .metadata()
         .context("recheck opened Codex enrichment source")?;
-    let named = std::fs::metadata(&conversation.source_path)
-        .context("recheck Codex enrichment source path")?;
+    let named = std::fs::metadata(path).context("recheck Codex enrichment source path")?;
     if !same_rollout_snapshot(&before, &after)? || !same_rollout_snapshot(&before, &named)? {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,

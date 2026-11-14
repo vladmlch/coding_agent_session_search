@@ -53,7 +53,21 @@ impl SourceSnapshot {
         conversation: &mut super::NormalizedConversation,
         progress_tick: Option<&(dyn Fn() + Send + Sync)>,
     ) -> Result<()> {
-        self.validate(&conversation.source_path)?;
+        let path = conversation.source_path.clone();
+        self.enrich_path(conversation, &path, progress_tick)
+    }
+
+    /// Enrich from this retained handle, validating against `path` — the
+    /// segment this snapshot covers. A merged thread's continuation snapshots
+    /// validate against their own segment path, not the conversation's identity
+    /// path, so every segment's bytes are tied to one observed generation.
+    pub(super) fn enrich_path(
+        &self,
+        conversation: &mut super::NormalizedConversation,
+        path: &Path,
+        progress_tick: Option<&(dyn Fn() + Send + Sync)>,
+    ) -> Result<()> {
+        self.validate(path)?;
         let mut file = &self.file;
         file.rewind().context("rewind admitted Codex source")?;
         let mut reader = BufReader::new(file.take(self.before.len()));
@@ -66,7 +80,7 @@ impl SourceSnapshot {
             )
             .into());
         }
-        self.validate(&conversation.source_path)
+        self.validate(path)
     }
 
     pub(super) fn validate(&self, path: &Path) -> Result<()> {

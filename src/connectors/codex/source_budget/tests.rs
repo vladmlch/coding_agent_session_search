@@ -265,3 +265,132 @@ fn preflight_rechecks_current_size_and_only_primary_jsonl_sources() -> Result<()
     assert_eq!(observed_over_limit(&source), None);
     Ok(())
 }
+
+/// A late enrichment budget refusal of ONE segment of a merged thread withdraws
+/// the WHOLE thread: no fragment is delivered and no segment completion is
+/// certified. The continuation grows past the enrichment cap after FAD's primary
+/// parse read its opened prefix, during CASS enrichment (a concurrent writer).
+#[test]
+fn late_size_rejection_of_one_merged_segment_withdraws_the_whole_thread() -> Result<()> {
+    use franken_agent_detection::DetectionResult;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    // Arms the growth only after the primary parse, so it lands in enrichment.
+    struct ArmAfterPrimaryParse {
+        armed: Arc<AtomicBool>,
+    }
+    impl Connector for ArmAfterPrimaryParse {
+        fn detect(&self) -> DetectionResult {
+            DetectionResult::not_found()
+        }
+        fn scan(&self, _ctx: &ScanContext) -> Result<Vec<NormalizedConversation>> {
+            anyhow::bail!("this fault-injection adapter requires source boundaries")
+        }
+        fn supports_source_boundaries(&self) -> bool {
+            true
+        }
+        fn scan_with_source_boundaries(
+            &self,
+            ctx: &ScanContext,
+            hooks: &mut SourceScanHooks<'_>,
+            on_conversation: &mut dyn FnMut(NormalizedConversation) -> Result<()>,
+        ) -> Result<()> {
+            let armed = self.armed.clone();
+            let mut arm_then_forward = |conversation: NormalizedConversation| {
+                armed.store(true, Ordering::SeqCst);
+                on_conversation(conversation)
+            };
+            franken_agent_detection::CodexConnector::new().scan_with_source_boundaries(
+                ctx,
+                hooks,
+                &mut arm_then_forward,
+            )
+        }
+    }
+
+    let dir = tempfile::tempdir()?;
+    let sessions = dir.path().join("sessions");
+    std::fs::create_dir_all(&sessions)?;
+    let thread = "01a1d1b4-5529-7cd3-97db-d52326514bc2";
+    let segment = "01a1d1ba-a4da-7b00-92b0-0368cfada0b2";
+    let original = sessions.join(format!("rollout-2026-11-12T22-40-18-{thread}.jsonl"));
+    let continuation = sessions.join(format!(
+        "rollout-2026-11-12T22-47-12-{thread}_{segment}.jsonl"
+    ));
+    for (path, text, ts) in [
+        (&original, "merged first question", "2026-11-12T21:40:20Z"),
+        (&continuation, "merged second question", "2026-11-12T21:47:20Z"),
+    ] {
+        std::fs::write(
+            path,
+            format!(
+                "{}\n{}\n",
+                json!({"type":"session_meta","timestamp":"2026-11-12T21:40:18Z",
+                    "payload":{"id":thread,"session_id":thread,"cwd":"/merged-workspace",
+                        "history_mode":"paginated","originator":"codex-tui","source":"cli"}}),
+                json!({"type":"response_item","timestamp":ts,
+                    "payload":{"type":"message","role":"user",
+                        "content":[{"type":"input_text","text":text}]}})
+            ),
+        )?;
+    }
+
+    let armed = Arc::new(AtomicBool::new(false));
+    let armed_tick = armed.clone();
+    let target = continuation.clone();
+    let tick = move || {
+        if armed_tick.load(Ordering::SeqCst) {
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&target)
+                .and_then(|file| file.set_len(MAX_AUGMENT_ROLLOUT_BYTES + 1));
+        }
+    };
+    let ctx = ScanContext::with_roots(
+        dir.path().to_path_buf(),
+        vec![ScanRoot::local(sessions.clone())],
+        None,
+    )
+    .with_progress_tick(Arc::new(tick));
+
+    let mut delivered = Vec::new();
+    let mut completed = Vec::new();
+    let mut complete = |done: &SourceCompletion| {
+        completed.push(done.source.source_path.clone());
+        Ok(())
+    };
+    let mut hooks = SourceScanHooks {
+        should_scan_source: None,
+        on_source_complete: Some(&mut complete),
+    };
+    let error = scan(
+        &ArmAfterPrimaryParse {
+            armed: armed.clone(),
+        },
+        &ctx,
+        &mut hooks,
+        &mut |conversation| {
+            delivered.push(conversation.source_path);
+            Ok(())
+        },
+        |conversation| super::super::augment_modern_codex_messages(conversation, None),
+    )
+    .unwrap_err();
+    let incomplete = error.downcast_ref::<IncompleteScan>().unwrap();
+    assert_eq!(incomplete.rejected_source_count, 1);
+    assert_eq!(
+        incomplete.rejected_sources[0].source_path,
+        continuation.to_string_lossy(),
+        "the refusal names the segment whose bytes were refused"
+    );
+    assert!(
+        delivered.is_empty(),
+        "a refused merged thread must never deliver a fragment: {delivered:?}"
+    );
+    assert!(
+        completed.is_empty(),
+        "a refused merged thread must never certify a segment completion: {completed:?}"
+    );
+    Ok(())
+}

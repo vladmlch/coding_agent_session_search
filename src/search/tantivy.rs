@@ -1717,6 +1717,19 @@ impl TantivyIndex {
         self.inner.delete_all()
     }
 
+    /// Delete specific canonical/region documents by their stable Cass
+    /// identities, publishing a successor generation. Used by the indexer
+    /// to drop the derived documents of retired conversations (e.g. the
+    /// stale per-segment Codex rows a merged thread supersedes) without a
+    /// whole-archive rebuild. Requires a committed writer, like the
+    /// region-stamp stale-identity deletes.
+    pub fn delete_cass_document_ids(&mut self, document_ids: &[String]) -> Result<()> {
+        if document_ids.is_empty() {
+            return Ok(());
+        }
+        self.inner.delete_cass_document_ids(document_ids)
+    }
+
     pub fn commit(&mut self) -> Result<()> {
         match self.inner.commit() {
             Ok(()) => Ok(()),

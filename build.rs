@@ -294,7 +294,7 @@ const CONTRACTS: &[DependencyContract] = &[
         // See that repo's LOCAL_FIXES.md. Return to the upstream URL/rev
         // once upstream carries every row there.
         expected_git: "https://github.com/vladmlch/franken_agent_detection",
-        expected_rev: "46c47608bf81a2b101b8f6d2ca8685ce5f527b55",
+        expected_rev: "18e2ffaff55e46f95a522861bd7675112c5da6d6",
         expected_version: "0.3.11",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.

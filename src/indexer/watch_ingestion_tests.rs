@@ -94,6 +94,52 @@ impl Fixture {
         Ok(())
     }
 
+    /// One merged Codex thread: an original rollout plus a continuation, both
+    /// carrying the thread's paginated session_meta. Returns (original,
+    /// continuation). Synthetic UUIDs and prompts; no personal data.
+    fn paginated_thread(
+        &self,
+        thread: &str,
+        segment: &str,
+        original_text: &str,
+        continuation_text: &str,
+    ) -> Result<(PathBuf, PathBuf)> {
+        let original = self
+            .root
+            .path
+            .join(format!("rollout-2026-11-12T22-40-18-{thread}.jsonl"));
+        let continuation = self.root.path.join(format!(
+            "rollout-2026-11-12T22-47-12-{thread}_{segment}.jsonl"
+        ));
+        for (path, text, ts) in [
+            (&original, original_text, "2026-11-12T21:40:20Z"),
+            (&continuation, continuation_text, "2026-11-12T21:47:20Z"),
+        ] {
+            let mut file = File::create(path)?;
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "timestamp": "2026-11-12T21:40:18Z", "type": "session_meta",
+                    "payload": {"id": thread, "session_id": thread, "cwd": "/receipt-workspace",
+                        "history_mode": "paginated", "originator": "codex-tui", "source": "cli"}
+                })
+            )?;
+            writeln!(
+                file,
+                "{}",
+                serde_json::json!({
+                    "timestamp": ts, "type": "response_item",
+                    "payload": {"type": "message", "role": "user",
+                        "content": [{"type": "input_text", "text": text}]}
+                })
+            )?;
+            drop(file);
+            age_source(path)?;
+        }
+        Ok((original, continuation))
+    }
+
     fn roots(&self) -> [(ConnectorKind, ScanRoot); 1] {
         [(self.kind, self.root.clone())]
     }
@@ -664,6 +710,116 @@ fn gh538_watch_source_receipts_bound_codex_active_retries_and_restart() -> Resul
 #[serial]
 fn gh538_watch_source_receipts_bound_claude_active_retries_and_restart() -> Result<()> {
     active_retry_and_restart(ConnectorKind::Claude)
+}
+
+/// GH #538 + merged Codex threads: a merged thread's durable marker binds exactly
+/// its own rollout segments (codex stays SelfContained). A change to ANY segment
+/// invalidates the marker; an unrelated new sibling in the sessions directory
+/// invalidates nothing, so single-file reuse is preserved.
+#[test]
+#[serial]
+fn gh538_watch_merged_codex_thread_marker_binds_only_its_own_segments() -> Result<()> {
+    let fixture = Fixture::new(ConnectorKind::Codex)?;
+    let _single_a = fixture.source("single-a", "mergedmarkersinglea")?;
+    let _single_b = fixture.source("single-b", "mergedmarkersingleb")?;
+    let thread = "01a1d1b4-5529-7cd3-97db-d52326514bc2";
+    let segment = "01a1d1ba-a4da-7b00-92b0-0368cfada0b2";
+    let (original, continuation) = fixture.paginated_thread(
+        thread,
+        segment,
+        "mergedmarkeroriginal",
+        "mergedmarkercontinuation",
+    )?;
+    let handles = Handles::open(&fixture)?;
+
+    // Two single-file threads plus one merged thread = three conversations.
+    let (initial, _) = handles.scan(&fixture, true)?;
+    assert_eq!(initial.indexed, 3);
+    assert_publication_receipts(&handles, 3)?;
+
+    // Read the merged thread's durable marker by its identity segment.
+    let merged_marker = || -> Result<String> {
+        Ok(handles
+            .storage
+            .lock()
+            .unwrap()
+            .source_ingest_ledger_entries()?
+            .into_values()
+            .find(|observation| {
+                serde_json::from_str::<serde_json::Value>(observation)
+                    .ok()
+                    .and_then(|value| {
+                        value["primary"]["path"]
+                            .as_str()
+                            .map(|path| Path::new(path).file_name() == original.file_name())
+                    })
+                    .unwrap_or(false)
+            })
+            .expect("the merged thread identity has a durable marker"))
+    };
+    let marker = merged_marker()?;
+    let value: serde_json::Value = serde_json::from_str(&marker)?;
+    let dependencies = value["dependencies"].as_array().unwrap();
+    assert_eq!(
+        dependencies.len(),
+        1,
+        "the merged marker binds exactly its one continuation: {value}"
+    );
+    assert!(
+        dependencies[0]["path"]
+            .as_str()
+            .is_some_and(|path| Path::new(path).file_name() == continuation.file_name()),
+        "the merged marker must bind its continuation segment: {value}"
+    );
+    let contract = value["producer_contract"].as_str().unwrap().to_owned();
+
+    // The identity source for the production reuse matcher.
+    let identity = DiscoveredSourceFile::new(
+        "codex",
+        &ScanRoot::local(fixture.root.path.clone()),
+        original.clone(),
+        crate::connectors::DiscoveredSourceRole::PrimarySessionLog,
+        true,
+    );
+    // Unchanged: the marker certifies reuse.
+    assert!(source_ledger_matches_with_contract(
+        &marker, &identity, &contract
+    ));
+
+    // An unrelated new sibling invalidates nothing (the parent is not a
+    // dependency of a self-contained codex source).
+    let _unrelated = fixture.source("unrelated", "mergedmarkerunrelated")?;
+    assert!(
+        source_ledger_matches_with_contract(&marker, &identity, &contract),
+        "an unrelated sibling must not invalidate the merged marker"
+    );
+
+    // A change to the continuation segment invalidates the marker and re-indexes
+    // the thread.
+    fixture.append(&continuation, thread, "mergedmarkercontinuationappend")?;
+    assert!(
+        !source_ledger_matches_with_contract(&marker, &identity, &contract),
+        "a continuation change must invalidate the merged marker"
+    );
+    let (outcome, _) = handles.scan(&fixture, false)?;
+    assert!(
+        outcome.indexed >= 1,
+        "the changed merged thread must be re-indexed"
+    );
+
+    // A change to the identity segment also invalidates the refreshed marker.
+    let refreshed = merged_marker()?;
+    assert!(source_ledger_matches_with_contract(
+        &refreshed, &identity, &contract
+    ));
+    fixture.append(&original, thread, "mergedmarkeroriginalappend")?;
+    assert!(
+        !source_ledger_matches_with_contract(&refreshed, &identity, &contract),
+        "an identity-segment change must invalidate the merged marker"
+    );
+
+    handles.close()?;
+    Ok(())
 }
 
 #[cfg(unix)]

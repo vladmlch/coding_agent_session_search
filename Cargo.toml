@@ -221,7 +221,7 @@ frankensearch = { version = "=0.7.1", default-features = false, features = ["has
 # a WAL-only commit — upstream 27a5429 turned boundaries on without them.
 # Source: the owner's pushed FAD fork https://github.com/vladmlch/franken_agent_detection
 # (branch master at 46c4760; the 0d972a9 cass-snapshot-cap pin stays as rollback).
-franken-agent-detection = { version = "=0.3.11", git = "https://github.com/vladmlch/franken_agent_detection", rev = "46c47608bf81a2b101b8f6d2ca8685ce5f527b55", features = ["connectors", "cursor", "chatgpt", "opencode", "crush", "goose", "hermes", "devin", "shelley", "grok-bot", "openclaw-sqlite", "copilot-vscdb", "codebuff", "codex-zstd", "pi-durable", "pi-sqlite"] }
+franken-agent-detection = { version = "=0.3.11", git = "https://github.com/vladmlch/franken_agent_detection", rev = "18e2ffaff55e46f95a522861bd7675112c5da6d6", features = ["connectors", "cursor", "chatgpt", "opencode", "crush", "goose", "hermes", "devin", "shelley", "grok-bot", "openclaw-sqlite", "copilot-vscdb", "codebuff", "codex-zstd", "pi-durable", "pi-sqlite"] }
 wide = "1.4.0"  # Portable SIMD for P0 Opt 2: SIMD dot product
 arrayvec = "0.7.6"  # Stack-based arrays for P1 Opt 1.4: Edge N-gram optimization
 bloomfilter = "3.0.1"  # Probabilistic membership testing for P2 Opt 3.3: Workspace Cache

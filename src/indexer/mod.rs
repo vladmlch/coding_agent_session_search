@@ -14919,15 +14919,17 @@ fn scan_with_durable_source_boundaries(
     let filtered = std::cell::Cell::new(false);
     let before = std::cell::RefCell::new(None);
     let primary_before = std::cell::RefCell::new(None);
-    // A self-contained parser cannot consult sidecars. Avoid a second full
-    // inventory and stat/JSON map solely to prove the absence of dependencies.
-    // Unexpected completion sidecars remain unobserved and withhold the marker.
-    // Other and unknown connector registrations keep the discovery-time guard.
-    let dependencies_before = if crate::connectors::source_dependencies::source_dependency_policy(
-        sender.borrow().connector_name,
-    )
-    .observes_parent_directory()
-    {
+    // Sidecar-aware connectors keep the discovery-time guard: a second full
+    // inventory proves the parent and every optional sidecar were observed
+    // before the connector's own discovery. Self-contained connectors skip that
+    // inventory; their explicit dependencies are captured per offer below, and
+    // a completion sidecar that was never offered still withholds the marker.
+    let observes_parent_directory =
+        crate::connectors::source_dependencies::source_dependency_policy(
+            sender.borrow().connector_name,
+        )
+        .observes_parent_directory();
+    let dependencies_before = if observes_parent_directory {
         crate::connectors::source_dependencies::observation::DependencyObservations::capture(
             connector
                 .discover_source_files(&ctx)?
@@ -14937,6 +14939,13 @@ fn scan_with_durable_source_boundaries(
     } else {
         Default::default()
     };
+    // A self-contained connector may still declare explicit reconstruction
+    // dependencies: a merged Codex thread's continuation segments are offered
+    // (and observed here) before the connector reads any of them. Capture each
+    // offered segment's first observation so the durable marker binds exactly
+    // the thread's own files. The implicit parent stays unobserved, so an
+    // unrelated new sibling never invalidates a self-contained source's reuse.
+    let sidecars_before = std::cell::RefCell::new(HashMap::<PathBuf, serde_json::Value>::new());
     let flush_error = std::cell::RefCell::new(None);
     let mut should_scan = |source: &DiscoveredSourceFile| {
         if config
@@ -14965,7 +14974,14 @@ fn scan_with_durable_source_boundaries(
         // Use the pre-discovery parent, not a later snapshot that could bless
         // an untracked sidecar appearing between discovery and admission.
         *before.borrow_mut() = dependencies_before.parent_for(&source.source_path).cloned();
-        *primary_before.borrow_mut() = source_file_observation(&source.source_path);
+        let primary_observation = source_file_observation(&source.source_path);
+        if !observes_parent_directory && let Some(observation) = &primary_observation {
+            sidecars_before
+                .borrow_mut()
+                .entry(source.source_path.clone())
+                .or_insert_with(|| observation.clone());
+        }
+        *primary_before.borrow_mut() = primary_observation;
         let skip = env!("CASS_SOURCE_INGEST_REUSE") == "true"
             && !filtered.get()
             && source_ledger_key(source, &ctx)
@@ -14993,12 +15009,18 @@ fn scan_with_durable_source_boundaries(
         {
             return sender.borrow_mut().flush();
         }
+        let self_contained_sidecars = sidecars_before.borrow();
+        let dependency_observations = if observes_parent_directory {
+            &dependencies_before.files
+        } else {
+            &self_contained_sidecars
+        };
         let Some((primary, dependencies)) = source_observations_after_scan(
             &completion.source,
             &completion.required_sidecars,
             primary_before.borrow().as_ref(),
             before.borrow().as_ref(),
-            &dependencies_before.files,
+            dependency_observations,
         ) else {
             return sender.borrow_mut().flush();
         };
@@ -40230,6 +40252,81 @@ pub mod persist {
         }
     }
 
+    /// Retire the stale per-segment Codex rows a merged thread supersedes,
+    /// then drop their derived canonical + region lexical documents. Called
+    /// after a persist batch (or a single watch persist) commits, so the
+    /// merged identity row already exists. A no-op for single-file threads
+    /// (no metadata.segments) and idempotent once the stale rows are gone.
+    /// The cleanup is keyed on metadata.segments[].external_id, never on
+    /// filename patterns. Without a lexical writer (deferred-rebuild lanes)
+    /// the authoritative rebuild from canonical rows drops the documents.
+    fn retire_superseded_codex_segments(
+        storage: &FrankenStorage,
+        mut t_index: Option<&mut TantivyIndex>,
+        convs: &[NormalizedConversation],
+    ) -> Result<usize> {
+        let mut retired_total = 0usize;
+        for conv in convs {
+            if conv.agent_slug != "codex" {
+                continue;
+            }
+            let Some(segments) = conv.metadata.get("segments").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            if segments.len() < 2 {
+                continue;
+            }
+            let Some(identity_external_id) = conv.external_id.as_deref() else {
+                continue;
+            };
+            let segment_external_ids: Vec<String> = segments
+                .iter()
+                .filter_map(|s| s.get("external_id").and_then(|v| v.as_str()))
+                .map(str::to_owned)
+                .collect();
+            if segment_external_ids.is_empty() {
+                continue;
+            }
+            let retired = storage.retire_superseded_codex_segment_rows(
+                &conv.source_path.to_string_lossy(),
+                identity_external_id,
+                &segment_external_ids,
+            )?;
+            if retired.is_empty() {
+                continue;
+            }
+            retired_total += retired.len();
+            if let Some(index) = t_index.as_deref_mut() {
+                let mut doc_ids: Vec<String> = Vec::new();
+                for row in &retired {
+                    let identity = |slot: u64| {
+                        frankensearch::quill::cass::cass_document_identity(
+                            &row.source_id,
+                            frankensearch::quill::cass::CassConversationKey {
+                                source_path: &row.source_path,
+                                id: Some(row.conversation_id),
+                            },
+                            slot,
+                        )
+                    };
+                    for &idx in &row.message_indices {
+                        doc_ids.push(identity(idx.max(0) as u64));
+                    }
+                    for &slot in &row.region_slots {
+                        doc_ids.push(identity(slot as u64));
+                    }
+                }
+                index.delete_cass_document_ids(&doc_ids)?;
+            }
+            tracing::info!(
+                retired = retired.len(),
+                identity = %conv.source_path.display(),
+                "retired stale per-segment Codex rows superseded by a merged thread"
+            );
+        }
+        Ok(retired_total)
+    }
+
     pub fn persist_conversation(
         storage: &FrankenStorage,
         t_index: &mut TantivyIndex,
@@ -40327,6 +40424,7 @@ pub mod persist {
                 )?;
             }
         }
+        retire_superseded_codex_segments(storage, Some(t_index), std::slice::from_ref(conv))?;
         Ok(())
     }
 
@@ -40842,9 +40940,9 @@ pub mod persist {
         let convs = admitted;
         let oversized = |conv: &NormalizedConversation| should_slice_conversation(conv, limits);
         if !convs.iter().any(oversized) {
-            return persist_conversations_batched_whole(
+            let outcome = persist_conversations_batched_whole(
                 storage,
-                t_index,
+                t_index.as_deref_mut(),
                 convs,
                 lexical_strategy,
                 defer_checkpoints,
@@ -40853,7 +40951,9 @@ pub mod persist {
                 true,
                 heartbeat,
                 source_completion,
-            );
+            )?;
+            retire_superseded_codex_segments(storage, t_index, convs)?;
+            return Ok(outcome);
         }
 
         // Runs of ordinary conversations still persist together; each giant
@@ -40963,6 +41063,7 @@ pub mod persist {
             }
             heartbeat.tick();
         }
+        retire_superseded_codex_segments(storage, t_index, convs)?;
         Ok(outcome)
     }
 
@@ -42140,6 +42241,251 @@ pub mod persist {
                     },
                 ],
             }
+        }
+
+        /// Build a stable Cass lexical document identity for a conversation slot.
+        fn pag_doc_identity(
+            source_path: &std::path::Path,
+            conversation_id: i64,
+            slot: u64,
+        ) -> String {
+            frankensearch::quill::cass::cass_document_identity(
+                "local",
+                frankensearch::quill::cass::CassConversationKey {
+                    source_path: &source_path.to_string_lossy(),
+                    id: Some(conversation_id),
+                },
+                slot,
+            )
+        }
+
+        /// Live canonical+region document identities matching a term.
+        fn pag_live_doc_ids(
+            index: &TantivyIndex,
+            term: &str,
+        ) -> std::collections::BTreeSet<String> {
+            let reader = index.reader().unwrap();
+            let parser = frankensearch::quill::query::CassQueryParser::new(
+                frankensearch::quill::schema::CASS_SEMANTIC_SCHEMA,
+            )
+            .unwrap();
+            let parsed = parser.parse(
+                term,
+                &frankensearch::quill::query::CassQueryFilters::default(),
+            );
+            let page =
+                crate::search::quill_bridge::search_paginated(&reader, &parsed.query, 512, 0, true)
+                    .unwrap();
+            page.hits
+                .iter()
+                .map(|hit| hit.document_id.clone())
+                .collect()
+        }
+
+        fn pag_conversation_count(storage: &FrankenStorage) -> i64 {
+            storage
+                .raw()
+                .query_row_map(
+                    "SELECT COUNT(*) FROM conversations",
+                    &[] as &[ParamValue],
+                    |row| row.get_typed(0),
+                )
+                .unwrap()
+        }
+
+        fn pag_conversation_id(storage: &FrankenStorage, external_id: &str) -> Option<i64> {
+            storage
+                .raw()
+                .query_map_collect(
+                    "SELECT id FROM conversations WHERE external_id = ?1",
+                    &[ParamValue::from(external_id)],
+                    |row| row.get_typed::<i64>(0),
+                )
+                .unwrap()
+                .into_iter()
+                .next()
+        }
+
+        /// FAD paginated-thread merge, section 7.3: an archive holding the old
+        /// per-segment Codex rows (one conversation per rollout segment) must
+        /// retire the continuation row when the merged thread is persisted,
+        /// drop its derived lexical documents, and the viewer bridge list must
+        /// then show one row. The cleanup is keyed on metadata.segments[].external_id.
+        /// This models the persist step of a rescan (the scan calls the same
+        /// batched persist path). Synthetic fixture only.
+        #[test]
+        fn codex_merged_thread_retires_stale_per_segment_rows() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let storage = create_franken_db(&dir.path().join("paginated.db"));
+            crate::viewer_extensions::schema::ensure_schema(storage.raw()).unwrap();
+            let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
+            let mut index = TantivyIndex::open_or_create(&index_path).unwrap();
+
+            let a = "01a1d1b4-5529-7cd3-97db-d52326514bc2";
+            let b = "01a1d1ba-a4da-7b00-92b0-0368cfada0b2";
+            let sessions = dir.path().join("sessions/2026/11/12");
+            let original = sessions.join(format!("rollout-2026-11-12T22-40-18-{a}.jsonl"));
+            let continuation = sessions.join(format!("rollout-2026-11-12T22-47-12-{a}_{b}.jsonl"));
+            let orig_ext = format!("sessions/2026/11/12/rollout-2026-11-12T22-40-18-{a}");
+            let cont_ext = format!("sessions/2026/11/12/rollout-2026-11-12T22-47-12-{a}_{b}");
+
+            let msg = |idx: i64, role: &str, text: &str| NormalizedMessage {
+                idx,
+                role: role.into(),
+                author: None,
+                created_at: Some(1_762_980_000_000 + idx * 1_000),
+                content: text.into(),
+                extra: serde_json::json!({}),
+                snippets: Vec::new(),
+                invocations: Vec::new(),
+            };
+            let base = |path: std::path::PathBuf,
+                        ext: String,
+                        msgs: Vec<NormalizedMessage>,
+                        meta: serde_json::Value| NormalizedConversation {
+                agent_slug: "codex".into(),
+                external_id: Some(ext),
+                title: Some("paginated thread".into()),
+                workspace: Some(dir.path().join("workspace")),
+                source_path: path,
+                started_at: Some(1_762_980_000_000),
+                ended_at: Some(1_762_980_060_000),
+                metadata: meta,
+                messages: msgs,
+            };
+            let orig_msgs = vec![
+                msg(0, "user", "sharedmarker first question"),
+                msg(1, "assistant", "sharedmarker first answer"),
+            ];
+            let cont_msgs = vec![
+                msg(0, "user", "sharedmarker second question"),
+                msg(1, "assistant", "sharedmarker second answer"),
+            ];
+
+            // Old FAD shape: one conversation per rollout segment.
+            let old_original = base(
+                original.clone(),
+                orig_ext.clone(),
+                orig_msgs.clone(),
+                serde_json::json!({"source":"rollout"}),
+            );
+            let old_continuation = base(
+                continuation.clone(),
+                cont_ext.clone(),
+                cont_msgs.clone(),
+                serde_json::json!({"source":"rollout"}),
+            );
+            persist_conversations_batched(
+                &storage,
+                Some(&mut index),
+                &[old_original, old_continuation],
+                LexicalPopulationStrategy::IncrementalInline,
+                false,
+            )
+            .unwrap();
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+            assert_eq!(
+                pag_conversation_count(&storage),
+                2,
+                "seeded archive holds one row per segment"
+            );
+            let orig_id = pag_conversation_id(&storage, &orig_ext).expect("original row");
+            let cont_id = pag_conversation_id(&storage, &cont_ext).expect("continuation row");
+            let retired_canonical: Vec<String> = (0..2)
+                .map(|i| pag_doc_identity(&continuation, cont_id, i))
+                .collect();
+            let live_before = pag_live_doc_ids(&index, "sharedmarker");
+            for id in &retired_canonical {
+                assert!(
+                    live_before.contains(id),
+                    "seeded continuation doc must be live before retirement: {id}"
+                );
+            }
+
+            // Merged thread (new FAD shape): identity is the original segment,
+            // metadata.segments lists both segments' former external ids.
+            let mut merged_msgs = orig_msgs.clone();
+            merged_msgs.push(msg(2, "user", "sharedmarker second question"));
+            merged_msgs.push(msg(3, "assistant", "sharedmarker second answer"));
+            let merged = base(
+                original.clone(),
+                orig_ext.clone(),
+                merged_msgs,
+                serde_json::json!({
+                    "source":"rollout", "thread_id": a, "segment_count": 2,
+                    "segments": [
+                        {"path": original, "external_id": orig_ext, "kind":"original"},
+                        {"path": continuation, "external_id": cont_ext, "kind":"continuation"},
+                    ],
+                }),
+            );
+            persist_conversations_batched(
+                &storage,
+                Some(&mut index),
+                &[merged],
+                LexicalPopulationStrategy::IncrementalInline,
+                false,
+            )
+            .unwrap();
+            index.commit_with_region_doc_stamps(storage.raw()).unwrap();
+
+            // The continuation row is retired; the identity row survives with all four messages.
+            assert_eq!(
+                pag_conversation_count(&storage),
+                1,
+                "the stale per-segment row must be retired"
+            );
+            assert_eq!(
+                pag_conversation_id(&storage, &cont_ext),
+                None,
+                "continuation row gone"
+            );
+            assert_eq!(
+                pag_conversation_id(&storage, &orig_ext),
+                Some(orig_id),
+                "identity row survives"
+            );
+            let surviving_messages: i64 = storage
+                .raw()
+                .query_row_map(
+                    "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1",
+                    &[ParamValue::from(orig_id)],
+                    |row| row.get_typed(0),
+                )
+                .unwrap();
+            assert_eq!(
+                surviving_messages, 4,
+                "merged identity keeps every segment's messages"
+            );
+            let orphan_regions: i64 = storage
+                .raw()
+                .query_row_map(
+                    "SELECT COUNT(*) FROM viewer_search_regions WHERE conversation_id = ?1",
+                    &[ParamValue::from(cont_id)],
+                    |row| row.get_typed(0),
+                )
+                .unwrap();
+            assert_eq!(orphan_regions, 0, "retired row's region rows cascade away");
+
+            // The retired row's canonical documents are gone; the merged identity's remain.
+            let live_after = pag_live_doc_ids(&index, "sharedmarker");
+            for id in &retired_canonical {
+                assert!(
+                    !live_after.contains(id),
+                    "retired continuation doc must be removed: {id}"
+                );
+            }
+            for i in 0..4u64 {
+                let id = pag_doc_identity(&original, orig_id, i);
+                assert!(
+                    live_after.contains(id.as_str()),
+                    "merged identity doc must stay live: {id}"
+                );
+            }
+
+            // The viewer bridge list lane is binary-only; its one-row assertion
+            // for a retired thread lives in tests/viewer_bridge_extensions.rs
+            // (codex_merged_thread_retirement_shows_one_list_row).
         }
 
         /// `(region_version, docs_state, count)` rows of the region marks

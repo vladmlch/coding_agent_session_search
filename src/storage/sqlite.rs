@@ -12216,6 +12216,100 @@ impl FrankenStorage {
         Ok(result)
     }
 
+    /// Retire the stale per-segment Codex rows a merged thread supersedes.
+    ///
+    /// FAD's paginated-thread merge emits one conversation per Codex thread
+    /// whose `metadata.segments[].external_id` lists the ids each rollout
+    /// segment used to own. Archives indexed before the merge hold one row
+    /// per segment; once the merged (identity) row is persisted, the other
+    /// rows of the same source whose `external_id` appears in that list are
+    /// orphans. This deletes them through the same transaction path as the
+    /// other dedup cleanups (`delete_duplicate_conversation_rows` + semantic
+    /// watermark clear + FTS presence-cache invalidate) and returns their
+    /// lexical document slots so the caller can drop the derived canonical
+    /// and region documents. The identity row itself is never a candidate.
+    ///
+    /// Keyed strictly on the caller-supplied `segment_external_ids` (the
+    /// authoritative `metadata.segments` list), never on filename patterns.
+    /// Returns an empty list when the identity row is absent or nothing
+    /// matches, so it is idempotent and safe on single-file threads.
+    pub fn retire_superseded_codex_segment_rows(
+        &self,
+        identity_source_path: &str,
+        identity_external_id: &str,
+        segment_external_ids: &[String],
+    ) -> Result<Vec<RetiredCodexSegmentRow>> {
+        if segment_external_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Resolve the merged thread's identity row to bind the source and
+        // agent the stale siblings must share.
+        let identity_rows: Vec<(i64, String, i64)> = self.conn.query_map_collect(
+            "SELECT c.id, c.source_id, c.agent_id FROM conversations c JOIN agents a ON a.id = c.agent_id WHERE c.source_path = ?1 AND c.external_id = ?2 AND a.slug = 'codex' LIMIT 1",
+            fparams![identity_source_path, identity_external_id],
+            |row| Ok((row.get_typed(0)?, row.get_typed(1)?, row.get_typed(2)?)),
+        )?;
+        let Some((identity_id, source_id, agent_id)) = identity_rows.into_iter().next() else {
+            return Ok(Vec::new());
+        };
+
+        let has_regions = historical_table_exists(&self.conn, "viewer_search_regions")?;
+        let mut retired: Vec<RetiredCodexSegmentRow> = Vec::new();
+        let mut seen: HashSet<i64> = HashSet::new();
+        for segment_external_id in segment_external_ids {
+            let candidates: Vec<(i64, String, String)> = self.conn.query_map_collect(
+                "SELECT id, source_path, external_id FROM conversations WHERE source_id = ?1 AND agent_id = ?2 AND external_id = ?3 AND source_path <> ?4 AND id <> ?5",
+                fparams![
+                    source_id.as_str(),
+                    agent_id,
+                    segment_external_id.as_str(),
+                    identity_source_path,
+                    identity_id
+                ],
+                |row| Ok((row.get_typed(0)?, row.get_typed(1)?, row.get_typed(2)?)),
+            )?;
+            for (conversation_id, source_path, external_id) in candidates {
+                if !seen.insert(conversation_id) {
+                    continue;
+                }
+                let message_indices: Vec<i64> = self.conn.query_map_collect(
+                    "SELECT idx FROM messages WHERE conversation_id = ?1",
+                    fparams![conversation_id],
+                    |row| row.get_typed(0),
+                )?;
+                let region_slots: Vec<i64> = if has_regions {
+                    self.conn.query_map_collect(
+                        "SELECT quill_idx FROM viewer_search_regions WHERE conversation_id = ?1",
+                        fparams![conversation_id],
+                        |row| row.get_typed(0),
+                    )?
+                } else {
+                    Vec::new()
+                };
+                retired.push(RetiredCodexSegmentRow {
+                    conversation_id,
+                    source_id: source_id.clone(),
+                    source_path,
+                    external_id,
+                    message_indices,
+                    region_slots,
+                });
+            }
+        }
+        if retired.is_empty() {
+            return Ok(retired);
+        }
+
+        let mut tx = self.conn.transaction()?;
+        for row in &retired {
+            delete_duplicate_conversation_rows(&tx, row.conversation_id)?;
+        }
+        clear_semantic_embed_watermark_after_deletion(&tx)?;
+        tx.commit()?;
+        self.invalidate_fts_messages_present_cache();
+        Ok(retired)
+    }
+
     /// Messages of one conversation, counted through the UNIQUE(conversation_id,
     /// idx) autoindex where the schema has it: FrankenSQLite runs
     /// `COUNT(*) ... WHERE conversation_id = ?` as a whole-table scan.
@@ -24583,6 +24677,25 @@ pub struct ExternalIdDuplicateCleanupResult {
     pub messages_affected: usize,
     /// The detected duplicate pairs (drop + keep ids, paths, external_ids).
     pub pairs: Vec<ExternalIdDuplicateCandidate>,
+}
+
+/// One stale per-segment Codex row retired by
+/// `FrankenStorage::retire_superseded_codex_segment_rows`, carrying the
+/// lexical document slots it owned so the caller can drop its derived
+/// canonical + region documents from the live Quill generation. Before the
+/// FAD paginated-thread merge each rollout segment was archived as its own
+/// conversation; the merged thread supersedes those per-segment rows.
+#[derive(Debug, Clone, Serialize)]
+pub struct RetiredCodexSegmentRow {
+    pub conversation_id: i64,
+    pub source_id: String,
+    pub source_path: String,
+    pub external_id: String,
+    /// Canonical message-document slots (`messages.idx`).
+    pub message_indices: Vec<i64>,
+    /// Region-document slots (`viewer_search_regions.quill_idx`); empty when
+    /// the viewer extension profile is absent.
+    pub region_slots: Vec<i64>,
 }
 
 /// A remote mirror container and the agents that own the store its
