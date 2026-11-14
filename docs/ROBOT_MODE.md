@@ -20,6 +20,7 @@ Updated: 2026-09-24
 - Timeouts: an expired search or pack exits 0 with `hits: []` and `budget.timed_out: true`; always read `budget` before treating an empty result as "no matches"
 - Busy index: exit 7 (`err.kind="index-busy"`) is retryable; cass rebuilds missing or unusable indexes in a detached background process, never inside your search
 - View source: `cass view <path> -n <line> --json`
+- Codex paginated threads: a thread split across an original rollout plus continuation files is indexed as ONE conversation whose `source_path` is the original segment. Search `line_number` is the canonical message ordinal of that merged conversation, so follow hits with `--message-index` (it reads the full merged thread from the index). Raw-file addressing (`view`/`expand` with `--line`) opens only the original segment file; a line that falls in a continuation is not in that file. The continuation files are listed in the conversation's `metadata.segments[]`.
 - Health: `cass health --json` or `cass state --json`
 - Incident mining: `cass analytics incidents --limit 10 --json`
 

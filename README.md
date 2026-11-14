@@ -52,6 +52,10 @@ cass sessions --workspace "$(pwd)" --json --limit 5
 
 # 4) View + expand a hit (use source_path/line_number from search output)
 cass view /path/to/session.jsonl -n 42 -C 3 --json --timeout 2000
+# Codex paginated threads merge into one conversation whose source_path is the
+# original segment, so raw --line addressing reads only that file. Search
+# line_number is the merged canonical ordinal: follow hits with --message-index
+# (details in docs/ROBOT_MODE.md).
 
 # 5) Discover the full machine API
 cass capabilities --json
