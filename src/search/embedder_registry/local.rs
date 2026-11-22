@@ -86,9 +86,6 @@ pub const REQUIRED_NATIVE_MODEL_FILES: &[&str] = &[
     "tokenizer_config.json",
 ];
 
-/// Eligibility cutoff for bake-off (models must be released on/after this date).
-pub const BAKEOFF_ELIGIBILITY_CUTOFF: &str = "2025-11-01";
-
 impl RegisteredEmbedder {
     /// Check if this embedder is available in the given data directory.
     pub fn is_available(&self, data_dir: &Path) -> bool {
@@ -137,31 +134,6 @@ impl RegisteredEmbedder {
                 .collect()
         } else {
             Vec::new()
-        }
-    }
-
-    /// Check if this embedder is eligible for the bake-off.
-    pub fn is_bakeoff_eligible(&self) -> bool {
-        if self.is_baseline {
-            return false;
-        }
-        self.release_date >= BAKEOFF_ELIGIBILITY_CUTOFF
-    }
-
-    /// Convert to bakeoff ModelMetadata.
-    pub fn to_model_metadata(&self) -> crate::bakeoff::ModelMetadata {
-        crate::bakeoff::ModelMetadata {
-            id: self.id.to_string(),
-            name: self.name.to_string(),
-            source: self.huggingface_id.to_string(),
-            release_date: self.release_date.to_string(),
-            dimension: Some(self.dimension),
-            size_bytes: if self.size_bytes > 0 {
-                Some(self.size_bytes)
-            } else {
-                None
-            },
-            is_baseline: self.is_baseline,
         }
     }
 }
@@ -272,27 +244,6 @@ impl EmbedderRegistry {
     /// by name or policy so an installed alternate cannot silently change spaces.
     pub fn best_available(&self) -> &'static RegisteredEmbedder {
         self.default_embedder()
-    }
-
-    /// Get all bake-off eligible embedders.
-    pub fn bakeoff_eligible(&self) -> Vec<&'static RegisteredEmbedder> {
-        EMBEDDERS
-            .iter()
-            .filter(|e| e.is_bakeoff_eligible())
-            .collect()
-    }
-
-    /// Get available bake-off eligible embedders (model files present).
-    pub fn available_bakeoff_candidates(&self) -> Vec<&'static RegisteredEmbedder> {
-        EMBEDDERS
-            .iter()
-            .filter(|e| e.is_bakeoff_eligible() && e.is_available(&self.data_dir))
-            .collect()
-    }
-
-    /// Get the baseline embedder for bake-off comparison.
-    pub fn baseline_embedder(&self) -> Option<&'static RegisteredEmbedder> {
-        EMBEDDERS.iter().find(|e| e.is_baseline)
     }
 
     /// Validate that an embedder is ready to use.
@@ -575,83 +526,6 @@ mod tests {
         let minilm_info = get_embedder_info(tmp.path(), Some("minilm")).unwrap();
         assert_eq!(minilm_info.id, "minilm-384");
         assert!(minilm_info.is_semantic);
-    }
-
-    // ==================== Bake-off Tests ====================
-
-    #[test]
-    fn test_no_unloadable_embedder_is_bakeoff_eligible() {
-        let (_tmp, registry) = registry_fixture();
-
-        let eligible = registry.bakeoff_eligible();
-        assert!(eligible.is_empty());
-
-        // MiniLM should NOT be in the eligible list (it's the baseline)
-        assert!(
-            !eligible.iter().any(|e| e.name == "minilm"),
-            "minilm should not be in eligible list"
-        );
-
-        // Hash should NOT be in the eligible list (not semantic)
-        assert!(
-            !eligible.iter().any(|e| e.name == "hash"),
-            "hash should not be in eligible list"
-        );
-
-        assert!(
-            !eligible.iter().any(|e| e.name == "multilingual-minilm"),
-            "the frozen opt-in multilingual model predates the bake-off cutoff"
-        );
-    }
-
-    #[test]
-    fn test_baseline_embedder() {
-        let (_tmp, registry) = registry_fixture();
-
-        let baseline = registry.baseline_embedder();
-        assert!(baseline.is_some());
-        let baseline = baseline.unwrap();
-        assert_eq!(baseline.name, "minilm");
-        assert!(baseline.is_baseline);
-        assert!(!baseline.is_bakeoff_eligible());
-    }
-
-    #[test]
-    fn test_bakeoff_eligibility_by_date() {
-        let (_tmp, registry) = registry_fixture();
-
-        // MiniLM was released before cutoff (2022-08-01)
-        let minilm = registry.get("minilm").unwrap();
-        assert!(
-            minilm.release_date < BAKEOFF_ELIGIBILITY_CUTOFF,
-            "minilm should be released before cutoff"
-        );
-
-        // All eligible models should be released after cutoff
-        for e in registry.bakeoff_eligible() {
-            assert!(
-                e.release_date >= BAKEOFF_ELIGIBILITY_CUTOFF,
-                "{} should be released after cutoff (date: {})",
-                e.name,
-                e.release_date
-            );
-        }
-    }
-
-    #[test]
-    fn test_bakeoff_model_metadata_conversion() {
-        let (_tmp, registry) = registry_fixture();
-
-        let minilm = registry.get("minilm").unwrap();
-        let metadata = minilm.to_model_metadata();
-
-        assert_eq!(metadata.id, "minilm-384");
-        assert_eq!(metadata.name, "minilm");
-        assert!(metadata.source.contains("MiniLM"));
-        assert_eq!(metadata.release_date, "2022-08-01");
-        assert_eq!(metadata.dimension, Some(384));
-        assert!(metadata.is_baseline);
-        assert!(!metadata.is_eligible());
     }
 
     #[test]

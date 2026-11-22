@@ -83,7 +83,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use coding_agent_search::proof_artifact::{ProofArtifact, ProofRun, ProofStatus};
 use util::e2e_log::{E2eError, PhaseTracker};
 use util::timeout::spawn_with_timeout_or_diag;
 
@@ -1500,66 +1499,6 @@ fn command_is_read_only(cmd: &str) -> bool {
 
 fn command_is_mutating(cmd: &str) -> bool {
     cmd.contains("--repair") || cmd.contains("--fix") || cmd.contains("index --full")
-}
-
-/// The per-fixture proof artifact must distinguish a real pass from a timeout
-/// and from a generated-only (no-assertions) run — the `logs` family of the
-/// closure proof. Pure over `proof_artifact::classify`, no binary needed.
-#[test]
-fn proof_artifact_distinguishes_pass_from_timeout() -> Result<(), String> {
-    let base = ProofRun {
-        command: "cass search + status [fm-storage-pragma-integrity-fail]".to_string(),
-        binary_path: Some(util::cass_bin()),
-        binary_version: None,
-        data_dir_or_fixture: Some("fm-storage-pragma-integrity-fail".to_string()),
-        exit_code: Some(0),
-        elapsed_ms: 42,
-        timeout_ms: SURFACE_TIMEOUT.as_millis() as u64,
-        timed_out: false,
-        skipped: false,
-        assertions_ran: true,
-        produced_artifact: false,
-        completed: true,
-        artifact_age_ms: None,
-        stdout_path: None,
-        stderr_path: None,
-    };
-
-    let pass = ProofArtifact::from_run(base.clone());
-    if !matches!(pass.status, ProofStatus::Pass) {
-        return Err(format!(
-            "a clean fixture run must classify as Pass, got {:?}",
-            pass.status
-        ));
-    }
-    if !pass.is_trustworthy_pass() {
-        return Err("a clean fixture run must be a trustworthy pass".to_string());
-    }
-
-    let mut timed = base.clone();
-    timed.timed_out = true;
-    timed.elapsed_ms = SURFACE_TIMEOUT.as_millis() as u64;
-    let timeout = ProofArtifact::from_run(timed);
-    if !matches!(timeout.status, ProofStatus::Timeout) {
-        return Err(format!(
-            "a timed-out fixture run must classify as Timeout, got {:?}",
-            timeout.status
-        ));
-    }
-    if timeout.is_trustworthy_pass() {
-        return Err("a timeout must never read as a trustworthy pass".to_string());
-    }
-
-    let mut not_asserted = base;
-    not_asserted.assertions_ran = false;
-    let generated = ProofArtifact::from_run(not_asserted);
-    if !matches!(generated.status, ProofStatus::GeneratedOnly) {
-        return Err(format!(
-            "a run with no assertions must classify as GeneratedOnly, got {:?}",
-            generated.status
-        ));
-    }
-    Ok(())
 }
 
 /// Attribution separates the four bead categories — fixture-setup, host

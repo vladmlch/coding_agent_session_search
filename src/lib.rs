@@ -11,8 +11,6 @@
 // that spelling resolve inside the library too.
 extern crate self as coding_agent_search;
 
-pub mod analytics;
-pub mod bakeoff;
 pub mod bookmarks;
 pub mod connector_ingest_diagnostics;
 pub mod connectors;
@@ -30,26 +28,20 @@ pub mod doctor_recover;
 pub(crate) mod doctor_robot_docs;
 pub(crate) mod doctor_runs;
 pub(crate) mod doctor_undo;
-pub mod e2e_runner;
 pub mod encryption;
 pub mod evidence_bundle;
 pub mod explainability;
 pub mod export;
 mod followup_coordinates;
 pub mod franken_sync;
-pub mod guide_planner;
-pub mod guide_runner;
 pub mod html_export;
-pub mod incident_discovery;
 mod index_result;
 pub mod indexer;
-pub mod metric_integrity;
 pub mod model;
 pub mod pages;
 pub mod perf_evidence;
 pub mod policy_registry;
 pub mod privacy_exposure;
-pub mod proof_artifact;
 pub mod query_cost_planner;
 pub mod raw_mirror;
 pub(crate) mod recipes_robot_docs;
@@ -58,7 +50,6 @@ pub mod resource_plan;
 pub mod robot_budget_envelope;
 pub mod root_cause_projection;
 pub mod root_cause_taxonomy;
-pub mod schedule;
 pub mod search;
 pub mod search_defaults;
 pub mod search_quality_eval;
@@ -68,10 +59,8 @@ pub mod storage;
 pub mod subsystem_coverage_matrix;
 pub mod time_parser;
 mod timeline_json;
-pub mod top_session_summary;
 pub mod topology_budget;
 pub mod viewer_extensions;
-pub mod workflow_macros;
 
 /// Shut down synchronous bridge runtimes cached on the calling thread.
 ///
@@ -956,54 +945,6 @@ pub enum Commands {
         #[arg(long, visible_alias = "robot")]
         json: bool,
     },
-    /// Intent-to-command planner and gated runner for guided safe workflows.
-    /// Dry-run is the default. `--apply` automatically evaluates only closed,
-    /// read-only proof adapters and requires an explicit confirmation for each
-    /// mutating step; macro strings are never evaluated by a shell. Maps an
-    /// operator intent (investigate-search-miss, repair-assets, export-session,
-    /// onboard-source, support-capsule) to an exact safe command plan — steps,
-    /// prerequisites, proof gates, forbidden shortcuts, cost/risk, privacy
-    /// notes, and stop conditions. Never launches a bare TUI. Omit the intent
-    /// to list the known intents.
-    Guide {
-        /// Operator intent to plan (omit to list the known intents). Multiple
-        /// words are joined, e.g. `cass guide rebuild index`.
-        intent: Vec<String>,
-        /// Deterministic preflight-facts source: a JSON file shaped like
-        /// `{ "facts": { "<fact>": true, ... }, "intent"?: "<intent>" }`.
-        #[arg(long)]
-        fixture: Option<PathBuf>,
-        /// Override data dir
-        #[arg(long)]
-        data_dir: Option<PathBuf>,
-        /// Enter gated apply mode (`--run` is an alias). Without this flag the
-        /// transcript is a deterministic, fully read-only dry-run.
-        #[arg(long, visible_alias = "run", default_value_t = false)]
-        apply: bool,
-        /// Confirm one exact mutating step number. Repeat for multiple steps;
-        /// confirmation never carries across steps.
-        #[arg(long, value_delimiter = ',')]
-        confirm_step: Vec<usize>,
-        /// Confirm an operator-context preflight fact as true. Repeatable; the
-        /// confirmation is recorded in the robot transcript.
-        #[arg(long)]
-        confirm_fact: Vec<String>,
-        /// Accept the exact declared privacy tier (`redacted` or `sensitive`).
-        /// A generic yes is intentionally not accepted.
-        #[arg(long)]
-        accept_privacy_tier: Option<String>,
-        /// Accept the exact declared cost-risk band (`medium` or `high`) after
-        /// reviewing the resource what-if result.
-        #[arg(long)]
-        accept_cost_risk: Option<String>,
-        /// Assert that every declared stop condition was checked and is clear.
-        /// An observed triggered stop condition always wins over this assertion.
-        #[arg(long, default_value_t = false)]
-        confirm_stop_conditions_clear: bool,
-        /// Output as JSON (for automation)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-    },
     /// Diagnose cass installation issues. Legacy `cass doctor --json` maps to the read-only check surface.
     /// Legacy `--fix` maps to safe-auto-run and may only apply contract-declared safe repairs.
     Doctor {
@@ -1662,21 +1603,6 @@ pub enum Commands {
     /// Import data from external sources
     #[command(subcommand)]
     Import(ImportCommand),
-    /// Token usage, tool, and model analytics
-    ///
-    /// Subcommands: status, tokens, tools, models, incidents, rebuild, validate.
-    /// All subcommands share time-range, dimensional, and output flags.
-    ///
-    /// # Examples
-    ///
-    /// ```bash
-    /// cass analytics status --json
-    /// cass analytics tokens --days 7 --group-by day --json
-    /// cass analytics rebuild --json
-    /// ```
-    #[command(subcommand)]
-    Analytics(AnalyticsCommand),
-
     /// Run the semantic model daemon (Unix only)
     #[cfg(unix)]
     Daemon {
@@ -1693,81 +1619,6 @@ pub enum Commands {
         #[arg(long)]
         data_dir: Option<PathBuf>,
     },
-
-    /// Keep the index fresh automatically via the OS scheduler (launchd / systemd user timers)
-    #[command(subcommand)]
-    Schedule(ScheduleCommand),
-}
-
-/// `cass schedule` — register low-priority background index jobs with the
-/// operating system's scheduler so the index is never stale when you search.
-#[derive(Subcommand, Debug, Clone)]
-pub enum ScheduleCommand {
-    /// Register the incremental (every N minutes) and nightly (full index +
-    /// semantic backfill) jobs with launchd (macOS) or systemd user timers (Linux)
-    Install {
-        /// Minutes between incremental index passes
-        #[arg(long, default_value_t = crate::schedule::DEFAULT_INTERVAL_MINS)]
-        interval_mins: u32,
-        /// Local hour (0-23) for the nightly full index + semantic backfill
-        #[arg(long, default_value_t = crate::schedule::DEFAULT_NIGHTLY_HOUR, value_parser = clap::value_parser!(u8).range(0..=23))]
-        nightly_hour: u8,
-        /// Minute (0-59) for the nightly job
-        #[arg(long, default_value_t = crate::schedule::DEFAULT_NIGHTLY_MINUTE, value_parser = clap::value_parser!(u8).range(0..=59))]
-        nightly_minute: u8,
-        /// Register only the incremental job (skip the nightly full index)
-        #[arg(long, default_value_t = false)]
-        no_nightly: bool,
-        /// Nightly job indexes only; never runs semantic backfill
-        #[arg(long, default_value_t = false)]
-        no_semantic: bool,
-        /// Render the unit files and commands without writing or registering anything
-        #[arg(long, default_value_t = false)]
-        dry_run: bool,
-        /// Data dir the scheduled jobs target (baked into the units)
-        #[arg(long)]
-        data_dir: Option<PathBuf>,
-        /// Output as JSON (`--robot` also works)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-    },
-    /// Unregister the jobs and remove the unit files cass wrote
-    Uninstall {
-        /// Report what would be removed without touching anything
-        #[arg(long, default_value_t = false)]
-        dry_run: bool,
-        /// Output as JSON (`--robot` also works)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-    },
-    /// Show registered jobs, scheduler state, and the last run of each job
-    Status {
-        /// Override data dir
-        #[arg(long)]
-        data_dir: Option<PathBuf>,
-        /// Output as JSON (`--robot` also works)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-    },
-    /// Execute one job now (this is what the scheduler units invoke)
-    Run {
-        /// Which job to run
-        #[arg(long, value_enum)]
-        job: crate::schedule::ScheduleJob,
-        /// Override data dir
-        #[arg(long)]
-        data_dir: Option<PathBuf>,
-        /// Skip semantic backfill in the nightly job
-        #[arg(long, default_value_t = false)]
-        no_semantic: bool,
-        /// Ignore load / console-idle gates and run regardless
-        #[arg(long, default_value_t = false)]
-        force: bool,
-        /// Output as JSON (`--robot` also works)
-        #[arg(long, visible_alias = "robot")]
-        json: bool,
-    },
-}
 
 /// Conversation-ingest quarantine inspection and management (#292 ask #3).
 #[derive(Subcommand, Debug, Clone)]
@@ -2155,263 +2006,6 @@ impl From<RebuildProfileArg> for indexer::LexicalRebuildProfile {
     }
 }
 
-/// Time bucketing for analytics aggregation.
-#[derive(Copy, Clone, Debug, Default, ValueEnum, PartialEq, Eq)]
-pub enum AnalyticsBucketing {
-    /// Group by hour
-    Hour,
-    /// Group by day
-    #[default]
-    Day,
-    /// Group by week (ISO weeks)
-    Week,
-    /// Group by calendar month
-    Month,
-}
-
-impl std::fmt::Display for AnalyticsBucketing {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Hour => write!(f, "hour"),
-            Self::Day => write!(f, "day"),
-            Self::Week => write!(f, "week"),
-            Self::Month => write!(f, "month"),
-        }
-    }
-}
-
-/// Which analytics track(s) `cass analytics rebuild` regenerates (#397 —
-/// `analytics validate` has recommended `--track all` since the two-track
-/// split; this makes that flag real).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum AnalyticsTrack {
-    /// Track A: message-level rollups (message_metrics, usage_hourly/daily)
-    A,
-    /// Track B: token-level rollups (token_daily_stats from the token_usage ledger)
-    B,
-    /// Both tracks
-    All,
-}
-
-/// Subcommands for analytics (token/tool/model breakdowns and bounded incident mining).
-///
-/// All subcommands share time-range, dimensional-filter, and output flags
-/// via clap's `flatten` on [`AnalyticsCommon`].
-#[derive(Subcommand, Debug, Clone)]
-pub enum AnalyticsCommand {
-    /// Summary of analytics data health: row counts, freshness, coverage, drift warnings
-    Status {
-        #[command(flatten)]
-        common: AnalyticsCommon,
-    },
-    /// Token usage over time, with dimensional breakdowns
-    Tokens {
-        #[command(flatten)]
-        common: AnalyticsCommon,
-        /// Time bucket for aggregation
-        #[arg(long, value_enum, default_value_t = AnalyticsBucketing::Day)]
-        group_by: AnalyticsBucketing,
-    },
-    /// Per-tool invocation counts and derived metrics
-    Tools {
-        #[command(flatten)]
-        common: AnalyticsCommon,
-        /// Time bucket for aggregation
-        #[arg(long, value_enum, default_value_t = AnalyticsBucketing::Day)]
-        group_by: AnalyticsBucketing,
-        /// Maximum tools to return (default 20)
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
-    /// Top models by usage and coverage statistics
-    #[command(name = "models")]
-    AnalyticsModels {
-        #[command(flatten)]
-        common: AnalyticsCommon,
-        /// Time bucket for aggregation
-        #[arg(long, value_enum, default_value_t = AnalyticsBucketing::Day)]
-        group_by: AnalyticsBucketing,
-    },
-    /// Mine recurrent CASS incident categories from the canonical archive under strict caps
-    Incidents {
-        #[command(flatten)]
-        common: AnalyticsCommon,
-        /// Maximum ranked incident sessions returned
-        #[arg(long, default_value_t = 10)]
-        limit: usize,
-        /// Maximum archive conversations scanned (hard ceiling: 10,000)
-        #[arg(long, default_value_t = crate::incident_discovery::DEFAULT_MAX_FILES)]
-        max_sessions: u64,
-        /// Maximum archive messages inspected
-        #[arg(long, default_value_t = crate::incident_discovery::DEFAULT_MAX_LINES)]
-        max_messages: u64,
-        /// Maximum UTF-8 message-content bytes inspected
-        #[arg(long, default_value_t = crate::incident_discovery::DEFAULT_MAX_BYTES)]
-        max_bytes: u64,
-        /// Wall-clock scan budget in milliseconds
-        #[arg(long, default_value_t = crate::incident_discovery::DEFAULT_BUDGET_MS)]
-        budget_ms: u64,
-    },
-    /// Rebuild / backfill analytics rollup tables with progress output
-    /// (always rebuilds; fresh rollups are not skipped)
-    Rebuild {
-        #[command(flatten)]
-        common: AnalyticsCommon,
-        /// Which analytics track to rebuild: message-level rollups (a),
-        /// token-level rollups (b), or both (all)
-        #[arg(long, value_enum, default_value_t = AnalyticsTrack::A)]
-        track: AnalyticsTrack,
-    },
-    /// Check rollup invariants and detect drift between raw data and aggregates
-    Validate {
-        #[command(flatten)]
-        common: AnalyticsCommon,
-        /// Attempt safe automatic repair of fixable Track A issues and report skipped non-fixable problems
-        #[arg(long)]
-        fix: bool,
-    },
-}
-
-/// Shared argument surface for analytics subcommands.
-///
-/// Query commands honor the time-range and dimensional filters. Whole-database
-/// maintenance commands reject filters they cannot truthfully apply.
-#[derive(Debug, Clone, clap::Args)]
-pub struct AnalyticsCommon {
-    // ---- Time range ----
-    /// Filter to entries since ISO date (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS),
-    /// keyword (`today`/`yesterday`/`now`), or relative offset
-    /// (`-7d`/`-24h`/`-30m`/`-1w`). `allow_hyphen_values` lets dash-prefixed
-    /// values pass clap (reality-check bead hr0z4).
-    #[arg(long, allow_hyphen_values = true)]
-    pub since: Option<String>,
-
-    /// Filter to entries until ISO date, keyword, or relative offset.
-    #[arg(long, allow_hyphen_values = true)]
-    pub until: Option<String>,
-
-    /// Filter to last N days
-    #[arg(long)]
-    pub days: Option<u32>,
-
-    // ---- Dimensional filters ----
-    /// Filter by agent slug (can be specified multiple times)
-    #[arg(long)]
-    pub agent: Vec<String>,
-
-    /// Filter by workspace path (can be specified multiple times)
-    #[arg(long)]
-    pub workspace: Vec<String>,
-
-    /// Filter by source: 'local', 'remote', 'all', or a specific hostname
-    #[arg(long)]
-    pub source: Option<String>,
-
-    // ---- Output ----
-    /// Output as JSON (for automation)
-    #[arg(long, visible_alias = "robot")]
-    pub json: bool,
-
-    /// Override data dir
-    #[arg(long)]
-    pub data_dir: Option<PathBuf>,
-}
-
-// ---------------------------------------------------------------------------
-// Bridge impls: CLI types → analytics library types
-// ---------------------------------------------------------------------------
-
-impl From<AnalyticsBucketing> for analytics::GroupBy {
-    fn from(b: AnalyticsBucketing) -> Self {
-        match b {
-            AnalyticsBucketing::Hour => analytics::GroupBy::Hour,
-            AnalyticsBucketing::Day => analytics::GroupBy::Day,
-            AnalyticsBucketing::Week => analytics::GroupBy::Week,
-            AnalyticsBucketing::Month => analytics::GroupBy::Month,
-        }
-    }
-}
-
-fn normalized_analytics_agent_arg(agent: &str) -> String {
-    let trimmed = agent.trim();
-    if trimmed.is_empty() {
-        "unknown".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn analytics_source_filter_from_common_input(source: Option<&str>) -> analytics::SourceFilter {
-    match source.map(crate::sources::provenance::SourceFilter::parse) {
-        None | Some(crate::sources::provenance::SourceFilter::All) => analytics::SourceFilter::All,
-        Some(crate::sources::provenance::SourceFilter::Local) => analytics::SourceFilter::Local,
-        Some(crate::sources::provenance::SourceFilter::Remote) => analytics::SourceFilter::Remote,
-        Some(crate::sources::provenance::SourceFilter::SourceId(source_id)) => {
-            analytics::SourceFilter::Specific(source_id)
-        }
-    }
-}
-
-fn parse_analytics_datetime_flag(flag: &str, raw: &str) -> CliResult<i64> {
-    parse_datetime_str(raw).ok_or_else(|| {
-        CliError::usage(
-            format!("could not parse {flag} value {raw:?}"),
-            Some(
-                "Use an ISO date (YYYY-MM-DD), a keyword (today/yesterday), or a relative offset (-7d, -24h)."
-                    .into(),
-            ),
-        )
-    })
-}
-
-fn analytics_filter_from_common(common: &AnalyticsCommon) -> CliResult<analytics::AnalyticsFilter> {
-    if common.days.is_some() && common.since.is_some() {
-        return Err(CliError::usage(
-            "--days and --since cannot be used together",
-            Some("Choose either a rolling --days window or an explicit --since bound.".into()),
-        ));
-    }
-
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    let since_ms = match (common.days, common.since.as_deref()) {
-        (Some(days), None) => {
-            Some(now_ms.saturating_sub(i64::from(days).saturating_mul(86_400_000)))
-        }
-        (None, Some(raw)) => Some(parse_analytics_datetime_flag("--since", raw)?),
-        (None, None) => None,
-        (Some(_), Some(_)) => unreachable!("conflicting analytics time bounds rejected above"),
-    };
-    let until_ms = common
-        .until
-        .as_deref()
-        .map(|raw| parse_analytics_datetime_flag("--until", raw))
-        .transpose()?;
-
-    if let (Some(since), Some(until)) = (since_ms, until_ms)
-        && since > until
-    {
-        return Err(CliError::usage(
-            "analytics time range is empty because --since is later than --until",
-            Some("Choose an --until value at or after --since.".into()),
-        ));
-    }
-
-    Ok(analytics::AnalyticsFilter {
-        since_ms,
-        until_ms,
-        agents: common
-            .agent
-            .iter()
-            .map(|agent| normalized_analytics_agent_arg(agent))
-            .collect(),
-        source: analytics_source_filter_from_common_input(common.source.as_deref()),
-        workspace_ids: vec![],
-    })
-}
-
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
 pub enum ColorPref {
     Auto,
@@ -2439,7 +2033,6 @@ pub enum RobotTopic {
     Contracts,
     Wrap,
     Sources,
-    Analytics,
     /// `cass doctor` agent handbook (added in world-class-doctor pass-2).
     /// Body lives in `src/doctor_robot_docs.rs`.
     Doctor,
@@ -2747,8 +2340,7 @@ fn root_structured_triage_rewrite(args: &[String]) -> Option<Vec<String>> {
 fn command_accepts_leading_structured_flag(command: &str) -> bool {
     matches!(
         command,
-        "analytics"
-            | "api-version"
+        "api-version"
             | "capabilities"
             | "context"
             | "dedup"
@@ -2756,7 +2348,6 @@ fn command_accepts_leading_structured_flag(command: &str) -> bool {
             | "doctor"
             | "expand"
             | "export-html"
-            | "guide"
             | "health"
             | "selftest"
             | "import"
@@ -2768,7 +2359,6 @@ fn command_accepts_leading_structured_flag(command: &str) -> bool {
             | "pages"
             | "resume"
             | "robot-docs"
-            | "schedule"
             | "search"
             | "sessions"
             | "sources"
@@ -2787,7 +2377,7 @@ fn data_dir_insertion_index(rest: &[String], command_index: usize) -> Option<usi
     let command = rest.get(command_index)?.to_ascii_lowercase();
     match command.as_str() {
         "index" | "search" | "pack" | "stats" | "diag" | "storage" | "dedup" | "status"
-        | "triage" | "support-bundle" | "state" | "health" | "onboarding" | "guide" | "doctor"
+        | "triage" | "support-bundle" | "state" | "health" | "onboarding" | "doctor"
         | "context" | "sessions" | "timeline" | "daemon" => Some(command_index + 1),
         "mirror" => rest
             .get(command_index + 1)
@@ -2796,14 +2386,6 @@ fn data_dir_insertion_index(rest: &[String], command_index: usize) -> Option<usi
         "sources" => rest
             .get(command_index + 1)
             .is_some_and(|action| action.eq_ignore_ascii_case("artifact-manifest"))
-            .then_some(command_index + 2),
-        "schedule" => rest
-            .get(command_index + 1)
-            .is_some_and(|action| {
-                ["install", "status", "run"]
-                    .iter()
-                    .any(|candidate| action.eq_ignore_ascii_case(candidate))
-            })
             .then_some(command_index + 2),
         "models" => rest
             .get(command_index + 1)
@@ -2816,22 +2398,6 @@ fn data_dir_insertion_index(rest: &[String], command_index: usize) -> Option<usi
         // `fleet`, `release-verify`, and `upgrade` are removed commands: they
         // never reach this rewrite because `removed_invocation_error` rejects
         // them in `parse_cli` first, so they have no arm here.
-        "analytics" => rest
-            .get(command_index + 1)
-            .is_some_and(|action| {
-                [
-                    "status",
-                    "tokens",
-                    "tools",
-                    "models",
-                    "incidents",
-                    "rebuild",
-                    "validate",
-                ]
-                .iter()
-                .any(|candidate| action.eq_ignore_ascii_case(candidate))
-            })
-            .then_some(command_index + 2),
         _ => None,
     }
 }
@@ -2922,7 +2488,6 @@ fn robot_docs_topic_shorthand(arg: &str) -> Option<&'static str> {
         "contracts" | "contract" | "api-contract" | "api_contract" => Some("contracts"),
         "wrap" | "wrapping" | "line-wrap" | "line_wrap" => Some("wrap"),
         "sources" | "source" | "remotes" | "remote" => Some("sources"),
-        "analytics" | "metrics" => Some("analytics"),
         "doctor" | "diagnostics" | "diag" => Some("doctor"),
         "exit-codes" | "exit_codes" | "exitcodes" | "codes" => Some("exit-codes"),
         "quickstart" | "quick-start" => Some("guide"),
@@ -2976,11 +2541,9 @@ mod robot_docs_shorthand_regression_tests {
         for sub in &[
             "diag",
             "sources",
-            "analytics",
             "health",
             "selftest",
             "Doctor",
-            "guide",
         ] {
             let mut rest = vec![sub.to_string(), "--json".to_string()];
             let mut corrections = Vec::new();
@@ -4324,13 +3887,10 @@ fn recover_structured_format_aliases(rest: &mut Vec<String>, corrections: &mut V
 }
 
 fn command_accepts_limit_alias(rest: &[String]) -> bool {
-    match rest.first().map(String::as_str) {
-        Some("analytics") => rest
-            .get(1)
-            .is_some_and(|arg| matches!(arg.as_str(), "tools" | "incidents")),
-        Some("context" | "pack" | "search" | "sessions") => true,
-        _ => false,
-    }
+    matches!(
+        rest.first().map(String::as_str),
+        Some("context" | "pack" | "search" | "sessions")
+    )
 }
 
 fn has_canonical_limit(rest: &[String]) -> bool {
@@ -5410,23 +4970,6 @@ fn format_missing_subcommand_error(args: &[String]) -> String {
         .unwrap_or("unknown");
 
     let (subcommands, examples): (&[&str], &[&str]) = match group {
-        "analytics" => (
-            &[
-                "status",
-                "tokens",
-                "tools",
-                "models",
-                "incidents",
-                "rebuild",
-                "validate",
-            ],
-            &[
-                "cass analytics status --json",
-                "cass analytics tokens --days 7 --group-by day --json",
-                "cass analytics incidents --limit 10 --json",
-                "cass analytics rebuild --json",
-            ],
-        ),
         "sources" => (
             &["list", "add", "remove", "doctor", "mappings", "agents"],
             &[
@@ -5780,14 +5323,12 @@ const CANONICAL_TOP_LEVEL_COMMANDS: &[&str] = &[
     "triage",
     "support-bundle",
     "onboarding",
-    "guide",
     "introspect",
     "api-version",
     "robot-docs",
     "models",
     "quarantine",
     "sources",
-    "analytics",
     "context",
     "timeline",
     "mirror",
@@ -5801,7 +5342,6 @@ const CANONICAL_TOP_LEVEL_COMMANDS: &[&str] = &[
     "bookmarks",
     "import",
     "daemon",
-    "schedule",
     "completions",
     "man",
 ];
@@ -5922,12 +5462,6 @@ struct RemovedFlag {
 
 /// Flags removed by the local-only port; see `RemovedFlag`.
 const REMOVED_FLAGS: &[RemovedFlag] = &[
-    RemovedFlag {
-        path: &["guide"],
-        flag: "allow-rch",
-        values: None,
-        hint: Some("the guide runs strictly local; there is no rch offload to permit"),
-    },
     RemovedFlag {
         path: &["models", "install"],
         flag: "mirror",
@@ -7561,8 +7095,7 @@ async fn execute_cli(
         | Commands::Triage { .. }
         | Commands::SupportBundle { .. }
         | Commands::View { .. }
-        | Commands::Pages { .. }
-        | Commands::Analytics(..) => {
+        | Commands::Pages { .. } => {
             // Robot-safe stderr hygiene + optional explicit --trace-file sink
             // (uojcg.2.1 / uojcg.2.5). Keep the guard alive for the command run.
             let _trace_guard = init_cli_tracing(
@@ -8503,9 +8036,6 @@ async fn execute_cli(
                         })?;
                     }
                 }
-                Commands::Analytics(subcmd) => {
-                    run_analytics(subcmd, cli.db.clone(), cli)?;
-                }
                 #[cfg(unix)]
                 Commands::Daemon {
                     socket,
@@ -8603,33 +8133,6 @@ async fn execute_cli(
                 Commands::Onboarding { data_dir, json } => {
                     let structured_format = resolve_subcommand_structured_format(cli, json);
                     run_onboarding(&data_dir, cli.db.clone(), structured_format)?;
-                }
-                Commands::Guide {
-                    intent,
-                    fixture,
-                    data_dir,
-                    apply,
-                    confirm_step,
-                    confirm_fact,
-                    accept_privacy_tier,
-                    accept_cost_risk,
-                    confirm_stop_conditions_clear,
-                    json,
-                } => {
-                    let structured_format = resolve_subcommand_structured_format(cli, json);
-                    run_guide(
-                        &intent,
-                        fixture.as_deref(),
-                        &data_dir,
-                        cli.db.clone(),
-                        structured_format,
-                        apply,
-                        &confirm_step,
-                        &confirm_fact,
-                        accept_privacy_tier.as_deref(),
-                        accept_cost_risk.as_deref(),
-                        confirm_stop_conditions_clear,
-                    )?;
                 }
                 Commands::Doctor {
                     data_dir,
@@ -9130,9 +8633,6 @@ async fn execute_cli(
                     data_dir,
                 } => {
                     run_daemon(socket, idle_timeout, max_connections, data_dir)?;
-                }
-                Commands::Schedule(subcmd) => {
-                    run_schedule_command(subcmd, cli)?;
                 }
                 _ => {}
             }
@@ -10639,249 +10139,6 @@ fn parse_size_bytes(raw: &str) -> std::result::Result<u64, CliError> {
         )
     })
 }
-// ---------------------------------------------------------------------------
-// Analytics command dispatch (br-z9fse.3.1)
-// ---------------------------------------------------------------------------
-
-/// Dispatch analytics subcommands.
-///
-/// Each arm validates its inputs and emits a deterministic JSON envelope on
-/// success:
-///
-/// ```json
-/// { "command": "analytics/<sub>", "data": { ... }, "_meta": { "elapsed_ms": N } }
-/// ```
-///
-/// The data for each analytics subcommand is produced by dedicated helpers
-/// below; this dispatcher only normalizes envelopes, shared filters, and
-/// structured output across the analytics surface.
-fn run_analytics(cmd: AnalyticsCommand, db_path: Option<PathBuf>, cli: &Cli) -> CliResult<()> {
-    use std::time::Instant;
-
-    let start = Instant::now();
-
-    // Extract the common args and subcommand label from the variant.
-    let (label, common) = match &cmd {
-        AnalyticsCommand::Status { common } => ("status", common),
-        AnalyticsCommand::Tokens { common, .. } => ("tokens", common),
-        AnalyticsCommand::Tools { common, .. } => ("tools", common),
-        AnalyticsCommand::AnalyticsModels { common, .. } => ("models", common),
-        AnalyticsCommand::Incidents { common, .. } => ("incidents", common),
-        AnalyticsCommand::Rebuild { common, .. } => ("rebuild", common),
-        AnalyticsCommand::Validate { common, .. } => ("validate", common),
-    };
-
-    // Reject malformed or contradictory query bounds before opening storage.
-    // Rebuild and validate have their own stricter maintenance-command rules.
-    if matches!(
-        &cmd,
-        AnalyticsCommand::Status { .. }
-            | AnalyticsCommand::Tokens { .. }
-            | AnalyticsCommand::Tools { .. }
-            | AnalyticsCommand::AnalyticsModels { .. }
-            | AnalyticsCommand::Incidents { .. }
-    ) {
-        analytics_filter_from_common(common)?;
-    }
-
-    // Build a summary of the active filters for _meta.
-    let filters = analytics_build_filters(common);
-
-    // Dispatch to per-subcommand implementation.
-    let data = match &cmd {
-        AnalyticsCommand::Status { common } => run_analytics_status(common, db_path.as_ref())?,
-        AnalyticsCommand::Tokens { common, group_by } => {
-            run_analytics_tokens(common, *group_by, db_path.as_ref())?
-        }
-        AnalyticsCommand::Rebuild { common, track } => {
-            run_analytics_rebuild(common, *track, db_path.as_ref())?
-        }
-        AnalyticsCommand::Tools {
-            common,
-            group_by,
-            limit,
-        } => run_analytics_tools(common, *group_by, *limit, db_path.as_ref())?,
-        AnalyticsCommand::Validate { common, fix } => {
-            run_analytics_validate(common, *fix, db_path.as_ref())?
-        }
-        AnalyticsCommand::AnalyticsModels { common, group_by } => {
-            run_analytics_models(common, *group_by, db_path.as_ref())?
-        }
-        AnalyticsCommand::Incidents {
-            common,
-            limit,
-            max_sessions,
-            max_messages,
-            max_bytes,
-            budget_ms,
-        } => run_analytics_incidents(
-            common,
-            *limit,
-            *max_sessions,
-            *max_messages,
-            *max_bytes,
-            *budget_ms,
-            db_path.as_ref(),
-        )?,
-    };
-
-    let elapsed_ms = start.elapsed().as_millis() as u64;
-
-    let structured_format = resolve_subcommand_structured_format(cli, common.json);
-
-    let envelope = serde_json::json!({
-        "command": format!("analytics/{label}"),
-        "data": data,
-        "_meta": {
-            "elapsed_ms": elapsed_ms,
-            "filters_applied": filters,
-            "data_dir": common.data_dir.as_ref().map(|p| p.display().to_string()),
-        }
-    });
-
-    if let Some(fmt) = structured_format {
-        return output_structured_value(envelope, fmt);
-    } else {
-        use colored::Colorize;
-        let heading = match &cmd {
-            AnalyticsCommand::Status { .. }
-            | AnalyticsCommand::Tokens { .. }
-            | AnalyticsCommand::Rebuild { .. }
-            | AnalyticsCommand::Tools { .. }
-            | AnalyticsCommand::Incidents { .. }
-            | AnalyticsCommand::Validate { .. }
-            | AnalyticsCommand::AnalyticsModels { .. } => format!(
-                "{} analytics {}",
-                "cass".cyan().bold(),
-                label.yellow().bold()
-            ),
-        };
-        eprintln!("{heading}");
-        if !filters.is_empty() {
-            eprintln!("  filters: {}", filters.join(", ").dimmed());
-        }
-        eprintln!("  elapsed: {elapsed_ms}ms");
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&envelope).unwrap_or_default()
-        );
-    }
-
-    Ok(())
-}
-
-/// Collect active filter descriptions for `_meta.filters_applied`.
-fn analytics_build_filters(common: &AnalyticsCommon) -> Vec<String> {
-    let mut f = Vec::new();
-    if common.since.is_some() {
-        f.push(format!("since={}", common.since.as_deref().unwrap_or("")));
-    }
-    if common.until.is_some() {
-        f.push(format!("until={}", common.until.as_deref().unwrap_or("")));
-    }
-    if let Some(d) = common.days {
-        f.push(format!("days={d}"));
-    }
-    for a in &common.agent {
-        f.push(format!("agent={}", normalized_analytics_agent_arg(a)));
-    }
-    for w in &common.workspace {
-        let trimmed = w.trim();
-        if !trimmed.is_empty() {
-            f.push(format!("workspace={trimmed}"));
-        }
-    }
-    if common.source.is_some() {
-        let source_label = match analytics_source_filter_from_common_input(common.source.as_deref())
-        {
-            analytics::SourceFilter::All => "all".to_string(),
-            analytics::SourceFilter::Local => "local".to_string(),
-            analytics::SourceFilter::Remote => "remote".to_string(),
-            analytics::SourceFilter::Specific(source_id) => source_id,
-        };
-        f.push(format!("source={source_label}"));
-    }
-    f
-}
-
-fn analytics_filter_flag_names(common: &AnalyticsCommon) -> Vec<&'static str> {
-    let mut flags = Vec::new();
-    if common.since.is_some() {
-        flags.push("--since");
-    }
-    if common.until.is_some() {
-        flags.push("--until");
-    }
-    if common.days.is_some() {
-        flags.push("--days");
-    }
-    if !common.agent.is_empty() {
-        flags.push("--agent");
-    }
-    if !common.workspace.is_empty() {
-        flags.push("--workspace");
-    }
-    if common.source.is_some() {
-        flags.push("--source");
-    }
-    flags
-}
-
-fn resolve_analytics_workspace_ids(
-    conn: &crate::franken_sync::Connection,
-    workspace_paths: &[String],
-) -> CliResult<Vec<i64>> {
-    use crate::franken_sync::compat::{ParamValue, RowExt};
-
-    let requested_paths: Vec<String> = workspace_paths
-        .iter()
-        .map(|workspace| workspace.trim())
-        .filter(|workspace| !workspace.is_empty())
-        .map(ToOwned::to_owned)
-        .collect();
-
-    if requested_paths.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    if !analytics::query::table_exists(conn, "workspaces") {
-        return Ok(vec![-1]);
-    }
-
-    let mut workspace_ids = std::collections::BTreeSet::new();
-    for workspace in requested_paths {
-        let ids: Vec<i64> = conn
-            .query_map_collect(
-                "SELECT id FROM workspaces WHERE path = ?1",
-                &[ParamValue::from(workspace.as_str())],
-                |row: &crate::franken_sync::Row| row.get_typed(0),
-            )
-            .map_err(|e| CliError {
-                code: 9,
-                kind: CliErrorKind::DbError.kind_str(),
-                message: format!("Failed to resolve analytics workspace filter '{workspace}': {e}"),
-                hint: Some("Check that the workspaces table exists and is readable.".into()),
-                retryable: false,
-            })?;
-        workspace_ids.extend(ids);
-    }
-
-    if workspace_ids.is_empty() {
-        Ok(vec![-1])
-    } else {
-        Ok(workspace_ids.into_iter().collect())
-    }
-}
-
-fn analytics_query_filter(
-    conn: &crate::franken_sync::Connection,
-    common: &AnalyticsCommon,
-) -> CliResult<analytics::AnalyticsFilter> {
-    let mut filter = analytics_filter_from_common(common)?;
-    filter.workspace_ids = resolve_analytics_workspace_ids(conn, &common.workspace)?;
-    Ok(filter)
-}
-
 /// Open a read-only frankensqlite connection for analytics queries.
 fn open_franken_analytics_db(
     data_dir: &Option<PathBuf>,
@@ -11370,1213 +10627,6 @@ fn fresh_franken_count_retry(
             Err(_) => return None,
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// analytics status — delegates to crate::analytics::query
-// ---------------------------------------------------------------------------
-
-fn analytics_query_cli_error(e: analytics::AnalyticsError) -> CliError {
-    CliError {
-        code: 9,
-        kind: CliErrorKind::DbError.kind_str(),
-        message: e.to_string(),
-        hint: Some("Check that the analytics tables exist and are not corrupt.".into()),
-        retryable: false,
-    }
-}
-
-/// Run `cass analytics status` — analytics health/quality endpoint.
-fn run_analytics_status(
-    common: &AnalyticsCommon,
-    db_path_override: Option<&PathBuf>,
-) -> CliResult<serde_json::Value> {
-    let conn = open_franken_analytics_db(&common.data_dir, db_path_override)?;
-    let filter = analytics_query_filter(&conn, common)?;
-
-    analytics::query::query_status(&conn, &filter)
-        .map(|mut r| {
-            let db_path = analytics_db_path(&common.data_dir, db_path_override);
-            let data_dir = resolve_data_dir(&common.data_dir, db_path_override);
-            for signal in &mut r.drift.signals {
-                if signal.signal == "legacy_omp_analytics_pending" {
-                    signal.detail = format!("Canonical OMP identity changed; analytics completion remains pending. Run {} without --since/--days.",
-                        cass_dataset_command(&data_dir, &db_path, &["analytics", "rebuild", "--track", "all", "--json"]));
-                }
-            }
-            r.to_json()
-        })
-        .map_err(analytics_query_cli_error)
-}
-
-fn incident_usage_error(message: impl Into<String>) -> CliError {
-    CliError {
-        code: 2,
-        kind: CliErrorKind::Usage.kind_str(),
-        message: message.into(),
-        hint: Some(
-            "Use positive bounded values; --limit <= 100 and --max-sessions <= 10000.".to_string(),
-        ),
-        retryable: false,
-    }
-}
-
-fn incident_scan_cli_error(error: anyhow::Error) -> CliError {
-    CliError {
-        code: 9,
-        kind: CliErrorKind::DbError.kind_str(),
-        message: format!("Incident mining failed: {error:#}"),
-        hint: Some(
-            "Check the canonical archive with 'cass doctor --json'; reduce the scan caps if the archive is very large."
-                .to_string(),
-        ),
-        retryable: false,
-    }
-}
-
-/// Run `cass analytics incidents` — bounded, read-only incident mining over
-/// canonical archive conversations and messages.
-fn run_analytics_incidents(
-    common: &AnalyticsCommon,
-    limit: usize,
-    max_sessions: u64,
-    max_messages: u64,
-    max_bytes: u64,
-    budget_ms: u64,
-    db_path_override: Option<&PathBuf>,
-) -> CliResult<serde_json::Value> {
-    if limit == 0 || limit > 100 {
-        return Err(incident_usage_error(format!(
-            "--limit must be between 1 and 100 (got {limit})"
-        )));
-    }
-    if max_sessions == 0 || max_sessions > 10_000 {
-        return Err(incident_usage_error(format!(
-            "--max-sessions must be between 1 and 10000 (got {max_sessions})"
-        )));
-    }
-    for (flag, value) in [
-        ("--max-messages", max_messages),
-        ("--max-bytes", max_bytes),
-        ("--budget-ms", budget_ms),
-    ] {
-        if value == 0 {
-            return Err(incident_usage_error(format!(
-                "{flag} must be greater than zero"
-            )));
-        }
-    }
-
-    let effective_db_path = analytics_db_path(&common.data_dir, db_path_override);
-    // dunce: the report's suggested `--db` must not carry Windows' \\?\ form.
-    let pointer_db_path = dunce::canonicalize(&effective_db_path).unwrap_or(effective_db_path);
-    let caps = crate::incident_discovery::DiscoveryCaps {
-        max_files: max_sessions,
-        max_lines: max_messages,
-        max_bytes,
-        budget_ms,
-        max_evidence: crate::incident_discovery::DEFAULT_MAX_EVIDENCE,
-    };
-    let scan_common = common.clone();
-    let scan_db_override = db_path_override.cloned();
-    let scan_db_path = pointer_db_path.clone();
-    let report = crate::incident_discovery::run_incident_scan_with_hard_timeout(caps, move || {
-        // The raw connection is created inside the bounded scan worker and is
-        // never transferred out of it. A hard timeout may detach this worker,
-        // but the connection remains thread-affine until the scan returns and
-        // owner-thread cleanup runs here.
-        let conn = open_franken_analytics_db(&scan_common.data_dir, scan_db_override.as_ref())
-            .map_err(anyhow::Error::new)?;
-        let scan_result = analytics_query_filter(&conn, &scan_common)
-            .map_err(anyhow::Error::new)
-            .and_then(|filter| {
-                crate::incident_discovery::scan_incidents(
-                    &conn,
-                    &filter,
-                    caps,
-                    limit,
-                    Some(&scan_db_path),
-                )
-            });
-        let _ = close_franken_cli_read_db_without_checkpoint(
-            conn,
-            &scan_db_path,
-            "analytics incidents",
-        );
-        scan_result
-    })
-    .map_err(incident_scan_cli_error)?;
-    serde_json::to_value(report).map_err(|error| CliError {
-        code: 9,
-        kind: CliErrorKind::SerializeMessage.kind_str(),
-        message: format!("Failed to serialize incident report: {error}"),
-        hint: None,
-        retryable: false,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// analytics tokens — delegates to crate::analytics::query
-// ---------------------------------------------------------------------------
-
-/// Run `cass analytics tokens` — time-series token/usage analytics.
-fn run_analytics_tokens(
-    common: &AnalyticsCommon,
-    group_by: AnalyticsBucketing,
-    db_path_override: Option<&PathBuf>,
-) -> CliResult<serde_json::Value> {
-    let conn = open_franken_analytics_db(&common.data_dir, db_path_override)?;
-    let filter = analytics_query_filter(&conn, common)?;
-
-    analytics::query::query_tokens_timeseries(&conn, &filter, group_by.into())
-        .map(|r| r.to_cli_json())
-        .map_err(analytics_query_cli_error)
-}
-
-// ---------------------------------------------------------------------------
-// analytics rebuild (br-z9fse.3.4)
-// ---------------------------------------------------------------------------
-
-/// Resolve the rebuild window from `--days` / `--since`, and reject the
-/// `AnalyticsCommon` filters a rebuild cannot honor.
-///
-/// `--until`, `--agent`, `--workspace` and `--source` are query-time filters;
-/// applying them to a rebuild would leave the rollup tables partially
-/// populated with no way to tell. Refusing is better than the previous
-/// behavior of accepting and ignoring them (GH #412).
-fn analytics_rebuild_since_ms(common: &AnalyticsCommon) -> CliResult<Option<i64>> {
-    let unsupported: Vec<&str> = analytics_filter_flag_names(common)
-        .into_iter()
-        .filter(|flag| !matches!(*flag, "--since" | "--days"))
-        .collect();
-    if !unsupported.is_empty() {
-        return Err(CliError::usage(
-            format!(
-                "analytics rebuild does not support {}: rollups are rebuilt for every agent, workspace and source",
-                unsupported.join(", ")
-            ),
-            Some(
-                "Use --since <date|-Nd> or --days N to limit the rebuild to recent days, or omit filters for a full rebuild."
-                    .into(),
-            ),
-        ));
-    }
-
-    if common.days.is_some() && common.since.is_some() {
-        return Err(CliError::usage(
-            "--days and --since cannot be used together",
-            Some("Choose either a rolling --days window or an explicit --since bound.".into()),
-        ));
-    }
-
-    if let Some(days) = common.days {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        return Ok(Some(
-            now_ms.saturating_sub(i64::from(days).saturating_mul(86_400_000)),
-        ));
-    }
-
-    match common.since.as_deref() {
-        None => Ok(None),
-        Some(raw) => parse_analytics_datetime_flag("--since", raw).map(Some),
-    }
-}
-
-fn validate_analytics_rebuild_window(
-    track: AnalyticsTrack,
-    since_ms: Option<i64>,
-) -> CliResult<()> {
-    if track == AnalyticsTrack::B && since_ms.is_some() {
-        return Err(CliError::usage(
-            "analytics rebuild --track b does not support --since or --days",
-            Some(
-                "Track B always rebuilds the complete token_usage ledger; omit the window or use --track a/all."
-                    .into(),
-            ),
-        ));
-    }
-    Ok(())
-}
-
-/// Human-readable UTC day label for the rebuild cutoff (day-aligned, matching
-/// what the storage layer actually rescans).
-fn format_rebuild_cutoff(since_ms: i64) -> String {
-    use crate::storage::sqlite::SqliteStorage;
-    let day_start_ms =
-        SqliteStorage::millis_from_day_id(SqliteStorage::day_id_from_millis(since_ms));
-    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(day_start_ms)
-        .map(|dt| dt.format("%Y-%m-%d UTC").to_string())
-        .unwrap_or_else(|| format!("{day_start_ms} ms"))
-}
-
-/// Serialize analytics mutations with indexing and other maintenance for this data directory.
-fn acquire_analytics_maintenance_lock(
-    data_dir: &Path,
-    db_path: &Path,
-) -> CliResult<crate::indexer::SearchMaintenanceMutationGuard> {
-    crate::indexer::acquire_search_maintenance_mutation_lock(
-        data_dir,
-        db_path,
-        crate::search::asset_state::SearchMaintenanceJobKind::AnalyticsRebuild,
-    )
-    .map_err(|error| {
-        let rendered = format!("{error:#}");
-        if error_chain_indicates_active_cass_index(&rendered) {
-            return active_index_run_details(data_dir, db_path)
-                .map(|details| details.to_cli_error())
-                .unwrap_or_else(|| index_storage_contention_cli_error(&rendered));
-        }
-        CliError {
-            code: 5,
-            kind: CliErrorKind::Storage.kind_str(),
-            message: format!("Failed to acquire analytics maintenance lock: {rendered}"),
-            hint: Some(format!("Check permissions under {}.", data_dir.display())),
-            retryable: true,
-        }
-    })
-}
-
-/// Rebuild Track A (optionally windowed) and/or the full Track B ledger rollups.
-fn run_analytics_rebuild(
-    common: &AnalyticsCommon,
-    track: AnalyticsTrack,
-    db_path_override: Option<&PathBuf>,
-) -> CliResult<serde_json::Value> {
-    use crate::storage::sqlite::FrankenStorage;
-
-    // Validate flags before touching storage so usage errors cannot be masked by
-    // a missing or locked database.
-    let since_ms = analytics_rebuild_since_ms(common)?;
-    validate_analytics_rebuild_window(track, since_ms)?;
-
-    let data_dir = resolve_data_dir(&common.data_dir, db_path_override);
-    let db_path = db_path_override
-        .cloned()
-        .unwrap_or_else(|| data_dir.join("agent_search.db"));
-
-    if !db_path.exists() {
-        return Err(CliError {
-            code: 3,
-            kind: CliErrorKind::MissingDb.kind_str(),
-            message: format!(
-                "Database not found at {}. Run 'cass index --full' first.",
-                db_path.display()
-            ),
-            hint: Some("Run 'cass index --full' to create the database.".into()),
-            retryable: false,
-        });
-    }
-
-    // Hold through all phase transactions and the final storage checkpoint.
-    // Acquiring before the writer opens also protects schema repair writes.
-    let maintenance_guard = acquire_analytics_maintenance_lock(&data_dir, &db_path)?;
-    let maintenance_progress = maintenance_guard.progress_atomic();
-    let storage = FrankenStorage::open(&db_path).map_err(|e| CliError {
-        code: 9,
-        kind: CliErrorKind::DbError.kind_str(),
-        message: format!("Failed to open database: {e}"),
-        hint: None,
-        retryable: false,
-    })?;
-
-    let rebuild_a = matches!(track, AnalyticsTrack::A | AnalyticsTrack::All);
-    let rebuild_b = matches!(track, AnalyticsTrack::B | AnalyticsTrack::All);
-    let overall_start = std::time::Instant::now();
-    let mut tracks_rebuilt: Vec<&str> = Vec::new();
-    let mut payload = serde_json::Map::new();
-
-    // Only the full, unscoped operation can complete the migration's
-    // all-projection authority. Single-track/windowed repairs retain it.
-    let legacy_omp_rebuild = if track == AnalyticsTrack::All && since_ms.is_none() {
-        let pending =
-            crate::storage::sqlite::legacy_omp_analytics_pending(storage.raw()).map_err(|e| {
-                CliError {
-                    code: 9,
-                    kind: CliErrorKind::DbError.kind_str(),
-                    message: format!("Failed to read OMP analytics authority: {e:#}"),
-                    hint: Some(format!(
-                        "Run {}.",
-                        cass_dataset_command(&data_dir, &db_path, &["doctor", "--json"],)
-                    )),
-                    retryable: true,
-                }
-            })?;
-        if pending {
-            eprintln!("Resuming pending OMP analytics identity repair...");
-            let last_processed = std::cell::Cell::new(None::<i64>);
-            let report_committed_progress = |processed: i64, _total: i64| {
-                // The first callback reports an existing resume cursor, not
-                // new work. Only subsequent committed message advancement
-                // refreshes the forward-progress timestamp.
-                if last_processed
-                    .replace(Some(processed))
-                    .is_some_and(|prior| processed > prior)
-                {
-                    maintenance_progress.store(
-                        FrankenStorage::now_millis(),
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
-                }
-            };
-            // Resume the stored ownership context. An analytics command must
-            // never reclassify canonical identities behind a published index.
-            // Legacy unbound markers require the indexing migration first.
-            let rebuilt = storage.rebuild_legacy_omp_analytics_with_progress(Some(&report_committed_progress), None, None)
-                .map_err(|e| CliError {
-                    code: 9,
-                    kind: CliErrorKind::RebuildError.kind_str(),
-                    message: format!("OMP analytics repair failed: {e:#}"),
-                    hint: Some(format!("Retry {} to resume committed analytics progress. If the migration marker has no ownership context, run {} first to migrate canonical identity and publish lexical search.",
-                        cass_dataset_command(&data_dir, &db_path, &["analytics", "rebuild", "--track", "all", "--json"]),
-                        cass_dataset_command(&data_dir, &db_path, &["index", "--json"]))),
-                    retryable: true,
-                })?;
-            maintenance_progress.store(
-                FrankenStorage::now_millis(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            rebuilt
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // The window only ever applies to Track A; advertising it in the JSON
-    // payload for a Track-B-only run would tell automation a window was
-    // honored when it was not.
-    if let Some(ms) = since_ms.filter(|_| rebuild_a) {
-        let cutoff_day = crate::storage::sqlite::SqliteStorage::day_id_from_millis(ms);
-        let cutoff_ms = crate::storage::sqlite::SqliteStorage::millis_from_day_id(cutoff_day);
-        payload.insert("since_ms".into(), serde_json::json!(cutoff_ms));
-        payload.insert("since_day_id".into(), serde_json::json!(cutoff_day));
-    }
-
-    if rebuild_a {
-        // Progress diagnostics go to stderr.
-        match since_ms {
-            Some(ms) => eprintln!(
-                "Rebuilding analytics (Track A) for messages since {}...",
-                format_rebuild_cutoff(ms)
-            ),
-            None => eprintln!("Rebuilding analytics (Track A)..."),
-        }
-        let result = legacy_omp_rebuild
-            .as_ref()
-            .map(|(result, _, _)| Ok(result.clone()))
-            .unwrap_or_else(|| storage.rebuild_analytics_since(since_ms))
-            .map_err(|e| CliError {
-                code: 9,
-                kind: CliErrorKind::RebuildError.kind_str(),
-                message: format!("Analytics rebuild failed: {e}"),
-                hint: Some("Check database integrity with 'cass health --json'.".into()),
-                retryable: true,
-            })?;
-        eprintln!(
-            "Track A complete: {} message_metrics, {} hourly, {} daily rows in {}ms ({:.0} msg/sec)",
-            result.message_metrics_rows,
-            result.usage_hourly_rows,
-            result.usage_daily_rows,
-            result.elapsed_ms,
-            result.messages_per_sec
-        );
-        tracks_rebuilt.push("a");
-        payload.insert(
-            "track_a".into(),
-            serde_json::json!({
-                "message_metrics_rows": result.message_metrics_rows,
-                "usage_hourly_rows": result.usage_hourly_rows,
-                "usage_daily_rows": result.usage_daily_rows,
-                "usage_models_daily_rows": result.usage_models_daily_rows,
-                "elapsed_ms": result.elapsed_ms,
-                "rows_per_sec": result.messages_per_sec,
-            }),
-        );
-    }
-
-    if rebuild_b {
-        // #397: `analytics validate` has recommended `--track all` for Track B
-        // drift since the two-track split; this is the path that actually
-        // rebuilds token_daily_stats from the token_usage ledger.
-        if since_ms.is_some() {
-            // Track B is derived from the `token_usage` ledger with its own
-            // checkpointing (GH #386); it has no windowed mode, so say so
-            // rather than let `--since` look like it applied.
-            eprintln!(
-                "Rebuilding analytics (Track B: token_daily_stats; --since/--days do not apply to Track B, rebuilding fully)..."
-            );
-        } else {
-            eprintln!("Rebuilding analytics (Track B: token_daily_stats)...");
-        }
-        let track_b_start = std::time::Instant::now();
-        let rows_created = legacy_omp_rebuild
-            .as_ref()
-            .map(|(_, rows, _)| Ok(*rows))
-            .unwrap_or_else(|| storage.rebuild_token_daily_stats())
-            .map_err(|e| CliError {
-                code: 9,
-                kind: CliErrorKind::ArchiveTokenDailyStatsRebuild.kind_str(),
-                message: format!("Track B (token_daily_stats) rebuild failed: {e}"),
-                hint: Some(
-                    "The token_usage ledger may be corrupt — run 'cass doctor check --json'."
-                        .into(),
-                ),
-                retryable: true,
-            })?;
-        let track_b_elapsed_ms = legacy_omp_rebuild
-            .as_ref()
-            .map(|(_, _, elapsed)| *elapsed)
-            .unwrap_or_else(|| track_b_start.elapsed().as_millis() as u64);
-        eprintln!(
-            "Track B complete: {rows_created} token_daily_stats rows in {track_b_elapsed_ms}ms"
-        );
-        tracks_rebuilt.push("b");
-        payload.insert(
-            "track_b".into(),
-            serde_json::json!({
-                "token_daily_stats_rows": rows_created,
-                "elapsed_ms": track_b_elapsed_ms,
-            }),
-        );
-    }
-
-    // WS-B.5 (z2uon): a rebuild rewrites whole analytics tables, so dropping
-    // the handle here used to leave every one of those pages in the WAL for
-    // the next opener to replay — on the owner's archive that was a 200 MB
-    // sidecar every `cass search` paid for. Close through the same
-    // checkpointing path `cass index` uses. The rows are already committed, so
-    // a blocked checkpoint (another reader pinning the WAL) is reported, not
-    // treated as a failed rebuild.
-    // Local fix (review 2026-11-02, I2): report the real checkpoint outcome.
-    let (wal_checkpoint, wal_checkpoint_detail) =
-        match crate::indexer::close_storage_with_wal_checkpoint_report(
-            storage,
-            &db_path,
-            "analytics rebuild",
-        ) {
-            Ok(report) => {
-                if report != crate::indexer::WalCheckpointReport::Completed {
-                    eprintln!(
-                        "Warning: final WAL checkpoint after analytics rebuild did not complete: {report:?}"
-                    );
-                }
-                crate::indexer::analytics_wal_checkpoint_fields(&report)
-            }
-            Err(err) => {
-                tracing::warn!(
-                    error = %format!("{err:#}"),
-                    db_path = %db_path.display(),
-                    "analytics rebuild: final WAL checkpoint did not complete"
-                );
-                eprintln!(
-                    "Warning: final WAL checkpoint after analytics rebuild did not complete: {err:#}"
-                );
-                (
-                    "failed",
-                    serde_json::json!({"status": "error", "error": format!("{err:#}")}),
-                )
-            }
-        };
-    payload.insert("wal_checkpoint".into(), serde_json::json!(wal_checkpoint));
-    payload.insert("wal_checkpoint_detail".into(), wal_checkpoint_detail);
-    payload.insert(
-        "track".into(),
-        serde_json::json!(match track {
-            AnalyticsTrack::A => "a",
-            AnalyticsTrack::B => "b",
-            AnalyticsTrack::All => "all",
-        }),
-    );
-    payload.insert("tracks_rebuilt".into(), serde_json::json!(tracks_rebuilt));
-    payload.insert(
-        "overall_elapsed_ms".into(),
-        serde_json::json!(overall_start.elapsed().as_millis() as u64),
-    );
-    Ok(serde_json::Value::Object(payload))
-}
-
-// ---------------------------------------------------------------------------
-// analytics tools (br-z9fse.3.9)
-// ---------------------------------------------------------------------------
-
-/// Run `cass analytics tools` — per-tool invocation counts and derived metrics.
-fn run_analytics_tools(
-    common: &AnalyticsCommon,
-    group_by: AnalyticsBucketing,
-    limit: usize,
-    db_path_override: Option<&PathBuf>,
-) -> CliResult<serde_json::Value> {
-    let conn = open_franken_analytics_db(&common.data_dir, db_path_override)?;
-    let filter = analytics_query_filter(&conn, common)?;
-
-    analytics::query::query_tools(&conn, &filter, group_by.into(), limit)
-        .map(|r| r.to_cli_json())
-        .map_err(analytics_query_cli_error)
-}
-
-#[cfg(test)]
-mod analytics_filter_validation_tests {
-    use super::*;
-
-    fn common() -> AnalyticsCommon {
-        AnalyticsCommon {
-            since: None,
-            until: None,
-            days: None,
-            agent: vec![],
-            workspace: vec![],
-            source: None,
-            json: false,
-            data_dir: None,
-        }
-    }
-
-    #[test]
-    fn no_flags_means_full_rebuild() {
-        assert_eq!(analytics_rebuild_since_ms(&common()).unwrap(), None);
-    }
-
-    #[test]
-    fn days_and_since_resolve_to_a_cutoff() {
-        let mut c = common();
-        c.days = Some(1);
-        let now_ms = Utc::now().timestamp_millis();
-        let got = analytics_rebuild_since_ms(&c).unwrap().unwrap();
-        assert!((now_ms - 86_400_000 - got).abs() < 60_000, "got {got}");
-
-        // `--since YYYY-MM-DD` parses as *local* midnight; the storage layer
-        // then floors to the UTC day, so the resolved day is either the named
-        // UTC day or the one before it (never after — the window is always a
-        // superset of the requested local day).
-        let mut c = common();
-        c.since = Some("2026-02-06".into());
-        let got = analytics_rebuild_since_ms(&c).unwrap().unwrap();
-        let got_day = crate::storage::sqlite::SqliteStorage::day_id_from_millis(got);
-        let feb6_utc_ms = chrono::NaiveDate::from_ymd_opt(2026, 2, 6)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
-            .and_utc()
-            .timestamp_millis();
-        let feb6_day = crate::storage::sqlite::SqliteStorage::day_id_from_millis(feb6_utc_ms);
-        assert!(
-            got_day == feb6_day || got_day == feb6_day - 1,
-            "got day {got_day}, expected {feb6_day} or {}",
-            feb6_day - 1
-        );
-
-        // The label is day-aligned UTC regardless of the intra-day offset.
-        assert_eq!(
-            format_rebuild_cutoff(feb6_utc_ms + 13 * 3_600_000),
-            "2026-02-06 UTC"
-        );
-    }
-
-    #[test]
-    fn unparseable_since_is_a_usage_error() {
-        let mut c = common();
-        c.since = Some("not-a-date".into());
-        let err = analytics_rebuild_since_ms(&c).unwrap_err();
-        assert_eq!(err.code, 2);
-        assert!(err.message.contains("--since"), "{}", err.message);
-    }
-
-    #[test]
-    fn query_only_filters_are_rejected_not_ignored() {
-        let mut c = common();
-        c.agent = vec!["claude_code".into()];
-        c.until = Some("today".into());
-        let err = analytics_rebuild_since_ms(&c).unwrap_err();
-        assert_eq!(err.code, 2);
-        assert!(err.message.contains("--until"), "{}", err.message);
-        assert!(err.message.contains("--agent"), "{}", err.message);
-    }
-
-    #[test]
-    fn ambiguous_and_invalid_query_time_bounds_are_usage_errors() {
-        let mut conflicting = common();
-        conflicting.days = Some(7);
-        conflicting.since = Some("2026-01-01".into());
-        let err = analytics_filter_from_common(&conflicting).unwrap_err();
-        assert_eq!(err.code, 2);
-        assert!(err.message.contains("--days"), "{}", err.message);
-        assert!(err.message.contains("--since"), "{}", err.message);
-
-        let mut invalid_until = common();
-        invalid_until.until = Some("not-a-date".into());
-        let err = analytics_filter_from_common(&invalid_until).unwrap_err();
-        assert_eq!(err.code, 2);
-        assert!(err.message.contains("--until"), "{}", err.message);
-
-        let mut reversed = common();
-        reversed.since = Some("2026-02-01".into());
-        reversed.until = Some("2026-01-01".into());
-        let err = analytics_filter_from_common(&reversed).unwrap_err();
-        assert_eq!(err.code, 2);
-        assert!(
-            err.message.contains("later than --until"),
-            "{}",
-            err.message
-        );
-    }
-
-    #[test]
-    fn maintenance_commands_reject_filters_they_cannot_apply() {
-        let mut ambiguous_rebuild = common();
-        ambiguous_rebuild.days = Some(7);
-        ambiguous_rebuild.since = Some("2026-01-01".into());
-        let err = analytics_rebuild_since_ms(&ambiguous_rebuild).unwrap_err();
-        assert_eq!(err.code, 2);
-        assert!(err.message.contains("cannot be used together"));
-
-        assert!(validate_analytics_rebuild_window(AnalyticsTrack::A, Some(1)).is_ok());
-        assert!(validate_analytics_rebuild_window(AnalyticsTrack::All, Some(1)).is_ok());
-        let err = validate_analytics_rebuild_window(AnalyticsTrack::B, Some(1)).unwrap_err();
-        assert_eq!(err.code, 2);
-        assert!(err.message.contains("--track b"), "{}", err.message);
-
-        let mut validate = common();
-        validate.agent = vec!["claude_code".into()];
-        validate.days = Some(7);
-        let err = reject_analytics_validate_filters(&validate).unwrap_err();
-        assert_eq!(err.code, 2);
-        assert!(err.message.contains("--days"), "{}", err.message);
-        assert!(err.message.contains("--agent"), "{}", err.message);
-    }
-
-    /// The window only applies to Track A, so the JSON payload advertises
-    /// `since_ms`/`since_day_id` when Track A ran with one. Track-B-only
-    /// window requests are rejected instead of being silently ignored (GH #412).
-    #[test]
-    fn payload_advertises_window_only_when_track_a_used_it() {
-        use crate::storage::sqlite::{FrankenStorage, SqliteStorage};
-
-        let dir = tempfile::TempDir::new().unwrap();
-        let db_path = dir.path().join("agent_search.db");
-        drop(FrankenStorage::open(&db_path).expect("create empty canonical db"));
-
-        let mut windowed = common();
-        windowed.days = Some(2);
-
-        for track in [AnalyticsTrack::A, AnalyticsTrack::All] {
-            let payload = run_analytics_rebuild(&windowed, track, Some(&db_path))
-                .unwrap_or_else(|e| panic!("{track:?}: {}", e.message));
-            let has_ms = payload.get("since_ms").is_some();
-            let has_day = payload.get("since_day_id").is_some();
-            assert!(has_ms, "{track:?}: {payload}");
-            assert!(has_day, "{track:?}: {payload}");
-            // Both fields describe the same day-aligned cutoff.
-            let ms = payload["since_ms"].as_i64().unwrap();
-            let day = payload["since_day_id"].as_i64().unwrap();
-            assert_eq!(SqliteStorage::millis_from_day_id(day), ms, "{payload}");
-            assert_eq!(SqliteStorage::day_id_from_millis(ms), day, "{payload}");
-        }
-
-        let err = run_analytics_rebuild(&windowed, AnalyticsTrack::B, Some(&db_path)).unwrap_err();
-        assert_eq!(err.code, 2);
-        assert!(err.message.contains("--track b"), "{}", err.message);
-
-        // No window requested => never advertised, whichever track ran.
-        let payload = run_analytics_rebuild(&common(), AnalyticsTrack::All, Some(&db_path))
-            .unwrap_or_else(|e| panic!("{}", e.message));
-        assert!(payload.get("since_ms").is_none(), "{payload}");
-        assert!(payload.get("since_day_id").is_none(), "{payload}");
-        assert_eq!(payload["tracks_rebuilt"], serde_json::json!(["a", "b"]));
-
-        // WS-B.5 (z2uon): the rebuild closes through the checkpointing path,
-        // so the command reports the checkpoint and leaves no WAL frames for
-        // the next opener to replay. Positive observable: `wal_checkpoint` is
-        // "completed" and the sidecar is header-only or gone. No-claim: a
-        // checkpoint blocked by a concurrent reader is not exercised here.
-        assert_eq!(
-            payload["wal_checkpoint"],
-            serde_json::json!("completed"),
-            "{payload}"
-        );
-        assert_eq!(payload["wal_checkpoint_detail"]["status"], "completed");
-        let wal_len = std::fs::metadata(crate::storage::sqlite::database_sidecar_path(
-            &db_path, "-wal",
-        ))
-        .map_or(0, |meta| meta.len());
-        assert!(
-            wal_len <= 32,
-            "analytics rebuild must not leave WAL frames behind (wal_len={wal_len})"
-        );
-    }
-}
-
-#[cfg(test)]
-mod analytics_query_cli_error_tests {
-    use super::*;
-
-    #[test]
-    fn analytics_query_cli_error_preserves_shape() {
-        let err = analytics_query_cli_error(analytics::AnalyticsError::Db("boom".to_string()));
-
-        assert_eq!(err.code, 9);
-        assert_eq!(err.kind, CliErrorKind::DbError.kind_str());
-        assert_eq!(err.message, "analytics db error: boom");
-        assert_eq!(
-            err.hint.as_deref(),
-            Some("Check that the analytics tables exist and are not corrupt.")
-        );
-        assert!(!err.retryable);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// analytics validate (br-z9fse.3.5)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
-struct AnalyticsValidationSummary {
-    errors: usize,
-    warnings: usize,
-    drift_entries: usize,
-    buckets_checked: usize,
-    buckets_total: usize,
-}
-
-fn analytics_validation_summary(
-    report: &analytics::ValidationReport,
-) -> AnalyticsValidationSummary {
-    AnalyticsValidationSummary {
-        errors: report.count_failures(analytics::validate::Severity::Error),
-        warnings: report.count_failures(analytics::validate::Severity::Warning),
-        drift_entries: report.drift.len(),
-        buckets_checked: report._meta.sampling.buckets_checked,
-        buckets_total: report._meta.sampling.buckets_total,
-    }
-}
-
-fn annotate_deferred_analytics_failures(
-    report: &mut analytics::ValidationReport,
-    deferred_check_ids: &std::collections::BTreeSet<String>,
-) {
-    if deferred_check_ids.is_empty() {
-        return;
-    }
-
-    for check in &mut report.checks {
-        if !check.ok
-            && check.severity == analytics::validate::Severity::Error
-            && deferred_check_ids.contains(&check.id)
-        {
-            check.severity = analytics::validate::Severity::Warning;
-            if !check
-                .details
-                .contains("deferred because automatic Track B rebuild is not available")
-            {
-                check.details.push_str(
-                    " This failure is currently deferred because automatic Track B rebuild is not available yet.",
-                );
-            }
-        }
-    }
-}
-
-fn emit_analytics_validate_summary(label: &str, summary: &AnalyticsValidationSummary) {
-    use colored::Colorize;
-
-    if summary.errors > 0 {
-        eprintln!(
-            "  {label} {} {} error(s), {} warning(s), {} drift entries",
-            "FAIL".red().bold(),
-            summary.errors,
-            summary.warnings,
-            summary.drift_entries
-        );
-    } else if summary.warnings > 0 {
-        eprintln!(
-            "  {label} {} {} warning(s), {} drift entries",
-            "WARN".yellow().bold(),
-            summary.warnings,
-            summary.drift_entries
-        );
-    } else {
-        eprintln!("  {label} {} all checks passed", "OK".green().bold());
-    }
-}
-
-fn analytics_perf_json(
-    perf_ts: &analytics::validate::PerfMeasurement,
-    perf_bd: &analytics::validate::PerfMeasurement,
-) -> serde_json::Value {
-    serde_json::json!({
-        "timeseries": {
-            "elapsed_ms": perf_ts.elapsed_ms,
-            "budget_ms": perf_ts.budget_ms,
-            "within_budget": perf_ts.within_budget,
-            "error": perf_ts.error,
-            "details": perf_ts.details,
-        },
-        "breakdown": {
-            "elapsed_ms": perf_bd.elapsed_ms,
-            "budget_ms": perf_bd.budget_ms,
-            "within_budget": perf_bd.within_budget,
-            "error": perf_bd.error,
-            "details": perf_bd.details,
-        }
-    })
-}
-
-fn reject_analytics_validate_filters(common: &AnalyticsCommon) -> CliResult<()> {
-    let unsupported = analytics_filter_flag_names(common);
-    if unsupported.is_empty() {
-        return Ok(());
-    }
-
-    Err(CliError::usage(
-        format!(
-            "analytics validate does not support {}: validation checks the complete analytics database",
-            unsupported.join(", ")
-        ),
-        Some("Remove query-only filters and rerun analytics validate.".into()),
-    ))
-}
-
-/// Run `cass analytics validate` — rollup invariant checks and drift detection.
-fn run_analytics_validate(
-    common: &AnalyticsCommon,
-    fix: bool,
-    db_path_override: Option<&PathBuf>,
-) -> CliResult<serde_json::Value> {
-    use crate::storage::sqlite::FrankenStorage;
-    use std::collections::BTreeSet;
-
-    // Validation is global. Reject filters before opening the database instead
-    // of ignoring them and falsely listing them under `_meta.filters_applied`.
-    reject_analytics_validate_filters(common)?;
-
-    let config = if fix {
-        analytics::ValidateConfig::deep()
-    } else {
-        analytics::ValidateConfig::default()
-    };
-    let db_path = analytics_db_path(&common.data_dir, db_path_override);
-
-    let _maintenance_guard = if fix {
-        Some(acquire_analytics_maintenance_lock(
-            &resolve_data_dir(&common.data_dir, db_path_override),
-            &db_path,
-        )?)
-    } else {
-        None
-    };
-    let pre_conn = open_franken_analytics_db(&common.data_dir, db_path_override)?;
-    let mut pre_report = analytics::validate::run_validation(&pre_conn, &config);
-    let scope_pending_action = |report: &mut analytics::validate::ValidationReport| {
-        for check in &mut report.checks {
-            if check.id == "migration.legacy_omp_analytics_pending" {
-                check.suggested_action = Some(cass_dataset_command(
-                    &resolve_data_dir(&common.data_dir, db_path_override),
-                    &db_path,
-                    &["analytics", "rebuild", "--track", "all", "--json"],
-                ));
-            } else if check.id == "migration.legacy_omp_authority" {
-                check.suggested_action = Some(cass_dataset_command(
-                    &resolve_data_dir(&common.data_dir, db_path_override),
-                    &db_path,
-                    &["doctor", "--json"],
-                ));
-            }
-        }
-    };
-    scope_pending_action(&mut pre_report);
-    let pre_summary = analytics_validation_summary(&pre_report);
-    let repair_plan = fix.then(|| analytics::validate::build_repair_plan(&pre_report));
-
-    let mut applied_repairs = Vec::new();
-    let mut skipped_repairs = Vec::new();
-    let mut deferred_check_ids = BTreeSet::new();
-
-    if let Some(plan) = repair_plan.as_ref() {
-        for decision in &plan.decisions {
-            match decision.kind {
-                analytics::validate::RepairKind::RebuildTrackA => {
-                    if ["messages", "conversations", "agents"]
-                        .into_iter()
-                        .all(|table| analytics::query::table_exists(&pre_conn, table))
-                    {
-                        let storage = FrankenStorage::open(&db_path).map_err(|e| CliError {
-                            code: 9,
-                            kind: CliErrorKind::DbError.kind_str(),
-                            message: format!("Failed to open database for analytics repair: {e}"),
-                            hint: None,
-                            retryable: false,
-                        })?;
-                        let rebuild = storage.rebuild_analytics().map_err(|e| CliError {
-                            code: 9,
-                            kind: CliErrorKind::RepairError.kind_str(),
-                            message: format!("Analytics auto-repair failed: {e}"),
-                            hint: Some(
-                                "Track A rebuild could not complete. Inspect the database and retry with 'cass analytics rebuild --json'."
-                                    .into(),
-                            ),
-                            retryable: true,
-                        })?;
-                        // WS-B.5 (z2uon): the repair rewrote whole analytics
-                        // tables; do not leave them in the WAL for the next
-                        // opener. A blocked checkpoint is logged, never fatal.
-                        if let Err(err) = crate::indexer::close_storage_with_wal_checkpoint(
-                            storage,
-                            &db_path,
-                            "analytics validate --fix (track A)",
-                        ) {
-                            tracing::warn!(
-                                error = %format!("{err:#}"),
-                                "analytics repair: final WAL checkpoint did not complete"
-                            );
-                        }
-                        applied_repairs.push(serde_json::json!({
-                            "kind": "rebuild_track_a",
-                            "check_ids": decision.check_ids,
-                            "reason": decision.reason,
-                            "result": {
-                                "message_metrics_rows": rebuild.message_metrics_rows,
-                                "usage_hourly_rows": rebuild.usage_hourly_rows,
-                                "usage_daily_rows": rebuild.usage_daily_rows,
-                                "usage_models_daily_rows": rebuild.usage_models_daily_rows,
-                                "elapsed_ms": rebuild.elapsed_ms,
-                                "rows_per_sec": rebuild.messages_per_sec,
-                            }
-                        }));
-                    } else {
-                        skipped_repairs.push(serde_json::json!({
-                            "kind": "rebuild_track_a",
-                            "check_ids": decision.check_ids,
-                            "reason": "Track A rebuild was skipped because the raw cass source tables (messages, conversations, agents) are missing, so --fix cannot safely reconstruct analytics from this database.",
-                        }));
-                    }
-                }
-                analytics::validate::RepairKind::RebuildTrackB => {
-                    // Bead m7xrw: repair Track B rollup drift by replaying
-                    // the intact `token_usage` ledger into fresh
-                    // `token_daily_stats` rows. Transactional inside
-                    // rebuild_token_daily_stats.
-                    let storage = FrankenStorage::open(&db_path).map_err(|e| CliError {
-                        code: 9,
-                        kind: CliErrorKind::DbError.kind_str(),
-                        message: format!(
-                            "Failed to open database for Track B analytics repair: {e}"
-                        ),
-                        hint: None,
-                        retryable: false,
-                    })?;
-                    match storage.rebuild_token_daily_stats() {
-                        Ok(rows_created) => {
-                            applied_repairs.push(serde_json::json!({
-                                "kind": "rebuild_track_b",
-                                "check_ids": decision.check_ids,
-                                "reason": decision.reason,
-                                "result": {
-                                    "token_daily_stats_rows": rows_created,
-                                },
-                            }));
-                        }
-                        Err(e) => {
-                            // Rebuild failed — defer and surface the
-                            // error, but do NOT propagate so other
-                            // repair decisions still get a chance to
-                            // run (matches Track A's shape).
-                            deferred_check_ids.extend(decision.check_ids.iter().cloned());
-                            skipped_repairs.push(serde_json::json!({
-                                "kind": "rebuild_track_b_failed",
-                                "check_ids": decision.check_ids,
-                                "reason": format!(
-                                    "rebuild_token_daily_stats returned error: {e}. The token_usage ledger may itself be corrupt — run 'cass doctor check --json' and repair or restore the canonical archive before rebuilding derived assets."
-                                ),
-                            }));
-                        }
-                    }
-                    // WS-B.5 (z2uon): same contract as Track A — the rollup
-                    // rewrite must not outlive this command in the WAL.
-                    if let Err(err) = crate::indexer::close_storage_with_wal_checkpoint(
-                        storage,
-                        &db_path,
-                        "analytics validate --fix (track B)",
-                    ) {
-                        tracing::warn!(
-                            error = %format!("{err:#}"),
-                            "analytics repair: final WAL checkpoint did not complete"
-                        );
-                    }
-                }
-                analytics::validate::RepairKind::TrackAllRebuildUnavailable => {
-                    deferred_check_ids.extend(decision.check_ids.iter().cloned());
-                    skipped_repairs.push(serde_json::json!({
-                        "kind": "track_all_rebuild_unavailable",
-                        "check_ids": decision.check_ids,
-                        "reason": decision.reason,
-                    }));
-                }
-                analytics::validate::RepairKind::ManualReview => {
-                    skipped_repairs.push(serde_json::json!({
-                        "kind": "manual_review",
-                        "check_ids": decision.check_ids,
-                        "reason": decision.reason,
-                    }));
-                }
-            }
-        }
-    }
-
-    let conn = open_franken_analytics_db(&common.data_dir, db_path_override)?;
-    let mut report = analytics::validate::run_validation(&conn, &config);
-    scope_pending_action(&mut report);
-    if fix {
-        annotate_deferred_analytics_failures(&mut report, &deferred_check_ids);
-    }
-    let summary = analytics_validation_summary(&report);
-
-    let perf_ts = analytics::validate::perf_query_guardrail(&conn);
-    let perf_bd = analytics::validate::perf_breakdown_guardrail(&conn);
-
-    if fix {
-        emit_analytics_validate_summary("pre-fix:", &pre_summary);
-        for repair in &applied_repairs {
-            eprintln!(
-                "  fix: applied {} for {:?}",
-                repair["kind"].as_str().unwrap_or("repair"),
-                repair["check_ids"]
-                    .as_array()
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[])
-            );
-        }
-        for repair in &skipped_repairs {
-            eprintln!(
-                "  fix: skipped {} for {:?}: {}",
-                repair["kind"].as_str().unwrap_or("repair"),
-                repair["check_ids"]
-                    .as_array()
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[]),
-                repair["reason"].as_str().unwrap_or("no reason recorded")
-            );
-        }
-        emit_analytics_validate_summary("post-fix:", &summary);
-    } else {
-        emit_analytics_validate_summary("", &summary);
-    }
-
-    {
-        use colored::Colorize;
-        let ts_status = if perf_ts.error.is_some() {
-            "ERR".red().to_string()
-        } else if perf_ts.within_budget {
-            "OK".green().to_string()
-        } else {
-            "SLOW".red().to_string()
-        };
-        let bd_status = if perf_bd.error.is_some() {
-            "ERR".red().to_string()
-        } else if perf_bd.within_budget {
-            "OK".green().to_string()
-        } else {
-            "SLOW".red().to_string()
-        };
-        eprintln!(
-            "  perf: timeseries {}ms [{}], breakdown {}ms [{}]",
-            perf_ts.elapsed_ms, ts_status, perf_bd.elapsed_ms, bd_status
-        );
-    }
-
-    let fix_json = fix.then(|| {
-        // Bead m7xrw: emit `tracks_rebuilt` so downstream consumers can
-        // tell at a glance which rebuild paths actually ran
-        // (previously only inferable from the per-repair entries).
-        let tracks_rebuilt: Vec<&str> = applied_repairs
-            .iter()
-            .filter_map(|entry| entry.get("kind").and_then(|v| v.as_str()))
-            .filter_map(|kind| match kind {
-                "rebuild_track_a" => Some("a"),
-                "rebuild_track_b" => Some("b"),
-                _ => None,
-            })
-            .collect::<std::collections::BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        serde_json::json!({
-            "requested": true,
-            "validation_mode": report._meta.sampling.mode.clone(),
-            "attempted": repair_plan.as_ref().is_some_and(|plan| !plan.decisions.is_empty()),
-            "changed": !applied_repairs.is_empty(),
-            "tracks_rebuilt": tracks_rebuilt,
-            "pre_fix_summary": pre_summary.clone(),
-            "post_fix_summary": summary.clone(),
-            "applied_repairs": applied_repairs,
-            "skipped_repairs": skipped_repairs,
-        })
-    });
-
-    let mut payload = serde_json::json!({
-        "summary": summary.clone(),
-        "checks": report.checks,
-        "drift": report.drift,
-        "perf": analytics_perf_json(&perf_ts, &perf_bd),
-    });
-    if let Some(fix_json) = fix_json {
-        payload["fix"] = fix_json;
-    }
-    Ok(payload)
-}
-
-// ---------------------------------------------------------------------------
-// analytics models (br-z9fse.3.6)
-// ---------------------------------------------------------------------------
-
-/// Run `cass analytics models` — top models by usage and coverage statistics.
-fn run_analytics_models(
-    common: &AnalyticsCommon,
-    group_by: AnalyticsBucketing,
-    db_path_override: Option<&PathBuf>,
-) -> CliResult<serde_json::Value> {
-    let conn = open_franken_analytics_db(&common.data_dir, db_path_override)?;
-    let filter = analytics_query_filter(&conn, common)?;
-
-    // Model breakdown by API tokens.
-    let by_tokens = analytics::query::query_breakdown(
-        &conn,
-        &filter,
-        analytics::Dim::Model,
-        analytics::Metric::ApiTotal,
-        50,
-    )
-    .map_err(analytics_query_cli_error)?;
-
-    // Time series for aggregate stats.
-    let ts = analytics::query::query_tokens_timeseries(&conn, &filter, group_by.into())
-        .map_err(analytics_query_cli_error)?;
-
-    // Human-readable stderr summary.
-    {
-        use colored::Colorize;
-        eprintln!(
-            "  {} models (by API tokens)",
-            by_tokens.rows.len().to_string().cyan().bold()
-        );
-        for (i, row) in by_tokens.rows.iter().take(5).enumerate() {
-            eprintln!(
-                "    {}. {} — {} API tokens",
-                i + 1,
-                row.key.yellow(),
-                row.bucket.api_tokens_total
-            );
-        }
-        if by_tokens.rows.len() > 5 {
-            eprintln!("    ... and {} more", by_tokens.rows.len() - 5);
-        }
-    }
-
-    Ok(serde_json::json!({
-        "by_api_tokens": by_tokens.to_cli_json(),
-        "timeseries": ts.to_cli_json(),
-    }))
 }
 
 async fn import_chatgpt_export(
@@ -16745,7 +14795,6 @@ fn describe_command(cli: &Cli) -> String {
         Some(Commands::Health { .. }) => "health".to_string(),
         Some(Commands::Selftest { .. }) => "selftest".to_string(),
         Some(Commands::Onboarding { .. }) => "onboarding".to_string(),
-        Some(Commands::Guide { .. }) => "guide".to_string(),
         Some(Commands::Doctor { .. }) => "doctor".to_string(),
         Some(Commands::Context { .. }) => "context".to_string(),
         Some(Commands::Sessions { .. }) => "sessions".to_string(),
@@ -16762,9 +14811,7 @@ fn describe_command(cli: &Cli) -> String {
         Some(Commands::Pages { .. }) => "pages".to_string(),
         #[cfg(unix)]
         Some(Commands::Daemon { .. }) => "daemon".to_string(),
-        Some(Commands::Schedule(..)) => "schedule".to_string(),
         Some(Commands::Import(..)) => "import".to_string(),
-        Some(Commands::Analytics(..)) => "analytics".to_string(),
         None => "(default)".to_string(),
     }
 }
@@ -16773,20 +14820,6 @@ fn resolve_subcommand_structured_format(cli: &Cli, json: bool) -> Option<RobotFo
     cli.robot_format
         .or(if json { Some(RobotFormat::Json) } else { None })
         .or_else(robot_format_from_env)
-}
-
-fn analytics_requests_structured_output(cmd: &AnalyticsCommand, cli: &Cli) -> bool {
-    let json = match cmd {
-        AnalyticsCommand::Status { common }
-        | AnalyticsCommand::Tokens { common, .. }
-        | AnalyticsCommand::Tools { common, .. }
-        | AnalyticsCommand::AnalyticsModels { common, .. }
-        | AnalyticsCommand::Incidents { common, .. }
-        | AnalyticsCommand::Rebuild { common, .. }
-        | AnalyticsCommand::Validate { common, .. } => common.json,
-    };
-
-    resolve_subcommand_structured_format(cli, json).is_some()
 }
 
 /// Default tracing directive for interactive human mode: emit INFO and above
@@ -18605,19 +16638,12 @@ fn is_robot_mode(command: &Commands, cli: &Cli) -> bool {
         } => resolve_subcommand_structured_format(cli, *json).is_some() || *robot_meta,
         Commands::Pack { json, .. } => resolve_subcommand_structured_format(cli, *json).is_some(),
         Commands::Index { json, .. } => resolve_subcommand_structured_format(cli, *json).is_some(),
-        Commands::Schedule(
-            ScheduleCommand::Install { json, .. }
-            | ScheduleCommand::Uninstall { json, .. }
-            | ScheduleCommand::Status { json, .. }
-            | ScheduleCommand::Run { json, .. },
-        ) => resolve_subcommand_structured_format(cli, *json).is_some(),
         Commands::Health { json, .. } | Commands::Selftest { json } => {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
         Commands::Onboarding { json, .. } => {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
-        Commands::Guide { json, .. } => resolve_subcommand_structured_format(cli, *json).is_some(),
         Commands::Pages {
             subcommand, json, ..
         } => {
@@ -18692,7 +16718,6 @@ fn is_robot_mode(command: &Commands, cli: &Cli) -> bool {
             }
         },
         Commands::Models(_) => cli.robot_format.is_some() || env_robot_mode,
-        Commands::Analytics(cmd) => analytics_requests_structured_output(cmd, cli),
         _ => false,
     }
 }
@@ -19496,7 +17521,6 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "`--keep-indexed-data` if you only want to block future indexing.".to_string(),
             "Exclusions apply to future local scans, archive mirror scans, and watch mode.".to_string(),
         ],
-        RobotTopic::Analytics => render_analytics_docs(),
         RobotTopic::Doctor => crate::doctor_robot_docs::doctor_robot_docs_body()
             .lines()
             .map(|s| s.to_string())
@@ -19509,166 +17533,6 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
 
     println!("{}", render_block(&lines, wrap));
     Ok(())
-}
-
-/// Render comprehensive analytics robot-docs.
-fn render_analytics_docs() -> Vec<String> {
-    vec![
-        "analytics:".into(),
-        String::new(),
-        "# cass analytics — Usage Analytics and Bounded Incident Mining".into(),
-        String::new(),
-        "## Subcommands".into(),
-        "  status    Row counts, freshness, coverage, drift warnings".into(),
-        "  tokens    Token usage over time with dimensional breakdowns".into(),
-        "  tools     Per-tool invocation counts and derived metrics".into(),
-        "  models    Top models by usage and coverage statistics".into(),
-        "  incidents Bounded recurrent CASS-incident mining over the canonical archive".into(),
-        "  rebuild   Rebuild/backfill rollup tables with progress output".into(),
-        "  validate  Check rollup invariants and detect data drift".into(),
-        String::new(),
-        "## Shared Flags (all subcommands)".into(),
-        "  --since <ISO>        Filter from date (YYYY-MM-DD or full timestamp)".into(),
-        "  --until <ISO>        Filter to date".into(),
-        "  --days <N>           Filter to last N days".into(),
-        "  --agent <slug>       Filter by agent (repeatable)".into(),
-        "  --workspace <path>   Filter by workspace (repeatable)".into(),
-        "  --source <name>      Filter by source ('local', 'remote', hostname)".into(),
-        "  --json / --robot     Machine-readable JSON output".into(),
-        "  --data-dir <path>    Override data directory".into(),
-        String::new(),
-        "## Bucketed Subcommands (tokens, tools, models)".into(),
-        "  --group-by <bucket>  hour | day (default) | week | month".into(),
-        String::new(),
-        "## JSON Envelope (all subcommands)".into(),
-        "  { \"command\": \"analytics/<sub>\", \"data\": {...}, \"_meta\": {...} }".into(),
-        "  _meta: { elapsed_ms: u64, filters_applied: [string], data_dir: string|null }".into(),
-        String::new(),
-        "## Per-Subcommand JSON Schemas".into(),
-        String::new(),
-        "### analytics status".into(),
-        "  data.tables: [{ table, exists, row_count, min_day_id, max_day_id, last_updated }]".into(),
-        "  data.coverage: { total_messages, <metric>_pct, <metric>_status, <metric>_display }".into(),
-        "    Metrics: message_metrics_coverage, api_token_coverage, model_name_coverage, estimate_only".into(),
-        "    <metric>_pct is number|null; status preserves true-zero, no-data, schema, and rebuild states.".into(),
-        "  data.drift: { signals: [{ signal, detail, severity }], track_a_fresh, track_b_fresh }".into(),
-        "  data.recommended_action: string".into(),
-        String::new(),
-        "### analytics tokens".into(),
-        "  data.buckets: [{ bucket: string, counts: {...}, content_tokens: {...},".into(),
-        "                   api_tokens: {...}, plan: {...}, derived: {...} }]".into(),
-        "  data.totals: <same shape as bucket>".into(),
-        "  data.source_table: string  ('usage_daily' | 'usage_hourly' | 'messages' | 'message_metrics')".into(),
-        "  data.granularity: string   ('hour' | 'day' | 'week' | 'month')".into(),
-        "  Bucket keys: counts.{message_count, user_message_count, assistant_message_count,".into(),
-        "    tool_call_count, plan_message_count}; api_tokens.{total, input, output,".into(),
-        "    cache_read, cache_creation, thinking}; derived.{api_coverage_pct,".into(),
-        "    avg_api_per_message, avg_content_per_message}".into(),
-        String::new(),
-        "### analytics tools".into(),
-        "  data.rows: [{ key: string, tool_call_count, message_count, api_tokens_total,".into(),
-        "               tool_calls_per_1k_api_tokens, tool_calls_per_1k_content_tokens }]".into(),
-        "  data.totals: { tool_call_count, message_count, api_tokens_total,".into(),
-        "                 overall_per_1k_api_tokens }".into(),
-        "  data.row_count: int".into(),
-        "  data._meta.source_table: (\'usage_daily\' | \'usage_hourly\' | \'message_metrics\')".into(),
-        "  --limit N (default 20): caps returned rows".into(),
-        String::new(),
-        "### analytics models".into(),
-        "  data.by_api_tokens: { dim, metric, rows: [{ key, value, message_count, ... }] }".into(),
-        "  data.timeseries: <same as analytics tokens>".into(),
-        "  data.by_api_tokens._meta.source_table: string  ('token_daily_stats' | 'token_usage')".into(),
-        "    Usually token_daily_stats; token_usage when filters require raw provenance recovery.".into(),
-        "  Models only available for connectors that report model names".into(),
-        "    (claude_code, codex, pi_agent, omp, factory, opencode, cursor).".into(),
-        String::new(),
-        "### analytics incidents".into(),
-        "  Read-only; keyset-scans canonical archive rows newest-id-first.".into(),
-        "  data.schema_version: 2".into(),
-        "  data.count_scope: all_matching_candidates | scanned_candidates_partial | no_verified_results_hard_timeout".into(),
-        "  data.discovery: { caps, files_considered, files_scanned, lines_scanned,".into(),
-        "                    bytes_scanned, elapsed_ms, stop_reason, timed_out, partial,".into(),
-        "                    evidence_truncated, evidence }".into(),
-        "  data.top_sessions: [{ conversation_id, session_id, agent, host, source_id,".into(),
-        "                        origin_host?, source_path, exists_state, hit_count,".into(),
-        "                        category_breadth, dominant_categories, evidence_summaries,".into(),
-        "                        redaction_status, suggested_command: { kind, argv, display } }]".into(),
-        "  data.total_sessions, data.total_hits, data.top_sessions_truncated: ranked-scope totals".into(),
-        "  data.scan_units.message_fragment_chars: per-message inspection bound (4096)".into(),
-        "    Oversized messages stop with discovery.stop_reason=message-fragment-capped.".into(),
-        "  data.redaction: { private_text_policy, hash_strategy, fields_emitted,".into(),
-        "                    fields_suppressed, opt_in_flags }".into(),
-        "  --limit N           Ranked sessions returned (1..100; default 10)".into(),
-        "  --max-sessions N    Archive conversations scanned (1..10000; default 2000)".into(),
-        "    This bounds the newest-row candidate window before dimensional filters.".into(),
-        "  --max-messages N    Archive messages inspected (default 250000)".into(),
-        "  --max-bytes N       UTF-8 content bytes inspected (default 268435456)".into(),
-        "  --budget-ms N       Hard wall-clock result budget (default 8000)".into(),
-        "  Raw prompt/tool text is always suppressed. source_path is retained only as the".into(),
-        "  actionable archive pointer; evidence paths are basename-redacted.".into(),
-        "  suggested_command.argv carries --db and --conversation-id for exact replay.".into(),
-        "  Example: cass analytics incidents --limit 10 --json".into(),
-        String::new(),
-        "### analytics rebuild".into(),
-        "  data.track: string ('a')".into(),
-        "  data.tracks_rebuilt: [string]".into(),
-        "  data.track_a: { message_metrics_rows, usage_hourly_rows, usage_daily_rows,".into(),
-        "                  usage_models_daily_rows, elapsed_ms, rows_per_sec }".into(),
-        "  data.overall_elapsed_ms: u64".into(),
-        "  data.wal_checkpoint: string ('completed' | 'failed') — the rebuild closes with a".into(),
-        "                  WAL checkpoint so the next opener replays nothing".into(),
-        "  data.wal_checkpoint_detail: { status: 'completed' | 'blocked' | 'not_attempted' | 'error', ... }".into(),
-        "                  blocked: busy, log_frames, checkpointed_frames; not_attempted: reason".into(),
-        "  Always rebuilds; fresh rollups are not skipped (there is no --force).".into(),
-        String::new(),
-        "### analytics validate".into(),
-        "  data.summary: { errors, warnings, drift_entries, buckets_checked, buckets_total }".into(),
-        "  data.checks: [{ id, ok, severity, details, suggested_action? }]".into(),
-        "    Check IDs: track_a.tables_exist, track_a.{content_tokens,message_count,".into(),
-        "      api_tokens,api_coverage}_match, track_b.tables_exist,".into(),
-        "      track_b.{tokens,agents}_match, cross_track.drift, non_negative.counters".into(),
-        "  data.drift: [{ day_id, agent_slug, source_id, track_a_total,".into(),
-        "                 track_b_total, delta, delta_pct, likely_cause }]".into(),
-        "  data.perf: { timeseries: { elapsed_ms, budget_ms, within_budget, error?, details },".into(),
-        "              breakdown: { elapsed_ms, budget_ms, within_budget, error?, details } }".into(),
-        "  --fix: run deep validation, rebuild safe Track A rollups when possible, and report skipped non-fixable issues".into(),
-        String::new(),
-        "## Coverage & Uncertainty Semantics".into(),
-        "  - api_token_coverage_pct: % of messages with API token data (from Claude, Codex).".into(),
-        "  - estimate_only_pct: % of messages with content-estimated tokens only (chars/4 heuristic).".into(),
-        "  - *_pct is null when no trustworthy number exists; inspect *_status and *_display.".into(),
-        "  - status values: value, true-zero, no-data, aggregate-failed, schema-incompatible,".into(),
-        "    rebuild-required, invalid-input. A true zero is never conflated with missing data.".into(),
-        "  - When coverage is low, derived metrics are unreliable estimates, not ground truth.".into(),
-        "  - Content token estimates are always available (heuristic); API tokens are sparse.".into(),
-        String::new(),
-        "## Exit Codes".into(),
-        "  0  Success".into(),
-        "  2  Usage error (invalid flags, missing required args)".into(),
-        "  3  Missing database (run 'cass index --full' first)".into(),
-        "  9  Database error (corrupt, missing tables, query failure)".into(),
-        String::new(),
-        "## Retry Guidance".into(),
-        "  exit 9 + retryable=true: transient DB lock/busy — retry after 1s".into(),
-        "  exit 9 + retryable=false: schema or data issue — run 'cass analytics rebuild' first".into(),
-        "  exit 3: no database — run 'cass index --full' to create it".into(),
-        "  validate errors: use 'cass analytics validate --fix --json' for safe Track A repair, or 'cass analytics rebuild --json' for a manual rebuild loop".into(),
-        String::new(),
-        "## Common Workflows".into(),
-        "  # Quick health check".into(),
-        "  cass analytics status --json | jq '.data.coverage'".into(),
-        String::new(),
-        "  # Recent usage by agent for last 7 days".into(),
-        "  cass analytics tokens --days 7 --json | jq '.data.buckets'".into(),
-        String::new(),
-        "  # Tool usage top-10".into(),
-        "  cass analytics tools --limit 10 --json | jq '.data.rows'".into(),
-        String::new(),
-        "  # Validation + remediation loop".into(),
-        "  cass analytics validate --json | jq '.data.summary'".into(),
-        "  # If errors: rebuild then re-validate".into(),
-        "  cass analytics rebuild --json && cass analytics validate --json".into(),
-    ]
 }
 
 /// Render schema docs from live response schemas
@@ -76794,244 +74658,6 @@ fn run_onboarding(
     Ok(())
 }
 
-/// `cass guide [INTENT]` — intent-to-command planner plus gated runner (beads
-/// `…5u82n.1` and `…5u82n.17`). Dry-run is the default. Apply mode automatically
-/// evaluates only allowlisted read-only proof adapters and requires an explicit
-/// confirmation for each exact mutating step; workflow macro strings are never
-/// interpreted by a shell.
-///
-/// Live mode derives the determinable preflight facts (db present, lexical index
-/// present, search assets ready) from a single `state_meta_json` snapshot; facts
-/// it cannot determine are left for the operator to confirm. `--fixture <file>`
-/// supplies `{ "facts": {…}, "intent"?: "…" }` for deterministic scenarios.
-#[allow(clippy::too_many_arguments)]
-fn run_guide(
-    intent_words: &[String],
-    fixture: Option<&Path>,
-    data_dir_override: &Option<PathBuf>,
-    db_override: Option<PathBuf>,
-    output_format: Option<RobotFormat>,
-    apply: bool,
-    confirmed_steps: &[usize],
-    confirmed_facts: &[String],
-    accepted_privacy_tier: Option<&str>,
-    accepted_cost_risk: Option<&str>,
-    stop_conditions_clear: bool,
-) -> CliResult<()> {
-    let mut intent = intent_words.join(" ");
-    let data_dir = data_dir_override.clone().unwrap_or_else(default_data_dir);
-    let db_path = db_override.unwrap_or_else(|| data_dir.join("agent_search.db"));
-
-    // Fixture mode: facts (and optionally a default intent) from a checked-in file.
-    let (mut facts, source_kind, fixture_id, fixture_context): (
-        Option<serde_json::Value>,
-        &str,
-        String,
-        Option<serde_json::Value>,
-    ) = if let Some(path) = fixture {
-        let raw = std::fs::read_to_string(path).map_err(|err| CliError {
-                code: 10,
-                kind: CliErrorKind::Config.kind_str(),
-                message: format!("could not read guide fixture {}: {err}", path.display()),
-                hint: Some(
-                    "Pass --fixture <file> with a JSON object like {\"facts\": {\"db_present\": true}}."
-                        .to_string(),
-                ),
-                retryable: false,
-            })?;
-        let parsed: serde_json::Value = serde_json::from_str(&raw).map_err(|err| CliError {
-            code: 10,
-            kind: CliErrorKind::Config.kind_str(),
-            message: format!("invalid guide fixture {}: {err}", path.display()),
-            hint: Some("The fixture must be a JSON object with a `facts` map.".to_string()),
-            retryable: false,
-        })?;
-        if intent.trim().is_empty()
-            && let Some(fixture_intent) = parsed.get("intent").and_then(serde_json::Value::as_str)
-        {
-            intent = fixture_intent.to_string();
-        }
-        let facts = parsed.get("facts").cloned();
-        let id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("fixture")
-            .to_string();
-        (facts, "fixture", id, Some(parsed))
-    } else {
-        // Live mode: derive the determinable facts from one state snapshot.
-        let state = state_meta_json(&data_dir, &db_path, 300, true);
-        let db_present = state
-            .pointer("/database/exists")
-            .and_then(serde_json::Value::as_bool);
-        let index_present = state
-            .pointer("/index/exists")
-            .and_then(serde_json::Value::as_bool);
-        let rebuild_active = state
-            .pointer("/rebuild/active")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-        let search_assets_ready = match (index_present, db_present) {
-            (Some(idx), Some(db)) => Some(idx && db && !rebuild_active),
-            _ => None,
-        };
-        let facts = crate::guide_planner::preflight_facts(
-            index_present,
-            db_present,
-            search_assets_ready,
-            None,
-            None,
-        );
-        (Some(facts), "live", "live".to_string(), None)
-    };
-
-    // Operator-context facts are explicit grants, never inferred. They are
-    // overlaid before readiness classification and echoed in the transcript.
-    if !confirmed_facts.is_empty() {
-        let facts = facts.get_or_insert_with(|| serde_json::json!({}));
-        let map = facts.as_object_mut().ok_or_else(|| CliError {
-            code: 10,
-            kind: CliErrorKind::Config.kind_str(),
-            message: "guide facts must be a JSON object".to_string(),
-            hint: Some(
-                "Use a fixture shaped like {\"facts\": {\"db_present\": true}}.".to_string(),
-            ),
-            retryable: false,
-        })?;
-        for fact in confirmed_facts {
-            map.insert(fact.clone(), serde_json::Value::Bool(true));
-        }
-    }
-
-    let plan =
-        crate::guide_planner::render_guide_plan(&intent, facts.as_ref(), source_kind, &fixture_id);
-    let payload = crate::guide_runner::render_execution(
-        plan,
-        &crate::guide_runner::GuideRunRequest {
-            apply,
-            confirmed_steps,
-            confirmed_facts,
-            accepted_privacy_tier,
-            accepted_cost_risk,
-            stop_conditions_clear,
-            source_kind,
-            fixture_context: fixture_context.as_ref(),
-            data_dir: &data_dir,
-            db_path: Some(&db_path),
-        },
-    );
-
-    if let Some(format) = output_format {
-        return output_structured_value(payload, format);
-    }
-
-    print_guide_human(&payload);
-    Ok(())
-}
-
-/// Human-readable guide summary (never a bare TUI). The richer interactive
-/// shell is a later dependent surface; this stays terse and copy-safe.
-fn print_guide_human(payload: &serde_json::Value) {
-    use colored::Colorize;
-    let intent = payload
-        .pointer("/intent/raw")
-        .and_then(serde_json::Value::as_str);
-    match intent {
-        None => {
-            // Catalog mode.
-            println!("{}", "CASS guide — known intents".bold());
-            if let Some(intents) = payload
-                .get("known_intents")
-                .and_then(serde_json::Value::as_array)
-            {
-                for entry in intents {
-                    let name = entry
-                        .get("intent")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
-                    let summary = entry
-                        .get("summary")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
-                    println!("  - {} — {summary}", name.cyan());
-                }
-            }
-            println!();
-            println!("  Plan one: cass guide <intent> --json");
-        }
-        Some(raw) => {
-            let recognized = payload
-                .pointer("/intent/recognized")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            if !recognized {
-                println!("{} {}", "Unknown intent:".bold(), raw);
-                println!("  Try one of the known intents:");
-                if let Some(intents) = payload
-                    .get("known_intents")
-                    .and_then(serde_json::Value::as_array)
-                {
-                    for entry in intents {
-                        if let Some(name) = entry.get("intent").and_then(serde_json::Value::as_str)
-                        {
-                            println!("    - {}", name.cyan());
-                        }
-                    }
-                }
-                println!("  Docs: cass robot-docs guide");
-                return;
-            }
-            let title = payload
-                .pointer("/plan/title")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("");
-            let readiness = payload
-                .get("readiness")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            println!("{} {}", "Guide:".bold(), title);
-            println!("  Intent: {raw}  |  Readiness: {readiness}");
-            if let Some(steps) = payload
-                .pointer("/plan/steps")
-                .and_then(serde_json::Value::as_array)
-            {
-                println!("  Steps:");
-                for step in steps {
-                    let order = step
-                        .get("order")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0);
-                    let intent = step
-                        .get("intent")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
-                    let gate = step
-                        .get("proof_gate")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("");
-                    println!("    {order}. {intent}  (proof: {gate})");
-                }
-            }
-            if let Some(action) = payload
-                .get("recommended_action")
-                .and_then(serde_json::Value::as_str)
-            {
-                println!("  Next: {action}");
-            }
-            let execution_mode = payload
-                .pointer("/execution/mode")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("dry-run");
-            let execution_status = payload
-                .pointer("/execution/overall_status")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("dry-run");
-            println!("  Mode: {execution_mode}  |  Execution: {execution_status}");
-            println!("  (pass --json for the argv, proof-gate, and confirmation transcript)");
-        }
-    }
-}
-
 fn diagnostics_connector_paths(
     _home: &std::path::Path,
     _config_dir: &std::path::Path,
@@ -89566,7 +87192,7 @@ fn run_config_based_export(
         recovery_secret,
         generate_qr: wizard_state.generate_qr,
         generated_docs: vec![],
-        analytics_status: Some(crate::pages::analytics::robot_status_projection(db_path)?),
+        analytics_status: None,
     };
 
     let bundle_builder = crate::pages::bundle::BundleBuilder::with_config(bundle_config);
@@ -113417,346 +111043,6 @@ fn run_daemon(
     })
 }
 
-fn schedule_error_to_cli(err: crate::schedule::ScheduleError) -> CliError {
-    use crate::schedule::ScheduleError;
-    match err {
-        ScheduleError::Unsupported(message) => CliError {
-            code: 10,
-            kind: CliErrorKind::Schedule.kind_str(),
-            message,
-            hint: Some(
-                "Windows and other platforms: register `cass schedule run --job incremental --data-dir <dir>` with your scheduler manually; the job is idempotent and exit 7 means another index run was already active."
-                    .to_string(),
-            ),
-            retryable: false,
-        },
-        ScheduleError::Io(message) => CliError {
-            code: 14,
-            kind: CliErrorKind::Schedule.kind_str(),
-            message,
-            hint: Some("Check permissions on the unit directory and data dir.".to_string()),
-            retryable: true,
-        },
-        ScheduleError::Command(message) => CliError {
-            code: 10,
-            kind: CliErrorKind::Schedule.kind_str(),
-            message,
-            hint: Some(
-                "Re-run with --dry-run to inspect the unit files, or run the failing launchctl/systemctl command by hand for its full error."
-                    .to_string(),
-            ),
-            retryable: true,
-        },
-    }
-}
-
-/// Resolve the absolute cass binary the scheduler units should invoke.
-fn schedule_binary_path() -> CliResult<PathBuf> {
-    let exe = std::env::current_exe().map_err(|e| CliError {
-        code: 14,
-        kind: CliErrorKind::Schedule.kind_str(),
-        message: format!("cannot resolve the running cass binary: {e}"),
-        hint: None,
-        retryable: false,
-    })?;
-    // Deliberately NOT canonicalized: a package-manager launcher path such as
-    // /opt/homebrew/bin/cass is a stable symlink that survives upgrades,
-    // while its canonical Cellar/<version>/bin/cass target is deleted on the
-    // next `brew upgrade` — baking that into launchd/systemd units would
-    // break every scheduled job after an upgrade. current_exe() is already
-    // absolute on every supported platform; canonicalize only as a fallback.
-    if exe.is_absolute() {
-        Ok(exe)
-    } else {
-        Ok(dunce::canonicalize(&exe).unwrap_or(exe))
-    }
-}
-
-fn run_schedule_command(subcmd: ScheduleCommand, cli: &Cli) -> CliResult<()> {
-    use crate::schedule::{self, RunConfig, ScheduleSpec};
-    use colored::Colorize;
-
-    match subcmd {
-        ScheduleCommand::Install {
-            interval_mins,
-            nightly_hour,
-            nightly_minute,
-            no_nightly,
-            no_semantic,
-            dry_run,
-            data_dir,
-            json,
-        } => {
-            let structured_format = resolve_subcommand_structured_format(cli, json);
-            let resolved_data_dir = resolve_data_dir(&data_dir, cli.db.as_ref());
-            let spec = ScheduleSpec {
-                interval_mins: interval_mins.max(1),
-                nightly_hour,
-                nightly_minute,
-                nightly: !no_nightly,
-                semantic: !no_semantic,
-                binary: schedule_binary_path()?,
-                data_dir: dunce::canonicalize(&resolved_data_dir).unwrap_or(resolved_data_dir),
-                db_path: cli.db.clone(),
-            };
-            let report = schedule::install(&spec, dry_run).map_err(schedule_error_to_cli)?;
-            if let Some(fmt) = structured_format {
-                let payload = serde_json::to_value(&report).unwrap_or_default();
-                return output_structured_value(payload, fmt);
-            }
-            let verb = if dry_run {
-                "Would register"
-            } else {
-                "Registered"
-            };
-            println!(
-                "{} cass background index jobs with {}",
-                verb.green().bold(),
-                report.platform.as_str().bold()
-            );
-            println!(
-                "  incremental: every {} min → {}",
-                spec.interval_mins,
-                "cass index --background".dimmed()
-            );
-            if spec.nightly {
-                println!(
-                    "  nightly:     {:02}:{:02} local → {}",
-                    spec.nightly_hour,
-                    spec.nightly_minute,
-                    if spec.semantic {
-                        "cass index --full --background + models backfill --scheduled".dimmed()
-                    } else {
-                        "cass index --full --background".dimmed()
-                    }
-                );
-            }
-            println!("  data dir:    {}", spec.data_dir.display());
-            println!(
-                "  logs:        {}",
-                schedule::schedule_dir(&spec.data_dir).display()
-            );
-            for unit in &report.units {
-                println!("  unit:        {}", unit.path.display());
-                if dry_run {
-                    println!("{}", "-".repeat(72).dimmed());
-                    print!("{}", unit.contents);
-                    println!("{}", "-".repeat(72).dimmed());
-                }
-            }
-            for path in &report.stale_removed {
-                println!(
-                    "  {} {}",
-                    if dry_run {
-                        "would remove stale unit:".dimmed()
-                    } else {
-                        "removed stale unit:".dimmed()
-                    },
-                    path.display()
-                );
-            }
-            for command in &report.commands {
-                let status = match (command.executed, command.exit_code) {
-                    (false, _) => "(dry-run)".dimmed().to_string(),
-                    (true, Some(0)) => "ok".green().to_string(),
-                    (true, code) => format!("exit {code:?}").yellow().to_string(),
-                };
-                println!("  {} {}", command.argv.join(" ").dimmed(), status);
-            }
-            for warning in &report.warnings {
-                println!("  {} {}", "note:".yellow().bold(), warning);
-            }
-            Ok(())
-        }
-        ScheduleCommand::Uninstall { dry_run, json } => {
-            let structured_format = resolve_subcommand_structured_format(cli, json);
-            let report = schedule::uninstall(dry_run).map_err(schedule_error_to_cli)?;
-            if let Some(fmt) = structured_format {
-                let payload = serde_json::to_value(&report).unwrap_or_default();
-                return output_structured_value(payload, fmt);
-            }
-            let verb = if dry_run { "Would remove" } else { "Removed" };
-            println!(
-                "{} cass scheduler jobs ({})",
-                verb.green().bold(),
-                report.platform.as_str()
-            );
-            for path in &report.removed {
-                println!("  {} {}", "removed".dimmed(), path.display());
-            }
-            for path in &report.missing {
-                println!("  {} {}", "absent ".dimmed(), path.display());
-            }
-            Ok(())
-        }
-        ScheduleCommand::Status { data_dir, json } => {
-            let structured_format = resolve_subcommand_structured_format(cli, json);
-            let resolved_data_dir = resolve_data_dir(&data_dir, cli.db.as_ref());
-            let report = schedule::status(&resolved_data_dir);
-            if let Some(fmt) = structured_format {
-                let payload = serde_json::to_value(&report).unwrap_or_default();
-                return output_structured_value(payload, fmt);
-            }
-            println!(
-                "{} ({})",
-                "cass schedule status".bold(),
-                report.platform.as_str()
-            );
-            if report.units.is_empty() {
-                println!("  no scheduler integration on this platform");
-            }
-            for unit in &report.units {
-                let state = match (unit.installed, unit.loaded) {
-                    (false, _) => "not installed".dimmed().to_string(),
-                    (true, Some(true)) => "installed, loaded".green().to_string(),
-                    (true, Some(false)) => "installed, NOT loaded".yellow().to_string(),
-                    (true, None) => "installed".to_string(),
-                };
-                println!("  {:<12} {}", unit.job.as_str(), state);
-            }
-            let describe = |label: &str, run: &Option<schedule::JobReport>| {
-                if let Some(run) = run {
-                    let when =
-                        chrono::DateTime::<chrono::Utc>::from_timestamp_millis(run.finished_ms)
-                            .map(|t| t.to_rfc3339())
-                            .unwrap_or_else(|| run.finished_ms.to_string());
-                    let outcome = match (&run.skipped_reason, run.ok) {
-                        (Some(reason), _) => format!("skipped: {reason}").yellow().to_string(),
-                        (None, true) => "ok".green().to_string(),
-                        (None, false) => "FAILED".red().to_string(),
-                    };
-                    println!("  last {label:<10} {when}  {outcome}");
-                    for step in &run.steps {
-                        let s = match (&step.skipped_reason, step.ok) {
-                            (Some(reason), _) => format!("skipped ({reason})").dimmed().to_string(),
-                            (None, true) => {
-                                format!("ok {}ms", step.duration_ms).green().to_string()
-                            }
-                            (None, false) => format!("exit {:?}", step.exit_code).red().to_string(),
-                        };
-                        println!("      {:<24} {}", step.name, s);
-                    }
-                } else {
-                    println!("  last {label:<10} {}", "never".dimmed());
-                }
-            };
-            describe("incremental", &report.state.last_incremental);
-            describe("nightly", &report.state.last_nightly);
-            if let Some(auto) = &report.auto_refresh {
-                let when =
-                    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(auto.last_spawn_ms)
-                        .map(|t| t.to_rfc3339())
-                        .unwrap_or_else(|| auto.last_spawn_ms.to_string());
-                println!(
-                    "  auto-refresh last spawn {when} (pid {}, {})",
-                    auto.last_pid, auto.last_reason
-                );
-                if auto.consecutive_failures > 0 {
-                    let verdict = if auto.consecutive_failures
-                        >= crate::indexer::background_refresh::FAILURE_TRIP_THRESHOLD
-                    {
-                        "tripped: no auto-spawn until a run completes"
-                    } else {
-                        "backing off"
-                    };
-                    println!(
-                        "  auto-refresh breaker {} ({} consecutive catch-ups ended without \
-                         advancing the index): {}",
-                        verdict.yellow(),
-                        auto.consecutive_failures,
-                        auto.last_failure.as_deref().unwrap_or("no detail recorded")
-                    );
-                }
-            }
-            for warning in &report.warnings {
-                println!("  {} {}", "note:".yellow().bold(), warning);
-            }
-            println!("  logs: {}", report.log_dir.display());
-            Ok(())
-        }
-        ScheduleCommand::Run {
-            job,
-            data_dir,
-            no_semantic,
-            force,
-            json,
-        } => {
-            let structured_format = resolve_subcommand_structured_format(cli, json);
-            let resolved_data_dir = resolve_data_dir(&data_dir, cli.db.as_ref());
-            let db_path = cli
-                .db
-                .clone()
-                .unwrap_or_else(|| resolved_data_dir.join("agent_search.db"));
-            let max_backfill_batches = dotenvy::var("CASS_SCHEDULE_MAX_BACKFILL_BATCHES")
-                .ok()
-                .and_then(|v| v.trim().parse::<u32>().ok())
-                .unwrap_or(schedule::DEFAULT_MAX_BACKFILL_BATCHES);
-            let cfg = RunConfig {
-                binary: schedule_binary_path()?,
-                data_dir: resolved_data_dir,
-                db_path,
-                semantic: !no_semantic,
-                max_backfill_batches,
-            };
-            let report = if force {
-                schedule::run_job_unconditionally(job, &cfg)
-            } else {
-                schedule::run_job(job, &cfg)
-            };
-            if let Some(fmt) = structured_format {
-                let payload = serde_json::to_value(&report).unwrap_or_default();
-                output_structured_value(payload, fmt)?;
-            } else {
-                let outcome = match (&report.skipped_reason, report.ok) {
-                    (Some(reason), _) => format!("skipped: {reason}").yellow().to_string(),
-                    (None, true) => "ok".green().to_string(),
-                    (None, false) => "FAILED".red().to_string(),
-                };
-                println!(
-                    "{} {} → {} ({} ms)",
-                    "cass schedule run".bold(),
-                    job.as_str(),
-                    outcome,
-                    report.finished_ms.saturating_sub(report.started_ms)
-                );
-                for step in &report.steps {
-                    let s = match (&step.skipped_reason, step.ok) {
-                        (Some(reason), _) => format!("skipped ({reason})").dimmed().to_string(),
-                        (None, true) => format!("ok {}ms", step.duration_ms).green().to_string(),
-                        (None, false) => format!("exit {:?}", step.exit_code).red().to_string(),
-                    };
-                    println!("  {:<24} {}", step.name, s);
-                }
-            }
-            if report.ok {
-                Ok(())
-            } else {
-                let err = CliError {
-                    code: 9,
-                    kind: CliErrorKind::Schedule.kind_str(),
-                    message: format!(
-                        "scheduled {} job had failing steps; see {}",
-                        job.as_str(),
-                        schedule::job_log_path(&cfg.data_dir, job).display()
-                    ),
-                    hint: Some(
-                        "Run `cass schedule status` for the per-step breakdown.".to_string(),
-                    ),
-                    retryable: true,
-                };
-                if structured_format.is_some() {
-                    // The full report is already on stdout as the single JSON
-                    // document; only propagate the exit code, never a second
-                    // error envelope (stdout must stay one-document).
-                    Err(CliError::already_reported_from(&err))
-                } else {
-                    Err(err)
-                }
-            }
-        }
-    }
-}
-
 #[cfg(all(test, unix))]
 mod daemon_cli_config_tests {
     use super::*;
@@ -113895,8 +111181,6 @@ mod subcommand_robot_output_tests {
                 vec!["cass", "selftest", "--json"],
                 vec!["cass", "sessions", "--json"],
                 vec!["cass", "timeline", "--json"],
-                vec!["cass", "analytics", "status", "--json"],
-                vec!["cass", "analytics", "incidents", "--json"],
                 vec![
                     "cass",
                     "pages",
@@ -113928,15 +111212,6 @@ mod subcommand_robot_output_tests {
                     | Commands::ExportHtml { json, .. } => {
                         resolve_subcommand_structured_format(&cli, *json)
                     }
-                    Commands::Analytics(
-                        AnalyticsCommand::Status { common }
-                        | AnalyticsCommand::Tokens { common, .. }
-                        | AnalyticsCommand::Tools { common, .. }
-                        | AnalyticsCommand::AnalyticsModels { common, .. }
-                        | AnalyticsCommand::Incidents { common, .. }
-                        | AnalyticsCommand::Rebuild { common, .. }
-                        | AnalyticsCommand::Validate { common, .. },
-                    ) => resolve_subcommand_structured_format(&cli, common.json),
                     Commands::Sources(SourcesCommand::List { json, .. }) => {
                         resolve_subcommand_structured_format(&cli, *json)
                     }

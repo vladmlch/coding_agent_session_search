@@ -4145,6 +4145,7 @@ const SEMANTIC_QUALITY_IDENTITY_REBUILD_META_KEY: &str = "semantic_quality_ident
 
 /// Read the durable analytics phase authority without opening a writer or
 /// changing migration state. Row parity cannot certify an identity rewrite.
+#[cfg(test)]
 pub(crate) fn legacy_omp_analytics_pending(conn: &FrankenConnection) -> Result<bool> {
     legacy_omp_analytics_pending_with_query(|sql| conn.query(sql))
 }
@@ -42304,14 +42305,6 @@ sys.exit('stock writer does not own WAL_WRITE_LOCK')
             fparams![LEGACY_OMP_RECLASSIFICATION_META_KEY, "broken-authority"],
         )?;
         assert!(legacy_omp_analytics_pending(storage.raw()).is_err());
-        let report = crate::analytics::validate::run_validation(storage.raw(), &Default::default());
-        assert!(
-            report
-                .checks
-                .iter()
-                .any(|check| check.id == "migration.legacy_omp_authority" && !check.ok)
-        );
-        assert!(crate::analytics::query::query_status(storage.raw(), &Default::default()).is_err());
         Ok(())
     }
 
@@ -42501,21 +42494,6 @@ sys.exit('stock writer does not own WAL_WRITE_LOCK')
         assert!(pending.analytics_rebuild_required);
         assert!(legacy_omp_analytics_pending(storage.raw())?);
         assert_eq!(fs::read(lexical_path.join("MANIFEST"))?, published_manifest);
-        let status = crate::analytics::query::query_status(storage.raw(), &Default::default())?;
-        assert!(
-            status
-                .drift
-                .signals
-                .iter()
-                .any(|signal| signal.signal == "legacy_omp_analytics_pending")
-        );
-        let report = crate::analytics::validate::run_validation(storage.raw(), &Default::default());
-        assert!(
-            report
-                .checks
-                .iter()
-                .any(|check| check.id == "migration.legacy_omp_analytics_pending" && !check.ok)
-        );
         let unknown_phases = std::cell::Cell::new(0_usize);
         let resumed_progress = |processed: i64, total: i64| {
             record_progress(processed, total);

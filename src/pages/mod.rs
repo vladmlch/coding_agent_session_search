@@ -8,7 +8,6 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub mod analytics;
 pub mod archive_config;
 pub mod attachments;
 pub mod bundle;

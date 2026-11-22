@@ -1687,9 +1687,7 @@ impl PagesWizard {
             recovery_secret: self.state.recovery_secret.clone(),
             generate_qr: self.state.generate_qr,
             generated_docs,
-            analytics_status: Some(crate::pages::analytics::robot_status_projection(
-                &self.state.db_path,
-            )?),
+            analytics_status: None,
         };
 
         let builder = BundleBuilder::with_config(bundle_config);

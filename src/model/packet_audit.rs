@@ -276,14 +276,6 @@ pub const PACKET_SINK_MIGRATIONS: &[PacketSinkMigration] = &[
         landed_in_commit: "19820c7a",
     },
     PacketSinkMigration {
-        sink: "analytics",
-        packet_helper: "crate::pages::analytics::Statistics::from_packets",
-        legacy_fallback: "crate::pages::analytics::AnalyticsGenerator::generate_statistics",
-        equivalence_test: "crate::pages::analytics::tests::analytics_statistics_from_packets_matches_sql_for_canonical_corpus",
-        kill_switch_env: None,
-        landed_in_commit: "bae8e341",
-    },
-    PacketSinkMigration {
         sink: "semantic",
         packet_helper: "crate::indexer::semantic::semantic_inputs_from_packets",
         legacy_fallback: "crate::indexer::semantic::packet_embedding_inputs_from_storage",

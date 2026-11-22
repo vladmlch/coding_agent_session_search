@@ -21,9 +21,6 @@ use super::reranker::{Reranker, RerankerError, RerankerResult};
 /// Default reranker name when none specified.
 pub const DEFAULT_RERANKER: &str = "ms-marco";
 
-/// Eligibility cutoff for bake-off (models must be released on/after this date).
-pub const BAKEOFF_ELIGIBILITY_CUTOFF: &str = "2025-11-01";
-
 /// Files required for the pure-Rust (frankentorch) reranker: a safetensors
 /// weight file plus the tokenizer. The ONNX backend was removed in cass #308.
 pub const REQUIRED_NATIVE_MODEL_FILES: &[&str] = &["model.safetensors", "tokenizer.json"];
@@ -102,31 +99,6 @@ impl RegisteredReranker {
             Vec::new()
         }
     }
-
-    /// Check if this reranker is eligible for the bake-off.
-    pub fn is_bakeoff_eligible(&self) -> bool {
-        if self.is_baseline {
-            return false;
-        }
-        self.release_date >= BAKEOFF_ELIGIBILITY_CUTOFF
-    }
-
-    /// Convert to bakeoff ModelMetadata.
-    pub fn to_model_metadata(&self) -> crate::bakeoff::ModelMetadata {
-        crate::bakeoff::ModelMetadata {
-            id: self.id.to_string(),
-            name: self.name.to_string(),
-            source: self.huggingface_id.to_string(),
-            release_date: self.release_date.to_string(),
-            dimension: None, // Rerankers don't have embedding dimensions
-            size_bytes: if self.size_bytes > 0 {
-                Some(self.size_bytes)
-            } else {
-                None
-            },
-            is_baseline: self.is_baseline,
-        }
-    }
 }
 
 /// Static registry of all supported rerankers.
@@ -201,27 +173,6 @@ impl RerankerRegistry {
     pub fn best_available(&self) -> Option<&'static RegisteredReranker> {
         // Try to find an available reranker (prefer baseline first for stability)
         RERANKERS.iter().find(|r| r.is_available(&self.data_dir))
-    }
-
-    /// Get all bake-off eligible rerankers.
-    pub fn bakeoff_eligible(&self) -> Vec<&'static RegisteredReranker> {
-        RERANKERS
-            .iter()
-            .filter(|r| r.is_bakeoff_eligible())
-            .collect()
-    }
-
-    /// Get available bake-off eligible rerankers (model files present).
-    pub fn available_bakeoff_candidates(&self) -> Vec<&'static RegisteredReranker> {
-        RERANKERS
-            .iter()
-            .filter(|r| r.is_bakeoff_eligible() && r.is_available(&self.data_dir))
-            .collect()
-    }
-
-    /// Get the baseline reranker for bake-off comparison.
-    pub fn baseline_reranker(&self) -> Option<&'static RegisteredReranker> {
-        RERANKERS.iter().find(|r| r.is_baseline)
     }
 
     /// Validate that a reranker is ready to use.
@@ -422,62 +373,6 @@ mod tests {
     }
 
     // ==================== Bake-off Tests ====================
-
-    #[test]
-    fn test_bakeoff_eligible_count() {
-        let (_tmp, registry) = registry_fixture();
-
-        let eligible = registry.bakeoff_eligible();
-        assert!(eligible.is_empty());
-
-        // ms-marco should NOT be in the eligible list (it's the baseline)
-        assert!(
-            !eligible.iter().any(|r| r.name == "ms-marco"),
-            "ms-marco should not be in eligible list"
-        );
-    }
-
-    #[test]
-    fn test_baseline_reranker() {
-        let (_tmp, registry) = registry_fixture();
-
-        let baseline = registry.baseline_reranker();
-        assert!(baseline.is_some());
-        let baseline = baseline.unwrap();
-        assert_eq!(baseline.name, "ms-marco");
-        assert!(baseline.is_baseline);
-        assert!(!baseline.is_bakeoff_eligible());
-    }
-
-    #[test]
-    fn test_bakeoff_eligibility_by_date() {
-        let (_tmp, registry) = registry_fixture();
-
-        // ms-marco was released before cutoff (2022-01-01)
-        let msmarco = registry.get("ms-marco").unwrap();
-        assert!(
-            msmarco.release_date < BAKEOFF_ELIGIBILITY_CUTOFF,
-            "ms-marco should be released before cutoff"
-        );
-
-        assert!(registry.bakeoff_eligible().is_empty());
-    }
-
-    #[test]
-    fn test_bakeoff_model_metadata_conversion() {
-        let (_tmp, registry) = registry_fixture();
-
-        let msmarco = registry.get("ms-marco").unwrap();
-        let metadata = msmarco.to_model_metadata();
-
-        assert_eq!(metadata.id, "ms-marco-minilm-l6-v2");
-        assert_eq!(metadata.name, "ms-marco");
-        assert!(metadata.source.contains("ms-marco"));
-        assert_eq!(metadata.release_date, "2022-01-01");
-        assert!(metadata.dimension.is_none()); // Rerankers don't have dimensions
-        assert!(metadata.is_baseline);
-        assert!(!metadata.is_eligible());
-    }
 
     #[test]
     fn test_unverified_reranker_topologies_are_not_registered() {

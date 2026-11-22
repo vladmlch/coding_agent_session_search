@@ -330,11 +330,6 @@ name = "cass-pages-perf-bundle"
 path = "src/bin/cass-pages-perf-bundle.rs"
 test = false
 
-[[bin]]
-name = "e2e-run-bundle"
-path = "src/bin/e2e-run-bundle.rs"
-test = false
-
 # Dev and test builds keep line-table debug info so backtraces and coverage
 # stay useful without paying for full variable debug info. Host-level
 # CARGO_PROFILE_DEV_DEBUG / CARGO_PROFILE_TEST_DEBUG and user-level cargo

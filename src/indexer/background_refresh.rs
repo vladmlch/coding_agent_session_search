@@ -576,62 +576,6 @@ fn build_command(binary: &Path, data_dir: &Path, db_path: &Path, full: bool) -> 
     cmd
 }
 
-/// Log file for the detached analytics rollup rebuild the TUI spawns (GH #395).
-pub fn analytics_rebuild_log_path(data_dir: &Path) -> PathBuf {
-    data_dir.join("analytics-rebuild.log")
-}
-
-/// The exact argv (after the binary) for a detached analytics rollup rebuild.
-///
-/// Track A only: that is what the TUI dashboard reads, and Track B's token
-/// ledger has its own scheduled path. `--json` keeps the child's stdout a
-/// single parseable receipt in the log file.
-pub fn background_analytics_rebuild_args(data_dir: &Path, db_path: &Path) -> Vec<OsString> {
-    vec![
-        OsString::from("--db"),
-        db_path.as_os_str().to_os_string(),
-        OsString::from("--color=never"),
-        OsString::from("analytics"),
-        OsString::from("rebuild"),
-        OsString::from("--json"),
-        OsString::from("--data-dir"),
-        data_dir.as_os_str().to_os_string(),
-    ]
-}
-
-/// Spawn a detached `cass analytics rebuild` for `db_path` (GH #395).
-///
-/// The TUI used to run the full rollup rebuild in-process on its effects
-/// thread when the dashboard found no rollups; on a multi-million-message
-/// archive that is a multi-GB, multi-minute allocation storm that froze the
-/// UI. The child inherits the same detachment as the index catch-up (own
-/// process group, stdio to a log, no nested auto-refresh) and is fire-and-
-/// forget: the caller reports "rebuilding in the background" and reloads the
-/// dashboard later. Returns the child pid.
-///
-/// # Errors
-///
-/// Returns a message when the current executable cannot be resolved or the
-/// child cannot be spawned.
-pub fn spawn_detached_analytics_rebuild(data_dir: &Path, db_path: &Path) -> Result<u32, String> {
-    let binary = std::env::current_exe()
-        .map_err(|error| format!("cannot resolve the running cass binary: {error}"))?;
-    let mut cmd = build_detached_command(
-        &binary,
-        &background_analytics_rebuild_args(data_dir, db_path),
-        &analytics_rebuild_log_path(data_dir),
-    );
-    let mut child = cmd
-        .spawn()
-        .map_err(|error| format!("cannot spawn detached analytics rebuild: {error}"))?;
-    let pid = child.id();
-    info!(pid, db_path = %db_path.display(), "spawned detached analytics rollup rebuild");
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(pid)
-}
-
 /// glibc arena cap for background index children (2l1b0.72).
 ///
 /// With glibc's default of eight arenas per core, a full lexical rebuild of

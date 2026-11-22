@@ -19,8 +19,8 @@ use embedder::{Embedder, EmbedderInfo, EmbedderResult};
 mod local;
 
 pub use local::{
-    BAKEOFF_ELIGIBILITY_CUTOFF, DEFAULT_EMBEDDER, EMBEDDERS, EmbedderRegistry, HASH_EMBEDDER,
-    REQUIRED_NATIVE_MODEL_FILES, RegisteredEmbedder,
+    DEFAULT_EMBEDDER, EMBEDDERS, EmbedderRegistry, HASH_EMBEDDER, REQUIRED_NATIVE_MODEL_FILES,
+    RegisteredEmbedder,
 };
 
 /// Validate a named selection without constructing a provider. Legacy names
