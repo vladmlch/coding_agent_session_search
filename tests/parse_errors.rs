@@ -8,7 +8,6 @@
 //! remaining valid sessions still processed.
 
 use coding_agent_search::connectors::claude_code::ClaudeCodeConnector;
-use coding_agent_search::connectors::cline::ClineConnector;
 use coding_agent_search::connectors::codex::CodexConnector;
 use coding_agent_search::connectors::gemini::GeminiConnector;
 use coding_agent_search::connectors::{Connector, ScanContext};
@@ -408,62 +407,6 @@ fn codex_handles_missing_events() {
         allow_local_default_stores: false,
     };
     // Should not panic - gracefully handle missing fields
-    let result = conn.scan(&ctx);
-    assert!(result.is_ok());
-}
-
-// =============================================================================
-// Cline Connector - Parsing Error Tests
-// =============================================================================
-
-/// Invalid JSON in Cline state file
-#[test]
-fn cline_skips_invalid_json() {
-    let tmp = TempDir::new().unwrap();
-    let cline_dir = tmp.path().join("cline");
-    fs::create_dir_all(&cline_dir).unwrap();
-
-    // Write invalid JSON
-    fs::write(cline_dir.join("state.json"), "{ not valid }").unwrap();
-
-    let conn = ClineConnector::new();
-    let ctx = ScanContext {
-        data_dir: tmp.path().to_path_buf(),
-        scan_roots: Vec::new(),
-        since_ts: None,
-        progress_tick: None,
-        allow_local_default_stores: false,
-    };
-    let convs = conn.scan(&ctx).unwrap();
-    assert!(convs.is_empty());
-}
-
-/// Cline file with missing taskHistory array
-#[test]
-fn cline_handles_missing_task_history() {
-    let tmp = TempDir::new().unwrap();
-    let cline_dir = tmp.path().join("cline");
-    fs::create_dir_all(&cline_dir).unwrap();
-
-    let state = serde_json::json!({
-        "version": "1.0"
-        // No "taskHistory" field
-    });
-    fs::write(
-        cline_dir.join("state.json"),
-        serde_json::to_string(&state).unwrap(),
-    )
-    .unwrap();
-
-    let conn = ClineConnector::new();
-    let ctx = ScanContext {
-        data_dir: tmp.path().to_path_buf(),
-        scan_roots: Vec::new(),
-        since_ts: None,
-        progress_tick: None,
-        allow_local_default_stores: false,
-    };
-    // Should not panic
     let result = conn.scan(&ctx);
     assert!(result.is_ok());
 }

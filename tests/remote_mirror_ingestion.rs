@@ -10,8 +10,8 @@ use std::path::Path;
 
 use coding_agent_search::sources::provenance::path_to_safe_dirname;
 use franken_agent_detection::{
-    Connector, CursorConnector, FactoryConnector, GeminiConnector, NormalizedConversation, Origin,
-    Platform, PrimeAgentConnector, ScanContext, ScanRoot, VibeConnector,
+    Connector, CursorConnector, GeminiConnector, NormalizedConversation, Origin, Platform,
+    ScanContext, ScanRoot,
 };
 
 include!("support/remote_mirror_cursor_fixture.rs");
@@ -27,36 +27,8 @@ struct Case {
 }
 
 fn cases() -> Vec<Case> {
-    let factory = concat!(
-        "{\"type\":\"session_start\",\"id\":\"mirror-factory\",\"cwd\":\"/srv/project\"}\n",
-        "{\"type\":\"message\",\"timestamp\":\"2024-01-01T00:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"mirror question\"}}\n",
-        "{\"type\":\"message\",\"timestamp\":\"2024-01-01T00:00:01Z\",\"message\":{\"role\":\"assistant\",\"content\":\"mirror answer\"}}\n"
-    );
     let gemini = br#"{"sessionId":"mirror-gemini","projectHash":"project-hash","messages":[{"id":"u1","type":"user","content":"mirror question","timestamp":"2024-01-01T00:00:00Z"},{"id":"a1","type":"gemini","content":"mirror answer","timestamp":"2024-01-01T00:00:01Z"}]}"#;
-    let vibe = concat!(
-        "{\"role\":\"user\",\"content\":\"mirror question\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n",
-        "{\"role\":\"assistant\",\"content\":\"mirror answer\",\"timestamp\":\"2024-01-01T00:00:01Z\"}\n"
-    );
-    let prime = concat!(
-        "{\"type\":\"session\",\"version\":1,\"id\":\"mirror-prime\",\"cwd\":\"/srv/project\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n",
-        "{\"type\":\"message\",\"timestamp\":\"2024-01-01T00:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"mirror question\"}}\n",
-        "{\"type\":\"message\",\"timestamp\":\"2024-01-01T00:00:01Z\",\"message\":{\"role\":\"assistant\",\"content\":\"mirror answer\"}}\n"
-    );
     let mut out = Vec::new();
-    for (source, payload_store) in [
-        ("~/.factory/sessions", ""),
-        ("/home/alice/.factory", "sessions"),
-    ] {
-        out.push(Case {
-            connector: Box::new(FactoryConnector::new()),
-            slug: "factory",
-            source,
-            store: ".factory/sessions",
-            payload_store,
-            file: "-srv-project/factory-test.jsonl",
-            bytes: factory.as_bytes().to_vec(),
-        });
-    }
     for (source, payload_store) in [("~/.gemini/tmp", ""), ("~/.gemini", "tmp")] {
         out.push(Case {
             connector: Box::new(GeminiConnector::new()),
@@ -66,36 +38,6 @@ fn cases() -> Vec<Case> {
             payload_store,
             file: "project-hash/chats/session-gemini.json",
             bytes: gemini.to_vec(),
-        });
-    }
-    for (source, payload_store) in [
-        ("~/.vibe/logs/session", ""),
-        ("~/.vibe/logs", "session"),
-        ("~/.vibe", "logs/session"),
-    ] {
-        out.push(Case {
-            connector: Box::new(VibeConnector::new()),
-            slug: "vibe",
-            source,
-            store: ".vibe/logs/session",
-            payload_store,
-            file: "fixture-session/messages.jsonl",
-            bytes: vibe.as_bytes().to_vec(),
-        });
-    }
-    for (source, payload_store) in [
-        ("~/.prime/agent/sessions", ""),
-        ("~/.prime/agent", "sessions"),
-        ("~/.prime", "agent/sessions"),
-    ] {
-        out.push(Case {
-            connector: Box::new(PrimeAgentConnector::new()),
-            slug: "prime_agent",
-            source,
-            store: ".prime/agent/sessions",
-            payload_store,
-            file: "prime-test.jsonl",
-            bytes: prime.as_bytes().to_vec(),
         });
     }
     for (source, payload_store) in [
@@ -217,38 +159,5 @@ fn hashed_mirrors_parse_like_local_stores_across_copy_layouts() {
             );
             assert!(case.connector.scan(&ctx).unwrap().is_empty());
         }
-    }
-}
-
-#[test]
-fn prime_mirrors_require_prime_ownership_not_a_shared_wire_format() {
-    let tmp = tempfile::tempdir().unwrap();
-    let prime = cases()
-        .into_iter()
-        .find(|case| case.slug == "prime_agent")
-        .unwrap();
-    for source in [
-        "~/.pi/agent/sessions",
-        "~/.omp/agent/sessions",
-        "~/sessions",
-    ] {
-        let wrapper = tmp.path().join(path_to_safe_dirname(source));
-        put(&wrapper.join("sessions/prime-test.jsonl"), &prime.bytes);
-        let ctx = ScanContext::with_roots(
-            tmp.path().join("state"),
-            vec![
-                ScanRoot::remote(wrapper, Origin::remote("mirror-host"), None)
-                    .with_mirrored_source_path(source),
-            ],
-            None,
-        );
-        assert!(
-            prime
-                .connector
-                .discover_source_files(&ctx)
-                .unwrap()
-                .is_empty()
-        );
-        assert!(prime.connector.scan(&ctx).unwrap().is_empty());
     }
 }

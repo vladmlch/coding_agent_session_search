@@ -33,7 +33,6 @@ while [ $# -gt 0 ]; do
 done
 [ ${#projects[@]} -gt 0 ] || projects=(chromium)
 [ ${#specs[@]} -gt 0 ] || specs=(
-    e2e/encryption/password-flow.spec.ts
     e2e/export/html-export-e2e.spec.ts
     e2e/export/pages-pipeline-e2e.spec.ts
     e2e/offline/cdn-fallback.spec.ts

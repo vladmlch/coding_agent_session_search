@@ -24,7 +24,7 @@ source "$SCRIPT_DIR/lib/run_cargo.sh"
 
 THRESHOLD=60
 FAIL_MODE=false
-CASS_COVERAGE_FEATURES="${CASS_COVERAGE_FEATURES:-qr encryption backtrace}"
+CASS_COVERAGE_FEATURES="${CASS_COVERAGE_FEATURES:-backtrace}"
 
 for arg in "$@"; do
     case $arg in

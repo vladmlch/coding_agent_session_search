@@ -48,7 +48,7 @@ else
 fi
 FAIL_FAST=${FAIL_FAST:-0}
 VERBOSE=${VERBOSE:-0}
-CASS_ROUTINE_FEATURES="${CASS_ROUTINE_FEATURES:-qr encryption backtrace}"
+CASS_ROUTINE_FEATURES="${CASS_ROUTINE_FEATURES:-backtrace}"
 
 # Colors
 if [[ -t 1 ]]; then
@@ -86,7 +86,7 @@ Environment:
                      Shared Cargo defaults resolved by scripts/lib/run_cargo.sh
     CASS_ROUTINE_FEATURES
                      Cass features for Rust E2E tests; defaults to
-                     "qr encryption backtrace" and intentionally excludes
+                     "backtrace" and intentionally excludes
                      strict-path-dep-validation
 
 Playwright:

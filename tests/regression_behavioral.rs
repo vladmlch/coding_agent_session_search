@@ -79,16 +79,13 @@ fn run_detection_in_child(test_name: &str) -> bool {
 
 /// CRITICAL: All connector detect() methods must complete within 100ms.
 ///
-/// This test would have caught the Aider detect() bug where it was doing
-/// a recursive WalkDir scan on every call, making it O(files) instead of O(1).
+/// This guards against connectors doing a recursive WalkDir scan on every
+/// detect() call, making it O(files) instead of O(1).
 #[test]
 fn detect_must_complete_within_100ms_all_connectors() {
     use coding_agent_search::connectors::Connector;
-    use coding_agent_search::connectors::aider::AiderConnector;
-    use coding_agent_search::connectors::amp::AmpConnector;
     use coding_agent_search::connectors::chatgpt::ChatGptConnector;
     use coding_agent_search::connectors::claude_code::ClaudeCodeConnector;
-    use coding_agent_search::connectors::cline::ClineConnector;
     use coding_agent_search::connectors::codex::CodexConnector;
     use coding_agent_search::connectors::cursor::CursorConnector;
     use coding_agent_search::connectors::gemini::GeminiConnector;
@@ -111,11 +108,8 @@ fn detect_must_complete_within_100ms_all_connectors() {
     }
 
     let connectors: Vec<(&str, Box<dyn Connector>)> = vec![
-        ("aider", Box::new(AiderConnector::new())),
-        ("amp", Box::new(AmpConnector::new())),
         ("chatgpt", Box::new(ChatGptConnector::new())),
         ("claude_code", Box::new(ClaudeCodeConnector::new())),
-        ("cline", Box::new(ClineConnector::new())),
         ("codex", Box::new(CodexConnector::new())),
         ("cursor", Box::new(CursorConnector::new())),
         ("gemini", Box::new(GeminiConnector::new())),
@@ -144,46 +138,6 @@ fn detect_must_complete_within_100ms_all_connectors() {
         failures.join("\n")
     );
     println!("cass-detection-child-ok:detect_must_complete_within_100ms_all_connectors");
-}
-
-/// Stress test: detect() must stay fast even with many nested directories.
-#[test]
-fn aider_detect_must_not_scan_recursively() {
-    use coding_agent_search::connectors::Connector;
-    use coding_agent_search::connectors::aider::AiderConnector;
-
-    if run_detection_in_child("aider_detect_must_not_scan_recursively") {
-        return;
-    }
-    let home = std::path::PathBuf::from(dotenvy::var("HOME").unwrap());
-
-    // Create a massive directory tree (10*10*10 = 1000 directories)
-    for a in 0..10 {
-        for b in 0..10 {
-            for c in 0..10 {
-                let path = home.join(format!("dir_{a}/subdir_{b}/leaf_{c}"));
-                fs::create_dir_all(&path).unwrap();
-                // Put decoy files (not in CWD)
-                fs::write(path.join(".aider.chat.history.md"), "decoy").unwrap();
-            }
-        }
-    }
-
-    let connector = AiderConnector::new();
-
-    // Time 10 consecutive detect() calls
-    let start = Instant::now();
-    for _ in 0..10 {
-        let _ = connector.detect();
-    }
-    let elapsed = start.elapsed();
-
-    assert!(
-        elapsed < Duration::from_millis(100),
-        "Aider detect() appears to be scanning recursively. 10 calls took {:?}",
-        elapsed
-    );
-    println!("cass-detection-child-ok:aider_detect_must_not_scan_recursively");
 }
 
 // =============================================================================

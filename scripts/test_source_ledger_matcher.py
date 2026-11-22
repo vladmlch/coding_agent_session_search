@@ -204,7 +204,6 @@ pub mod connectors {
     }
     pub mod claude_code { pub struct ClaudeCodeConnector; }
     pub mod codex { pub struct CodexConnector; }
-    pub mod codebuff { pub struct CodebuffConnector; }
     pub(crate) mod source_dependencies {
         include!("policy.rs");
         pub(crate) mod observation;
@@ -216,8 +215,6 @@ pub mod connectors {
                     <super::claude_code::ClaudeCodeConnector as SourceDependencyCapability>::SOURCE_DEPENDENCIES,
                 "codex" =>
                     <super::codex::CodexConnector as SourceDependencyCapability>::SOURCE_DEPENDENCIES,
-                "codebuff" =>
-                    <super::codebuff::CodebuffConnector as SourceDependencyCapability>::SOURCE_DEPENDENCIES,
                 _ => SourceDependencyPolicy::default(),
             }
         }

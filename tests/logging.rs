@@ -1,4 +1,3 @@
-use coding_agent_search::connectors::{Connector, ScanContext, amp::AmpConnector};
 use coding_agent_search::connectors::{NormalizedConversation, NormalizedMessage};
 use coding_agent_search::indexer::{IndexOptions, persist::persist_conversation};
 use coding_agent_search::search::query::{FieldMask, SearchClient, SearchFilters};
@@ -71,51 +70,6 @@ fn search_logs_backend_selection() {
 }
 
 #[test]
-fn amp_connector_emits_scan_span() {
-    let trace = TestTracing::new();
-    let _guard = trace.install();
-
-    let fixture_root = std::path::PathBuf::from("tests/fixtures/amp");
-    let conn = AmpConnector::new();
-    let ctx = ScanContext {
-        data_dir: fixture_root,
-        scan_roots: Vec::new(),
-        since_ts: None,
-        progress_tick: None,
-        allow_local_default_stores: false,
-    };
-    let convs = conn.scan(&ctx).unwrap();
-    // The amp fixture under tests/fixtures/amp/ is a committed
-    // golden input; any change to it should ripple through this
-    // test as a visible count diff, not silently pass via
-    // `!is_empty()`. Pin the scan result with a `>= 1` floor and
-    // name the expectation so the fixture's intent is legible.
-    assert!(
-        !convs.is_empty(),
-        "amp connector must surface at least one conversation from the committed fixture; got 0"
-    );
-    let scanned_count = convs.len();
-
-    let out = trace.output();
-    // amp_scan event must be emitted by the connector::amp target
-    // (not by some other module that happens to mention "amp_scan"),
-    // and must record the conversation count the scan actually
-    // produced. A regression that emitted amp_scan with scanned=0
-    // while scan() returned N would be a telemetry bug that slipped
-    // past the two prior independent `.contains(...)` probes.
-    let amp_scan_line = out
-        .lines()
-        .find(|line| line.contains("amp_scan") && line.contains("connector::amp"))
-        .unwrap_or_else(|| {
-            panic!(
-                "trace output must contain a connector::amp `amp_scan` event on the same line; got:\n{out}"
-            )
-        });
-    let _ = amp_scan_line;
-    let _ = scanned_count;
-}
-
-#[test]
 fn persist_conversation_logs_counts() {
     let trace = TestTracing::new();
     let _guard = trace.install();
@@ -157,18 +111,18 @@ fn run_index_does_not_drop_storage_without_explicit_close() {
     let xdg_dir = tmp.path().join("xdg");
     std::fs::create_dir_all(&home_dir).unwrap();
     std::fs::create_dir_all(&xdg_dir).unwrap();
-    let amp_dir = data_dir.join("amp");
-    std::fs::create_dir_all(&amp_dir).unwrap();
+    let codex_dir = data_dir.join("codex-sessions");
+    std::fs::create_dir_all(&codex_dir).unwrap();
     std::fs::write(
-        amp_dir.join("thread-log.json"),
-        r#"{
-  "id": "thread-log",
-  "title": "Amp test",
-  "messages": [
-    {"role":"user","text":"hi","createdAt":1700000000100},
-    {"role":"assistant","text":"hello","createdAt":1700000000200}
-  ]
-}"#,
+        codex_dir.join("rollout-log.jsonl"),
+        concat!(
+            r#"{"timestamp":"2023-11-14T22:13:20.100Z","type":"session_meta","payload":{"id":"thread-log","cwd":"/tmp/log-test"}}"#,
+            "\n",
+            r#"{"timestamp":"2023-11-14T22:13:20.100Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}}"#,
+            "\n",
+            r#"{"timestamp":"2023-11-14T22:13:20.200Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}}"#,
+            "\n",
+        ),
     )
     .unwrap();
 
@@ -192,7 +146,7 @@ fn run_index_does_not_drop_storage_without_explicit_close() {
     };
 
     let mut local_roots = std::collections::HashMap::new();
-    local_roots.insert("amp".to_string(), vec![amp_dir.clone()]);
+    local_roots.insert("codex".to_string(), vec![codex_dir.clone()]);
     coding_agent_search::indexer::run_index_with_local_connector_roots(opts, local_roots, None)
         .unwrap();
 

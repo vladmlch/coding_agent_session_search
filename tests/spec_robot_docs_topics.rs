@@ -64,7 +64,6 @@ const DOCUMENTED_TOPICS: &[&str] = &[
     "contracts",
     "wrap",
     "sources",
-    "analytics",
     "doctor",
     "recipes",
 ];

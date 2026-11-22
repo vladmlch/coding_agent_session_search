@@ -317,9 +317,6 @@ impl VerboseLogger {
     }
 }
 
-
-
-
 use coding_agent_search::connectors::{
     NormalizedConversation, NormalizedMessage, NormalizedSnippet,
 };

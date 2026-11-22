@@ -15,7 +15,7 @@ NO_MOCK_ONLY=false
 ARTIFACT_HYGIENE_ONLY=false
 NO_MOCK_FAILED=false
 E2E_COMPLIANCE_FAILED=false
-CASS_ROUTINE_FEATURES="${CASS_ROUTINE_FEATURES:-qr encryption backtrace}"
+CASS_ROUTINE_FEATURES="${CASS_ROUTINE_FEATURES:-backtrace}"
 
 usage() {
     cat <<'USAGE'
@@ -25,7 +25,7 @@ Environment:
   CARGO_TARGET_DIR / CARGO_BUILD_JOBS / RUST_TEST_THREADS
                       Shared local Cargo defaults resolved by
                       scripts/lib/run_cargo.sh
-  CASS_ROUTINE_FEATURES="qr encryption backtrace"
+  CASS_ROUTINE_FEATURES="backtrace"
                        Cass features for routine gates; excludes
                        strict-path-dep-validation by default
 USAGE

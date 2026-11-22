@@ -29,7 +29,7 @@ FAD_ROOT="/data/projects/franken_agent_detection"
 BASELINE_DIR="${CASS_ROOT}/docs/artifacts/migration-baseline"
 # shellcheck source=lib/run_cargo.sh
 source "${CASS_ROOT}/scripts/lib/run_cargo.sh"
-CASS_ROUTINE_FEATURES="${CASS_ROUTINE_FEATURES:-qr encryption backtrace}"
+CASS_ROUTINE_FEATURES="${CASS_ROUTINE_FEATURES:-backtrace}"
 
 # Colors (only when stdout is a terminal)
 if [[ -t 1 ]]; then

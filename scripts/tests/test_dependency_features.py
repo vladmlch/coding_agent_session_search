@@ -61,7 +61,7 @@ class DependencyFeaturesTest(unittest.TestCase):
         text = (root / "build.rs").read_text(encoding="utf-8")
         expected = checker.contracts(text)
         features = expected[("dependencies", "franken-agent-detection")]
-        self.assertTrue({"openclaw-sqlite", "copilot-vscdb"} <= features)
+        self.assertTrue({"chatgpt", "codex-zstd", "qoder-sqlite"} <= features)
         resolved = {}
         for (table, key), values in expected.items():
             resolved.setdefault(table, {})[key] = {"features": sorted(values)}

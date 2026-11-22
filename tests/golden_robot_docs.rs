@@ -159,14 +159,6 @@ fn robot_docs_sources_matches_golden() {
 }
 
 #[test]
-fn robot_docs_analytics_matches_golden() {
-    assert_golden(
-        "robot_docs/analytics.txt.golden",
-        &capture_docs("analytics"),
-    );
-}
-
-#[test]
 fn robot_docs_recipes_matches_golden() {
     // Bead .11.3: canonical recovery + workflow recipes topic. Body lives in
     // src/recipes_robot_docs.rs; the safety/completeness invariants are pinned

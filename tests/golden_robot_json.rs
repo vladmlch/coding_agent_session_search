@@ -24,9 +24,6 @@
 //! schema change that requires human review before it ships.
 
 use assert_cmd::Command;
-use coding_agent_search::franken_sync::Connection;
-use coding_agent_search::franken_sync::compat::ConnectionExt;
-use coding_agent_search::franken_sync::params;
 use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use coding_agent_search::search::tantivy::expected_index_dir;
 use coding_agent_search::storage::sqlite::FrankenStorage;
@@ -48,7 +45,6 @@ fn cass_cmd(test_home: &std::path::Path) -> Command {
     let claude_home = test_home.join(".claude");
     let gemini_home = test_home.join(".gemini");
     let opencode_root = test_home.join(".opencode");
-    let aider_root = test_home.join(".aider-missing");
     let xdg_config_home = test_home.join(".config");
     cmd.current_dir(test_home)
         // Pin data dir so the test never touches the user's real cache.
@@ -59,7 +55,6 @@ fn cass_cmd(test_home: &std::path::Path) -> Command {
         .env("CLAUDE_HOME", claude_home)
         .env("GEMINI_HOME", gemini_home)
         .env("OPENCODE_STORAGE_ROOT", opencode_root)
-        .env("CASS_AIDER_DATA_ROOT", aider_root)
         // WS-A.6: the Pi family connectors honor these overrides ahead of
         // the synthetic HOME. On 2026-09-01 a fleet worker's real
         // `~/.pi/agent/sessions` leaked into `search_robot` and
@@ -99,87 +94,6 @@ fn cass_cmd(test_home: &std::path::Path) -> Command {
 /// the checkout's `.gitignore` as policy for the synthetic archive.
 fn isolate_doctor_fixture_from_parent_repo(test_home: &Path) -> io::Result<()> {
     fs::create_dir(test_home.join(".git"))
-}
-
-fn seed_analytics_incidents_fixture(test_home: &Path) -> PathBuf {
-    let db_path = test_home.join("analytics-incidents.db");
-    let conn = Connection::open(db_path.to_string_lossy().into_owned())
-        .expect("open analytics incidents fixture db");
-    conn.execute_batch(
-        "CREATE TABLE agents (
-             id INTEGER PRIMARY KEY,
-             slug TEXT NOT NULL
-         );
-         CREATE TABLE conversations (
-             id INTEGER PRIMARY KEY,
-             agent_id INTEGER NOT NULL,
-             workspace_id INTEGER,
-             source_id TEXT,
-             external_id TEXT,
-             source_path TEXT NOT NULL,
-             started_at INTEGER,
-             ended_at INTEGER,
-             origin_host TEXT
-         );
-         CREATE TABLE messages (
-             id INTEGER PRIMARY KEY,
-             conversation_id INTEGER NOT NULL,
-             idx INTEGER NOT NULL,
-             content TEXT NOT NULL
-         );
-         INSERT INTO agents(id, slug) VALUES (1, 'codex'), (2, 'claude_code');",
-    )
-    .expect("create analytics incidents fixture schema");
-
-    let primary_path = test_home
-        .join("sessions/codex-primary.jsonl")
-        .to_string_lossy()
-        .into_owned();
-    let ordinary_path = test_home
-        .join("sessions/codex-ordinary.jsonl")
-        .to_string_lossy()
-        .into_owned();
-    conn.execute_compat(
-        "INSERT INTO conversations(
-             id, agent_id, workspace_id, source_id, external_id,
-             source_path, started_at, origin_host
-         ) VALUES (1, 1, 10, 'local', 'primary-session', ?1, 200, NULL)",
-        params![primary_path.as_str()],
-    )
-    .expect("insert primary incident conversation");
-    conn.execute_compat(
-        "INSERT INTO conversations(
-             id, agent_id, workspace_id, source_id, external_id,
-             source_path, started_at, origin_host
-         ) VALUES (
-             2, 2, 20, 'remote-fixture', 'remote-session',
-             '/remote/archive/remote-session.jsonl', 300, 'fixture-host'
-         )",
-        params![],
-    )
-    .expect("insert remote incident conversation");
-    conn.execute_compat(
-        "INSERT INTO conversations(
-             id, agent_id, workspace_id, source_id, external_id,
-             source_path, started_at, origin_host
-         ) VALUES (3, 1, 10, 'local', 'ordinary-session', ?1, 100, NULL)",
-        params![ordinary_path.as_str()],
-    )
-    .expect("insert ordinary conversation");
-    conn.execute_batch(
-        "INSERT INTO messages(id, conversation_id, idx, content) VALUES
-             (1, 1, 0,
-              'cass health_class degraded recommended_action inspect semantic_fallback_lexical model missing database is locked busy'),
-             (2, 1, 1,
-              'cass index-ingest-out-of-memory quarantined_conversations=1'),
-             (3, 2, 0,
-              'cass source sync ssh permission denied auth timeout'),
-             (4, 3, 0,
-              'ordinary application note with no operational markers');",
-    )
-    .expect("insert analytics incidents fixture messages");
-    drop(conn);
-    db_path
 }
 
 fn write_quarantined_manifest(generation_dir: &std::path::Path) {
@@ -2021,36 +1935,6 @@ fn stats_json_missing_db_error_envelope_shape_matches_golden() {
     let canonical =
         serde_json::to_string_pretty(&json_value_schema(&parsed)).expect("pretty-print JSON");
     assert_golden("robot/stats_missing_db_shape.json.golden", &canonical);
-}
-
-#[test]
-fn analytics_incidents_json_matches_golden() {
-    let test_home = tempfile::tempdir().expect("create temp home");
-    let db_path = seed_analytics_incidents_fixture(test_home.path());
-    let db_path = db_path.to_str().expect("utf8 fixture db path");
-    let scrubbed = capture_robot_json(
-        test_home.path(),
-        &[
-            "--db",
-            db_path,
-            "analytics",
-            "incidents",
-            "--json",
-            "--limit",
-            "2",
-            "--max-sessions",
-            "10",
-            "--max-messages",
-            "100",
-            "--max-bytes",
-            "1000000",
-            "--budget-ms",
-            "60000",
-        ],
-        ExpectStatus::ExitOk,
-    );
-    let scrubbed = format!("{scrubbed}\n");
-    assert_golden("robot/analytics_incidents.json.golden", &scrubbed);
 }
 
 #[test]

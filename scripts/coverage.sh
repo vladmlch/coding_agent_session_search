@@ -25,7 +25,7 @@ source "$SCRIPT_DIR/lib/run_cargo.sh"
 REPORT_DIR="target/coverage"
 QUICK_MODE=false
 OPEN_REPORT=false
-CASS_COVERAGE_FEATURES="${CASS_COVERAGE_FEATURES:-qr encryption backtrace}"
+CASS_COVERAGE_FEATURES="${CASS_COVERAGE_FEATURES:-backtrace}"
 
 # Parse arguments
 for arg in "$@"; do
