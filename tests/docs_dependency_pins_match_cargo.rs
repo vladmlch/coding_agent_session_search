@@ -80,8 +80,7 @@ fn exact_pins(manifest: &str) -> BTreeMap<String, Pin> {
 /// rows were checked. A registry row is `| names | crates.io `=X` ... |`; a
 /// row for a git-pinned dependency names git in its source cell and must
 /// carry the exact revision and the version. A row's pin is matched against
-/// the first backticked name that is an exactly pinned dependency
-/// (`frankentui` rows are keyed by `ftui`).
+/// the first backticked name that is an exactly pinned dependency.
 fn pin_mismatches(doc: &str, pins: &BTreeMap<String, Pin>) -> (Vec<String>, usize) {
     let mut mismatches = Vec::new();
     let mut checked = 0;
@@ -153,8 +152,8 @@ fn readme_and_agents_dependency_pins_match_cargo_toml() {
             mismatches.join("\n")
         );
         // frankensqlite, franken-agent-detection, asupersync, frankensearch,
-        // frankentui and toon each have a row today.
-        assert!(checked >= 6, "{doc}: only {checked} pin rows found");
+        // and toon each have a row today.
+        assert!(checked >= 5, "{doc}: only {checked} pin rows found");
     }
 }
 

@@ -176,7 +176,6 @@ mod gh472 {
                 ".config",
                 ".local/share",
                 "data",
-                "aider",
                 "traces",
             ] {
                 fs::create_dir_all(home.join(directory)).expect("create fixture directory");
@@ -256,7 +255,6 @@ mod gh472 {
                 .env("XDG_CONFIG_HOME", self.home.join(".config"))
                 .env("XDG_DATA_HOME", self.home.join(".local/share"))
                 .env("CLAUDE_CONFIG_DIR", self.home.join(".claude"))
-                .env("CASS_AIDER_DATA_ROOT", self.home.join("aider"))
                 .env("CASS_DATA_DIR", self.data())
                 .env("CASS_IGNORE_SOURCES_CONFIG", "1")
                 .env("CASS_STREAMING_INDEX", self.streaming)
@@ -740,38 +738,67 @@ mod gh472 {
     fn nightly_reconciliation_censuses_old_mtime_fallback_sources() {
         let fixture = Fixture::new("fallback_census", "1");
         let original = fixture.baseline();
-        let initial = fixture.home.join("aider/initial/.aider.chat.history.md");
-        fs::create_dir_all(initial.parent().unwrap()).unwrap();
-        let history = include_str!("fixtures/aider/.aider.chat.history.md");
-        fs::write(
-            &initial,
-            format!("{history}\n> gh472aiderinitialz\n\nRetain gh472aiderinitialz discussion.\n"),
-        )
-        .unwrap();
+        let write_qwen_session = |project_hash: &str, filename: &str, needle: &str| -> PathBuf {
+            let project = fixture.home.join(".qwen/tmp").join(project_hash);
+            let chats = project.join("chats");
+            fs::create_dir_all(&chats).unwrap();
+            fs::write(
+                project.join("config.json"),
+                format!(r#"{{"workspace":"/workspace/{project_hash}"}}"#),
+            )
+            .unwrap();
+            let path = chats.join(filename);
+            let session = serde_json::json!({
+                "sessionId": format!("qwen-{project_hash}"),
+                "projectHash": project_hash,
+                "startTime": "2026-11-10T09:00:00.000Z",
+                "lastUpdated": "2026-11-10T09:00:01.000Z",
+                "messages": [
+                    {
+                        "id": "m1",
+                        "timestamp": "2026-11-10T09:00:00.000Z",
+                        "type": "user",
+                        "content": format!("Retain {needle} discussion.")
+                    },
+                    {
+                        "id": "m2",
+                        "timestamp": "2026-11-10T09:00:01.000Z",
+                        "type": "qwen",
+                        "content": format!("Confirmed {needle} details.")
+                    }
+                ]
+            });
+            fs::write(&path, serde_json::to_string(&session).unwrap()).unwrap();
+            path
+        };
+
+        let initial = write_qwen_session(
+            "initial-hash",
+            "session-1762643950138-initial.json",
+            "gh472qweninitialz",
+        );
         fixture.run(&["index", "--json"], &[]);
-        let with_aider = fixture.archive();
-        assert_retained(&original, &with_aider);
-        assert_eq!(with_aider.len(), 3);
-        assert_eq!(with_aider[&initial]["agent"], "aider");
-        fixture.assert_search("gh472aiderinitialz", &with_aider);
+        let with_qwen = fixture.archive();
+        assert_retained(&original, &with_qwen);
+        assert_eq!(with_qwen.len(), 3);
+        assert_eq!(with_qwen[&initial]["agent"], "qwen");
+        fixture.assert_search("gh472qweninitialz", &with_qwen);
         let storage =
             SqliteStorage::open_readonly(&fixture.data().join("agent_search.db")).unwrap();
         assert!(
             storage
-                .get_connector_last_scan_ts("aider")
+                .get_connector_last_scan_ts("qwen")
                 .unwrap()
                 .is_some_and(|watermark| watermark > 101_000),
             "establish this fallback provider's own watermark before adding an old file"
         );
         drop(storage);
 
-        let old_source = fixture.home.join("aider/late/.aider.chat.history.md");
-        fs::create_dir_all(old_source.parent().unwrap()).unwrap();
-        fs::write(
-            &old_source,
-            format!("{history}\n> gh472aideroldz\n\nRecover gh472aideroldz discussion.\n"),
-        )
-        .unwrap();
+        let old_source = write_qwen_session(
+            "late-hash",
+            "session-1762643950139-late.json",
+            "gh472qwenoldz",
+        );
         let old_time = std::time::UNIX_EPOCH + Duration::from_secs(100);
         fs::File::options()
             .write(true)
@@ -786,9 +813,9 @@ mod gh472 {
 
         let incremental = fixture.run(&["index", "--json"], &[]);
         incremental.assert_codex_observations(2, 0);
-        assert_eq!(fixture.archive(), with_aider);
+        assert_eq!(fixture.archive(), with_qwen);
         assert_eq!(
-            raw_lexical_total_matches(&fixture.index(), "gh472aideroldz"),
+            raw_lexical_total_matches(&fixture.index(), "gh472qwenoldz"),
             0,
             "ordinary timestamp-filtered discovery must demonstrate the negative branch"
         );
@@ -796,9 +823,9 @@ mod gh472 {
         nightly.assert_inline();
         nightly.assert_codex_observations(2, 0);
         let archive = fixture.archive();
-        assert_retained(&with_aider, &archive);
+        assert_retained(&with_qwen, &archive);
         assert_eq!(archive.len(), 4);
-        assert_eq!(archive[&old_source]["agent"], "aider");
+        assert_eq!(archive[&old_source]["agent"], "qwen");
         assert!(
             archive[&old_source]["messages"]
                 .as_array()
@@ -807,9 +834,9 @@ mod gh472 {
                 .any(|message| message["content"]
                     .as_str()
                     .unwrap()
-                    .contains("gh472aideroldz"))
+                    .contains("gh472qwenoldz"))
         );
-        fixture.assert_search("gh472aideroldz", &archive);
+        fixture.assert_search("gh472qwenoldz", &archive);
         fixture.assert_search("gh472firstanchorz", &archive);
         assert_eq!(
             fs::metadata(&old_source).unwrap().modified().unwrap(),
@@ -818,7 +845,7 @@ mod gh472 {
         let noop = fixture.nightly(&[]);
         noop.assert_inline();
         assert_eq!(fixture.archive(), archive);
-        fixture.assert_search("gh472aideroldz", &archive);
+        fixture.assert_search("gh472qwenoldz", &archive);
     }
 
     #[test]

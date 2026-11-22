@@ -439,7 +439,6 @@ fn find_item_end(masked: &str, start: usize) -> usize {
 const SRC_DIAGNOSTIC_ALLOWLIST: &[&str] = &[
     "src/sources/config.rs",
     "src/sources/config_validation.rs",
-    "src/schedule/discovery.rs",
     "src/sources/provenance.rs",
     "src/search/semantic_manifest.rs",
     "src/search/model_acquisition.rs",

@@ -20,8 +20,6 @@ use coding_agent_search::search::fastembed_reranker::FastEmbedReranker;
 
 const CARGO_MANIFEST: &str = include_str!("../Cargo.toml");
 const BUILD_SCRIPT: &str = include_str!("../build.rs");
-const BAKEOFF_VALIDATION_SCRIPT: &str = include_str!("../scripts/bakeoff/cass_validation_e2e.sh");
-const RERANK_E2E_SCRIPT: &str = include_str!("../scripts/bakeoff/cass_rerank_e2e.sh");
 
 #[test]
 fn retired_baseline_build_machinery_does_not_return() -> Result<(), String> {
@@ -37,16 +35,6 @@ fn retired_baseline_build_machinery_does_not_return() -> Result<(), String> {
     {
         return Err(
             "build.rs must not retain ORT/CoreML or semantic-feature linkage machinery".to_string(),
-        );
-    }
-    if BAKEOFF_VALIDATION_SCRIPT.contains("model.onnx")
-        || RERANK_E2E_SCRIPT.contains("model.onnx")
-        || !BAKEOFF_VALIDATION_SCRIPT.contains("model.safetensors")
-        || !RERANK_E2E_SCRIPT.contains("model.safetensors")
-    {
-        return Err(
-            "runnable reranker validation must require native safetensors, not retired ONNX assets"
-                .to_string(),
         );
     }
     Ok(())

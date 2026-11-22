@@ -221,8 +221,7 @@ fn invalid_data_dir_path_handled_without_panic() {
 //
 // Precedence itself is covered above (`cli_data_dir_flag_takes_precedence_over_env`,
 // `env_data_dir_used_when_no_flag`); the pure layout resolver is unit-tested in
-// `src/fleet_platform_compat.rs`; auxiliary-CLI no-data safety (bakeoff
-// zero/empty baseline) is unit-tested in `src/bakeoff.rs`.
+// `src/fleet_platform_compat.rs`.
 
 /// Build a fully isolated cass command: fake HOME/XDG roots under `home` plus
 /// `CASS_IGNORE_SOURCES_CONFIG` so neither the operator's `sources.toml` nor

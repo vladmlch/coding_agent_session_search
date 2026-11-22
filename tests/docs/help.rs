@@ -259,9 +259,7 @@ fn test_missing_args_error() {
 fn test_help_html_valid() {
     use chrono::Utc;
     use coding_agent_search::pages::docs::{DocConfig, DocLocation, DocumentationGenerator};
-    use coding_agent_search::pages::summary::{
-        KeySlotSummary, KeySlotType, PrePublishSummary, ScanReportSummary,
-    };
+    use coding_agent_search::pages::summary::{PrePublishSummary, ScanReportSummary};
 
     let summary = PrePublishSummary {
         total_conversations: 100,
@@ -273,12 +271,7 @@ fn test_help_html_valid() {
         date_histogram: Vec::new(),
         workspaces: Vec::new(),
         agents: Vec::new(),
-        key_slots: vec![KeySlotSummary {
-            slot_index: 0,
-            slot_type: KeySlotType::Password,
-            hint: None,
-            created_at: None,
-        }],
+        key_slots: Vec::new(),
         secret_scan: ScanReportSummary {
             total_findings: 0,
             by_severity: Default::default(),
@@ -310,14 +303,12 @@ fn test_help_html_valid() {
     );
 }
 
-/// Test that generated recovery.html is valid.
+/// Test that generated recovery.html discloses the plaintext archive.
 #[test]
 fn test_recovery_html_valid() {
     use chrono::Utc;
     use coding_agent_search::pages::docs::{DocConfig, DocLocation, DocumentationGenerator};
-    use coding_agent_search::pages::summary::{
-        KeySlotSummary, KeySlotType, PrePublishSummary, ScanReportSummary,
-    };
+    use coding_agent_search::pages::summary::{PrePublishSummary, ScanReportSummary};
 
     let summary = PrePublishSummary {
         total_conversations: 50,
@@ -329,20 +320,7 @@ fn test_recovery_html_valid() {
         date_histogram: Vec::new(),
         workspaces: Vec::new(),
         agents: Vec::new(),
-        key_slots: vec![
-            KeySlotSummary {
-                slot_index: 0,
-                slot_type: KeySlotType::Password,
-                hint: None,
-                created_at: None,
-            },
-            KeySlotSummary {
-                slot_index: 1,
-                slot_type: KeySlotType::Recovery,
-                hint: None,
-                created_at: None,
-            },
-        ],
+        key_slots: Vec::new(),
         secret_scan: ScanReportSummary {
             total_findings: 0,
             by_severity: Default::default(),
@@ -372,20 +350,22 @@ fn test_recovery_html_valid() {
         mentions_recovery,
         "Recovery doc should mention recovery procedures"
     );
+    assert!(
+        content.contains("not encrypted"),
+        "Recovery doc should disclose that the archive is not encrypted"
+    );
 }
 
 // =============================================================================
 // Security Documentation Tests
 // =============================================================================
 
-/// Test that SECURITY.md mentions key security features.
+/// Test that SECURITY.md states the unencrypted security model.
 #[test]
 fn test_security_doc_complete() {
     use chrono::Utc;
     use coding_agent_search::pages::docs::{DocConfig, DocLocation, DocumentationGenerator};
-    use coding_agent_search::pages::summary::{
-        KeySlotSummary, KeySlotType, PrePublishSummary, ScanReportSummary,
-    };
+    use coding_agent_search::pages::summary::{PrePublishSummary, ScanReportSummary};
 
     let summary = PrePublishSummary {
         total_conversations: 100,
@@ -397,12 +377,7 @@ fn test_security_doc_complete() {
         date_histogram: Vec::new(),
         workspaces: Vec::new(),
         agents: Vec::new(),
-        key_slots: vec![KeySlotSummary {
-            slot_index: 0,
-            slot_type: KeySlotType::Password,
-            hint: None,
-            created_at: None,
-        }],
+        key_slots: Vec::new(),
         secret_scan: ScanReportSummary {
             total_findings: 0,
             by_severity: Default::default(),
@@ -414,7 +389,7 @@ fn test_security_doc_complete() {
         generated_at: Utc::now(),
     };
 
-    let config = DocConfig::new().with_argon_params(65536, 3, 4);
+    let config = DocConfig::new();
     let generator = DocumentationGenerator::new(config, summary);
 
     let security_doc = generator.generate_security_doc();
@@ -426,8 +401,8 @@ fn test_security_doc_complete() {
 
     // Should mention key security concepts
     assert!(
-        content.contains("argon") || content.contains("kdf"),
-        "Should mention key derivation"
+        content.contains("not encrypted"),
+        "Should warn that the archive is not encrypted"
     );
     assert!(
         content.contains("aes") || content.contains("encrypt"),

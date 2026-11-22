@@ -341,7 +341,6 @@ fn export_privacy_html(
     session: &Path,
     source: Option<&str>,
     include_secrets: bool,
-    encrypt: bool,
 ) -> Result<(Value, String), Box<dyn std::error::Error>> {
     let mut cmd = export_privacy_command(root);
     cmd.arg("export-html")
@@ -354,10 +353,6 @@ fn export_privacy_html(
     }
     if include_secrets {
         cmd.arg("--include-secrets");
-    }
-    if encrypt {
-        cmd.args(["--encrypt", "--password-stdin"])
-            .write_stdin("export privacy regression passphrase\n");
     }
     let output = cmd.output()?;
     assert!(
@@ -558,8 +553,7 @@ fn export_redaction_parity_for_live_and_archived_sources() -> Result<(), Box<dyn
             assert!(exported.contains("password rotation"));
             assert!(String::from_utf8_lossy(&output.stderr).contains("redact-secrets"));
         }
-        let (receipt, html) =
-            export_privacy_html(root.path(), identity_path, source, false, false)?;
+        let (receipt, html) = export_privacy_html(root.path(), identity_path, source, false)?;
         assert!(
             !html.contains(EXPORT_PRIVACY_SECRET),
             "{label}/HTML leaked a credential"
@@ -654,8 +648,7 @@ fn export_redaction_covers_tool_arguments_results_and_nested_metadata()
                 assert_eq!(messages[1]["message"]["content"][0]["id"], "call-84");
             }
         }
-        let (_, html) =
-            export_privacy_html(root.path(), identity_path, None, include_secrets, false)?;
+        let (_, html) = export_privacy_html(root.path(), identity_path, None, include_secrets)?;
         assert_eq!(html.contains(EXPORT_PRIVACY_SECRET), include_secrets);
         assert!(html.contains("tool-result-kept"));
         assert!(html.contains("src/lib.rs"));
@@ -759,7 +752,7 @@ fn export_redaction_covers_unredacted_archive_with_never_created_source()
             assert!(exported.contains("café 界"));
         }
         let (receipt, html) =
-            export_privacy_html(root.path(), &absent, Some("local"), include_secrets, false)?;
+            export_privacy_html(root.path(), &absent, Some("local"), include_secrets)?;
         assert_eq!(html.contains(EXPORT_PRIVACY_SECRET), include_secrets);
         assert_eq!(
             receipt.to_string().contains(EXPORT_PRIVACY_SECRET),
@@ -812,7 +805,7 @@ fn export_redaction_raw_fidelity_requires_explicit_sensitive_option()
         assert!(policy.contains("include-secrets"));
         assert!(policy.contains("\"sensitive_output\":true"));
     }
-    let (receipt, html) = export_privacy_html(root.path(), identity_path, None, true, false)?;
+    let (receipt, html) = export_privacy_html(root.path(), identity_path, None, true)?;
     assert!(html.contains(EXPORT_PRIVACY_SECRET));
     assert!(
         receipt["exported"]["title"]
@@ -822,73 +815,6 @@ fn export_redaction_raw_fidelity_requires_explicit_sensitive_option()
     // Index-first: export resolves the archive read-only — it must never
     // create or mutate the database it reads.
     assert_eq!(fs::read(&db_path)?, db_before);
-    Ok(())
-}
-
-#[test]
-#[cfg(feature = "encryption")]
-fn export_redaction_policy_applies_before_encryption() -> Result<(), Box<dyn std::error::Error>> {
-    use aes_gcm::{
-        Aes256Gcm, Nonce,
-        aead::{Aead, KeyInit},
-    };
-    use base64::Engine as _;
-    use base64::prelude::BASE64_STANDARD;
-    use ring::pbkdf2;
-    use std::num::NonZeroU32;
-
-    let root = TempDir::new()?;
-    export_privacy_session(root.path())?;
-    // Index-first: ingest the session verbatim so the archive holds the raw
-    // content; the export-time policy is the only redactor under test.
-    let indexed = export_privacy_command(root.path())
-        .args(["index", "--full"])
-        .env("CASS_INDEX_REDACTION", "off")
-        .env("HOME", root.path())
-        .output()?;
-    assert!(
-        indexed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&indexed.stderr)
-    );
-    let db_path = root.path().join("data/agent_search.db");
-    let identity = archived_identity(&db_path, "rollout-export-privacy");
-    let identity_path = Path::new(&identity);
-    let carrier = Regex::new(r#"(?s)<div id="encrypted-content" hidden>(.*?)</div>"#)?;
-    for include_secrets in [false, true] {
-        let (receipt, html) =
-            export_privacy_html(root.path(), identity_path, None, include_secrets, true)?;
-        let payload = carrier
-            .captures(&html)
-            .and_then(|caps| caps.get(1))
-            .ok_or("encrypted payload")?;
-        let encrypted: Value = serde_json::from_str(payload.as_str())?;
-        let salt = BASE64_STANDARD.decode(encrypted["salt"].as_str().ok_or("salt")?)?;
-        let iv = BASE64_STANDARD.decode(encrypted["iv"].as_str().ok_or("nonce")?)?;
-        let ciphertext =
-            BASE64_STANDARD.decode(encrypted["ciphertext"].as_str().ok_or("ciphertext")?)?;
-        let iterations = u32::try_from(encrypted["iterations"].as_u64().ok_or("KDF work")?)?;
-        let mut key = [0u8; 32];
-        pbkdf2::derive(
-            pbkdf2::PBKDF2_HMAC_SHA256,
-            NonZeroU32::new(iterations).ok_or("nonzero KDF work")?,
-            &salt,
-            b"export privacy regression passphrase",
-            &mut key,
-        );
-        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| "AES key")?;
-        let nonce = Nonce::try_from(iv.as_slice()).map_err(|_| "AES nonce")?;
-        let plaintext = cipher
-            .decrypt(&nonce, ciphertext.as_ref())
-            .map_err(|_| "decrypt")?;
-        let plaintext = String::from_utf8(plaintext)?;
-        assert!(plaintext.contains("ordinary-kept-marker"));
-        assert_eq!(plaintext.contains(EXPORT_PRIVACY_SECRET), include_secrets);
-        if !include_secrets {
-            assert!(!receipt.to_string().contains(EXPORT_PRIVACY_SECRET));
-            assert!(!html.contains(EXPORT_PRIVACY_SECRET));
-        }
-    }
     Ok(())
 }
 

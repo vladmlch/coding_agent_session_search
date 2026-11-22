@@ -1,4 +1,4 @@
-//! Security regression gate for HTML-export content sanitization + encryption.
+//! Security regression gate for HTML-export content sanitization.
 //!
 //! Bead `coding_agent_session_search-cass-fleet-resilience-20260608-uojcg.15.3`
 //! ("Secure HTML export encryption and content-rendering regression coverage").
@@ -12,14 +12,11 @@
 //! and opaque encryption as concrete risks, so this surface needs security-grade
 //! regression coverage rather than casual snapshot checks.
 //!
-//! The existing suites already pin the crypto primitives, the robot envelope
-//! shapes, the log-redaction guards, and UTF-8 char-boundary safety
-//! (`crypto_vectors`, `spec_crypto_roundtrip_proptest`, `spec_export_html_envelopes`,
-//! `crypto_tracing_safety`, `metamorphic_html_export`). The gap this gate fills
-//! is the one with **no** prior coverage: malicious *content* fixtures driven
-//! through the real `cass export-html` binary, proving every injection vector
-//! lands inert, and that an encrypted export keeps the conversation body and the
-//! password out of the shipped file.
+//! The existing suites already pin the robot envelope shapes and UTF-8
+//! char-boundary safety (`spec_export_html_envelopes`, `metamorphic_html_export`).
+//! The gap this gate fills is the one with **no** prior coverage: malicious
+//! *content* fixtures driven through the real `cass export-html` binary, proving
+//! every injection vector lands inert.
 //!
 //! What it proves (against the real binary)
 //! ---------------------------------------
@@ -31,14 +28,10 @@
 //!    `javascript:`/`data:` href or src survives.
 //! 2. The content is still *rendered* (escaped), not silently dropped, so the
 //!    sanitizer is not masking a content-loss bug.
-//! 3. An encrypted export ships the conversation body only as ciphertext (no
-//!    body plaintext / token leak), exposes only the bounded title preview as
-//!    metadata, and never writes the supplied secret into the HTML, stdout, or
-//!    stderr (via the supported `--password-stdin` channel).
-//! 4. The documented error envelopes hold: a missing session is
-//!    `session-not-found` (code 3); `--encrypt` without a password is
-//!    `password-required` (code 6) — you can never silently ship a "would-be
-//!    encrypted" export in plaintext.
+//! 3. The documented error envelopes hold: a missing session is
+//!    `conversation-not-indexed` (code 3); the removed `--encrypt` flag is
+//!    refused at parse time (usage, exit 2) and writes nothing — you can never
+//!    silently ship a "would-be encrypted" export in plaintext.
 //!
 //! Isolation: every run uses a fresh `tempdir` as `HOME` with update prompts and
 //! color disabled, so the gate never reaches the operator's real corpus.
@@ -51,10 +44,6 @@ use serde_json::{Value, json};
 /// Hard bound per export; an export of a tiny fixture is sub-second, so this
 /// only fires on a true hang.
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// A unique non-credential sentinel string passed on the encryption channel — if
-/// it ever appears in the HTML, stdout, or stderr the redaction contract is broken.
-const LEAK_SENTINEL: &str = "leak-sentinel-8f3a2b-not-a-credential";
 
 /// A malicious-content case: a payload embedded in a message, the raw injection
 /// substrings that must be ABSENT from the export, and optional text that must
@@ -190,8 +179,7 @@ fn write_malicious_session(dir: &Path, cases: &[MaliciousCase]) -> Result<PathBu
     Ok(path)
 }
 
-/// Write a session whose body (beyond the title preview) carries secret markers,
-/// used to prove an encrypted export ships the body only as ciphertext.
+/// Write a small benign session used by the error-envelope checks.
 fn write_secret_body_session(dir: &Path) -> Result<PathBuf, String> {
     let lines = [
         message_line("user", "benign title preview only", 0),
@@ -292,17 +280,9 @@ fn read_export_html(envelope: &Value) -> Result<Option<String>, String> {
     Ok(Some(html))
 }
 
-/// Run `cass --db <db> export-html <identity> --output-dir <out> --json
-/// [--encrypt --password-stdin]` and capture the envelope + artifacts.
-/// `password` = `Some(pw)` encrypts via `--password-stdin` (the only supported
-/// password channel); `None` exports plaintext.
-fn run_export(
-    home: &Path,
-    db: &Path,
-    identity: &str,
-    out_dir: &Path,
-    password: Option<&str>,
-) -> Result<ExportRun, String> {
+/// Run `cass --db <db> export-html <identity> --output-dir <out> --json` and
+/// capture the envelope + artifacts.
+fn run_export(home: &Path, db: &Path, identity: &str, out_dir: &Path) -> Result<ExportRun, String> {
     let mut cmd = export_command(home)?;
     cmd.arg("--db")
         .arg(db)
@@ -311,11 +291,6 @@ fn run_export(
         .arg("--output-dir")
         .arg(out_dir)
         .arg("--json");
-    if let Some(pw) = password {
-        cmd.arg("--encrypt")
-            .arg("--password-stdin")
-            .write_stdin(pw.to_string());
-    }
     let output = cmd.output().map_err(|e| format!("run export-html: {e}"))?;
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -423,7 +398,7 @@ fn malicious_message_content_is_inert_in_unencrypted_export() -> Result<(), Stri
     let session = write_malicious_session(&project_dir, &cases)?;
     let (db, identity) = index_session(home.path(), &session)?;
 
-    let run = run_export(home.path(), &db, &identity, &out_dir, None)?;
+    let run = run_export(home.path(), &db, &identity, &out_dir)?;
     if !matches!(
         run.envelope.get("success").and_then(Value::as_bool),
         Some(true)
@@ -457,74 +432,6 @@ fn malicious_message_content_is_inert_in_unencrypted_export() -> Result<(), Stri
     }
 }
 
-/// The conversation-body secret markers that must never survive into an
-/// encrypted export.
-const BODY_SECRETS: &[&str] = &[
-    "BODY_SECRET_MARKER",
-    "sk-DEEPSECRET999",
-    "ASSISTANT_SECRET_MARKER",
-];
-
-/// First body secret that leaked into the HTML, if any.
-fn leaked_body_secret(html: &str) -> Option<&'static str> {
-    BODY_SECRETS.iter().copied().find(|s| html.contains(s))
-}
-
-/// Encrypted export ships the body as ciphertext only and never leaks the
-/// password (via the supported `--password-stdin` channel).
-#[test]
-fn encrypted_export_encrypts_body_and_never_leaks_password() -> Result<(), String> {
-    let home = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
-    let out_dir = home.path().join("out");
-    std::fs::create_dir_all(&out_dir).map_err(|e| format!("create out dir: {e}"))?;
-    let project_dir = home.path().join(".claude/projects/sec-gate");
-    std::fs::create_dir_all(&project_dir).map_err(|e| format!("create project dir: {e}"))?;
-    let session = write_secret_body_session(&project_dir)?;
-    let (db, identity) = index_session(home.path(), &session)?;
-
-    let run = run_export(home.path(), &db, &identity, &out_dir, Some(LEAK_SENTINEL))?;
-    if !matches!(
-        run.envelope.get("success").and_then(Value::as_bool),
-        Some(true)
-    ) {
-        return Err(format!(
-            "encrypted export failed: {}; stderr: {}",
-            head(&run.stdout),
-            head(&run.stderr)
-        ));
-    }
-    if !matches!(
-        run.envelope
-            .pointer("/exported/encrypted")
-            .and_then(Value::as_bool),
-        Some(true)
-    ) {
-        return Err("envelope did not report exported.encrypted=true".to_string());
-    }
-    let html = run
-        .html
-        .ok_or_else(|| "encrypted export produced no HTML".to_string())?;
-
-    if !html.contains("id=\"encrypted-content\"") {
-        return Err("encrypted export is missing the encrypted-content carrier".to_string());
-    }
-    if let Some(secret) = leaked_body_secret(&html) {
-        return Err(format!(
-            "encrypted export leaked conversation body in plaintext: {secret:?}"
-        ));
-    }
-    if html.contains(LEAK_SENTINEL) {
-        return Err("password leaked into the exported HTML".to_string());
-    }
-    if run.stdout.contains(LEAK_SENTINEL) {
-        return Err("password leaked into stdout".to_string());
-    }
-    if run.stderr.contains(LEAK_SENTINEL) {
-        return Err("password leaked into stderr".to_string());
-    }
-    Ok(())
-}
-
 /// The documented export error envelopes hold — so a caller can never silently
 /// ship a plaintext export when encryption was requested.
 #[test]
@@ -545,12 +452,12 @@ fn export_html_security_error_envelopes_are_stable() -> Result<(), String> {
         &db,
         missing.to_str().ok_or("missing path is not utf8")?,
         &out_dir,
-        None,
     )?;
     check_error(&run.envelope, 3, "conversation-not-indexed")?;
 
-    // --encrypt with no password → password-required (code 6): the export must
-    // refuse rather than ship plaintext.
+    // HTML-export encryption was removed: `--encrypt` is an unknown flag, so
+    // the invocation must fail at parse time (usage, exit 2) and write no
+    // HTML, rather than silently ship a plaintext export.
     let mut cmd = export_command(home.path())?;
     cmd.arg("--db")
         .arg(&db)
@@ -561,10 +468,24 @@ fn export_html_security_error_envelopes_are_stable() -> Result<(), String> {
         .arg("--encrypt")
         .arg("--json");
     let output = cmd.output().map_err(|e| format!("run export-html: {e}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    let envelope = parse_envelope(&stdout, &stderr)?;
-    check_error(&envelope, 6, "password-required")?;
+    if !output.status.code().cmp(&Some(2)).is_eq() {
+        return Err(format!(
+            "removed --encrypt must be refused with exit 2, got {:?}; stdout: {}; stderr: {}",
+            output.status.code(),
+            head(&String::from_utf8_lossy(&output.stdout)),
+            head(&String::from_utf8_lossy(&output.stderr))
+        ));
+    }
+    let written = std::fs::read_dir(&out_dir)
+        .map_err(|e| format!("read out dir: {e}"))?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "html"))
+        .count();
+    if written != 0 {
+        return Err(format!(
+            "refused --encrypt export still wrote {written} HTML file(s)"
+        ));
+    }
     Ok(())
 }
 

@@ -40,8 +40,7 @@ pub const SUBSYSTEM_COVERAGE_SCHEMA_VERSION: u32 = 1;
 /// order. `update_check` was dropped from the canonical set when the update
 /// machinery was removed (Task 8, local-only). The closeout gate requires
 /// exactly one matrix row per name.
-pub const REPORT_SUBSYSTEM_FILES: [&str; 14] = [
-    "analytics",
+pub const REPORT_SUBSYSTEM_FILES: [&str; 12] = [
     "bookmarks",
     "cache",
     "cli_robot",
@@ -54,7 +53,6 @@ pub const REPORT_SUBSYSTEM_FILES: [&str; 14] = [
     "search",
     "sources",
     "storage",
-    "tui",
 ];
 
 /// The precursor design docs this matrix builds on. The gate asserts both still
@@ -168,28 +166,10 @@ pub enum CoverageGap {
     MissingArtifact { subsystem: String, artifact: String },
 }
 
-/// The fourteen-row subsystem coverage matrix. Order matches
+/// The twelve-row subsystem coverage matrix. Order matches
 /// [`REPORT_SUBSYSTEM_FILES`].
 pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
     vec![
-        SubsystemCoverage {
-            subsystem: "analytics",
-            owning_beads: &[".15.4", ".9.4"],
-            failure_modes: &[
-                "fm-analytics-rebuild-grouped-aggregate",
-                "fm-analytics-charts-saturating-zero",
-            ],
-            mandatory_proofs: &[ProofLevel::Unit, ProofLevel::Golden],
-            proof_artifacts: &[
-                "src/metric_integrity.rs",
-                "tests/analytics_cost_pricing_table_contract.rs",
-            ],
-            optional_diagnostics: &["live analytics rollup tail under doctor --fix"],
-            fixture_provenance: "synthetic usage-ledger rows; no real session content",
-            log_expectation: "deterministic --lib result line; proof-log when wired into doctor rebuild",
-            redaction: RedactionExpectation::NoUserContent,
-            closure_evidence: "cargo test --lib metric_integrity + analytics contract test path/count",
-        },
         SubsystemCoverage {
             subsystem: "bookmarks",
             owning_beads: &[".15.4"],
@@ -248,8 +228,6 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
                 "fm-connectors-jsonl-parse-error",
                 "fm-connectors-cursor-vscdb-locked",
                 "fm-connectors-chatgpt-encrypted-undecipherable",
-                "fm-connectors-amp-stem-prefix-unsafe",
-                "fm-indexer-aider-external-id-collision",
             ],
             mandatory_proofs: &[
                 ProofLevel::Unit,
@@ -260,8 +238,8 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
                 "src/connector_ingest_diagnostics.rs",
                 "tests/connector_cursor.rs",
                 "tests/connector_chatgpt.rs",
-                "tests/connector_aider.rs",
-                "tests/connector_amp.rs",
+                "tests/connector_claude.rs",
+                "tests/connector_codex.rs",
             ],
             optional_diagnostics: &["per-provider live ingest probe"],
             fixture_provenance: "per-provider synthetic session files; encrypted blob is non-decipherable by design",
@@ -290,12 +268,7 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
         SubsystemCoverage {
             subsystem: "html_export",
             owning_beads: &[".15.3", ".10.5", ".12.3", ".13.3"],
-            failure_modes: &[
-                "fm-html-export-markdown-injection",
-                "fm-html-export-encryption-failure",
-                "fm-encryption-nonce-type-safety",
-                "fm-encryption-utf8-byte-slicing",
-            ],
+            failure_modes: &["fm-html-export-markdown-injection"],
             mandatory_proofs: &[ProofLevel::Integration, ProofLevel::Golden, ProofLevel::E2e],
             proof_artifacts: &[
                 "tests/html_export_sanitization_security.rs",
@@ -303,8 +276,8 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
                 "tests/html_export_e2e.rs",
             ],
             optional_diagnostics: &[],
-            fixture_provenance: "synthetic malicious markdown/script inputs; encrypted body is ciphertext",
-            log_expectation: "structured proof-log for the real-binary export run; encrypted bodies stay ciphertext",
+            fixture_provenance: "synthetic malicious markdown/script inputs; exported HTML stays escaped",
+            log_expectation: "structured proof-log for the real-binary export run; scripts stay inert",
             redaction: RedactionExpectation::RedactRequired,
             closure_evidence: "cargo test --test html_export_sanitization_security + golden html_export diff",
         },
@@ -340,10 +313,7 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
                 "fm-models-checksum-mismatch",
             ],
             mandatory_proofs: &[ProofLevel::Integration],
-            proof_artifacts: &[
-                "tests/cli_model_lifecycle_contract.rs",
-                "tests/e2e_analytics_models.rs",
-            ],
+            proof_artifacts: &["tests/cli_model_lifecycle_contract.rs"],
             optional_diagnostics: &["`cass models verify` checksum pass on installed files"],
             fixture_provenance: "missing/mismatched model dirs; no network exists anywhere",
             log_expectation: "deterministic contract test result line; local installs are opt-in only",
@@ -439,22 +409,6 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
             log_expectation: "structured proof-log over the real-binary storage-failure gate",
             redaction: RedactionExpectation::NoUserContent,
             closure_evidence: "cargo test --test e2e_storage_failure_fixture_gate result line",
-        },
-        SubsystemCoverage {
-            subsystem: "tui",
-            owning_beads: &[".15.4", ".13.2", ".13.4", ".12.6"],
-            failure_modes: &["fm-tui-render-parity-drift", "fm-tui-human-robot-mismatch"],
-            mandatory_proofs: &[ProofLevel::Integration, ProofLevel::Golden, ProofLevel::E2e],
-            proof_artifacts: &[
-                "tests/e2e_human_robot_parity_gate.rs",
-                "tests/tui_smoke.rs",
-                "tests/e2e_tui_smoke_flows.rs",
-            ],
-            optional_diagnostics: &["live TUI asciicast capture"],
-            fixture_provenance: "headless TUI fixtures; human summaries carry redacted fields verbatim",
-            log_expectation: "structured proof-log over the human/robot parity gate",
-            redaction: RedactionExpectation::RedactRequired,
-            closure_evidence: "cargo test --test e2e_human_robot_parity_gate result line",
         },
     ]
 }
@@ -795,11 +749,11 @@ mod tests {
 
     fn complete_row() -> SubsystemCoverage {
         SubsystemCoverage {
-            subsystem: "analytics",
+            subsystem: "bookmarks",
             owning_beads: &[".15.4"],
-            failure_modes: &["fm-analytics-charts-saturating-zero"],
+            failure_modes: &["fm-bookmarks-silent-row-decode"],
             mandatory_proofs: &[ProofLevel::Unit],
-            proof_artifacts: &["src/metric_integrity.rs"],
+            proof_artifacts: &["src/bookmarks.rs"],
             optional_diagnostics: &[],
             fixture_provenance: "synthetic rows",
             log_expectation: "deterministic --lib result line",

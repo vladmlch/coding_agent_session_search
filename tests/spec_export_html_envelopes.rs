@@ -1,14 +1,14 @@
 //! INV-cass-14 — `cass export-html` error envelope contract + success
 //! envelope shape.
 //!
-//! README's "HTML Export (Robot Mode)" section documents four user-facing
-//! exit codes (3, 4, 5, 6) and a success envelope. Until this file landed,
+//! README's "HTML Export (Robot Mode)" section documents the user-facing
+//! exit codes (3, 4) and a success envelope. Until this file landed,
 //! that contract was carried only by inline test helpers in
 //! `tests/html_export_*.rs` covering end-to-end behavior; the **error
 //! envelope kebab-case `kind` values + retryable flags + stdout/stderr
 //! discipline** had no mechanical drift guard. This file pins them.
 //!
-//! Four invariants:
+//! Three invariants:
 //!
 //!   1. Session-not-found (code 3): exit 3, kebab-case
 //!      `kind="session-not-found"`, `retryable=false`, envelope on stderr,
@@ -16,21 +16,18 @@
 //!   2. Output-dir-not-writable (code 4): exit 4, kebab-case
 //!      `kind="output-not-writable"`, `retryable=false`. Triggered by
 //!      `chmod 555` on the output dir so the OS rejects the write.
-//!   3. Password-required (code 6): exit 6, kebab-case
-//!      `kind="password-required"`, `retryable=false`. Triggered by
-//!      `--encrypt` without `--password-stdin`.
-//!   4. Success envelope shape: exit 0, top-level `success: true` and
-//!      `exported.{output_path, encrypted, messages_count, size_bytes,
-//!      agent, filename, session_path, title}` keys all present. Note
+//!   3. Success envelope shape: exit 0, top-level `success: true` and
+//!      `exported.{output_path, messages_count, size_bytes, agent,
+//!      filename, session_path, title}` keys all present. Note
 //!      that some field names in the README are out of sync with the
 //!      actual envelope (README documents `file_size`/`message_count`
 //!      but the live shape uses `size_bytes`/`messages_count`). This
 //!      test pins the *actual* shape so future doc fixes align with
 //!      reality, not the other way around.
 //!
-//! Code 5 (encryption_error) is not covered here — it requires an
-//! actively failing encryption path which is harder to trigger
-//! deterministically and is exercised by the encryption test suite.
+//! HTML-export encryption (`--encrypt`, `--password-stdin`) and its
+//! `password-required` (code 6) / `encryption_error` (code 5) envelopes
+//! were removed in Phase 0; exports are plaintext only.
 //!
 //! Verified against `tests/fixtures/message_grouping/claude_session.jsonl`
 //! as the real-JSONL fixture (export-html's "indexed conversation or
@@ -248,63 +245,6 @@ fn export_html_nonexistent_session_returns_not_indexed_envelope() -> TestResult 
     Ok(())
 }
 
-#[test]
-fn export_html_encrypt_without_password_returns_password_required_envelope() -> TestResult {
-    let tmp = TempDir::new()?;
-    let out_dir = tmp.path().join("out");
-    fs::create_dir_all(&out_dir)?;
-    let session = real_jsonl_session();
-    let db = tmp.path().join("envelope.db");
-    seed_fixture_archive(&db, &session);
-    let outcome = run_export_html(
-        &[
-            session.to_str().ok_or("non-utf8 path")?,
-            "--output-dir",
-            out_dir.to_str().ok_or("non-utf8 path")?,
-            "--encrypt",
-        ],
-        Some(&db),
-    )?;
-    assert_error_envelope(
-        "export-html-encrypt-no-password",
-        &outcome,
-        6,
-        "password-required",
-    )
-}
-
-#[test]
-fn empty_stdin_password_is_rejected_as_password_required() -> TestResult {
-    let tmp = TempDir::new()?;
-    let out_dir = tmp.path().join("out");
-    fs::create_dir_all(&out_dir)?;
-    let session = real_jsonl_session();
-    let db = tmp.path().join("envelope.db");
-    seed_fixture_archive(&db, &session);
-    let output = Command::cargo_bin("cass")?
-        .args(["--color=never", "--db"])
-        .arg(&db)
-        .arg("export-html")
-        .arg(&session)
-        .arg("--output-dir")
-        .arg(&out_dir)
-        .args(["--encrypt", "--password-stdin", "--json"])
-        .write_stdin("\n")
-        .output()?;
-    let outcome = CmdOutcome {
-        exit_code: output.status.code(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    };
-
-    assert_error_envelope(
-        "export-html-encrypt-empty-stdin-password",
-        &outcome,
-        6,
-        "password-required",
-    )
-}
-
 #[cfg(unix)]
 #[test]
 fn export_html_unwritable_output_dir_returns_output_not_writable_envelope() -> TestResult {
@@ -400,7 +340,6 @@ fn export_html_success_envelope_has_documented_keys() -> TestResult {
     // README -> code, not the other way; this test enforces that direction.
     for required in [
         "agent",
-        "encrypted",
         "filename",
         "messages_count",
         "output_path",

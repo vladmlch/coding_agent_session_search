@@ -486,58 +486,6 @@ fn test_fts_rebuild() {
 }
 
 // =============================================================================
-// Key Slot Migration Tests
-// =============================================================================
-
-/// Test that old encryption configs without recovery slots work.
-#[test]
-fn test_legacy_single_slot_config() {
-    use serde_json::json;
-
-    let legacy_config = json!({
-        "version": 1,
-        "export_id": "AAAAAAAAAAAAAAAAAAAAAA==",
-        "base_nonce": "AAAAAAAAAAAA",
-        "compression": "deflate",
-        "kdf_defaults": {
-            "memory_kb": 65536,
-            "iterations": 3,
-            "parallelism": 4
-        },
-        "payload": {
-            "chunk_size": 8388608,
-            "chunk_count": 1,
-            "total_compressed_size": 1024,
-            "total_plaintext_size": 2048,
-            "files": ["data.db"]
-        },
-        "key_slots": [{
-            "id": 0,
-            "slot_type": "password",
-            "kdf": "argon2id",
-            "salt": "c2FsdHNhbHRzYWx0c2FsdA==",
-            "wrapped_dek": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-            "nonce": "AAAAAAAAAAAA",
-            "argon2_params": {
-                "memory_kb": 65536,
-                "iterations": 3,
-                "parallelism": 4
-            }
-        }]
-    });
-
-    // Should parse without recovery slot
-    let config: coding_agent_search::pages::encrypt::EncryptionConfig =
-        serde_json::from_value(legacy_config).unwrap();
-
-    assert_eq!(config.key_slots.len(), 1);
-    assert_eq!(
-        config.key_slots[0].slot_type,
-        coding_agent_search::pages::encrypt::SlotType::Password
-    );
-}
-
-// =============================================================================
 // Rollback Tests
 // =============================================================================
 

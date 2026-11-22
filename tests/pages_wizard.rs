@@ -26,15 +26,9 @@ fn test_wizard_state_default() {
     assert!(state.time_range.is_none());
     assert!(state.workspaces.is_none());
 
-    // Default security config
-    assert!(state.password.is_none());
-    assert!(state.recovery_secret.is_none());
-    assert!(state.generate_recovery);
-    assert!(!state.generate_qr);
-
     // Default site config
     assert_eq!(state.title, "cass Archive");
-    assert!(state.description.contains("Encrypted archive"));
+    assert!(state.description.contains("Searchable archive"));
     assert!(!state.hide_metadata);
 
     // Local output (hosted deployment was removed — everything is local)
@@ -42,7 +36,7 @@ fn test_wizard_state_default() {
 
     // Default exclusions
     assert!(state.exclusions.excluded_conversations.is_empty());
-    assert!(state.exclusions.excluded_workspaces.is_empty());
+    assert!(exclusions_empty(&state.exclusions));
     assert!(state.last_summary.is_none());
 
     // Default secret scan
@@ -50,11 +44,11 @@ fn test_wizard_state_default() {
     assert!(!state.secret_scan_has_critical);
     assert_eq!(state.secret_scan_count, 0);
 
-    // Default encryption
-    assert!(!state.no_encryption);
-    assert!(!state.unencrypted_confirmed);
-
     assert!(state.final_site_dir.is_none());
+}
+
+fn exclusions_empty(exclusions: &ExclusionSet) -> bool {
+    exclusions.excluded_conversations.is_empty() && exclusions.excluded_workspaces.is_empty()
 }
 
 #[test]
@@ -66,11 +60,6 @@ fn test_wizard_state_with_custom_config() {
         agents: vec!["claude_code".to_string(), "codex".to_string()],
         time_range: Some("last_week".to_string()),
         workspaces: Some(vec![PathBuf::from("/projects/myapp")]),
-        // Security
-        password: Some("test-password-123".to_string()),
-        generate_recovery: true,
-        generate_qr: true,
-        password_entropy_bits: 48.0,
         // Site
         title: "My Archive".to_string(),
         description: "My custom archive".to_string(),
@@ -84,35 +73,8 @@ fn test_wizard_state_with_custom_config() {
     assert_eq!(state.agents.len(), 2);
     assert_eq!(state.time_range.as_deref(), Some("last_week"));
     assert_eq!(state.workspaces.as_ref().unwrap().len(), 1);
-    // Bead 7k7pl: pin the EXACT password the test seeds (not just
-    // "password present"). A regression that zeroed or replaced the
-    // password with a default would slip past `.is_some()` while
-    // silently breaking encryption behavior.
-    assert_eq!(state.password.as_deref(), Some("test-password-123"));
-    assert_eq!(state.password_entropy_bits, 48.0);
+    assert!(state.hide_metadata);
     assert_eq!(state.title, "My Archive");
-}
-
-#[test]
-fn test_wizard_state_no_encryption_mode() {
-    let _tracker = PhaseTracker::new("pages_wizard", "state_no_encryption");
-
-    let state = WizardState {
-        // Enable no encryption mode
-        no_encryption: true,
-        unencrypted_confirmed: true,
-        // When unencrypted, recovery options should be disabled
-        generate_recovery: false,
-        generate_qr: false,
-        password: None,
-        ..WizardState::default()
-    };
-
-    assert!(state.no_encryption);
-    assert!(state.unencrypted_confirmed);
-    assert!(!state.generate_recovery);
-    assert!(!state.generate_qr);
-    assert!(state.password.is_none());
 }
 
 // =============================================================================
@@ -179,18 +141,6 @@ fn test_exclusion_set_workspaces() {
 // =============================================================================
 // Wizard State Validation Tests
 // =============================================================================
-
-#[test]
-fn test_wizard_state_validation_password_required_for_encryption() {
-    let _tracker = PhaseTracker::new("pages_wizard", "validation_password_required");
-
-    let state = WizardState::default();
-
-    // When not in no_encryption mode, password is required
-    assert!(!state.no_encryption);
-    assert!(state.password.is_none());
-    // This state would fail validation during wizard run
-}
 
 #[test]
 fn test_wizard_state_validation_output_dir() {
@@ -576,10 +526,6 @@ fn test_pages_config_to_wizard_state_with_real_db() {
             "agents": ["claude_code"],
             "path_mode": "relative"
         },
-        "encryption": {
-            "no_encryption": true,
-            "i_understand_risks": true
-        },
         "bundle": {
             "title": "Test Archive",
             "description": "Integration test export"
@@ -607,8 +553,6 @@ fn test_pages_config_to_wizard_state_with_real_db() {
     assert_eq!(state.agents, vec!["claude_code"]);
     assert_eq!(state.title, "Test Archive");
     assert_eq!(state.description, "Integration test export");
-    assert!(state.no_encryption);
-    assert!(state.unencrypted_confirmed);
     assert_eq!(state.db_path, db_path);
 }
 
@@ -624,8 +568,6 @@ fn test_wizard_state_with_fixture_export_flow() {
         db_path: db_path.clone(),
         agents: vec!["claude_code".to_string()],
         output_dir: tmp.path().to_path_buf(),
-        no_encryption: true,
-        unencrypted_confirmed: true,
         title: "Fixture Test".to_string(),
         ..WizardState::default()
     };
@@ -717,33 +659,26 @@ fn test_exclusion_set_with_real_conversation_ids() {
 fn test_config_validation_scenarios() {
     let _tracker = PhaseTracker::new("pages_wizard", "config_validation_scenarios");
 
-    // Valid config with password
+    // Valid unencrypted local config
     let valid_config = r#"{
-        "encryption": {"password": "secure-password-123"}
+        "bundle": {"title": "Valid Archive"}
     }"#;
     let config: PagesConfig = serde_json::from_str(valid_config).unwrap();
     let result = config.validate();
-    assert!(result.valid, "Should be valid with password");
+    assert!(result.valid, "Default local config should be valid");
 
-    // Invalid: no encryption without acknowledgment
+    // Invalid: unsupported path_mode
     let invalid_config = r#"{
-        "encryption": {"no_encryption": true}
+        "filters": {"path_mode": "invalid_mode"}
     }"#;
     let config: PagesConfig = serde_json::from_str(invalid_config).unwrap();
     let result = config.validate();
-    assert!(!result.valid, "Should fail without i_understand_risks");
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| e.contains("i_understand_risks"))
-    );
+    assert!(!result.valid, "Should fail with invalid filters.path_mode");
 
     // Hosted targets are gone: github/cloudflare are rejected as unsupported.
     for target in ["github", "cloudflare"] {
         let hosted = format!(
             r#"{{
-                "encryption": {{"password": "test"}},
                 "deployment": {{"target": "{target}"}}
             }}"#
         );

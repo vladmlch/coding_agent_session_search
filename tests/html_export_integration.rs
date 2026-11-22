@@ -7,7 +7,6 @@
 //! - Export pipeline (complete success flow)
 //! - Message type preservation
 //! - Large session handling
-//! - Encrypted export flow
 //! - CLI integration (robot mode)
 //! - Cross-platform path handling
 //! - Performance benchmarks
@@ -315,85 +314,14 @@ fn test_export_unicode_content() {
 }
 
 // =============================================================================
-// Encrypted Export Tests
+// Default Name / Title Tests
 // =============================================================================
 
-#[test]
-fn test_encrypted_export_flow() {
-    let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
-    let tmp = TempDir::new().unwrap();
-    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
-    let password = "test-password-secure-123";
-
-    let output = base_cmd()
-        .args([
-            "--db",
-            db.to_str().unwrap(),
-            "export-html",
-            &identity,
-            "--output-dir",
-            tmp.path().to_str().unwrap(),
-            "--robot",
-            "--encrypt",
-            "--password-stdin",
-        ])
-        .write_stdin(format!("{password}\n"))
-        .output()
-        .unwrap();
-
-    assert!(output.status.success());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(&stdout).unwrap();
-
-    assert_eq!(json["success"], true);
-    assert_eq!(json["exported"]["encrypted"], true);
-
-    let output_path = json["exported"]["output_path"].as_str().unwrap();
-    let html = fs::read_to_string(output_path).unwrap();
-
-    // Verify decryption infrastructure present
-    assert!(
-        html.contains("crypto.subtle") || html.contains("SubtleCrypto"),
-        "Web Crypto API code should be present"
-    );
-    assert!(
-        html.contains("decrypt"),
-        "Decrypt function should be present"
-    );
-    assert!(
-        html.contains("password") || html.contains("Password"),
-        "Password input should be present"
-    );
-
-    // Verify encrypted payload structure
-    assert!(
-        html.contains("salt") || html.contains("iv") || html.contains("ciphertext"),
-        "Encryption payload markers should be present"
-    );
-
-    // Verify plaintext content is NOT directly visible
-    // (The actual message content should be encrypted)
-    let session_content = fs::read_to_string(&session_path).unwrap();
-    let first_line: Value = serde_json::from_str(session_content.lines().next().unwrap()).unwrap();
-    if let Some(msg) = first_line.get("message") {
-        if let Some(content) = msg.get("content").and_then(|c| c.as_str()) {
-            // Long plaintext content shouldn't appear verbatim
-            if content.len() > 50 {
-                assert!(
-                    !html.contains(&content[..50]),
-                    "Plaintext content should not be directly visible"
-                );
-            }
-        }
-    }
-}
-
 /// 2l1b0.67: the plaintext export's default name and title carry the
-/// conversation topic; the encrypted export of the same session must show
-/// neither in its file name nor in its HTML.
+/// conversation topic. (Its encrypted counterpart, which hid the topic, was
+/// removed with HTML-export encryption in Phase 0.)
 #[test]
-fn test_encrypted_export_hides_topic_in_default_name_and_html() {
+fn test_plain_export_default_name_and_title_carry_topic() {
     let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
     let staging_dir = TempDir::new().unwrap();
     let (db, identity) = stage_indexed_session(&staging_dir, &session_path, "-it");
@@ -434,191 +362,6 @@ fn test_encrypted_export_hides_topic_in_default_name_and_html() {
         !plain_name.ends_with("_session.html"),
         "fixture must produce a topic in its plain default name: {plain_name}"
     );
-
-    let encrypted_dir = TempDir::new().unwrap();
-    let encrypted = base_cmd()
-        .args([
-            "--db",
-            db.to_str().unwrap(),
-            "export-html",
-            session,
-            "--output-dir",
-            encrypted_dir.path().to_str().unwrap(),
-            "--robot",
-            "--encrypt",
-            "--password-stdin",
-        ])
-        .write_stdin("sealed-topic-password\n")
-        .output()
-        .unwrap();
-    assert!(
-        encrypted.status.success(),
-        "{}",
-        String::from_utf8_lossy(&encrypted.stderr)
-    );
-    let encrypted_json: Value = serde_json::from_slice(&encrypted.stdout).unwrap();
-    let encrypted_name = encrypted_json["exported"]["filename"].as_str().unwrap();
-    assert!(
-        encrypted_name.ends_with("_session.html"),
-        "encrypted default name must not carry the topic: {encrypted_name} (plain: {plain_name})"
-    );
-    let html_path = encrypted_json["exported"]["output_path"]
-        .as_str()
-        .expect("output_path");
-    let html = fs::read_to_string(html_path).expect("read encrypted html");
-    assert!(
-        !html.contains(&plain_title),
-        "the conversation title must not be visible before unlock: {plain_title}"
-    );
-
-    let unlock_script = r#"
-        import { readFileSync } from 'node:fs';
-        import vm from 'node:vm';
-
-        const html = readFileSync(process.env.CASS_ENCRYPTED_HTML_PATH, 'utf8');
-        const expectedTitle = process.env.CASS_EXPECTED_TITLE;
-        const encryptedMatch = html.match(/<div id="encrypted-content" hidden>([\s\S]*?)<\/div>/);
-        const cryptoMatch = html.match(/(const CASS_HTML_PBKDF2_ITERATIONS =[\s\S]*?\nconst Crypto = \{[\s\S]*?\n\};)/);
-        if (!encryptedMatch || !cryptoMatch) {
-            throw new Error('missing encrypted-content or Crypto script block in exported HTML');
-        }
-        const decodeHtmlText = (s) =>
-            s.replace(/&lt;/g, '<')
-             .replace(/&gt;/g, '>')
-             .replace(/&quot;/g, '"')
-             .replace(/&#x27;|&#39;/g, "'")
-             .replace(/&amp;/g, '&');
-
-        let submitHandler = null;
-        const headerContent = { innerHTML: '<h1 class="header-title">Encrypted conversation</h1>' };
-        const footerTitle = { textContent: 'Encrypted conversation' };
-        const errorEl = { hidden: true, textContent: '' };
-        const modal = { hidden: false };
-        const passwordInput = { value: '' };
-        const form = {
-            addEventListener(event, fn) {
-                if (event === 'submit') submitHandler = fn;
-            },
-            reset() {
-                passwordInput.value = '';
-            },
-        };
-        const conversation = {
-            innerHTML: '',
-            querySelector(sel) {
-                if (sel !== '#cass-sealed-header') return null;
-                const m = this.innerHTML.match(/<template id="cass-sealed-header" data-title="([^"]*)">([\s\S]*?)<\/template>/);
-                if (!m) return null;
-                return {
-                    innerHTML: m[2],
-                    getAttribute(name) {
-                        return name === 'data-title' ? decodeHtmlText(m[1]) : null;
-                    },
-                    remove: () => {
-                        this.innerHTML = this.innerHTML.replace(m[0], '');
-                    },
-                };
-            },
-        };
-        const elements = {
-            '#password-modal': modal,
-            '#password-form': form,
-            '#decrypt-error': errorEl,
-            '#password-input': passwordInput,
-            '#encrypted-content': { textContent: decodeHtmlText(encryptedMatch[1]) },
-            '#conversation': conversation,
-            '.header .header-content': headerContent,
-            '.print-footer-title': footerTitle,
-        };
-        const documentStub = { title: 'Encrypted conversation' };
-        const context = {
-            $: (sel) => elements[sel] || null,
-            document: documentStub,
-            crypto: globalThis.crypto,
-            TextEncoder: globalThis.TextEncoder,
-            TextDecoder: globalThis.TextDecoder,
-            atob: globalThis.atob,
-            JSON,
-            Error,
-            Uint8Array,
-        };
-        vm.createContext(context);
-        vm.runInContext(`${cryptoMatch[1]}\nthis.Crypto = Crypto;`, context);
-        context.Crypto.init();
-        if (typeof submitHandler !== 'function') {
-            throw new Error('Crypto.init() did not attach a submit listener');
-        }
-
-        passwordInput.value = 'wrong-password';
-        await context.Crypto.decrypt();
-        if (errorEl.hidden || !errorEl.textContent.includes('Wrong password')) {
-            throw new Error(`wrong password should surface error: ${JSON.stringify(errorEl)}`);
-        }
-        if (documentStub.title !== 'Encrypted conversation') {
-            throw new Error(`title leaked on failed unlock: ${documentStub.title}`);
-        }
-
-        passwordInput.value = 'sealed-topic-password';
-        await context.Crypto.decrypt();
-        if (!errorEl.hidden || !modal.hidden) {
-            throw new Error('successful unlock should hide error and modal');
-        }
-        if (documentStub.title !== expectedTitle || footerTitle.textContent !== expectedTitle) {
-            throw new Error(`unlocked title mismatch: doc=${documentStub.title} footer=${footerTitle.textContent} expected=${expectedTitle}`);
-        }
-        if (!decodeHtmlText(headerContent.innerHTML).includes(expectedTitle) || conversation.innerHTML.includes('cass-sealed-header')) {
-            throw new Error('sealed header should move into .header-content and be removed from #conversation');
-        }
-        console.log(JSON.stringify({
-            step: 'browser_unlock_verified',
-            wrong_password_error: errorEl.textContent,
-            unlocked_title: documentStub.title,
-            header_restored: headerContent.innerHTML.includes('header-meta'),
-        }));
-    "#;
-    let node_out = std::process::Command::new("node")
-        .args(["--input-type=module", "--eval", unlock_script])
-        .env("CASS_ENCRYPTED_HTML_PATH", html_path)
-        .env("CASS_EXPECTED_TITLE", &plain_title)
-        .output()
-        .expect("run encrypted HTML unlock verification under node");
-    assert!(
-        node_out.status.success(),
-        "encrypted HTML unlock verification failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&node_out.stdout),
-        String::from_utf8_lossy(&node_out.stderr)
-    );
-    eprintln!("{}", String::from_utf8_lossy(&node_out.stdout).trim());
-}
-
-#[test]
-fn test_encrypted_export_requires_password() {
-    let session_path = fixture_path("real_sessions", "claude_code_auth_fix.jsonl");
-    let tmp = TempDir::new().unwrap();
-    let (db, identity) = stage_indexed_session(&tmp, &session_path, "-it");
-
-    let output = base_cmd()
-        .args([
-            "--db",
-            db.to_str().unwrap(),
-            "export-html",
-            &identity,
-            "--output-dir",
-            tmp.path().to_str().unwrap(),
-            "--robot",
-            "--encrypt",
-            // Missing --password-stdin
-        ])
-        .output()
-        .unwrap();
-
-    assert!(!output.status.success());
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: Value = serde_json::from_str(&stdout).unwrap();
-
-    assert_eq!(json["success"], false);
-    assert_eq!(json["error"]["kind"], "password-required");
 }
 
 // =============================================================================

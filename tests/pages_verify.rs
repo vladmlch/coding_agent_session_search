@@ -1,6 +1,5 @@
 use assert_cmd::cargo::cargo_bin_cmd;
-use coding_agent_search::pages::bundle::BundleBuilder;
-use coding_agent_search::pages::encrypt::EncryptionEngine;
+use coding_agent_search::pages::bundle::{BundleBuilder, UnencryptedConfig, UnencryptedPayload};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
@@ -15,23 +14,31 @@ fn fixture_root(name: &str) -> PathBuf {
 
 fn build_current_valid_bundle() -> (TempDir, PathBuf) {
     let temp = TempDir::new().expect("create valid bundle tempdir");
-    let encrypted_dir = temp.path().join("encrypted");
+    let export_dir = temp.path().join("export");
     let bundle_dir = temp.path().join("bundle");
-    fs::create_dir_all(&encrypted_dir).expect("create encrypted fixture directory");
+    let payload_dir = export_dir.join("payload");
+    fs::create_dir_all(&payload_dir).expect("create export payload directory");
 
-    let input = temp.path().join("input.db");
-    fs::write(&input, b"pages verifier integration fixture")
-        .expect("write verifier source fixture");
-    let mut engine = EncryptionEngine::default();
-    engine
-        .add_password_slot("test-password")
-        .expect("add verifier fixture password slot");
-    engine
-        .encrypt_file(&input, &encrypted_dir, |_, _| {})
-        .expect("encrypt verifier source fixture");
+    let body: &[u8] = b"pages verifier integration fixture";
+    fs::write(payload_dir.join("archive.db"), body).expect("write verifier payload fixture");
+    let config = UnencryptedConfig {
+        encrypted: false,
+        version: "1.0.0".to_string(),
+        payload: UnencryptedPayload {
+            path: "payload/archive.db".to_string(),
+            format: "sqlite".to_string(),
+            size_bytes: Some(body.len() as u64),
+        },
+        warning: Some("UNENCRYPTED".to_string()),
+    };
+    fs::write(
+        export_dir.join("config.json"),
+        serde_json::to_vec_pretty(&config).expect("serialize verifier export config"),
+    )
+    .expect("write verifier export config");
 
     let result = BundleBuilder::new()
-        .build(&encrypted_dir, &bundle_dir, |_, _| {})
+        .build(&export_dir, &bundle_dir, |_, _| {})
         .expect("build current valid Pages bundle");
     (temp, result.site_dir)
 }

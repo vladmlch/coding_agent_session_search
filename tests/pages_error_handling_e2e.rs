@@ -6,7 +6,6 @@
 //! - Error messages don't leak sensitive information
 //! - All error paths are tested
 //! - Recovery suggestions are provided
-//! - Timing attacks are prevented
 //!
 //! # Running
 //!
@@ -14,22 +13,15 @@
 //! cargo test --test pages_error_handling_e2e
 //! ```
 
-use coding_agent_search::pages::encrypt::{DecryptionEngine, EncryptionEngine, load_config};
+use coding_agent_search::pages::bundle::{BundleBuilder, UnencryptedConfig, UnencryptedPayload};
 use coding_agent_search::pages::errors::{
     BrowserError, DbError, DecryptError, ErrorCode, ExportError, NetworkError,
 };
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
-
-// =============================================================================
-// Test Configuration
-// =============================================================================
-
-const TEST_PASSWORD: &str = "test-password-for-error-handling";
-const TEST_RECOVERY_SECRET: &[u8] = b"test-recovery-secret-32-bytes!!";
 
 // =============================================================================
 // Helper Functions
@@ -50,76 +42,43 @@ fn run_node_module_assertions(script: &str) -> std::io::Result<Output> {
         .output()
 }
 
-/// Create a test archive with password encryption.
-fn create_test_archive(temp_dir: &Path, password: &str) -> std::path::PathBuf {
-    let input_path = temp_dir.join("input.db");
+/// Stage an unencrypted Pages export (`config.json` + `payload/<name>`).
+fn write_unencrypted_source(root: &Path, payload_name: &str, body: &[u8]) {
+    let payload_dir = root.join("payload");
+    fs::create_dir_all(&payload_dir).unwrap();
+    fs::write(payload_dir.join(payload_name), body).unwrap();
+
+    let config = UnencryptedConfig {
+        encrypted: false,
+        version: "1.0.0".into(),
+        payload: UnencryptedPayload {
+            path: format!("payload/{payload_name}"),
+            format: "sqlite".into(),
+            size_bytes: Some(body.len() as u64),
+        },
+        warning: Some("UNENCRYPTED".into()),
+    };
     fs::write(
-        &input_path,
-        b"Test database content for error handling tests",
+        root.join("config.json"),
+        serde_json::to_vec_pretty(&config).unwrap(),
     )
     .unwrap();
-
-    let encrypt_dir = temp_dir.join("encrypted");
-    let mut engine = EncryptionEngine::new(1024).expect("valid chunk size");
-    engine.add_password_slot(password).unwrap();
-
-    engine
-        .encrypt_file(&input_path, &encrypt_dir, |_, _| {})
-        .unwrap();
-
-    encrypt_dir
 }
 
-/// Create a test archive with both password and recovery slots.
-fn create_test_archive_with_recovery(
-    temp_dir: &Path,
-    password: &str,
-    recovery: &[u8],
-) -> std::path::PathBuf {
-    let input_path = temp_dir.join("input.db");
-    fs::write(&input_path, b"Test database content").unwrap();
-
-    let encrypt_dir = temp_dir.join("encrypted");
-    let mut engine = EncryptionEngine::new(1024).expect("valid chunk size");
-    engine.add_password_slot(password).unwrap();
-    engine.add_recovery_slot(recovery).unwrap();
-
-    engine
-        .encrypt_file(&input_path, &encrypt_dir, |_, _| {})
-        .unwrap();
-
-    encrypt_dir
+/// Stage a test export with an unencrypted payload; returns the source dir.
+fn create_test_archive(temp_dir: &Path) -> PathBuf {
+    let source_dir = temp_dir.join("export");
+    write_unencrypted_source(
+        &source_dir,
+        "data.db",
+        b"Test database content for error handling tests",
+    );
+    source_dir
 }
 
 // =============================================================================
 // Authentication Error Tests
 // =============================================================================
-
-#[test]
-fn test_wrong_password_error() {
-    let temp_dir = TempDir::new().unwrap();
-    let archive_dir = create_test_archive(temp_dir.path(), "correct-password");
-
-    let config = load_config(&archive_dir).expect("Should load config");
-    let result = DecryptionEngine::unlock_with_password(config, "wrong-password");
-
-    assert!(result.is_err(), "Should fail with wrong password");
-
-    // Verify error message is user-friendly
-    match result {
-        Ok(_) => panic!("Should have failed"),
-        Err(e) => {
-            let err_msg = e.to_string();
-            assert!(
-                err_msg.contains("password")
-                    || err_msg.contains("Invalid")
-                    || err_msg.contains("key slot"),
-                "Error should mention password issue: {}",
-                err_msg
-            );
-        }
-    }
-}
 
 #[test]
 fn test_empty_password_validation() {
@@ -138,77 +97,6 @@ fn test_empty_password_validation() {
     assert!(!suggestion.is_empty(), "Should have a suggestion");
 }
 
-#[test]
-fn test_password_error_no_timing_leak() {
-    // Verify that wrong password attempts take similar time
-    // This helps prevent timing attacks that could reveal password length
-    let temp_dir = TempDir::new().unwrap();
-    let archive_dir = create_test_archive(temp_dir.path(), "correctpassword123");
-
-    let config = load_config(&archive_dir).expect("Should load config");
-
-    // Measure time for different wrong passwords
-    let attempts = [
-        "a",
-        "ab",
-        "abc",
-        "wrongpassword",
-        "wrongpassword123",
-        "wrongpassword12345678901234567890",
-    ];
-
-    let mut times = Vec::new();
-
-    for password in &attempts {
-        let config_copy = config.clone();
-        let start = Instant::now();
-        let _ = DecryptionEngine::unlock_with_password(config_copy, password);
-        times.push(start.elapsed());
-    }
-
-    // Calculate mean and variance
-    let mean_ns: u128 = times.iter().map(|t| t.as_nanos()).sum::<u128>() / times.len() as u128;
-    let variance: f64 = times
-        .iter()
-        .map(|t| (t.as_nanos() as f64 - mean_ns as f64).powi(2))
-        .sum::<f64>()
-        / times.len() as f64;
-
-    let std_dev = variance.sqrt();
-    let coefficient_of_variation = std_dev / mean_ns as f64;
-
-    // The coefficient of variation should be reasonably low
-    // (high variance would indicate timing leak)
-    // Note: This is a heuristic; actual timing attack prevention
-    // requires constant-time comparison in crypto code
-    println!(
-        "Timing test: mean={:.2}ms, std_dev={:.2}ms, cv={:.4}",
-        mean_ns as f64 / 1_000_000.0,
-        std_dev / 1_000_000.0,
-        coefficient_of_variation
-    );
-
-    // CV above 0.5 would be suspicious for constant-time operations
-    // but Argon2 time varies with system load, so we use a lenient threshold
-    assert!(
-        coefficient_of_variation < 1.0,
-        "Timing variance is suspiciously high (CV={:.4}), may indicate timing leak",
-        coefficient_of_variation
-    );
-}
-
-#[test]
-fn test_wrong_recovery_key_error() {
-    let temp_dir = TempDir::new().unwrap();
-    let archive_dir =
-        create_test_archive_with_recovery(temp_dir.path(), TEST_PASSWORD, TEST_RECOVERY_SECRET);
-
-    let config = load_config(&archive_dir).expect("Should load config");
-    let result = DecryptionEngine::unlock_with_recovery(config, &[0xEE; 32]);
-
-    assert!(result.is_err(), "Should fail with wrong recovery key");
-}
-
 // =============================================================================
 // Archive Format Error Tests
 // =============================================================================
@@ -216,104 +104,35 @@ fn test_wrong_recovery_key_error() {
 #[test]
 fn test_corrupted_config_header() {
     let temp_dir = TempDir::new().unwrap();
-    let archive_dir = create_test_archive(temp_dir.path(), TEST_PASSWORD);
+    let archive_dir = create_test_archive(temp_dir.path());
 
     // Corrupt the config.json
     let config_path = archive_dir.join("config.json");
     fs::write(&config_path, b"{ invalid json }").unwrap();
 
-    let result = load_config(&archive_dir);
+    let result = BundleBuilder::new().build(
+        archive_dir.as_path(),
+        temp_dir.path().join("bundle").as_path(),
+        |_, _| {},
+    );
     assert!(result.is_err(), "Should fail with corrupted config");
 }
 
 #[test]
-fn test_corrupted_ciphertext() {
+fn test_missing_payload_file() {
     let temp_dir = TempDir::new().unwrap();
-    let archive_dir = create_test_archive(temp_dir.path(), TEST_PASSWORD);
+    let archive_dir = create_test_archive(temp_dir.path());
 
-    // Find and corrupt a payload chunk
-    let payload_dir = archive_dir.join("payload");
-    let chunk_path = fs::read_dir(&payload_dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .find(|p| p.extension().map(|e| e == "bin").unwrap_or(false))
-        .expect("Should find a chunk");
+    // Remove the payload file referenced by config.json
+    fs::remove_file(archive_dir.join("payload").join("data.db")).unwrap();
 
-    let mut chunk_data = fs::read(&chunk_path).unwrap();
-    if !chunk_data.is_empty() {
-        // Flip bits in middle of chunk
-        let mid = chunk_data.len() / 2;
-        chunk_data[mid] ^= 0xFF;
-        fs::write(&chunk_path, &chunk_data).unwrap();
-    }
+    let result = BundleBuilder::new().build(
+        archive_dir.as_path(),
+        temp_dir.path().join("bundle").as_path(),
+        |_, _| {},
+    );
 
-    // Loading config should work
-    let config = load_config(&archive_dir).expect("Config should load");
-
-    // But decryption should fail due to tampered ciphertext
-    let decryptor = DecryptionEngine::unlock_with_password(config, TEST_PASSWORD)
-        .expect("Password should still work");
-
-    let decrypted_path = temp_dir.path().join("decrypted.db");
-    let result = decryptor.decrypt_to_file(&archive_dir, &decrypted_path, |_, _| {});
-
-    assert!(result.is_err(), "Should fail on corrupted ciphertext");
-}
-
-#[test]
-fn test_truncated_archive() {
-    let temp_dir = TempDir::new().unwrap();
-    let archive_dir = create_test_archive(temp_dir.path(), TEST_PASSWORD);
-
-    // Truncate a payload chunk
-    let payload_dir = archive_dir.join("payload");
-    let chunk_path = fs::read_dir(&payload_dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .find(|p| p.extension().map(|e| e == "bin").unwrap_or(false))
-        .expect("Should find a chunk");
-
-    let chunk_data = fs::read(&chunk_path).unwrap();
-    if chunk_data.len() > 10 {
-        fs::write(&chunk_path, &chunk_data[..chunk_data.len() / 2]).unwrap();
-    }
-
-    let config = load_config(&archive_dir).expect("Config should load");
-    let decryptor = DecryptionEngine::unlock_with_password(config, TEST_PASSWORD)
-        .expect("Password should work");
-
-    let decrypted_path = temp_dir.path().join("decrypted.db");
-    let result = decryptor.decrypt_to_file(&archive_dir, &decrypted_path, |_, _| {});
-
-    assert!(result.is_err(), "Should fail on truncated archive");
-}
-
-#[test]
-fn test_missing_chunk_file() {
-    let temp_dir = TempDir::new().unwrap();
-    let archive_dir = create_test_archive(temp_dir.path(), TEST_PASSWORD);
-
-    // Remove a payload chunk
-    let payload_dir = archive_dir.join("payload");
-    let chunk_path = fs::read_dir(&payload_dir)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .find(|p| p.extension().map(|e| e == "bin").unwrap_or(false))
-        .expect("Should find a chunk");
-
-    fs::remove_file(&chunk_path).unwrap();
-
-    let config = load_config(&archive_dir).expect("Config should load");
-    let decryptor = DecryptionEngine::unlock_with_password(config, TEST_PASSWORD)
-        .expect("Password should work");
-
-    let decrypted_path = temp_dir.path().join("decrypted.db");
-    let result = decryptor.decrypt_to_file(&archive_dir, &decrypted_path, |_, _| {});
-
-    assert!(result.is_err(), "Should fail on missing chunk");
+    assert!(result.is_err(), "Should fail on missing payload file");
 }
 
 #[test]
@@ -785,37 +604,10 @@ fn test_export_error_suggestions() {
 // =============================================================================
 
 #[test]
-fn test_error_chain_authentication_to_recovery() {
-    // Simulate: user enters wrong password, gets error, uses recovery key
-    let temp_dir = TempDir::new().unwrap();
-    let archive_dir =
-        create_test_archive_with_recovery(temp_dir.path(), TEST_PASSWORD, TEST_RECOVERY_SECRET);
-
-    // Step 1: Wrong password
-    let config = load_config(&archive_dir).unwrap();
-    let wrong_result = DecryptionEngine::unlock_with_password(config, "wrong-password");
-    assert!(wrong_result.is_err());
-
-    // Step 2: User sees helpful error message
-    match wrong_result {
-        Ok(_) => panic!("Should have failed"),
-        Err(e) => {
-            let err_msg = e.to_string();
-            assert!(!err_msg.is_empty(), "Error message should not be empty");
-        }
-    }
-
-    // Step 3: User uses recovery key instead
-    let config = load_config(&archive_dir).unwrap();
-    let recovery_result = DecryptionEngine::unlock_with_recovery(config, TEST_RECOVERY_SECRET);
-    assert!(recovery_result.is_ok(), "Recovery key should work");
-}
-
-#[test]
 fn test_graceful_degradation_corrupted_archive() {
     // Test that corruption is rejected gracefully with a useful error.
     let temp_dir = TempDir::new().unwrap();
-    let archive_dir = create_test_archive(temp_dir.path(), TEST_PASSWORD);
+    let archive_dir = create_test_archive(temp_dir.path());
 
     // Partially corrupt the archive
     let config_path = archive_dir.join("config.json");
@@ -825,92 +617,17 @@ fn test_graceful_degradation_corrupted_archive() {
     let modified = config_content.replace("\"version\"", "\"garbage_field\": true, \"version\"");
     fs::write(&config_path, modified).unwrap();
 
-    let err = load_config(&archive_dir).expect_err("corrupted config should be rejected");
-    let msg = err.to_string();
+    let err = BundleBuilder::new()
+        .build(
+            archive_dir.as_path(),
+            temp_dir.path().join("bundle").as_path(),
+            |_, _| {},
+        )
+        .expect_err("corrupted config should be rejected");
+    let msg = format!("{err:#}");
     assert!(
         msg.contains("unknown field") && msg.contains("garbage_field"),
         "Should surface the offending unexpected field cleanly: {msg}"
-    );
-}
-
-#[test]
-fn browser_lock_terminates_in_flight_crypto_before_reinitializing() {
-    let auth_js = include_str!("../src/pages_assets/auth.js");
-    let terminate_body = auth_js
-        .split_once("function terminateCryptoWorker()")
-        .expect("auth.js should define the crypto-worker termination boundary")
-        .1
-        .split_once("function resetCryptoWorker()")
-        .expect("worker termination should remain a bounded helper")
-        .0;
-    assert!(
-        terminate_body.contains("previousWorker.terminate();"),
-        "worker termination must cancel in-flight cryptographic work"
-    );
-
-    let reset_body = auth_js
-        .split_once("function resetCryptoWorker()")
-        .expect("auth.js should define the crypto-worker reset boundary")
-        .1
-        .split_once("function beginAppInitAttempt()")
-        .expect("worker reset should remain a bounded helper")
-        .0;
-    let terminate_offset = reset_body
-        .find("terminateCryptoWorker();")
-        .expect("worker reset must use the hard termination boundary");
-    let reinitialize_offset = reset_body
-        .find("initializeCryptoWorker();")
-        .expect("worker reset must create a clean replacement");
-    assert!(
-        terminate_offset < reinitialize_offset,
-        "the old worker must be terminated before its replacement is started"
-    );
-
-    let lock_body = auth_js
-        .split_once("async function lockArchive(options = {})")
-        .expect("auth.js should define lockArchive")
-        .1
-        .split_once("async function loadQrScannerLibrary()")
-        .expect("lockArchive should remain a bounded helper")
-        .0;
-    let reset_offset = lock_body
-        .find("const workerReady = resetCryptoWorker();")
-        .expect("locking must reset the crypto worker");
-    let clear_session_offset = lock_body
-        .find("window.cassSession = null;")
-        .expect("locking must clear the in-memory session key");
-    let first_await_offset = lock_body
-        .find("await closeQrScanner();")
-        .expect("locking should still close the QR scanner");
-    assert!(
-        reset_offset < first_await_offset,
-        "worker termination must happen synchronously before lockArchive yields"
-    );
-    assert!(
-        clear_session_offset < first_await_offset,
-        "the in-memory session key must be cleared before lockArchive yields"
-    );
-    assert!(
-        !auth_js.contains("postMessage({ type: 'CLEAR_KEYS' })"),
-        "a queued CLEAR_KEYS message is not a cancellation boundary"
-    );
-
-    let unlock_success_body = auth_js
-        .split_once("function handleUnlockSuccess(data)")
-        .expect("auth.js should define the successful-unlock transition")
-        .1
-        .split_once("function handleUnlockFailed(data)")
-        .expect("successful unlock should remain a bounded helper")
-        .0;
-    let clear_password_offset = unlock_success_body
-        .find("elements.passwordInput.value = \"\";")
-        .expect("a successful unlock must erase the password input");
-    let persist_session_offset = unlock_success_body
-        .find("persistSession(data.dek);")
-        .expect("successful unlock should still establish the configured session");
-    assert!(
-        clear_password_offset < persist_session_offset,
-        "the plaintext password must not remain in the DOM for the unlocked session"
     );
 }
 

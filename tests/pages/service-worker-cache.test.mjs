@@ -453,8 +453,8 @@ test("installation still preloads the complete runtime and leaves older generati
   const f = fixture(t); f.seed("old.enc", "keep until activation", f.prefix + "v7");
   await f.install();
   const urls = [...f.stores.get(f.name).keys()];
-  for (const path of ["index.html", "auth.js", "database.js", "conversation.js", "crypto_worker.js",
-    "vendor/sqlite3.mjs", "vendor/sqlite3.wasm", "vendor/argon2.wasm"]) {
+  for (const path of ["index.html", "auth.js", "database.js", "conversation.js", "session.js",
+    "vendor/sqlite3.mjs", "vendor/sqlite3.wasm", "vendor/sqlite3-opfs-async-proxy.js"]) {
     assert.ok(urls.includes(scope + path), path);
   }
   assert.ok(f.stores.has(f.prefix + "v7"));

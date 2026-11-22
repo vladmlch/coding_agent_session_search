@@ -232,7 +232,7 @@ check_help() {
     fi
 
     # Test subcommand help
-    local subcommands=("search" "index" "export" "tui" "health")
+    local subcommands=("search" "index" "export" "health")
     for cmd in "${subcommands[@]}"; do
         if "$binary" "$cmd" --help &>/dev/null; then
             log_pass "Subcommand '$cmd' has help"

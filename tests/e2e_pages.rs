@@ -1,7 +1,7 @@
 //! End-to-end integration tests for the Pages export pipeline (P6.5).
 //!
 //! This module validates the complete workflow:
-//! - Export → Encrypt → Bundle → Verify → Decrypt
+//! - Export → Stage (unencrypted) → Bundle → Verify → Read payload
 //!
 //! # Running
 //!
@@ -13,14 +13,16 @@
 //! RUST_LOG=debug cargo test --test e2e_pages -- --nocapture
 //!
 //! # Run specific test
-//! cargo test --test e2e_pages test_full_export_pipeline_password_only
+//! cargo test --test e2e_pages test_full_export_pipeline_unencrypted
 //! ```
 
 use coding_agent_search::franken_sync::compat::ConnectionExt;
 use coding_agent_search::franken_sync::{Connection, params as fparams};
 use coding_agent_search::model::types::{Agent, AgentKind};
-use coding_agent_search::pages::bundle::{BundleBuilder, BundleResult};
-use coding_agent_search::pages::encrypt::{DecryptionEngine, EncryptionEngine, load_config};
+use coding_agent_search::pages::bundle::{
+    BundleBuilder, BundleResult, UnencryptedConfig, UnencryptedPayload,
+};
+use coding_agent_search::pages::confirmation::UNENCRYPTED_ACK_PHRASE;
 use coding_agent_search::pages::export::{ExportEngine, ExportFilter, PathMode};
 use coding_agent_search::pages::verify::verify_bundle;
 use coding_agent_search::storage::sqlite::FrankenStorage;
@@ -46,10 +48,8 @@ use util::e2e_log::PhaseTracker;
 // Test Constants
 // =============================================================================
 
-// ubs:ignore — test-only credential for TempDir-backed encrypted bundle fixtures.
-const TEST_PASSWORD: &str = "test-password-123!";
-const TEST_RECOVERY_SECRET: &[u8] = b"recovery-secret-32bytes-padding!";
-const CHUNK_SIZE: usize = 1024 * 1024; // 1 MB chunks
+/// File name of the staged unencrypted SQLite payload (matches the CLI producer).
+const PAYLOAD_NAME: &str = "data.db";
 
 // =============================================================================
 // E2E Logger Support
@@ -243,12 +243,6 @@ fn write_pages_config(path: &Path, output_dir: &Path) {
         "filters": {
             "path_mode": "relative"
         },
-        "encryption": {
-            "password": TEST_PASSWORD,
-            "generate_recovery": true,
-            "generate_qr": false,
-            "chunk_size": CHUNK_SIZE
-        },
         "bundle": {
             "title": "CLI E2E Archive",
             "description": "Full CLI pages export workflow",
@@ -329,6 +323,15 @@ fn inject_test_secret(db_path: &Path) {
     .expect("inject staged-scan fixture secret");
 }
 
+/// Resolve the bundled payload through the site's unencrypted `config.json`.
+fn bundled_payload_path(site_dir: &Path) -> PathBuf {
+    let config_bytes = fs::read(site_dir.join("config.json")).expect("read site config.json");
+    let config: UnencryptedConfig =
+        serde_json::from_slice(&config_bytes).expect("parse unencrypted site config.json");
+    assert!(!config.encrypted, "Pages bundles are unencrypted-only");
+    site_dir.join(config.payload.path)
+}
+
 /// Build the complete pipeline and return artifacts.
 struct PipelineArtifacts {
     export_db_path: std::path::PathBuf,
@@ -336,11 +339,7 @@ struct PipelineArtifacts {
     _temp_dir: TempDir, // Keep alive for duration of test
 }
 
-fn build_full_pipeline(
-    conversation_count: usize,
-    include_password: bool,
-    include_recovery: bool,
-) -> PipelineArtifacts {
+fn build_full_pipeline(conversation_count: usize) -> PipelineArtifacts {
     let tracker = tracker_for("build_full_pipeline");
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let data_dir = temp_dir.path().join("data");
@@ -386,46 +385,44 @@ fn build_full_pipeline(
         start,
     );
 
-    // Step 3: Encrypt
-    let start = tracker.start("encrypt", Some("Encrypt exported database with AES-GCM"));
-    let encrypt_dir = temp_dir.path().join("encrypt_staging");
-    let mut enc_engine = EncryptionEngine::new(CHUNK_SIZE).expect("valid chunk size");
-
-    if include_password {
-        enc_engine
-            .add_password_slot(TEST_PASSWORD)
-            .expect("Failed to add password slot");
-    }
-
-    if include_recovery {
-        enc_engine
-            .add_recovery_slot(TEST_RECOVERY_SECRET)
-            .expect("Failed to add recovery slot");
-    }
-
-    let _enc_config = enc_engine
-        .encrypt_file(&export_db_path, &encrypt_dir, |_, _| {})
-        .expect("Encryption failed");
+    // Step 3: Stage the unencrypted payload and its config.json
+    let start = tracker.start("stage", Some("Stage unencrypted payload and config.json"));
+    let source_dir = temp_dir.path().join("unencrypted_staging");
+    let payload_dir = source_dir.join("payload");
+    fs::create_dir_all(&payload_dir).expect("Failed to create payload staging");
+    let staged_payload = payload_dir.join(PAYLOAD_NAME);
+    fs::copy(&export_db_path, &staged_payload).expect("Failed to stage payload");
+    let payload_size = fs::metadata(&staged_payload)
+        .expect("stat staged payload")
+        .len();
+    let config = UnencryptedConfig {
+        encrypted: false,
+        version: "1.0.0".to_string(),
+        payload: UnencryptedPayload {
+            path: format!("payload/{PAYLOAD_NAME}"),
+            format: "sqlite".to_string(),
+            size_bytes: Some(payload_size),
+        },
+        warning: Some("UNENCRYPTED".to_string()),
+    };
+    fs::write(
+        source_dir.join("config.json"),
+        serde_json::to_vec_pretty(&config).expect("serialize config.json"),
+    )
+    .expect("Failed to write config.json");
     tracker.end(
-        "encrypt",
-        Some("Encrypt exported database with AES-GCM"),
+        "stage",
+        Some("Stage unencrypted payload and config.json"),
         start,
     );
 
     // Step 4: Bundle
     let start = tracker.start("bundle", Some("Create local web bundle"));
     let bundle_dir = temp_dir.path().join("bundle");
-    let mut builder = BundleBuilder::new()
+    let bundle = BundleBuilder::new()
         .title("E2E Test Archive")
         .description("Test archive for integration tests")
-        .generate_qr(false);
-
-    if include_recovery {
-        builder = builder.recovery_secret(Some(TEST_RECOVERY_SECRET.to_vec()));
-    }
-
-    let bundle = builder
-        .build(&encrypt_dir, &bundle_dir, |_, _| {})
+        .build(&source_dir, &bundle_dir, |_, _| {})
         .expect("Bundle failed");
     tracker.end("bundle", Some("Create local web bundle"), start);
 
@@ -439,17 +436,17 @@ fn build_full_pipeline(
 }
 
 // =============================================================================
-// Test: Full Export Pipeline (Password Only)
+// Test: Full Export Pipeline (Unencrypted)
 // =============================================================================
 
-/// Test the complete export pipeline with password-only authentication.
+/// Test the complete unencrypted export pipeline.
 #[test]
-fn test_full_export_pipeline_password_only() {
-    let tracker = tracker_for("test_full_export_pipeline_password_only");
+fn test_full_export_pipeline_unencrypted() {
+    let tracker = tracker_for("test_full_export_pipeline_unencrypted");
     let test_start = Instant::now();
-    eprintln!("{{\"test\":\"test_full_export_pipeline_password_only\",\"status\":\"START\"}}");
+    eprintln!("{{\"test\":\"test_full_export_pipeline_unencrypted\",\"status\":\"START\"}}");
 
-    let artifacts = build_full_pipeline(5, true, false);
+    let artifacts = build_full_pipeline(5);
 
     // Verify bundle structure
     let verify_start = tracker.start("verify_structure", Some("Validate bundle artifacts exist"));
@@ -465,15 +462,27 @@ fn test_full_export_pipeline_password_only() {
         "payload directory should exist"
     );
 
-    // Verify config.json has single key slot
+    // Verify config.json describes the unencrypted SQLite payload
     let config_str = fs::read_to_string(site.join("config.json")).expect("read config");
     let config: serde_json::Value = serde_json::from_str(&config_str).expect("parse config");
-    let slots = config.get("key_slots").expect("key_slots field");
-    assert_eq!(slots.as_array().unwrap().len(), 1, "Should have 1 key slot");
     assert_eq!(
-        slots[0].get("kdf").unwrap().as_str().unwrap(),
-        "argon2id",
-        "Should use argon2id KDF"
+        config["encrypted"].as_bool(),
+        Some(false),
+        "Bundle config should be unencrypted"
+    );
+    assert_eq!(
+        config["payload"]["format"].as_str(),
+        Some("sqlite"),
+        "Payload should be a SQLite database"
+    );
+    assert_eq!(
+        bundled_payload_path(site),
+        site.join("payload").join(PAYLOAD_NAME),
+        "config.json should point at the bundled payload"
+    );
+    assert!(
+        site.join("payload").join(PAYLOAD_NAME).is_file(),
+        "bundled payload database should exist"
     );
 
     tracker.end(
@@ -483,154 +492,45 @@ fn test_full_export_pipeline_password_only() {
     );
     tracker.flush();
     eprintln!(
-        "{{\"test\":\"test_full_export_pipeline_password_only\",\"duration_ms\":{},\"status\":\"PASS\"}}",
+        "{{\"test\":\"test_full_export_pipeline_unencrypted\",\"duration_ms\":{},\"status\":\"PASS\"}}",
         test_start.elapsed().as_millis()
     );
 }
 
 // =============================================================================
-// Test: Full Export Pipeline (Password + Recovery)
+// Test: Payload Integrity Roundtrip
 // =============================================================================
 
-/// Test the complete export pipeline with dual authentication (password + recovery).
+/// Test that the bundled payload matches the original export database.
 #[test]
-fn test_full_export_pipeline_dual_auth() {
-    let start = Instant::now();
-    eprintln!("{{\"test\":\"test_full_export_pipeline_dual_auth\",\"status\":\"START\"}}");
-
-    let artifacts = build_full_pipeline(3, true, true);
-
-    // Verify config.json has two key slots
-    let site = &artifacts.bundle.site_dir;
-    let config_str = fs::read_to_string(site.join("config.json")).expect("read config");
-    let config: serde_json::Value = serde_json::from_str(&config_str).expect("parse config");
-    let slots = config.get("key_slots").expect("key_slots field");
-    let slots_arr = slots.as_array().unwrap();
-    assert_eq!(slots_arr.len(), 2, "Should have 2 key slots");
-
-    // Verify first slot is password (argon2id)
-    assert_eq!(
-        slots_arr[0].get("kdf").unwrap().as_str().unwrap(),
-        "argon2id"
-    );
-
-    // Verify second slot is recovery (hkdf-sha256)
-    assert_eq!(
-        slots_arr[1].get("kdf").unwrap().as_str().unwrap(),
-        "hkdf-sha256"
-    );
-
-    // Verify private directory has recovery secret
-    assert!(
-        artifacts
-            .bundle
-            .private_dir
-            .join("recovery-secret.txt")
-            .exists(),
-        "recovery-secret.txt should exist"
-    );
-
-    eprintln!(
-        "{{\"test\":\"test_full_export_pipeline_dual_auth\",\"duration_ms\":{},\"status\":\"PASS\"}}",
-        start.elapsed().as_millis()
-    );
-}
-
-// =============================================================================
-// Test: Integrity and Decrypt Roundtrip
-// =============================================================================
-
-/// Test that decrypted payload matches original export database.
-#[test]
-fn test_integrity_decrypt_roundtrip_password() {
-    let tracker = tracker_for("test_integrity_decrypt_roundtrip_password");
+fn test_integrity_payload_roundtrip() {
+    let tracker = tracker_for("test_integrity_payload_roundtrip");
     let test_start = Instant::now();
-    eprintln!("{{\"test\":\"test_integrity_decrypt_roundtrip_password\",\"status\":\"START\"}}");
+    eprintln!("{{\"test\":\"test_integrity_payload_roundtrip\",\"status\":\"START\"}}");
 
-    let temp_dir = TempDir::new().unwrap();
-    let artifacts = build_full_pipeline(2, true, true);
-
-    // Decrypt with password
-    let decrypt_start = tracker.start(
-        "decrypt_password",
-        Some("Decrypt payload using password-derived key"),
-    );
-    let config = load_config(&artifacts.bundle.site_dir).expect("load config");
-    let decryptor =
-        DecryptionEngine::unlock_with_password(config, TEST_PASSWORD).expect("unlock password");
-    let decrypted_path = temp_dir.path().join("decrypted_password.db");
-    decryptor
-        .decrypt_to_file(&artifacts.bundle.site_dir, &decrypted_path, |_, _| {})
-        .expect("decrypt with password");
-
-    // Verify bytes match
-    let original = fs::read(&artifacts.export_db_path).expect("read original");
-    let decrypted = fs::read(&decrypted_path).expect("read decrypted");
-    assert_eq!(
-        original, decrypted,
-        "Decrypted content should match original"
-    );
-
-    tracker.end(
-        "decrypt_password",
-        Some("Decrypt payload using password-derived key"),
-        decrypt_start,
-    );
-    tracker.flush();
-    eprintln!(
-        "{{\"test\":\"test_integrity_decrypt_roundtrip_password\",\"duration_ms\":{},\"status\":\"PASS\"}}",
-        test_start.elapsed().as_millis()
-    );
-}
-
-/// Test that decrypted payload matches original using recovery key.
-#[test]
-fn test_integrity_decrypt_roundtrip_recovery() {
-    let tracker = tracker_for("test_integrity_decrypt_roundtrip_recovery");
-    let test_start = Instant::now();
-    eprintln!("{{\"test\":\"test_integrity_decrypt_roundtrip_recovery\",\"status\":\"START\"}}");
-
-    let temp_dir = TempDir::new().unwrap();
-    let artifacts = build_full_pipeline(2, true, true);
-
-    // Decrypt with recovery key
-    let decrypt_start = tracker.start(
-        "decrypt_recovery",
-        Some("Decrypt payload using recovery secret"),
-    );
-    let config = load_config(&artifacts.bundle.site_dir).expect("load config");
-    let decryptor = DecryptionEngine::unlock_with_recovery(config, TEST_RECOVERY_SECRET)
-        .expect("unlock recovery");
-    let decrypted_path = temp_dir.path().join("decrypted_recovery.db");
-    decryptor
-        .decrypt_to_file(&artifacts.bundle.site_dir, &decrypted_path, |_, _| {})
-        .expect("decrypt with recovery");
-    tracker.end(
-        "decrypt_recovery",
-        Some("Decrypt payload using recovery secret"),
-        decrypt_start,
-    );
+    let artifacts = build_full_pipeline(2);
 
     // Verify bytes match
     let verify_start = tracker.start(
         "verify_content",
-        Some("Compare decrypted content with original"),
+        Some("Compare bundled payload with original"),
     );
     let original = fs::read(&artifacts.export_db_path).expect("read original");
-    let decrypted = fs::read(&decrypted_path).expect("read decrypted");
+    let bundled =
+        fs::read(bundled_payload_path(&artifacts.bundle.site_dir)).expect("read bundled payload");
     assert_eq!(
-        original, decrypted,
-        "Decrypted content should match original"
+        original, bundled,
+        "Bundled payload content should match original"
     );
     tracker.end(
         "verify_content",
-        Some("Compare decrypted content with original"),
+        Some("Compare bundled payload with original"),
         verify_start,
     );
 
     tracker.flush();
     eprintln!(
-        "{{\"test\":\"test_integrity_decrypt_roundtrip_recovery\",\"duration_ms\":{},\"status\":\"PASS\"}}",
+        "{{\"test\":\"test_integrity_payload_roundtrip\",\"duration_ms\":{},\"status\":\"PASS\"}}",
         test_start.elapsed().as_millis()
     );
 }
@@ -639,14 +539,14 @@ fn test_integrity_decrypt_roundtrip_recovery() {
 // Test: Tampering Detection
 // =============================================================================
 
-/// Test that tampering with a chunk fails authentication.
+/// Test that tampering with the bundled payload fails verification.
 #[test]
-fn test_tampering_fails_authentication() {
-    let tracker = tracker_for("test_tampering_fails_authentication");
+fn test_tampering_fails_verification() {
+    let tracker = tracker_for("test_tampering_fails_verification");
     let test_start = Instant::now();
-    eprintln!("{{\"test\":\"test_tampering_fails_authentication\",\"status\":\"START\"}}");
+    eprintln!("{{\"test\":\"test_tampering_fails_verification\",\"status\":\"START\"}}");
 
-    let artifacts = build_full_pipeline(2, true, false);
+    let artifacts = build_full_pipeline(2);
     let site_dir = &artifacts.bundle.site_dir;
 
     // Baseline: verify passes
@@ -662,22 +562,16 @@ fn test_tampering_fails_authentication() {
         phase_start,
     );
 
-    // Find and corrupt a payload chunk
+    // Corrupt the bundled payload
     let phase_start = tracker.start(
-        "corrupt_chunk",
-        Some("Modify payload chunk to simulate tampering"),
+        "corrupt_payload",
+        Some("Modify payload database to simulate tampering"),
     );
-    let payload_dir = site_dir.join("payload");
-    let chunk = fs::read_dir(&payload_dir)
-        .unwrap()
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path())
-        .find(|path| path.extension().map(|e| e == "bin").unwrap_or(false))
-        .expect("payload chunk");
-    fs::write(&chunk, b"corrupted payload data").expect("corrupt chunk");
+    let payload = bundled_payload_path(site_dir);
+    fs::write(&payload, b"corrupted payload data").expect("corrupt payload");
     tracker.end(
-        "corrupt_chunk",
-        Some("Modify payload chunk to simulate tampering"),
+        "corrupt_payload",
+        Some("Modify payload database to simulate tampering"),
         phase_start,
     );
 
@@ -699,7 +593,7 @@ fn test_tampering_fails_authentication() {
 
     tracker.flush();
     eprintln!(
-        "{{\"test\":\"test_tampering_fails_authentication\",\"duration_ms\":{},\"status\":\"PASS\"}}",
+        "{{\"test\":\"test_tampering_fails_verification\",\"duration_ms\":{},\"status\":\"PASS\"}}",
         test_start.elapsed().as_millis()
     );
 }
@@ -716,7 +610,7 @@ fn test_cli_verify_command() {
     let test_start = Instant::now();
     eprintln!("{{\"test\":\"test_cli_verify_command\",\"status\":\"START\"}}");
 
-    let artifacts = build_full_pipeline(1, true, false);
+    let artifacts = build_full_pipeline(1);
 
     // Run cass pages --verify
     let phase_start = tracker.start("cli_verify", Some("Execute cass pages --verify command"));
@@ -743,7 +637,7 @@ fn test_cli_verify_command() {
 }
 
 /// Test the full user-facing CLI pages flow:
-/// config-driven export -> CLI verify -> CLI preview -> decrypt roundtrip.
+/// config-driven export -> CLI verify -> CLI preview -> payload roundtrip.
 #[test]
 fn test_cli_pages_full_workflow_end_to_end() {
     let tracker = tracker_for("test_cli_pages_full_workflow_end_to_end");
@@ -764,7 +658,7 @@ fn test_cli_pages_full_workflow_end_to_end() {
         Some("Run cass pages --config end-to-end export"),
     );
     // Release validation can use a published producer while this test keeps
-    // the candidate's decryption library and preview server. Ordinary runs
+    // the candidate's verifier, payload reader and preview server. Ordinary runs
     // still exercise the candidate end to end; no external binary is required.
     // Read the test launcher's override without loading .env into a running
     // parallel test process or rejecting non-Unicode executable paths.
@@ -802,7 +696,6 @@ fn test_cli_pages_full_workflow_end_to_end() {
         serde_json::from_slice(&export_output.stdout).expect("parse pages export JSON");
     assert_eq!(export_json["status"].as_str(), Some("success"));
     assert_eq!(export_json["stats"]["conversations"].as_u64(), Some(4));
-    assert_eq!(export_json["encryption"]["enabled"].as_bool(), Some(true));
     assert_eq!(export_json["secret_scan"]["complete"].as_bool(), Some(true));
     assert_eq!(
         export_json["secret_scan"]["approval_state"].as_str(),
@@ -832,8 +725,8 @@ fn test_cli_pages_full_workflow_end_to_end() {
         "site bundle should exist"
     );
     assert!(
-        private_dir.join("recovery-secret.txt").exists(),
-        "private recovery secret should exist"
+        private_dir.join("unencrypted-warning.txt").exists(),
+        "private unencrypted-archive notice should exist"
     );
     assert!(
         !bundle_dir.join("payload").exists(),
@@ -931,32 +824,12 @@ fn test_cli_pages_full_workflow_end_to_end() {
     );
 
     let phase_start = tracker.start(
-        "decrypt_roundtrip",
-        Some("Decrypt CLI-generated bundle and compare contents"),
+        "payload_roundtrip",
+        Some("Read CLI-generated payload and compare contents"),
     );
-    let config = load_config(&site_dir).expect("load generated config");
-    let params = config
-        .key_slots
-        .iter()
-        .find_map(|slot| slot.argon2_params.as_ref())
-        .expect("CLI export has a password slot");
-    assert_eq!(
-        (params.memory_kb, params.iterations, params.parallelism),
-        (65536, 3, 4),
-        "CLI export must use production Argon2 parameters"
-    );
-    assert!(
-        DecryptionEngine::unlock_with_password(config.clone(), "incorrect-pages-password").is_err(),
-        "a wrong password must not unlock the CLI-generated bundle"
-    );
-    let decryptor = DecryptionEngine::unlock_with_password(config, TEST_PASSWORD)
-        .expect("unlock CLI-generated bundle");
-    let decrypted_path = temp_dir.path().join("cli-decrypted.db");
-    decryptor
-        .decrypt_to_file(&site_dir, &decrypted_path, |_, _| {})
-        .expect("decrypt CLI-generated bundle");
-    let conn =
-        Connection::open(decrypted_path.to_string_lossy().as_ref()).expect("open decrypted db");
+    let payload_copy = temp_dir.path().join("cli-payload.db");
+    fs::copy(bundled_payload_path(&site_dir), &payload_copy).expect("copy CLI-generated payload");
+    let conn = Connection::open(payload_copy.to_string_lossy().as_ref()).expect("open payload db");
     use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
     let conversation_count: i64 = conn
         .query_row_map(
@@ -964,14 +837,14 @@ fn test_cli_pages_full_workflow_end_to_end() {
             &[],
             |row: &coding_agent_search::franken_sync::Row| row.get_typed(0),
         )
-        .expect("count decrypted conversations");
+        .expect("count payload conversations");
     let message_count: i64 = conn
         .query_row_map(
             "SELECT COUNT(*) FROM messages",
             &[],
             |row: &coding_agent_search::franken_sync::Row| row.get_typed(0),
         )
-        .expect("count decrypted messages");
+        .expect("count payload messages");
     assert_eq!(
         conversation_count, 4,
         "CLI-generated bundle should export all conversations"
@@ -981,8 +854,8 @@ fn test_cli_pages_full_workflow_end_to_end() {
         "CLI-generated bundle must retain every message"
     );
     tracker.end(
-        "decrypt_roundtrip",
-        Some("Decrypt CLI-generated bundle and compare contents"),
+        "payload_roundtrip",
+        Some("Read CLI-generated payload and compare contents"),
         phase_start,
     );
 
@@ -1129,39 +1002,24 @@ fn test_pages_wizard_pty_respects_db_override_and_writes_bundle_root() {
         "did not observe pages wizard startup output"
     );
 
-    let strong_password = TEST_PASSWORD;
+    wait_for_prompt(&captured, "Your input (or \"cancel\" to abort)");
+    send_line_and_wait(
+        &mut *writer,
+        &captured,
+        UNENCRYPTED_ACK_PHRASE,
+        "acknowledging unencrypted export",
+    );
+    wait_for_prompt(
+        &captured,
+        "Are you ABSOLUTELY SURE you want to export WITHOUT encryption?",
+    );
+    send_confirm_yes_and_wait(&mut *writer, &captured, "confirming unencrypted export");
     wait_for_prompt(&captured, "Which agents would you like to include?");
     send_line_and_wait(&mut *writer, &captured, "", "accepting all agents");
     wait_for_prompt(&captured, "Include all workspaces?");
     send_line_and_wait(&mut *writer, &captured, "", "including all workspaces");
     wait_for_prompt(&captured, "Time range");
     send_line_and_wait(&mut *writer, &captured, "", "keeping all-time range");
-    wait_for_prompt(&captured, "Archive password (min 8 characters)");
-    send_line_and_wait(
-        &mut *writer,
-        &captured,
-        strong_password,
-        "entering password",
-    );
-    wait_for_prompt(&captured, "Confirm password");
-    send_line_and_wait(
-        &mut *writer,
-        &captured,
-        strong_password,
-        "confirming password",
-    );
-    wait_for_prompt(&captured, "Generate recovery secret? (recommended)");
-    send_line_and_wait(
-        &mut *writer,
-        &captured,
-        "",
-        "accepting recovery key generation",
-    );
-    wait_for_prompt(
-        &captured,
-        "Generate QR code for recovery? (for mobile access)",
-    );
-    send_line_and_wait(&mut *writer, &captured, "", "skipping QR generation");
     wait_for_prompt(&captured, "Archive title");
     send_line_and_wait(&mut *writer, &captured, "", "accepting default title");
     wait_for_prompt(&captured, "Description (shown on unlock page)");
@@ -1195,11 +1053,6 @@ fn test_pages_wizard_pty_respects_db_override_and_writes_bundle_root() {
     );
     wait_for_prompt(&captured, "Have you reviewed the content summary?");
     send_confirm_yes_and_wait(&mut *writer, &captured, "confirming content review");
-    wait_for_prompt(
-        &captured,
-        "I understand that I must save the recovery key securely",
-    );
-    send_confirm_yes_and_wait(&mut *writer, &captured, "confirming recovery key backup");
     wait_for_prompt(&captured, "[First confirmation - press Enter]");
     send_line_and_wait(&mut *writer, &captured, "", "first final confirmation");
     wait_for_prompt(&captured, "[Second confirmation - press Enter to proceed]");
@@ -1248,9 +1101,9 @@ fn test_pages_wizard_pty_respects_db_override_and_writes_bundle_root() {
     assert!(
         wizard_output
             .join("private")
-            .join("recovery-secret.txt")
+            .join("unencrypted-warning.txt")
             .exists(),
-        "wizard should place private recovery artifacts under the requested output root"
+        "wizard should place private artifacts under the requested output root"
     );
     assert!(
         !wizard_output.join("payload").exists(),
@@ -1272,15 +1125,11 @@ fn test_pages_wizard_pty_respects_db_override_and_writes_bundle_root() {
         captured_output
     );
 
-    let config = load_config(&site_dir).expect("load wizard-generated config");
-    let decryptor = DecryptionEngine::unlock_with_password(config, strong_password)
-        .expect("unlock wizard-generated bundle");
-    let decrypted_path = temp_dir.path().join("wizard-decrypted.db");
-    decryptor
-        .decrypt_to_file(&site_dir, &decrypted_path, |_, _| {})
-        .expect("decrypt wizard-generated bundle");
-    let conn = Connection::open(decrypted_path.to_string_lossy().as_ref())
-        .expect("open wizard decrypted db");
+    let payload_copy = temp_dir.path().join("wizard-payload.db");
+    fs::copy(bundled_payload_path(&site_dir), &payload_copy)
+        .expect("copy wizard-generated payload");
+    let conn =
+        Connection::open(payload_copy.to_string_lossy().as_ref()).expect("open wizard payload db");
     use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
     let conversation_count: i64 = conn
         .query_row_map(
@@ -1288,14 +1137,14 @@ fn test_pages_wizard_pty_respects_db_override_and_writes_bundle_root() {
             &[],
             |row: &coding_agent_search::franken_sync::Row| row.get_typed(0),
         )
-        .expect("count wizard decrypted conversations");
+        .expect("count wizard payload conversations");
     let message_count: i64 = conn
         .query_row_map(
             "SELECT COUNT(*) FROM messages",
             &[],
             |row: &coding_agent_search::franken_sync::Row| row.get_typed(0),
         )
-        .expect("count wizard decrypted messages");
+        .expect("count wizard payload messages");
     assert_eq!(
         conversation_count, 2,
         "wizard bundle should contain the conversations from the overridden --db"
@@ -1313,40 +1162,39 @@ fn test_pages_wizard_pty_respects_db_override_and_writes_bundle_root() {
 }
 
 // =============================================================================
-// Test: Search in Decrypted Archive
+// Test: Search in Bundled Archive
 // =============================================================================
 
-/// Test that we can query the decrypted export database.
+/// Test that we can query the bundled export database.
 #[test]
-fn test_search_in_decrypted_archive() {
-    let tracker = tracker_for("test_search_in_decrypted_archive");
+fn test_search_in_bundled_archive() {
+    let tracker = tracker_for("test_search_in_bundled_archive");
     let test_start = Instant::now();
-    eprintln!("{{\"test\":\"test_search_in_decrypted_archive\",\"status\":\"START\"}}");
+    eprintln!("{{\"test\":\"test_search_in_bundled_archive\",\"status\":\"START\"}}");
 
     let temp_dir = TempDir::new().unwrap();
-    let artifacts = build_full_pipeline(5, true, false);
+    let artifacts = build_full_pipeline(5);
 
-    // Decrypt
-    let phase_start = tracker.start("decrypt", Some("Decrypt payload to SQLite database"));
-    let config = load_config(&artifacts.bundle.site_dir).expect("load config");
-    let decryptor = DecryptionEngine::unlock_with_password(config, TEST_PASSWORD).expect("unlock");
-    let decrypted_path = temp_dir.path().join("decrypted.db");
-    decryptor
-        .decrypt_to_file(&artifacts.bundle.site_dir, &decrypted_path, |_, _| {})
-        .expect("decrypt");
+    // Copy the bundled payload out of the site
+    let phase_start = tracker.start("read_payload", Some("Copy bundled SQLite payload"));
+    let payload_copy = temp_dir.path().join("payload.db");
+    fs::copy(
+        bundled_payload_path(&artifacts.bundle.site_dir),
+        &payload_copy,
+    )
+    .expect("copy bundled payload");
     tracker.end(
-        "decrypt",
-        Some("Decrypt payload to SQLite database"),
+        "read_payload",
+        Some("Copy bundled SQLite payload"),
         phase_start,
     );
 
     // Open the export database directly (it has a different schema than the main DB)
     let phase_start = tracker.start(
         "query_database",
-        Some("Query decrypted database to verify schema"),
+        Some("Query bundled database to verify schema"),
     );
-    let conn =
-        Connection::open(decrypted_path.to_string_lossy().as_ref()).expect("open decrypted db");
+    let conn = Connection::open(payload_copy.to_string_lossy().as_ref()).expect("open payload db");
 
     use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
 
@@ -1381,13 +1229,13 @@ fn test_search_in_decrypted_archive() {
     assert_eq!(schema_version, "1", "Export schema version should be 1");
     tracker.end(
         "query_database",
-        Some("Query decrypted database to verify schema"),
+        Some("Query bundled database to verify schema"),
         phase_start,
     );
 
     tracker.flush();
     eprintln!(
-        "{{\"test\":\"test_search_in_decrypted_archive\",\"duration_ms\":{},\"status\":\"PASS\"}}",
+        "{{\"test\":\"test_search_in_bundled_archive\",\"duration_ms\":{},\"status\":\"PASS\"}}",
         test_start.elapsed().as_millis()
     );
 }
@@ -2049,8 +1897,8 @@ fn test_prepublish_summary_render() {
         "Should have security section"
     );
     assert!(
-        rendered.contains("AES-256-GCM"),
-        "Should show encryption algorithm"
+        rendered.contains("Encryption: none"),
+        "Should show that the archive is unencrypted"
     );
     tracker.end(
         "verify_render",

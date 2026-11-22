@@ -14,8 +14,9 @@
 //!   2. **`--agent X` projects only matching hits.** Agents pass user-
 //!      supplied agent names verbatim; a regression that quietly stops
 //!      filtering would mix corpora across providers and silently break
-//!      downstream automation. Locked against the fixture's known
-//!      `aider`-only contents.
+//!      downstream automation. Locked against a freshly indexed archive
+//!      holding only `codex` sessions (the checked-in demo fixture's rows
+//!      carry a connector slug that is no longer a valid `--agent` value).
 //!
 //!   3. **Invalid agent names are typed usage errors.** A misspelled or
 //!      unsupported name must fail with `unknown-agent`, exit 2, rather
@@ -30,8 +31,9 @@
 //!      monotonicity (e.g., inclusive/exclusive boundary inversion) is
 //!      caught immediately.
 //!
-//! Verified against the checked-in `search_demo_data` fixture with the
-//! query `"the"` (yields 2 aider hits). The fixture's age is "before
+//! The limit, absent-agent and days invariants are verified against the
+//! checked-in `search_demo_data` fixture with the query `"the"` (yields 2
+//! hits of archived legacy `aider` rows). The fixture's age is "before
 //! today", which the monotonicity test relies on (`--days 1` returns 0
 //! hits; `--days 36500` returns the full set).
 
@@ -148,15 +150,102 @@ fn search_limit_0_returns_all_available_hits_not_empty_set() -> TestResult {
     Ok(())
 }
 
+/// A `cass` command confined to `home`: no ambient sources config, no
+/// background refresh, and every connector default root under `home`.
+fn isolated_cass(home: &Path) -> Result<Command, Box<dyn Error>> {
+    let mut cmd = Command::cargo_bin("cass")?;
+    cmd.current_dir(home)
+        .env("HOME", home)
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("CODEX_HOME", home.join(".codex"))
+        .env("CASS_IGNORE_SOURCES_CONFIG", "1")
+        .env("CASS_AUTO_REFRESH", "0")
+        .env("RUST_LOG", "error")
+        .env_remove("CASS_DB_PATH");
+    Ok(cmd)
+}
+
+/// Seed one Codex rollout under `<home>/.codex` and index it into
+/// `<home>/archive` through the real CLI, returning the archive directory.
+/// The rollout file name must start with `rollout-` or the Codex connector
+/// skips it.
+fn index_codex_archive(home: &Path) -> Result<PathBuf, Box<dyn Error>> {
+    let sessions = home.join(".codex/sessions/2024/04/24");
+    fs::create_dir_all(&sessions)?;
+    let workspace = home.to_string_lossy().into_owned();
+    let lines = [
+        serde_json::json!({
+            "timestamp": "2024-04-24T23:06:40Z",
+            "type": "session_meta",
+            "payload": {
+                "id": "rollout-agent-filter-01",
+                "cwd": workspace,
+                "cli_version": "0.42.0",
+            },
+        }),
+        serde_json::json!({
+            "timestamp": "2024-04-24T23:06:41Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "explain the agent filter" }],
+            },
+        }),
+        serde_json::json!({
+            "timestamp": "2024-04-24T23:06:42Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "the filter keeps matching hits" }],
+            },
+        }),
+    ];
+    let mut body = String::new();
+    for line in &lines {
+        body.push_str(&serde_json::to_string(line)?);
+        body.push('\n');
+    }
+    fs::write(sessions.join("rollout-agent-filter-01.jsonl"), body)?;
+
+    let data_dir = home.join("archive");
+    let output = isolated_cass(home)?
+        .args(["--color=never", "index", "--full", "--json", "--data-dir"])
+        .arg(&data_dir)
+        .output()?;
+    ensure(
+        output.status.success(),
+        format!(
+            "cass index --full failed on the seeded codex corpus; stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )?;
+    Ok(data_dir)
+}
+
 #[test]
 fn search_agent_filter_projects_only_matching_agent() -> TestResult {
     let tmp = TempDir::new()?;
-    let data_dir = copy_search_demo_fixture(tmp.path())?;
+    let data_dir = index_codex_archive(tmp.path())?;
 
-    // The fixture's hits all have agent="aider". The filter must:
+    // The archive's hits all have agent="codex". The filter must:
     //   - Return only those hits (positive correctness).
-    //   - Mark every returned hit's `agent` field as "aider" (no leaks).
-    let response = run_search(&data_dir, &["--agent", "aider"])?;
+    //   - Mark every returned hit's `agent` field as "codex" (no leaks).
+    let output = isolated_cass(tmp.path())?
+        .args(["--color=never", "search", "the", "--robot"])
+        .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])
+        .args(["--agent", "codex"])
+        .output()?;
+    ensure(
+        output.status.code() == Some(0),
+        format!(
+            "cass search --agent codex should exit 0; stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+    )?;
+    let response: Value = serde_json::from_slice(&output.stdout)?;
     let hits = response
         .get("hits")
         .and_then(Value::as_array)
@@ -164,10 +253,10 @@ fn search_agent_filter_projects_only_matching_agent() -> TestResult {
 
     ensure(
         !hits.is_empty(),
-        "--agent aider should return at least 1 hit against the fixture",
+        "--agent codex should return at least 1 hit against the indexed archive",
     )?;
     for (idx, hit) in hits.iter().enumerate() {
-        check_hit_agent_matches(idx, hit, "aider")?;
+        check_hit_agent_matches(idx, hit, "codex")?;
     }
     Ok(())
 }
@@ -190,13 +279,13 @@ fn search_agent_filter_known_absent_agent_returns_empty_set() -> TestResult {
     let tmp = TempDir::new()?;
     let data_dir = copy_search_demo_fixture(tmp.path())?;
 
-    // Gemini is supported, but this fixture contains only Aider sessions.
-    // A valid empty projection remains a successful search.
+    // Gemini is supported, but this fixture contains only archived legacy
+    // Aider sessions. A valid empty projection remains a successful search.
     let response = run_search(&data_dir, &["--agent", "gemini"])?;
     let n = hit_count(&response)?;
     ensure(
         n == 0,
-        format!("--agent gemini should produce 0 hits in the Aider fixture; got {n}"),
+        format!("--agent gemini should produce 0 hits in the legacy Aider fixture; got {n}"),
     )?;
     Ok(())
 }
@@ -214,7 +303,7 @@ fn search_agent_filter_unknown_agent_returns_usage_error_before_archive_access()
         .env_remove("CASS_DB_PATH")
         .args(["--color=never", "search", "the", "--robot"])
         .args(["--data-dir", data_dir.to_str().ok_or("non-utf8 path")?])
-        .args(["--agent", "aider", "--agent", "zzz_nonexistent_agent_xyz"])
+        .args(["--agent", "codex", "--agent", "zzz_nonexistent_agent_xyz"])
         .output()?;
     ensure(
         output.status.code() == Some(2),

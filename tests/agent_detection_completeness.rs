@@ -7,7 +7,7 @@
 //! 2. Connector detection round-trip works correctly
 //! 3. FAD probe paths stay consistent with the connector set
 //! 4. Agent counts are consistent across all APIs
-//! 5. Detection-only connectors (windsurf) are properly handled
+//! 5. No detection-only connectors remain: every probed slug has a parser
 
 use coding_agent_search::indexer::get_connector_factories;
 use std::collections::HashSet;
@@ -33,7 +33,7 @@ fn fad_slug(public: &str) -> &str {
     }
 }
 
-/// Collect factory slugs as the FAD internal names (e.g. "claude", "copilot").
+/// Collect factory slugs as the FAD internal names (e.g. "claude", "codex").
 fn factory_fad_slugs() -> HashSet<String> {
     get_connector_factories()
         .into_iter()
@@ -49,10 +49,28 @@ fn probe_slugs() -> HashSet<String> {
         .collect()
 }
 
-/// Detection-only connectors: have probe paths and detection entries but
-/// no parser implementation (no entry in `get_connector_factories()`).
-/// `continue` graduated to a full connector factory in the pinned FAD fork.
-const DETECTION_ONLY: &[&str] = &["windsurf"];
+/// The connector registry under the FAD features cass enables, as FAD
+/// internal slugs. Phase 0 kept exactly these ten; probe paths, the detection
+/// report and the parser factories all enumerate this set.
+const KEPT_FAD_SLUGS: &[&str] = &[
+    "antigravity",
+    "chatgpt",
+    "claude",
+    "codex",
+    "cursor",
+    "devin",
+    "gemini",
+    "opencode",
+    "qoder",
+    "qwen",
+];
+
+fn kept_fad_slugs() -> HashSet<String> {
+    KEPT_FAD_SLUGS
+        .iter()
+        .map(|slug| (*slug).to_string())
+        .collect()
+}
 
 /// Extract a function body from source code, including the braces.
 fn extract_function_body(source: &str, fn_prefix: &str) -> String {
@@ -92,10 +110,11 @@ fn extract_function_body(source: &str, fn_prefix: &str) -> String {
 fn connector_factories_all_instantiate_and_detect() {
     let factories = get_connector_factories();
 
-    // Must have at least 12 base connectors
-    assert!(
-        factories.len() >= 12,
-        "Expected >=12 connector factories, got {}",
+    assert_eq!(
+        factories.len(),
+        KEPT_FAD_SLUGS.len(),
+        "Expected {} connector factories, got {}",
+        KEPT_FAD_SLUGS.len(),
         factories.len()
     );
 
@@ -123,97 +142,57 @@ fn connector_factories_all_instantiate_and_detect() {
     let unique: HashSet<&str> = slugs.iter().copied().collect();
     assert_eq!(unique.len(), slugs.len(), "Duplicate factory slugs");
 
-    // Required base connectors always present
-    for required in [
-        "codex",
-        "cline",
-        "gemini",
-        "claude",
-        "clawdbot",
-        "vibe",
-        "amp",
-        "aider",
-        "pi_agent",
-        "pi_durable",
-        "factory",
-        "omp",
-        "openclaw",
-        "copilot",
-        "grok",
-        "muse",
-        "prime_agent",
-        "kiro",
-        "devin",
-    ] {
+    // Required connectors always present
+    for required in KEPT_FAD_SLUGS {
         assert!(
             unique.contains(required),
-            "Required base connector '{required}' missing"
+            "Required connector '{required}' missing"
         );
     }
 }
 
-/// Feature-gated connectors (chatgpt, cursor, opencode, crush, goose, hermes, devin)
-/// are available because cass enables those features in Cargo.toml.
+/// Feature-gated connectors (chatgpt, cursor, opencode) are available because
+/// cass enables those features in Cargo.toml.
 #[test]
 fn feature_gated_connectors_available() {
     let slugs = factory_fad_slugs();
-    for gated in [
-        "chatgpt", "cursor", "opencode", "crush", "goose", "hermes", "devin", "shelley",
-        "grok_bot", "codebuff",
-    ] {
+    for gated in ["chatgpt", "cursor", "opencode"] {
         assert!(
             slugs.contains(gated),
             "Feature-gated connector '{gated}' not found. \
              Check Cargo.toml enables the feature for franken-agent-detection"
         );
     }
-    assert_eq!(slugs.len(), 34, "Expected 34 connector factories");
+    assert_eq!(slugs.len(), 10, "Expected 10 connector factories");
+    assert_eq!(slugs, kept_fad_slugs(), "connector factory set drifted");
 }
 
 // ---------------------------------------------------------------------------
 // Test 2: Probe path coverage
 // ---------------------------------------------------------------------------
 
-/// Every factory connector must have a corresponding probe path entry.
-/// Detection-only connectors have probe paths but no factory.
+/// Every factory connector must have a corresponding probe path entry, and
+/// every probed slug must have a factory (no detection-only connectors remain).
 #[test]
 fn probe_paths_cover_all_factory_connectors() {
     let factory = factory_fad_slugs();
     let probes = probe_slugs();
 
-    // Map factory slugs to their FAD probe slug equivalents.
-    // Note: "copilot" factory slug maps to "github-copilot" in KNOWN_CONNECTORS.
-    let factory_mapped: HashSet<String> = factory
-        .iter()
-        .map(|s| match s.as_str() {
-            "copilot" => "github-copilot".to_string(),
-            other => other.to_string(),
-        })
-        .collect();
-
-    let missing: Vec<_> = factory_mapped.difference(&probes).cloned().collect();
+    let missing: Vec<_> = factory.difference(&probes).cloned().collect();
     assert!(
         missing.is_empty(),
         "Factory connectors missing from probe paths: {missing:?}"
     );
-
-    // Detection-only connectors must be in probes but NOT in factory
-    for slug in DETECTION_ONLY {
-        assert!(
-            probes.contains(*slug),
-            "Detection-only connector '{slug}' missing from probe paths"
-        );
-        assert!(
-            !factory.contains(*slug),
-            "Detection-only connector '{slug}' should NOT have a factory"
-        );
-    }
+    let detection_only: Vec<_> = probes.difference(&factory).cloned().collect();
+    assert!(
+        detection_only.is_empty(),
+        "Probed connectors without a factory: {detection_only:?}"
+    );
 
     eprintln!(
-        "  Factory: {} connectors, Probes: {} entries, Detection-only: {}",
+        "  Factory: {} connectors, Probes: {} entries",
         factory.len(),
-        probes.len(),
-        DETECTION_ONLY.len()
+        probes.len()
     );
 }
 
@@ -222,17 +201,6 @@ fn probe_paths_cover_all_factory_connectors() {
 fn probe_paths_are_tilde_relative() {
     let paths = franken_agent_detection::default_probe_paths_tilde();
     for (slug, paths) in &paths {
-        if matches!(*slug, "shelley" | "pi_durable") {
-            // A live SQLite database and WAL cannot yet be copied as a
-            // consistent remote bundle (GH #415; Pi durable stores, FAD #28).
-            // Local detection remains available, but advertising remote paths
-            // would be unsafe.
-            assert!(
-                paths.is_empty(),
-                "{slug} remote probes must remain disabled"
-            );
-            continue;
-        }
         assert!(!paths.is_empty(), "Connector '{slug}' has no probe paths");
         for path in paths {
             assert!(
@@ -258,9 +226,11 @@ fn detect_installed_agents_report_structure() {
         .expect("detect_installed_agents should not fail");
 
     // Must cover the full KNOWN_CONNECTORS set.
-    assert!(
-        report.installed_agents.len() >= 15,
-        "Expected >=15 agents in report, got {}",
+    assert_eq!(
+        report.installed_agents.len(),
+        KEPT_FAD_SLUGS.len(),
+        "Expected {} agents in report, got {}",
+        KEPT_FAD_SLUGS.len(),
         report.installed_agents.len()
     );
     assert_eq!(report.format_version, 1);
@@ -290,11 +260,11 @@ fn detect_installed_agents_report_structure() {
         .map(|e| e.slug.as_str())
         .collect();
 
-    // Detection-only connectors must appear
-    for slug in DETECTION_ONLY {
+    // Every kept connector must appear
+    for slug in KEPT_FAD_SLUGS {
         assert!(
             slugs.contains(slug),
-            "Detection-only connector '{slug}' missing from detection report"
+            "Connector '{slug}' missing from detection report"
         );
     }
 
@@ -313,8 +283,8 @@ fn detect_installed_agents_report_structure() {
 // Test 4: Agent count consistency
 // ---------------------------------------------------------------------------
 
-/// Detection and probe APIs should enumerate the same set of connectors.
-/// Factory connectors are a subset (they exclude detection-only connectors).
+/// Detection, probe and factory APIs should enumerate the same set of
+/// connectors (no detection-only connectors remain).
 #[test]
 fn agent_counts_consistent_across_apis() {
     let factory = factory_fad_slugs();
@@ -341,27 +311,24 @@ fn agent_counts_consistent_across_apis() {
         probes.len()
     );
 
-    // Factory must be a strict subset of detection (after slug mapping)
-    let factory_mapped: HashSet<String> = factory
-        .iter()
-        .map(|s| match s.as_str() {
-            "copilot" => "github-copilot".to_string(),
-            other => other.to_string(),
-        })
-        .collect();
-    for slug in &factory_mapped {
+    // Factory and detection enumerate the same slugs
+    for slug in &factory {
         assert!(
             detection.contains(slug),
             "Factory connector '{slug}' not in detection report"
         );
     }
+    let without_factory: Vec<_> = detection.difference(&factory).cloned().collect();
+    assert!(
+        without_factory.is_empty(),
+        "Detected connectors without a factory: {without_factory:?}"
+    );
 
     eprintln!(
-        "  Factories: {}, Detection: {}, Probes: {}, Detection-only: {}",
+        "  Factories: {}, Detection: {}, Probes: {}",
         factory.len(),
         detection.len(),
-        probes.len(),
-        DETECTION_ONLY.len()
+        probes.len()
     );
 }
 
@@ -385,10 +352,10 @@ fn diagnostics_connector_paths_is_dynamic() {
         ".claude/projects",
         ".codex/sessions",
         ".gemini",
-        ".goose/sessions",
-        ".continue/sessions",
-        "sourcegraph.amp",
-        "saoudrizwan.claude-dev",
+        ".qwen/projects",
+        ".qoder/projects",
+        ".local/share/opencode",
+        "com.openai.chat",
     ] {
         assert!(
             !body.contains(banned),
@@ -402,7 +369,6 @@ fn diagnostics_connector_paths_is_dynamic() {
 // ---------------------------------------------------------------------------
 
 /// FAD uses "claude" internally; cass exposes "claude_code" publicly.
-/// FAD uses "copilot" for the factory; KNOWN_CONNECTORS uses "github-copilot".
 #[test]
 fn slug_mappings_are_correct() {
     let factory = factory_fad_slugs();
@@ -412,9 +378,6 @@ fn slug_mappings_are_correct() {
     assert!(!factory.contains("claude_code"));
     assert_eq!(public_slug("claude"), "claude_code");
     assert_eq!(fad_slug("claude_code"), "claude");
-
-    // FAD factory uses "copilot"
-    assert!(factory.contains("copilot"));
 }
 
 // ---------------------------------------------------------------------------
@@ -455,355 +418,6 @@ fn new_agent_auto_discovery_documented() {
         report.summary.detected_count
     );
     eprintln!("  - Adding a connector to FAD auto-discovers in cass.");
-}
-
-mod prime_ingestion {
-    use super::*;
-    use coding_agent_search::connectors::{ScanContext, ScanRoot};
-    use serde_json::{Value, json};
-    use std::fs;
-    use std::io::Write;
-    use std::time::Duration;
-
-    fn prime_command(home: &std::path::Path, data: &std::path::Path) -> std::process::Command {
-        let mut command = std::process::Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-        command
-            .env_clear()
-            .env("HOME", home)
-            .env("USERPROFILE", home)
-            .env("PATH", "")
-            .env("XDG_DATA_HOME", home.join(".local/share"))
-            .env("XDG_CONFIG_HOME", home.join(".config"))
-            .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-            .env("CASS_DATA_DIR", data)
-            .env("CASS_AUTO_REFRESH", "0")
-            .env("CASS_ACTIVE_SESSION_RECENT_WRITE_WINDOW_SECS", "0")
-            .env("RUST_MIN_STACK", "134217728")
-            .current_dir(home);
-        if let Ok(system_root) = dotenvy::var("SystemRoot") {
-            command.env("SystemRoot", system_root);
-        }
-        command
-    }
-
-    fn write_prime(path: &std::path::Path, id: &str, text: &str) -> Vec<u8> {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let bytes = format!(
-            "{}\n{}\n",
-            json!({"type":"session","version":3,"id":id,"cwd":"/work/prime"}),
-            json!({"type":"message","id":"first","parentId":null,
-                "message":{"role":"user","content":text}})
-        )
-        .into_bytes();
-        fs::write(path, &bytes).unwrap();
-        bytes
-    }
-
-    fn prime_search(home: &std::path::Path, data: &std::path::Path, query: &str) -> Value {
-        let mut command = assert_cmd::Command::from_std(prime_command(home, data));
-        let output = command
-            .args([
-                "search",
-                query,
-                "--mode",
-                "lexical",
-                "--json",
-                "--no-maintenance",
-                "--timeout",
-                "3000",
-                "--limit",
-                "100",
-            ])
-            .timeout(Duration::from_secs(10))
-            .assert()
-            .success()
-            .get_output()
-            .stdout
-            .clone();
-        let result: Value = serde_json::from_slice(&output).unwrap();
-        assert_ne!(
-            result.pointer("/budget/timed_out").and_then(Value::as_bool),
-            Some(true),
-            "timed out search cannot prove absence: {result}"
-        );
-        assert!(result["hits"].is_array(), "missing hits: {result}");
-        result
-    }
-
-    #[test]
-    fn prime_explicit_file_watch_once_excludes_neighbors_and_replays_without_duplicates() {
-        let home = tempfile::tempdir().unwrap();
-        let data = home.path().join("cass-data");
-        let sessions = home.path().join(".prime/agent/sessions");
-        write_prime(
-            &sessions.join("baseline.jsonl"),
-            "baseline",
-            "primebaseline",
-        );
-        assert_cmd::Command::from_std(prime_command(home.path(), &data))
-            .args(["index", "--full", "--json"])
-            .timeout(Duration::from_secs(120))
-            .assert()
-            .success();
-        let target = sessions.join("chosen.jsonl");
-        let bytes = write_prime(&target, "chosen", "primechosenneedle");
-        let neighbor = sessions.join("neighbor.jsonl");
-        let neighbor_bytes = write_prime(&neighbor, "neighbor", "primeexcludedneedle");
-        let pi = home.path().join(".pi/agent/sessions/other.jsonl");
-        let pi_bytes = write_prime(&pi, "pi-neighbor", "primeexcludedneedle");
-        for _ in 0..2 {
-            assert_cmd::Command::from_std(prime_command(home.path(), &data))
-                .args(["index", "--watch", "--watch-once"])
-                .arg(&target)
-                .arg("--json")
-                .timeout(Duration::from_secs(120))
-                .assert()
-                .success();
-            let found = prime_search(home.path(), &data, "primechosenneedle");
-            let hits = found["hits"].as_array().unwrap();
-            assert_eq!(
-                hits.len(),
-                1,
-                "target must be indexed exactly once: {found}"
-            );
-            assert_eq!(hits[0]["agent"], "prime_agent");
-            // Watch-once indexes the canonical path (#377), which on macOS is
-            // /private/var/... for a temp dir under /var.
-            let indexed = Path::new(hits[0]["source_path"].as_str().unwrap())
-                .canonicalize()
-                .unwrap();
-            assert_eq!(indexed, target.canonicalize().unwrap());
-            let excluded = prime_search(home.path(), &data, "primeexcludedneedle");
-            assert!(
-                excluded["hits"].as_array().unwrap().is_empty(),
-                "neighbor leakage: {excluded}"
-            );
-        }
-        assert_eq!(fs::read(target).unwrap(), bytes);
-        assert_eq!(fs::read(neighbor).unwrap(), neighbor_bytes);
-        assert_eq!(fs::read(pi).unwrap(), pi_bytes);
-    }
-
-    #[test]
-    fn prime_configured_root_live_watch_indexes_new_file_without_unrelated_sources() {
-        use std::process::{Child, Stdio};
-        use std::time::Instant;
-        struct WatchChild(Child);
-        impl Drop for WatchChild {
-            fn drop(&mut self) {
-                let _ = self.0.kill();
-                let _ = self.0.wait();
-            }
-        }
-        let home = tempfile::tempdir().unwrap();
-        let data = home.path().join("cass-data");
-        let sessions = home.path().join("configured-prime-store");
-        write_prime(
-            &sessions.join("baseline.jsonl"),
-            "baseline",
-            "primebaseline",
-        );
-        let stdout = home.path().join("watch.stdout");
-        let stderr = home.path().join("watch.stderr");
-        let logs = || {
-            format!(
-                "stdout:\n{}\nstderr:\n{}",
-                fs::read_to_string(&stdout).unwrap_or_default(),
-                fs::read_to_string(&stderr).unwrap_or_default()
-            )
-        };
-        let mut watch = WatchChild(
-            prime_command(home.path(), &data)
-                .env("PRIME_AGENT_SESSION_DIR", &sessions)
-                .env("RUST_LOG", "info")
-                .arg("--verbose")
-                .args(["index", "--watch", "--watch-interval", "1", "--json"])
-                .stdout(Stdio::from(fs::File::create(&stdout).unwrap()))
-                .stderr(Stdio::from(fs::File::create(&stderr).unwrap()))
-                .spawn()
-                .unwrap(),
-        );
-        let deadline = Instant::now() + Duration::from_secs(90);
-        while !logs().contains("watch mode: minimum interval between scan cycles") {
-            assert!(
-                watch.0.try_wait().unwrap().is_none(),
-                "watch exited: {}",
-                logs()
-            );
-            assert!(
-                Instant::now() < deadline,
-                "watch startup timeout: {}",
-                logs()
-            );
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let unrelated = home.path().join("unrelated-store/session.jsonl");
-        let unrelated_bytes = write_prime(&unrelated, "unrelated", "primeunrelatedneedle");
-        let target = sessions.join("new-session.jsonl");
-        let bytes = write_prime(&target, "new-session", "primeliveneedle");
-        loop {
-            let found = prime_search(home.path(), &data, "primeliveneedle");
-            if !found["hits"].as_array().unwrap().is_empty() {
-                assert_eq!(found["hits"].as_array().unwrap().len(), 1, "{found}");
-                assert_eq!(found["hits"][0]["agent"], "prime_agent");
-                assert_eq!(
-                    found["hits"][0]["source_path"],
-                    target.to_string_lossy().as_ref()
-                );
-                break;
-            }
-            assert!(
-                watch.0.try_wait().unwrap().is_none(),
-                "watch exited: {}",
-                logs()
-            );
-            assert!(
-                Instant::now() < deadline,
-                "new file never indexed: {}",
-                logs()
-            );
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        let excluded = prime_search(home.path(), &data, "primeunrelatedneedle");
-        assert!(
-            excluded["hits"].as_array().unwrap().is_empty(),
-            "{excluded}"
-        );
-        assert_eq!(fs::read(target).unwrap(), bytes);
-        assert_eq!(fs::read(unrelated).unwrap(), unrelated_bytes);
-    }
-
-    #[test]
-    fn prime_active_branch_survives_cli_ingestion_and_incremental_append() {
-        let home = tempfile::tempdir().expect("isolated Prime home");
-        let sessions = home.path().join(".prime/agent/sessions");
-        let data = home.path().join("cass-data");
-        fs::create_dir_all(&sessions).expect("Prime session root");
-        let source = sessions.join("custom-session-id.jsonl");
-        let records = [
-            json!({"type":"session", "version":3, "id":"prime-session",
-                "timestamp":"2026-01-05T10:00:00Z", "cwd":"/work/prime"}),
-            json!({"type":"message", "id":"aaaa0001", "parentId":null,
-                "message":{"role":"user", "content":"primeneedle investigate"}}),
-            json!({"type":"message", "id":"aaaa0002", "parentId":"aaaa0001",
-                "message":{"role":"assistant", "content":"excludedbranch"}}),
-            json!({"type":"message", "id":"aaaa0003", "parentId":"aaaa0001",
-                "message":{"role":"assistant", "model":"model", "provider":"provider",
-                    "content":[{"type":"text", "text":"primeneedle corrected"},
-                        {"type":"thinking", "thinking":"inspect the active branch"},
-                        {"type":"image", "mimeType":"image/png", "data":"excludedimage"}],
-                    "usage":{"input":12,"output":7,"cacheRead":1,"cacheWrite":2}}}),
-            json!({"type":"message", "id":"aaaa0004", "parentId":"aaaa0003",
-                "message":{"role":"toolResult", "toolCallId":"call", "toolName":"shell",
-                    "content":[{"type":"text", "text":"primeneedle verified"}]}}),
-        ];
-        let mut bytes = records
-            .iter()
-            .map(Value::to_string)
-            .collect::<Vec<_>>()
-            .join("\n");
-        bytes.push('\n');
-        fs::write(&source, &bytes).expect("versioned Prime transcript");
-
-        let (_, factory) = get_connector_factories()
-            .into_iter()
-            .find(|(slug, _)| *slug == "prime_agent")
-            .expect("Prime factory");
-        let ctx = ScanContext::with_roots(
-            home.path().to_path_buf(),
-            vec![ScanRoot::local(sessions)],
-            None,
-        )
-        .without_local_default_stores();
-        let conversations = factory().scan(&ctx).expect("Prime scan");
-        assert_eq!(conversations.len(), 1);
-        let conversation = &conversations[0];
-        assert_eq!(conversation.agent_slug, "prime_agent");
-        assert_eq!(conversation.external_id.as_deref(), Some("prime-session"));
-        assert_eq!(conversation.metadata["omitted_branch_entry_count"], 1);
-        assert_eq!(conversation.messages.len(), 3);
-        assert_eq!(conversation.messages[2].role, "tool");
-        assert!(
-            conversation.messages[1]
-                .content
-                .contains("inspect the active branch")
-        );
-        assert_eq!(conversation.messages[1].extra["usage"]["cacheRead"], 1);
-        for message in &conversation.messages {
-            assert!(!message.content.contains("excluded"));
-            assert!(!message.extra.to_string().contains("excludedimage"));
-        }
-
-        let cass = || {
-            let mut cmd = assert_cmd::Command::new(assert_cmd::cargo::cargo_bin!("cass"));
-            cmd.env_clear()
-                .env("HOME", home.path())
-                .env("USERPROFILE", home.path())
-                .env("PATH", "")
-                .env("XDG_DATA_HOME", home.path().join(".local/share"))
-                .env("XDG_CONFIG_HOME", home.path().join(".config"))
-                .env("CASS_IGNORE_SOURCES_CONFIG", "1")
-                .env("CASS_AUTO_REFRESH", "0")
-                .env("CASS_ACTIVE_SESSION_RECENT_WRITE_WINDOW_SECS", "0")
-                .env("RUST_MIN_STACK", "134217728")
-                .current_dir(home.path())
-                .arg("--data-dir")
-                .arg(&data)
-                .timeout(Duration::from_secs(120));
-            if let Ok(system_root) = dotenvy::var("SystemRoot") {
-                cmd.env("SystemRoot", system_root);
-            }
-            cmd
-        };
-        for round in 0..3 {
-            if round == 1 {
-                let line = json!({"type":"message", "id":"aaaa0005", "parentId":"aaaa0004",
-                    "message":{"role":"user", "content":"primeneedle followup"}})
-                .to_string()
-                    + "\n";
-                fs::OpenOptions::new()
-                    .append(true)
-                    .open(&source)
-                    .expect("append source")
-                    .write_all(line.as_bytes())
-                    .expect("new Prime turn");
-                bytes.push_str(&line);
-            }
-            cass()
-                .args(if round == 0 {
-                    vec!["index", "--full", "--json"]
-                } else {
-                    vec!["index", "--json"]
-                })
-                .assert()
-                .success();
-            let output = cass()
-                .args([
-                    "search",
-                    "primeneedle",
-                    "--agent",
-                    "prime_agent",
-                    "--mode",
-                    "lexical",
-                    "--json",
-                    "--limit",
-                    "20",
-                ])
-                .assert()
-                .success()
-                .get_output()
-                .stdout
-                .clone();
-            let result: Value = serde_json::from_slice(&output).expect("Prime search JSON");
-            let hits = result["hits"].as_array().expect("Prime hits");
-            assert_eq!(hits.len(), if round == 0 { 3 } else { 4 }, "{result}");
-            assert!(hits.iter().all(|hit| hit["agent"] == "prime_agent"));
-            assert_eq!(
-                fs::read_to_string(&source).expect("preserved transcript"),
-                bytes
-            );
-        }
-    }
 }
 
 /// GH449: the Devin factory exists even when its SQLite parser is compiled out.

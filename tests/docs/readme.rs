@@ -195,22 +195,6 @@ fn test_readme_local_preview_included() {
     );
 }
 
-/// Verify Argon2 parameters are documented.
-#[test]
-fn test_readme_argon_params_included() {
-    let summary = create_test_summary(10, vec![("Agent", 10)]);
-    let config = DocConfig::new().with_argon_params(65536, 3, 4);
-
-    let generator = DocumentationGenerator::new(config, summary);
-    let readme_doc = generator.generate_readme();
-
-    // Should mention Argon2 parameters
-    assert!(
-        readme_doc.content.contains("65536") || readme_doc.content.contains("64MB"),
-        "README should include memory parameter"
-    );
-}
-
 // =============================================================================
 // README Completeness Tests
 // =============================================================================

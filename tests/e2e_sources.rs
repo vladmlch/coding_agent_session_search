@@ -3217,9 +3217,9 @@ to = "/work/projects"
 }
 
 /// GH #520, end to end: the archive layout keeps only a configured path's
-/// basename inside its safe-name container (`~/.factory/sessions` arrives as
-/// `<container>/sessions`). Factory, Vibe, Prime, Gemini and Cursor recognise
-/// a store by its parent chain, so they indexed nothing from such a mirror.
+/// basename inside its safe-name container (`~/.gemini/tmp` arrives as
+/// `<container>/tmp`). Gemini and Cursor recognise a store by its parent
+/// chain, so they indexed nothing from such a mirror.
 /// The real binary indexes a mirror laid out exactly that way: every agent
 /// must index, each marker must be searchable, and a second index must not
 /// add or rekey a conversation.
@@ -3241,10 +3241,6 @@ fn gh520_remote_mirrors_index_structural_agents_end_to_end() {
     let paths = [
         "~/.claude/projects",
         "~/.codex/sessions",
-        "~/.pi/agent/sessions",
-        "~/.factory/sessions",
-        "~/.vibe/logs/session",
-        "~/.prime/agent/sessions",
         "~/.gemini/tmp",
         "~/.config/Cursor/User",
     ];
@@ -3283,34 +3279,6 @@ fn gh520_remote_mirrors_index_structural_agents_end_to_end() {
     copy_tree(
         &fixtures.join("codex_real/sessions"),
         &container("~/.codex/sessions").join("sessions"),
-    );
-    copy_tree(
-        &fixtures.join("pi_agent/sessions"),
-        &container("~/.pi/agent/sessions").join("sessions"),
-    );
-    write(
-        container("~/.factory/sessions").join("sessions/-home-operator-proj/fac-520.jsonl"),
-        &[
-            r#"{"type":"session_start","id":"fac-520","title":"Factory mirror","owner":"operator","cwd":"/home/operator/proj"}"#.into(),
-            r#"{"type":"message","timestamp":"2026-10-01T10:00:00Z","message":{"role":"user","content":"factorymirrorprobe question"}}"#.into(),
-            r#"{"type":"message","timestamp":"2026-10-01T10:00:05Z","message":{"role":"assistant","content":"factory answer"}}"#.into(),
-        ],
-    );
-    write(
-        container("~/.vibe/logs/session").join("session/vibe-520/messages.jsonl"),
-        &[
-            r#"{"role":"user","content":"vibemirrorprobe question","timestamp":"2026-10-01T10:00:00.000Z"}"#.into(),
-            r#"{"role":"assistant","content":"vibe answer","timestamp":"2026-10-01T10:00:05.000Z"}"#.into(),
-        ],
-    );
-    write(
-        container("~/.prime/agent/sessions")
-            .join("sessions/2026-10-01T10-00-00-000Z_0192aa11-0000-7000-8000-000000000520.jsonl"),
-        &[
-            r#"{"type":"session","version":3,"id":"0192aa11-0000-7000-8000-000000000520","timestamp":"2026-10-01T10:00:00.000Z","cwd":"/home/operator/proj"}"#.into(),
-            r#"{"type":"message","id":"aaaa0001","parentId":null,"timestamp":"2026-10-01T10:00:01.000Z","message":{"role":"user","content":"primemirrorprobe question"}}"#.into(),
-            r#"{"type":"message","id":"aaaa0002","parentId":"aaaa0001","timestamp":"2026-10-01T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"prime answer"}]}}"#.into(),
-        ],
     );
     write(
         container("~/.gemini/tmp").join("tmp/hash520/chats/session-520.json"),
@@ -3420,39 +3388,19 @@ fn gh520_remote_mirrors_index_structural_agents_end_to_end() {
     let first = rows();
     eprintln!("gh520 indexed: {first:?}");
     let slugs: BTreeSet<String> = first.iter().map(|(slug, _)| slug.clone()).collect();
-    for slug in [
-        "claude_code",
-        "codex",
-        "pi_agent",
-        "factory",
-        "vibe",
-        "prime_agent",
-        "gemini",
-        "cursor",
-    ] {
+    for slug in ["claude_code", "codex", "gemini", "cursor"] {
         assert!(slugs.contains(slug), "{slug} missing: {first:?}");
     }
-    for marker in [
-        "factorymirrorprobe",
-        "vibemirrorprobe",
-        "primemirrorprobe",
-        "geminimirrorprobe",
-        "cursormirrorprobe",
-    ] {
+    for marker in ["geminimirrorprobe", "cursormirrorprobe"] {
         assert!(hits(marker) > 0, "{marker} not searchable");
     }
     assert_eq!(conversation_count(), i64::try_from(first.len()).unwrap());
 
     // Each conversation belongs to the agent whose store its file was synced
-    // from. Before mx520 the Claude connector also claimed the Factory, Pi,
-    // Prime and Gemini files, and Pi claimed the Prime file.
+    // from. Before mx520 the Claude connector also claimed the Gemini file.
     let expected_agent: std::collections::BTreeMap<String, &str> = [
         ("~/.claude/projects", "claude_code"),
         ("~/.codex/sessions", "codex"),
-        ("~/.pi/agent/sessions", "pi_agent"),
-        ("~/.factory/sessions", "factory"),
-        ("~/.vibe/logs/session", "vibe"),
-        ("~/.prime/agent/sessions", "prime_agent"),
         ("~/.gemini/tmp", "gemini"),
         ("~/.config/Cursor/User", "cursor"),
     ]

@@ -1020,42 +1020,28 @@ fn evaluate_fixture(
     }
 }
 
-/// Build the per-fixture proof artifact certifying the GATE's verdict (not the
-/// cass exit code): a fixture that correctly fails closed is a gate *pass*.
-fn fixture_proof(
+/// Summarize one fixture's gate verdict for verbose structured logs.
+fn fixture_proof_summary(
     fixture: &StorageFixture,
     verdict: &FixtureVerdict,
     elapsed_ms: u64,
-) -> ProofArtifact {
-    let run = ProofRun {
-        command: format!(
-            "cass search '{PROBE_QUERY}' --robot + cass status --json [{}]",
-            fixture.id
-        ),
-        binary_path: Some(util::cass_bin()),
-        binary_version: None,
-        data_dir_or_fixture: Some(format!(
-            "{} (expected_storage_state={})",
-            fixture.id, fixture.expected_storage_state
-        )),
-        exit_code: if verdict.timed_out {
-            None
+) -> (bool, String) {
+    let pass = !verdict.timed_out && verdict.ok;
+    let summary = format!(
+        "{} [{}] status={} elapsed_ms={} detail={}",
+        fixture.id,
+        fixture.expected_storage_state,
+        if verdict.timed_out {
+            "timed_out"
+        } else if verdict.ok {
+            "pass"
         } else {
-            Some(if verdict.ok { 0 } else { 1 })
+            "fail"
         },
         elapsed_ms,
-        timeout_ms: SURFACE_TIMEOUT.as_millis() as u64,
-        timed_out: verdict.timed_out,
-        skipped: false,
-        // A timed-out fixture never reached its assertions.
-        assertions_ran: !verdict.timed_out,
-        produced_artifact: false,
-        completed: !verdict.timed_out,
-        artifact_age_ms: None,
-        stdout_path: None,
-        stderr_path: None,
-    };
-    ProofArtifact::from_run(run)
+        verdict.detail,
+    );
+    (pass, summary)
 }
 
 /// One failure line: fixture + reason + attribution + reproduction.
@@ -1188,11 +1174,11 @@ fn run_one_fixture(
     let elapsed_ms = started.elapsed().as_millis() as u64;
     tracker.end(fixture.id, None, phase);
 
-    let proof = fixture_proof(fixture, &verdict, elapsed_ms);
-    tracker.verbose(&format!("{} -> {}", fixture.id, proof.summary));
+    let (proof_pass, summary) = fixture_proof_summary(fixture, &verdict, elapsed_ms);
+    tracker.verbose(&format!("{} -> {}", fixture.id, summary));
 
     FixtureRunOutcome {
-        proof_pass: matches!(proof.status, ProofStatus::Pass),
+        proof_pass,
         timed_out: verdict.timed_out,
         // A host-pressure timeout is a structured skip, not a gate failure.
         failure_line: if verdict.ok || verdict.timed_out {

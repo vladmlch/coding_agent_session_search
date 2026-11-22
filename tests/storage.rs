@@ -2833,7 +2833,7 @@ fn cache_statistics_tracking() {
     assert_eq!(misses, 0);
     assert_eq!(hit_rate, 0.0);
 
-    let agents = ["codex", "claude_code", "cline"];
+    let agents = ["codex", "claude_code", "gemini"];
     let workspaces = ["/ws/a", "/ws/b"];
 
     // First round - all misses

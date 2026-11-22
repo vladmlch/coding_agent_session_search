@@ -194,6 +194,43 @@ fn shared_search_demo_data() -> &'static str {
         .1
 }
 
+/// One private indexed Codex corpus per test binary for tests that exercise
+/// live connector filter arguments (`--agent codex`, `--provider codex`, etc.)
+/// without relying on removed connectors in the legacy demo fixture.
+fn shared_codex_search_data() -> &'static str {
+    static SHARED: OnceLock<(TempDir, String)> = OnceLock::new();
+    &SHARED
+        .get_or_init(|| {
+            let fixture = TempDir::new().expect("isolated codex search home");
+            let home = fixture.path();
+            let data_dir = home.join("cass_data");
+            let codex_home = home.join(".codex");
+            util::seed_codex_session(
+                &codex_home,
+                "rollout-agent-filter.jsonl",
+                "filterprobe",
+                false,
+            );
+            let mut index = isolated_cass_cmd(home);
+            index
+                .env("CLAUDE_HOME", home.join(".claude"))
+                .env("GEMINI_HOME", home.join(".gemini"))
+                .env("OPENCODE_STORAGE_ROOT", home.join(".opencode"))
+                .env("CASS_AUTO_REFRESH", "0")
+                .args(["index", "--full", "--json", "--data-dir"])
+                .arg(&data_dir)
+                .timeout(std::time::Duration::from_secs(120))
+                .assert()
+                .success();
+            let path = data_dir
+                .to_str()
+                .expect("UTF-8 temporary directory")
+                .to_owned();
+            (fixture, path)
+        })
+        .1
+}
+
 /// uxz8y: bead xwi3f made this binary hermetic, then later tests pointed
 /// commands at the committed fixture again. Only `SEARCH_DEMO_DATA_DIR`, the
 /// copy source, may name it.
@@ -361,17 +398,9 @@ fn robot_help_prints_contract() {
     cmd.assert()
         .success()
         .stdout(contains("cass --robot-help (contract v1)"))
-        .stdout(contains("OMP aliases: oh-my-pi | oh_my_pi | ohmypi"))
+        .stdout(contains("cass triage --json"))
+        .stdout(contains("cass search \"your query\" --robot"))
         .stdout(contains("Exit codes: 0 ok"));
-}
-
-#[test]
-fn resume_help_lists_every_omp_alias() {
-    let mut cmd = base_cmd();
-    cmd.args(["resume", "--help"]);
-    cmd.assert()
-        .success()
-        .stdout(contains("omp | oh-my-pi | oh_my_pi | ohmypi"));
 }
 
 #[test]
@@ -501,8 +530,9 @@ fn capabilities_are_self_describing_for_agents() {
         "CASS_TRACE_FILTER",
         "CASS_TRACE_MAX_BYTES",
         "CASS_TRACE_MAX_EVENTS",
-        "CASS_OMP_DATA_ROOT",
-        "PI_SESSIONS_DIR",
+        "CODEX_HOME",
+        "GEMINI_HOME",
+        "OPENCODE_STORAGE_ROOT",
         "CASS_STATUS_BUDGET_MS",
         "CASS_DOCTOR_BUDGET_MS",
         "CASS_FTS_DRYRUN_CAP",
@@ -541,34 +571,6 @@ fn capabilities_are_self_describing_for_agents() {
             "capabilities should advertise the runtime default for {name}"
         );
     }
-    let pi_sessions_dir = env_vars
-        .iter()
-        .find(|env_var| env_var["name"] == "PI_SESSIONS_DIR")
-        .expect("PI_SESSIONS_DIR capability");
-    assert_eq!(
-        pi_sessions_dir["description"], "Override the exact Pi Agent sessions directory.",
-        "capabilities must distinguish the exact sessions override from the broader Pi-family agent directory"
-    );
-    let omp_data_root = env_vars
-        .iter()
-        .find(|env_var| env_var["name"] == "CASS_OMP_DATA_ROOT")
-        .expect("CASS_OMP_DATA_ROOT capability");
-    assert!(
-        omp_data_root["description"]
-            .as_str()
-            .is_some_and(|description| description.contains("OMP-only")),
-        "capabilities must expose the provider-qualified OMP ownership override"
-    );
-    let shared_pi_family_root = env_vars
-        .iter()
-        .find(|env_var| env_var["name"] == "PI_CODING_AGENT_DIR")
-        .expect("PI_CODING_AGENT_DIR capability");
-    assert!(
-        shared_pi_family_root["description"]
-            .as_str()
-            .is_some_and(|description| description.contains("Pi Agent-owned")),
-        "the ambiguous shared override must not promise OMP identity"
-    );
 
     let workflows = json["workflows"].as_array().expect("workflows array");
     let cold_start = workflows
@@ -1390,19 +1392,10 @@ fn assert_pack_command_returns_evidence(command: &str, extra_args: &[&str]) {
         ("CLAUDE_HOME", ".claude"),
         ("GEMINI_HOME", ".gemini"),
         ("OPENCODE_STORAGE_ROOT", ".opencode"),
-        ("CASS_AIDER_DATA_ROOT", ".aider-missing"),
-        ("PI_SESSIONS_DIR", ".pi-sessions-missing"),
-        ("PI_CODING_AGENT_DIR", ".pi-agent-missing"),
-        (
-            "PI_CODING_AGENT_SESSION_DIR",
-            ".pi-coding-agent-sessions-missing",
-        ),
     ] {
         index.env(key, home.join(relative));
     }
     index
-        .env_remove("PI_CONFIG_DIR")
-        .env_remove("PI_PROFILE")
         .env("CASS_AUTO_REFRESH", "0")
         .args(["index", "--full", "--json", "--data-dir"])
         .arg(&data_dir)
@@ -2561,7 +2554,7 @@ fn robot_docs_schemas_topic() {
 }
 
 #[test]
-fn robot_docs_commands_includes_tui_reset_and_no_ansi() {
+fn robot_docs_commands_lists_commands_and_no_ansi() {
     let mut cmd = base_cmd();
     cmd.args(["--color=never", "robot-docs", "commands"]);
     let out = cmd.assert().success().get_output().clone();
@@ -2571,8 +2564,12 @@ fn robot_docs_commands_includes_tui_reset_and_no_ansi() {
         "robot-docs commands should not emit ANSI when color=never"
     );
     assert!(
-        stdout.contains("cass tui"),
-        "commands topic should list cass tui"
+        stdout.contains("cass search <query>"),
+        "commands topic should list cass search"
+    );
+    assert!(
+        stdout.contains("cass triage"),
+        "commands topic should list cass triage"
     );
     assert!(
         stdout.contains("cass robot-docs <topic>"),
@@ -2592,7 +2589,6 @@ fn robot_docs_env_lists_key_vars_and_no_ansi() {
     );
     for needle in &[
         "CASS_DATA_DIR",
-        "TUI_HEADLESS",
         "CASS_STATUS_BUDGET_MS",
         "CASS_DOCTOR_BUDGET_MS",
         "CASS_FTS_DRYRUN_CAP",
@@ -2722,16 +2718,6 @@ fn wrap_40_inserts_line_breaks() {
         .success()
         // With wrap at 40, long command examples should wrap across lines
         .stdout(contains("--robot #\nSearch with JSON output"));
-}
-
-#[test]
-fn tui_bypasses_in_non_tty() {
-    let mut cmd = base_cmd();
-    // No subcommand provided; in test harness stdout is non-TTY so TUI should be blocked
-    cmd.assert()
-        .failure()
-        .code(2)
-        .stderr(contains("TUI is disabled"));
 }
 
 #[test]
@@ -2924,13 +2910,13 @@ fn search_filter_assignments_attach_to_options() {
     let mut cmd = base_cmd();
     cmd.args([
         "search",
-        "",
+        "filterprobe",
         "--json",
         "limit=1",
-        "agent=aider",
+        "agent=codex",
         "fields=minimal",
         "mode=lexical",
-        format!("data_dir={}", shared_search_demo_data()).as_str(),
+        format!("data_dir={}", shared_codex_search_data()).as_str(),
     ]);
 
     let output = cmd.assert().success().get_output().clone();
@@ -2949,7 +2935,7 @@ fn search_filter_assignments_attach_to_options() {
         hit["line_number"].is_number(),
         "minimal preset keeps line_number"
     );
-    assert_eq!(hit["agent"].as_str(), Some("aider"));
+    assert_eq!(hit["agent"].as_str(), Some("codex"));
     assert!(hit["content"].is_null(), "minimal preset omits content");
 }
 
@@ -3768,10 +3754,27 @@ fn status_json_reports_index_health() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn view_json_highlights_requested_line() {
+    let tmp = TempDir::new().unwrap();
+    let sample_path = tmp.path().join("thread-001.json");
+    fs::write(
+        &sample_path,
+        concat!(
+            "{\n",
+            "  \"id\": \"thread-001\",\n",
+            "  \"title\": \"Sample thread\",\n",
+            "  \"messages\": [\n",
+            "    { \"role\": \"user\", \"text\": \"Hello\", \"createdAt\": 1700000000000 },\n",
+            "    { \"role\": \"assistant\", \"text\": \"Hi there\", \"createdAt\": 1700000005000 }\n",
+            "  ]\n",
+            "}\n",
+        ),
+    )
+    .unwrap();
+
     let mut cmd = base_cmd();
     cmd.args([
         "view",
-        "tests/fixtures/amp/thread-001.json",
+        sample_path.to_str().unwrap(),
         "--json",
         "-n",
         "5",
@@ -4066,7 +4069,18 @@ fn diag_json_reports_paths_and_connectors() {
         .map(str::to_string)
         .collect();
 
-    for expected in ["aider", "pi_agent", "omp", "claude_code"] {
+    for expected in [
+        "codex",
+        "claude_code",
+        "gemini",
+        "opencode",
+        "cursor",
+        "chatgpt",
+        "devin",
+        "qwen",
+        "antigravity",
+        "qoder",
+    ] {
         assert!(
             connector_names.contains(expected),
             "diag connectors missing expected entry: {expected}"
@@ -4154,15 +4168,16 @@ fn stats_missing_db_returns_code_3() {
 #[test]
 fn search_agent_filter_limits_hits() {
     // Agent filter should restrict results to the chosen agent
+    let data_dir = shared_codex_search_data();
     let mut cmd = base_cmd();
     cmd.args([
         "search",
         "",
         "--json",
         "--agent",
-        "aider",
+        "codex",
         "--data-dir",
-        shared_search_demo_data(),
+        data_dir,
     ]);
 
     let output = cmd.assert().success().get_output().clone();
@@ -4170,26 +4185,48 @@ fn search_agent_filter_limits_hits() {
     let json: Value = serde_json::from_str(stdout.trim()).expect("valid JSON");
 
     let hits = json["hits"].as_array().expect("hits array");
-    if hits.is_empty() {
-        assert_eq!(json["count"].as_u64().unwrap_or(0), 0);
-        return;
-    }
+    assert!(
+        !hits.is_empty(),
+        "fixture should contain codex hits: {json}"
+    );
     for hit in hits {
-        assert_eq!(hit["agent"], "aider", "agent filter should be enforced");
+        assert_eq!(hit["agent"], "codex", "agent filter should be enforced");
     }
+
+    let mut non_matching = base_cmd();
+    non_matching.args([
+        "search",
+        "",
+        "--json",
+        "--agent",
+        "gemini",
+        "--data-dir",
+        data_dir,
+    ]);
+    let non_matching_out = non_matching.assert().success().get_output().clone();
+    let non_matching_json: Value =
+        serde_json::from_slice(&non_matching_out.stdout).expect("valid JSON");
+    assert_eq!(
+        non_matching_json["hits"]
+            .as_array()
+            .expect("hits array")
+            .len(),
+        0,
+        "agent filter for an unseeded kept connector should exclude codex hits"
+    );
 }
 
 #[test]
 fn search_provider_alias_filters_like_agent() {
     for alias_args in [
-        vec!["--provider", "aider"],
-        vec!["--tool", "aider"],
-        vec!["provider=aider"],
+        vec!["--provider", "codex"],
+        vec!["--tool", "codex"],
+        vec!["provider=codex"],
     ] {
         let mut cmd = base_cmd();
         cmd.args(["search", "", "--json", "--limit", "10"]);
         cmd.args(alias_args);
-        cmd.args(["--data-dir", shared_search_demo_data()]);
+        cmd.args(["--data-dir", shared_codex_search_data()]);
 
         let output = cmd.assert().success().get_output().clone();
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -4197,11 +4234,11 @@ fn search_provider_alias_filters_like_agent() {
         let hits = json["hits"].as_array().expect("hits array");
         assert!(
             !hits.is_empty(),
-            "fixture should contain aider hits: {json}"
+            "fixture should contain codex hits: {json}"
         );
         for hit in hits {
             assert_eq!(
-                hit["agent"], "aider",
+                hit["agent"], "codex",
                 "provider alias should filter by agent"
             );
         }
@@ -6405,41 +6442,6 @@ fn robot_docs_topic_shorthands_route_to_robot_docs() {
 }
 
 #[test]
-fn guide_planner_and_robot_docs_guide_are_unambiguous() {
-    let mut planner = base_cmd();
-    planner.args(["guide", "--json", "--color=never"]);
-    let planner_output = planner.assert().success().get_output().clone();
-    let planner_stdout = String::from_utf8_lossy(&planner_output.stdout);
-    let planner_json: Value = serde_json::from_str(planner_stdout.trim())
-        .expect("bare cass guide should emit the guided-operations planner JSON");
-    assert_eq!(
-        planner_json["schema_version"], "cass.guide.plan.v1",
-        "bare cass guide must remain the dedicated planner"
-    );
-    assert!(
-        !planner_stdout.contains('\u{1b}'),
-        "guide planner should honor --color=never"
-    );
-
-    let mut docs = base_cmd();
-    docs.args(["robot-docs", "guide", "--color=never"]);
-    let docs_output = docs.assert().success().get_output().clone();
-    let docs_stdout = String::from_utf8_lossy(&docs_output.stdout);
-    assert!(
-        docs_stdout.contains("guide:"),
-        "explicit cass robot-docs guide must retain the documentation topic"
-    );
-    assert!(
-        serde_json::from_str::<Value>(docs_stdout.trim()).is_err(),
-        "robot-docs guide should remain deterministic documentation text"
-    );
-    assert!(
-        !docs_stdout.contains('\u{1b}'),
-        "robot-docs guide should honor --color=never"
-    );
-}
-
-#[test]
 fn structured_help_requests_route_to_robot_docs() {
     for (args, expected) in [
         (vec!["help", "--json", "--color=never"], "guide:"),
@@ -7409,6 +7411,14 @@ fn robot_docs_guide_provides_usage_info() {
     );
     // Should contain guide content
     assert!(
+        stdout.contains("guide:"),
+        "robot-docs guide must retain the guide documentation topic"
+    );
+    assert!(
+        serde_json::from_str::<Value>(stdout.trim()).is_err(),
+        "robot-docs guide should remain deterministic documentation text"
+    );
+    assert!(
         stdout.contains("search") || stdout.contains("cass") || stdout.contains("agent"),
         "guide topic should provide usage information"
     );
@@ -7498,27 +7508,6 @@ fn robot_docs_contracts_describes_api() {
     assert!(
         stdout.contains("contract") || stdout.contains("version") || stdout.contains("API"),
         "contracts topic should describe API contract"
-    );
-}
-
-/// robot-docs analytics topic should describe the implemented safe repair path
-#[test]
-fn robot_docs_analytics_describes_safe_fix_mode() {
-    let mut cmd = base_cmd();
-    cmd.args(["--color=never", "robot-docs", "analytics"]);
-    let out = cmd.assert().success().get_output().clone();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        !stdout.contains('\u{1b}'),
-        "robot-docs analytics should not emit ANSI when color=never"
-    );
-    assert!(
-        stdout.contains("cass analytics validate --fix --json"),
-        "analytics topic should document the implemented safe fix path"
-    );
-    assert!(
-        !stdout.contains("not yet implemented"),
-        "analytics topic should not claim implemented fix behavior is unavailable"
     );
 }
 
@@ -7661,14 +7650,6 @@ fn exit_code_0_success_capabilities() {
 fn exit_code_2_invalid_subcommand() {
     let mut cmd = base_cmd();
     cmd.args(["--json", "nonexistent_command"]);
-    cmd.assert().code(2);
-}
-
-/// Exit code 2: TUI disabled in non-TTY environment
-#[test]
-fn exit_code_2_tui_disabled_non_tty() {
-    let mut cmd = base_cmd();
-    // No subcommand triggers TUI which should be disabled in test
     cmd.assert().code(2);
 }
 
@@ -8111,7 +8092,6 @@ fn introspect_dynamic_schema_all_commands_present() {
     let commands = json["commands"].as_array().expect("commands array");
 
     let expected_commands = [
-        "tui",
         "index",
         "completions",
         "search",

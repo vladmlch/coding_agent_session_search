@@ -71,9 +71,14 @@ fn snapshot(data: &Path) -> (Vec<Archived>, Messages) {
     (conversations, messages)
 }
 
+/// The first message's searchable probe word; underscores would split it.
+fn probe(agent: &str) -> String {
+    format!("{}subtreeprobe", agent.replace('_', ""))
+}
+
 fn transcript(agent: &str, id: &str) -> Vec<u8> {
     let messages = [
-        ("user", format!("{agent}subtreeprobe {id} question")),
+        ("user", format!("{} {id} question", probe(agent))),
         ("assistant", format!("{agent} {id} answer")),
     ];
     if agent == "gemini" {
@@ -88,29 +93,17 @@ fn transcript(agent: &str, id: &str) -> Vec<u8> {
         }))
         .unwrap();
     }
-    let mut rows = Vec::new();
-    if agent == "factory" {
-        rows.push(json!({"type": "session_start", "id": id, "cwd": "/remote/project"}));
-    } else if agent == "prime_agent" {
-        rows.push(json!({"type": "session", "version": 3, "id": id,
-                         "timestamp": "2023-11-14T22:13:20Z", "cwd": "/remote/project"}));
-    }
-    for (index, (role, content)) in messages.into_iter().enumerate() {
-        let time = 1_700_000_000_000_i64 + i64::try_from(index).unwrap() * 1000;
-        rows.push(if agent == "vibe" {
-            json!({"role": role, "content": content, "timestamp": time})
-        } else {
-            json!({"type": "message", "timestamp": time,
+    // Claude Code session JSONL.
+    let rows: Vec<String> = messages
+        .into_iter()
+        .enumerate()
+        .map(|(index, (role, content))| {
+            json!({"type": role, "timestamp": format!("2023-11-14T22:13:{:02}Z", 20 + index),
                    "message": {"role": role, "content": content}})
-        });
-    }
-    (rows
-        .iter()
-        .map(Value::to_string)
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n")
-        .into_bytes()
+            .to_string()
+        })
+        .collect();
+    (rows.join("\n") + "\n").into_bytes()
 }
 
 fn cursor_database(path: &Path, id: &str) {
@@ -149,28 +142,16 @@ fn exercise(test_name: &str, trailing_slash: bool, retain_basename: bool) {
     let mirror = data.join("remotes").join(SOURCE_ID).join("mirror");
     let cases = [
         (
-            "factory",
-            "~/.factory/sessions/project-a",
-            "nested/session.jsonl",
-            "factory-subtree",
+            "claude_code",
+            "~/.claude/projects/project-a",
+            "session-a.jsonl",
+            "claude-a",
         ),
         (
-            "prime_agent",
-            "~/.prime/agent/sessions/project-a",
-            "nested/session.jsonl",
-            "prime-subtree",
-        ),
-        (
-            "vibe",
-            "~/.vibe/logs/session/team-a/run",
-            "messages.jsonl",
-            "team-a/run",
-        ),
-        (
-            "vibe",
-            "~/.vibe/logs/session/team-b/run",
-            "messages.jsonl",
-            "team-b/run",
+            "claude_code",
+            "~/.claude/projects/project-b",
+            "session-b.jsonl",
+            "claude-b",
         ),
         (
             "gemini",
@@ -227,7 +208,7 @@ fn exercise(test_name: &str, trailing_slash: bool, retain_basename: bool) {
                 .is_none()
         );
         before.insert(file.clone(), fs::read(&file).unwrap());
-        if id == "team-a/run" {
+        if id == "claude-a" {
             appended_file = Some(file);
         }
         paths.insert(configured);
@@ -295,7 +276,7 @@ fn exercise(test_name: &str, trailing_slash: bool, retain_basename: bool) {
         );
         assert_eq!(
             actual_messages[0].3,
-            format!("{agent}subtreeprobe {fixture_id} question")
+            format!("{} {fixture_id} question", probe(agent))
         );
         // The archive stores MessageRole::Agent as "agent".
         assert_eq!(
@@ -304,14 +285,8 @@ fn exercise(test_name: &str, trailing_slash: bool, retain_basename: bool) {
         );
         assert_eq!(actual_messages[1].3, format!("{agent} {fixture_id} answer"));
     }
-    for (agent, count) in [
-        ("factory", 1),
-        ("prime_agent", 1),
-        ("vibe", 2),
-        ("gemini", 1),
-        ("cursor", 3),
-    ] {
-        let marker = format!("{agent}subtreeprobe");
+    for (agent, count) in [("claude_code", 2), ("gemini", 1), ("cursor", 3)] {
+        let marker = probe(agent);
         let output = run(&[
             "search",
             &marker,
@@ -322,7 +297,7 @@ fn exercise(test_name: &str, trailing_slash: bool, retain_basename: bool) {
         ]);
         let result: Value = serde_json::from_slice(&output).unwrap();
         // Count sessions, not hits: a conversation whose title is its first
-        // question (factory) also matches through that title on its answer.
+        // question (Claude Code) also matches through that title on its answer.
         let conversations = result["hits"]
             .as_array()
             .unwrap()
@@ -351,7 +326,7 @@ fn exercise(test_name: &str, trailing_slash: bool, retain_basename: bool) {
     let file = appended_file.unwrap();
     let mut bytes = before[&file].clone();
     bytes.extend_from_slice(
-        b"{\"role\":\"user\",\"content\":\"vibeappendprobe\",\"timestamp\":1700000002000}\n",
+        b"{\"type\":\"user\",\"timestamp\":\"2023-11-14T22:13:22Z\",\"message\":{\"role\":\"user\",\"content\":\"claudeappendprobe\"}}\n",
     );
     fs::write(&file, &bytes).unwrap();
     run(&["index", "--json"]);
@@ -363,7 +338,7 @@ fn exercise(test_name: &str, trailing_slash: bool, retain_basename: bool) {
         selected_id,
         2,
         "user".to_owned(),
-        "vibeappendprobe".to_owned(),
+        "claudeappendprobe".to_owned(),
     );
     let mut expected_messages = initial.1;
     expected_messages.push(added);
@@ -371,7 +346,7 @@ fn exercise(test_name: &str, trailing_slash: bool, retain_basename: bool) {
     assert_eq!(updated.1, expected_messages);
     let output = run(&[
         "search",
-        "vibeappendprobe",
+        "claudeappendprobe",
         "--robot",
         "--mode",
         "lexical",

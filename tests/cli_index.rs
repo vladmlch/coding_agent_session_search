@@ -882,13 +882,18 @@ fn full_index_worker_overrides_the_linux_default_stack_for_franken_open()
 fn index_watch_once_skips_advisory_locked_active_source_without_quarantine() {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().join("data");
-    let source_dir = tmp.path().join("amp");
+    let source_dir = tmp.path().join(".codex/sessions/2026/04/23");
     fs::create_dir_all(&data_dir).unwrap();
     fs::create_dir_all(&source_dir).unwrap();
-    let source_path = source_dir.join("thread-active-source.json");
+    let source_path = source_dir.join("rollout-active-source.jsonl");
     fs::write(
         &source_path,
-        r#"{"id":"thread-active-source","messages":[{"role":"user","text":"still being written","createdAt":1700000000100}]}"#,
+        concat!(
+            r#"{"timestamp":"2026-04-23T00:00:00Z","type":"session_meta","payload":{"id":"rollout-active-source","cwd":"/tmp","cli_version":"0.42.0"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-04-23T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"still being written"}]}}"#,
+            "\n"
+        ),
     )
     .unwrap();
     let locked_source = OpenOptions::new()
@@ -1575,24 +1580,33 @@ fn make_codex_session(
 
 #[test]
 #[serial]
-fn watch_once_indexes_real_aider_session_with_deferred_tantivy_open() {
+fn watch_once_indexes_real_codex_session_with_deferred_tantivy_open() {
+    use std::time::{Duration, UNIX_EPOCH};
+
     let tmp = TempDir::new().unwrap();
     let home = tmp.path();
     let data_dir = home.join("cass_data");
     fs::create_dir_all(&data_dir).unwrap();
-    // qu81y: redundant HOME guard removed — spawns pass env explicitly.
-    let history_file = home.join(".aider.chat.history.md");
-    fs::write(
-        &history_file,
-        "\n> lazywatchprobe\n\nassistant says lazywatchprobe response\n",
-    )
-    .unwrap();
+    let session_file = make_codex_session(
+        &home.join(".codex"),
+        "2026/04",
+        "rollout-watch-once-01.jsonl",
+        "lazywatchprobe",
+    );
+    // Pin mtime past the active-writer recent-write window so watch-once
+    // ingests the finished session immediately rather than deferring it.
+    fs::File::options()
+        .write(true)
+        .open(&session_file)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(100)))
+        .unwrap();
 
     let mut index = base_cmd(home);
     index.current_dir(home);
     index
         .args(["index", "--watch-once"])
-        .arg(&history_file)
+        .arg(&session_file)
         .args(["--json", "--data-dir"])
         .arg(&data_dir);
     let output = index.output().expect("run watch-once index");
@@ -5551,14 +5565,90 @@ fn rvt_claude_session(
     file
 }
 
-/// One Aider chat history — the non-boundary-connector fixture (its
+/// One OpenCode JSON session — the non-boundary-connector fixture (its
 /// unchanged sources are cut by the mtime watermark).
-fn rvt_aider_history(dir: &std::path::Path, needle: &str) -> std::path::PathBuf {
-    fs::create_dir_all(dir).unwrap();
-    let file = dir.join(".aider.chat.history.md");
-    fs::write(&file, format!("> {needle} question\n\n{needle} response\n")).unwrap();
-    rvt_pin_mtime_past(&file);
-    file
+fn rvt_opencode_session(
+    home: &std::path::Path,
+    session_id: &str,
+    needle: &str,
+) -> std::path::PathBuf {
+    let storage = home.join(".local/share/opencode/storage");
+    let session_dir = storage.join("session/rvt-proj");
+    let message_dir = storage.join(format!("message/{session_id}"));
+    let part_user_dir = storage.join(format!("part/{session_id}-m1"));
+    let part_assistant_dir = storage.join(format!("part/{session_id}-m2"));
+    for dir in [
+        &session_dir,
+        &message_dir,
+        &part_user_dir,
+        &part_assistant_dir,
+    ] {
+        fs::create_dir_all(dir).unwrap();
+    }
+    let session_file = session_dir.join(format!("{session_id}.json"));
+    let msg1 = message_dir.join(format!("{session_id}-m1.json"));
+    let part1 = part_user_dir.join("part-1.json");
+    let msg2 = message_dir.join(format!("{session_id}-m2.json"));
+    let part2 = part_assistant_dir.join("part-2.json");
+    fs::write(
+        &session_file,
+        serde_json::to_string(&serde_json::json!({
+            "id": session_id,
+            "projectID": "rvt-proj",
+            "directory": "/workspace/rvt-opencode",
+            "time": {"created": 1_762_643_950_000_i64, "updated": 1_762_643_951_000_i64}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        &msg1,
+        serde_json::to_string(&serde_json::json!({
+            "id": format!("{session_id}-m1"),
+            "sessionID": session_id,
+            "role": "user",
+            "time": {"created": 1_762_643_950_000_i64}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        &part1,
+        serde_json::to_string(&serde_json::json!({
+            "id": "part-1",
+            "messageID": format!("{session_id}-m1"),
+            "type": "text",
+            "text": format!("{needle} question")
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        &msg2,
+        serde_json::to_string(&serde_json::json!({
+            "id": format!("{session_id}-m2"),
+            "sessionID": session_id,
+            "role": "assistant",
+            "time": {"created": 1_762_643_951_000_i64}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        &part2,
+        serde_json::to_string(&serde_json::json!({
+            "id": "part-2",
+            "messageID": format!("{session_id}-m2"),
+            "type": "text",
+            "text": format!("{needle} response")
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    for path in [&session_file, &msg1, &part1, &msg2, &part2] {
+        rvt_pin_mtime_past(path);
+    }
+    session_file
 }
 
 /// One Qwen Code session — the non-boundary control connector whose marks
@@ -5650,13 +5740,6 @@ fn rvt_run_index(
     let mut cmd = base_cmd(home);
     cmd.env("CASS_AUTO_REFRESH", "0");
     cmd.env("CASS_RAW_MIRROR", "0");
-    // The Aider connector's default roots are cwd + HOME, and on macOS the
-    // raw temp path (/var/folders/...) canonicalizes (/private/var/...), so
-    // both roots walk the same history files and emit duplicate
-    // conversations with different source paths. A single explicit root
-    // (the house pattern from e2e_index_resume) keeps the fixture at one
-    // conversation per history file.
-    cmd.env("CASS_AIDER_DATA_ROOT", home);
     for (key, value) in extra_env {
         cmd.env(key, value);
     }
@@ -6102,7 +6185,7 @@ fn rvt_extension_versions(db_path: &std::path::Path, conversation_id: i64) -> (i
 /// win is: index a fixture, age its rows and receipts to the previous
 /// versions (what the previous binary left behind its bump), then
 /// - clone B: keep every source, run `--full` — the incumbent remedy;
-/// - archive A: delete the claude/aider sources, run a PLAIN incremental —
+/// - archive A: delete the claude/opencode sources, run a PLAIN incremental —
 ///   the only possible convergence path is re-projection from the persisted
 ///   archive.
 ///
@@ -6122,9 +6205,9 @@ fn incremental_reprojects_stale_extension_state_from_the_persisted_archive() {
     let db_path = data_dir.join("agent_search.db");
 
     let claude_a = rvt_claude_session(home, "rvt-claude-a", "rvt claude archive probe");
-    let aider_a = rvt_aider_history(home, "rvt aider archive probe");
+    let opencode_a = rvt_opencode_session(home, "rvt-opencode-a", "rvt opencode archive probe");
     let qwen = rvt_qwen_session(home, "rvt qwen control probe");
-    for source in [&claude_a, &aider_a, &qwen] {
+    for source in [&claude_a, &opencode_a, &qwen] {
         assert!(source.exists(), "fixture {} must exist", source.display());
     }
 
@@ -6146,12 +6229,8 @@ fn incremental_reprojects_stale_extension_state_from_the_persisted_archive() {
     };
     let claude_id = find("rvt-claude-a");
     let qwen_id = find("rvt-hash");
-    let aider_id = conversations
-        .iter()
-        .find(|(_, path)| path.ends_with(".aider.chat.history.md"))
-        .map(|(id, _)| *id)
-        .expect("aider conversation");
-    let mut ids = [claude_id, aider_id, qwen_id];
+    let opencode_id = find("rvt-opencode-a");
+    let mut ids = [claude_id, opencode_id, qwen_id];
     ids.sort_unstable();
 
     let marks = rvt_region_marks(&db_path);
@@ -6195,14 +6274,14 @@ fn incremental_reprojects_stale_extension_state_from_the_persisted_archive() {
         );
     }
 
-    // Claude Code culled the claude/aider probe sources; the qwen control
+    // Claude Code culled the claude/opencode probe sources; the qwen control
     // stays live and unchanged.
     fs::remove_file(&claude_a).unwrap();
-    fs::remove_file(&aider_a).unwrap();
+    fs::remove_file(&opencode_a).unwrap();
     rvt_repair_global_scan_watermark(&db_path);
 
     // Run A: a plain incremental — never `--full` — on the archive whose
-    // claude/aider sources are gone. The only possible convergence path is
+    // claude/opencode sources are gone. The only possible convergence path is
     // re-projection from the persisted archive.
     let run2 = rvt_run_incremental(home, &data_dir);
     let marks = rvt_region_marks(&db_path);
@@ -6222,9 +6301,9 @@ fn incremental_reprojects_stale_extension_state_from_the_persisted_archive() {
         "run A must not re-parse claude sources: {run2}"
     );
     assert_eq!(
-        rvt_connector_conversations(&run2, "aider"),
+        rvt_connector_conversations(&run2, "opencode"),
         0,
-        "run A must not re-parse aider sources: {run2}"
+        "run A must not re-parse opencode sources: {run2}"
     );
     assert_eq!(
         rvt_connector_conversations(&run2, "qwen"),

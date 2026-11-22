@@ -23,9 +23,8 @@
 //! and closed in Task 11.
 
 use std::fs;
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 
 use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt};
 use coding_agent_search::franken_sync::{Connection as FrankenConnection, params};
@@ -50,7 +49,7 @@ const LEGACY_ORIGIN_HOST: &str = "legacy-remote-host";
 /// The configured remote path a pre-removal sync would have mirrored. The
 /// mirror directory the indexer still scans lives at
 /// `<data-dir>/remotes/<name>/mirror/<path_to_safe_dirname(path)>`.
-const REMOTE_VIBE_PATH: &str = "~/.vibe/logs/session";
+const REMOTE_CLAUDE_PATH: &str = "~/.claude/projects";
 
 /// One canonical row as the test cares about it: identity, provenance and the
 /// message count. `index --full` must leave the whole set bit-identical.
@@ -169,25 +168,6 @@ impl Fixture {
         self.cass_command().args(args).output().expect("spawn cass")
     }
 
-    /// Run cass with a piped stdin (for `--password-stdin` surfaces).
-    fn cass_stdin(&self, args: &[&str], stdin_text: &str) -> Output {
-        let mut child = self
-            .cass_command()
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn cass");
-        child
-            .stdin
-            .take()
-            .expect("stdin pipe")
-            .write_all(stdin_text.as_bytes())
-            .expect("write cass stdin");
-        child.wait_with_output().expect("cass output")
-    }
-
     fn expect_ok(out: &Output, args: &[&str]) {
         assert!(
             out.status.success(),
@@ -201,12 +181,6 @@ impl Fixture {
 
     fn cass_ok(&self, args: &[&str]) -> Output {
         let out = self.cass(args);
-        Self::expect_ok(&out, args);
-        out
-    }
-
-    fn cass_stdin_ok(&self, args: &[&str], stdin_text: &str) -> Output {
-        let out = self.cass_stdin(args, stdin_text);
         Self::expect_ok(&out, args);
         out
     }
@@ -530,13 +504,13 @@ fn write_empty_sources_config(config_dir: &Path) {
 }
 
 /// Drop a transcript into the historical mirror layout
-/// `<data-dir>/remotes/<source>/mirror/<safe-name>/<basename>/<session>/messages.jsonl`,
-/// the way a pre-removal rsync/scp of `~/.vibe/logs/session` laid it out: the
-/// transport container holds the remote path's basename (`session/`) and the
+/// `<data-dir>/remotes/<source>/mirror/<safe-name>/<basename>/<session>/session.jsonl`,
+/// the way a pre-removal rsync/scp of `~/.claude/projects` laid it out: the
+/// transport container holds the remote path's basename (`projects/`) and the
 /// session store lives below it. The connector's `mirrored_store` resolver
 /// only accepts that basename-preserving shape for a path without a trailing
 /// slash.
-fn write_vibe_mirror_file(data_dir: &Path, source_id: &str, remote_path: &str) -> PathBuf {
+fn write_claude_mirror_file(data_dir: &Path, source_id: &str, remote_path: &str) -> PathBuf {
     let basename = Path::new(remote_path)
         .file_name()
         .expect("remote path must name a store basename");
@@ -547,13 +521,13 @@ fn write_vibe_mirror_file(data_dir: &Path, source_id: &str, remote_path: &str) -
         .join(path_to_safe_dirname(remote_path))
         .join(basename)
         .join("fixture-session")
-        .join("messages.jsonl");
+        .join("session.jsonl");
     fs::create_dir_all(file.parent().expect("mirror parent")).expect("create mirror directory");
     fs::write(
         &file,
         format!(
-            "{{\"role\":\"user\",\"content\":\"mirror question {MARK_MIRROR}\",\"timestamp\":1700000000000}}\n\
-             {{\"role\":\"assistant\",\"content\":\"mirror answer\",\"timestamp\":1700000001000}}\n"
+            "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"mirror question {MARK_MIRROR}\"}},\"uuid\":\"mirror-1\",\"timestamp\":\"2023-11-14T22:13:20Z\",\"sessionId\":\"fixture-session\",\"cwd\":\"/fixture/workspace\"}}\n\
+             {{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":\"mirror answer\"}},\"uuid\":\"mirror-2\",\"timestamp\":\"2023-11-14T22:13:21Z\",\"sessionId\":\"fixture-session\",\"cwd\":\"/fixture/workspace\"}}\n"
         ),
     )
     .expect("write mirror transcript");
@@ -572,9 +546,9 @@ fn configured_mirror_indexes_then_survives_mirror_and_config_loss() {
         &fixture.config,
         WORK_SOURCE_ID,
         WORK_ORIGIN_HOST,
-        REMOTE_VIBE_PATH,
+        REMOTE_CLAUDE_PATH,
     );
-    write_vibe_mirror_file(&fixture.data_dir, WORK_SOURCE_ID, REMOTE_VIBE_PATH);
+    write_claude_mirror_file(&fixture.data_dir, WORK_SOURCE_ID, REMOTE_CLAUDE_PATH);
 
     // Phase 1 — mirror present: `index --full` must pick the mirrored
     // transcript up under the `work-laptop` source.
@@ -874,28 +848,30 @@ fn archived_remote_rows_survive_across_read_surfaces() {
         "hybrid search must surface the archived remote session: {hybrid:?}"
     );
 
-    // Encrypted HTML export of the archived remote session.
-    let html_dir = fixture.data_dir.join("html-encrypted");
-    let encrypted = fixture.cass_stdin_ok(
-        &[
-            "export-html",
-            work_source_path,
-            "--source",
-            WORK_SOURCE_ID,
-            "--conversation-id",
-            &conv_id,
-            "--output-dir",
-            &html_dir.to_string_lossy(),
-            "--encrypt",
-            "--password-stdin",
-            "--json",
-        ],
-        "archive-preservation passphrase\n",
-    );
-    let receipt: Value = serde_json::from_slice(&encrypted.stdout).expect("export-html json");
+    // Plaintext HTML export of the archived remote session.
+    let html_dir = fixture.data_dir.join("html-exported");
+    let exported_html = fixture.cass_ok(&[
+        "export-html",
+        work_source_path,
+        "--source",
+        WORK_SOURCE_ID,
+        "--conversation-id",
+        &conv_id,
+        "--output-dir",
+        &html_dir.to_string_lossy(),
+        "--json",
+    ]);
+    let receipt: Value = serde_json::from_slice(&exported_html.stdout).expect("export-html json");
     assert_eq!(
-        receipt["exported"]["encrypted"], true,
-        "export-html --encrypt must emit an encrypted file: {receipt}"
+        receipt["success"], true,
+        "export-html must succeed for archived remote session: {receipt}"
+    );
+    assert!(
+        fs::read_dir(&html_dir)
+            .expect("export-html output dir")
+            .count()
+            > 0,
+        "export-html must write an HTML file for the archived remote session"
     );
 
     // Pages static export of the whole archive: `--export-only` writes a
@@ -932,18 +908,6 @@ fn archived_remote_rows_survive_across_read_surfaces() {
         total, 2,
         "timeline --source remote must count both remote sessions: {timeline}"
     );
-
-    // Analytics rollups tolerate remote rows (they may be empty of token
-    // data, but the command must answer).
-    fixture.cass_ok(&[
-        "analytics",
-        "tokens",
-        "--source",
-        "remote",
-        "--json",
-        "--data-dir",
-        &data_dir,
-    ]);
 
     // `models backfill` with the hash embedder must place remote messages
     // into the semantic index — no model download needed.

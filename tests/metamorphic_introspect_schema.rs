@@ -24,15 +24,6 @@ fn cass_cmd(test_home: &Path) -> Command {
         .env("CLAUDE_HOME", test_home.join(".claude"))
         .env("GEMINI_HOME", test_home.join(".gemini"))
         .env("OPENCODE_STORAGE_ROOT", test_home.join(".opencode"))
-        .env("CASS_AIDER_DATA_ROOT", test_home.join(".aider-missing"))
-        .env("PI_SESSIONS_DIR", test_home.join(".pi-sessions-missing"))
-        .env("PI_CODING_AGENT_DIR", test_home.join(".pi-agent-missing"))
-        .env(
-            "PI_CODING_AGENT_SESSION_DIR",
-            test_home.join(".pi-coding-agent-sessions-missing"),
-        )
-        .env_remove("PI_CONFIG_DIR")
-        .env_remove("PI_PROFILE")
         .env("CASS_AUTO_REFRESH", "0")
         .current_dir(test_home)
         .env("CASS_IGNORE_SOURCES_CONFIG", "1");
@@ -257,18 +248,6 @@ fn surface_command(
     let empty_data_dir = empty_data_dir.to_str().expect("utf8 data dir");
 
     let args = match surface {
-        "analytics-incidents" => {
-            return Some((
-                vec![
-                    "analytics".to_string(),
-                    "incidents".to_string(),
-                    "--json".to_string(),
-                    "--data-dir".to_string(),
-                    demo_data.to_string(),
-                ],
-                ExpectStatus::ExitOk,
-            ));
-        }
         "api-version" => vec!["api-version", "--json"],
         "capabilities" => vec!["capabilities", "--json"],
         "diag" => vec!["diag", "--json"],

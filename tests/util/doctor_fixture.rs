@@ -1869,17 +1869,13 @@ impl DoctorProviderSpec {
             Self::claude_code(),
             Self::codex(),
             Self::cursor(),
+            Self::antigravity(),
             Self::gemini(),
-            Self::aider(),
-            Self::amp(),
-            Self::cline(),
             Self::opencode(),
-            Self::pi_agent(),
-            Self::copilot(),
-            Self::openclaw(),
-            Self::clawdbot(),
-            Self::vibe(),
+            Self::qwen(),
             Self::chatgpt(),
+            Self::devin(),
+            Self::qoder(),
             Self::fad_backed(),
         ]
     }
@@ -1908,20 +1904,16 @@ impl DoctorProviderSpec {
         )
     }
 
+    pub fn antigravity() -> Self {
+        Self::new(
+            "antigravity",
+            "Antigravity",
+            ".gemini/antigravity/brain/demo/.system_generated/logs/transcript.jsonl",
+        )
+    }
+
     pub fn gemini() -> Self {
         Self::new("gemini", "Gemini", ".gemini/tmp/demo/chats/session.json")
-    }
-
-    pub fn aider() -> Self {
-        Self::new("aider", "Aider", "project/.aider.chat.history.md")
-    }
-
-    pub fn amp() -> Self {
-        Self::new(
-            "amp",
-            "Amp",
-            ".config/sourcegraph/amp/sessions/session.json",
-        )
     }
 
     pub fn cline() -> Self {
@@ -1936,24 +1928,12 @@ impl DoctorProviderSpec {
         Self::new("opencode", "OpenCode", ".local/share/opencode/opencode.db")
     }
 
-    pub fn pi_agent() -> Self {
-        Self::new("pi_agent", "Pi Agent", ".pi-agent/sessions/session.jsonl")
-    }
-
-    pub fn copilot() -> Self {
-        Self::new("copilot", "Copilot", ".config/github-copilot/chat.json")
-    }
-
-    pub fn openclaw() -> Self {
-        Self::new("openclaw", "OpenClaw", ".openclaw/sessions/session.jsonl")
-    }
-
-    pub fn clawdbot() -> Self {
-        Self::new("clawdbot", "ClawdBot", ".clawdbot/sessions/session.jsonl")
-    }
-
-    pub fn vibe() -> Self {
-        Self::new("vibe", "Vibe", ".vibe/sessions/session.jsonl")
+    pub fn qwen() -> Self {
+        Self::new(
+            "qwen",
+            "Qwen",
+            ".qwen/tmp/demo/chats/session-1762643950138-demo.json",
+        )
     }
 
     pub fn chatgpt() -> Self {
@@ -1961,6 +1941,18 @@ impl DoctorProviderSpec {
             "chatgpt",
             "ChatGPT",
             ".config/cass/chatgpt/conversations.json",
+        )
+    }
+
+    pub fn devin() -> Self {
+        Self::new("devin", "Devin", ".local/share/devin/sessions.sqlite")
+    }
+
+    pub fn qoder() -> Self {
+        Self::new(
+            "qoder",
+            "Qoder",
+            ".qoder/SharedClientCache/Data/db/session.db",
         )
     }
 

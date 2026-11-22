@@ -3,27 +3,34 @@
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use coding_agent_search::pages::bundle::{BundleBuilder, BundleConfig, IntegrityManifest};
-    use coding_agent_search::pages::encrypt::EncryptionEngine;
+    use coding_agent_search::pages::bundle::{
+        BundleBuilder, BundleConfig, IntegrityManifest, UnencryptedConfig, UnencryptedPayload,
+    };
     use std::fs;
     use std::path::Path;
     use std::process::Command;
     use tempfile::TempDir;
 
-    /// Create a test encrypted archive in the given directory
-    fn setup_encrypted_archive(dir: &Path) -> Result<()> {
-        // Create a test file to encrypt
-        let test_file = dir.join("test_input.db");
-        fs::write(&test_file, b"test database content for bundle testing")?;
+    const PAYLOAD_NAME: &str = "data.db";
+    const PAYLOAD_BODY: &[u8] = b"test database content for bundle testing";
 
-        // Encrypt it
-        let mut engine = EncryptionEngine::default();
-        engine.add_password_slot("test-password")?;
-        let dir_buf = dir.to_path_buf();
-        engine.encrypt_file(&test_file, &dir_buf, |_, _| {})?;
+    /// Stage an unencrypted export (`config.json` + `payload/data.db`) in `dir`.
+    fn setup_unencrypted_export(dir: &Path) -> Result<()> {
+        let payload_dir = dir.join("payload");
+        fs::create_dir_all(&payload_dir)?;
+        fs::write(payload_dir.join(PAYLOAD_NAME), PAYLOAD_BODY)?;
 
-        // Clean up the source file
-        fs::remove_file(&test_file)?;
+        let config = UnencryptedConfig {
+            encrypted: false,
+            version: "1.0.0".to_string(),
+            payload: UnencryptedPayload {
+                path: format!("payload/{PAYLOAD_NAME}"),
+                format: "sqlite".to_string(),
+                size_bytes: Some(PAYLOAD_BODY.len() as u64),
+            },
+            warning: Some("UNENCRYPTED".to_string()),
+        };
+        fs::write(dir.join("config.json"), serde_json::to_vec_pretty(&config)?)?;
 
         Ok(())
     }
@@ -53,9 +60,9 @@ mod tests {
     }
 
     /// Node suites that execute the shipped Pages modules: real SQLite/FTS5
-    /// through `node:sqlite`, and vm-module harnesses for the search, viewer,
-    /// crypto-worker and service-worker controllers. No cargo target ran them,
-    /// and four of their tests drifted red unnoticed (0dpz2).
+    /// through `node:sqlite`, and vm-module harnesses for the search, viewer
+    /// and service-worker controllers. No cargo target ran them, and four of
+    /// their tests drifted red unnoticed (0dpz2).
     fn pages_node_suites() -> Result<Vec<String>> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut suites = Vec::new();
@@ -79,7 +86,7 @@ mod tests {
     fn pages_node_behavior_suites_pass() -> Result<()> {
         let suites = pages_node_suites()?;
         assert!(
-            suites.len() >= 16,
+            suites.len() >= 13,
             "expected the Pages node suites, found {suites:?}"
         );
         // Node 22.13+ (node:sqlite without a flag).
@@ -109,7 +116,6 @@ mod tests {
         "index.html",
         "styles.css",
         "auth.js",
-        "password-strength.js",
         "viewer.js",
         "router.js",
         "share.js",
@@ -121,7 +127,6 @@ mod tests {
         "session.js",
         "sw.js",
         "sw-register.js",
-        "crypto_worker.js",
         "virtual-list.js",
         "coi-detector.js",
         "attachments.js",
@@ -132,32 +137,24 @@ mod tests {
         "vendor/sqlite3.mjs",
         "vendor/sqlite3.wasm",
         "vendor/sqlite3-opfs-async-proxy.js",
-        "vendor/argon2.js",
-        "vendor/argon2-wasm.js",
-        "vendor/argon2.wasm",
-        "vendor/fflate.js",
-        "vendor/html5-qrcode.min.js",
         "vendor/manifest.json",
         "vendor/LICENSE-sqlite-wasm.txt",
-        "vendor/LICENSE-argon2-browser.txt",
-        "vendor/LICENSE-fflate.txt",
-        "vendor/LICENSE-html5-qrcode.txt",
     ];
 
     #[test]
     fn test_bundle_creates_directory_structure() -> Result<()> {
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
-        setup_encrypted_archive(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
+        setup_unencrypted_export(&export_dir)?;
 
         let builder = BundleBuilder::new()
             .title("Test Archive")
             .description("A test archive");
 
-        let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
+        let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
 
         // Verify directory structure
         assert!(result.site_dir.exists(), "site/ directory should exist");
@@ -176,14 +173,14 @@ mod tests {
     #[test]
     fn test_bundle_copies_all_assets() -> Result<()> {
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
-        setup_encrypted_archive(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
+        setup_unencrypted_export(&export_dir)?;
 
         let builder = BundleBuilder::new();
-        let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
+        let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
 
         // Verify required files exist
         let site_dir = &result.site_dir;
@@ -233,35 +230,34 @@ mod tests {
     }
 
     #[test]
-    fn test_bundle_copies_payload_chunks() -> Result<()> {
+    fn test_bundle_copies_payload_file() -> Result<()> {
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
-        setup_encrypted_archive(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
+        setup_unencrypted_export(&export_dir)?;
 
         let builder = BundleBuilder::new();
-        let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
+        let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
 
-        // Verify payload chunks were copied
-        assert!(result.chunk_count > 0, "Should have at least one chunk");
+        // An unencrypted export publishes exactly its one declared payload file.
+        assert_eq!(
+            result.chunk_count, 1,
+            "Should copy exactly one payload file"
+        );
 
         let payload_dir = result.site_dir.join("payload");
-        let chunk_count = fs::read_dir(&payload_dir)?
-            .filter(|e| {
-                e.as_ref()
-                    .map(|e| {
-                        e.path()
-                            .extension()
-                            .map(|ext| ext == "bin")
-                            .unwrap_or(false)
-                    })
-                    .unwrap_or(false)
-            })
-            .count();
-
-        assert_eq!(chunk_count, result.chunk_count, "Chunk count should match");
+        let payload_count = fs::read_dir(&payload_dir)?.count();
+        assert_eq!(
+            payload_count, result.chunk_count,
+            "Payload file count should match"
+        );
+        assert_eq!(
+            fs::read(payload_dir.join(PAYLOAD_NAME))?,
+            PAYLOAD_BODY,
+            "Payload bytes should be copied verbatim"
+        );
 
         Ok(())
     }
@@ -269,21 +265,18 @@ mod tests {
     #[test]
     fn test_bundle_does_not_publish_unlisted_stale_payload_bins() -> Result<()> {
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
-        setup_encrypted_archive(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
+        setup_unencrypted_export(&export_dir)?;
 
-        let payload_dir = encrypted_dir.join("payload");
-        fs::write(
-            payload_dir.join("chunk-99999.bin"),
-            b"stale encrypted chunk",
-        )?;
+        let payload_dir = export_dir.join("payload");
+        fs::write(payload_dir.join("chunk-99999.bin"), b"stale payload chunk")?;
         fs::write(payload_dir.join("secret.bin"), b"unlisted payload file")?;
 
         let builder = BundleBuilder::new();
-        let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
+        let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
 
         assert!(!result.site_dir.join("payload/chunk-99999.bin").exists());
         assert!(!result.site_dir.join("payload/secret.bin").exists());
@@ -299,14 +292,14 @@ mod tests {
     #[test]
     fn test_bundle_generates_integrity_manifest() -> Result<()> {
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
-        setup_encrypted_archive(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
+        setup_unencrypted_export(&export_dir)?;
 
         let builder = BundleBuilder::new();
-        let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
+        let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
 
         // Load and verify integrity manifest
         let integrity_path = result.site_dir.join("integrity.json");
@@ -315,15 +308,15 @@ mod tests {
 
         assert_eq!(manifest.version, 1);
         // BundleBuilder embeds every first-party page asset from
-        // src/pages/bundle.rs::PAGES_ASSETS plus whatever payload chunks the
-        // encrypted archive produced. Missing an imported module produces a
-        // publishable bundle whose viewer fails only at browser runtime, so the
-        // test names the complete asset set instead of checking a loose count.
+        // src/pages/bundle.rs::PAGES_ASSETS plus the export's payload file.
+        // Missing an imported module produces a publishable bundle whose
+        // viewer fails only at browser runtime, so the test names the
+        // complete asset set instead of checking a loose count.
         let minimum_runtime_assets = EXPECTED_PAGE_ASSETS.len() + EXPECTED_VENDOR_ASSETS.len();
         assert!(
             manifest.files.len() >= minimum_runtime_assets,
             "integrity manifest must list at least the {minimum_runtime_assets} embedded \
-             first-party and vendor runtime assets plus payload chunks; got {} entries: {:?}",
+             first-party and vendor runtime assets plus the payload; got {} entries: {:?}",
             manifest.files.len(),
             manifest.files.keys().collect::<Vec<_>>()
         );
@@ -342,6 +335,11 @@ mod tests {
                 "integrity manifest must list pinned vendor asset `{expected_asset}`"
             );
         }
+        let payload_entry = format!("payload/{PAYLOAD_NAME}");
+        assert!(
+            manifest.files.contains_key(&payload_entry),
+            "integrity manifest must list the copied payload `{payload_entry}`"
+        );
 
         // Verify integrity.json is not in the manifest (chicken/egg)
         assert!(!manifest.files.contains_key("integrity.json"));
@@ -369,14 +367,14 @@ mod tests {
     #[test]
     fn test_bundle_generates_fingerprint() -> Result<()> {
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
-        setup_encrypted_archive(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
+        setup_unencrypted_export(&export_dir)?;
 
         let builder = BundleBuilder::new();
-        let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
+        let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
 
         // Fingerprint should be 16 hex characters
         assert_eq!(
@@ -395,24 +393,22 @@ mod tests {
     #[test]
     fn test_bundle_writes_private_artifacts() -> Result<()> {
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
-        setup_encrypted_archive(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
+        setup_unencrypted_export(&export_dir)?;
 
         let config = BundleConfig {
             title: "Test Archive".to_string(),
             description: "Test description".to_string(),
             hide_metadata: false,
-            recovery_secret: Some(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
-            generate_qr: false,
             generated_docs: Vec::new(),
             analytics_status: None,
         };
 
         let builder = BundleBuilder::with_config(config);
-        let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
+        let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
 
         // Verify private artifacts
         assert!(
@@ -421,13 +417,12 @@ mod tests {
                 .join("integrity-fingerprint.txt")
                 .exists()
         );
-        assert!(result.private_dir.join("recovery-secret.txt").exists());
-        assert!(result.private_dir.join("master-key.json").exists());
+        assert!(result.private_dir.join("unencrypted-warning.txt").exists());
 
-        // Verify recovery secret content
-        let recovery_content = fs::read_to_string(result.private_dir.join("recovery-secret.txt"))?;
-        assert!(recovery_content.contains("Recovery Secret"));
-        assert!(recovery_content.contains("NEVER share"));
+        // Verify unencrypted warning content
+        let warning = fs::read_to_string(result.private_dir.join("unencrypted-warning.txt"))?;
+        assert!(warning.contains("UNENCRYPTED ARCHIVE WARNING"));
+        assert!(warning.contains("WITHOUT encryption"));
 
         Ok(())
     }
@@ -435,18 +430,16 @@ mod tests {
     #[test]
     fn test_bundle_site_has_no_secrets() -> Result<()> {
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
-        setup_encrypted_archive(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
+        setup_unencrypted_export(&export_dir)?;
 
         let config = BundleConfig {
             title: "Test Archive".to_string(),
             description: "Test description".to_string(),
             hide_metadata: false,
-            recovery_secret: Some(vec![0xDE, 0xAD, 0xBE, 0xEF]),
-            generate_qr: false,
             generated_docs: Vec::new(),
             analytics_status: Some(serde_json::json!({
                 "coverage": { "api_token_coverage_status": "no-data" },
@@ -455,7 +448,7 @@ mod tests {
         };
 
         let builder = BundleBuilder::with_config(config);
-        let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
+        let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
 
         // Verify site/ has no private files
         assert!(!result.site_dir.join("recovery-secret.txt").exists());
@@ -463,13 +456,15 @@ mod tests {
         assert!(!result.site_dir.join("qr-code.svg").exists());
         assert!(!result.site_dir.join("integrity-fingerprint.txt").exists());
         assert!(!result.site_dir.join("master-key.json").exists());
+        assert!(!result.site_dir.join("unencrypted-warning.txt").exists());
         let analytics_status = fs::read_to_string(result.site_dir.join("analytics_status.json"))?;
         assert!(analytics_status.contains("rebuild_track_b"));
 
-        // Verify config.json doesn't contain DEK or secrets
-        let _config_content = fs::read_to_string(result.site_dir.join("config.json"))?;
-        // DEK would be unwrapped, so it shouldn't be plain in config
-        // But wrapped DEK is expected (that's the design - LUKS-style key slots)
+        // The public config.json is exactly the unencrypted payload descriptor
+        let config_content = fs::read_to_string(result.site_dir.join("config.json"))?;
+        let site_config: UnencryptedConfig = serde_json::from_str(&config_content)?;
+        assert!(!site_config.encrypted);
+        assert_eq!(site_config.payload.path, format!("payload/{PAYLOAD_NAME}"));
 
         Ok(())
     }
@@ -477,14 +472,14 @@ mod tests {
     #[test]
     fn test_bundle_robots_txt_content() -> Result<()> {
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
-        setup_encrypted_archive(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
+        setup_unencrypted_export(&export_dir)?;
 
         let builder = BundleBuilder::new();
-        let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
+        let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
 
         let robots_content = fs::read_to_string(result.site_dir.join("robots.txt"))?;
         assert!(robots_content.contains("User-agent: *"));
@@ -496,17 +491,17 @@ mod tests {
     #[test]
     fn test_bundle_site_metadata() -> Result<()> {
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
-        setup_encrypted_archive(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
+        setup_unencrypted_export(&export_dir)?;
 
         let builder = BundleBuilder::new()
             .title("My Custom Archive")
             .description("Custom description here");
 
-        let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
+        let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
 
         let site_json_content = fs::read_to_string(result.site_dir.join("site.json"))?;
         let site_json: serde_json::Value = serde_json::from_str(&site_json_content)?;
@@ -521,14 +516,14 @@ mod tests {
     #[test]
     fn test_bundle_fails_without_config() -> Result<()> {
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
         // Don't create config.json or payload/
 
         let builder = BundleBuilder::new();
-        let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {});
+        let result = builder.build(&export_dir, &bundle_dir, |_, _| {});
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -543,28 +538,24 @@ mod tests {
     #[test]
     fn test_bundle_fails_without_payload() -> Result<()> {
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
 
         // Create config.json but no payload/
         let test_config = serde_json::json!({
-            "version": 2,
-            "export_id": "test",
-            "base_nonce": "test",
-            "compression": "deflate",
-            "kdf_defaults": {},
-            "payload": {"files": []},
-            "key_slots": []
+            "encrypted": false,
+            "version": "1.0.0",
+            "payload": {"path": format!("payload/{PAYLOAD_NAME}"), "format": "sqlite"}
         });
         fs::write(
-            encrypted_dir.join("config.json"),
+            export_dir.join("config.json"),
             serde_json::to_string(&test_config)?,
         )?;
 
         let builder = BundleBuilder::new();
-        let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {});
+        let result = builder.build(&export_dir, &bundle_dir, |_, _| {});
 
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -581,17 +572,17 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let temp = TempDir::new()?;
-        let encrypted_dir = temp.path().join("encrypted");
+        let export_dir = temp.path().join("export");
         let bundle_dir = temp.path().join("bundle");
 
-        fs::create_dir_all(&encrypted_dir)?;
-        setup_encrypted_archive(&encrypted_dir)?;
+        fs::create_dir_all(&export_dir)?;
+        setup_unencrypted_export(&export_dir)?;
 
         let phases: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let phases_clone = phases.clone();
 
         let builder = BundleBuilder::new();
-        builder.build(&encrypted_dir, &bundle_dir, move |phase, _msg| {
+        builder.build(&export_dir, &bundle_dir, move |phase, _msg| {
             phases_clone.lock().unwrap().push(phase.to_string());
         })?;
 
@@ -981,23 +972,6 @@ mod tests {
                     "FROM conversations c WHERE 1 = 1${scope.sql}\n     ORDER BY c.started_at DESC, c.id DESC LIMIT ? OFFSET ?"
                 ),
             "recent search should pass time bounds when an agent filter is also active"
-        );
-    }
-
-    #[test]
-    fn test_auth_password_unlock_preserves_exact_input() {
-        let auth_js = include_str!("../src/pages_assets/auth.js");
-        assert!(
-            auth_js.contains("const password = elements.passwordInput.value;"),
-            "browser unlock must pass the exact password string to Argon2id"
-        );
-        assert!(
-            auth_js.contains("if (password.length === 0)"),
-            "empty-password validation should not trim away intentional leading/trailing spaces"
-        );
-        assert!(
-            !auth_js.contains("const password = elements.passwordInput.value.trim();"),
-            "trimming the browser password makes archives with leading/trailing-space passwords impossible to unlock"
         );
     }
 
@@ -1539,72 +1513,6 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_qr_scanner_cancel_invalidates_pending_start_and_clears_dom() {
-        let auth_js = include_str!("../src/pages_assets/auth.js");
-        assert!(
-            auth_js.contains("let activeQrScannerSession = 0;"),
-            "auth QR flow should track scanner sessions so cancel/lock can invalidate in-flight starts"
-        );
-        assert!(
-            auth_js.contains("let qrLibraryLoadPromise = null;"),
-            "auth QR flow should share one library load promise instead of injecting duplicate scripts"
-        );
-        assert!(
-            auth_js.contains("const sessionToken = beginQrScannerSession();"),
-            "auth QR open flow should snapshot the current scanner session before async work"
-        );
-        assert!(
-            auth_js
-                .contains("if (qrScanner && !elements.qrScanner?.classList.contains(\"hidden\"))"),
-            "auth QR open flow should refuse to spawn a second scanner while one is already active"
-        );
-        assert!(
-            auth_js.contains("!isCurrentQrScannerSession(sessionToken)")
-                && auth_js.contains("elements.qrScanner?.classList.contains(\"hidden\")"),
-            "auth QR open flow should abort stale scanner starts after cancel or lock"
-        );
-        assert!(
-            auth_js.contains("await scanner.clear();"),
-            "auth QR teardown should clear the library-owned DOM after stopping the camera"
-        );
-        assert!(
-            auth_js.contains("elements.qrReader?.replaceChildren();"),
-            "auth QR teardown should clear any stale scanner markup from the reader container"
-        );
-    }
-
-    #[test]
-    fn test_auth_live_session_expiry_is_enforced_without_extending_on_mode_change() {
-        let auth_js = include_str!("../src/pages_assets/auth.js");
-        assert!(
-            auth_js.contains("let activeSessionExpiryTs = 0;")
-                && auth_js.contains("let activeSessionExpiryTimerId = null;")
-                && auth_js.contains(
-                    "document.addEventListener(\"visibilitychange\", handleSessionVisibilityChange);"
-                ),
-            "auth should track active session expiry in memory and recheck it when the page becomes visible again"
-        );
-        assert!(
-            auth_js.contains("persistSession(window.cassSession.dek, activeSessionExpiryTs);")
-                && auth_js.contains(
-                    "function persistSession(dekBase64, expiryTs = activeSessionExpiryTs) {"
-                ),
-            "changing storage backends during an unlocked session should preserve the existing expiry instead of silently extending it"
-        );
-        assert!(
-            auth_js.contains("scheduleActiveSessionExpiry(expiry);")
-                && auth_js.contains(
-                    "showError(\"Your session expired. Please unlock the archive again.\");"
-                ),
-            "auth should actively enforce live session expiry instead of only checking expiry on page reload"
-        );
-        assert!(
-            auth_js.matches("clearActiveSessionExpiry();").count() >= 4,
-            "auth lock and failure paths should clear the in-memory expiry timer so stale expirations cannot fire later"
-        );
-    }
-
-    #[test]
     fn test_conversation_load_has_error_boundary_for_render_failures() {
         let conversation_js = include_str!("../src/pages_assets/conversation.js");
         assert!(
@@ -1697,8 +1605,8 @@ mod tests {
             "pages bundle should keep the strict CSP script policy"
         );
         assert!(
-            index_html.contains("id=\"auth-screen\" class=\"auth-container\""),
-            "auth screen should stay visible in static markup so a failed auth.js startup does not leave the page blank"
+            index_html.contains("id=\"app-screen\" class=\"app-container\""),
+            "app screen should stay visible in static markup so a failed auth.js startup does not leave the page blank"
         );
         assert!(
             !index_html.contains("<script type=\"module\">"),
@@ -1716,22 +1624,20 @@ mod tests {
             auth_js.contains("registerServiceWorker().catch((error) => {")
                 && auth_js.contains("initCOIDetection({")
                 && auth_js.contains("onServiceWorkerActivated(async () => {")
-                && auth_js.contains("authScreen?.classList.add(\"hidden\");"),
-            "auth.js should own service-worker registration, initial auth hiding, COI initialization, and activation rechecks"
+                && auth_js.contains("const appScreen = document.getElementById(\"app-screen\");"),
+            "auth.js should own service-worker registration, COI initialization, and activation rechecks"
         );
         assert!(
-            auth_js.contains("const appScreen = document.getElementById(\"app-screen\");")
-                && auth_js
-                    .contains("if (appScreen && !appScreen.classList.contains(\"hidden\")) {")
-                && auth_js.contains("const revealAuthScreenIfLocked = () => {")
-                && auth_js.contains("revealAuthScreenIfLocked();"),
-            "COI bootstrap should only re-show the auth screen while the app is still locked, including late failure paths"
+            auth_js.contains("const revealAppScreen = () => {")
+                && auth_js.contains("appScreen?.classList.remove(\"hidden\");")
+                && auth_js.contains("onReady: revealAppScreen,"),
+            "COI bootstrap should reveal the app screen once isolation is ready"
         );
         assert!(
             auth_js.contains("})\n    .catch((error) => {")
                 && auth_js.contains("console.error(\"[App] COI initialization failed:\", error);")
-                && auth_js.contains("revealAuthScreenIfLocked();"),
-            "COI bootstrap failures should fall back to revealing the auth screen instead of leaving the page blank"
+                && auth_js.matches("revealAppScreen();").count() >= 2,
+            "COI bootstrap failures should fall back to revealing the app screen instead of leaving the page blank"
         );
     }
 
@@ -1855,7 +1761,7 @@ mod tests {
             !install_body.contains("self.skipWaiting()")
                 && sw_js.contains("event.waitUntil(skipWaitingTask);")
                 && sw_js.contains("event.waitUntil(clearCacheTask);")
-                && sw_js.contains("const CACHE_VERSION = \"v10\";"),
+                && sw_js.contains("const CACHE_VERSION = \"v11\";"),
             "updates must wait for explicit user activation and every async message operation must extend its event lifetime"
         );
         assert!(
@@ -2557,316 +2463,6 @@ mod tests {
     }
 
     #[test]
-    fn test_worker_message_paths_guard_malformed_payloads_and_report_generic_failures() {
-        let auth_js = include_str!("../src/pages_assets/auth.js");
-        assert!(
-            auth_js.contains(
-                "const payload = event?.data && typeof event.data === \"object\" ? event.data : null;"
-            ) && auth_js.contains("Ignoring malformed worker message payload")
-                && auth_js
-                    .contains("void handleWorkerError(new Error(\"Malformed worker response\"));")
-                && auth_js.contains("case \"WORKER_ERROR\":")
-                && auth_js.contains(
-                    "void handleWorkerError(new Error(`Unknown worker message type: ${type}`));"
-                ),
-            "auth-side worker message handling should fail closed on malformed or unknown payloads and surface generic worker failures"
-        );
-
-        let crypto_worker_js = include_str!("../src/pages_assets/crypto_worker.js");
-        assert!(
-            crypto_worker_js.contains("Ignoring malformed worker request payload")
-                && crypto_worker_js.contains("type: \"WORKER_ERROR\",")
-                && crypto_worker_js.contains("error: \"Malformed worker request payload\",")
-                && crypto_worker_js
-                    .contains("throw new Error(`Unknown worker message type: ${type}`);")
-                && crypto_worker_js.contains("type: getWorkerFailureMessageType(type),")
-                && crypto_worker_js.contains("return \"WORKER_ERROR\";"),
-            "crypto worker should report malformed or unknown payloads and fall back to a generic worker failure type"
-        );
-    }
-
-    #[test]
-    fn test_crypto_worker_rejects_unsupported_archive_compression() {
-        let crypto_worker_js = include_str!("../src/pages_assets/crypto_worker.js");
-        assert!(
-            crypto_worker_js.contains("cfg.compression !== \"deflate\"")
-                && crypto_worker_js.contains("Unsupported archive compression")
-                && !crypto_worker_js.contains("// No compression"),
-            "crypto worker should fail closed when encrypted config.json declares unsupported compression"
-        );
-    }
-
-    #[test]
-    fn test_crypto_worker_inflates_each_encrypted_payload_chunk_independently() {
-        let crypto_worker_js = include_str!("../src/pages_assets/crypto_worker.js");
-        assert!(
-            crypto_worker_js.contains("dbBytes = new Uint8Array(payload.total_plaintext_size);")
-                && crypto_worker_js.contains("const plaintext = await decompressDeflate(")
-                && crypto_worker_js.contains("payload.chunk_size")
-                && crypto_worker_js.contains("dbBytes.set(plaintext, totalDecrypted);")
-                && crypto_worker_js.contains("plaintext.fill(0);")
-                && !crypto_worker_js.contains("const plaintextChunks = [];")
-                && !crypto_worker_js
-                    .contains("const compressed = concatenateChunks(decryptedChunks);"),
-            "crypto worker must inflate each independent chunk directly into one bounded database buffer"
-        );
-    }
-
-    #[test]
-    fn test_crypto_worker_allows_zero_chunk_archives_like_rust_validator() {
-        let crypto_worker_js = include_str!("../src/pages_assets/crypto_worker.js");
-        assert!(
-            crypto_worker_js.contains("payload.chunk_count < 0")
-                && !crypto_worker_js.contains("payload.chunk_count <= 0"),
-            "crypto worker payload metadata validation should match Rust and allow zero chunks with an empty file list"
-        );
-    }
-
-    #[test]
-    fn test_crypto_worker_rejects_oversized_chunk_size_like_rust_validator() -> Result<()> {
-        run_node_module_assertions(
-            r#"
-                import fs from 'node:fs';
-                import vm from 'node:vm';
-
-                const code = fs.readFileSync('./src/pages_assets/crypto_worker.js', 'utf8');
-                const context = {
-                    console,
-                    atob: globalThis.atob,
-                    btoa: globalThis.btoa,
-                    self: {
-                        location: { href: 'https://example.test/archive/' },
-                        postMessage() {},
-                    },
-                };
-                vm.createContext(context);
-                vm.runInContext(code, context);
-
-                const config = {
-                    version: 2,
-                    compression: 'deflate',
-                    payload: {
-                        chunk_size: 32 * 1024 * 1024,
-                        chunk_count: 0,
-                        total_compressed_size: 0,
-                        total_plaintext_size: 0,
-                        files: [],
-                    },
-                    export_id: Buffer.alloc(16).toString('base64'),
-                    base_nonce: Buffer.alloc(12).toString('base64'),
-                    kdf_defaults: {
-                        memory_kb: 65536,
-                        iterations: 3,
-                        parallelism: 4,
-                    },
-                    key_slots: [{
-                        id: 0,
-                        slot_type: 'password',
-                        kdf: 'argon2id',
-                        salt: Buffer.alloc(16).toString('base64'),
-                        wrapped_dek: Buffer.alloc(48).toString('base64'),
-                        nonce: Buffer.alloc(12).toString('base64'),
-                        argon2_params: {
-                            memory_kb: 65536,
-                            iterations: 3,
-                            parallelism: 4,
-                        },
-                    }],
-                };
-
-                context.validateSupportedPayloadFormat(config);
-
-                config.payload.chunk_size += 1;
-                let rejected = false;
-                try {
-                    context.validateSupportedPayloadFormat(config);
-                } catch (error) {
-                    if (!String(error.message).includes('exceeds maximum')) {
-                        throw new Error(`unexpected oversized chunk_size error: ${error.message}`);
-                    }
-                    rejected = true;
-                }
-
-                if (!rejected) {
-                    throw new Error('oversized encrypted archive chunk_size should be rejected');
-                }
-            "#,
-        )
-    }
-
-    #[test]
-    fn crypto_worker_rejects_dangerous_archive_metadata_before_crypto() -> Result<()> {
-        run_node_module_assertions(
-            r#"
-                import fs from 'node:fs';
-                import vm from 'node:vm';
-
-                const code = fs.readFileSync('./src/pages_assets/crypto_worker.js', 'utf8');
-                const context = {
-                    console,
-                    atob: globalThis.atob,
-                    btoa: globalThis.btoa,
-                    self: {
-                        location: { href: 'https://example.test/archive/' },
-                        postMessage() {},
-                    },
-                };
-                vm.createContext(context);
-                vm.runInContext(code, context);
-
-                const baseConfig = () => ({
-                    version: 2,
-                    compression: 'deflate',
-                    export_id: Buffer.alloc(16).toString('base64'),
-                    base_nonce: Buffer.alloc(12).toString('base64'),
-                    kdf_defaults: {
-                        memory_kb: 65536,
-                        iterations: 3,
-                        parallelism: 4,
-                    },
-                    payload: {
-                        chunk_size: 1024,
-                        chunk_count: 0,
-                        total_compressed_size: 0,
-                        total_plaintext_size: 0,
-                        files: [],
-                    },
-                    key_slots: [{
-                        id: 0,
-                        slot_type: 'password',
-                        kdf: 'argon2id',
-                        salt: Buffer.alloc(16).toString('base64'),
-                        wrapped_dek: Buffer.alloc(48).toString('base64'),
-                        nonce: Buffer.alloc(12).toString('base64'),
-                        argon2_params: {
-                            memory_kb: 65536,
-                            iterations: 3,
-                            parallelism: 4,
-                        },
-                    }],
-                });
-
-                const expectRejected = (mutate, expectedMessage) => {
-                    const config = baseConfig();
-                    mutate(config);
-                    try {
-                        context.validateSupportedPayloadFormat(config);
-                    } catch (error) {
-                        if (!String(error.message).includes(expectedMessage)) {
-                            throw new Error(`expected ${expectedMessage}, got: ${error.message}`);
-                        }
-                        return;
-                    }
-                    throw new Error(`dangerous metadata was accepted: ${expectedMessage}`);
-                };
-
-                context.validateSupportedPayloadFormat(baseConfig());
-                expectRejected(config => { config.key_slots = []; }, 'at least one key slot');
-                expectRejected(config => {
-                    config.key_slots[0].argon2_params.memory_kb = 0x7fffffff;
-                }, 'Unsupported archive key_slots.argon2_params.memory_kb');
-                expectRejected(config => {
-                    config.key_slots.push({ ...config.key_slots[0] });
-                }, 'Duplicate archive key slot id');
-                expectRejected(config => {
-                    config.payload.total_plaintext_size = 1;
-                }, 'expected 1 chunks');
-                expectRejected(config => {
-                    config.payload.chunk_count = 4097;
-                }, 'browser limit is 4096');
-                expectRejected(config => {
-                    config.payload.total_plaintext_size = 512 * 1024 * 1024 + 1;
-                }, 'Archive plaintext exceeds');
-                expectRejected(config => {
-                    config.payload.total_compressed_size = 640 * 1024 * 1024 + 1;
-                }, 'Archive ciphertext exceeds');
-                expectRejected(config => {
-                    config.payload.files = ['payload/../secret.bin'];
-                    config.payload.chunk_count = 1;
-                    config.payload.total_plaintext_size = 1;
-                    config.payload.total_compressed_size = 17;
-                }, 'Invalid payload file entry 0');
-            "#,
-        )
-    }
-
-    #[test]
-    fn crypto_worker_fflate_fallback_is_input_sliced_and_output_bounded() -> Result<()> {
-        run_node_module_assertions(
-            r#"
-                import fs from 'node:fs';
-                import vm from 'node:vm';
-
-                const code = fs.readFileSync('./src/pages_assets/crypto_worker.js', 'utf8');
-                const pushes = [];
-                const context = {
-                    console,
-                    atob: globalThis.atob,
-                    btoa: globalThis.btoa,
-                    Uint8Array,
-                    self: {
-                        location: { href: 'https://example.test/archive/' },
-                        postMessage() {},
-                        DecompressionStream: class {
-                            constructor() { throw new Error('deflate-raw unsupported'); }
-                        },
-                        fflate: {
-                            Inflate: class {
-                                constructor(ondata) { this.ondata = ondata; }
-                                push(chunk, final) {
-                                    pushes.push({ length: chunk.byteLength, final });
-                                    this.ondata(new Uint8Array(1), final);
-                                }
-                            },
-                        },
-                    },
-                };
-                vm.createContext(context);
-                vm.runInContext(code, context);
-
-                const inflated = await context.decompressDeflate(
-                    new Uint8Array(40_000),
-                    100_000
-                );
-                if (inflated.byteLength !== 3) {
-                    throw new Error(`expected one output byte per input slice, got ${inflated.byteLength}`);
-                }
-                const expectedLengths = [16_384, 16_384, 7_232];
-                if (JSON.stringify(pushes.map(push => push.length)) !== JSON.stringify(expectedLengths)) {
-                    throw new Error(`expected bounded 16 KiB input slices, got ${JSON.stringify(pushes)}`);
-                }
-                if (pushes.slice(0, -1).some(push => push.final) || !pushes.at(-1).final) {
-                    throw new Error(`only the final fflate input slice may be final: ${JSON.stringify(pushes)}`);
-                }
-
-                let cumulativePushes = 0;
-                context.self.fflate.Inflate = class {
-                    constructor(ondata) { this.ondata = ondata; }
-                    push(_chunk, final) {
-                        cumulativePushes += 1;
-                        this.ondata(new Uint8Array(3), final);
-                    }
-                };
-                let rejected = false;
-                try {
-                    await context.decompressDeflate(new Uint8Array(40), 5);
-                } catch (error) {
-                    if (!String(error.message).includes('5-byte archive limit')) {
-                        throw new Error(`unexpected decompression-bound error: ${error.message}`);
-                    }
-                    rejected = true;
-                }
-                if (!rejected) {
-                    throw new Error('streaming inflater accepted expansion past declared chunk_size');
-                }
-                if (cumulativePushes !== 2) {
-                    throw new Error(`expected cumulative bound to stop after two pushes, got ${cumulativePushes}`);
-                }
-            "#,
-        )
-    }
-
-    #[test]
     fn unencrypted_database_stream_enforces_exact_bound_and_zeroizes_chunks() -> Result<()> {
         run_node_module_assertions(
             r#"
@@ -3012,7 +2608,7 @@ mod tests {
 
                 const source = fs.readFileSync('./src/pages_assets/auth.js', 'utf8');
                 const start = source.indexOf('function normalizeUnencryptedPayloadPath(');
-                const end = source.indexOf('\n/**\n * Handle lock button click', start);
+                const end = source.indexOf('\nasync function loadViewerModule(', start);
                 if (start < 0 || end < 0) {
                     throw new Error('could not isolate unencrypted payload path normalizer');
                 }
@@ -3039,69 +2635,6 @@ mod tests {
                         throw new Error(`URL-decoding alias was accepted: ${encodedPath}`);
                     }
                 }
-            "#,
-        )
-    }
-
-    #[test]
-    fn crypto_worker_zeroizes_replaced_and_superseded_keys() -> Result<()> {
-        run_node_module_assertions(
-            r#"
-                import fs from 'node:fs';
-                import vm from 'node:vm';
-
-                const code = fs.readFileSync('./src/pages_assets/crypto_worker.js', 'utf8');
-                const context = {
-                    console,
-                    atob: globalThis.atob,
-                    btoa: globalThis.btoa,
-                    self: {
-                        location: { href: 'https://example.test/archive/' },
-                        postMessage() {},
-                    },
-                };
-                vm.createContext(context);
-                vm.runInContext(code, context);
-                vm.runInContext(`
-                    const first = new Uint8Array(32).fill(0x11);
-                    const firstGeneration = beginUnlockAttempt();
-                    commitUnlockResult(firstGeneration, first, 1);
-                    beginUnlockAttempt();
-                    if (first.some(byte => byte !== 0)) {
-                        throw new Error('beginning a subsequent unlock did not zero the prior DEK');
-                    }
-
-                    const stale = new Uint8Array(32).fill(0x22);
-                    const staleGeneration = activeUnlockGeneration;
-                    beginUnlockAttempt();
-                    let staleRejected = false;
-                    try {
-                        commitUnlockResult(staleGeneration, stale, 2);
-                    } catch (error) {
-                        staleRejected = String(error.message).includes('superseded');
-                    }
-                    if (!staleRejected || stale.some(byte => byte !== 0)) {
-                        throw new Error('superseded unlock result was retained or not zeroized');
-                    }
-
-                    const latest = new Uint8Array(32).fill(0x33);
-                    commitUnlockResult(activeUnlockGeneration, latest, 3);
-                    clearKeys();
-                    if (latest.some(byte => byte !== 0)) {
-                        throw new Error('CLEAR_KEYS did not zero the current DEK');
-                    }
-                    const decryptGeneration = beginDecryptAttempt();
-                    clearKeys();
-                    let decryptSuperseded = false;
-                    try {
-                        ensureCurrentDecryptAttempt(decryptGeneration);
-                    } catch (error) {
-                        decryptSuperseded = String(error.message).includes('superseded');
-                    }
-                    if (!decryptSuperseded) {
-                        throw new Error('CLEAR_KEYS did not invalidate an in-flight database decrypt');
-                    }
-                `, context);
             "#,
         )
     }
@@ -3145,66 +2678,6 @@ mod tests {
                 && !database_js.contains("getAsObject()")
         );
 
-        let worker_js = include_str!("../src/pages_assets/crypto_worker.js");
-        assert!(
-            worker_js.contains("self.loadArgon2WasmBinary = async () =>")
-                && worker_js.contains("./vendor/argon2.wasm")
-                && worker_js.contains("./vendor/argon2-wasm.js")
-                && worker_js.contains("./vendor/argon2.js")
-                && worker_js.contains("./vendor/fflate.js")
-                && !worker_js.contains("./vendor/fflate.min.js")
-                && !worker_js.contains("./vendor/sqlite3.js")
-                && !worker_js.contains("async function initDatabase(")
-                && !worker_js.contains("let config = null;")
-                && worker_js.contains("Recovery secret must contain at least 24 bytes")
-                && worker_js.contains("MAX_BROWSER_ARCHIVE_CHUNKS = 4096")
-                && worker_js.contains("cannot be read safely without streaming response support")
-                && worker_js.contains("return concatenateAndZeroChunks(chunks);")
-                && worker_js.contains("const generation = beginDecryptAttempt();")
-                && worker_js.contains("ensureCurrentDecryptAttempt(job.generation);")
-                && worker_js.contains("invalidateDecryptAttempts();")
-                // Each prefetched ciphertext chunk is scrubbed once consumed.
-                && worker_js.contains(
-                    "yield { index, bytes: slot.bytes };\n      } finally {\n        slot.bytes?.fill(0);"
-                )
-                && worker_js.contains("passwordBytes.fill(0);")
-                && worker_js.contains("result.hash.fill(0);")
-                && !worker_js.contains("await response.arrayBuffer()")
-                && worker_js.matches("await writer.abort(error);").count() == 1
-        );
-
-        // The message handlers queue one unlock job at a time (edf9c7af);
-        // these job runners derive the KEK and unwrap the DEK.
-        assert!(
-            worker_js.contains("return enqueueUnlock(\"password\", password, cfg, requestId);")
-                && worker_js.contains(
-                    "return enqueueUnlock(\"recovery\", recoverySecret, cfg, requestId);"
-                )
-                && worker_js.contains("await runPasswordUnlock(job);")
-                && worker_js.contains("await runRecoveryUnlock(job);")
-        );
-        for unlock_function in ["runPasswordUnlock", "runRecoveryUnlock"] {
-            let signature = format!("async function {unlock_function}");
-            let function_body = worker_js
-                .split_once(signature.as_str())
-                .unwrap_or_else(|| panic!("missing {unlock_function}"))
-                .1
-                .split_once("\n}\n")
-                .unwrap_or_else(|| panic!("unbounded {unlock_function}"))
-                .0;
-            let derive_offset = function_body
-                .find("const kek = await deriveKekFrom")
-                .unwrap_or_else(|| panic!("missing KEK derivation in {unlock_function}"));
-            let unwrap_try_offset = function_body
-                .find("let unwrappedDek = null;\n      try {")
-                .unwrap_or_else(|| panic!("missing unwrap-only catch in {unlock_function}"));
-            assert!(
-                derive_offset < unwrap_try_offset
-                    && function_body.contains("if (error?.name !== \"OperationError\")"),
-                "{unlock_function} must not relabel KDF/runtime failures as bad credentials"
-            );
-        }
-
         let auth_js = include_str!("../src/pages_assets/auth.js");
         assert!(
             auth_js.contains("const expectedSize = getUnencryptedPayloadSize();")
@@ -3214,7 +2687,7 @@ mod tests {
                 && auth_js.contains("nextLength > expectedSize")
                 && auth_js.contains("if (totalLength !== expectedSize)")
                 && auth_js.contains("dbBytes.fill(0);")
-                && auth_js.contains("dbBytes?.fill(0);")
+                && auth_js.contains("bytes?.fill(0);")
                 && !auth_js.contains("isOpfsEnabled")
                 && !auth_js.contains("opfsEnabled")
                 && !auth_js.contains("new Uint8Array(await response.arrayBuffer())"),

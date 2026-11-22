@@ -11,6 +11,7 @@
 
 use anyhow::Result;
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 mod util;
@@ -32,6 +33,32 @@ fn get_ephemeral_port() -> u16 {
     port
 }
 
+/// Stage an unencrypted Pages export (`config.json` + `payload/`) under `root`
+/// and return the export directory that `BundleBuilder::build` consumes.
+fn stage_unencrypted_export(root: &Path, body: &[u8]) -> Result<PathBuf> {
+    use coding_agent_search::pages::bundle::{UnencryptedConfig, UnencryptedPayload};
+
+    let export_dir = root.join("export");
+    let payload_dir = export_dir.join("payload");
+    std::fs::create_dir_all(&payload_dir)?;
+    std::fs::write(payload_dir.join("archive.db"), body)?;
+    let config = UnencryptedConfig {
+        encrypted: false,
+        version: "1.0.0".to_string(),
+        payload: UnencryptedPayload {
+            path: "payload/archive.db".to_string(),
+            format: "sqlite".to_string(),
+            size_bytes: Some(body.len() as u64),
+        },
+        warning: Some("UNENCRYPTED".to_string()),
+    };
+    std::fs::write(
+        export_dir.join("config.json"),
+        serde_json::to_vec_pretty(&config)?,
+    )?;
+    Ok(export_dir)
+}
+
 // NOTE: create_test_db helper removed - not currently used
 // If needed for future tests, can be restored from git history
 
@@ -43,29 +70,16 @@ fn get_ephemeral_port() -> u16 {
 #[test]
 fn bundle_creates_complete_structure() -> Result<()> {
     use coding_agent_search::pages::bundle::BundleBuilder;
-    use coding_agent_search::pages::encrypt::EncryptionEngine;
-    use std::fs;
 
     let tracker = tracker_for("bundle_creates_complete_structure");
 
     let phase_start = tracker.start("setup", Some("Create test fixtures"));
     let temp = tempfile::TempDir::new()?;
-    let encrypted_dir = temp.path().join("encrypted");
     let bundle_dir = temp.path().join("bundle");
-
-    fs::create_dir_all(&encrypted_dir)?;
-
-    // Create a simple test file to encrypt
-    let test_content = b"Test database content for bundle integration test";
-    let test_file = temp.path().join("test_input.db");
-    fs::write(&test_file, test_content)?;
-
-    // Encrypt it
-    let mut engine = EncryptionEngine::default();
-    engine.add_password_slot("test-password-123")?;
-    engine.encrypt_file(&test_file, &encrypted_dir, |_, _| {})?;
-
-    fs::remove_file(&test_file)?;
+    let export_dir = stage_unencrypted_export(
+        temp.path(),
+        b"Test database content for bundle integration test",
+    )?;
     tracker.end("setup", Some("Create test fixtures"), phase_start);
 
     // Phase: Build bundle
@@ -76,7 +90,7 @@ fn bundle_creates_complete_structure() -> Result<()> {
         .title("Integration Test Archive")
         .description("Test bundle from integration test");
 
-    let result = builder.build(&encrypted_dir, &bundle_dir, |phase, msg| {
+    let result = builder.build(&export_dir, &bundle_dir, |phase, msg| {
         eprintln!("  Bundle phase: {} - {}", phase, msg);
     })?;
 
@@ -130,7 +144,7 @@ fn bundle_creates_complete_structure() -> Result<()> {
     );
     assert!(
         result.chunk_count > 0,
-        "Should have at least one payload chunk"
+        "Should have at least one payload file"
     );
 
     // Verify fingerprint format (16 hex chars)
@@ -166,30 +180,19 @@ fn bundle_creates_complete_structure() -> Result<()> {
 #[test]
 fn bundle_integrity_manifest_valid() -> Result<()> {
     use coding_agent_search::pages::bundle::{BundleBuilder, IntegrityManifest};
-    use coding_agent_search::pages::encrypt::EncryptionEngine;
     use std::fs;
 
     let tracker = tracker_for("bundle_integrity_manifest_valid");
 
     let phase_start = tracker.start("setup", Some("Create test fixtures"));
     let temp = tempfile::TempDir::new()?;
-    let encrypted_dir = temp.path().join("encrypted");
     let bundle_dir = temp.path().join("bundle");
-
-    fs::create_dir_all(&encrypted_dir)?;
-
-    let test_file = temp.path().join("test.db");
-    fs::write(&test_file, b"test database content")?;
-
-    let mut engine = EncryptionEngine::default();
-    engine.add_password_slot("password123")?;
-    engine.encrypt_file(&test_file, &encrypted_dir, |_, _| {})?;
-    fs::remove_file(&test_file)?;
+    let export_dir = stage_unencrypted_export(temp.path(), b"test database content")?;
     tracker.end("setup", Some("Create test fixtures"), phase_start);
 
     let phase_start = tracker.start("build", Some("Build bundle"));
     let builder = BundleBuilder::new();
-    let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
+    let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
     tracker.end("build", Some("Build bundle"), phase_start);
 
     let phase_start = tracker.start("verify_integrity", Some("Verify integrity manifest"));
@@ -268,30 +271,19 @@ fn bundle_integrity_manifest_valid() -> Result<()> {
 #[test]
 fn bundle_site_metadata_correct() -> Result<()> {
     use coding_agent_search::pages::bundle::BundleBuilder;
-    use coding_agent_search::pages::encrypt::EncryptionEngine;
     use std::fs;
 
     let tracker = tracker_for("bundle_site_metadata_correct");
 
     let temp = tempfile::TempDir::new()?;
-    let encrypted_dir = temp.path().join("encrypted");
     let bundle_dir = temp.path().join("bundle");
-
-    fs::create_dir_all(&encrypted_dir)?;
-
-    let test_file = temp.path().join("test.db");
-    fs::write(&test_file, b"test content")?;
-
-    let mut engine = EncryptionEngine::default();
-    engine.add_password_slot("password")?;
-    engine.encrypt_file(&test_file, &encrypted_dir, |_, _| {})?;
-    fs::remove_file(&test_file)?;
+    let export_dir = stage_unencrypted_export(temp.path(), b"test content")?;
 
     let builder = BundleBuilder::new()
         .title("Custom Title Here")
         .description("Custom description for testing");
 
-    let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
+    let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
 
     // Load and verify site.json
     let site_json_path = result.site_dir.join("site.json");
@@ -599,34 +591,27 @@ fn preview_blocks_traversal() -> Result<()> {
 #[test]
 fn integration_build_and_preview() -> Result<()> {
     use coding_agent_search::pages::bundle::BundleBuilder;
-    use coding_agent_search::pages::encrypt::EncryptionEngine;
     use std::io::{Read, Write};
     use std::net::TcpStream;
 
     let tracker = tracker_for("integration_build_and_preview");
 
     // Phase 1: Build a real bundle
-    let phase_start = tracker.start("build_bundle", Some("Build encrypted bundle"));
+    let phase_start = tracker.start("build_bundle", Some("Build unencrypted bundle"));
     let temp = tempfile::TempDir::new()?;
-    let encrypted_dir = temp.path().join("encrypted");
     let bundle_dir = temp.path().join("bundle");
-
-    std::fs::create_dir_all(&encrypted_dir)?;
-
-    let test_file = temp.path().join("test.db");
-    std::fs::write(&test_file, b"Integration test database content")?;
-
-    let mut engine = EncryptionEngine::default();
-    engine.add_password_slot("integration-test-password")?;
-    engine.encrypt_file(&test_file, &encrypted_dir, |_, _| {})?;
-    std::fs::remove_file(&test_file)?;
+    let export_dir = stage_unencrypted_export(temp.path(), b"Integration test database content")?;
 
     let builder = BundleBuilder::new()
         .title("Integration Test Bundle")
         .description("Built and served via integration test");
 
-    let result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
-    tracker.end("build_bundle", Some("Build encrypted bundle"), phase_start);
+    let result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
+    tracker.end(
+        "build_bundle",
+        Some("Build unencrypted bundle"),
+        phase_start,
+    );
 
     // Phase 2: Start preview server
     let phase_start = tracker.start("start_preview", Some("Start preview server"));
@@ -695,31 +680,25 @@ fn integration_build_and_preview() -> Result<()> {
 #[test]
 fn integration_preview_accepts_bundle_root() -> Result<()> {
     use coding_agent_search::pages::bundle::BundleBuilder;
-    use coding_agent_search::pages::encrypt::EncryptionEngine;
     use std::io::{Read, Write};
     use std::net::TcpStream;
 
     let tracker = tracker_for("integration_preview_accepts_bundle_root");
 
-    let phase_start = tracker.start("build_bundle", Some("Build encrypted bundle"));
+    let phase_start = tracker.start("build_bundle", Some("Build unencrypted bundle"));
     let temp = tempfile::TempDir::new()?;
-    let encrypted_dir = temp.path().join("encrypted");
     let bundle_dir = temp.path().join("bundle");
-
-    std::fs::create_dir_all(&encrypted_dir)?;
-    let test_file = temp.path().join("test.db");
-    std::fs::write(&test_file, b"Bundle-root preview test")?;
-
-    let mut engine = EncryptionEngine::default();
-    engine.add_password_slot("integration-test-password")?;
-    engine.encrypt_file(&test_file, &encrypted_dir, |_, _| {})?;
-    std::fs::remove_file(&test_file)?;
+    let export_dir = stage_unencrypted_export(temp.path(), b"Bundle-root preview test")?;
 
     let builder = BundleBuilder::new()
         .title("Bundle Root Preview Test")
         .description("Preview should resolve bundle root to site/");
-    let _result = builder.build(&encrypted_dir, &bundle_dir, |_, _| {})?;
-    tracker.end("build_bundle", Some("Build encrypted bundle"), phase_start);
+    let _result = builder.build(&export_dir, &bundle_dir, |_, _| {})?;
+    tracker.end(
+        "build_bundle",
+        Some("Build unencrypted bundle"),
+        phase_start,
+    );
 
     let phase_start = tracker.start("start_preview", Some("Start preview from bundle root"));
     let port = get_ephemeral_port();
