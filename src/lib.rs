@@ -1597,6 +1597,7 @@ pub enum Commands {
         #[arg(long)]
         data_dir: Option<PathBuf>,
     },
+}
 
 /// Conversation-ingest quarantine inspection and management (#292 ask #3).
 #[derive(Subcommand, Debug, Clone)]
