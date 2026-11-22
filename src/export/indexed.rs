@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::franken_sync::Row;
 use crate::franken_sync::compat::{ConnectionExt, RowExt, TransactionExt};
 use crate::storage::sqlite::FrankenStorage;
-use crate::ui::data::{ConversationView, load_conversation_by_id_uncached};
+use crate::conversation_view::{ConversationView, load_conversation_by_id_uncached};
 
 /// Identity of the requested conversation. `source_id` is the normalized
 /// provenance id (`local`, a remote name); `conversation_id` is the canonical

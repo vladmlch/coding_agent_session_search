@@ -8,7 +8,7 @@ use crate::franken_sync::{Connection, Row as FrankenRow, params};
 use crate::pages::profiles::ShareProfile;
 use crate::pages::redact::RedactionEngine;
 use crate::pages::summary::ExclusionSet;
-use crate::ui::time_parser::parse_time_input;
+use crate::time_parser::parse_time_input;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;

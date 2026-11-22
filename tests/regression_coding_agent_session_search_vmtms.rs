@@ -1,5 +1,5 @@
 //! Regression + metamorphic/property-style coverage for
-//! src/ui/time_parser.rs::parse_time_input.
+//! src/time_parser.rs::parse_time_input.
 //!
 //! The original regression (bead vmtms) pinned that adversarial
 //! i64::MAX relative-time inputs never panic. Bead 7qtn5 (this file's
@@ -14,7 +14,7 @@
 //! - equivalent unit spellings ("7d" == "7 days ago" within a tight
 //!   tolerance that covers the ~wall-clock drift between two calls).
 
-use coding_agent_search::ui::time_parser::parse_time_input;
+use coding_agent_search::time_parser::parse_time_input;
 
 #[test]
 fn oversized_relative_time_filters_are_rejected_without_panicking() {

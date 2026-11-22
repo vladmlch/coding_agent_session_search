@@ -531,7 +531,7 @@ impl PagesWizard {
             .state
             .time_range
             .as_deref()
-            .and_then(crate::ui::time_parser::parse_time_input);
+            .and_then(crate::time_parser::parse_time_input);
 
         let filters = SecretScanFilters {
             agents: if self.state.agents.is_empty() {
@@ -1004,7 +1004,7 @@ impl PagesWizard {
             .state
             .time_range
             .as_deref()
-            .and_then(crate::ui::time_parser::parse_time_input);
+            .and_then(crate::time_parser::parse_time_input);
 
         let filters = SummaryFilters {
             agents: if self.state.agents.is_empty() {
@@ -1470,7 +1470,7 @@ impl PagesWizard {
             .state
             .time_range
             .as_deref()
-            .and_then(crate::ui::time_parser::parse_time_input);
+            .and_then(crate::time_parser::parse_time_input);
 
         let agents: Vec<String> = self.state.agents.to_vec();
         let estimate = SizeEstimate::from_database(
@@ -1510,7 +1510,7 @@ impl PagesWizard {
         // Build export filter with workspaces
         let workspaces = self.state.workspaces.clone();
         let since_dt = self.state.time_range.as_deref().and_then(|s| {
-            crate::ui::time_parser::parse_time_input(s)
+            crate::time_parser::parse_time_input(s)
                 .and_then(chrono::DateTime::from_timestamp_millis)
         });
 

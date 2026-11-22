@@ -79,7 +79,7 @@
 //!   rather than producing a silent empty export.
 
 use crate::model::types::{Message, MessageRole};
-use crate::ui::data::ConversationView;
+use crate::conversation_view::ConversationView;
 use serde_json::{Map, Value};
 
 /// Agent-neutral projection of one indexed conversation. The metadata fields

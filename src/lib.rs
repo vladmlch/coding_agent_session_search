@@ -16,6 +16,7 @@ pub mod bakeoff;
 pub mod bookmarks;
 pub mod connector_ingest_diagnostics;
 pub mod connectors;
+pub mod conversation_view;
 pub mod crash_replay;
 #[cfg(unix)]
 pub mod daemon;
@@ -66,6 +67,7 @@ pub mod source_onboarding;
 pub mod sources;
 pub mod storage;
 pub mod subsystem_coverage_matrix;
+pub mod time_parser;
 mod timeline_json;
 pub mod top_session_summary;
 pub mod topology_budget;
@@ -8457,10 +8459,10 @@ async fn execute_cli(
                             workspaces: workspaces_path,
                             since_ts: since
                                 .as_deref()
-                                .and_then(crate::ui::time_parser::parse_time_input),
+                                .and_then(crate::time_parser::parse_time_input),
                             until_ts: until
                                 .as_deref()
-                                .and_then(crate::ui::time_parser::parse_time_input),
+                                .and_then(crate::time_parser::parse_time_input),
                         };
 
                         let config = crate::pages::secret_scan::SecretScanConfig::from_inputs(
@@ -20558,7 +20560,7 @@ fn parse_datetime_str(s: &str) -> Option<i64> {
         return local_midnight_ts(date);
     }
 
-    crate::ui::time_parser::parse_time_input(s)
+    crate::time_parser::parse_time_input(s)
 }
 
 #[cfg(test)]
@@ -96729,7 +96731,7 @@ fn role_to_export_string(role: &crate::model::types::MessageRole) -> String {
 }
 
 fn conversation_view_to_raw_messages(
-    view: &crate::ui::data::ConversationView,
+    view: &crate::conversation_view::ConversationView,
 ) -> Vec<serde_json::Value> {
     view.messages
         .iter()
@@ -96903,7 +96905,7 @@ fn try_load_indexed_conversation_from_db_with_source(
     db_path: &Path,
     source_id: Option<&str>,
     conversation_id: Option<i64>,
-) -> Option<crate::ui::data::ConversationView> {
+) -> Option<crate::conversation_view::ConversationView> {
     if !db_path.exists() {
         return None;
     }
@@ -96915,7 +96917,7 @@ fn try_load_indexed_conversation_from_db_with_source(
     let source_id = canonical_followup_source_id(source_id);
     if let Some(conversation_id) = conversation_id {
         let view =
-            crate::ui::data::load_conversation_by_id_uncached(&storage, conversation_id).ok()??;
+            crate::conversation_view::load_conversation_by_id_uncached(&storage, conversation_id).ok()??;
         if view.convo.source_path.to_string_lossy() != source_path {
             return None;
         }
@@ -96928,10 +96930,10 @@ fn try_load_indexed_conversation_from_db_with_source(
         return Some(view);
     }
     if let Some(source_id) = source_id.as_deref() {
-        return crate::ui::data::load_conversation_for_source(&storage, source_id, &source_path)
+        return crate::conversation_view::load_conversation_for_source(&storage, source_id, &source_path)
             .ok()?;
     }
-    if let Some(local_view) = crate::ui::data::load_conversation_for_source(
+    if let Some(local_view) = crate::conversation_view::load_conversation_for_source(
         &storage,
         crate::sources::provenance::LOCAL_SOURCE_ID,
         &source_path,
@@ -96940,11 +96942,11 @@ fn try_load_indexed_conversation_from_db_with_source(
     {
         return Some(local_view);
     }
-    crate::ui::data::load_conversation(&storage, &source_path).ok()?
+    crate::conversation_view::load_conversation(&storage, &source_path).ok()?
 }
 
 fn serialize_indexed_view_lines(
-    view: &crate::ui::data::ConversationView,
+    view: &crate::conversation_view::ConversationView,
 ) -> CliResult<Vec<String>> {
     conversation_view_to_raw_messages(view)
         .into_iter()
@@ -97026,7 +97028,7 @@ fn infer_followup_agent_and_workspace(path: &Path) -> (Option<String>, Option<St
 fn try_load_indexed_conversation_from_db(
     source_path: &Path,
     db_path: &Path,
-) -> Option<crate::ui::data::ConversationView> {
+) -> Option<crate::conversation_view::ConversationView> {
     try_load_indexed_conversation_from_db_with_source(source_path, db_path, None, None)
 }
 
