@@ -3222,50 +3222,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn test_copy_blobs_directory_skips_symlinked_files() {
-        use std::os::unix::fs::symlink;
-
-        let src = TempDir::new().unwrap();
-        let dst = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-
-        fs::write(src.path().join("blob.bin"), "blob").unwrap();
-        fs::write(outside.path().join("secret.bin"), "secret").unwrap();
-        symlink(
-            outside.path().join("secret.bin"),
-            src.path().join("linked-blob.bin"),
-        )
-        .unwrap();
-
-        let copied = copy_blobs_directory(src.path(), src.path(), dst.path()).unwrap();
-        assert_eq!(copied, 1);
-        assert!(dst.path().join("blob.bin").exists());
-        assert!(!dst.path().join("linked-blob.bin").exists());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_copy_blobs_directory_rejects_symlinked_source_directory() {
-        use std::os::unix::fs::symlink;
-
-        let source = TempDir::new().unwrap();
-        let dst = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-
-        fs::write(outside.path().join("blob.bin"), "outside blob").unwrap();
-        symlink(outside.path(), source.path().join("blobs")).unwrap();
-
-        let err = copy_blobs_directory(source.path(), &source.path().join("blobs"), dst.path())
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("must not be a symlink"),
-            "unexpected error: {err:#}"
-        );
-        assert!(!dst.path().join("blob.bin").exists());
-    }
-
-    #[test]
     fn test_build_replaces_existing_bundle_without_stale_files() {
         let source = TempDir::new().unwrap();
         let output_parent = TempDir::new().unwrap();

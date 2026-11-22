@@ -568,7 +568,7 @@ impl ConnectorIngestRun {
     pub fn begin(
         provider: &str,
         data_dir: &Path,
-        _ctx: &ScanContext,
+        ctx: &ScanContext,
         sources: &[DiscoveredSourceFile],
     ) -> Self {
         let mut run = Self {
@@ -910,6 +910,7 @@ impl ConnectorIngestRun {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connectors::{DiscoveredSourceRole, ScanRoot};
     use serde_json::json;
     use tempfile::tempdir;
 
