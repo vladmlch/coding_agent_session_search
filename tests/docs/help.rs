@@ -113,7 +113,7 @@ fn test_version_flag() {
 /// Test that major subcommands have help.
 #[test]
 fn test_subcommand_help_available() {
-    let subcommands = ["search", "index", "export", "tui", "health"];
+    let subcommands = ["search", "index", "export", "health"];
 
     for cmd in &subcommands {
         let output = Command::new(env!("CARGO_BIN_EXE_cass"))

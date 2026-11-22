@@ -453,7 +453,6 @@ mod command_runtime_tests {
             &["cass", "index"][..],
             &["cass", "index", "--full"][..],
             &["cass", "index", "--watch"][..],
-            &["cass", "tui", "--once"][..],
             &["cass"][..],
         ] {
             assert!(!current_thread(args), "parallel path: {args:?}");

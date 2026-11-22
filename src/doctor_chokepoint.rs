@@ -843,61 +843,6 @@ mod tests {
         ));
     }
 
-    // ---- Pass-4 fixture round-trip: fm-tui-state-json-corrupt ----
-
-    /// End-to-end round-trip exercising the chokepoint against a corrupt
-    /// `tui_state.json` fixture (per analysis/failure_modes/tui.md FM-02).
-    /// Demonstrates that pass-1+ fixers can be unit-tested via the
-    /// chokepoint API alone without spawning the cass binary.
-    #[test]
-    fn pass4_fixture_fm_tui_state_json_corrupt_round_trips() {
-        let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().to_path_buf();
-
-        // Step 1 — corrupt: write a truncated tui_state.json
-        let target = data_dir.join("tui_state.json");
-        let pre_bytes = b"{\"version\": 2, \"saved_views\": [{\"name\":";
-        fs::write(&target, pre_bytes).unwrap();
-
-        // Step 2 — doctor "fix": quarantine the corrupt file via chokepoint
-        let run_id = RunId::from_parts("test-sha", 1_700_000_000_000);
-        let _run_dir = crate::doctor_runs::create_run_dir(&data_dir, &run_id).unwrap();
-        let receipt = mutate(MutationRequest {
-            run_id: run_id.clone(),
-            data_dir: data_dir.clone(),
-            fm_id: "fm-tui-state-json-corrupt".into(),
-            path: target.clone(),
-            op: Op::Quarantine {
-                reason: "tui state failed parse — pass-4 fixture".into(),
-            },
-        })
-        .expect("quarantine ok");
-
-        // Post-fix: target moved out of place.
-        assert!(!target.exists(), "corrupt file should be moved out");
-
-        // Pass-4 assertion 1: per-run backup is byte-identical to pre-fix bytes.
-        let run_dir_path = crate::doctor_runs::run_dir_for(&data_dir, &run_id);
-        let backup_full = run_dir_path
-            .join("backups")
-            .join(receipt.backup_relative_path.as_ref().unwrap());
-        let backup_bytes = fs::read(&backup_full).expect("backup readable");
-        assert_eq!(
-            backup_bytes,
-            pre_bytes.to_vec(),
-            "backup must be byte-identical to pre-mutate state"
-        );
-
-        // Pass-4 assertion 2: actions.jsonl recorded one Mutation with the
-        // expected hashes.
-        let (recs, _errs) = crate::doctor_runs::read_actions(&run_dir_path).unwrap();
-        let mutations: Vec<_> = recs
-            .iter()
-            .filter(|r| matches!(r, ActionRecord::Mutation { .. }))
-            .collect();
-        assert_eq!(mutations.len(), 1);
-    }
-
     // ---- Pass-5 fixture round-trips (5 more FMs) ----
 
     /// fm-storage-stale-wal-shm: a `.db-wal` sidecar exists but the parent DB
@@ -1748,31 +1693,6 @@ mod tests {
         // run (the undo creates its own run-id).
         let runs2 = crate::doctor_runs::list_runs(&data_dir).unwrap();
         assert!(runs2.len() >= 2, "undo creates a new run-id of its own");
-    }
-
-    /// fm-tui-asciicast-orphan-dir: orphaned asciicast file. Quarantine
-    /// pattern. Closes the loop on the TUI subsystem.
-    #[test]
-    fn pass7_fixture_fm_tui_asciicast_orphan_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().to_path_buf();
-        let orphan = data_dir.join("asciicast/2026-04-01/orphan.cast");
-        fs::create_dir_all(orphan.parent().unwrap()).unwrap();
-        let pre = b"{\"version\":2,\"width\":80,\"height\":24}\n[0.1,\"o\",\"truncated";
-        fs::write(&orphan, pre).unwrap();
-        let run_id = RunId::from_parts("sha-asciio", 1_700_000_000_000);
-        let _ = crate::doctor_runs::create_run_dir(&data_dir, &run_id).unwrap();
-        let _ = mutate(MutationRequest {
-            run_id,
-            data_dir,
-            fm_id: "fm-tui-asciicast-orphan-dir".into(),
-            path: orphan.clone(),
-            op: Op::Quarantine {
-                reason: "orphaned asciicast — pass-7 fixture".into(),
-            },
-        })
-        .expect("quarantine ok");
-        assert!(!orphan.exists());
     }
 
     /// fm-sources-toml-malformed: sources.toml has a broken section header.

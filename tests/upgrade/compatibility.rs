@@ -568,11 +568,6 @@ fn test_path_dependency_compile_contracts() {
         frankensearch::ModelTier::Fast
     );
 
-    let mut pool = ftui::GraphemePool::new();
-    let mut frame = ftui::Frame::new(8, 4, &mut pool);
-    frame.set_degradation(ftui::render::budget::DegradationLevel::Full);
-    let _style = ftui::Style::default();
-
     let encoded = toon::encode(json!({ "contract": true }), None);
     assert!(!encoded.is_empty(), "toon::encode should produce output");
 }

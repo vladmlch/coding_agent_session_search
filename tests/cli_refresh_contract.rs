@@ -134,27 +134,7 @@ fn search_refresh_and_catch_up_alias_enable_incremental_preflight() -> Result<()
 }
 
 #[test]
-fn tui_refresh_and_catch_up_alias_enable_incremental_preflight() -> Result<(), String> {
-    run_on_large_stack(|| {
-        for args in [
-            ["cass", "tui", "--once", "--refresh"],
-            ["cass", "tui", "--once", "--catch-up"],
-        ] {
-            let cli = parse(&args)?;
-            match cli.command {
-                Some(Commands::Tui { refresh: true, .. }) => {}
-                Some(Commands::Tui { .. }) => {
-                    return Err(format!("tui should enable refresh for args {args:?}"));
-                }
-                other => return Err(format!("expected tui command for args {args:?}: {other:?}")),
-            }
-        }
-        Ok(())
-    })
-}
-
-#[test]
-fn refresh_preflight_stays_opt_in_for_search_and_tui() -> Result<(), String> {
+fn refresh_preflight_stays_opt_in_for_search() -> Result<(), String> {
     run_on_large_stack(|| {
         let search = parse(&["cass", "search", "needle"])?;
         match search.command {
@@ -163,13 +143,6 @@ fn refresh_preflight_stays_opt_in_for_search_and_tui() -> Result<(), String> {
                 return Err("search refresh must stay opt-in".to_string());
             }
             other => return Err(format!("expected search command: {other:?}")),
-        }
-
-        let tui = parse(&["cass", "tui", "--once"])?;
-        match tui.command {
-            Some(Commands::Tui { refresh: false, .. }) => {}
-            Some(Commands::Tui { .. }) => return Err("tui refresh must stay opt-in".to_string()),
-            other => return Err(format!("expected tui command: {other:?}")),
         }
         Ok(())
     })
@@ -193,31 +166,9 @@ fn refresh_preflight_remains_scoped_to_requested_data_dir() -> Result<(), String
                 data_dir: Some(data_dir),
                 json: true,
                 ..
-            }) if data_dir.display().to_string() == "/tmp/cass-refresh-contract" => {}
-            other => {
-                return Err(format!(
-                    "search refresh preflight must stay data-dir scoped: {other:?}"
-                ));
-            }
-        }
-
-        let tui = parse(&[
-            "cass",
-            "tui",
-            "--once",
-            "--catch-up",
-            "--data-dir",
-            "/tmp/cass-refresh-contract",
-        ])?;
-        match tui.command {
-            Some(Commands::Tui {
-                once: true,
-                refresh: true,
-                data_dir: Some(data_dir),
-                ..
             }) if data_dir.display().to_string() == "/tmp/cass-refresh-contract" => Ok(()),
             other => Err(format!(
-                "tui catch-up preflight must stay data-dir scoped: {other:?}"
+                "search refresh preflight must stay data-dir scoped: {other:?}"
             )),
         }
     })

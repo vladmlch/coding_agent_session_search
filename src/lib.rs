@@ -37,7 +37,6 @@ pub mod explainability;
 pub mod export;
 mod followup_coordinates;
 pub mod franken_sync;
-pub mod ftui_harness;
 pub mod guide_planner;
 pub mod guide_runner;
 pub mod html_export;
@@ -71,8 +70,6 @@ pub mod time_parser;
 mod timeline_json;
 pub mod top_session_summary;
 pub mod topology_budget;
-pub mod tui_asciicast;
-pub mod ui;
 pub mod viewer_extensions;
 pub mod workflow_macros;
 
@@ -338,53 +335,6 @@ pub struct InvocationInterpretation {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Debug, Clone)]
 pub enum Commands {
-    /// Launch interactive TUI
-    Tui {
-        /// Render once and exit (headless-friendly)
-        #[arg(long, default_value_t = false)]
-        once: bool,
-
-        /// Delete persisted UI state (`tui_state.json`) before launch
-        #[arg(long, default_value_t = false)]
-        reset_state: bool,
-
-        /// Record terminal output to an asciicast v2 file; in non-interactive
-        /// headless --once mode cass writes a labeled sentinel cast because no
-        /// live TUI session is launched.
-        #[arg(long, value_hint = ValueHint::FilePath)]
-        asciicast: Option<PathBuf>,
-
-        /// Override data dir (matches index --data-dir)
-        #[arg(long)]
-        data_dir: Option<PathBuf>,
-
-        /// Run in inline mode (UI anchored within terminal, scrollback preserved)
-        #[arg(long, default_value_t = false)]
-        inline: bool,
-
-        /// Height of the inline UI in rows (default: 12, ignored without --inline)
-        #[arg(long, default_value_t = 12)]
-        ui_height: u16,
-
-        /// Anchor the inline UI to top or bottom of the terminal (default: bottom)
-        #[arg(long, value_parser = ["top", "bottom"], default_value = "bottom")]
-        anchor: String,
-
-        /// Record input events to a macro file for replay/debugging
-        #[arg(long, value_hint = ValueHint::FilePath)]
-        record_macro: Option<PathBuf>,
-
-        /// Play back a previously recorded macro file
-        #[arg(long, value_hint = ValueHint::FilePath, conflicts_with = "record_macro")]
-        play_macro: Option<PathBuf>,
-
-        /// Run an incremental `cass index` pass before launching the TUI so
-        /// new conversations created since the last index are searchable.
-        /// No-op when the index is already current; indexing errors are
-        /// logged and the TUI opens on the existing index (non-fatal).
-        #[arg(long, visible_alias = "catch-up", default_value_t = false)]
-        refresh: bool,
-    },
     /// Run indexer
     #[command(
         after_help = "Exclusions: CASS_EXCLUDE_PATHS accepts comma/newline-separated source files or directory prefixes. CASS_EXCLUDE_WORKSPACES accepts comma/newline-separated workspace globs. Both affect future ingestion; existing history remains searchable.\n\nTo remove archived conversations, preview `cass forget --workspace-glob '<glob>' --older-than 90d --json`, then add --apply. To reclaim raw source captures, use `cass mirror prune --older-than 90d --json`, then add --apply."
@@ -2836,7 +2786,7 @@ fn command_accepts_leading_structured_flag(command: &str) -> bool {
 fn data_dir_insertion_index(rest: &[String], command_index: usize) -> Option<usize> {
     let command = rest.get(command_index)?.to_ascii_lowercase();
     match command.as_str() {
-        "tui" | "index" | "search" | "pack" | "stats" | "diag" | "storage" | "dedup" | "status"
+        "index" | "search" | "pack" | "stats" | "diag" | "storage" | "dedup" | "status"
         | "triage" | "support-bundle" | "state" | "health" | "onboarding" | "guide" | "doctor"
         | "context" | "sessions" | "timeline" | "daemon" => Some(command_index + 1),
         "mirror" => rest
@@ -5854,7 +5804,6 @@ const CANONICAL_TOP_LEVEL_COMMANDS: &[&str] = &[
     "schedule",
     "completions",
     "man",
-    "tui",
 ];
 
 /// Commands that mutate state or reach the network must never be entered by
@@ -7422,7 +7371,6 @@ pub async fn run_with_parsed(parsed: ParsedCli) -> CliResult<()> {
         &cli,
         wrap_cfg,
         progress_resolved,
-        stdout_is_tty,
         stderr_is_tty,
     )
     .await;
@@ -7552,58 +7500,40 @@ async fn execute_cli(
     cli: &Cli,
     wrap: WrapConfig,
     progress: ProgressResolved,
-    stdout_is_tty: bool,
     stderr_is_tty: bool,
 ) -> CliResult<()> {
-    let command = cli.command.clone().unwrap_or_else(|| {
-        if cli.robot_format.is_some() || robot_format_from_env().is_some() {
-            Commands::Triage {
-                data_dir: None,
-                json: true,
-                stale_threshold: 1800,
-                timeout: None,
-            }
-        } else {
-            Commands::Tui {
-                once: false,
-                reset_state: false,
-                asciicast: None,
-                data_dir: None,
-                inline: false,
-                ui_height: 12,
-                anchor: "bottom".to_string(),
-                record_macro: None,
-                play_macro: None,
-                refresh: false,
-            }
-        }
-    });
-
     if cli.robot_help {
         print_robot_help(wrap)?;
         return Ok(());
     }
 
+    let command = match cli.command.clone() {
+        Some(command) => command,
+        None => {
+            if cli.robot_format.is_some() || robot_format_from_env().is_some() {
+                Commands::Triage {
+                    data_dir: None,
+                    json: true,
+                    stale_threshold: 1800,
+                    timeout: None,
+                }
+            } else {
+                Cli::command().print_help().map_err(|e| CliError {
+                    code: 9,
+                    kind: CliErrorKind::Io.kind_str(),
+                    message: format!("Failed to print CLI help: {e}"),
+                    hint: None,
+                    retryable: false,
+                })?;
+                println!();
+                return Ok(());
+            }
+        }
+    };
+
     if let Commands::RobotDocs { topic } = command.clone() {
         print_robot_docs(topic, wrap)?;
         return Ok(());
-    }
-
-    // TUI preflight: call out env profiles that commonly make the UI look
-    // degraded (global no-color, conservative TERM profiles).
-    if matches!(command, Commands::Tui { .. }) {
-        warn_tui_terminal_profile(stderr_is_tty);
-    }
-
-    // Block TUI in non-TTY contexts unless TUI_HEADLESS is set (for testing)
-    if matches!(command, Commands::Tui { .. })
-        && !stdout_is_tty
-        && dotenvy::var("TUI_HEADLESS").is_err()
-    {
-        return Err(CliError::usage(
-            "No subcommand provided; in non-TTY contexts TUI is disabled.",
-            Some("Use an explicit subcommand, e.g., `cass search --json ...` or `cass --robot-help`.".to_string()),
-        ));
     }
 
     // Auto-quiet in robot mode: suppress INFO/WARN logs for clean JSON output.
@@ -7620,150 +7550,6 @@ async fn execute_cli(
     let filter = build_robot_aware_log_filter(robot_mode, cli.verbose, cli.quiet);
 
     match &command {
-        Commands::Tui { data_dir, .. } => {
-            let log_dir = resolve_data_dir(data_dir, cli.db.as_ref());
-            std::fs::create_dir_all(&log_dir).ok();
-
-            let file_appender = tracing_appender::rolling::daily(&log_dir, "cass.log");
-            let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
-
-            tracing_subscriber::registry()
-                .with(filter)
-                .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_writer(non_blocking)
-                        .compact()
-                        .with_target(false)
-                        .with_ansi(false),
-                )
-                .init();
-
-            // No update check anywhere: the checker and its TUI banner were
-            // removed by the local-only conversion. The historical pre-TUI
-            // check awaited the network and then blocked on a stdin prompt
-            // before the first frame (2l1b0.56).
-            if let Commands::Tui {
-                once,
-                reset_state,
-                asciicast,
-                data_dir,
-                inline,
-                ui_height,
-                anchor,
-                record_macro,
-                play_macro,
-                refresh,
-            } = command.clone()
-            {
-                let tui_data_dir = resolve_data_dir(&data_dir, cli.db.as_ref());
-                let tui_db_path = cli
-                    .db
-                    .clone()
-                    .unwrap_or_else(|| tui_data_dir.join("agent_search.db"));
-                if refresh {
-                    refresh_index_inline(cli.db.clone(), Some(tui_data_dir.clone()));
-                } else if let Some(outcome) =
-                    maybe_auto_refresh_index_after_read(&tui_data_dir, &tui_db_path, None)
-                {
-                    // Stale-on-launch catch-up runs detached; the TUI opens
-                    // immediately on the existing index and can reload
-                    // (Ctrl+Shift+R / command palette) once it lands.
-                    info!(?outcome, "tui: auto-refresh evaluated");
-                }
-                info!(once, inline, ui_height, %anchor, record_macro = ?record_macro, play_macro = ?play_macro, "launching ftui runtime");
-
-                let inline_config = if inline {
-                    let ui_anchor = if anchor == "top" {
-                        ui::ftui_adapter::UiAnchor::Top
-                    } else {
-                        ui::ftui_adapter::UiAnchor::Bottom
-                    };
-                    Some(ui::app::InlineTuiConfig {
-                        ui_height,
-                        anchor: ui_anchor,
-                    })
-                } else {
-                    None
-                };
-
-                if reset_state {
-                    let state_path = tui_data_dir.join("tui_state.json");
-                    match std::fs::remove_file(&state_path) {
-                        Ok(()) => {}
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(e) => {
-                            return Err(CliError {
-                                code: 9,
-                                kind: CliErrorKind::TuiResetState.kind_str(),
-                                message: format!(
-                                    "failed to remove persisted state {}: {e}",
-                                    state_path.display()
-                                ),
-                                hint: Some(
-                                    "Check file permissions or rerun without --reset-state."
-                                        .to_string(),
-                                ),
-                                retryable: false,
-                            });
-                        }
-                    }
-                }
-
-                let non_tty_headless_once =
-                    once && !inline && !stdout_is_tty && dotenvy::var("TUI_HEADLESS").is_ok();
-
-                if non_tty_headless_once {
-                    prepare_headless_once_tui_artifacts(
-                        &tui_data_dir,
-                        &tui_db_path,
-                        asciicast.as_deref(),
-                    )
-                    .map_err(|e| CliError {
-                        code: 9,
-                        kind: CliErrorKind::TuiHeadlessOnce.kind_str(),
-                        message: format!(
-                            "headless --once TUI bootstrap failed for {}: {e}",
-                            tui_data_dir.display()
-                        ),
-                        hint: Some(
-                            "Ensure the data directory is writable and retry the command."
-                                .to_string(),
-                        ),
-                        retryable: false,
-                    })?;
-                    info!(
-                        data_dir = %tui_data_dir.display(),
-                        asciicast = ?asciicast,
-                        "completed non-interactive headless --once TUI bootstrap"
-                    );
-                } else {
-                    let macro_config = ui::app::MacroConfig {
-                        record_path: record_macro,
-                        play_path: play_macro,
-                    };
-                    let run_result = if let Some(path) = asciicast {
-                        tui_asciicast::run_tui_with_asciicast(&path, !once)
-                    } else {
-                        ui::app::run_tui_ftui(
-                            inline_config,
-                            macro_config,
-                            Some(tui_data_dir),
-                            Some(tui_db_path),
-                        )
-                    };
-
-                    if let Err(e) = run_result {
-                        return Err(CliError {
-                            code: 9,
-                            kind: CliErrorKind::Tui.kind_str(),
-                            message: format!("tui failed: {e}"),
-                            hint: None,
-                            retryable: false,
-                        });
-                    }
-                }
-            }
-        }
         Commands::Index { .. }
         | Commands::Search { .. }
         | Commands::Pack { .. }
@@ -16844,184 +16630,6 @@ mod readiness_projection_tests {
     }
 }
 
-fn warn_tui_terminal_profile(stderr_is_tty: bool) {
-    if !stderr_is_tty {
-        return;
-    }
-
-    let env_truthy = |raw: Option<String>| {
-        raw.map(|v| {
-            matches!(
-                v.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
-    };
-
-    let no_color_global = dotenvy::var("NO_COLOR").is_ok();
-    let no_color_local = dotenvy::var("CASS_NO_COLOR").is_ok();
-    let respect_global = env_truthy(dotenvy::var("CASS_RESPECT_NO_COLOR").ok());
-    let effective_no_color = no_color_local || (respect_global && no_color_global);
-    if effective_no_color {
-        eprintln!(
-            "warning: CASS_NO_COLOR/NO_COLOR profile is active; cass TUI styling may be reduced."
-        );
-        eprintln!(
-            "hint: use `CASS_NO_COLOR=1` for monochrome, or `CASS_RESPECT_NO_COLOR=1` if you want global NO_COLOR honored."
-        );
-    } else if no_color_global {
-        eprintln!(
-            "info: NO_COLOR is set but ignored by default. Set CASS_RESPECT_NO_COLOR=1 to honor it."
-        );
-    }
-
-    let term = dotenvy::var("TERM").unwrap_or_default();
-    if term.trim().eq_ignore_ascii_case("dumb") && dotenvy::var("TUI_HEADLESS").is_err() {
-        eprintln!(
-            "warning: TERM=dumb detected; cass will apply a compatibility profile unless CASS_ALLOW_DUMB_TERM=1."
-        );
-        eprintln!(
-            "hint: try `env -u NO_COLOR TERM=xterm-256color COLORTERM=truecolor cass` for full rendering."
-        );
-    }
-}
-
-fn prepare_headless_once_tui_artifacts(
-    data_dir: &Path,
-    db_path: &Path,
-    asciicast_path: Option<&Path>,
-) -> Result<()> {
-    std::fs::create_dir_all(data_dir).map_err(|e| {
-        anyhow::anyhow!(
-            "create headless --once data directory {}: {e}",
-            data_dir.display()
-        )
-    })?;
-
-    if let Some(parent) = db_path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            anyhow::anyhow!(
-                "create headless --once database parent {}: {e}",
-                parent.display()
-            )
-        })?;
-    }
-    {
-        let _conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "initialize SQLite database for headless --once at {}: {e}",
-                    db_path.display()
-                )
-            })?;
-    }
-
-    let _index_path = crate::search::tantivy::index_dir(data_dir).map_err(|e| {
-        anyhow::anyhow!(
-            "initialize index directory for headless --once at {}: {e}",
-            data_dir.display()
-        )
-    })?;
-
-    if let Some(path) = asciicast_path {
-        write_headless_asciicast_sentinel(path)?;
-    }
-
-    Ok(())
-}
-
-fn write_headless_asciicast_sentinel(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            anyhow::anyhow!(
-                "create asciicast output directory {}: {e}",
-                parent.display()
-            )
-        })?;
-    }
-
-    let mut file = std::fs::File::create(path)
-        .map_err(|e| anyhow::anyhow!("create asciicast file {}: {e}", path.display()))?;
-
-    let header = serde_json::json!({
-        "version": 2,
-        "width": 120,
-        "height": 40,
-        "timestamp": Utc::now().timestamp(),
-        "cass_artifact_kind": "headless_once_asciicast_sentinel",
-        "recording_available": false,
-        "reason": "non_interactive_headless_once_bootstrap",
-        "env": {
-            "TERM": dotenvy::var("TERM").unwrap_or_else(|_| "xterm-256color".to_string()),
-            "SHELL": dotenvy::var("SHELL").unwrap_or_else(|_| "cass".to_string())
-        }
-    });
-
-    writeln!(file, "{header}")
-        .map_err(|e| anyhow::anyhow!("write asciicast header to {}: {e}", path.display()))?;
-    let sentinel_frame = serde_json::to_string(
-        "cass headless --once bootstrap completed without launching the interactive TUI.\r\n\
-This asciicast is a sentinel artifact, not a real terminal session recording.\r\n",
-    )
-    .map_err(|e| {
-        anyhow::anyhow!(
-            "encode asciicast sentinel frame for {}: {e}",
-            path.display()
-        )
-    })?;
-    writeln!(file, "[0.0,\"o\",{sentinel_frame}]")
-        .map_err(|e| anyhow::anyhow!("write asciicast frame to {}: {e}", path.display()))?;
-    Ok(())
-}
-
-#[cfg(test)]
-mod headless_asciicast_sentinel_tests {
-    use super::write_headless_asciicast_sentinel;
-    use std::fs;
-    use tempfile::TempDir;
-
-    #[test]
-    fn headless_asciicast_sentinel_is_labeled_and_nonempty() {
-        let tmp = TempDir::new().expect("temp dir");
-        let cast_path = tmp.path().join("captures").join("headless.cast");
-
-        write_headless_asciicast_sentinel(&cast_path).expect("write sentinel cast");
-
-        let cast = fs::read_to_string(&cast_path).expect("read sentinel cast");
-        assert!(cast.contains("\"version\":2"));
-        assert!(cast.contains("\"cass_artifact_kind\":\"headless_once_asciicast_sentinel\""));
-        assert!(cast.contains("\"recording_available\":false"));
-        assert!(cast.contains("sentinel artifact, not a real terminal session recording"));
-        assert!(
-            !cast.contains("[0.0,\"o\",\"\"]"),
-            "sentinel cast must not use an empty placeholder frame"
-        );
-    }
-
-    #[test]
-    fn headless_asciicast_sentinel_overwrites_existing_placeholder_content() {
-        let tmp = TempDir::new().expect("temp dir");
-        let cast_path = tmp.path().join("existing.cast");
-        fs::write(&cast_path, "{\"version\":2}\n[0.0,\"o\",\"\"]\n")
-            .expect("write old placeholder");
-
-        write_headless_asciicast_sentinel(&cast_path).expect("rewrite sentinel cast");
-
-        let cast = fs::read_to_string(&cast_path).expect("read overwritten cast");
-        assert!(cast.contains("\"cass_artifact_kind\":\"headless_once_asciicast_sentinel\""));
-        assert!(cast.contains("headless --once bootstrap completed"));
-        assert!(
-            !cast.contains("[0.0,\"o\",\"\"]"),
-            "overwritten cast should no longer contain the vacuous stub frame"
-        );
-    }
-}
-
 fn configure_color(choice: ColorPref, stdout_is_tty: bool, stderr_is_tty: bool) {
     let enabled = match choice {
         ColorPref::Always => true,
@@ -17115,7 +16723,6 @@ mod watch_once_resolution_tests {
 
 fn describe_command(cli: &Cli) -> String {
     match &cli.command {
-        Some(Commands::Tui { .. }) => "tui".to_string(),
         Some(Commands::Index { .. }) => "index".to_string(),
         Some(Commands::Search { .. }) => "search".to_string(),
         Some(Commands::Pack { .. }) => "pack".to_string(),
@@ -114599,7 +114206,7 @@ mod subcommand_robot_output_tests {
     }
 
     #[test]
-    fn refresh_catchup_flags_are_opt_in_for_search_and_tui() {
+    fn refresh_catchup_flags_are_opt_in_for_search() {
         run_on_large_stack(|| {
             for args in [
                 vec!["cass", "search", "needle", "--refresh"],
@@ -114608,17 +114215,6 @@ mod subcommand_robot_output_tests {
                 let cli = Cli::try_parse_from(args.clone()).expect("parse search refresh flag");
                 let Some(Commands::Search { refresh, .. }) = cli.command else {
                     panic!("expected search command for args {args:?}");
-                };
-                assert!(refresh, "refresh should be enabled for args {args:?}");
-            }
-
-            for args in [
-                vec!["cass", "tui", "--once", "--refresh"],
-                vec!["cass", "tui", "--once", "--catch-up"],
-            ] {
-                let cli = Cli::try_parse_from(args.clone()).expect("parse tui refresh flag");
-                let Some(Commands::Tui { refresh, .. }) = cli.command else {
-                    panic!("expected tui command for args {args:?}");
                 };
                 assert!(refresh, "refresh should be enabled for args {args:?}");
             }

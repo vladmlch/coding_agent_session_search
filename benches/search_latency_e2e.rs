@@ -13,8 +13,17 @@ use coding_agent_search::search::query::{
     SearchResult as BackendSearchResult,
 };
 use coding_agent_search::search::tantivy::{TantivyIndex, index_dir};
-use coding_agent_search::ui::app::RankingMode;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RankingMode {
+    RecentHeavy,
+    Balanced,
+    RelevanceHeavy,
+    MatchQualityHeavy,
+    DateNewest,
+    DateOldest,
+}
 use std::cmp::Ordering;
 use std::hint::black_box;
 use std::path::PathBuf;
