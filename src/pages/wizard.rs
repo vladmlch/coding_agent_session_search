@@ -263,11 +263,7 @@ impl PagesWizard {
 
                     if !confirmed {
                         writeln!(term)?;
-                        writeln!(
-                            term,
-                            "  {}",
-                            style("Export cancelled.").yellow()
-                        )?;
+                        writeln!(term, "  {}", style("Export cancelled.").yellow())?;
                         return Ok(false);
                     }
 
@@ -940,8 +936,7 @@ impl PagesWizard {
                     }
                     flow.complete_current_step();
                 }
-                ConfirmationStep::PasswordStrengthWarning
-                | ConfirmationStep::RecoveryKeyBackup => {
+                ConfirmationStep::PasswordStrengthWarning | ConfirmationStep::RecoveryKeyBackup => {
                     flow.complete_current_step();
                 }
                 ConfirmationStep::FinalConfirmation => {
@@ -1258,7 +1253,8 @@ impl PagesWizard {
         writeln!(
             term,
             "  {}",
-            style("WARNING: Archive will be exported WITHOUT encryption (publicly readable)!").red()
+            style("WARNING: Archive will be exported WITHOUT encryption (publicly readable)!")
+                .red()
         )?;
 
         let payload_dir = encrypted_dir.join("payload");

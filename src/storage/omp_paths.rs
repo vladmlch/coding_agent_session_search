@@ -491,7 +491,7 @@ fn local_omp_store_roots_from(
     roots
 }
 
-
+fn dedupe_tagged_roots(roots: &mut Vec<(PathBuf, Option<String>)>) {
     let mut seen = HashSet::new();
     roots.retain(|(path, _)| {
         let key = fs::canonicalize(path).unwrap_or_else(|_| path.clone());
@@ -499,13 +499,9 @@ fn local_omp_store_roots_from(
     });
 }
 
-/// Return an explicit OMP session/store override that owns `path`.
-///
-/// `PI_CODING_AGENT_DIR` is deliberately included only as a resume/scan-root
-/// resolver, not as an OMP identity signal: Pi Agent and OMP both honor that
-/// variable, so it cannot safely distinguish the two by itself.
+/// Recover a valid named profile from canonical, custom-config, or XDG OMP
+/// session paths. Callers must first establish that the path belongs to OMP.
 #[must_use]
-
 pub(crate) fn profile_from_session_path(path: &Path) -> Option<String> {
     let parts = path_parts(path)?;
 
@@ -552,10 +548,3 @@ pub(crate) fn profile_from_session_path(path: &Path) -> Option<String> {
     }
     None
 }
-
-/// Resolve the profile needed to reopen one OMP transcript.
-///
-/// A path-encoded named profile is durable provenance. The process profile is
-/// only valid for the exact `PI_CODING_AGENT_SESSION_DIR` live override; an
-/// unrelated active profile must never be attached to a CASS archive or copy.
-#[must_use]

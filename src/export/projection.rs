@@ -78,8 +78,8 @@
 //!   tool-only archive under `--include-tools=false` errors explicitly
 //!   rather than producing a silent empty export.
 
-use crate::model::types::{Message, MessageRole};
 use crate::conversation_view::ConversationView;
+use crate::model::types::{Message, MessageRole};
 use serde_json::{Map, Value};
 
 /// Agent-neutral projection of one indexed conversation. The metadata fields

@@ -4,8 +4,6 @@ mod checkpoint_deadline;
 // Local fix (review 2026-11-02, I1): unreadable forgotten source stays forgotten.
 mod forgotten_source_admission;
 // Local fix (review 2026-11-02, I2): typed final-checkpoint report for analytics.
-#[cfg(test)]
-mod wal_checkpoint_report;
 pub(crate) mod lexical_generation;
 mod lexical_publish;
 pub mod lexical_reconcile;
@@ -23,6 +21,8 @@ pub mod semantic_progress;
 mod source_ledger_tests;
 mod source_writer_probe;
 pub(crate) mod staging_reclaim;
+#[cfg(test)]
+mod wal_checkpoint_report;
 #[cfg(test)]
 mod watch_ingestion_tests;
 mod watch_source_cache;
@@ -72773,7 +72773,10 @@ c.close()
 
     #[test]
     fn devin_connector_kind_maps_runtime_slug_and_compact_wire_key() {
-        assert_eq!(ConnectorKind::from_slug("devin"), Some(ConnectorKind::Devin));
+        assert_eq!(
+            ConnectorKind::from_slug("devin"),
+            Some(ConnectorKind::Devin)
+        );
         assert_eq!(ConnectorKind::Devin.slug(), "devin");
         assert_eq!(
             serde_json::to_string(&ConnectorKind::Devin).unwrap(),
@@ -72788,7 +72791,10 @@ c.close()
 
     #[test]
     fn qoder_connector_kind_maps_runtime_slug_and_compact_wire_key() {
-        assert_eq!(ConnectorKind::from_slug("qoder"), Some(ConnectorKind::Qoder));
+        assert_eq!(
+            ConnectorKind::from_slug("qoder"),
+            Some(ConnectorKind::Qoder)
+        );
         assert_eq!(ConnectorKind::Qoder.slug(), "qoder");
         assert_eq!(
             serde_json::to_string(&ConnectorKind::Qoder).unwrap(),
@@ -73959,7 +73965,10 @@ c.close()
         reindex_paths(
             &opts,
             vec![selected.to_path_buf()],
-            &[(ConnectorKind::Codex, ScanRoot::local(selected.to_path_buf()))],
+            &[(
+                ConnectorKind::Codex,
+                ScanRoot::local(selected.to_path_buf()),
+            )],
             &Mutex::new(HashMap::new()),
             storage,
             index,
@@ -75629,7 +75638,10 @@ c.close()
         write_watch_codex_messages(
             &codex_file,
             "thread-semantic",
-            &[("user", "hi", base_ts), ("assistant", "hello", base_ts + 100)],
+            &[
+                ("user", "hi", base_ts),
+                ("assistant", "hello", base_ts + 100),
+            ],
         );
 
         let opts = super::IndexOptions {
@@ -76327,7 +76339,10 @@ c.close()
         drop(in_memory);
 
         let loaded = load_watch_state(&data_dir);
-        assert_eq!(loaded.get(&ConnectorKind::Codex).copied(), Some(persisted_ts));
+        assert_eq!(
+            loaded.get(&ConnectorKind::Codex).copied(),
+            Some(persisted_ts)
+        );
 
         if let Some(prev) = prev {
             unsafe { std::env::set_var("XDG_DATA_HOME", prev) };

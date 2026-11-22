@@ -2744,7 +2744,8 @@ fn write_private_unencrypted_notice(private_dir: &Path) -> Result<()> {
 
 /// Generate public README for the site directory
 fn generate_public_readme(title: &str, description: &str) -> String {
-    let about_line = "This is a searchable archive of AI coding agent conversations (not encrypted)";
+    let about_line =
+        "This is a searchable archive of AI coding agent conversations (not encrypted)";
     let security_section = r#"## Security
 
 ⚠️ This archive is **NOT encrypted**.

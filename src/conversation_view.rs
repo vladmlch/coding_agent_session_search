@@ -837,7 +837,6 @@ pub fn log_conversation_cache_stats() {
     );
 }
 
-
 // -------------------------------------------------------------------------
 // Unit Tests
 // -------------------------------------------------------------------------
@@ -845,8 +844,8 @@ pub fn log_conversation_cache_stats() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::query::MatchType;
     use crate::model::types::MessageRole;
+    use crate::search::query::MatchType;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -2350,5 +2349,4 @@ mod tests {
         let (hits, misses, _) = cache.stats().get();
         assert!(hits + misses > 0, "Expected some cache operations");
     }
-
 }

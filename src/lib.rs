@@ -2505,13 +2505,7 @@ mod robot_docs_shorthand_regression_tests {
 
     #[test]
     fn other_real_subcommands_are_not_rewritten() {
-        for sub in &[
-            "diag",
-            "sources",
-            "health",
-            "selftest",
-            "Doctor",
-        ] {
+        for sub in &["diag", "sources", "health", "selftest", "Doctor"] {
             let mut rest = vec![sub.to_string(), "--json".to_string()];
             let mut corrections = Vec::new();
             recover_robot_docs_topic_shorthands(&mut rest, &mut corrections);
@@ -6868,13 +6862,7 @@ pub async fn run_with_parsed(parsed: ParsedCli) -> CliResult<()> {
         emit_correction_notes(&all_notes, false);
     }
 
-    let result = execute_cli(
-        &cli,
-        wrap_cfg,
-        progress_resolved,
-        stderr_is_tty,
-    )
-    .await;
+    let result = execute_cli(&cli, wrap_cfg, progress_resolved, stderr_is_tty).await;
 
     if result.is_ok() && !all_notes.is_empty() && !is_doc_mode && is_robot_mode {
         emit_correction_notes(&all_notes, true);
@@ -17085,8 +17073,6 @@ fn print_robot_docs(topic: RobotTopic, wrap: WrapConfig) -> CliResult<()> {
             "  CASS_STREAMING_COMBINE_MAX=<N>           max messages per combined drain (clamped 1..1024, default 64)".to_string(),
             "  CASS_STREAMING_COMBINE_MAX_BYTES=<N>     byte cap per combined drain (clamped 1MiB..STREAMING_MAX, default half)".to_string(),
             "  CASS_INDEXER_PARALLEL_WAL=off            DISABLE Card 1 parallel-WAL shadow observer (DEFAULT: shadow). Observer records per-chunk wall-clock; does NOT change commit semantics. `on`/`commit` are reserved for a future revision.".to_string(),
-            "  CASS_AIDER_DATA_ROOT=<path>              Aider history location (default ~/.aider.chat.history.md)".to_string(),
-            "  CASS_ALLOW_DUMB_TERM=1                   allow TUI startup even when TERM=dumb".to_string(),
             "  CASS_AUTOMATIC_WILDCARD_FALLBACK_MAX_DOCS=<N>  max index documents for automatic wildcard fallback on sparse results (default 10000)".to_string(),
             "  CASS_CACHE_BYTE_CAP=<N>                  search-hit cache byte limit (default available memory / 128, clamped 64 MiB..2 GiB; 0 disables)".to_string(),
             "  CASS_CACHE_EVICTION_POLICY=lru|s3-fifo   search-hit cache eviction policy (default lru)".to_string(),
@@ -81820,7 +81806,6 @@ pub(crate) fn run_doctor_impl(
         home.join(".claude"),        // Claude Code
         home.join(".codex"),         // Codex
         home.join(".cursor"),        // Cursor
-        home.join(".aider"),         // Aider
         home.join(".chatgpt"),       // ChatGPT
         home.join(".config/gemini"), // Gemini
     ];
@@ -85708,11 +85693,6 @@ fn build_env_var_capabilities() -> Vec<EnvVarCapability> {
             "CASS_STREAMING_CONSUMER_COMBINE",
             Some("1"),
             "Set to 0 to disable flat-combining drain in the streaming consumer.",
-        ),
-        env_var_capability(
-            "CASS_AIDER_DATA_ROOT",
-            None,
-            "Override Aider session discovery root.",
         ),
         env_var_capability(
             "CASS_OMP_DATA_ROOT",
@@ -93560,7 +93540,8 @@ fn try_load_indexed_conversation_from_db_with_source(
     let source_id = canonical_followup_source_id(source_id);
     if let Some(conversation_id) = conversation_id {
         let view =
-            crate::conversation_view::load_conversation_by_id_uncached(&storage, conversation_id).ok()??;
+            crate::conversation_view::load_conversation_by_id_uncached(&storage, conversation_id)
+                .ok()??;
         if view.convo.source_path.to_string_lossy() != source_path {
             return None;
         }
@@ -93573,8 +93554,12 @@ fn try_load_indexed_conversation_from_db_with_source(
         return Some(view);
     }
     if let Some(source_id) = source_id.as_deref() {
-        return crate::conversation_view::load_conversation_for_source(&storage, source_id, &source_path)
-            .ok()?;
+        return crate::conversation_view::load_conversation_for_source(
+            &storage,
+            source_id,
+            &source_path,
+        )
+        .ok()?;
     }
     if let Some(local_view) = crate::conversation_view::load_conversation_for_source(
         &storage,
@@ -100761,19 +100746,19 @@ fn run_export_html(
 
     if let Some(_fmt) = structured_format {
         let result = serde_json::json!({
-            "success": true,
-            "privacy": privacy.metadata(),
-            "exported": {
-                "session_path": session_path.display().to_string(),
-                "output_path": output_path.display().to_string(),
-                    "filename": output_path.file_name().map(|n| n.to_string_lossy().to_string()),
-                    "size_bytes": file_size,
-                    "messages_count": message_count,
-                    "agent": agent_name,
-                    "workspace": workspace,
-                    "title": session_title
-                }
-            });
+        "success": true,
+        "privacy": privacy.metadata(),
+        "exported": {
+            "session_path": session_path.display().to_string(),
+            "output_path": output_path.display().to_string(),
+                "filename": output_path.file_name().map(|n| n.to_string_lossy().to_string()),
+                "size_bytes": file_size,
+                "messages_count": message_count,
+                "agent": agent_name,
+                "workspace": workspace,
+                "title": session_title
+            }
+        });
         println!(
             "{}",
             serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())

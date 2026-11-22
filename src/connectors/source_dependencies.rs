@@ -180,10 +180,7 @@ mod tests {
 
     #[test]
     fn gh512_whole_source_exclusions_require_explicit_runtime_capabilities() {
-        for (registration, source) in [
-            ("claude", "claude_code"),
-            ("codex", "codex"),
-        ] {
+        for (registration, source) in [("claude", "claude_code"), ("codex", "codex")] {
             assert!(can_reuse_with_path_exclusions(registration, source));
             assert!(!can_reuse_with_path_exclusions("unknown", source));
             assert!(!can_reuse_with_path_exclusions(registration, "unknown"));

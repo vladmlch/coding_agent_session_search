@@ -1,6 +1,5 @@
 //! `SQLite` backend: schema, pragmas, and migrations.
 
-use crate::storage::omp_paths::{PiFamilyOwner, PiFamilyOwnership};
 use crate::franken_sync::{
     Connection as FrankenConnection, Row as FrankenRow, SqliteValue,
     compat::{
@@ -13,6 +12,7 @@ use crate::franken_sync::{
 };
 use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole, Snippet};
 use crate::sources::provenance::{LOCAL_SOURCE_ID, Source, SourceKind};
+use crate::storage::omp_paths::{PiFamilyOwner, PiFamilyOwnership};
 use anyhow::{Context, Result, anyhow, bail};
 use frankensqlite::AsyncConnection as FrankenAsyncConnection;
 use serde::{Deserialize, Serialize};
