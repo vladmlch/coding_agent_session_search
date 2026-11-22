@@ -5,13 +5,13 @@
 //! to `=0.3.2` while both tables still said `=0.3.1`, and the 2026-09-23 audit
 //! found the tables two releases stale.
 //!
-//! Since 2026-11-07 the fsqlite family resolves from the owner's
-//! frankensqlite fork through the committed `[patch.crates-io]` table (at
-//! the 0.4.13 strict-read-only rev since 2026-11-09): the
-//! `[dependencies]` entries keep registry-shaped `=0.4.13` requirements, so
-//! the fork's git revision is adopted from the patch entry here — otherwise
-//! a row documenting the fork source would be unchecked (and the family row
-//! would silently drop out of the `checked >= 6` floor).
+//! Since the rusqlite migration the SQLite engine is the crates.io
+//! `rusqlite =0.40.2` pin (bundled amalgamation + `modern_sqlite`), and the
+//! committed `[patch.crates-io]` table redirects only `frankensearch-quill`
+//! — a transitive dependency, not a `[dependencies]` key, so it never
+//! enters `pins`. The patch-aware rev lookup stays so a future
+//! patch-redirected direct dependency is still checked against its fork
+//! revision instead of silently dropping out of the `checked >= 6` floor.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -152,7 +152,7 @@ fn readme_and_agents_dependency_pins_match_cargo_toml() {
             "{doc} dependency table disagrees with Cargo.toml:\n{}",
             mismatches.join("\n")
         );
-        // frankensqlite, franken-agent-detection, asupersync, frankensearch,
+        // rusqlite, franken-agent-detection, asupersync, frankensearch,
         // frankentui and toon each have a row today.
         assert!(checked >= 6, "{doc}: only {checked} pin rows found");
     }
