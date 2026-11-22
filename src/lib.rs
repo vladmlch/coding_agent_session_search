@@ -87066,11 +87066,7 @@ fn run_config_based_export(
                 staged_secret_scan.artifact_sha256
             );
         }
-        if encryption_enabled {
-            println!("  Encryption: enabled");
-        } else {
-            println!("  Encryption: DISABLED (content is public)");
-        }
+        println!("  Encryption: DISABLED (local archive)");
         println!(
             "  Fingerprint: {}",
             bundle_result

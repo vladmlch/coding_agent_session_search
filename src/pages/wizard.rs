@@ -11,8 +11,8 @@ use std::time::Duration;
 use crate::franken_sync::Connection;
 use crate::pages::bundle::{BundleBuilder, BundleConfig};
 use crate::pages::confirmation::{
-    ConfirmationConfig, ConfirmationFlow, ConfirmationStep, unencrypted_warning_lines,
-    validate_unencrypted_ack,
+    ConfirmationConfig, ConfirmationFlow, ConfirmationStep, StepValidation, UNENCRYPTED_ACK_PHRASE,
+    unencrypted_warning_lines, validate_unencrypted_ack,
 };
 use crate::pages::docs::{ArchiveMode, DocConfig, DocumentationGenerator};
 use crate::pages::export::{ExportEngine, ExportFilter, PathMode};
