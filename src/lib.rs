@@ -1205,8 +1205,6 @@ pub enum Commands {
                 \x20 claude | claude-code | claude_code\n\
                 \x20 codex\n\
                 \x20 opencode\n\
-                \x20 pi_agent | pi-agent | pi (pi-mono)\n\
-                \x20 omp | oh-my-pi | oh_my_pi | ohmypi (Oh My Pi; profile/session roots preserved)\n\
                 \x20 gemini\n\
                 \x20 antigravity | agy       (resume via `agy --conversation <uuid>`)"
         )]
@@ -74187,18 +74185,13 @@ fn capabilities_connector_names() -> Vec<String> {
         "codex",
         "claude_code",
         "gemini",
-        "clawdbot",
-        "vibe",
         "opencode",
-        "amp",
-        "cline",
-        "aider",
         "cursor",
         "chatgpt",
-        "pi_agent",
-        "omp",
-        "factory",
-        "openclaw",
+        "devin",
+        "qwen",
+        "antigravity",
+        "qoder",
     ];
 
     let mut connectors: Vec<String> = preferred.iter().map(|name| (*name).to_string()).collect();
@@ -79500,10 +79493,6 @@ mod cli_read_db_tests {
                 "claude",
             ),
             (r"C:\Users\ellis\.codex\sessions\session.jsonl", "codex"),
-            (
-                r"C:\Users\ellis\.pi\agent\sessions\session.jsonl",
-                "pi_agent",
-            ),
             (r"C:\Users\ellis\.gemini\sessions\session.jsonl", "gemini"),
         ] {
             let detected = detect_resume_agent(Path::new(path), None)
@@ -79558,219 +79547,6 @@ mod cli_read_db_tests {
         assert_eq!(target.agent, "opencode");
         assert_eq!(target.session_id.as_deref(), Some("sess-xyz"));
         assert_eq!(target.argv, vec!["opencode", "--session", "sess-xyz"]);
-    }
-
-    #[test]
-    fn resume_detects_oh_my_pi_from_omp_path_and_reads_session_id() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let sessions_dir = temp.path().join(".omp/agent/sessions");
-        std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
-        let session_file = sessions_dir.join("2026-04-09T00-00-00_abc.jsonl");
-        std::fs::write(
-            &session_file,
-            r#"{"type":"session","id":"my-omp-id","timestamp":"2026-04-09T00:00:00Z"}
-{"type":"message","timestamp":"2026-04-09T00:00:01Z","message":{"role":"user","content":"hi"}}"#,
-        )
-        .expect("write session file");
-
-        let target = resolve_resume_target(&session_file, None).expect("resolve");
-        assert_eq!(target.agent, "omp");
-        assert_eq!(target.session_id.as_deref(), Some("my-omp-id"));
-        assert_eq!(
-            target.argv,
-            vec![
-                "omp".to_string(),
-                "--session-dir".to_string(),
-                sessions_dir.display().to_string(),
-                "--resume".to_string(),
-                "my-omp-id".to_string(),
-            ],
-            "a copied canonical-looking store must not silently resume from the current user's live home"
-        );
-    }
-
-    #[test]
-    fn resume_preserves_omp_named_profile_from_home_layout() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let sessions_dir = temp
-            .path()
-            .join(".omp/profiles/work/agent/sessions/-projects-cass");
-        std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
-        let session_file = sessions_dir.join("2026-08-23T00-00-00_profile.jsonl");
-        std::fs::write(&session_file, r#"{"type":"session","id":"omp-work-id"}"#)
-            .expect("write session file");
-
-        let target = resolve_resume_target(&session_file, None).expect("resolve");
-        assert_eq!(target.agent, "omp");
-        assert_eq!(target.session_id.as_deref(), Some("omp-work-id"));
-        assert_eq!(
-            target.argv,
-            vec![
-                "omp".to_string(),
-                "--profile".to_string(),
-                "work".to_string(),
-                "--session-dir".to_string(),
-                temp.path()
-                    .join(".omp/profiles/work/agent/sessions")
-                    .display()
-                    .to_string(),
-                "--resume".to_string(),
-                "omp-work-id".to_string(),
-            ],
-            "a copied named-profile store needs both its profile identity and exact archive root"
-        );
-    }
-
-    #[test]
-    fn resume_preserves_omp_xdg_session_root() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let sessions_dir = temp.path().join("xdg/omp/sessions/-projects-cass");
-        std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
-        let session_file = sessions_dir.join("2026-08-23T00-00-00_xdg.jsonl");
-        std::fs::write(&session_file, r#"{"type":"session","id":"omp-xdg-id"}"#)
-            .expect("write session file");
-
-        let target = resolve_resume_target(&session_file, None).expect("resolve");
-        assert_eq!(target.agent, "omp");
-        assert_eq!(
-            target.argv,
-            vec![
-                "omp".to_string(),
-                "--session-dir".to_string(),
-                temp.path().join("xdg/omp/sessions").display().to_string(),
-                "--resume".to_string(),
-                "omp-xdg-id".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn resume_does_not_apply_active_profile_to_cass_archive_root() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let archive_root = temp.path().join("custom-omp-archive");
-        let sessions_root = archive_root.join("sessions");
-        let sessions_dir = sessions_root.join("-projects-cass");
-        std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
-        let session_file = sessions_dir.join("2026-08-24T00-00-00_archive.jsonl");
-        std::fs::write(&session_file, r#"{"type":"session","id":"omp-archive-id"}"#)
-            .expect("write session file");
-
-        let _pi_sessions = set_env("PI_SESSIONS_DIR", "");
-        let _omp_sessions = set_env("PI_CODING_AGENT_SESSION_DIR", "");
-        let _shared_agent = set_env("PI_CODING_AGENT_DIR", "");
-        let _omp_archive = set_env(
-            "CASS_OMP_DATA_ROOT",
-            archive_root.to_string_lossy().as_ref(),
-        );
-        let _config_dir = set_env("PI_CONFIG_DIR", "");
-        let _active_profile = set_env("OMP_PROFILE", "work");
-        let _legacy_profile = set_env("PI_PROFILE", "");
-        let _xdg = set_env("XDG_DATA_HOME", "");
-
-        let target = resolve_resume_target(&session_file, None).expect("resolve");
-        assert_eq!(target.agent, "omp");
-        assert_eq!(
-            target.argv,
-            vec![
-                "omp".to_string(),
-                "--session-dir".to_string(),
-                sessions_root.display().to_string(),
-                "--resume".to_string(),
-                "omp-archive-id".to_string(),
-            ],
-            "an active local profile must not be grafted onto a CASS archive with no path-encoded profile"
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn resume_preserves_omp_explicit_session_dir_and_profile() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let sessions_root = temp.path().join("launch-sessions");
-        let sessions_dir = sessions_root.join("-projects-cass");
-        std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
-        let session_file = sessions_dir.join("2026-08-23T00-00-00_custom.jsonl");
-        std::fs::write(&session_file, r#"{"type":"session","id":"omp-custom-id"}"#)
-            .expect("write session file");
-        let _session_dir = set_env(
-            "PI_CODING_AGENT_SESSION_DIR",
-            sessions_root.to_string_lossy().as_ref(),
-        );
-        let _pi_sessions = set_env("PI_SESSIONS_DIR", "");
-        let _shared_agent = set_env("PI_CODING_AGENT_DIR", "");
-        let _omp_archive = set_env("CASS_OMP_DATA_ROOT", "");
-        let _xdg = set_env("XDG_DATA_HOME", "");
-        let _profile = set_env("OMP_PROFILE", "work");
-
-        let target = resolve_resume_target(&session_file, None).expect("resolve");
-        assert_eq!(target.agent, "omp");
-        assert_eq!(
-            target.argv,
-            vec![
-                "omp".to_string(),
-                "--profile".to_string(),
-                "work".to_string(),
-                "--session-dir".to_string(),
-                sessions_root.display().to_string(),
-                "--resume".to_string(),
-                "omp-custom-id".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    #[serial]
-    fn resume_rejects_invalid_canonical_omp_profile_without_falling_back_to_pi_profile() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let sessions_root = temp.path().join("launch-sessions");
-        let sessions_dir = sessions_root.join("-projects-cass");
-        std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
-        let session_file = sessions_dir.join("2026-08-23T00-00-00_custom.jsonl");
-        std::fs::write(&session_file, r#"{"type":"session","id":"omp-custom-id"}"#)
-            .expect("write session file");
-        let _session_dir = set_env(
-            "PI_CODING_AGENT_SESSION_DIR",
-            sessions_root.to_string_lossy().as_ref(),
-        );
-        let _pi_sessions = set_env("PI_SESSIONS_DIR", "");
-        let _shared_agent = set_env("PI_CODING_AGENT_DIR", "");
-        let _omp_archive = set_env("CASS_OMP_DATA_ROOT", "");
-        let _xdg = set_env("XDG_DATA_HOME", "");
-        let _legacy_profile = set_env("PI_PROFILE", "legacy");
-        let _canonical_profile = set_env("OMP_PROFILE", "con");
-
-        let target = resolve_resume_target(&session_file, None).expect("resolve");
-        assert_eq!(target.agent, "omp");
-        assert_eq!(
-            target.argv,
-            vec![
-                "omp".to_string(),
-                "--session-dir".to_string(),
-                sessions_root.display().to_string(),
-                "--resume".to_string(),
-                "omp-custom-id".to_string(),
-            ],
-            "invalid OMP_PROFILE must select the default profile and suppress PI_PROFILE fallback"
-        );
-    }
-
-    #[test]
-    fn resume_detects_pi_mono_from_pi_path_and_reads_session_id() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let sessions_dir = temp.path().join(".pi/agent/sessions");
-        std::fs::create_dir_all(&sessions_dir).expect("create sessions dir");
-        let session_file = sessions_dir.join("2026-04-09T00-00-00_def.jsonl");
-        std::fs::write(
-            &session_file,
-            r#"{"type":"session","id":"my-pi-id","timestamp":"2026-04-09T00:00:00Z"}"#,
-        )
-        .expect("write session file");
-
-        let target = resolve_resume_target(&session_file, None).expect("resolve");
-        assert_eq!(target.agent, "pi_agent");
-        assert_eq!(target.session_id.as_deref(), Some("my-pi-id"));
-        assert_eq!(target.argv[0], "pi");
     }
 
     #[test]
@@ -79875,45 +79651,6 @@ mod cli_read_db_tests {
         let target = resolve_resume_target(&path, Some("codex")).expect("resolve");
         assert_eq!(target.agent, "codex");
         assert_eq!(target.session_id.as_deref(), Some("abc-123"));
-
-        // Every documented OMP spelling is exact and first-class even when the
-        // path does not carry a canonical OMP store marker.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let sess = temp.path().join("2026-04-09T00-00-00_xyz.jsonl");
-        std::fs::write(&sess, r#"{"type":"session","id":"ov-42"}"#).expect("write");
-        for alias in ["omp", "oh-my-pi", "oh_my_pi", "ohmypi"] {
-            let target = resolve_resume_target(&sess, Some(alias)).expect("resolve OMP alias");
-            assert_eq!(target.agent, "omp", "alias {alias:?}");
-            assert_eq!(
-                target.argv[0], "omp",
-                "--agent {alias} must force the `omp` binary"
-            );
-            assert_eq!(target.session_id.as_deref(), Some("ov-42"));
-        }
-        let err = resolve_resume_target(&sess, Some("oh_my_pipeline"))
-            .expect_err("a near-match must not be accepted as OMP");
-        assert_eq!(err.code, 2);
-        assert_eq!(err.kind, "invalid-agent");
-
-        // `pi` alias must force the `pi` binary even when path contains .omp/agent.
-        let omp_dir = temp.path().join(".omp/agent/sessions");
-        std::fs::create_dir_all(&omp_dir).expect("create dir");
-        let omp_sess = omp_dir.join("2026-04-09T00-00-00_pp.jsonl");
-        std::fs::write(&omp_sess, r#"{"type":"session","id":"pp-77"}"#).expect("write");
-        let target = resolve_resume_target(&omp_sess, Some("pi")).expect("resolve");
-        assert_eq!(target.agent, "pi_agent");
-        assert_eq!(
-            target.argv[0], "pi",
-            "--agent pi must force the `pi` binary even on .omp/agent paths"
-        );
-
-        // The generic Pi Agent identity no longer aliases OMP, even when the
-        // path happens to come from an OMP store.
-        let target = resolve_resume_target(&omp_sess, Some("pi_agent")).expect("resolve");
-        assert_eq!(
-            target.argv[0], "pi",
-            "--agent pi_agent must stay on the pi-mono binary"
-        );
     }
 
     #[test]
@@ -80150,142 +79887,6 @@ mod cli_read_db_tests {
             shell_quote("/abs/path/with-dashes"),
             "/abs/path/with-dashes"
         );
-    }
-
-    #[test]
-    fn extract_pi_family_session_id_errors_name_the_selected_harness() {
-        // No filename fallback: headerless files must produce an error
-        // rather than a synthesized id that the native harness would reject
-        // with a confusing runtime message.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let f = temp.path().join("2026-04-09T00-00-00_stem-id.jsonl");
-        std::fs::write(
-            &f,
-            r#"{"type":"message","message":{"role":"user","content":"hi"}}"#,
-        )
-        .expect("write");
-        for (harness, expected_name, expected_command, forbidden_command) in [
-            (
-                PiFamilyHarness::PiAgent,
-                "Pi Agent",
-                "pi --resume",
-                "omp --resume",
-            ),
-            (
-                PiFamilyHarness::Omp,
-                "Oh My Pi (omp)",
-                "omp --resume",
-                "pi --resume",
-            ),
-        ] {
-            let err =
-                extract_pi_family_session_id(&f, harness).expect_err("must fail without header");
-            assert_eq!(err.code, 5);
-            assert_eq!(err.kind, "session-id-not-found");
-            assert!(
-                err.message.contains(expected_name),
-                "error should name {expected_name}: {}",
-                err.message
-            );
-            let hint = err.hint.as_deref().expect("manual resume hint");
-            assert!(
-                hint.contains(expected_command),
-                "hint should name the selected harness: {hint}"
-            );
-            assert!(
-                !hint.contains(forbidden_command),
-                "hint must not recommend the other harness: {hint}"
-            );
-        }
-    }
-
-    #[test]
-    fn extract_pi_family_session_id_prefers_sessionid_field_over_id() {
-        // When a single session-header line contains BOTH `sessionId`
-        // and `id`, `sessionId` wins. The `sessionId` field is the
-        // explicit Oh My Pi resume identifier (per issue #175) while
-        // `id` can be any legacy identifier that happened to be called
-        // `id` in earlier formats.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let f = temp.path().join("2026-04-09T00-00-00_sid.jsonl");
-        std::fs::write(
-            &f,
-            concat!(
-                r#"{"type":"session","id":"legacy-id","sessionId":"sid-wins"}"#,
-                "\n",
-                r#"{"type":"message","message":{"role":"user","content":"hi"}}"#,
-                "\n",
-            ),
-        )
-        .expect("write");
-        let id = extract_pi_family_session_id(&f, PiFamilyHarness::Omp).expect("extract");
-        assert_eq!(id, "sid-wins");
-    }
-
-    #[test]
-    fn extract_pi_family_session_id_uses_id_when_sessionid_absent() {
-        // A session-header line with only `id` (no `sessionId`) falls
-        // back to `id`. This is the pi-mono format.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let f = temp.path().join("2026-04-09T00-00-00_id.jsonl");
-        std::fs::write(
-            &f,
-            r#"{"type":"session","id":"plain-id","timestamp":"2026-04-09T00:00:00Z"}
-{"type":"message","timestamp":"2026-04-09T00:00:01Z","message":{"role":"user","content":"hi"}}"#,
-        )
-        .expect("write");
-        let id = extract_pi_family_session_id(&f, PiFamilyHarness::PiAgent).expect("extract");
-        assert_eq!(id, "plain-id");
-    }
-
-    #[test]
-    fn extract_pi_family_session_id_ignores_blank_sessionid() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let f = temp.path().join("2026-04-09T00-00-00_blank-id.jsonl");
-        std::fs::write(
-            &f,
-            r#"{"type":"session","id":"fallback-id","sessionId":"   "}"#,
-        )
-        .expect("write");
-
-        let id = extract_pi_family_session_id(&f, PiFamilyHarness::Omp).expect("extract");
-        assert_eq!(id, "fallback-id");
-    }
-
-    #[test]
-    fn extract_pi_family_session_id_skips_leading_non_session_ids_and_blank_lines() {
-        // Blank lines should not consume the 16-line budget.
-        let temp = tempfile::tempdir().expect("tempdir");
-        let f = temp.path().join("2026-04-09T00-00-00_blank.jsonl");
-        let header = r#"{"type":"session","id":"after-blanks"}"#;
-        let content = format!(
-            "\n\n\n{}\n{}\n{header}\n",
-            r#"{"type":"message","sessionId":"wrong-message-id","message":{"role":"user","content":"hi"}}"#,
-            r#"{"type":"title","sessionId":"wrong-title-id","title":"Title"}"#,
-        );
-        std::fs::write(&f, content).expect("write");
-        let id = extract_pi_family_session_id(&f, PiFamilyHarness::Omp).expect("extract");
-        assert_eq!(id, "after-blanks");
-    }
-
-    #[test]
-    fn extract_pi_family_session_id_rejects_non_session_sessionid() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let f = temp.path().join("2026-04-09T00-00-00_no-header.jsonl");
-        std::fs::write(
-            &f,
-            concat!(
-                r#"{"type":"message","sessionId":"wrong-message-id","message":{"role":"user","content":"hi"}}"#,
-                "\n",
-                r#"{"type":"title","sessionId":"wrong-title-id","title":"Title"}"#,
-                "\n",
-            ),
-        )
-        .expect("write");
-
-        let err = extract_pi_family_session_id(&f, PiFamilyHarness::Omp)
-            .expect_err("non-session records must not supply a resume id");
-        assert_eq!(err.kind, "session-id-not-found");
     }
 }
 
@@ -94035,32 +93636,16 @@ fn infer_followup_agent_and_workspace(path: &Path) -> (Option<String>, Option<St
     let path_str = path.to_string_lossy();
     let path_lower = path_str.to_ascii_lowercase().replace('\\', "/");
 
-    let agent_name = if crate::connectors::omp::owns_session_path(path) {
-        Some("omp".to_string())
-    } else {
-        [
-            (".local/share/opencode", "opencode"),
-            ("sourcegraph.amp", "amp"),
-            (".local/share/amp", "amp"),
-            (".config/gh-copilot", "copilot"),
-            (".config/gh/copilot", "copilot"),
-            ("github-copilot", "copilot"),
-            (".copilot", "copilot"),
-            (".pi/agent", "pi_agent"),
-            (".openclaw", "openclaw"),
-            ("clawdbot", "clawdbot"),
-            ("cline", "cline"),
-            (".aider", "aider"),
-            (".claude", "claude_code"),
-            (".codex", "codex"),
-            ("cursor", "cursor"),
-            (".config/gemini", "gemini"),
-            (".gemini", "gemini"),
-            (".vibe", "vibe"),
-        ]
-        .into_iter()
-        .find_map(|(marker, slug)| path_lower.contains(marker).then(|| slug.to_string()))
-    };
+    let agent_name = [
+        (".local/share/opencode", "opencode"),
+        (".claude", "claude_code"),
+        (".codex", "codex"),
+        ("cursor", "cursor"),
+        (".config/gemini", "gemini"),
+        (".gemini", "gemini"),
+    ]
+    .into_iter()
+    .find_map(|(marker, slug)| path_lower.contains(marker).then(|| slug.to_string()));
 
     let workspace = path.parent().map(|parent| parent.display().to_string());
     (agent_name, workspace)
@@ -99531,23 +99116,6 @@ struct DetectedAgent {
     reason: String,
 }
 
-fn omp_session_dir_from_path(path: &Path) -> Option<PathBuf> {
-    if let Some(root) = crate::connectors::omp::configured_session_root(path) {
-        return Some(root);
-    }
-
-    if crate::connectors::omp::is_resolved_live_config_session_path(path) {
-        return None;
-    }
-
-    path.ancestors().find_map(|ancestor| {
-        ancestor
-            .file_name()
-            .is_some_and(|name| name == "sessions")
-            .then(|| ancestor.to_path_buf())
-    })
-}
-
 /// Detect which coding-agent harness owns a given session path.
 ///
 /// Detection is path-based and mirrors the layouts that the bundled
@@ -99560,8 +99128,6 @@ fn detect_resume_agent(path: &Path, agent_override: Option<&str>) -> CliResult<D
             "claude" | "claude_code" | "claude-code" => "claude",
             "codex" => "codex",
             "opencode" => "opencode",
-            "pi_agent" | "pi-agent" | "pi" => "pi_agent",
-            "omp" | "oh-my-pi" | "ohmypi" | "oh_my_pi" => "omp",
             "gemini" => "gemini",
             // Antigravity resumes via `agy --conversation <uuid>`; `agy` is
             // the binary name, so accept it as an alias for the slug.
@@ -99571,7 +99137,7 @@ fn detect_resume_agent(path: &Path, agent_override: Option<&str>) -> CliResult<D
                     code: 2,
                     kind: CliErrorKind::InvalidAgent.kind_str(),
                     message: format!(
-                        "unknown --agent value '{other}'; expected one of: claude, codex, opencode, pi_agent, pi, omp, gemini, antigravity"
+                        "unknown --agent value '{other}'; expected one of: claude, codex, opencode, gemini, antigravity"
                     ),
                     hint: None,
                     retryable: false,
@@ -99625,20 +99191,6 @@ fn detect_resume_agent(path: &Path, agent_override: Option<&str>) -> CliResult<D
             reason: "path references opencode storage".to_string(),
         });
     }
-    if crate::connectors::omp::owns_session_path(path) {
-        return Ok(DetectedAgent {
-            slug: "omp",
-            is_override: false,
-            reason: "path matches an OMP v18 session store".to_string(),
-        });
-    }
-    if path_str.contains(".pi/agent") {
-        return Ok(DetectedAgent {
-            slug: "pi_agent",
-            is_override: false,
-            reason: "path contains .pi/agent".to_string(),
-        });
-    }
     // Antigravity stores its transcripts under
     // `~/.gemini/antigravity{,-cli}/brain/<uuid>/.system_generated/logs/transcript.jsonl`
     // (IDE store and `agy` CLI store respectively, #454). Those paths ALSO
@@ -99672,7 +99224,7 @@ fn detect_resume_agent(path: &Path, agent_override: Option<&str>) -> CliResult<D
             path.display()
         ),
         hint: Some(
-            "Pass --agent <name> to override (claude, codex, opencode, pi, omp, gemini, antigravity)."
+            "Pass --agent <name> to override (claude, codex, opencode, gemini, antigravity)."
                 .into(),
         ),
         retryable: false,
@@ -99753,131 +99305,6 @@ fn extract_uuid_from_stem(stem: &str) -> Option<String> {
         }
     }
     None
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PiFamilyHarness {
-    PiAgent,
-    Omp,
-}
-
-impl PiFamilyHarness {
-    const fn display_name(self) -> &'static str {
-        match self {
-            Self::PiAgent => "Pi Agent",
-            Self::Omp => "Oh My Pi (omp)",
-        }
-    }
-
-    const fn executable(self) -> &'static str {
-        match self {
-            Self::PiAgent => "pi",
-            Self::Omp => "omp",
-        }
-    }
-}
-
-/// Extract a Pi-family session id from a JSONL session file.
-///
-/// Pi-family session files begin with a `{"type":"session", ...}` header
-/// that contains `id` (and often `sessionId`). We scan up to the first
-/// 16 non-empty lines to find it, tolerating blank lines and leading
-/// metadata. Streams line-by-line so large session logs do not get
-/// read into memory in full.
-///
-/// A 1 MiB byte budget caps the total read so a pathologically long
-/// first line (e.g. a JSONL file with no newlines, or a single megabyte
-/// of garbage before the real content) cannot OOM the process. The
-/// session header is always well under this budget in practice.
-fn extract_pi_family_session_id(path: &Path, harness: PiFamilyHarness) -> CliResult<String> {
-    use std::io::{BufRead as _, Read as _};
-    const MAX_SCAN_BYTES: u64 = 1024 * 1024; // 1 MiB
-    let file = std::fs::File::open(path).map_err(|err| CliError {
-        code: 4,
-        kind: CliErrorKind::SessionFileUnreadable.kind_str(),
-        message: format!(
-            "cannot open {} session file {}: {err}",
-            harness.display_name(),
-            path.display()
-        ),
-        hint: None,
-        retryable: false,
-    })?;
-    let reader = std::io::BufReader::new(file).take(MAX_SCAN_BYTES);
-    let mut scanned = 0usize;
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(err) => {
-                // Stop at the first I/O error — the file may have been
-                // truncated mid-scan, or we hit the MAX_SCAN_BYTES cap
-                // in the middle of a multi-byte UTF-8 sequence. Fall
-                // through to the session-id-not-found error path so
-                // the user gets a clear diagnostic.
-                tracing::debug!(
-                    path = %path.display(),
-                    error = %err,
-                    harness = harness.display_name(),
-                    "pi-family resume: stopped reading after line I/O error"
-                );
-                break;
-            }
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        scanned += 1;
-        if scanned > 16 {
-            break;
-        }
-        let value: serde_json::Value = match serde_json::from_str(trimmed) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let entry_type = value.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if entry_type == "session" {
-            // Both identifiers are valid only on the authoritative session
-            // header. Message/tool records may also carry a `sessionId`, but
-            // accepting one would produce a command for a different session.
-            if let Some(id) = value
-                .get("sessionId")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-            {
-                return Ok(id.to_string());
-            }
-            if let Some(id) = value
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|id| !id.is_empty())
-            {
-                return Ok(id.to_string());
-            }
-        }
-    }
-    // Deliberately no filename fallback: pi-agent session ids come from
-    // the in-file `{"type":"session","id":"..."}` header, not from the
-    // filename. Synthesizing an id from the filename would produce a
-    // command that looks plausible but the native harness would reject with
-    // a confusing error. Fail explicitly so the user knows what's wrong.
-    Err(CliError {
-        code: 5,
-        kind: CliErrorKind::SessionIdNotFound.kind_str(),
-        message: format!(
-            "no usable session id found in a session header in {} file {} (scanned first 16 non-empty lines)",
-            harness.display_name(),
-            path.display()
-        ),
-        hint: Some(format!(
-            "{} session ids live in the `{{\"type\":\"session\",\"id\":\"...\"}}` header of the JSONL file. If the file is missing its header, invoke `{} --resume <id>` directly with the id you want.",
-            harness.display_name(),
-            harness.executable(),
-        )),
-        retryable: false,
-    })
 }
 
 /// Extract an OpenCode session id from a cass-stored source_path.
@@ -100106,36 +99533,6 @@ fn resolve_resume_target(path: &Path, agent_override: Option<&str>) -> CliResult
             Ok(ResumeTarget {
                 agent: "opencode",
                 argv: vec!["opencode".into(), "--session".into(), id.clone()],
-                session_id: Some(id),
-                detection_reason,
-            })
-        }
-        "pi_agent" => {
-            let id = extract_pi_family_session_id(path, PiFamilyHarness::PiAgent)?;
-            Ok(ResumeTarget {
-                agent: "pi_agent",
-                argv: vec!["pi".into(), "--resume".into(), id.clone()],
-                session_id: Some(id),
-                detection_reason,
-            })
-        }
-        "omp" => {
-            let id = extract_pi_family_session_id(path, PiFamilyHarness::Omp)?;
-            let mut argv = vec!["omp".to_string()];
-            let profile = crate::connectors::omp::resume_profile_from_path(path);
-            if let Some(profile) = profile {
-                argv.extend(["--profile".to_string(), profile]);
-            }
-            if let Some(session_dir) = omp_session_dir_from_path(path) {
-                argv.extend([
-                    "--session-dir".to_string(),
-                    session_dir.display().to_string(),
-                ]);
-            }
-            argv.extend(["--resume".to_string(), id.clone()]);
-            Ok(ResumeTarget {
-                agent: "omp",
-                argv,
                 session_id: Some(id),
                 detection_reason,
             })

@@ -45,9 +45,6 @@ pub use franken_agent_detection::{
 };
 
 /// Extract token/model metadata for every CASS connector identity.
-///
-/// OMP and Pi Agent share the pi-family wire schema, so they intentionally use
-/// the same token-extraction branch while retaining distinct archive slugs.
 #[must_use]
 pub fn extract_tokens_for_agent(
     agent_slug: &str,
@@ -55,27 +52,7 @@ pub fn extract_tokens_for_agent(
     content: &str,
     role: &str,
 ) -> ExtractedTokenUsage {
-    let extraction_slug = if agent_slug == "omp" {
-        "pi_agent"
-    } else {
-        agent_slug
-    };
-    let mut usage =
-        franken_agent_detection::extract_tokens_for_agent(extraction_slug, extra, content, role);
-    if agent_slug == "omp"
-        && usage
-            .provider
-            .as_deref()
-            .is_none_or(|provider| provider == "unknown")
-        && let Some(provider) = usage
-            .model_name
-            .as_deref()
-            .and_then(|model| model.split_once('/').map(|(provider, _)| provider))
-            .filter(|provider| !provider.is_empty())
-    {
-        usage.provider = Some(provider.to_string());
-    }
-    usage
+    franken_agent_detection::extract_tokens_for_agent(agent_slug, extra, content, role)
 }
 
 /// Result of a Codex scan-root preflight. The preflight replaces directory
@@ -260,34 +237,14 @@ fn is_codex_rollout_file(path: &Path) -> bool {
 }
 
 // Connector re-export stubs — each module file re-exports from FAD.
-pub mod aider;
-pub mod amp;
 pub mod antigravity;
 pub mod chatgpt;
 pub mod claude_code;
-pub mod clawdbot;
-pub mod cline;
-pub mod codebuff;
 pub mod codex;
-pub mod continue_dev;
-pub mod copilot;
-pub mod copilot_cli;
-pub mod crush;
 pub mod cursor;
-pub mod factory;
 pub mod gemini;
-pub mod goose;
-pub mod grok;
-pub mod hermes;
-pub mod kimi;
-pub mod muse;
-pub mod omp;
-pub mod openclaw;
 pub mod opencode;
-pub mod openhands;
-pub mod pi_agent;
 pub mod qwen;
-pub mod vibe;
 
 /// Constructor function used by the runtime connector registry.
 pub type ConnectorFactory = fn() -> Box<dyn Connector + Send>;
@@ -303,41 +260,10 @@ fn codex_connector_factory() -> Box<dyn Connector + Send> {
     Box::new(codex::CodexConnector::new())
 }
 
-fn codebuff_connector_factory() -> Box<dyn Connector + Send> {
-    Box::new(codebuff::CodebuffConnector::new())
-}
-
-fn continue_connector_factory() -> Box<dyn Connector + Send> {
-    Box::new(continue_dev::ContinueConnector::new())
-}
-
-fn omp_connector_factory() -> Box<dyn Connector + Send> {
-    Box::new(omp::OmpConnector::new())
-}
-
-fn pi_agent_connector_factory() -> Box<dyn Connector + Send> {
-    Box::new(pi_agent::PiAgentConnector::new())
-}
-
-fn grok_bot_connector_factory() -> Box<dyn Connector + Send> {
-    Box::new(grok::GrokBotConnector::new())
-}
-
-fn copilot_connector_factory() -> Box<dyn Connector + Send> {
-    Box::new(copilot::CopilotConnector::new())
-}
-
 /// Return connector factories with CASS-specific wrappers applied.
 ///
 /// Codex passes through CASS's enrichment wrapper so modern `function_call`
-/// arguments reach the production indexer. OMP passes through its profile
-/// provenance adapter, and Pi Agent passes through the OMP identity boundary
-/// that prevents broad explicit roots from indexing the same store twice.
-/// OpenClaw passes through its native-store WAL and state-directory adapter.
-/// Copilot passes through a detection widening that also recognises VS Code's
-/// native chat stores, which the upstream scanner reads but never detected.
-/// Codebuff delegates parsing to FAD while adding per-transcript checkpoints.
-/// Continue applies source exclusions and ledger-first retries before parsing.
+/// arguments reach the production indexer.
 #[must_use]
 pub fn get_connector_factories() -> Vec<(&'static str, ConnectorFactory)> {
     get_connector_registrations()
@@ -373,25 +299,12 @@ pub(crate) fn get_connector_registrations() -> Vec<source_dependencies::Connecto
 
     franken_agent_detection::get_connector_factories()
         .into_iter()
-        .map(|(name, factory)| {
-            let mut registration = match name {
-                "claude" => {
-                    ConnectorRegistration::new(name, claude_connector_factory)
-                        .with_source_capability::<claude_code::ClaudeCodeConnector>("claude_code")
-                }
-                "codex" => ConnectorRegistration::new(name, codex_connector_factory)
-                    .with_source_capability::<codex::CodexConnector>("codex"),
-                "codebuff" => ConnectorRegistration::new(name, codebuff_connector_factory)
-                    .with_source_capability::<codebuff::CodebuffConnector>("codebuff"),
-                "continue" => ConnectorRegistration::new(name, continue_connector_factory),
-                "omp" => ConnectorRegistration::new(name, omp_connector_factory),
-                "pi_agent" => ConnectorRegistration::new(name, pi_agent_connector_factory),
-                "grok_bot" => ConnectorRegistration::new(name, grok_bot_connector_factory),
-                "copilot" => ConnectorRegistration::new(name, copilot_connector_factory),
-                _ => ConnectorRegistration::new(name, factory),
-            };
-            registration.factory = openclaw::with_wal_freshness(name, registration.factory);
-            registration
+        .map(|(name, factory)| match name {
+            "claude" => ConnectorRegistration::new(name, claude_connector_factory)
+                .with_source_capability::<claude_code::ClaudeCodeConnector>("claude_code"),
+            "codex" => ConnectorRegistration::new(name, codex_connector_factory)
+                .with_source_capability::<codex::CodexConnector>("codex"),
+            _ => ConnectorRegistration::new(name, factory),
         })
         .collect()
 }

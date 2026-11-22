@@ -159,7 +159,7 @@ mod tests {
             connector("codex", Some("rejected b")),
             connector("claude", Some("read failure")),
             connector("codex", Some("rejected d")),
-            connector("amp", None),
+            connector("cursor", None),
         ];
         let mut payload = json!({});
         assert!(annotate_partial_scan(&mut payload, true, &connectors));

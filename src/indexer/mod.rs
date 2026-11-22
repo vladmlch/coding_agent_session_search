@@ -69,14 +69,10 @@ use crate::connector_ingest_diagnostics::{
     ConnectorIngestDiagnostic, ConnectorIngestReport, ConnectorIngestRun, ProviderIngestSummary,
 };
 use crate::connectors::{
-    Connector, DiscoveredSourceFile, ScanContext, ScanRoot, aider::AiderConnector,
-    amp::AmpConnector, antigravity::AntigravityConnector, chatgpt::ChatGptConnector,
-    claude_code::ClaudeCodeConnector, clawdbot::ClawdbotConnector, cline::ClineConnector,
-    codex::CodexConnector, copilot::CopilotConnector, copilot_cli::CopilotCliConnector,
-    cursor::CursorConnector, factory::FactoryConnector, gemini::GeminiConnector,
-    grok::GrokConnector, kimi::KimiConnector, muse::MuseConnector, omp::OmpConnector,
-    openclaw::OpenClawConnector, opencode::OpenCodeConnector, pi_agent::PiAgentConnector,
-    qwen::QwenConnector, vibe::VibeConnector,
+    Connector, DiscoveredSourceFile, ScanContext, ScanRoot, antigravity::AntigravityConnector,
+    chatgpt::ChatGptConnector, claude_code::ClaudeCodeConnector, codex::CodexConnector,
+    cursor::CursorConnector, gemini::GeminiConnector, opencode::OpenCodeConnector,
+    qwen::QwenConnector,
 };
 use crate::connectors::{NormalizedConversation, NormalizedMessage, NormalizedSnippet};
 use crate::model::conversation_packet::{
@@ -32079,22 +32075,22 @@ mod watch_root_coalescing_tests {
     #[test]
     fn nested_roots_for_one_connector_collapse_to_the_shallowest() {
         let roots = vec![
-            local(ConnectorKind::Omp, "/home/u/.omp/sessions"),
-            local(ConnectorKind::Omp, "/home/u/.omp"),
-            local(ConnectorKind::Omp, "/home/u/.omp/profiles/work/sessions"),
-            local(ConnectorKind::Omp, "/home/u/.omp"),
+            local(ConnectorKind::Codex, "/home/u/.codex/sessions"),
+            local(ConnectorKind::Codex, "/home/u/.codex"),
+            local(ConnectorKind::Codex, "/home/u/.codex/archived/sessions"),
+            local(ConnectorKind::Codex, "/home/u/.codex"),
         ];
         let kept = coalesce_nested_watch_roots(roots);
         assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].1.path, PathBuf::from("/home/u/.omp"));
+        assert_eq!(kept[0].1.path, PathBuf::from("/home/u/.codex"));
     }
 
     #[test]
     fn order_independent_and_siblings_survive() {
         let kept = coalesce_nested_watch_roots(vec![
-            local(ConnectorKind::Omp, "/a/b"),
-            local(ConnectorKind::Omp, "/a/c"),
-            local(ConnectorKind::Omp, "/a/b/deep"),
+            local(ConnectorKind::Codex, "/a/b"),
+            local(ConnectorKind::Codex, "/a/c"),
+            local(ConnectorKind::Codex, "/a/b/deep"),
         ]);
         let paths: Vec<_> = kept.iter().map(|(_, r)| r.path.clone()).collect();
         assert_eq!(paths, vec![PathBuf::from("/a/b"), PathBuf::from("/a/c")]);
@@ -32103,8 +32099,8 @@ mod watch_root_coalescing_tests {
     #[test]
     fn different_connectors_never_coalesce() {
         let kept = coalesce_nested_watch_roots(vec![
-            local(ConnectorKind::Omp, "/shared"),
-            local(ConnectorKind::PiAgent, "/shared/sessions"),
+            local(ConnectorKind::Claude, "/shared"),
+            local(ConnectorKind::Gemini, "/shared/sessions"),
             local(ConnectorKind::Codex, "/shared"),
         ]);
         assert_eq!(kept.len(), 3);
@@ -32115,8 +32111,8 @@ mod watch_root_coalescing_tests {
         // `/a/b` is not an ancestor of `/a/bc`; Path::starts_with is
         // component-wise, so both must survive.
         let kept = coalesce_nested_watch_roots(vec![
-            local(ConnectorKind::Omp, "/a/b"),
-            local(ConnectorKind::Omp, "/a/bc"),
+            local(ConnectorKind::Codex, "/a/b"),
+            local(ConnectorKind::Codex, "/a/bc"),
         ]);
         assert_eq!(kept.len(), 2);
     }
@@ -32126,39 +32122,15 @@ impl ConnectorKind {
     fn from_slug(slug: &str) -> Option<Self> {
         match slug {
             "codex" => Some(Self::Codex),
-            "cline" => Some(Self::Cline),
             "gemini" => Some(Self::Gemini),
             "antigravity" => Some(Self::Antigravity),
             "claude" => Some(Self::Claude),
-            "clawdbot" => Some(Self::Clawdbot),
-            "vibe" => Some(Self::Vibe),
-            "amp" => Some(Self::Amp),
             "opencode" => Some(Self::OpenCode),
-            "aider" => Some(Self::Aider),
             "cursor" => Some(Self::Cursor),
             "chatgpt" => Some(Self::ChatGpt),
-            "pi_agent" => Some(Self::PiAgent),
-            "omp" => Some(Self::Omp),
-            "factory" => Some(Self::Factory),
-            "openclaw" => Some(Self::OpenClaw),
-            "copilot" => Some(Self::Copilot),
-            "kimi" => Some(Self::Kimi),
-            "copilot_cli" => Some(Self::CopilotCli),
             "qwen" => Some(Self::Qwen),
-            "grok" => Some(Self::Grok),
-            "muse" => Some(Self::Muse),
-            "prime_agent" => Some(Self::PrimeAgent),
-            "kiro" => Some(Self::Kiro),
             "devin" => Some(Self::Devin),
-            "shelley" => Some(Self::Shelley),
-            "grok_bot" => Some(Self::GrokBot),
-            "openhands" => Some(Self::OpenHands),
-            "goose" => Some(Self::Goose),
-            "crush" => Some(Self::Crush),
-            "hermes" => Some(Self::Hermes),
-            "codebuff" => Some(Self::Codebuff),
-            "pi_durable" => Some(Self::PiDurable),
-            "continue" => Some(Self::Continue),
+            "qoder" => Some(Self::Qoder),
             _ => None,
         }
     }
@@ -32166,39 +32138,15 @@ impl ConnectorKind {
     fn slug(self) -> &'static str {
         match self {
             Self::Codex => "codex",
-            Self::Cline => "cline",
             Self::Gemini => "gemini",
             Self::Antigravity => "antigravity",
             Self::Claude => "claude",
-            Self::Clawdbot => "clawdbot",
-            Self::Vibe => "vibe",
-            Self::Amp => "amp",
             Self::OpenCode => "opencode",
-            Self::Aider => "aider",
             Self::Cursor => "cursor",
             Self::ChatGpt => "chatgpt",
-            Self::PiAgent => "pi_agent",
-            Self::Omp => "omp",
-            Self::Factory => "factory",
-            Self::OpenClaw => "openclaw",
-            Self::Copilot => "copilot",
-            Self::Kimi => "kimi",
-            Self::CopilotCli => "copilot_cli",
             Self::Qwen => "qwen",
-            Self::Grok => "grok",
-            Self::Muse => "muse",
-            Self::PrimeAgent => "prime_agent",
-            Self::Kiro => "kiro",
             Self::Devin => "devin",
-            Self::Shelley => "shelley",
-            Self::GrokBot => "grok_bot",
-            Self::OpenHands => "openhands",
-            Self::Goose => "goose",
-            Self::Crush => "crush",
-            Self::Hermes => "hermes",
-            Self::Codebuff => "codebuff",
-            Self::PiDurable => "pi_durable",
-            Self::Continue => "continue",
+            Self::Qoder => "qoder",
         }
     }
 
@@ -32210,39 +32158,15 @@ impl ConnectorKind {
                 Some(data_dir) => CodexConnector::new().with_archive_data_dir(data_dir),
                 None => CodexConnector::new(),
             }),
-            Self::Cline => Box::new(ClineConnector::new()),
             Self::Gemini => Box::new(GeminiConnector::new()),
             Self::Antigravity => Box::new(AntigravityConnector::new()),
             Self::Claude => Box::new(ClaudeCodeConnector::new()),
-            Self::Clawdbot => Box::new(ClawdbotConnector::new()),
-            Self::Vibe => Box::new(VibeConnector::new()),
-            Self::Amp => Box::new(AmpConnector::new()),
             Self::OpenCode => Box::new(OpenCodeConnector::new()),
-            Self::Aider => Box::new(AiderConnector::new()),
             Self::Cursor => Box::new(CursorConnector::new()),
             Self::ChatGpt => Box::new(ChatGptConnector::new()),
-            Self::PiAgent => Box::new(PiAgentConnector::new()),
-            Self::Omp => Box::new(OmpConnector::new()),
-            Self::Factory => Box::new(FactoryConnector::new()),
-            Self::OpenClaw => Box::new(OpenClawConnector::new()),
-            Self::Copilot => Box::new(CopilotConnector::new()),
-            Self::Kimi => Box::new(KimiConnector::new()),
-            Self::CopilotCli => Box::new(CopilotCliConnector::new()),
             Self::Qwen => Box::new(QwenConnector::new()),
-            Self::Grok => Box::new(GrokConnector::new()),
-            Self::Muse => Box::new(MuseConnector::new()),
-            Self::PrimeAgent => Box::new(franken_agent_detection::PrimeAgentConnector::new()),
-            Self::Kiro => Box::new(franken_agent_detection::KiroConnector::new()),
             Self::Devin => Box::new(franken_agent_detection::DevinConnector::new()),
-            Self::Shelley => Box::new(franken_agent_detection::ShelleyConnector::new()),
-            Self::GrokBot => Box::new(crate::connectors::grok::GrokBotConnector::new()),
-            Self::OpenHands => Box::new(franken_agent_detection::OpenHandsConnector::new()),
-            Self::Goose => Box::new(franken_agent_detection::GooseConnector::new()),
-            Self::Crush => Box::new(franken_agent_detection::CrushConnector::new()),
-            Self::Hermes => Box::new(franken_agent_detection::HermesConnector::new()),
-            Self::Codebuff => Box::new(crate::connectors::codebuff::CodebuffConnector::new()),
-            Self::PiDurable => Box::new(franken_agent_detection::PiDurableConnector::new()),
-            Self::Continue => Box::new(crate::connectors::continue_dev::ContinueConnector::new()),
+            Self::Qoder => Box::new(franken_agent_detection::QoderConnector::new()),
         }
     }
 }
@@ -32940,17 +32864,15 @@ fn is_database_watch_root(kind: ConnectorKind, root: &ScanRoot) -> bool {
 }
 
 fn is_database_watch_path(kind: ConnectorKind, path: &Path) -> bool {
-    kind == ConnectorKind::Shelley
-        || (kind == ConnectorKind::Devin
-            && path.extension().is_some_and(|extension| extension == "db"))
+    kind == ConnectorKind::Devin && path.extension().is_some_and(|extension| extension == "db")
 }
 
-/// Shelley and Devin take an explicit file root as their database and fail the
+/// Devin takes an explicit file root as its database and fails the
 /// whole scan on anything else. So `--watch-once <file>` under a directory root
-/// hands them the file only when it is a SQLite database. An unhinted Codex
+/// hands it the file only when it is a SQLite database. An unhinted Codex
 /// rollout under a shared configured source used to fail the run (GH #524).
 fn explicit_watch_once_file_may_be_database(kind: ConnectorKind, path: &Path) -> bool {
-    if !matches!(kind, ConnectorKind::Shelley | ConnectorKind::Devin) || !path.is_file() {
+    if kind != ConnectorKind::Devin || !path.is_file() {
         return true;
     }
     let mut header = [0_u8; 16];
@@ -33035,7 +32957,7 @@ fn database_root_poller(
 }
 
 fn watch_scan_lower_bound(kind: ConnectorKind, since_ts: Option<i64>) -> Option<i64> {
-    if matches!(kind, ConnectorKind::Devin | ConnectorKind::Shelley) {
+    if kind == ConnectorKind::Devin {
         // Database providers filter by activity time, which can precede
         // the WAL commit that triggered this scan. Filesystem event times cannot
         // bound it, even after rounding to seconds. Re-read the changed store and
@@ -33850,7 +33772,7 @@ mod watch_registration_tests {
         let roots = vec![
             (ConnectorKind::Codex, ScanRoot::local(parent.clone())),
             (ConnectorKind::Devin, ScanRoot::local(child.clone())),
-            (ConnectorKind::Shelley, ScanRoot::local(arriving.clone())),
+            (ConnectorKind::Devin, ScanRoot::local(arriving.clone())),
             (ConnectorKind::Codex, ScanRoot::local(alias.clone())),
         ];
         let (events_tx, events) = crossbeam_channel::unbounded();
@@ -33969,7 +33891,6 @@ mod watch_registration_tests {
                 ScanRoot::local(temp.path().to_path_buf()),
             ),
             (ConnectorKind::Devin, ScanRoot::local(database.clone())),
-            (ConnectorKind::Shelley, ScanRoot::local(database.clone())),
         ];
         let mut watcher = recommended_watcher(|_| {}).unwrap();
         let mut registered = BTreeMap::new();
@@ -36418,74 +36339,24 @@ mod mirror_scan_skip_tests {
 enum ConnectorKind {
     #[serde(rename = "cx", alias = "Codex")]
     Codex,
-    #[serde(rename = "cl", alias = "Cline")]
-    Cline,
     #[serde(rename = "gm", alias = "Gemini")]
     Gemini,
     #[serde(rename = "ag", alias = "Antigravity")]
     Antigravity,
     #[serde(rename = "cd", alias = "Claude")]
     Claude,
-    #[serde(rename = "cb", alias = "Clawdbot")]
-    Clawdbot,
-    #[serde(rename = "vb", alias = "Vibe")]
-    Vibe,
-    #[serde(rename = "am", alias = "Amp")]
-    Amp,
     #[serde(rename = "oc", alias = "OpenCode")]
     OpenCode,
-    #[serde(rename = "ai", alias = "Aider")]
-    Aider,
     #[serde(rename = "cu", alias = "Cursor")]
     Cursor,
     #[serde(rename = "cg", alias = "ChatGpt")]
     ChatGpt,
-    #[serde(rename = "pi", alias = "PiAgent")]
-    PiAgent,
-    #[serde(rename = "om", alias = "Omp")]
-    Omp,
-    #[serde(rename = "fa", alias = "Factory")]
-    Factory,
-    #[serde(rename = "ow", alias = "OpenClaw")]
-    OpenClaw,
-    #[serde(rename = "cp", alias = "Copilot")]
-    Copilot,
-    #[serde(rename = "ki", alias = "Kimi")]
-    Kimi,
-    #[serde(rename = "cc", alias = "CopilotCli")]
-    CopilotCli,
     #[serde(rename = "qw", alias = "Qwen")]
     Qwen,
-    #[serde(rename = "gk", alias = "Grok")]
-    Grok,
-    #[serde(rename = "mu", alias = "Muse")]
-    Muse,
-    #[serde(rename = "pr", alias = "PrimeAgent")]
-    PrimeAgent,
-    #[serde(rename = "kr", alias = "Kiro")]
-    Kiro,
     #[serde(rename = "dv", alias = "Devin")]
     Devin,
-    #[serde(rename = "sh", alias = "Shelley")]
-    Shelley,
-    #[serde(rename = "gb", alias = "GrokBot")]
-    GrokBot,
-    #[serde(rename = "oh", alias = "OpenHands")]
-    OpenHands,
-    #[serde(rename = "gs", alias = "Goose")]
-    Goose,
-    #[serde(rename = "cr", alias = "Crush")]
-    Crush,
-    #[serde(rename = "hm", alias = "Hermes")]
-    Hermes,
-    /// Shared Codebuff / Freebuff (Manicode) CLI history (GH #423).
-    #[serde(rename = "bf", alias = "Codebuff")]
-    Codebuff,
-    /// Pi durable-harness stores (franken_agent_detection #28).
-    #[serde(rename = "pd", alias = "PiDurable")]
-    PiDurable,
-    #[serde(rename = "ct", alias = "Continue")]
-    Continue,
+    #[serde(rename = "qd", alias = "Qoder")]
+    Qoder,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
@@ -36755,59 +36626,17 @@ fn explicit_watch_once_connector_hint(path: &Path) -> Option<ConnectorKind> {
         Some(ConnectorKind::Claude)
     } else if has_pair(".gemini", "tmp") {
         Some(ConnectorKind::Gemini)
-    } else if components
-        .windows(3)
-        .any(|window| window[0] == ".prime" && window[1] == "agent" && window[2] == "sessions")
-    {
-        Some(ConnectorKind::PrimeAgent)
-    } else if crate::connectors::omp::owns_session_path(path) {
-        Some(ConnectorKind::Omp)
     } else {
         None
     }
 }
 
 fn explicit_watch_once_scan_path(
-    kind: ConnectorKind,
-    requested: &Path,
+    _kind: ConnectorKind,
+    _requested: &Path,
     canonical: &Path,
 ) -> PathBuf {
-    // Copilot's native reader recognizes state.vscdb, not its WAL. Keep the
-    // targeted scan on that one database; scanning the parent would also
-    // admit unrelated workspaces. Its connector checks the WAL's freshness.
-    if kind == ConnectorKind::Copilot
-        && canonical
-            .file_name()
-            .is_some_and(|name| name == "state.vscdb-wal")
-    {
-        let database = canonical.with_file_name("state.vscdb");
-        if database.is_file() {
-            return database;
-        }
-    }
-    if kind != ConnectorKind::Omp {
-        return canonical.to_path_buf();
-    }
-    let path = if explicit_watch_once_connector_hint(requested) == Some(ConnectorKind::Omp) {
-        requested
-    } else {
-        canonical
-    };
-
-    // FAD accepts a direct `.omp` transcript as an explicit root, but an XDG
-    // transcript path has no `.omp` marker. Retain the nearest `sessions`
-    // root so OMP's v18 resolver can recognize and scan it.
-    let scan_path = if let Some(root) = crate::connectors::omp::configured_session_root(path) {
-        root
-    } else if !path.to_string_lossy().contains(".omp") {
-        path.ancestors()
-            .find(|ancestor| ancestor.file_name().is_some_and(|name| name == "sessions"))
-            .unwrap_or(path)
-            .to_path_buf()
-    } else {
-        path.to_path_buf()
-    };
-    dunce::canonicalize(&scan_path).unwrap_or(scan_path)
+    canonical.to_path_buf()
 }
 
 /// GH #478: existing explicit `--watch-once` paths that no connector claims.
@@ -37632,11 +37461,6 @@ fn capture_discovered_source_file_before_parse(
     if raw_source_exclusions.excludes(&source.source_path) {
         return;
     }
-    if provider == "copilot"
-        && crate::connectors::copilot::source_is_proven_chat_free(&source.source_path)
-    {
-        return;
-    }
 
     match crate::raw_mirror::capture_source_file(crate::raw_mirror::RawMirrorCaptureInput {
         data_dir,
@@ -37813,9 +37637,6 @@ fn capture_scan_root_file_before_parse(
         .map(|policy| !policy.patterns.is_empty())
         .unwrap_or(true)
     {
-        return false;
-    }
-    if provider == "copilot" && crate::connectors::copilot::source_is_proven_chat_free(&root.path) {
         return false;
     }
     match crate::raw_mirror::capture_source_file(crate::raw_mirror::RawMirrorCaptureInput {
@@ -48435,7 +48256,7 @@ mod tests {
             if discovered {
                 let root = ScanRoot::local(temp.path().to_path_buf());
                 let source = DiscoveredSourceFile::new(
-                    "copilot",
+                    "cursor",
                     &root,
                     source_path.clone(),
                     crate::connectors::DiscoveredSourceRole::SqliteDatabase,
@@ -48443,14 +48264,14 @@ mod tests {
                 );
                 capture_discovered_source_file_before_parse(
                     &data_dir,
-                    "copilot",
+                    "cursor",
                     &source,
                     &RawSourceExclusions::default(),
                 );
             } else {
                 capture_scan_root_file_before_parse(
                     &data_dir,
-                    "copilot",
+                    "cursor",
                     &ScanRoot::local(source_path.clone()),
                     &ActiveSessionSourceFilter::default(),
                     &RawSourceExclusions::default(),
@@ -48473,7 +48294,7 @@ mod tests {
             vec![ScanRoot::local(source_path.clone())],
             None,
         );
-        let parsed = CopilotConnector::new().scan(&ctx);
+        let parsed = CursorConnector::new().scan(&ctx);
         assert!(parsed.is_err() || parsed.is_ok_and(|conversations| conversations.is_empty()));
         assert_eq!(std::fs::read(source_path)?, source_bytes);
         Ok(())
@@ -62421,7 +62242,7 @@ mod tests {
             watch_interval_secs: 30,
         };
         // Real Claude parsing and SourceComplete ingestion, followed by a
-        // real Cline factory with no roots in the closed scan universe.
+        // real Gemini factory with no roots in the closed scan universe.
         let outcome = run_batch_index_with_connector_factories(
             &storage,
             None,
@@ -62431,7 +62252,7 @@ mod tests {
             Vec::new(),
             Some(Arc::new(HashMap::from([
                 ("claude".to_string(), vec![source]),
-                ("cline".to_string(), Vec::new()),
+                ("gemini".to_string(), Vec::new()),
             ]))),
             factories,
             None,
@@ -62475,14 +62296,18 @@ mod tests {
     #[test]
     fn gh426_non_watch_batch_stop_preserves_committed_prefix_and_resumes() -> Result<()> {
         let temp = TempDir::new()?;
-        let root = temp.path().join("aider");
+        let root = temp.path().join(".codex/sessions/2026/05/08");
+        fs::create_dir_all(&root)?;
         for source in 0..3 {
-            let project = root.join(format!("project-{source}"));
-            fs::create_dir_all(&project)?;
             fs::write(
-                project.join(".aider.chat.history.md"),
+                root.join(format!("rollout-2026-05-08T00-00-0{source}-00000000-0000-4000-8000-00000000000{source}.jsonl")),
                 format!(
-                    "> retained fallback prompt {source}\n\nretained fallback answer {source}\n"
+                    concat!(
+                        "{{\"timestamp\":\"2026-05-08T23:09:00.000Z\",\"type\":\"session_meta\",\"payload\":{{\"id\":\"s-{s}\",\"cwd\":\"/tmp\"}}}}\n",
+                        "{{\"timestamp\":\"2026-05-08T23:09:01.000Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"user\",\"content\":[{{\"type\":\"input_text\",\"text\":\"retained fallback prompt {s}\"}}]}}}}\n",
+                        "{{\"timestamp\":\"2026-05-08T23:09:02.000Z\",\"type\":\"response_item\",\"payload\":{{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{{\"type\":\"output_text\",\"text\":\"retained fallback answer {s}\"}}]}}}}\n"
+                    ),
+                    s = source
                 ),
             )?;
         }
@@ -62490,7 +62315,7 @@ mod tests {
         fs::create_dir_all(&data_dir)?;
         let storage = FrankenStorage::open(&data_dir.join("archive.db"))?;
         let context = ScanContext::with_roots(data_dir.clone(), vec![ScanRoot::local(root)], None);
-        let conversations = AiderConnector::new().scan(&context)?;
+        let conversations = CodexConnector::new().scan(&context)?;
         assert_eq!(conversations.len(), 3);
         assert!(
             conversations
@@ -70907,46 +70732,6 @@ c.close()
     }
 
     #[test]
-    fn gh415_shelley_watch_accepts_old_timestamps_and_only_its_database_sidecars() {
-        let tmp = TempDir::new().unwrap();
-        assert_eq!(watch_scan_lower_bound(ConnectorKind::Shelley, None), None);
-        for input in [0, 1, 1_700_000_000_999, i64::MAX] {
-            assert_eq!(
-                watch_scan_lower_bound(ConnectorKind::Shelley, Some(input)),
-                None
-            );
-        }
-        for name in ["shelley.db", "sessions.sqlite3", "history"] {
-            let db = tmp.path().join(name);
-            fs::write(&db, b"source database").unwrap();
-            let root = ScanRoot::local(db.clone());
-            let roots = vec![(ConnectorKind::Shelley, root.clone())];
-            for event in std::iter::once(db.clone()).chain(database_sidecar_paths(&db)) {
-                fs::write(&event, b"database event").unwrap();
-                for explicit in [false, true] {
-                    let classified = classify_paths(vec![event.clone()], &roots, explicit);
-                    assert_eq!(classified.len(), 1, "{name}: {}", event.display());
-                    assert_eq!(classified[0].0, ConnectorKind::Shelley);
-                    let expected = if explicit {
-                        fs::canonicalize(&db).unwrap()
-                    } else {
-                        db.clone()
-                    };
-                    assert_eq!(classified[0].1.path, expected);
-                    assert_eq!(classified[0].1.origin, root.origin);
-                }
-            }
-            for suffix in ["-wal-extra", "2-wal", ".other"] {
-                let neighbor = tmp.path().join(format!("{name}{suffix}"));
-                fs::write(&neighbor, b"unrelated event").unwrap();
-                for explicit in [false, true] {
-                    assert!(classify_paths(vec![neighbor.clone()], &roots, explicit).is_empty());
-                }
-            }
-        }
-    }
-
-    #[test]
     fn classify_devin_database_sidecars_preserves_root_and_rejects_neighbors() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("sessions.db");
@@ -71001,10 +70786,6 @@ c.close()
         std::fs::create_dir_all(claude.parent().unwrap()).unwrap();
         std::fs::write(&claude, "{{}}").unwrap();
 
-        let aider = tmp.path().join("repo/.aider.chat.history.md");
-        std::fs::create_dir_all(aider.parent().unwrap()).unwrap();
-        std::fs::write(&aider, "user\nassistant").unwrap();
-
         let cursor = tmp.path().join("Cursor/User/globalStorage/state.vscdb");
         std::fs::create_dir_all(cursor.parent().unwrap()).unwrap();
         std::fs::write(&cursor, b"").unwrap();
@@ -71026,10 +70807,6 @@ c.close()
                 ScanRoot::local(tmp.path().join("project")),
             ),
             (
-                ConnectorKind::Aider,
-                ScanRoot::local(tmp.path().join("repo")),
-            ),
-            (
                 ConnectorKind::Cursor,
                 ScanRoot::local(tmp.path().join("Cursor/User")),
             ),
@@ -71042,14 +70819,13 @@ c.close()
             ),
         ];
 
-        let paths = vec![codex.clone(), claude.clone(), aider, cursor, chatgpt];
+        let paths = vec![codex.clone(), claude.clone(), cursor, chatgpt];
         let classified = classify_paths(paths, &roots, false);
 
         let kinds: std::collections::HashSet<_> =
             classified.iter().map(|(k, _, _, _)| *k).collect();
         assert!(kinds.contains(&ConnectorKind::Codex));
         assert!(kinds.contains(&ConnectorKind::Claude));
-        assert!(kinds.contains(&ConnectorKind::Aider));
         assert!(kinds.contains(&ConnectorKind::Cursor));
         assert!(kinds.contains(&ConnectorKind::ChatGpt));
 
@@ -71061,22 +70837,22 @@ c.close()
     #[test]
     fn classify_paths_uses_deepest_root_per_connector_and_origin() {
         let tmp = TempDir::new().unwrap();
-        let app_root = tmp.path().join("share/omp");
+        let app_root = tmp.path().join("share/codex");
         let profile_root = app_root.join("profiles/work");
         let session = profile_root
             .join("sessions/-projects-cass")
-            .join("2026-08-24T12-00-00_omp.jsonl");
+            .join("rollout-2026-08-24T12-00-00.jsonl");
         std::fs::create_dir_all(session.parent().unwrap()).unwrap();
         std::fs::write(&session, b"{}\n").unwrap();
         let roots = vec![
-            (ConnectorKind::Omp, ScanRoot::local(app_root)),
-            (ConnectorKind::Omp, ScanRoot::local(profile_root.clone())),
+            (ConnectorKind::Codex, ScanRoot::local(app_root)),
+            (ConnectorKind::Codex, ScanRoot::local(profile_root.clone())),
         ];
 
         let classified = classify_paths(vec![session], &roots, false);
 
         assert_eq!(classified.len(), 1);
-        assert_eq!(classified[0].0, ConnectorKind::Omp);
+        assert_eq!(classified[0].0, ConnectorKind::Codex);
         assert_eq!(classified[0].1.path, profile_root);
     }
 
@@ -71084,7 +70860,7 @@ c.close()
     #[test]
     fn gh538_classify_paths_prefers_a_physical_descendant_through_a_short_alias() {
         let tmp = TempDir::new().unwrap();
-        let parent = tmp.path().join("storage/user/omp");
+        let parent = tmp.path().join("storage/user/codex");
         let child = parent.join("profiles/work");
         let session = child.join("sessions/session.jsonl");
         std::fs::create_dir_all(session.parent().unwrap()).unwrap();
@@ -71103,9 +70879,9 @@ c.close()
         ] {
             let mut roots: Vec<_> = ordered
                 .into_iter()
-                .map(|root| (ConnectorKind::Omp, root))
+                .map(|root| (ConnectorKind::Codex, root))
                 .collect();
-            roots.push((ConnectorKind::Omp, other.clone()));
+            roots.push((ConnectorKind::Codex, other.clone()));
             let classified = classify_paths(vec![event.clone()], &roots, false);
             assert_eq!(classified.len(), 2, "distinct sources must remain distinct");
             for (_, selected, since, watermark) in &classified {
@@ -71147,11 +70923,11 @@ c.close()
         ] {
             let roots: Vec<_> = ordered
                 .into_iter()
-                .map(|root| (ConnectorKind::Omp, root))
+                .map(|root| (ConnectorKind::Codex, root))
                 .collect();
             let classified = classify_paths(vec![event.clone()], &roots, false);
             assert_eq!(classified.len(), 1, "one scan per connector and source");
-            assert_eq!(classified[0].0, ConnectorKind::Omp);
+            assert_eq!(classified[0].0, ConnectorKind::Codex);
             assert_eq!(classified[0].1.path, nested.path);
             assert_eq!(classified[0].1.origin, nested.origin);
         }
@@ -71284,11 +71060,11 @@ c.close()
         std::fs::write(&session, b"{}\n").unwrap();
         let roots = vec![
             (
-                ConnectorKind::Omp,
+                ConnectorKind::Codex,
                 ScanRoot::remote(mirror_root.clone(), Origin::remote("source-a"), None),
             ),
             (
-                ConnectorKind::Omp,
+                ConnectorKind::Codex,
                 ScanRoot::remote(mirror_root, Origin::remote("source-b"), None),
             ),
         ];
@@ -71324,62 +71100,6 @@ c.close()
     }
 
     #[test]
-    fn classify_paths_copilot_wal_retains_scope_origin_and_coalesces_primary() {
-        let tmp = tempfile::tempdir().unwrap();
-        let workspace = tmp.path().join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-        let database = workspace.join("state.vscdb");
-        let wal = workspace.join("state.vscdb-wal");
-        std::fs::write(&database, b"SQLite format 3\0").unwrap();
-        std::fs::write(&wal, b"a changed WAL event").unwrap();
-        let origin = Origin::remote_with_host("fixture-mirror", "fixture-host");
-        let root = ScanRoot::remote(tmp.path().to_path_buf(), origin.clone(), None);
-        let roots = vec![(ConnectorKind::Copilot, root.clone())];
-
-        let classified = classify_paths(vec![wal.clone(), database.clone()], &roots, true);
-        assert_eq!(
-            classified.len(),
-            1,
-            "primary and WAL are one targeted store"
-        );
-        assert_eq!(classified[0].0, ConnectorKind::Copilot);
-        assert_eq!(
-            classified[0].1.path,
-            dunce::canonicalize(&database).unwrap()
-        );
-        assert_eq!(classified[0].1.origin, origin);
-        assert!(classified[0].2.is_some());
-        assert!(classified[0].3.is_some());
-
-        // Live events retain the configured root and its provenance.
-        let live = classify_paths(vec![wal.clone()], &roots, false);
-        assert_eq!(live.len(), 1);
-        assert_eq!(live[0].1.path, root.path);
-        assert_eq!(live[0].1.origin, origin);
-        let other_provider = classify_paths(vec![wal], &[(ConnectorKind::Claude, root)], true);
-        assert_eq!(other_provider.len(), 1);
-        assert_eq!(
-            other_provider[0].1.path,
-            dunce::canonicalize(workspace.join("state.vscdb-wal")).unwrap()
-        );
-
-        let missing = tmp.path().join("missing/state.vscdb-wal");
-        std::fs::create_dir_all(missing.parent().unwrap()).unwrap();
-        for path in [
-            missing,
-            workspace.join("another.db-wal"),
-            workspace.join("state.vscdb-shm"),
-            workspace.join("native.json"),
-        ] {
-            std::fs::write(&path, b"{}").unwrap();
-            let selected = classify_paths(vec![path.clone()], &roots, true);
-            assert_eq!(selected.len(), 1);
-            assert_eq!(selected[0].1.path, dunce::canonicalize(path).unwrap());
-            assert_eq!(selected[0].1.origin, origin);
-        }
-    }
-
-    #[test]
     fn classify_paths_hints_codex_connector_for_explicit_codex_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let codex_root = tmp.path().join(".codex").join("sessions");
@@ -71412,7 +71132,6 @@ c.close()
         std::fs::write(&database, b"SQLite format 3\0rest of the header").unwrap();
         let roots = vec![
             (ConnectorKind::Codex, ScanRoot::local(root.clone())),
-            (ConnectorKind::Shelley, ScanRoot::local(root.clone())),
             (ConnectorKind::Devin, ScanRoot::local(root.clone())),
         ];
         let kinds = |path: &PathBuf, explicit: bool| -> Vec<ConnectorKind> {
@@ -71422,46 +71141,14 @@ c.close()
                 .collect()
         };
 
-        // An unhinted rollout under a shared root reaches Codex only; Shelley
-        // and Devin would open it as their database and fail the run (GH #524).
+        // An unhinted rollout under a shared root reaches Codex only; Devin
+        // would open it as its database and fail the run (GH #524).
         assert_eq!(kinds(&rollout, true), vec![ConnectorKind::Codex]);
-        // A SQLite file under the same root still reaches them.
+        // A SQLite file under the same root still reaches Devin.
         let database_kinds = kinds(&database, true);
-        assert!(database_kinds.contains(&ConnectorKind::Shelley));
         assert!(database_kinds.contains(&ConnectorKind::Devin));
         // A live watch event keeps scanning the configured root for every kind.
-        assert_eq!(kinds(&rollout, false).len(), 3);
-    }
-
-    #[test]
-    fn classify_paths_keeps_explicit_prime_file_and_rejects_similar_provider_paths() {
-        let tmp = tempfile::tempdir().unwrap();
-        let session = tmp.path().join(".prime/agent/sessions/chosen.jsonl");
-        std::fs::create_dir_all(session.parent().unwrap()).unwrap();
-        std::fs::write(&session, b"{}\n").unwrap();
-        let roots = vec![
-            (
-                ConnectorKind::PrimeAgent,
-                ScanRoot::local(tmp.path().to_path_buf()),
-            ),
-            (
-                ConnectorKind::PiAgent,
-                ScanRoot::local(tmp.path().to_path_buf()),
-            ),
-        ];
-        let classified = classify_paths(vec![session.clone()], &roots, true);
-        assert_eq!(classified.len(), 1);
-        assert_eq!(classified[0].0, ConnectorKind::PrimeAgent);
-        assert_eq!(classified[0].1.path, dunce::canonicalize(session).unwrap());
-        for path in [
-            ".prime-other/agent/sessions/x.jsonl",
-            ".pi/agent/sessions/x.jsonl",
-        ] {
-            assert_ne!(
-                explicit_watch_once_connector_hint(&tmp.path().join(path)),
-                Some(ConnectorKind::PrimeAgent)
-            );
-        }
+        assert_eq!(kinds(&rollout, false).len(), 2);
     }
 
     #[test]
@@ -71590,138 +71277,6 @@ c.close()
         assert_eq!(source_ids, ["source-a", "source-b"].into_iter().collect());
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn explicit_watch_once_omp_scan_root_survives_symlink_resolution() {
-        let tmp = tempfile::tempdir().unwrap();
-        let real_root = tmp.path().join("archive");
-        std::fs::create_dir_all(real_root.join("-workspace")).unwrap();
-        let real = real_root.join("-workspace/session.jsonl");
-        std::fs::write(&real, b"{}\n").unwrap();
-        let linked_root = tmp.path().join("share/omp/sessions");
-        std::fs::create_dir_all(linked_root.parent().unwrap()).unwrap();
-        std::os::unix::fs::symlink(&real_root, &linked_root).unwrap();
-        let requested = linked_root.join("-workspace/session.jsonl");
-        let canonical = std::fs::canonicalize(&real).unwrap();
-
-        assert_eq!(
-            explicit_watch_once_scan_path(ConnectorKind::Omp, &requested, &canonical),
-            std::fs::canonicalize(real_root).unwrap()
-        );
-    }
-
-    #[test]
-    fn classify_paths_keeps_omp_xdg_sessions_root_for_watch_once() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sessions_root = tmp.path().join("share/omp/sessions");
-        let session = sessions_root
-            .join("-projects-cass")
-            .join("2026-08-23T12-00-00_omp.jsonl");
-        std::fs::create_dir_all(session.parent().unwrap()).unwrap();
-        std::fs::write(&session, b"{}\n").unwrap();
-        let roots = vec![(ConnectorKind::Omp, ScanRoot::local(sessions_root.clone()))];
-
-        let classified = classify_paths(vec![session], &roots, true);
-
-        assert_eq!(classified.len(), 1);
-        assert_eq!(classified[0].0, ConnectorKind::Omp);
-        assert_eq!(
-            classified[0].1.path,
-            dunce::canonicalize(sessions_root).unwrap()
-        );
-        assert!(classified[0].2.is_some());
-        assert!(classified[0].3.is_some());
-    }
-
-    #[test]
-    #[serial]
-    fn classify_paths_keeps_custom_omp_session_override_for_watch_once() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sessions_root = tmp.path().join("launch-sessions");
-        let session = sessions_root
-            .join("-projects-cass")
-            .join("2026-08-23T12-00-00_omp.jsonl");
-        std::fs::create_dir_all(session.parent().unwrap()).unwrap();
-        std::fs::write(&session, b"{}\n").unwrap();
-        let _session_dir = set_env_var(
-            "PI_CODING_AGENT_SESSION_DIR",
-            sessions_root.to_string_lossy(),
-        );
-
-        let classified = classify_paths(vec![session], &[], true);
-
-        assert_eq!(classified.len(), 1);
-        assert_eq!(classified[0].0, ConnectorKind::Omp);
-        assert_eq!(
-            classified[0].1.path,
-            dunce::canonicalize(sessions_root).unwrap()
-        );
-        assert!(classified[0].2.is_some());
-        assert!(classified[0].3.is_some());
-    }
-
-    #[test]
-    #[serial]
-    fn reindex_paths_watch_once_indexes_custom_omp_session_override() {
-        let tmp = tempfile::tempdir().unwrap();
-        let data_dir = tmp.path().join("cass-data");
-        let sessions_root = tmp.path().join("launch-sessions");
-        let session = sessions_root
-            .join("-projects-cass")
-            .join("2026-08-23T12-00-00_omp.jsonl");
-        std::fs::create_dir_all(session.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(&data_dir).unwrap();
-        std::fs::write(
-            &session,
-            r#"{"type":"session","version":3,"id":"omp-watch-once","timestamp":"2026-08-23T12:00:00Z","cwd":"/projects/cass"}
-{"type":"message","timestamp":"2026-08-23T12:00:01Z","message":{"role":"user","content":"watch custom OMP root"}}
-{"type":"message","timestamp":"2026-08-23T12:00:02Z","message":{"role":"assistant","content":"indexed"}}
-"#,
-        )
-        .unwrap();
-        let _session_dir = set_env_var(
-            "PI_CODING_AGENT_SESSION_DIR",
-            sessions_root.to_string_lossy(),
-        );
-        let _profile = set_env_var("OMP_PROFILE", "review");
-        let opts = super::IndexOptions {
-            full: false,
-            watch: false,
-            force_rebuild: false,
-            watch_once_paths: Some(vec![session.clone()]),
-            db_path: data_dir.join("db.sqlite"),
-            data_dir: data_dir.clone(),
-            semantic: false,
-            build_hnsw: false,
-            embedder: "fastembed".to_string(),
-            progress: None,
-            watch_interval_secs: 30,
-        };
-        let storage = FrankenStorage::open(&opts.db_path).unwrap();
-        let index_path = index_dir(&opts.data_dir).unwrap();
-        let state = Mutex::new(HashMap::new());
-        let storage = Mutex::new(storage);
-        let t_index = Mutex::new(None);
-
-        let indexed = reindex_paths(
-            &opts,
-            vec![session],
-            &[],
-            &state,
-            &storage,
-            &t_index,
-            &index_path,
-            false,
-        )
-        .unwrap();
-
-        assert_eq!(indexed, 1);
-        let conversations = storage.lock().unwrap().list_conversations(10, 0).unwrap();
-        assert_eq!(conversations.len(), 1);
-        assert_eq!(conversations[0].agent_slug, "omp");
-        assert_eq!(conversations[0].metadata_json["profile"], "review");
-    }
-
     #[test]
     #[serial]
     fn reindex_paths_watch_once_indexes_explicit_codex_path_without_detected_root() {
@@ -71810,12 +71365,13 @@ c.close()
         )
         .unwrap();
 
-        let amp_threads = tmp.path().join("amp/threads");
-        std::fs::create_dir_all(&amp_threads).unwrap();
-        let amp_session = amp_threads.join("未来-thread-名前.json");
+        let claude_projects = tmp.path().join(".claude/projects/-workspace-mixed");
+        std::fs::create_dir_all(&claude_projects).unwrap();
+        let claude_session = claude_projects.join("未来-session-名前.jsonl");
         std::fs::write(
-            &amp_session,
-            r#"{"id":"mixed-amp","messages":[{"role":"user","content":"stmh6-amp-searchable"}]}"#,
+            &claude_session,
+            r#"{"parentUuid":null,"cwd":"/workspace/mixed","sessionId":"mixed-claude","version":"2.0.37","type":"user","message":{"role":"user","content":"stmh6-claude-searchable"},"uuid":"msg-001","timestamp":"2026-07-22T06:00:00.000Z"}
+"#,
         )
         .unwrap();
 
@@ -71824,7 +71380,7 @@ c.close()
             full: false,
             watch: false,
             force_rebuild: false,
-            watch_once_paths: Some(vec![codex_session.clone(), amp_session.clone()]),
+            watch_once_paths: Some(vec![codex_session.clone(), claude_session.clone()]),
             db_path: data_dir.join("db.sqlite"),
             data_dir: data_dir.clone(),
             semantic: false,
@@ -71843,12 +71399,12 @@ c.close()
                 ConnectorKind::Codex,
                 ScanRoot::local(codex_session.parent().unwrap().to_path_buf()),
             ),
-            (ConnectorKind::Amp, ScanRoot::local(amp_threads)),
+            (ConnectorKind::Claude, ScanRoot::local(claude_projects)),
         ];
 
         let indexed = reindex_paths(
             &opts,
-            vec![codex_session, amp_session],
+            vec![codex_session, claude_session],
             &roots,
             &state,
             &storage,
@@ -71870,8 +71426,8 @@ c.close()
         let stats = progress.stats.lock().unwrap();
         let codex = stats.connector_summary.get("codex").unwrap();
         assert_eq!(codex.partially_indexed, 1);
-        let amp = stats.connector_summary.get("amp").unwrap();
-        assert_eq!(amp.indexed, 1);
+        let claude = stats.connector_summary.get("claude").unwrap();
+        assert_eq!(claude.indexed, 1);
         assert_eq!(stats.connector_diagnostics.len(), 1);
         assert_eq!(
             stats.connector_diagnostics[0].failure_kind,
@@ -71882,7 +71438,7 @@ c.close()
         drop(t_index);
 
         let client = SearchClient::open(&index_path, None).unwrap().unwrap();
-        for marker in ["stmh6-codex-tail-searchable", "stmh6-amp-searchable"] {
+        for marker in ["stmh6-codex-tail-searchable", "stmh6-claude-searchable"] {
             let hits = client
                 .search(marker, SearchFilters::default(), 10, 0, FieldMask::FULL)
                 .unwrap();
@@ -73203,44 +72759,44 @@ c.close()
         let mut state = HashMap::new();
         state.insert(ConnectorKind::Codex, 123);
         state.insert(ConnectorKind::Gemini, 456);
-        state.insert(ConnectorKind::Grok, 789);
-        state.insert(ConnectorKind::Omp, 987);
+        state.insert(ConnectorKind::Cursor, 789);
+        state.insert(ConnectorKind::Devin, 987);
 
         save_watch_state(&data_dir, &state).unwrap();
 
         let loaded = load_watch_state(&data_dir);
         assert_eq!(loaded.get(&ConnectorKind::Codex), Some(&123));
         assert_eq!(loaded.get(&ConnectorKind::Gemini), Some(&456));
-        assert_eq!(loaded.get(&ConnectorKind::Grok), Some(&789));
-        assert_eq!(loaded.get(&ConnectorKind::Omp), Some(&987));
+        assert_eq!(loaded.get(&ConnectorKind::Cursor), Some(&789));
+        assert_eq!(loaded.get(&ConnectorKind::Devin), Some(&987));
     }
 
     #[test]
-    fn grok_connector_kind_maps_runtime_slug_and_compact_wire_key() {
-        assert_eq!(ConnectorKind::from_slug("grok"), Some(ConnectorKind::Grok));
-        assert_eq!(ConnectorKind::Grok.slug(), "grok");
+    fn devin_connector_kind_maps_runtime_slug_and_compact_wire_key() {
+        assert_eq!(ConnectorKind::from_slug("devin"), Some(ConnectorKind::Devin));
+        assert_eq!(ConnectorKind::Devin.slug(), "devin");
         assert_eq!(
-            serde_json::to_string(&ConnectorKind::Grok).unwrap(),
-            "\"gk\""
+            serde_json::to_string(&ConnectorKind::Devin).unwrap(),
+            "\"dv\""
         );
         assert_eq!(
-            serde_json::from_str::<ConnectorKind>("\"Grok\"").unwrap(),
-            ConnectorKind::Grok,
+            serde_json::from_str::<ConnectorKind>("\"Devin\"").unwrap(),
+            ConnectorKind::Devin,
             "legacy human-readable watch-state keys remain accepted"
         );
     }
 
     #[test]
-    fn omp_connector_kind_maps_runtime_slug_and_compact_wire_key() {
-        assert_eq!(ConnectorKind::from_slug("omp"), Some(ConnectorKind::Omp));
-        assert_eq!(ConnectorKind::Omp.slug(), "omp");
+    fn qoder_connector_kind_maps_runtime_slug_and_compact_wire_key() {
+        assert_eq!(ConnectorKind::from_slug("qoder"), Some(ConnectorKind::Qoder));
+        assert_eq!(ConnectorKind::Qoder.slug(), "qoder");
         assert_eq!(
-            serde_json::to_string(&ConnectorKind::Omp).unwrap(),
-            "\"om\""
+            serde_json::to_string(&ConnectorKind::Qoder).unwrap(),
+            "\"qd\""
         );
         assert_eq!(
-            serde_json::from_str::<ConnectorKind>("\"Omp\"").unwrap(),
-            ConnectorKind::Omp,
+            serde_json::from_str::<ConnectorKind>("\"Qoder\"").unwrap(),
+            ConnectorKind::Qoder,
             "legacy human-readable watch-state keys remain accepted"
         );
     }
@@ -73257,12 +72813,12 @@ c.close()
         save_watch_state(&data_dir, &first).unwrap();
 
         let mut second = HashMap::new();
-        second.insert(ConnectorKind::Amp, 222);
+        second.insert(ConnectorKind::Gemini, 222);
         save_watch_state(&data_dir, &second).unwrap();
 
         let loaded = load_watch_state(&data_dir);
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded.get(&ConnectorKind::Amp), Some(&222));
+        assert_eq!(loaded.get(&ConnectorKind::Gemini), Some(&222));
         assert!(!loaded.contains_key(&ConnectorKind::Codex));
     }
 
@@ -73327,6 +72883,51 @@ c.close()
         assert!(!raw.contains("Codex"));
     }
 
+    fn write_watch_codex_messages(path: &Path, id: &str, messages: &[(&str, &str, i64)]) {
+        use std::io::Write as _;
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut out = Vec::new();
+        let ts = messages.first().map_or(1_700_000_000_000_i64, |m| m.2);
+        let iso = |ms: i64| {
+            chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap_or_else(|| chrono::DateTime::from_timestamp_millis(0).unwrap())
+                .to_rfc3339()
+        };
+        serde_json::to_writer(
+            &mut out,
+            &serde_json::json!({
+                "timestamp": iso(ts),
+                "type": "session_meta",
+                "payload": {"id": id, "cwd": "/tmp/watch-test"}
+            }),
+        )
+        .unwrap();
+        out.push(b'\n');
+        for (role, text, created_at) in messages {
+            let item_type = if *role == "assistant" {
+                "output_text"
+            } else {
+                "input_text"
+            };
+            serde_json::to_writer(
+                &mut out,
+                &serde_json::json!({
+                    "timestamp": iso(*created_at),
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": role,
+                        "content": [{"type": item_type, "text": text}]
+                    }
+                }),
+            )
+            .unwrap();
+            out.push(b'\n');
+        }
+        let mut f = fs::File::create(path).unwrap();
+        f.write_all(&out).unwrap();
+    }
+
     #[test]
     #[serial]
     fn watch_state_updates_after_reindex_paths() {
@@ -73338,25 +72939,21 @@ c.close()
         unsafe { std::env::set_var("XDG_DATA_HOME", &xdg) };
 
         // Use xdg directly (not dirs::data_dir() which doesn't respect XDG_DATA_HOME on macOS)
-        let data_dir = xdg.join("amp");
+        let data_dir = xdg.join("codex");
         std::fs::create_dir_all(&data_dir).unwrap();
 
-        // Prepare amp fixture under data dir so detection + scan succeed.
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
-        let amp_file = amp_dir.join("thread-002.json");
-        std::fs::write(
-            &amp_file,
-            r#"{
-  "id": "thread-002",
-  "title": "Amp test",
-  "messages": [
-    {"role":"user","text":"hi","createdAt":1700000000100},
-    {"role":"assistant","text":"hello","createdAt":1700000000200}
-  ]
-}"#,
-        )
-        .unwrap();
+        // Prepare codex fixture under data dir so detection + scan succeed.
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let codex_file = codex_dir.join("rollout-002.jsonl");
+        write_watch_codex_messages(
+            &codex_file,
+            "thread-002",
+            &[
+                ("user", "hi", 1_700_000_000_100),
+                ("assistant", "hello", 1_700_000_000_200),
+            ],
+        );
 
         let opts = super::IndexOptions {
             full: false,
@@ -73382,11 +72979,11 @@ c.close()
         let t_index = std::sync::Mutex::new(Some(t_index));
 
         // Need roots for reindex_paths
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_dir))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_dir))];
 
         reindex_paths(
             &opts,
-            vec![amp_file.clone()],
+            vec![codex_file.clone()],
             &roots,
             &state,
             &storage,
@@ -73397,8 +72994,8 @@ c.close()
         .unwrap();
 
         let loaded = load_watch_state(&data_dir);
-        assert!(loaded.contains_key(&ConnectorKind::Amp));
-        let ts = loaded.get(&ConnectorKind::Amp).copied().unwrap();
+        assert!(loaded.contains_key(&ConnectorKind::Codex));
+        let ts = loaded.get(&ConnectorKind::Codex).copied().unwrap();
         assert!(ts > 0);
 
         if let Some(prev) = prev {
@@ -73424,10 +73021,10 @@ c.close()
         // to the active-source skip path.
         let _window_guard = set_env("CASS_ACTIVE_SESSION_RECENT_WRITE_WINDOW_SECS", "0");
 
-        let data_dir = xdg.join("amp");
+        let data_dir = xdg.join("codex");
         std::fs::create_dir_all(&data_dir).unwrap();
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
         let now_u128 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -73437,15 +73034,12 @@ c.close()
             .saturating_add(10_000);
         let mut paths = Vec::new();
         for idx in 0..4 {
-            let path = amp_dir.join(format!("thread-oom-{idx}.json"));
-            std::fs::write(
+            let path = codex_dir.join(format!("rollout-oom-{idx}.jsonl"));
+            write_watch_codex_messages(
                 &path,
-                format!(
-                    r#"{{"id":"thread-oom-{idx}","messages":[{{"role":"user","text":"p{idx}","createdAt":{}}}]}}"#,
-                    base_ts + i64::from(idx)
-                ),
-            )
-            .unwrap();
+                &format!("thread-oom-{idx}"),
+                &[("user", &format!("p{idx}"), base_ts + i64::from(idx))],
+            );
             paths.push(path);
         }
 
@@ -73470,7 +73064,7 @@ c.close()
         let state = std::sync::Mutex::new(std::collections::HashMap::new());
         let storage = std::sync::Mutex::new(storage);
         let t_index = std::sync::Mutex::new(Some(t_index));
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_dir))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_dir))];
 
         let indexed = reindex_paths(
             &opts,
@@ -73498,7 +73092,7 @@ c.close()
             .unwrap();
         assert_eq!(conversation_rows, 4);
         assert!(
-            load_watch_state(&data_dir).contains_key(&ConnectorKind::Amp),
+            load_watch_state(&data_dir).contains_key(&ConnectorKind::Codex),
             "watch state should advance after split batches persist"
         );
         assert!(
@@ -73520,8 +73114,8 @@ c.close()
     fn watch_reindex_quarantine_preserves_watermark_for_retry() {
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("watch-quarantine-retry");
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
         let now_u128 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -73529,14 +73123,12 @@ c.close()
         let created_at = i64::try_from(now_u128)
             .unwrap_or(i64::MAX)
             .saturating_add(10_000);
-        let amp_file = amp_dir.join("thread-watch-quarantine-retry.json");
-        std::fs::write(
-            &amp_file,
-            format!(
-                r#"{{"id":"thread-watch-quarantine-retry","messages":[{{"role":"user","text":"retry me","createdAt":{created_at}}}]}}"#
-            ),
-        )
-        .unwrap();
+        let codex_file = codex_dir.join("rollout-watch-quarantine-retry.jsonl");
+        write_watch_codex_messages(
+            &codex_file,
+            "thread-watch-quarantine-retry",
+            &[("user", "retry me", created_at)],
+        );
 
         let _oom_guard = set_env("CASS_TEST_WATCH_INGEST_OOM_MIN_CONVS", "1");
         // #298: model a *genuinely* poisoned conversation — the solo isolate
@@ -73575,11 +73167,11 @@ c.close()
         let state = std::sync::Mutex::new(std::collections::HashMap::new());
         let storage = std::sync::Mutex::new(storage);
         let t_index = std::sync::Mutex::new(Some(t_index));
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_dir))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_dir))];
 
         let indexed = reindex_paths(
             &opts,
-            vec![amp_file],
+            vec![codex_file],
             &roots,
             &state,
             &storage,
@@ -73611,8 +73203,8 @@ c.close()
     fn watch_reindex_defers_small_conversation_when_solo_retry_also_ooms() {
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("watch-oom-defer-small");
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
         let now_u128 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -73620,14 +73212,12 @@ c.close()
         let created_at = i64::try_from(now_u128)
             .unwrap_or(i64::MAX)
             .saturating_add(10_000);
-        let amp_file = amp_dir.join("thread-watch-oom-defer-small.json");
-        std::fs::write(
-            &amp_file,
-            format!(
-                r#"{{"id":"thread-watch-oom-defer-small","messages":[{{"role":"user","text":"defer me","createdAt":{created_at}}}]}}"#
-            ),
-        )
-        .unwrap();
+        let codex_file = codex_dir.join("rollout-watch-oom-defer-small.jsonl");
+        write_watch_codex_messages(
+            &codex_file,
+            "thread-watch-oom-defer-small",
+            &[("user", "defer me", created_at)],
+        );
 
         let _oom_guard = set_env("CASS_TEST_WATCH_INGEST_OOM_MIN_CONVS", "1");
         let _solo_oom_guard = set_env("CASS_TEST_WATCH_SOLO_RETRY_OOM", "1");
@@ -73656,11 +73246,11 @@ c.close()
         let state = std::sync::Mutex::new(std::collections::HashMap::new());
         let storage = std::sync::Mutex::new(storage);
         let t_index = std::sync::Mutex::new(Some(t_index));
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_dir))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_dir))];
 
         let indexed = reindex_paths(
             &opts,
-            vec![amp_file],
+            vec![codex_file],
             &roots,
             &state,
             &storage,
@@ -73693,8 +73283,8 @@ c.close()
     fn watch_reindex_backs_off_a_repeatedly_deferred_conversation() {
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("watch-oom-defer-backoff");
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
         let now_u128 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -73702,14 +73292,12 @@ c.close()
         let created_at = i64::try_from(now_u128)
             .unwrap_or(i64::MAX)
             .saturating_add(10_000);
-        let amp_file = amp_dir.join("thread-watch-oom-defer-backoff.json");
-        std::fs::write(
-            &amp_file,
-            format!(
-                r#"{{"id":"thread-watch-oom-defer-backoff","messages":[{{"role":"user","text":"back off","createdAt":{created_at}}}]}}"#
-            ),
-        )
-        .unwrap();
+        let codex_file = codex_dir.join("rollout-watch-oom-defer-backoff.jsonl");
+        write_watch_codex_messages(
+            &codex_file,
+            "thread-watch-oom-defer-backoff",
+            &[("user", "back off", created_at)],
+        );
 
         let oom_guard = set_env("CASS_TEST_WATCH_INGEST_OOM_MIN_CONVS", "1");
         let solo_oom_guard = set_env("CASS_TEST_WATCH_SOLO_RETRY_OOM", "1");
@@ -73736,11 +73324,11 @@ c.close()
         let state = std::sync::Mutex::new(std::collections::HashMap::new());
         let storage = std::sync::Mutex::new(storage);
         let t_index = std::sync::Mutex::new(Some(t_index));
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_dir))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_dir))];
         let tick = || {
             reindex_paths_with_semantic_delta(
                 &opts,
-                vec![amp_file.clone()],
+                vec![codex_file.clone()],
                 &roots,
                 &state,
                 &storage,
@@ -73820,7 +73408,7 @@ c.close()
         assert!(recovered_tick.retry_sources.is_empty());
         assert!(WatchNomemDeferrals::load(&data_dir).entries.is_empty());
         assert!(
-            load_watch_state(&data_dir).contains_key(&ConnectorKind::Amp),
+            load_watch_state(&data_dir).contains_key(&ConnectorKind::Codex),
             "the watermark advances once the deferred conversation ingests"
         );
     }
@@ -73924,8 +73512,8 @@ c.close()
     fn watch_reindex_defers_large_conversation_with_ample_memory() {
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("watch-oom-defer-large");
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
         let now_u128 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -73933,14 +73521,12 @@ c.close()
         let created_at = i64::try_from(now_u128)
             .unwrap_or(i64::MAX)
             .saturating_add(10_000);
-        let amp_file = amp_dir.join("thread-watch-oom-defer-large.json");
-        std::fs::write(
-            &amp_file,
-            format!(
-                r#"{{"id":"thread-watch-oom-defer-large","messages":[{{"role":"user","text":"defer the large one","createdAt":{created_at}}}]}}"#
-            ),
-        )
-        .unwrap();
+        let codex_file = codex_dir.join("rollout-watch-oom-defer-large.jsonl");
+        write_watch_codex_messages(
+            &codex_file,
+            "thread-watch-oom-defer-large",
+            &[("user", "defer the large one", created_at)],
+        );
 
         let _oom_guard = set_env("CASS_TEST_WATCH_INGEST_OOM_MIN_CONVS", "1");
         let _solo_oom_guard = set_env("CASS_TEST_WATCH_SOLO_RETRY_OOM", "1");
@@ -73971,11 +73557,11 @@ c.close()
         let state = std::sync::Mutex::new(std::collections::HashMap::new());
         let storage = std::sync::Mutex::new(storage);
         let t_index = std::sync::Mutex::new(Some(t_index));
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_dir))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_dir))];
 
         let indexed = reindex_paths(
             &opts,
-            vec![amp_file],
+            vec![codex_file],
             &roots,
             &state,
             &storage,
@@ -74020,10 +73606,10 @@ c.close()
         let _chunk_guard = set_env("CASS_WATCH_INGEST_CHUNK_SIZE", "4");
         let _window_guard = set_env("CASS_ACTIVE_SESSION_RECENT_WRITE_WINDOW_SECS", "0");
 
-        let data_dir = xdg.join("amp");
+        let data_dir = xdg.join("codex");
         std::fs::create_dir_all(&data_dir).unwrap();
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
         let now_u128 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -74033,15 +73619,12 @@ c.close()
             .saturating_add(10_000);
         let mut paths = Vec::new();
         for idx in 0..4 {
-            let path = amp_dir.join(format!("thread-batch-oom-solo-ok-{idx}.json"));
-            std::fs::write(
+            let path = codex_dir.join(format!("rollout-batch-oom-solo-ok-{idx}.jsonl"));
+            write_watch_codex_messages(
                 &path,
-                format!(
-                    r#"{{"id":"thread-batch-oom-solo-ok-{idx}","messages":[{{"role":"user","text":"p{idx}","createdAt":{}}}]}}"#,
-                    base_ts + i64::from(idx)
-                ),
-            )
-            .unwrap();
+                &format!("thread-batch-oom-solo-ok-{idx}"),
+                &[("user", &format!("p{idx}"), base_ts + i64::from(idx))],
+            );
             paths.push(path);
         }
 
@@ -74066,7 +73649,7 @@ c.close()
         let state = std::sync::Mutex::new(std::collections::HashMap::new());
         let storage = std::sync::Mutex::new(storage);
         let t_index = std::sync::Mutex::new(Some(t_index));
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_dir))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_dir))];
 
         let indexed = reindex_paths(
             &opts,
@@ -74120,16 +73703,16 @@ c.close()
         unsafe { std::env::set_var("XDG_DATA_HOME", &xdg) };
         let _lexical_oom_guard = inject_incremental_lexical_update_test_oom();
 
-        let data_dir = xdg.join("amp");
+        let data_dir = xdg.join("codex");
         std::fs::create_dir_all(&data_dir).unwrap();
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
-        let amp_file = amp_dir.join("thread-watch-once-lexical-oom.json");
-        std::fs::write(
-            &amp_file,
-            r#"{"id":"thread-watch-once-lexical-oom","messages":[{"role":"user","text":"persist me","createdAt":1700000000100}]}"#,
-        )
-        .unwrap();
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let codex_file = codex_dir.join("rollout-watch-once-lexical-oom.jsonl");
+        write_watch_codex_messages(
+            &codex_file,
+            "thread-watch-once-lexical-oom",
+            &[("user", "persist me", 1_700_000_000_100)],
+        );
 
         let opts = super::IndexOptions {
             full: false,
@@ -74141,7 +73724,7 @@ c.close()
             build_hnsw: false,
             embedder: "fastembed".to_string(),
             progress: None,
-            watch_once_paths: Some(vec![amp_file.clone()]),
+            watch_once_paths: Some(vec![codex_file.clone()]),
             watch_interval_secs: 30,
         };
 
@@ -74151,11 +73734,11 @@ c.close()
         let state = std::sync::Mutex::new(std::collections::HashMap::new());
         let storage = std::sync::Mutex::new(storage);
         let t_index = std::sync::Mutex::new(Some(t_index));
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_file.clone()))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_file.clone()))];
 
         let indexed = reindex_paths(
             &opts,
-            vec![amp_file.clone()],
+            vec![codex_file.clone()],
             &roots,
             &state,
             &storage,
@@ -74205,7 +73788,7 @@ c.close()
         assert_eq!(
             watch_lexical_replay_debt_for_root(
                 &storage.lock().unwrap(),
-                ConnectorKind::Amp,
+                ConnectorKind::Codex,
                 &roots[0].1,
             )
             .unwrap()
@@ -74228,7 +73811,7 @@ c.close()
         let expected_id = frankensearch::quill::cass::cass_document_identity(
             "local",
             frankensearch::quill::cass::CassConversationKey {
-                source_path: &amp_file.to_string_lossy(),
+                source_path: &codex_file.to_string_lossy(),
                 id: Some(canonical_before[0].0),
             },
             canonical_before[0].2 as u64,
@@ -74238,7 +73821,7 @@ c.close()
                 .then(|| WatchLexicalFaultGuard::set(WatchLexicalTestFault::PublicationAfter(0)));
             let indexed = reindex_paths(
                 &opts,
-                vec![amp_file.clone()],
+                vec![codex_file.clone()],
                 &roots,
                 &state,
                 &storage,
@@ -74261,7 +73844,7 @@ c.close()
             assert_eq!(
                 watch_lexical_replay_debt_for_root(
                     &storage.lock().unwrap(),
-                    ConnectorKind::Amp,
+                    ConnectorKind::Codex,
                     &roots[0].1,
                 )
                 .unwrap()
@@ -74346,16 +73929,7 @@ c.close()
     }
 
     fn write_watch_lexical_source(path: &Path, id: &str, marker: &str) {
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(
-            path,
-            serde_json::to_vec(&serde_json::json!({
-                "id": id,
-                "messages": [{"role": "user", "text": marker, "createdAt": 1700000000100_i64}]
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        write_watch_codex_messages(path, id, &[("user", marker, 1_700_000_000_100)]);
     }
 
     fn watch_lexical_options(data_dir: &Path) -> IndexOptions {
@@ -74385,7 +73959,7 @@ c.close()
         reindex_paths(
             &opts,
             vec![selected.to_path_buf()],
-            &[(ConnectorKind::Amp, ScanRoot::local(selected.to_path_buf()))],
+            &[(ConnectorKind::Codex, ScanRoot::local(selected.to_path_buf()))],
             &Mutex::new(HashMap::new()),
             storage,
             index,
@@ -74409,7 +73983,7 @@ c.close()
         let storage = Mutex::new(FrankenStorage::open(&opts.db_path)?);
         let index_path = index_dir(&data_dir)?;
         let index = Mutex::new(Some(TantivyIndex::open_or_create(&index_path)?));
-        let preserved = tmp.path().join("preserved/amp/thread-preserved.json");
+        let preserved = tmp.path().join("preserved/codex/rollout-preserved.jsonl");
         write_watch_lexical_source(&preserved, "thread-preserved", "recyclepreservedneedle");
         assert_eq!(
             run_watch_lexical_selection(&opts, &preserved, &storage, &index)?,
@@ -74419,12 +73993,12 @@ c.close()
         let preserved_ids = watch_lexical_search_ids(&index_path, "recyclepreservedneedle");
         assert_eq!(preserved_ids.len(), 1);
 
-        let source = tmp.path().join("pending/amp/thread-pending.json");
+        let source = tmp.path().join("pending/codex/rollout-pending.jsonl");
         write_watch_lexical_source(&source, "thread-pending", "recyclerecoveredneedle");
         let source_before = fs::read(&source)?;
         let source_modified = fs::metadata(&source)?.modified()?;
         let roots = [(
-            ConnectorKind::Amp,
+            ConnectorKind::Codex,
             ScanRoot::local(source.parent().unwrap().to_path_buf()),
         )];
         let state = Mutex::new(HashMap::new());
@@ -74586,16 +74160,16 @@ c.close()
         let tmp = TempDir::new()?;
         let data_dir = tmp.path().join("cass");
         fs::create_dir_all(&data_dir)?;
-        let selected = tmp.path().join("amp");
-        let source = selected.join("thread-retry.json");
-        let unrelated = tmp.path().join("preserved/amp/thread-preserved.json");
+        let selected = tmp.path().join("codex/sessions");
+        let source = selected.join("rollout-retry.jsonl");
+        let unrelated = tmp.path().join("preserved/codex/rollout-preserved.jsonl");
         write_watch_lexical_source(&source, "thread-retry", "watchretryscheduledneedle");
         write_watch_lexical_source(&unrelated, "thread-preserved", "watchretrypreservedneedle");
         let source_before = fs::read(&source)?;
         let source_mtime = fs::metadata(&source)?.modified()?;
         let mut opts = watch_lexical_options(&data_dir);
         opts.watch = true;
-        let roots = [(ConnectorKind::Amp, ScanRoot::local(selected.clone()))];
+        let roots = [(ConnectorKind::Codex, ScanRoot::local(selected.clone()))];
         let index_path = index_dir(&data_dir)?;
         let storage = Mutex::new(FrankenStorage::open(&opts.db_path)?);
         let index = Mutex::new(Some(TantivyIndex::open_or_create(&index_path)?));
@@ -74740,17 +74314,17 @@ c.close()
     fn gh538_watch_restart_debt_respects_source_connector_and_root_scope() -> Result<()> {
         let tmp = TempDir::new()?;
         let storage = FrankenStorage::open(&tmp.path().join("agent_search.db"))?;
-        let root = ScanRoot::local(tmp.path().join("amp"));
+        let root = ScanRoot::local(tmp.path().join("codex"));
         let child = ScanRoot::local(root.path.join("child"));
-        let roots = [(ConnectorKind::Amp, root.clone())];
+        let roots = [(ConnectorKind::Codex, root.clone())];
         assert!(watch_lexical_replay_sources(&storage, &roots)?.is_empty());
-        let same_root = WatchLexicalReplayDebt::for_root(ConnectorKind::Amp, &root);
-        let child_debt = WatchLexicalReplayDebt::for_root(ConnectorKind::Amp, &child);
+        let same_root = WatchLexicalReplayDebt::for_root(ConnectorKind::Codex, &root);
+        let child_debt = WatchLexicalReplayDebt::for_root(ConnectorKind::Codex, &child);
         let another_connector = WatchLexicalReplayDebt::for_root(ConnectorKind::Claude, &root);
-        let mut another_source = WatchLexicalReplayDebt::for_root(ConnectorKind::Amp, &root);
+        let mut another_source = WatchLexicalReplayDebt::for_root(ConnectorKind::Codex, &root);
         another_source.source_id = "removed-source".into();
         let removed_root = WatchLexicalReplayDebt::for_root(
-            ConnectorKind::Amp,
+            ConnectorKind::Codex,
             &ScanRoot::local(tmp.path().join("removed-root")),
         );
         for debt in [
@@ -74767,7 +74341,7 @@ c.close()
             BTreeSet::from([root.path.clone()])
         );
         assert_eq!(
-            watch_lexical_replay_sources(&storage, &[(ConnectorKind::Amp, child.clone())])?,
+            watch_lexical_replay_sources(&storage, &[(ConnectorKind::Codex, child.clone())])?,
             BTreeSet::from([child.path]),
             "an ancestor debt may retry only the still-configured child"
         );
@@ -74802,7 +74376,7 @@ c.close()
     #[serial]
     fn gh538_watch_excluded_debt_does_not_schedule_an_endless_rescan() -> Result<()> {
         let tmp = TempDir::new()?;
-        let source = tmp.path().join("amp/thread-excluded.json");
+        let source = tmp.path().join("codex/rollout-excluded.jsonl");
         write_watch_lexical_source(&source, "thread-excluded", "excludedwatchneedle");
         let _exclusion = set_env("CASS_EXCLUDE_PATHS", &source.to_string_lossy());
         let opts = watch_lexical_options(tmp.path());
@@ -74810,13 +74384,13 @@ c.close()
         let root = ScanRoot::local(source.parent().unwrap().to_path_buf());
         persist_watch_lexical_replay_debt(
             &storage.lock().unwrap(),
-            &WatchLexicalReplayDebt::for_root(ConnectorKind::Amp, &root),
+            &WatchLexicalReplayDebt::for_root(ConnectorKind::Codex, &root),
         )?;
         let index = Mutex::new(None);
         let outcome = reindex_paths_with_semantic_delta(
             &opts,
             vec![root.path.clone()],
-            &[(ConnectorKind::Amp, root.clone())],
+            &[(ConnectorKind::Codex, root.clone())],
             &Mutex::new(HashMap::new()),
             &storage,
             &index,
@@ -74975,13 +74549,13 @@ c.close()
         let storage = FrankenStorage::open(&tmp.path().join("agent_search.db")).unwrap();
         let root = ScanRoot::local(real.clone());
         let saved = WatchLexicalReplayDebt {
-            connector: ConnectorKind::Amp,
+            connector: ConnectorKind::Codex,
             source_id: root.origin.source_id.clone(),
             path: alias.clone(),
             discovery_only: false,
         };
         let unrelated = WatchLexicalReplayDebt {
-            connector: ConnectorKind::Amp,
+            connector: ConnectorKind::Codex,
             source_id: root.origin.source_id.clone(),
             path: sibling.clone(),
             discovery_only: false,
@@ -74994,7 +74568,7 @@ c.close()
         );
 
         let pending =
-            watch_lexical_replay_debt_for_root(&storage, ConnectorKind::Amp, &root).unwrap();
+            watch_lexical_replay_debt_for_root(&storage, ConnectorKind::Codex, &root).unwrap();
         assert_eq!(pending.len(), 1, "alias debt found; sibling debt not");
         assert_eq!(
             pending[0].path, alias,
@@ -75002,13 +74576,13 @@ c.close()
         );
         clear_watch_lexical_replay_debt(&storage, &pending[0]).unwrap();
         assert!(
-            watch_lexical_replay_debt_for_root(&storage, ConnectorKind::Amp, &root)
+            watch_lexical_replay_debt_for_root(&storage, ConnectorKind::Codex, &root)
                 .unwrap()
                 .is_empty()
         );
         let sibling_root = ScanRoot::local(sibling.clone());
         assert_eq!(
-            watch_lexical_replay_debt_for_root(&storage, ConnectorKind::Amp, &sibling_root)
+            watch_lexical_replay_debt_for_root(&storage, ConnectorKind::Codex, &sibling_root)
                 .unwrap()
                 .len(),
             1,
@@ -75028,14 +74602,14 @@ c.close()
         let storage = FrankenStorage::open(&tmp.path().join("agent_search.db")).unwrap();
         let root = ScanRoot::local(real.clone());
         let saved = WatchLexicalReplayDebt {
-            connector: ConnectorKind::Amp,
+            connector: ConnectorKind::Codex,
             source_id: root.origin.source_id.clone(),
             path: std::fs::canonicalize(&real).unwrap(),
             discovery_only: false,
         };
         persist_watch_lexical_replay_debt(&storage, &saved).unwrap();
         let pending =
-            watch_lexical_replay_debt_for_root(&storage, ConnectorKind::Amp, &root).unwrap();
+            watch_lexical_replay_debt_for_root(&storage, ConnectorKind::Codex, &root).unwrap();
         assert_eq!(
             pending.len(),
             1,
@@ -75043,7 +74617,7 @@ c.close()
         );
         clear_watch_lexical_replay_debt(&storage, &pending[0]).unwrap();
         assert!(
-            watch_lexical_replay_debt_for_root(&storage, ConnectorKind::Amp, &root)
+            watch_lexical_replay_debt_for_root(&storage, ConnectorKind::Codex, &root)
                 .unwrap()
                 .is_empty()
         );
@@ -75118,7 +74692,7 @@ c.close()
         let parent_root = ScanRoot::local(selected.clone());
         let parent_debt = watch_lexical_replay_debt_for_root(
             &storage.lock().unwrap(),
-            ConnectorKind::Amp,
+            ConnectorKind::Codex,
             &parent_root,
         )
         .unwrap();
@@ -75163,7 +74737,7 @@ c.close()
             assert_eq!(
                 watch_lexical_replay_debt_for_root(
                     &storage.lock().unwrap(),
-                    ConnectorKind::Amp,
+                    ConnectorKind::Codex,
                     &parent_root,
                 )
                 .unwrap()
@@ -75181,7 +74755,7 @@ c.close()
         assert_eq!(
             watch_lexical_replay_debt_for_root(
                 &storage.lock().unwrap(),
-                ConnectorKind::Amp,
+                ConnectorKind::Codex,
                 &parent_root,
             )
             .unwrap()
@@ -75200,7 +74774,7 @@ c.close()
         assert!(
             watch_lexical_replay_debt_for_root(
                 &storage.lock().unwrap(),
-                ConnectorKind::Amp,
+                ConnectorKind::Codex,
                 &parent_root,
             )
             .unwrap()
@@ -75236,23 +74810,22 @@ c.close()
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("cass");
         let selected = tmp.path().join("selected");
-        let amp_file = selected.join("thread-shared.json");
+        let gemini_file = selected.join("chats/session-shared.json");
         let claude_file = selected.join("projects/demo/session.jsonl");
         fs::create_dir_all(&data_dir).unwrap();
+        fs::create_dir_all(gemini_file.parent().unwrap()).unwrap();
         fs::create_dir_all(claude_file.parent().unwrap()).unwrap();
-        // The nested Amp shape is a real provider format; Claude's generic
-        // top-level messages parser must not reinterpret it as a Claude log.
+        // The nested Gemini shape is a real provider format; Claude's generic
+        // JSONL parser ignores .json files.
         fs::write(
-            &amp_file,
+            &gemini_file,
             serde_json::to_vec(&serde_json::json!({
-                "thread": {
-                    "id": "thread-shared",
-                    "messages": [{
-                        "role": "user",
-                        "content": "ampconnectorneedle",
-                        "createdAt": 1700000000100_i64
-                    }]
-                }
+                "sessionId": "session-shared",
+                "messages": [{
+                    "type": "user",
+                    "content": "geminiconnectorneedle",
+                    "timestamp": "2025-11-12T18:31:18.000Z"
+                }]
             }))
             .unwrap(),
         )
@@ -75269,7 +74842,7 @@ c.close()
         opts.watch_once_paths = Some(vec![selected.clone()]);
         let root = ScanRoot::local(selected.clone());
         let roots = [
-            (ConnectorKind::Amp, root.clone()),
+            (ConnectorKind::Gemini, root.clone()),
             (ConnectorKind::Claude, root.clone()),
         ];
         let kinds: HashSet<_> = classify_paths(vec![selected.clone()], &roots, true)
@@ -75278,7 +74851,7 @@ c.close()
             .collect();
         assert_eq!(
             kinds,
-            HashSet::from([ConnectorKind::Amp, ConnectorKind::Claude])
+            HashSet::from([ConnectorKind::Gemini, ConnectorKind::Claude])
         );
         let storage = Mutex::new(FrankenStorage::open(&opts.db_path).unwrap());
         let index_path = index_dir(&data_dir).unwrap();
@@ -75286,23 +74859,36 @@ c.close()
         {
             let _fault = WatchLexicalFaultGuard::set(WatchLexicalTestFault::PublicationAfter(0));
             assert_eq!(
-                run_watch_lexical_selection(&opts, &selected, &storage, &index).unwrap(),
+                reindex_paths(
+                    &opts,
+                    vec![selected.clone()],
+                    &[(ConnectorKind::Gemini, root.clone())],
+                    &Mutex::new(HashMap::new()),
+                    &storage,
+                    &index,
+                    &index_path,
+                    false,
+                )
+                .unwrap(),
                 1
             );
         }
         assert!(index.lock().unwrap().is_none());
-        let amp_rows = watch_lexical_canonical_rows(&storage.lock().unwrap());
-        assert_eq!(amp_rows.len(), 1);
-        assert_eq!(amp_rows[0].3, "ampconnectorneedle");
-        assert!(watch_lexical_search_ids(&index_path, "ampconnectorneedle").is_empty());
+        let gemini_rows = watch_lexical_canonical_rows(&storage.lock().unwrap());
+        assert_eq!(gemini_rows.len(), 1);
+        assert_eq!(gemini_rows[0].3, "geminiconnectorneedle");
+        assert!(watch_lexical_search_ids(&index_path, "geminiconnectorneedle").is_empty());
         // These scans create the final v1 schema, including connector identity;
         // this test does not fabricate or claim migration of older debt rows.
-        let amp_debt =
-            watch_lexical_replay_debt_for_root(&storage.lock().unwrap(), ConnectorKind::Amp, &root)
-                .unwrap();
-        assert_eq!(amp_debt.len(), 1);
-        assert_eq!(amp_debt[0].connector, ConnectorKind::Amp);
-        let amp_metadata = amp_debt[0].metadata().unwrap();
+        let gemini_debt = watch_lexical_replay_debt_for_root(
+            &storage.lock().unwrap(),
+            ConnectorKind::Gemini,
+            &root,
+        )
+        .unwrap();
+        assert_eq!(gemini_debt.len(), 1);
+        assert_eq!(gemini_debt[0].connector, ConnectorKind::Gemini);
+        let gemini_metadata = gemini_debt[0].metadata().unwrap();
         assert!(
             watch_lexical_replay_debt_for_root(
                 &storage.lock().unwrap(),
@@ -75314,7 +74900,7 @@ c.close()
         );
 
         // Configured roots trigger every connector. Fix the order here so a
-        // healthy Claude publication follows Amp's failed publication exactly.
+        // healthy Claude publication follows Gemini's failed publication exactly.
         assert_eq!(
             reindex_paths(
                 &opts,
@@ -75331,7 +74917,7 @@ c.close()
         );
         let canonical_before = watch_lexical_canonical_rows(&storage.lock().unwrap());
         assert_eq!(canonical_before.len(), 2);
-        assert_eq!(canonical_before[0], amp_rows[0]);
+        assert_eq!(canonical_before[0], gemini_rows[0]);
         assert_eq!(canonical_before[1].3, "claudeconnectorneedle");
         let expected_id = |source: &Path, row: &(i64, i64, i64, String)| {
             frankensearch::quill::cass::cass_document_identity(
@@ -75343,18 +74929,25 @@ c.close()
                 row.2 as u64,
             )
         };
-        let amp_ids = BTreeSet::from([expected_id(&amp_file, &canonical_before[0])]);
+        let gemini_ids = BTreeSet::from([expected_id(&gemini_file, &canonical_before[0])]);
         let claude_ids = BTreeSet::from([expected_id(&claude_file, &canonical_before[1])]);
-        assert!(watch_lexical_search_ids(&index_path, "ampconnectorneedle").is_empty());
+        assert!(watch_lexical_search_ids(&index_path, "geminiconnectorneedle").is_empty());
         assert_eq!(
             watch_lexical_search_ids(&index_path, "claudeconnectorneedle"),
             claude_ids
         );
-        let remaining =
-            watch_lexical_replay_debt_for_root(&storage.lock().unwrap(), ConnectorKind::Amp, &root)
-                .unwrap();
-        assert_eq!(remaining.len(), 1, "Claude must not discharge Amp's debt");
-        assert_eq!(remaining[0].metadata().unwrap(), amp_metadata);
+        let remaining = watch_lexical_replay_debt_for_root(
+            &storage.lock().unwrap(),
+            ConnectorKind::Gemini,
+            &root,
+        )
+        .unwrap();
+        assert_eq!(
+            remaining.len(),
+            1,
+            "Claude must not discharge Gemini's debt"
+        );
+        assert_eq!(remaining[0].metadata().unwrap(), gemini_metadata);
         assert!(
             watch_lexical_replay_debt_for_root(
                 &storage.lock().unwrap(),
@@ -75375,7 +74968,7 @@ c.close()
             .unwrap();
         let index = Mutex::new(None);
         let mut file_selection = opts.clone();
-        file_selection.watch_once_paths = Some(vec![amp_file.clone()]);
+        file_selection.watch_once_paths = Some(vec![gemini_file.clone()]);
         assert!(
             !should_skip_unchanged_explicit_watch_once_paths(
                 &file_selection,
@@ -75383,13 +74976,23 @@ c.close()
                 &roots,
             )
             .unwrap(),
-            "the outer unchanged-file fast path must preserve Amp's debt"
+            "the outer unchanged-file fast path must preserve Gemini's debt"
         );
         for _ in 0..2 {
-            // Both packets are unchanged. Only Amp's durable debt permits
+            // Both packets are unchanged. Only Gemini's durable debt permits
             // recovery on the first retry; the second must remain idempotent.
             assert_eq!(
-                run_watch_lexical_selection(&opts, &selected, &storage, &index).unwrap(),
+                reindex_paths(
+                    &opts,
+                    vec![selected.clone()],
+                    &[(ConnectorKind::Gemini, root.clone())],
+                    &Mutex::new(HashMap::new()),
+                    &storage,
+                    &index,
+                    &index_path,
+                    false,
+                )
+                .unwrap(),
                 1
             );
             assert_eq!(
@@ -75397,14 +75000,14 @@ c.close()
                 canonical_before
             );
             assert_eq!(
-                watch_lexical_search_ids(&index_path, "ampconnectorneedle"),
-                amp_ids
+                watch_lexical_search_ids(&index_path, "geminiconnectorneedle"),
+                gemini_ids
             );
             assert_eq!(
                 watch_lexical_search_ids(&index_path, "claudeconnectorneedle"),
                 claude_ids
             );
-            for kind in [ConnectorKind::Amp, ConnectorKind::Claude] {
+            for kind in [ConnectorKind::Gemini, ConnectorKind::Claude] {
                 assert!(
                     watch_lexical_replay_debt_for_root(&storage.lock().unwrap(), kind, &root)
                         .unwrap()
@@ -75424,13 +75027,13 @@ c.close()
     fn watch_lexical_oom_debt_write_failure_precedes_canonical_mutation() {
         let tmp = TempDir::new().unwrap();
         let opts = watch_lexical_options(tmp.path());
-        let source = tmp.path().join("amp/thread-debt-write.json");
+        let source = tmp.path().join("codex/rollout-debt-write.jsonl");
         write_watch_lexical_source(&source, "thread-debt-write", "debtwriteneedle");
         let storage = Mutex::new(FrankenStorage::open(&opts.db_path).unwrap());
         let index_path = index_dir(tmp.path()).unwrap();
         let index = Mutex::new(Some(TantivyIndex::open_or_create(&index_path).unwrap()));
-        let prior_root = ScanRoot::local(tmp.path().join("prior/amp"));
-        let prior_debt = WatchLexicalReplayDebt::for_root(ConnectorKind::Amp, &prior_root);
+        let prior_root = ScanRoot::local(tmp.path().join("prior/codex"));
+        let prior_debt = WatchLexicalReplayDebt::for_root(ConnectorKind::Codex, &prior_root);
         persist_watch_lexical_replay_debt(&storage.lock().unwrap(), &prior_debt).unwrap();
         let mut broad_pending = LexicalRebuildState::new(
             deferred_lexical_rebuild_db_state(&opts.db_path, 0),
@@ -75457,7 +75060,7 @@ c.close()
         assert!(watch_lexical_search_ids(&index_path, "debtwriteneedle").is_empty());
         let prior_after = watch_lexical_replay_debt_for_root(
             &storage.lock().unwrap(),
-            ConnectorKind::Amp,
+            ConnectorKind::Codex,
             &prior_root,
         )
         .unwrap();
@@ -75478,16 +75081,16 @@ c.close()
         let _active_skip_reset = ActiveSessionSkipReset;
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("active-source-skip");
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
-        let amp_file = amp_dir.join("thread-active-source.json");
-        std::fs::write(
-            &amp_file,
-            r#"{"id":"thread-active-source","messages":[{"role":"user","text":"not ready yet","createdAt":1700000000100}]}"#,
-        )
-        .unwrap();
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let codex_file = codex_dir.join("rollout-active-source.jsonl");
+        write_watch_codex_messages(
+            &codex_file,
+            "thread-active-source",
+            &[("user", "not ready yet", 1_700_000_000_100)],
+        );
 
-        let active_paths = std::env::join_paths([amp_file.as_os_str()]).unwrap();
+        let active_paths = std::env::join_paths([codex_file.as_os_str()]).unwrap();
         let active_paths = active_paths.to_string_lossy().to_string();
         let _active_guard = set_env("CASS_TEST_ACTIVE_SESSION_SOURCE_PATHS", &active_paths);
 
@@ -75501,7 +75104,7 @@ c.close()
             build_hnsw: false,
             embedder: "fastembed".to_string(),
             progress: None,
-            watch_once_paths: Some(vec![amp_file.clone()]),
+            watch_once_paths: Some(vec![codex_file.clone()]),
             watch_interval_secs: 30,
         };
 
@@ -75512,11 +75115,11 @@ c.close()
         let state = std::sync::Mutex::new(std::collections::HashMap::new());
         let storage = std::sync::Mutex::new(storage);
         let t_index = std::sync::Mutex::new(Some(t_index));
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_file.clone()))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_file.clone()))];
 
         let indexed = reindex_paths(
             &opts,
-            vec![amp_file.clone()],
+            vec![codex_file.clone()],
             &roots,
             &state,
             &storage,
@@ -75571,14 +75174,14 @@ c.close()
         let _active_skip_reset = ActiveSessionSkipReset;
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("recent-active-source-skip");
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
-        let amp_file = amp_dir.join("thread-recent-active-source.json");
-        std::fs::write(
-            &amp_file,
-            r#"{"id":"thread-recent-active-source","messages":[{"role":"user","text":"still streaming","createdAt":1700000000100}]}"#,
-        )
-        .unwrap();
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let codex_file = codex_dir.join("rollout-recent-active-source.jsonl");
+        write_watch_codex_messages(
+            &codex_file,
+            "thread-recent-active-source",
+            &[("user", "still streaming", 1_700_000_000_100)],
+        );
 
         let _window_guard = set_env("CASS_ACTIVE_SESSION_RECENT_WRITE_WINDOW_SECS", "3600");
         let opts = super::IndexOptions {
@@ -75602,11 +75205,11 @@ c.close()
         let state = std::sync::Mutex::new(std::collections::HashMap::new());
         let storage = std::sync::Mutex::new(storage);
         let t_index = std::sync::Mutex::new(Some(t_index));
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_file.clone()))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_file.clone()))];
 
         let indexed = reindex_paths(
             &opts,
-            vec![amp_file.clone()],
+            vec![codex_file.clone()],
             &roots,
             &state,
             &storage,
@@ -76010,11 +75613,11 @@ c.close()
         // the active-source filter.
         let _window_guard = set_env("CASS_ACTIVE_SESSION_RECENT_WRITE_WINDOW_SECS", "0");
 
-        let data_dir = xdg.join("amp");
+        let data_dir = xdg.join("codex");
         std::fs::create_dir_all(&data_dir).unwrap();
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
-        let amp_file = amp_dir.join("thread-semantic.json");
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let codex_file = codex_dir.join("rollout-semantic.jsonl");
         let now_u128 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -76023,21 +75626,11 @@ c.close()
             .unwrap_or(i64::MAX)
             .saturating_add(10_000);
 
-        std::fs::write(
-            &amp_file,
-            format!(
-                r#"{{
-  "id": "thread-semantic",
-  "title": "Amp semantic delta test",
-  "messages": [
-    {{"role":"user","text":"hi","createdAt":{base_ts}}},
-    {{"role":"assistant","text":"hello","createdAt":{assistant_ts}}}
-  ]
-}}"#,
-                assistant_ts = base_ts + 100,
-            ),
-        )
-        .unwrap();
+        write_watch_codex_messages(
+            &codex_file,
+            "thread-semantic",
+            &[("user", "hi", base_ts), ("assistant", "hello", base_ts + 100)],
+        );
 
         let opts = super::IndexOptions {
             full: false,
@@ -76059,12 +75652,12 @@ c.close()
         let state = std::sync::Mutex::new(std::collections::HashMap::new());
         let storage = std::sync::Mutex::new(storage);
         let t_index = std::sync::Mutex::new(Some(t_index));
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_dir.clone()))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_dir.clone()))];
 
         let mut first_delta = WatchSemanticDelta::default();
         let indexed = reindex_paths_with_semantic_delta(
             &opts,
-            vec![amp_file.clone()],
+            vec![codex_file.clone()],
             &roots,
             &state,
             &storage,
@@ -76085,28 +75678,20 @@ c.close()
         assert!(first_delta.max_message_id.is_some());
 
         std::thread::sleep(Duration::from_millis(25));
-        std::fs::write(
-            &amp_file,
-            format!(
-                r#"{{
-  "id": "thread-semantic",
-  "title": "Amp semantic delta test",
-  "messages": [
-    {{"role":"user","text":"hi","createdAt":{base_ts}}},
-    {{"role":"assistant","text":"hello","createdAt":{assistant_ts}}},
-    {{"role":"assistant","text":"followup","createdAt":{followup_ts}}}
-  ]
-}}"#,
-                assistant_ts = base_ts + 100,
-                followup_ts = base_ts + 200,
-            ),
-        )
-        .unwrap();
+        write_watch_codex_messages(
+            &codex_file,
+            "thread-semantic",
+            &[
+                ("user", "hi", base_ts),
+                ("assistant", "hello", base_ts + 100),
+                ("assistant", "followup", base_ts + 200),
+            ],
+        );
 
         let mut second_delta = WatchSemanticDelta::default();
         let indexed = reindex_paths_with_semantic_delta(
             &opts,
-            vec![amp_file.clone()],
+            vec![codex_file.clone()],
             &roots,
             &state,
             &storage,
@@ -76143,11 +75728,11 @@ c.close()
         unsafe { std::env::set_var("XDG_DATA_HOME", &xdg) };
 
         // Use xdg directly (not dirs::data_dir() which doesn't respect XDG_DATA_HOME on macOS)
-        let data_dir = xdg.join("amp");
+        let data_dir = xdg.join("codex");
         std::fs::create_dir_all(&data_dir).unwrap();
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
-        let amp_file = amp_dir.join("thread-window.json");
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let codex_file = codex_dir.join("rollout-window.jsonl");
         let now_u128 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -76155,11 +75740,7 @@ c.close()
         let now = i64::try_from(now_u128)
             .unwrap_or(i64::MAX)
             .saturating_add(10_000);
-        std::fs::write(
-            &amp_file,
-            format!(r#"{{"id":"tw","messages":[{{"role":"user","text":"p","createdAt":{now}}}]}}"#),
-        )
-        .unwrap();
+        write_watch_codex_messages(&codex_file, "tw", &[("user", "p", now)]);
 
         let opts = super::IndexOptions {
             full: false,
@@ -76179,15 +75760,15 @@ c.close()
         let index_path = index_dir(&opts.data_dir).unwrap();
         let t_index = TantivyIndex::open_or_create(&index_path).unwrap();
         let mut initial = HashMap::new();
-        initial.insert(ConnectorKind::Amp, i64::MAX / 4);
+        initial.insert(ConnectorKind::Codex, i64::MAX / 4);
         let state = Mutex::new(initial);
         let storage = Mutex::new(storage);
         let t_index = Mutex::new(Some(t_index));
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_dir))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_dir))];
 
         let indexed = reindex_paths(
             &opts,
-            vec![amp_file],
+            vec![codex_file],
             &roots,
             &state,
             &storage,
@@ -76218,13 +75799,13 @@ c.close()
         unsafe { std::env::set_var("XDG_DATA_HOME", &xdg) };
 
         // Use xdg directly (not dirs::data_dir() which doesn't respect XDG_DATA_HOME on macOS)
-        let data_dir = xdg.join("amp");
+        let data_dir = xdg.join("codex");
         std::fs::create_dir_all(&data_dir).unwrap();
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
-        let amp_file = amp_dir.join("thread-zero.json");
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let codex_file = codex_dir.join("rollout-zero.jsonl");
         // Intentionally malformed payload so scan yields zero conversations.
-        std::fs::write(&amp_file, "not valid json").unwrap();
+        std::fs::write(&codex_file, "not valid json").unwrap();
 
         let opts = super::IndexOptions {
             full: false,
@@ -76243,15 +75824,15 @@ c.close()
         let storage = FrankenStorage::open(&opts.db_path).unwrap();
         let index_path = index_dir(&opts.data_dir).unwrap();
         let mut initial = HashMap::new();
-        initial.insert(ConnectorKind::Amp, 10_000);
+        initial.insert(ConnectorKind::Codex, 10_000);
         let state = Mutex::new(initial);
         let storage = Mutex::new(storage);
         let t_index = Mutex::new(None);
-        let roots = vec![(ConnectorKind::Amp, ScanRoot::local(amp_dir))];
+        let roots = vec![(ConnectorKind::Codex, ScanRoot::local(codex_dir))];
 
         let indexed = reindex_paths(
             &opts,
-            vec![amp_file],
+            vec![codex_file],
             &roots,
             &state,
             &storage,
@@ -76265,7 +75846,7 @@ c.close()
             "fixture should produce no indexed conversations"
         );
         assert_eq!(
-            state.lock().unwrap().get(&ConnectorKind::Amp),
+            state.lock().unwrap().get(&ConnectorKind::Codex),
             Some(&10_000)
         );
         // The storage-side last_indexed_at and Tantivy writer should remain
@@ -76300,15 +75881,11 @@ c.close()
 
         // Prepare amp fixture using temp directory directly (not dirs::data_dir()
         // which doesn't respect XDG_DATA_HOME on macOS)
-        let data_dir = xdg.join("amp");
+        let data_dir = xdg.join("codex");
         std::fs::create_dir_all(&data_dir).unwrap();
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
-        let amp_file = amp_dir.join("thread-progress.json");
-        // Use a timestamp well in the future to avoid race with file mtime.
-        // The since_ts filter compares message.createdAt > file_mtime - 1, so if
-        // there's any delay between capturing 'now' and writing the file, the message
-        // could be filtered out. Adding 10s buffer ensures the message is always included.
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let codex_file = codex_dir.join("rollout-progress.jsonl");
         let now_u128 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -76316,11 +75893,7 @@ c.close()
         let now = i64::try_from(now_u128)
             .unwrap_or(i64::MAX)
             .saturating_add(10_000);
-        std::fs::write(
-            &amp_file,
-            format!(r#"{{"id":"tp","messages":[{{"role":"user","text":"p","createdAt":{now}}}]}}"#),
-        )
-        .unwrap();
+        write_watch_codex_messages(&codex_file, "tp", &[("user", "p", now)]);
 
         let progress = Arc::new(super::IndexingProgress::default());
         let opts = super::IndexOptions {
@@ -76346,8 +75919,8 @@ c.close()
 
         reindex_paths(
             &opts,
-            vec![amp_file],
-            &[(ConnectorKind::Amp, ScanRoot::local(amp_dir))],
+            vec![codex_file],
+            &[(ConnectorKind::Codex, ScanRoot::local(codex_dir))],
             &state,
             &storage,
             &t_index,
@@ -76383,25 +75956,21 @@ c.close()
         let prev = dotenvy::var("XDG_DATA_HOME").ok();
         unsafe { std::env::set_var("XDG_DATA_HOME", &xdg) };
 
-        let data_dir = xdg.join("amp");
+        let data_dir = xdg.join("codex");
         std::fs::create_dir_all(&data_dir).unwrap();
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
-        let amp_file = amp_dir.join("thread-old.json");
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let codex_file = codex_dir.join("rollout-old.jsonl");
 
         // Intentionally ancient timestamp relative to the current file mtime.
-        std::fs::write(
-            &amp_file,
-            r#"{"id":"old","messages":[{"role":"user","text":"p","createdAt":1000}]}"#,
-        )
-        .unwrap();
+        write_watch_codex_messages(&codex_file, "old", &[("user", "p", 1_000)]);
 
         let progress = Arc::new(IndexingProgress::default());
         let opts = super::IndexOptions {
             full: false,
             watch: false,
             force_rebuild: false,
-            watch_once_paths: Some(vec![amp_file.clone()]),
+            watch_once_paths: Some(vec![codex_file.clone()]),
             db_path: data_dir.join("db.sqlite"),
             data_dir: data_dir.clone(),
             semantic: false,
@@ -76415,15 +75984,15 @@ c.close()
         let index_path = index_dir(&opts.data_dir).unwrap();
         let t_index = TantivyIndex::open_or_create(&index_path).unwrap();
         let mut initial = HashMap::new();
-        initial.insert(ConnectorKind::Amp, i64::MAX / 4);
+        initial.insert(ConnectorKind::Codex, i64::MAX / 4);
         let state = Mutex::new(initial);
         let storage = Mutex::new(storage);
         let t_index = Mutex::new(Some(t_index));
 
         let indexed = reindex_paths(
             &opts,
-            vec![amp_file],
-            &[(ConnectorKind::Amp, ScanRoot::local(amp_dir))],
+            vec![codex_file],
+            &[(ConnectorKind::Codex, ScanRoot::local(codex_dir))],
             &state,
             &storage,
             &t_index,
@@ -76441,7 +76010,7 @@ c.close()
             assert_eq!(stats.total_conversations, 1);
             assert_eq!(stats.total_messages, 1);
             assert_eq!(stats.connectors.len(), 1);
-            assert_eq!(stats.connectors[0].name, "amp");
+            assert_eq!(stats.connectors[0].name, "codex");
             assert_eq!(stats.connectors[0].conversations, 1);
             assert_eq!(stats.connectors[0].messages, 1);
         }
@@ -76463,14 +76032,14 @@ c.close()
         let agent_id = storage
             .ensure_agent(&Agent {
                 id: None,
-                slug: "openclaw".into(),
-                name: "OpenClaw".into(),
+                slug: "devin".into(),
+                name: "Devin".into(),
                 version: None,
                 kind: AgentKind::Cli,
             })
             .unwrap();
         let workspace_id = storage.ensure_workspace(tmp.path(), None).unwrap();
-        let source = tmp.path().join("openclaw-agent.sqlite");
+        let source = tmp.path().join("devin.db");
         std::fs::write(&source, b"main database").unwrap();
         storage
             .raw()
@@ -76502,7 +76071,7 @@ c.close()
         let unchanged = || {
             explicit_watch_once_root_unchanged_after_last_index(
                 &storage,
-                ConnectorKind::OpenClaw,
+                ConnectorKind::Devin,
                 &root,
             )
             .unwrap()
@@ -76541,22 +76110,22 @@ c.close()
         let prev = dotenvy::var("XDG_DATA_HOME").ok();
         unsafe { std::env::set_var("XDG_DATA_HOME", &xdg) };
 
-        let data_dir = xdg.join("amp");
+        let data_dir = xdg.join("codex");
         std::fs::create_dir_all(&data_dir).unwrap();
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
-        let amp_file = amp_dir.join("thread-unchanged.json");
-        std::fs::write(
-            &amp_file,
-            r#"{"id":"unchanged","messages":[{"role":"user","text":"p","createdAt":1700000000100}]}"#,
-        )
-        .unwrap();
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let codex_file = codex_dir.join("rollout-unchanged.jsonl");
+        write_watch_codex_messages(
+            &codex_file,
+            "unchanged",
+            &[("user", "p", 1_700_000_000_100)],
+        );
 
         let opts = super::IndexOptions {
             full: false,
             watch: false,
             force_rebuild: false,
-            watch_once_paths: Some(vec![amp_file.clone()]),
+            watch_once_paths: Some(vec![codex_file.clone()]),
             db_path: data_dir.join("db.sqlite"),
             data_dir: data_dir.clone(),
             semantic: false,
@@ -76575,8 +76144,8 @@ c.close()
 
         let first = reindex_paths(
             &opts,
-            vec![amp_file.clone()],
-            &[(ConnectorKind::Amp, ScanRoot::local(amp_dir.clone()))],
+            vec![codex_file.clone()],
+            &[(ConnectorKind::Codex, ScanRoot::local(codex_dir.clone()))],
             &state,
             &storage,
             &t_index,
@@ -76593,7 +76162,7 @@ c.close()
             should_skip_unchanged_explicit_watch_once_paths(
                 &opts,
                 &guard,
-                &[(ConnectorKind::Amp, ScanRoot::local(amp_dir.clone()))],
+                &[(ConnectorKind::Codex, ScanRoot::local(codex_dir.clone()))],
             )
             .unwrap()
         };
@@ -76613,7 +76182,7 @@ c.close()
             should_skip_unchanged_explicit_watch_once_paths(
                 &opts,
                 &guard,
-                &[(ConnectorKind::Amp, ScanRoot::local(amp_dir.clone()))],
+                &[(ConnectorKind::Codex, ScanRoot::local(codex_dir.clone()))],
             )
             .unwrap()
         };
@@ -76670,8 +76239,8 @@ c.close()
 
         let second = reindex_paths(
             &opts,
-            vec![amp_file],
-            &[(ConnectorKind::Amp, ScanRoot::local(amp_dir))],
+            vec![codex_file],
+            &[(ConnectorKind::Codex, ScanRoot::local(codex_dir))],
             &state,
             &storage,
             &t_index,
@@ -76700,27 +76269,27 @@ c.close()
         let prev = dotenvy::var("XDG_DATA_HOME").ok();
         unsafe { std::env::set_var("XDG_DATA_HOME", &xdg) };
 
-        let data_dir = xdg.join("amp");
+        let data_dir = xdg.join("codex");
         std::fs::create_dir_all(&data_dir).unwrap();
-        let amp_dir = data_dir.join("amp");
-        std::fs::create_dir_all(&amp_dir).unwrap();
-        let amp_file = amp_dir.join("thread-watch-once.json");
-        std::fs::write(
-            &amp_file,
-            r#"{"id":"watch-once","messages":[{"role":"user","text":"p","createdAt":1700000000100}]}"#,
-        )
-        .unwrap();
+        let codex_dir = data_dir.join("codex/sessions");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let codex_file = codex_dir.join("rollout-watch-once.jsonl");
+        write_watch_codex_messages(
+            &codex_file,
+            "watch-once",
+            &[("user", "p", 1_700_000_000_100)],
+        );
 
         let persisted_ts = 123_456_i64;
         let mut persisted_state = HashMap::new();
-        persisted_state.insert(ConnectorKind::Amp, persisted_ts);
+        persisted_state.insert(ConnectorKind::Codex, persisted_ts);
         save_watch_state(&data_dir, &persisted_state).unwrap();
 
         let opts = super::IndexOptions {
             full: false,
             watch: false,
             force_rebuild: false,
-            watch_once_paths: Some(vec![amp_file.clone()]),
+            watch_once_paths: Some(vec![codex_file.clone()]),
             db_path: data_dir.join("db.sqlite"),
             data_dir: data_dir.clone(),
             semantic: false,
@@ -76739,8 +76308,8 @@ c.close()
 
         let indexed = reindex_paths(
             &opts,
-            vec![amp_file],
-            &[(ConnectorKind::Amp, ScanRoot::local(amp_dir))],
+            vec![codex_file],
+            &[(ConnectorKind::Codex, ScanRoot::local(codex_dir))],
             &state,
             &storage,
             &t_index,
@@ -76752,13 +76321,13 @@ c.close()
 
         let in_memory = state.lock().unwrap();
         assert_eq!(
-            in_memory.get(&ConnectorKind::Amp).copied(),
+            in_memory.get(&ConnectorKind::Codex).copied(),
             Some(persisted_ts)
         );
         drop(in_memory);
 
         let loaded = load_watch_state(&data_dir);
-        assert_eq!(loaded.get(&ConnectorKind::Amp).copied(), Some(persisted_ts));
+        assert_eq!(loaded.get(&ConnectorKind::Codex).copied(), Some(persisted_ts));
 
         if let Some(prev) = prev {
             unsafe { std::env::set_var("XDG_DATA_HOME", prev) };
@@ -77271,8 +76840,7 @@ c.close()
     fn build_scan_roots_discovers_gh520_mirrored_layouts() {
         use crate::connectors::Connector;
         use franken_agent_detection::connectors::{
-            cursor::CursorConnector, factory::FactoryConnector, gemini::GeminiConnector,
-            prime_agent::PrimeAgentConnector, vibe::VibeConnector,
+            cursor::CursorConnector, gemini::GeminiConnector,
         };
         let _guard = ignore_sources_config();
         let tmp = TempDir::new().unwrap();
@@ -77280,11 +76848,6 @@ c.close()
         std::fs::create_dir_all(&data_dir).unwrap();
         let storage = FrankenStorage::open(&data_dir.join("db.sqlite")).unwrap();
         let cases: Vec<(&str, &str, Box<dyn Connector>)> = vec![
-            (
-                "~/.factory/sessions",
-                "sessions/project/session.jsonl",
-                Box::new(FactoryConnector::new()),
-            ),
             (
                 "~/.config/Cursor/User",
                 "User/globalStorage/state.vscdb",
@@ -77294,16 +76857,6 @@ c.close()
                 "~/.gemini/tmp",
                 "tmp/hash/chats/session-test.json",
                 Box::new(GeminiConnector::new()),
-            ),
-            (
-                "~/.vibe/logs",
-                "logs/session/session-test/messages.jsonl",
-                Box::new(VibeConnector::new()),
-            ),
-            (
-                "~/.prime/agent/sessions",
-                "sessions/session.jsonl",
-                Box::new(PrimeAgentConnector::new()),
             ),
         ];
         for (path, relative, connector) in cases {
@@ -80812,134 +80365,6 @@ c.close()
                 );
             }
         }
-    }
-
-    #[test]
-    #[serial]
-    fn continue_operational_routes_honor_ledger_admission_before_global_cutoff() {
-        use franken_agent_detection::connectors::SourceScanHooks;
-        use std::time::{Duration, UNIX_EPOCH};
-
-        let temp = TempDir::new().unwrap();
-        let file = temp.path().join("old.json");
-        fs::write(
-            &file,
-            serde_json::to_vec(&serde_json::json!({
-                "sessionId": "old",
-                "title": "Continue operational route",
-                "workspaceDirectory": "/synthetic/continue",
-                "history": [{"message": {"role": "user", "content": "retry this question"}}]
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        fs::File::open(&file)
-            .unwrap()
-            .set_modified(UNIX_EPOCH + Duration::from_secs(100))
-            .unwrap();
-        let _paths = unset_env_var("CASS_EXCLUDE_PATHS");
-        let _workspaces = unset_env_var("CASS_EXCLUDE_WORKSPACES");
-        let _sources = ignore_sources_config();
-        let configured_factory = configured_connector_factories()
-            .into_iter()
-            .find(|(name, _)| *name == "continue")
-            .unwrap()
-            .1;
-        let ctx = ScanContext::with_roots(
-            temp.path().join("data"),
-            vec![ScanRoot::local(temp.path().to_path_buf())],
-            Some(200_000),
-        );
-        for connector in [
-            configured_factory(),
-            ConnectorKind::Continue.create_connector(None),
-        ] {
-            let mut admitted = Vec::new();
-            let mut completed = Vec::new();
-            let mut conversations = Vec::new();
-            connector
-                .scan_with_source_boundaries(
-                    &ctx,
-                    &mut SourceScanHooks {
-                        should_scan_source: Some(&mut |source| {
-                            admitted.push(source.clone());
-                            true
-                        }),
-                        on_source_complete: Some(&mut |completion| {
-                            completed.push(completion.source.clone());
-                            Ok(())
-                        }),
-                    },
-                    &mut |conversation| {
-                        conversations.push(conversation);
-                        Ok(())
-                    },
-                )
-                .unwrap();
-            assert_eq!(admitted.len(), 1);
-            assert_eq!(admitted[0].source_path, file);
-            assert_eq!(completed, admitted);
-            assert_eq!(conversations.len(), 1);
-            assert_eq!(conversations[0].external_id.as_deref(), Some("old"));
-            assert_eq!(conversations[0].messages[0].content, "retry this question");
-        }
-        assert_eq!(ctx.since_ts, Some(200_000));
-    }
-
-    #[test]
-    #[serial]
-    fn continue_operational_routes_refuse_incomplete_admitted_snapshots() {
-        use franken_agent_detection::connectors::SourceScanHooks;
-
-        let temp = TempDir::new().unwrap();
-        let invalid = temp.path().join("invalid.json");
-        fs::write(&invalid, b"{invalid").unwrap();
-        let _paths = unset_env_var("CASS_EXCLUDE_PATHS");
-        let _workspaces = unset_env_var("CASS_EXCLUDE_WORKSPACES");
-        let ctx = ScanContext::with_roots(
-            temp.path().join("data"),
-            vec![ScanRoot::local(temp.path().to_path_buf())],
-            None,
-        );
-        let connector = ConnectorKind::Continue.create_connector(None);
-        let error = connector
-            .scan_with_source_boundaries(
-                &ctx,
-                &mut SourceScanHooks {
-                    should_scan_source: Some(&mut |_| true),
-                    on_source_complete: Some(&mut |_| panic!("invalid snapshot completed")),
-                },
-                &mut |_| panic!("invalid snapshot emitted a conversation"),
-            )
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("1 admitted snapshot(s) did not complete")
-        );
-        assert!(error.to_string().contains("invalid.json"));
-        connector
-            .scan_with_source_boundaries(
-                &ctx,
-                &mut SourceScanHooks {
-                    should_scan_source: Some(&mut |_| false),
-                    on_source_complete: Some(&mut |_| panic!("rejected snapshot completed")),
-                },
-                &mut |_| panic!("rejected snapshot emitted a conversation"),
-            )
-            .unwrap();
-        let _excluded = set_env_var("CASS_EXCLUDE_PATHS", invalid.to_string_lossy());
-        connector
-            .scan_with_source_boundaries(
-                &ctx,
-                &mut SourceScanHooks {
-                    should_scan_source: Some(&mut |_| panic!("excluded snapshot admitted")),
-                    on_source_complete: Some(&mut |_| panic!("excluded snapshot completed")),
-                },
-                &mut |_| panic!("excluded snapshot parsed"),
-            )
-            .unwrap();
-        assert_eq!(fs::read(&invalid).unwrap(), b"{invalid");
     }
 
     #[test]

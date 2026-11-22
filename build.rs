@@ -294,27 +294,18 @@ const CONTRACTS: &[DependencyContract] = &[
         // See that repo's LOCAL_FIXES.md. Return to the upstream URL/rev
         // once upstream carries every row there.
         expected_git: "https://github.com/vladmlch/franken_agent_detection",
-        expected_rev: "18e2ffaff55e46f95a522861bd7675112c5da6d6",
+        expected_rev: "2321cc0177131bc388fcc23631fba35dc069cbb1",
         expected_version: "0.3.11",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.
         expected_features: &[
             "chatgpt",
-            "codebuff",
             "codex-zstd",
             "connectors",
-            "copilot-vscdb",
-            "crush",
             "cursor",
             "devin",
-            "goose",
-            "grok-bot",
-            "hermes",
-            "openclaw-sqlite",
             "opencode",
-            "pi-durable",
-            "pi-sqlite",
-            "shelley",
+            "qoder-sqlite",
         ],
         expected_default_features: None,
         repo_rel: "../franken_agent_detection",

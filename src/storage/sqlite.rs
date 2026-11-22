@@ -1,6 +1,6 @@
 //! `SQLite` backend: schema, pragmas, and migrations.
 
-use crate::connectors::omp::{PiFamilyOwner, PiFamilyOwnership};
+use crate::storage::omp_paths::{PiFamilyOwner, PiFamilyOwnership};
 use crate::franken_sync::{
     Connection as FrankenConnection, Row as FrankenRow, SqliteValue,
     compat::{
@@ -10775,9 +10775,9 @@ impl FrankenStorage {
                 // append merges intentionally do not replace conversation
                 // metadata, so recover this authoritative field during the
                 // identity migration itself.
-                if let Some(profile) = crate::connectors::omp::profile_from_session_path(Path::new(
-                    &legacy.source_path,
-                )) {
+                if let Some(profile) = crate::storage::omp_paths::profile_from_session_path(
+                    Path::new(&legacy.source_path),
+                ) {
                     object.insert("profile".into(), serde_json::Value::String(profile));
                 }
                 metadata_updates.push((

@@ -563,43 +563,18 @@ pub struct ConnectorIngestRun {
     diagnostics: Vec<ConnectorIngestDiagnostic>,
     /// The scan context's data dir, for the single-store contexts below.
     scan_data_dir: PathBuf,
-    /// Each discovered Pi durable store as a single-store scan root carrying
-    /// its discovery provenance. [`Self::finish`] asks the connector why a
-    /// store that yielded no conversation was not read.
-    durable_stores: Vec<ScanRoot>,
 }
 
 impl ConnectorIngestRun {
     /// Inspect discovered sources for failure modes that upstream connectors
-    /// otherwise log-and-skip: malformed JSONL, locked Cursor databases,
-    /// encrypted ChatGPT directories unavailable to this scan, and Pi stores
-    /// in formats the Pi connector does not read.
+    /// otherwise log-and-skip: malformed JSONL, locked Cursor databases, and
+    /// encrypted ChatGPT directories unavailable to this scan.
     pub fn begin(
         provider: &str,
         data_dir: &Path,
         ctx: &ScanContext,
         sources: &[DiscoveredSourceFile],
     ) -> Self {
-        let durable_stores = if provider == "pi_durable" {
-            sources
-                .iter()
-                .filter(|source| {
-                    matches!(
-                        source.role,
-                        DiscoveredSourceRole::PrimarySessionLog
-                            | DiscoveredSourceRole::SqliteDatabase
-                    )
-                })
-                .map(|source| {
-                    let mut root = ScanRoot::local(source.source_path.clone());
-                    root.origin = source.origin.clone();
-                    root.platform = source.platform;
-                    root
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
         let mut run = Self {
             provider: provider.to_string(),
             sources: sources
@@ -616,7 +591,6 @@ impl ConnectorIngestRun {
                 .collect(),
             diagnostics: Vec::new(),
             scan_data_dir: ctx.data_dir.clone(),
-            durable_stores,
         };
         for source in sources {
             run.inspect_jsonl(data_dir, &source.source_path);
@@ -626,9 +600,6 @@ impl ConnectorIngestRun {
         }
         if provider == "chatgpt" {
             run.inspect_chatgpt_encrypted_directories(ctx, sources);
-        }
-        if provider == "pi_agent" {
-            run.inspect_unsupported_pi_stores(ctx);
         }
         run
     }
@@ -730,38 +701,6 @@ impl ConnectorIngestRun {
             }
             return;
         }
-        // Codebuff retains bounded typed failures for independently scanned
-        // inputs. Classify EACH cause at its recorded path, not the first cause
-        // at a fallback root. Never parse paths or copy payloads from Display.
-        if self.provider == "codebuff"
-            && crate::connectors::codebuff::CodebuffConnector::for_each_source_failure(
-                error,
-                |path, cause| {
-                    let mut diagnostic =
-                        classify_path(&self.provider, path, connector_scan_failure_kind(cause));
-                    let state = self
-                        .sources
-                        .entry(path.to_path_buf())
-                        .or_insert(ObservedSource {
-                            disposition: SourceIngestDisposition::Discovered,
-                            malformed: false,
-                        });
-                    // An observation can fail after delivery. Do not erase
-                    // content that this run already observed for that source.
-                    if matches!(
-                        state.disposition,
-                        SourceIngestDisposition::Indexed
-                            | SourceIngestDisposition::PartiallyIndexed
-                    ) {
-                        diagnostic.disposition = SourceIngestDisposition::PartiallyIndexed;
-                    }
-                    state.disposition = diagnostic.disposition;
-                    self.diagnostics.push(diagnostic);
-                },
-            )
-        {
-            return;
-        }
         // GH #511: FAD's top message includes the failing path. Classify the
         // cause, so a project called "busy" cannot turn a parse or permission
         // failure into a retryable database lock.
@@ -780,13 +719,9 @@ impl ConnectorIngestRun {
         self.diagnostics.push(diagnostic);
     }
 
-    /// Close the scope. Each Pi durable store that yielded no conversation
-    /// and was not reused is asked once why, so an unsupported schema or an
-    /// unreadable store is reported rather than counted as an empty source.
-    /// Stores that yielded conversations are not read again.
+    /// Close the scope and summarize discovered sources.
     #[must_use]
-    pub fn finish(mut self) -> ConnectorIngestReport {
-        self.inspect_unproductive_durable_stores();
+    pub fn finish(self) -> ConnectorIngestReport {
         let mut summary = ProviderIngestSummary::default();
         for source in self.sources.values() {
             summary.record(source.disposition);
@@ -795,71 +730,6 @@ impl ConnectorIngestRun {
             provider: self.provider,
             summary,
             diagnostics: self.diagnostics,
-        }
-    }
-
-    fn inspect_unproductive_durable_stores(&mut self) {
-        let connector = franken_agent_detection::PiDurableConnector::new();
-        for root in std::mem::take(&mut self.durable_stores) {
-            let unproductive = self
-                .sources
-                .get(&root.path)
-                .is_some_and(|source| source.disposition == SourceIngestDisposition::Discovered);
-            if !unproductive {
-                continue;
-            }
-            let ctx = ScanContext::with_roots(self.scan_data_dir.clone(), vec![root], None);
-            for found in connector.store_diagnostics(&ctx) {
-                let kind = match found.code {
-                    "unsupported_version"
-                    | "sqlite_support_not_compiled"
-                    | "remote_sqlite_unsupported" => IngestFailureKind::UnsupportedStoreFormat,
-                    "unreadable" => IngestFailureKind::UnreadableSource,
-                    // A file that is not a durable store, or a note on a store
-                    // that was read; inspect_jsonl reports torn and malformed
-                    // commit lines itself.
-                    _ => continue,
-                };
-                let diagnostic = classify_path(&self.provider, &found.path, kind)
-                    .with_detail(format!("{}: {}", found.code, found.detail));
-                if let Some(source) = self.sources.get_mut(&found.path) {
-                    source.disposition = diagnostic.disposition;
-                }
-                self.diagnostics.push(diagnostic);
-            }
-        }
-    }
-
-    fn inspect_unsupported_pi_stores(&mut self, ctx: &ScanContext) {
-        for store in
-            crate::connectors::pi_agent::PiAgentConnector::new().unsupported_store_diagnostics(ctx)
-        {
-            let detail = match store.store_format {
-                "session_store_v2" => {
-                    "session_store_v2: Pi Session Store V2 sidecars are not read; a JSONL \
-                     transcript beside one is indexed and may lag it"
-                }
-                "sqlite_sessions" => {
-                    "sqlite_sessions: Pi SQLite sessions under a remote root are not read, \
-                     because a synced database and its WAL are not one snapshot; index them on \
-                     their own host"
-                }
-                other => other,
-            };
-            let diagnostic = classify_path(
-                &self.provider,
-                &store.path,
-                IngestFailureKind::UnsupportedStoreFormat,
-            )
-            .with_detail(detail);
-            self.sources.insert(
-                store.path,
-                ObservedSource {
-                    disposition: diagnostic.disposition,
-                    malformed: false,
-                },
-            );
-            self.diagnostics.push(diagnostic);
         }
     }
 
@@ -1581,23 +1451,6 @@ mod tests {
     }
 
     #[test]
-    fn amp_unicode_future_filename_is_scanned_without_byte_slicing_panic() -> TestResult {
-        let temp = tempdir()?;
-        let threads = temp.path().join("threads");
-        std::fs::create_dir_all(&threads)?;
-        std::fs::write(
-            threads.join("未来-thread-名前.json"),
-            r#"{"id":"future-unicode","messages":[{"role":"user","content":"searchable"}]}"#,
-        )?;
-        let connector = crate::connectors::amp::AmpConnector::new();
-        let ctx = ScanContext::with_roots(threads.clone(), vec![ScanRoot::local(threads)], None);
-        let conversations = connector.scan(&ctx)?;
-        verify_eq!(conversations.len(), 1);
-        verify_eq!(conversations[0].messages[0].content, "searchable");
-        Ok(())
-    }
-
-    #[test]
     fn live_cursor_busy_error_is_retryable_and_not_zero_message_success() -> TestResult {
         let ctx = ScanContext::local_default(PathBuf::from("/tmp"), None);
         let mut run = ConnectorIngestRun::begin("cursor", Path::new("/tmp"), &ctx, &[]);
@@ -1844,101 +1697,6 @@ mod tests {
         Ok(())
     }
 
-    /// A Pi durable JSONL store whose one commit marker declares `format`.
-    fn durable_jsonl_store(
-        dir: &Path,
-        format: i64,
-    ) -> std::io::Result<(ScanRoot, DiscoveredSourceFile)> {
-        std::fs::create_dir_all(dir)?;
-        let main = dir.join("main.jsonl");
-        std::fs::write(
-            &main,
-            format!("{{\"type\":\"commit\",\"format\":{format},\"seq\":1,\"writes\":[]}}\n"),
-        )?;
-        let root = ScanRoot::local(dir.to_path_buf());
-        let source = DiscoveredSourceFile::new(
-            "pi_durable",
-            &root,
-            main,
-            DiscoveredSourceRole::PrimarySessionLog,
-            true,
-        );
-        Ok((root, source))
-    }
-
-    #[test]
-    fn a_durable_store_in_an_unsupported_format_is_reported_not_counted_empty() -> TestResult {
-        let temp = tempdir()?;
-        let (root, source) = durable_jsonl_store(temp.path(), 2)?;
-        let main = source.source_path.display().to_string();
-        let ctx = ScanContext::with_roots(temp.path().to_path_buf(), vec![root], None);
-        let report = ConnectorIngestRun::begin("pi_durable", temp.path(), &ctx, &[source]).finish();
-        verify_eq!(report.diagnostics.len(), 1);
-        let diagnostic = &report.diagnostics[0];
-        verify_eq!(
-            diagnostic.failure_kind,
-            IngestFailureKind::UnsupportedStoreFormat
-        );
-        verify_eq!(diagnostic.provider, "pi_durable");
-        verify_eq!(diagnostic.source_path, main);
-        let detail = diagnostic.detail.as_deref().unwrap_or_default();
-        verify!(
-            detail.starts_with("unsupported_version: ") && detail.contains("format"),
-            "{detail}"
-        );
-        verify_eq!(report.summary.skipped, 1);
-        verify_eq!(report.summary.discovered, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn a_readable_durable_store_without_conversations_is_not_reported() -> TestResult {
-        let temp = tempdir()?;
-        let (root, source) = durable_jsonl_store(temp.path(), 1)?;
-        let ctx = ScanContext::with_roots(temp.path().to_path_buf(), vec![root], None);
-        let report = ConnectorIngestRun::begin("pi_durable", temp.path(), &ctx, &[source]).finish();
-        verify!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        verify_eq!(report.summary.discovered, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn reused_and_productive_durable_stores_are_not_read_again() -> TestResult {
-        // Both stores would be reported if read: their format is unsupported.
-        let temp = tempdir()?;
-        let (reused_root, reused) = durable_jsonl_store(&temp.path().join("reused"), 2)?;
-        let (productive_root, productive) =
-            durable_jsonl_store(&temp.path().join("productive"), 2)?;
-        let ctx = ScanContext::with_roots(
-            temp.path().to_path_buf(),
-            vec![reused_root, productive_root],
-            None,
-        );
-        let mut run = ConnectorIngestRun::begin(
-            "pi_durable",
-            temp.path(),
-            &ctx,
-            &[reused.clone(), productive.clone()],
-        );
-        run.observe_reused_sources([reused.source_path]);
-        let mut conversation = NormalizedConversation {
-            agent_slug: "pi_durable".into(),
-            external_id: Some("lead".into()),
-            title: None,
-            workspace: None,
-            source_path: productive.source_path,
-            started_at: None,
-            ended_at: None,
-            metadata: json!({}),
-            messages: Vec::new(),
-        };
-        run.observe_conversation(&mut conversation);
-        let report = run.finish();
-        verify!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
-        verify_eq!(report.summary.indexed, 2);
-        Ok(())
-    }
-
     #[test]
     fn a_reused_source_missing_from_the_discovery_inventory_counts_as_indexed() -> TestResult {
         // Self-contained connectors (Claude Code, Codex) reuse ledger rows
@@ -1952,70 +1710,6 @@ mod tests {
         verify!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         verify_eq!(report.summary.indexed, 1);
         verify_eq!(report.summary.discovered, 0);
-        Ok(())
-    }
-
-    fn v2_sidecar(agent_dir: &Path) -> std::io::Result<PathBuf> {
-        // One component at a time: the diagnostic's path comes from a walk,
-        // which spells Windows separators as `\`.
-        let sidecar = agent_dir
-            .join("sessions")
-            .join("--work--")
-            .join("2026-01-01T00-00-00-000Z_0123abcd.v2");
-        std::fs::create_dir_all(&sidecar)?;
-        std::fs::write(sidecar.join("manifest.json"), "{}")?;
-        Ok(sidecar)
-    }
-
-    #[test]
-    fn a_pi_session_store_v2_sidecar_is_reported() -> TestResult {
-        let temp = tempdir()?;
-        let agent_dir = temp.path().join("copied-home/.pi/agent");
-        let sidecar = v2_sidecar(&agent_dir)?;
-        let ctx = ScanContext::with_roots(
-            temp.path().to_path_buf(),
-            vec![ScanRoot::local(agent_dir)],
-            None,
-        );
-        let report = ConnectorIngestRun::begin("pi_agent", temp.path(), &ctx, &[]).finish();
-        verify_eq!(report.diagnostics.len(), 1, "{:?}", report.diagnostics);
-        let diagnostic = &report.diagnostics[0];
-        verify_eq!(
-            diagnostic.failure_kind,
-            IngestFailureKind::UnsupportedStoreFormat
-        );
-        verify_eq!(diagnostic.source_path, sidecar.display().to_string());
-        verify!(
-            diagnostic
-                .detail
-                .as_deref()
-                .is_some_and(|detail| detail.starts_with("session_store_v2: ")),
-            "{:?}",
-            diagnostic.detail
-        );
-        verify_eq!(report.summary.skipped, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn a_v2_sidecar_in_an_omp_store_is_not_reported_as_pi() -> TestResult {
-        let temp = tempdir()?;
-        let agent_dir = temp.path().join("copied-home/.omp/agent");
-        v2_sidecar(&agent_dir)?;
-        let ctx = ScanContext::with_roots(
-            temp.path().to_path_buf(),
-            vec![ScanRoot::local(agent_dir)],
-            None,
-        );
-        // Pi's own permissive detection does claim it.
-        verify_eq!(
-            franken_agent_detection::PiAgentConnector::new()
-                .unsupported_store_diagnostics(&ctx)
-                .len(),
-            1
-        );
-        let report = ConnectorIngestRun::begin("pi_agent", temp.path(), &ctx, &[]).finish();
-        verify!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
         Ok(())
     }
 
