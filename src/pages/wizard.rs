@@ -1615,38 +1615,6 @@ mod tests {
     }
 
     #[test]
-    fn wizard_state_security_configuration() {
-        let state = WizardState {
-            password: Some("test_password".to_string()),
-            recovery_secret: Some(vec![1, 2, 3, 4]),
-            generate_recovery: false,
-            generate_qr: true,
-            ..Default::default()
-        };
-
-        assert_eq!(state.password, Some("test_password".to_string()));
-        assert_eq!(state.recovery_secret, Some(vec![1, 2, 3, 4]));
-        assert!(!state.generate_recovery);
-        assert!(state.generate_qr);
-    }
-
-    #[test]
-    fn wizard_state_debug_redacts_sensitive_fields() {
-        let state = WizardState {
-            password: Some("test_password".to_string()),
-            recovery_secret: Some(vec![1, 2, 3, 4]),
-            ..Default::default()
-        };
-
-        let debug = format!("{state:?}");
-        assert!(debug.contains("password"));
-        assert!(debug.contains("recovery_secret"));
-        assert!(debug.contains("[REDACTED]"));
-        assert!(!debug.contains("test_password"));
-        assert!(!debug.contains("[1, 2, 3, 4]"));
-    }
-
-    #[test]
     fn sample_title_truncation_is_utf8_boundary_safe() {
         let ascii = "abcdefghijklmnopqrstuvwxyz0123456789";
         assert_eq!(
@@ -1659,15 +1627,6 @@ mod tests {
         assert!(truncated.ends_with("..."));
         assert!(truncated.is_char_boundary(truncated.len()));
         assert!(truncated.len() <= 30);
-    }
-
-    #[test]
-    fn wizard_state_password_entropy() {
-        let mut state = WizardState::default();
-        assert_eq!(state.password_entropy_bits, 0.0);
-
-        state.password_entropy_bits = 64.5;
-        assert!((state.password_entropy_bits - 64.5).abs() < f64::EPSILON);
     }
 
     #[test]

@@ -290,8 +290,7 @@ Version: CASS v{version}
 mod tests {
     use super::*;
     use crate::pages::summary::{
-        AgentSummaryItem, DateRange, EncryptionSummary, KeySlotSummary, PrePublishSummary,
-        ScanReportSummary, WorkspaceSummaryItem,
+        AgentSummaryItem, DateRange, PrePublishSummary, ScanReportSummary, WorkspaceSummaryItem,
     };
 
     macro_rules! assert_doc_contains {

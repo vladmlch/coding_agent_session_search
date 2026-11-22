@@ -39,6 +39,7 @@
 //! ```
 
 #[cfg(unix)]
+#[cfg_attr(all(not(test), not(target_os = "macos")), allow(dead_code))]
 mod child_output;
 
 pub mod config;
@@ -132,6 +133,7 @@ fn finish_child_pipe(
 }
 
 #[cfg(unix)]
+#[cfg_attr(all(not(test), not(target_os = "macos")), allow(dead_code))]
 pub(crate) fn configure_child_process_group(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
 
@@ -142,6 +144,7 @@ pub(crate) fn configure_child_process_group(cmd: &mut Command) {
 pub(crate) fn configure_child_process_group(_cmd: &mut Command) {}
 
 #[cfg(unix)]
+#[cfg_attr(all(not(test), not(target_os = "macos")), allow(dead_code))]
 #[allow(unsafe_code)]
 fn kill_child_process_group(pid: u32) {
     let Ok(pid) = i32::try_from(pid) else {
@@ -173,6 +176,7 @@ fn kill_child_process_group(_pid: u32) {}
 /// and cancellation cannot leave background reader threads behind. Process
 /// teardown/reaping itself can exceed the budget if the OS stalls.
 #[cfg(unix)]
+#[cfg_attr(all(not(test), not(target_os = "macos")), allow(dead_code))]
 pub(crate) fn wait_for_child_output_with_limit(
     child: Child,
     timeout: Duration,

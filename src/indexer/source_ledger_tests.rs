@@ -114,6 +114,50 @@ fn gh538_source_ledger_identity_rejects_unencodable_paths_without_panicking() {
     assert_eq!(fs::read(&ordinary).unwrap(), b"retained ordinary source");
 }
 
+fn collect_ledger_scan(
+    connector: &dyn Connector,
+    ctx: &ScanContext,
+    config: &StreamingProducerConfig,
+    name: &'static str,
+) -> Result<(
+    Vec<NormalizedConversation>,
+    Vec<crate::storage::sqlite::SourceIngestLedgerEntry>,
+)> {
+    let limiter = Arc::clone(&config.flow_limiter);
+    let (tx, rx) = bounded(8);
+    let mut sender = StreamingBatchSender::new(&tx, Arc::clone(&limiter), name, true);
+    scan_with_durable_source_boundaries(connector, ctx, config, &mut sender, |conversation| {
+        Ok(Some(conversation))
+    })?;
+    sender.flush()?;
+    let mut conversations = Vec::new();
+    let mut entries = Vec::new();
+    for message in rx.try_iter() {
+        match message {
+            IndexMessage::Batch {
+                conversations: batch,
+                byte_reservation,
+                ..
+            } => {
+                conversations.extend(batch);
+                limiter.release(byte_reservation);
+            }
+            IndexMessage::SourceComplete {
+                conversations: batch,
+                completion,
+                byte_reservation,
+                ..
+            } => {
+                conversations.extend(batch);
+                entries.push(completion);
+                limiter.release(byte_reservation);
+            }
+            _ => panic!("unexpected source producer message"),
+        }
+    }
+    Ok((conversations, entries))
+}
+
 #[cfg(unix)]
 #[test]
 fn gh538_unencodable_ledger_identity_keeps_real_source_parsing_without_ack() -> Result<()> {

@@ -2180,69 +2180,6 @@ fn ensure_regular_copy_source_under_root(
     Ok(())
 }
 
-fn ensure_regular_copy_directory_under_root(
-    src_root: &Path,
-    src_dir: &Path,
-    label: &str,
-) -> Result<()> {
-    let metadata = fs::symlink_metadata(src_dir)
-        .with_context(|| format!("{label} not found: {}", src_dir.display()))?;
-    let file_type = metadata.file_type();
-    if file_type.is_symlink() {
-        bail!("{label} must not be a symlink: {}", src_dir.display());
-    }
-    if !file_type.is_dir() {
-        bail!("{label} must be a directory: {}", src_dir.display());
-    }
-
-    let canonical_root = src_root.canonicalize().with_context(|| {
-        format!(
-            "Failed to resolve bundle source directory {}",
-            src_root.display()
-        )
-    })?;
-    let canonical_source = src_dir.canonicalize().with_context(|| {
-        format!(
-            "Failed to resolve {label} source directory {}",
-            src_dir.display()
-        )
-    })?;
-    if !canonical_source.starts_with(&canonical_root) {
-        bail!(
-            "{label} resolves outside bundle source directory: {}",
-            src_dir.display()
-        );
-    }
-
-    Ok(())
-}
-
-/// Copy encrypted attachment blobs from source to destination
-fn copy_blobs_directory(src_root: &Path, src_dir: &Path, dest_dir: &Path) -> Result<usize> {
-    ensure_regular_copy_directory_under_root(src_root, src_dir, "Attachment blobs directory")?;
-    fs::create_dir_all(dest_dir).context("Failed to create blobs directory")?;
-
-    let mut count = 0;
-
-    for entry in fs::read_dir(src_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path)?;
-        let file_type = metadata.file_type();
-
-        if file_type.is_file() {
-            let Some(filename) = path.file_name() else {
-                continue; // Skip entries without valid filenames
-            };
-            let dest_path = dest_dir.join(filename);
-            fs::copy(&path, &dest_path)?;
-            count += 1;
-        }
-    }
-
-    Ok(count)
-}
-
 fn validate_embedded_vendor_asset(asset: &PinnedVendorAsset) -> Result<()> {
     let actual_size = u64::try_from(asset.bytes.len()).context("Vendor asset size overflow")?;
     if actual_size != asset.size {

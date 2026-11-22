@@ -40,9 +40,7 @@ use std::path::{Path, PathBuf};
 use crate::franken_sync::compat::{ConnectionExt, OpenFlags, open_with_flags};
 use serde::{Deserialize, Serialize};
 
-use crate::connectors::{
-    DiscoveredSourceFile, DiscoveredSourceRole, NormalizedConversation, ScanContext, ScanRoot,
-};
+use crate::connectors::{DiscoveredSourceFile, NormalizedConversation, ScanContext};
 
 /// Stable schema version for the connector-ingest diagnostic wire format.
 pub const CONNECTOR_INGEST_DIAGNOSTIC_SCHEMA_VERSION: u32 = 1;
@@ -561,8 +559,6 @@ pub struct ConnectorIngestRun {
     provider: String,
     sources: BTreeMap<PathBuf, ObservedSource>,
     diagnostics: Vec<ConnectorIngestDiagnostic>,
-    /// The scan context's data dir, for the single-store contexts below.
-    scan_data_dir: PathBuf,
 }
 
 impl ConnectorIngestRun {
@@ -572,7 +568,7 @@ impl ConnectorIngestRun {
     pub fn begin(
         provider: &str,
         data_dir: &Path,
-        ctx: &ScanContext,
+        _ctx: &ScanContext,
         sources: &[DiscoveredSourceFile],
     ) -> Self {
         let mut run = Self {
@@ -590,7 +586,6 @@ impl ConnectorIngestRun {
                 })
                 .collect(),
             diagnostics: Vec::new(),
-            scan_data_dir: ctx.data_dir.clone(),
         };
         for source in sources {
             run.inspect_jsonl(data_dir, &source.source_path);
@@ -915,7 +910,6 @@ impl ConnectorIngestRun {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connectors::Connector;
     use serde_json::json;
     use tempfile::tempdir;
 

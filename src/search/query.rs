@@ -864,6 +864,7 @@ fn semantic_message_id_from_db(message_id: i64) -> std::io::Result<u64> {
     u64::try_from(message_id).map_err(|_| std::io::Error::other("negative message_id"))
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn semantic_doc_component_id_from_db(raw: Option<i64>) -> u32 {
     raw.map(|value| u32::try_from(value.max(0)).unwrap_or(u32::MAX))
         .unwrap_or(0)
@@ -1297,6 +1298,7 @@ fn frankensearch_two_tier_config() -> FsTwoTierConfig {
 }
 
 #[inline]
+#[cfg_attr(not(test), allow(dead_code))]
 const fn progressive_phase_fetch_limit(limit: usize) -> usize {
     let limit = if limit == 0 { 1 } else { limit };
     limit.saturating_mul(3)
@@ -2429,6 +2431,7 @@ pub enum ProgressiveSearchEvent {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct ProgressiveSearchRequest<'a> {
     pub(crate) cx: &'a FsCx,
     pub(crate) query: &'a str,
@@ -3179,6 +3182,7 @@ impl InMemoryTwoTierUnavailable {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 struct ProgressiveTwoTierContext {
     context_token: Arc<()>,
     index: Arc<FsTwoTierIndex>,
@@ -3350,6 +3354,7 @@ fn two_tier_index_supports_mode(
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
 struct ResolvedSemanticDocId {
     message_id: u64,
     doc_id: String,
@@ -3363,12 +3368,17 @@ struct RankedMessageHydrationCandidate {
     score: f32,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 type ProgressiveLookupKey = (String, String, Option<i64>, String, i64, Option<i64>, u64);
+#[cfg_attr(not(test), allow(dead_code))]
 type ProgressiveExactQueryKey = (i64, i64);
+#[cfg_attr(not(test), allow(dead_code))]
 type ProgressiveFallbackQueryKey = (String, String, i64);
+#[cfg_attr(not(test), allow(dead_code))]
 type ResolvedSemanticLookupRow = Option<(ProgressiveLookupKey, ResolvedSemanticDocId)>;
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
 struct ProgressiveLexicalHit {
     title: String,
     snippet: String,
@@ -3387,6 +3397,7 @@ struct ProgressiveLexicalHit {
     origin_host: Option<String>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl ProgressiveLexicalHit {
     fn from_search_hit(hit: &SearchHit, field_mask: FieldMask) -> Self {
         Self {
@@ -3443,6 +3454,7 @@ impl ProgressiveLexicalHit {
 }
 
 #[derive(Debug, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
 struct ProgressiveLexicalCache {
     hits_by_message: HashMap<u64, ProgressiveLexicalHit>,
     wildcard_fallback: bool,
@@ -3450,6 +3462,7 @@ struct ProgressiveLexicalCache {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))]
 struct ProgressivePhaseContext<'a> {
     query: &'a str,
     filters: &'a SearchFilters,
@@ -3459,8 +3472,10 @@ struct ProgressivePhaseContext<'a> {
     fetch_limit: usize,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 type ProgressiveLexicalSnapshot = Arc<ProgressiveLexicalCache>;
 
+#[cfg_attr(not(test), allow(dead_code))]
 struct CassProgressiveLexicalAdapter {
     client: Arc<SearchClient>,
     filters: SearchFilters,
@@ -3469,6 +3484,7 @@ struct CassProgressiveLexicalAdapter {
     shared: Arc<Mutex<ProgressiveLexicalSnapshot>>,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl CassProgressiveLexicalAdapter {
     fn new(
         client: Arc<SearchClient>,
@@ -6237,6 +6253,7 @@ impl SearchClient {
         bail!("unsupported progressive embedder id: {embedder_id}");
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn resolve_semantic_doc_ids_for_hits(
         &self,
         hits: &[SearchHit],
@@ -6472,6 +6489,7 @@ impl SearchClient {
             .collect())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn load_message_text_by_id(&self, message_id: u64) -> Result<Option<String>> {
         let sqlite_guard = self.sqlite_guard()?;
         let conn = sqlite_guard
@@ -6485,6 +6503,7 @@ impl SearchClient {
         Ok(rows.into_iter().next())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn collapse_progressive_scored_results(
         &self,
         results: &[FsScoredResult],
@@ -6758,6 +6777,7 @@ impl SearchClient {
         Ok(hits)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn overlay_progressive_lexical_hit(
         &self,
         hit: &mut SearchHit,
@@ -6777,6 +6797,7 @@ impl SearchClient {
         hit.line_number = lexical.line_number.or(hit.line_number);
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn progressive_phase_to_result(
         &self,
         results: &[FsScoredResult],
@@ -6845,6 +6866,7 @@ impl SearchClient {
         })
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn search_progressive_with_callback(
         self: &Arc<Self>,
         request: ProgressiveSearchRequest<'_>,
