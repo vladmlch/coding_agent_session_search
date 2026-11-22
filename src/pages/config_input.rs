@@ -14,18 +14,11 @@
 //!     "workspaces": ["/path/one", "/path/two"],
 //!     "path_mode": "relative"
 //!   },
-//!   "encryption": {
-//!     "password": "env:EXPORT_PASSWORD",
-//!     "generate_recovery": true,
-//!     "generate_qr": true,
-//!     "compression": "deflate",
-//!     "chunk_size": 8388608
-//!   },
 //!   "bundle": {
 //!     "title": "Team Archive",
-//!     "description": "Encrypted cass export",
+//!     "description": "Searchable cass export",
 //!     "hide_metadata": false,
-//!     "share_profile": "team"
+//!     "share_profile": "public"
 //!   },
 //!   "deployment": {
 //!     "target": "local",
@@ -79,11 +72,10 @@ pub struct ConfigValidationResult {
     pub resolved: Option<ResolvedConfig>,
 }
 
-/// Resolved configuration with env vars expanded and defaults applied.
+/// Resolved configuration with defaults applied.
 #[derive(Debug, Serialize)]
 pub struct ResolvedConfig {
     pub filters: ResolvedFilters,
-    pub encryption: ResolvedEncryption,
     pub bundle: ResolvedBundle,
     pub deployment: ResolvedDeployment,
 }
@@ -96,17 +88,6 @@ pub struct ResolvedFilters {
     pub since_ts: Option<i64>,
     pub until_ts: Option<i64>,
     pub path_mode: String,
-}
-
-/// Resolved encryption configuration.
-#[derive(Debug, Serialize)]
-pub struct ResolvedEncryption {
-    pub enabled: bool,
-    pub password_set: bool,
-    pub generate_recovery: bool,
-    pub generate_qr: bool,
-    pub compression: String,
-    pub chunk_size: u64,
 }
 
 /// Resolved bundle configuration.
@@ -134,10 +115,6 @@ pub struct PagesConfig {
     /// Filter configuration for content selection.
     #[serde(default)]
     pub filters: FilterConfig,
-
-    /// Encryption and security configuration.
-    #[serde(default)]
-    pub encryption: EncryptionConfig,
 
     /// Bundle/site configuration.
     #[serde(default)]
@@ -172,56 +149,6 @@ pub struct FilterConfig {
     pub path_mode: Option<String>,
 }
 
-/// Encryption and security configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EncryptionConfig {
-    /// Password for encryption. Supports "env:VAR_NAME" syntax for env var resolution.
-    /// If None and no_encryption is false, will error.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
-
-    /// Disable encryption entirely (DANGEROUS).
-    /// Requires explicit acknowledgment via `i_understand_risks: true`.
-    #[serde(default)]
-    pub no_encryption: bool,
-
-    /// Required acknowledgment for no_encryption mode.
-    #[serde(default)]
-    pub i_understand_risks: bool,
-
-    /// Generate recovery secret for password recovery.
-    #[serde(default = "default_true")]
-    pub generate_recovery: bool,
-
-    /// Generate QR code for password.
-    #[serde(default)]
-    pub generate_qr: bool,
-
-    /// Compression algorithm for encrypted payload chunks.
-    ///
-    /// The current encryption format supports deflate only.
-    #[serde(default)]
-    pub compression: Option<String>,
-
-    /// Chunk size for encryption in bytes. Default: 8MB.
-    #[serde(default)]
-    pub chunk_size: Option<u64>,
-}
-
-impl Default for EncryptionConfig {
-    fn default() -> Self {
-        Self {
-            password: None,
-            no_encryption: false,
-            i_understand_risks: false,
-            generate_recovery: true,
-            generate_qr: false,
-            compression: None,
-            chunk_size: None,
-        }
-    }
-}
-
 /// Bundle/site configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleConfig {
@@ -237,9 +164,8 @@ pub struct BundleConfig {
     #[serde(default)]
     pub hide_metadata: bool,
 
-    /// Share profile applied to every exported text: public, team or
-    /// personal. Absent: public for an unencrypted export, team when
-    /// encrypted (2l1b0.60).
+    /// Share profile applied to every exported text: public, team or personal.
+    /// Defaults to `public` when absent.
     #[serde(default)]
     pub share_profile: Option<ShareProfile>,
 }
@@ -302,14 +228,11 @@ impl Default for DeploymentConfig {
 }
 
 // Default value functions
-fn default_true() -> bool {
-    true
-}
 fn default_title() -> String {
     "cass Archive".to_string()
 }
 fn default_description() -> String {
-    "Encrypted archive of AI coding agent conversations".to_string()
+    "Searchable archive of AI coding agent conversations".to_string()
 }
 fn default_target() -> String {
     "local".to_string()
@@ -319,8 +242,6 @@ fn default_output_dir() -> String {
 }
 
 const DEFAULT_PATH_MODE: &str = "relative";
-const DEFAULT_COMPRESSION: &str = "deflate";
-const DEFAULT_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
 
 fn resolve_env_var(env_var: &str) -> Result<String, ConfigError> {
     dotenvy::var(env_var).map_err(|_| ConfigError::EnvVarNotFound(env_var.to_string()))
@@ -356,24 +277,6 @@ impl PagesConfig {
         }
         self.normalized_path_mode()
             .unwrap_or_else(|| DEFAULT_PATH_MODE.to_string())
-    }
-
-    fn resolved_compression(&self) -> String {
-        self.normalized_compression()
-            .unwrap_or_else(|| DEFAULT_COMPRESSION.to_string())
-    }
-
-    fn normalized_compression(&self) -> Option<String> {
-        self.encryption
-            .compression
-            .as_deref()
-            .map(str::trim)
-            .filter(|compression| !compression.is_empty())
-            .map(str::to_ascii_lowercase)
-    }
-
-    fn resolved_chunk_size(&self) -> u64 {
-        self.encryption.chunk_size.unwrap_or(DEFAULT_CHUNK_SIZE)
     }
 
     fn resolved_time_range(&self) -> Option<String> {
@@ -412,12 +315,6 @@ impl PagesConfig {
     /// Values starting with "env:" are resolved to the corresponding
     /// environment variable value.
     pub fn resolve_env_vars(&mut self) -> Result<(), ConfigError> {
-        if let Some(ref password) = self.encryption.password
-            && let Some(env_var) = password.strip_prefix("env:")
-        {
-            self.encryption.password = Some(resolve_env_var(env_var)?);
-        }
-
         // Resolve env vars in output_dir if prefixed
         if let Some(env_var) = self.deployment.output_dir.strip_prefix("env:") {
             self.deployment.output_dir = resolve_env_var(env_var)?;
@@ -434,30 +331,6 @@ impl PagesConfig {
     pub fn validate(&self) -> ConfigValidationResult {
         let mut errors = Vec::new();
         let mut warnings = Vec::new();
-
-        // Validate encryption config
-        if !self.encryption.no_encryption {
-            match self.encryption.password.as_deref().map(str::trim) {
-                Some(password) if !password.is_empty() => {}
-                Some(_) => errors.push(
-                    "encryption.password must not be empty when encryption is enabled.".to_string(),
-                ),
-                None => errors.push(
-                    "encryption.password is required when encryption is enabled. \
-                     Use \"env:VAR_NAME\" syntax to read from environment variable, \
-                     or set encryption.no_encryption: true (requires i_understand_risks: true)."
-                        .to_string(),
-                ),
-            }
-        }
-
-        if self.encryption.no_encryption && !self.encryption.i_understand_risks {
-            errors.push(
-                "encryption.i_understand_risks must be true when no_encryption is enabled. \
-                 This confirms you understand the security implications of unencrypted exports."
-                    .to_string(),
-            );
-        }
 
         // Validate path_mode if specified
         if let Some(mode) = self.normalized_path_mode() {
@@ -536,50 +409,6 @@ impl PagesConfig {
             ));
         }
 
-        match self.encryption.chunk_size {
-            Some(0) => errors.push("encryption.chunk_size must be greater than 0 bytes.".into()),
-            Some(chunk_size) if chunk_size > crate::pages::encrypt::MAX_CHUNK_SIZE as u64 => errors.push(format!(
-                    "encryption.chunk_size ({chunk_size}) exceeds the maximum supported size of {} bytes.",
-                    crate::pages::encrypt::MAX_CHUNK_SIZE
-                )),
-            _ => {}
-        }
-        if let Some(compression) = self.normalized_compression()
-            && compression != DEFAULT_COMPRESSION
-        {
-            errors.push(format!(
-                "Invalid encryption.compression: '{}'. The current encrypted pages format supports only deflate.",
-                self.encryption.compression.as_deref().unwrap_or_default()
-            ));
-        }
-
-        // Warnings
-        if self
-            .encryption
-            .password
-            .as_ref()
-            .is_some_and(|p| p.chars().count() < 12)
-        {
-            warnings.push(
-                "Password is less than 12 characters. Consider using a stronger password."
-                    .to_string(),
-            );
-        }
-
-        if self.encryption.no_encryption {
-            warnings.push(
-                "no_encryption is enabled. Content will be publicly readable without a password."
-                    .to_string(),
-            );
-        }
-
-        if self.encryption.generate_qr && !self.encryption.generate_recovery {
-            warnings.push(
-                "generate_qr is enabled but generate_recovery is false. QR codes are generated for recovery secrets only."
-                    .to_string(),
-            );
-        }
-
         let valid = errors.is_empty();
         let resolved = if valid {
             Some(self.to_resolved())
@@ -604,14 +433,6 @@ impl PagesConfig {
                 since_ts: self.filters.since.as_deref().and_then(parse_time_input),
                 until_ts: self.filters.until.as_deref().and_then(parse_time_input),
                 path_mode: self.resolved_path_mode(),
-            },
-            encryption: ResolvedEncryption {
-                enabled: !self.encryption.no_encryption,
-                password_set: self.encryption.password.is_some(),
-                generate_recovery: self.encryption.generate_recovery,
-                generate_qr: self.encryption.generate_qr,
-                compression: self.resolved_compression(),
-                chunk_size: self.resolved_chunk_size(),
             },
             bundle: ResolvedBundle {
                 title: self.bundle.title.clone(),
@@ -650,10 +471,6 @@ impl PagesConfig {
             agents: self.filters.agents.clone(),
             time_range: self.resolved_time_range(),
             workspaces,
-            password: self.encryption.password.clone(),
-            recovery_secret: None,
-            generate_recovery: self.encryption.generate_recovery,
-            generate_qr: self.encryption.generate_qr,
             title: self.bundle.title.clone(),
             description: self.bundle.description.clone(),
             hide_metadata: self.bundle.hide_metadata,
@@ -665,9 +482,6 @@ impl PagesConfig {
             secret_scan_has_findings: false,
             secret_scan_has_critical: false,
             secret_scan_count: 0,
-            password_entropy_bits: 0.0,
-            no_encryption: self.encryption.no_encryption,
-            unencrypted_confirmed: self.encryption.i_understand_risks,
             final_site_dir: None,
         })
     }
@@ -703,20 +517,11 @@ pub fn example_config() -> &'static str {
     "workspaces": [],
     "path_mode": "relative"
   },
-  "encryption": {
-    "password": "env:CASS_EXPORT_PASSWORD",
-    "no_encryption": false,
-    "i_understand_risks": false,
-    "generate_recovery": true,
-    "generate_qr": false,
-    "compression": "deflate",
-    "chunk_size": 8388608
-  },
   "bundle": {
     "title": "My Archive",
-    "description": "Encrypted cass export",
+    "description": "Searchable cass export",
     "hide_metadata": false,
-    "share_profile": "team"
+    "share_profile": "public"
   },
   "deployment": {
     "target": "local",
@@ -729,18 +534,15 @@ pub fn example_config() -> &'static str {
 mod tests {
     use super::*;
 
-    fn config_with_password() -> PagesConfig {
-        let mut config = PagesConfig::default();
-        config.encryption.password = Some("test123".to_string());
-        config
+    fn default_test_config() -> PagesConfig {
+        PagesConfig::default()
     }
 
     #[test]
     fn test_parse_minimal_config() {
-        let json = r#"{"encryption": {"password": "test123"}}"#;
+        let json = r#"{"bundle": {"title": "My Archive"}}"#;
         let config: PagesConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(config.encryption.password, Some("test123".to_string()));
-        assert!(!config.encryption.no_encryption);
+        assert_eq!(config.bundle.title, "My Archive");
     }
 
     #[test]
@@ -750,22 +552,17 @@ mod tests {
         assert_eq!(config.filters.agents, vec!["claude-code", "codex"]);
         assert_eq!(config.bundle.title, "My Archive");
         assert_eq!(config.deployment.target, "local");
-        assert_eq!(config.bundle.share_profile, Some(ShareProfile::Team));
+        assert_eq!(config.bundle.share_profile, Some(ShareProfile::Public));
     }
 
     /// 2l1b0.60: bundle.share_profile reaches the export state; absent, the
-    /// export falls back to public for plaintext and team when encrypted;
-    /// custom and unknown names are refused rather than silently ignored.
+    /// export falls back to public; custom and unknown names are refused
+    /// rather than silently ignored.
     #[test]
     fn share_profile_config_reaches_the_export_and_refuses_unusable_values() {
-        let mut config = config_with_password();
+        let mut config = default_test_config();
         let state = config.to_wizard_state(PathBuf::from("/tmp/a.db")).unwrap();
         assert_eq!(state.share_profile, None);
-        assert_eq!(state.effective_share_profile(), ShareProfile::Team);
-
-        config.encryption.no_encryption = true;
-        config.encryption.i_understand_risks = true;
-        let state = config.to_wizard_state(PathBuf::from("/tmp/a.db")).unwrap();
         assert_eq!(state.effective_share_profile(), ShareProfile::Public);
 
         config.bundle.share_profile = Some(ShareProfile::Personal);
@@ -789,61 +586,9 @@ mod tests {
         assert!(serde_json::from_str::<PagesConfig>(unknown).is_err());
     }
 
-    // Tests for `include_attachments` config field removed: the flag was
-    // accepted but unimplemented and has been removed from the pages
-    // config surface (bead adyyt). Any future attachment-bundling work
-    // will re-add the field with end-to-end implementation + fresh tests.
-
-    #[test]
-    fn test_validate_missing_password() {
-        let config = PagesConfig::default();
-        let result = config.validate();
-        assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("password")));
-    }
-
-    #[test]
-    fn test_validate_empty_password() {
-        let mut config = PagesConfig::default();
-        config.encryption.password = Some("   ".to_string());
-
-        let result = config.validate();
-        assert!(!result.valid);
-        assert!(
-            result
-                .errors
-                .iter()
-                .any(|e| e.contains("password") && e.contains("empty"))
-        );
-    }
-
-    #[test]
-    fn test_validate_no_encryption_without_ack() {
-        let mut config = PagesConfig::default();
-        config.encryption.no_encryption = true;
-        config.encryption.i_understand_risks = false;
-        let result = config.validate();
-        assert!(!result.valid);
-        assert!(
-            result
-                .errors
-                .iter()
-                .any(|e| e.contains("i_understand_risks"))
-        );
-    }
-
-    #[test]
-    fn test_validate_no_encryption_with_ack() {
-        let mut config = PagesConfig::default();
-        config.encryption.no_encryption = true;
-        config.encryption.i_understand_risks = true;
-        let result = config.validate();
-        assert!(result.valid);
-    }
-
     #[test]
     fn test_validate_github_target_is_unsupported() {
-        let mut config = config_with_password();
+        let mut config = default_test_config();
         config.deployment.target = "github".to_string();
         let result = config.validate();
         assert!(!result.valid);
@@ -859,7 +604,7 @@ mod tests {
 
     #[test]
     fn test_validate_cloudflare_target_is_unsupported() {
-        let mut config = config_with_password();
+        let mut config = default_test_config();
         config.deployment.target = "cloudflare".to_string();
 
         let result = config.validate();
@@ -874,7 +619,7 @@ mod tests {
 
     #[test]
     fn test_validate_legacy_hosting_keys_warn_but_do_not_fail() {
-        let mut config = config_with_password();
+        let mut config = default_test_config();
         config.deployment.repo = Some("my-archive".to_string());
         config.deployment.branch = Some("gh-pages".to_string());
         config.deployment.account_id = Some("acc".to_string());
@@ -892,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_validate_blank_output_dir() {
-        let mut config = config_with_password();
+        let mut config = default_test_config();
         config.deployment.output_dir = "   ".to_string();
 
         let result = config.validate();
@@ -906,61 +651,15 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_zero_chunk_size() {
-        let mut config = config_with_password();
-        config.encryption.chunk_size = Some(0);
-
-        let result = config.validate();
-        assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("chunk_size")));
-    }
-
-    #[test]
-    fn test_validate_oversized_chunk_size() {
-        let mut config = config_with_password();
-        config.encryption.chunk_size = Some(crate::pages::encrypt::MAX_CHUNK_SIZE as u64 + 1);
-
-        let result = config.validate();
-        assert!(!result.valid);
-        assert!(result.errors.iter().any(|e| e.contains("chunk_size")));
-    }
-
-    #[test]
-    fn test_validate_rejects_unsupported_compression() {
-        let mut config = config_with_password();
-        config.encryption.compression = Some("gzip".to_string());
-
-        let result = config.validate();
-        assert!(!result.valid);
-        assert!(
-            result
-                .errors
-                .iter()
-                .any(|e| e.contains("compression") && e.contains("deflate"))
-        );
-    }
-
-    #[test]
-    fn test_validate_compression_trims_and_normalizes() {
-        let mut config = config_with_password();
-        config.encryption.compression = Some(" Deflate ".to_string());
-
-        let result = config.validate();
-        assert!(result.valid, "{:?}", result.errors);
-        let resolved = result.resolved.expect("resolved config should exist");
-        assert_eq!(resolved.encryption.compression, DEFAULT_COMPRESSION);
-    }
-
-    #[test]
     fn test_env_var_resolution() {
         // SAFETY: This test runs in isolation and the env var is cleaned up after use
-        unsafe { std::env::set_var("TEST_PASSWORD_VAR", "secret123") };
+        unsafe { std::env::set_var("TEST_OUTPUT_DIR_VAR", "/tmp/cass-out") };
         let mut config = PagesConfig::default();
-        config.encryption.password = Some("env:TEST_PASSWORD_VAR".to_string());
+        config.deployment.output_dir = "env:TEST_OUTPUT_DIR_VAR".to_string();
         config.resolve_env_vars().unwrap();
-        assert_eq!(config.encryption.password, Some("secret123".to_string()));
+        assert_eq!(config.deployment.output_dir, "/tmp/cass-out");
         // SAFETY: Cleanup of test env var
-        unsafe { std::env::remove_var("TEST_PASSWORD_VAR") };
+        unsafe { std::env::remove_var("TEST_OUTPUT_DIR_VAR") };
     }
 
     #[test]
@@ -986,14 +685,14 @@ mod tests {
     #[test]
     fn test_env_var_not_found() {
         let mut config = PagesConfig::default();
-        config.encryption.password = Some("env:NONEXISTENT_VAR_12345".to_string());
+        config.deployment.output_dir = "env:NONEXISTENT_VAR_12345".to_string();
         let result = config.resolve_env_vars();
         assert!(result.is_err());
     }
 
     #[test]
     fn test_invalid_path_mode() {
-        let mut config = config_with_password();
+        let mut config = default_test_config();
         config.filters.path_mode = Some("invalid".to_string());
         let result = config.validate();
         assert!(!result.valid);
@@ -1002,7 +701,7 @@ mod tests {
 
     #[test]
     fn test_invalid_deploy_target() {
-        let mut config = config_with_password();
+        let mut config = default_test_config();
         config.deployment.target = "invalid".to_string();
         let result = config.validate();
         assert!(!result.valid);
@@ -1011,7 +710,7 @@ mod tests {
 
     #[test]
     fn test_validate_partial_cloudflare_credentials() {
-        let mut config = config_with_password();
+        let mut config = default_test_config();
         config.deployment.target = "cloudflare".to_string();
         config.deployment.account_id = Some("acc-only".to_string());
 
@@ -1068,7 +767,7 @@ mod tests {
 
     #[test]
     fn test_validate_path_mode_trims_whitespace() {
-        let mut config = config_with_password();
+        let mut config = default_test_config();
         config.filters.path_mode = Some(" FULL ".to_string());
 
         let result = config.validate();
@@ -1080,20 +779,18 @@ mod tests {
 
     #[test]
     fn test_resolved_config_applies_export_defaults() {
-        let config = config_with_password();
+        let config = default_test_config();
 
         let result = config.validate();
         assert!(result.valid, "{:?}", result.errors);
 
         let resolved = result.resolved.expect("resolved config should exist");
         assert_eq!(resolved.filters.path_mode, DEFAULT_PATH_MODE);
-        assert_eq!(resolved.encryption.compression, DEFAULT_COMPRESSION);
-        assert_eq!(resolved.encryption.chunk_size, DEFAULT_CHUNK_SIZE);
     }
 
     #[test]
     fn test_validate_target_trims_whitespace() {
-        let mut config = config_with_password();
+        let mut config = default_test_config();
         config.deployment.target = " Local ".to_string();
 
         let result = config.validate();
@@ -1105,7 +802,7 @@ mod tests {
 
     #[test]
     fn test_to_wizard_state_rejects_hosted_target() {
-        let mut config = config_with_password();
+        let mut config = default_test_config();
         config.deployment.target = " cloudflare ".to_string();
 
         let err = config

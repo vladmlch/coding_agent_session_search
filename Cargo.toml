@@ -131,7 +131,6 @@ walkdir = "2.5.0"
 glob = "0.3.3"
 base64 = ">=0.21"
 blake3 = "1.8.5"
-mime_guess = "2.0.5"
 pulldown-cmark = { version = "0.13.3", default-features = false, features = ["html"] }
 chrono = { version = "0.4.44", features = ["serde"] }
 tracing-appender = "0.2.5"
@@ -219,13 +218,7 @@ wide = "1.4.0"  # Portable SIMD for P0 Opt 2: SIMD dot product
 arrayvec = "0.7.6"  # Stack-based arrays for P1 Opt 1.4: Edge N-gram optimization
 bloomfilter = "3.0.1"  # Probabilistic membership testing for P2 Opt 3.3: Workspace Cache
 
-# Crypto for ChatGPT encrypted conversations and HTML export encryption.
-# The aes-gcm + digest + hkdf + sha2 family must stay on compatible majors.
-# aes-gcm 0.11, sha2 0.11, and hkdf 0.13 share digest 0.11; mixing either side
-# with the former digest 0.10 family breaks the encryption trait bounds.
-aes-gcm = "0.11"
 ring = "0.17.14"
-pbkdf2 = "0.13.0"  # PBKDF2 key derivation for Web Crypto compatible HTML export encryption
 
 # SHA256 hashing for model verification
 sha2 = "0.11"
@@ -234,22 +227,12 @@ hex = "0.4.3"
 # Interactive terminal prompts for setup wizard
 dialoguer = "0.12.0"
 
-argon2 = "0.5.3"
-hkdf = "0.13"  # Must match sha2 0.11 / aes-gcm 0.11 (digest 0.11 family); see comment above.
-zeroize = { version = "1.8.2", features = ["derive"] }
-flate2 = "1.1.9"
 rand = "0.10"
 
-# QR code generation (optional, for recovery secret QR codes)
-qrcode = { version = "0.14.1", optional = true }
-image = { version = "0.25.10", optional = true, default-features = false, features = ["png"] }
-
-# macOS keychain access (optional, for ChatGPT decryption)
-[target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "3.7.0"
 # SO_NOSIGPIPE on the clipboard socket pair: macOS has no MSG_NOSIGNAL, so a
 # write after the clipboard tool exits would raise SIGPIPE. Already built (with
 # "all") for asupersync, so this adds no crate.
+[target.'cfg(target_os = "macos")'.dependencies]
 socket2 = { version = "0.6.5", features = ["all"] }
 
 # Restores the default SIGPIPE disposition at startup (#356): with Rust's
@@ -259,9 +242,7 @@ socket2 = { version = "0.6.5", features = ["all"] }
 sigpipe = "0.1.3"
 
 [features]
-default = ["qr", "encryption"]
-qr = ["dep:qrcode", "dep:image"]
-encryption = []  # Enables HTML export encryption (deps already included for ChatGPT)
+default = []
 backtrace = []
 # NOTE: the former `semantic` feature was retired (bead tg5o9). It had become
 # vacuous after cass#308: the pure-Rust `frankensearch/native` backend
@@ -287,6 +268,7 @@ vergen = { version = "10.0.0", default-features = false, features = ["build", "c
 toml = "1.1.2"
 
 [dev-dependencies]
+aes-gcm = "0.11"
 portable-pty = "0.9.0"
 assert_cmd = "2.2.2"
 predicates = "3.1.4"
@@ -557,15 +539,7 @@ name = "search_latency_e2e"
 harness = false
 
 [[bench]]
-name = "crypto_perf"
-harness = false
-
-[[bench]]
 name = "db_perf"
-harness = false
-
-[[bench]]
-name = "export_perf"
 harness = false
 
 [[bench]]
@@ -587,7 +561,3 @@ path = "tests/docs/mod.rs"
 [[test]]
 name = "upgrade"
 path = "tests/upgrade/mod.rs"
-
-[[test]]
-name = "recovery"
-path = "tests/recovery/mod.rs"

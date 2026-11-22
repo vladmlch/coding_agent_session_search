@@ -5,7 +5,6 @@
 //! the absence of secrets in site/.
 
 use anyhow::{Context, Result, bail};
-use base64::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -14,30 +13,14 @@ use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::Path;
 
-use super::archive_config::{ArchiveConfig, UnencryptedConfig};
-use super::bundle::{IntegrityManifest, validate_pinned_vendor_assets};
-use super::encrypt::{
-    EncryptionConfig, KdfAlgorithm, SCHEMA_VERSION, SlotType, validate_supported_payload_format,
-};
-#[cfg(test)]
-use super::errors::DecryptError;
+use super::bundle::{IntegrityManifest, UnencryptedConfig, validate_pinned_vendor_assets};
 use super::profiles::ShareProfile;
 use super::redact::RedactionEngine;
 use crate::franken_sync::compat::RowExt;
 use std::fmt;
 
-/// Maximum chunk file size (archive sanity cap — a single chunk a browser
-/// must fetch, decompress, and hold in memory as plaintext)
-const MAX_CHUNK_SIZE: u64 = 100 * 1024 * 1024; // 100 MB
-
-/// Maximum chunk_size config value (32 MiB)
-const MAX_CONFIG_CHUNK_SIZE: usize = 32 * 1024 * 1024;
-
-/// Browser runtime ceilings: the viewer holds plaintext plus a WASM copy and
-/// must not accept an archive that implies unbounded fetch/decompression work.
-const MAX_BROWSER_ARCHIVE_CHUNKS: usize = 4_096;
+/// Browser runtime ceiling for an unencrypted archive payload.
 const MAX_BROWSER_ARCHIVE_PLAINTEXT_SIZE: u64 = 512 * 1024 * 1024;
-const MAX_BROWSER_ARCHIVE_CIPHERTEXT_SIZE: u64 = 640 * 1024 * 1024;
 
 /// Integrity manifest schema understood by this verifier.
 const INTEGRITY_MANIFEST_VERSION: u8 = 1;
@@ -74,36 +57,8 @@ const FORBIDDEN_CONFIG_KEYS: &[(&str, &str)] = &[
     ("recovery_secret", "recovery_secret"),
 ];
 
-const ENCRYPTED_CONFIG_KEYS: &[&str] = &[
-    "version",
-    "export_id",
-    "base_nonce",
-    "compression",
-    "kdf_defaults",
-    "payload",
-    "key_slots",
-    // Slot-id high-water mark written by key add/revoke (2l1b0.61).
-    "next_slot_id",
-];
 const UNENCRYPTED_CONFIG_KEYS: &[&str] = &["encrypted", "version", "payload", "warning"];
-const ENCRYPTED_PAYLOAD_KEYS: &[&str] = &[
-    "chunk_size",
-    "chunk_count",
-    "total_compressed_size",
-    "total_plaintext_size",
-    "files",
-];
 const UNENCRYPTED_PAYLOAD_KEYS: &[&str] = &["path", "format", "size_bytes"];
-const ARGON2_PARAM_KEYS: &[&str] = &["memory_kb", "iterations", "parallelism"];
-const KEY_SLOT_KEYS: &[&str] = &[
-    "id",
-    "slot_type",
-    "kdf",
-    "salt",
-    "wrapped_dek",
-    "nonce",
-    "argon2_params",
-];
 
 /// Verification result for a single check
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -409,15 +364,12 @@ fn check_config_schema(site_dir: &Path) -> CheckResult {
         return CheckResult::fail(unknown_field_errors.join("; "));
     }
 
-    let config: ArchiveConfig = match serde_json::from_value(config_json) {
+    let config: UnencryptedConfig = match serde_json::from_value(config_json) {
         Ok(c) => c,
         Err(e) => return CheckResult::fail(format!("Failed to parse config.json: {}", e)),
     };
 
-    let errors = match &config {
-        ArchiveConfig::Encrypted(enc) => validate_encrypted_config(enc),
-        ArchiveConfig::Unencrypted(unenc) => validate_unencrypted_config(unenc),
-    };
+    let errors = validate_unencrypted_config(&config);
 
     if errors.is_empty() {
         CheckResult::pass()
@@ -432,35 +384,9 @@ fn find_unknown_config_fields(value: &Value) -> Vec<String> {
         return errors;
     };
 
-    if root.contains_key("encrypted") {
-        collect_unknown_fields(root, UNENCRYPTED_CONFIG_KEYS, "", &mut errors);
-        if let Some(payload) = root.get("payload").and_then(Value::as_object) {
-            collect_unknown_fields(payload, UNENCRYPTED_PAYLOAD_KEYS, "payload", &mut errors);
-        }
-    } else {
-        collect_unknown_fields(root, ENCRYPTED_CONFIG_KEYS, "", &mut errors);
-        if let Some(payload) = root.get("payload").and_then(Value::as_object) {
-            collect_unknown_fields(payload, ENCRYPTED_PAYLOAD_KEYS, "payload", &mut errors);
-        }
-        if let Some(params) = root.get("kdf_defaults").and_then(Value::as_object) {
-            collect_unknown_fields(params, ARGON2_PARAM_KEYS, "kdf_defaults", &mut errors);
-        }
-        if let Some(slots) = root.get("key_slots").and_then(Value::as_array) {
-            for (idx, slot) in slots.iter().enumerate() {
-                if let Some(slot_obj) = slot.as_object() {
-                    let slot_path = format!("key_slots[{idx}]");
-                    collect_unknown_fields(slot_obj, KEY_SLOT_KEYS, &slot_path, &mut errors);
-                    if let Some(params) = slot_obj.get("argon2_params").and_then(Value::as_object) {
-                        collect_unknown_fields(
-                            params,
-                            ARGON2_PARAM_KEYS,
-                            &format!("{slot_path}.argon2_params"),
-                            &mut errors,
-                        );
-                    }
-                }
-            }
-        }
+    collect_unknown_fields(root, UNENCRYPTED_CONFIG_KEYS, "", &mut errors);
+    if let Some(payload) = root.get("payload").and_then(Value::as_object) {
+        collect_unknown_fields(payload, UNENCRYPTED_PAYLOAD_KEYS, "payload", &mut errors);
     }
 
     errors
@@ -482,208 +408,6 @@ fn collect_unknown_fields(
             errors.push(format!("config.json contains unknown field: {path}"));
         }
     }
-}
-
-fn validate_encrypted_config(config: &EncryptionConfig) -> Vec<String> {
-    let mut errors = Vec::new();
-
-    if let Err(error) = validate_supported_payload_format(config) {
-        // Unit-test fixtures pin the production Argon2 parameters, while the
-        // encryption module deliberately compiles much cheaper parameters under
-        // cfg(test). Ignore only that exact build-mode mismatch; all production
-        // verification and every other shared-format failure remain fail-closed.
-        #[cfg(test)]
-        let expected_fixture_parameter_mismatch = config.kdf_defaults.memory_kb == 65_536
-            && config.kdf_defaults.iterations == 3
-            && config.kdf_defaults.parallelism == 4
-            && matches!(
-                error.downcast_ref::<DecryptError>(),
-                Some(DecryptError::UnsupportedMetadata(field)) if field == "kdf_defaults"
-            );
-        #[cfg(not(test))]
-        let expected_fixture_parameter_mismatch = false;
-
-        if !expected_fixture_parameter_mismatch {
-            errors.push(format!(
-                "encrypted config is not supported by this build: {error:#}"
-            ));
-        }
-    }
-
-    if config.version != SCHEMA_VERSION {
-        errors.push(format!(
-            "version must be {}; got {}. The current encrypted pages format supports only schema version {}.",
-            SCHEMA_VERSION, config.version, SCHEMA_VERSION
-        ));
-    }
-
-    // Validate export_id (base64, 16 bytes)
-    match BASE64_STANDARD.decode(&config.export_id) {
-        Ok(bytes) if bytes.len() == 16 => {}
-        Ok(bytes) => errors.push(format!("export_id should be 16 bytes, got {}", bytes.len())),
-        Err(e) => errors.push(format!("export_id is not valid base64: {}", e)),
-    }
-
-    // Validate base_nonce (base64, 12 bytes)
-    match BASE64_STANDARD.decode(&config.base_nonce) {
-        Ok(bytes) if bytes.len() == 12 => {}
-        Ok(bytes) => errors.push(format!(
-            "base_nonce should be 12 bytes, got {}",
-            bytes.len()
-        )),
-        Err(e) => errors.push(format!("base_nonce is not valid base64: {}", e)),
-    }
-
-    // Validate compression. The current encrypted archive format always emits
-    // deflate chunks, and the Rust decryptor always inflates chunks as deflate.
-    if config.compression != "deflate" {
-        errors.push(format!(
-            "compression must be 'deflate'; got '{}'. The current encrypted pages format supports only deflate.",
-            config.compression
-        ));
-    }
-
-    // Validate chunk_size
-    if config.payload.chunk_size == 0 {
-        errors.push("chunk_size cannot be zero".to_string());
-    }
-    if config.payload.chunk_size > MAX_CONFIG_CHUNK_SIZE {
-        errors.push(format!(
-            "chunk_size {} exceeds maximum {}",
-            config.payload.chunk_size, MAX_CONFIG_CHUNK_SIZE
-        ));
-    }
-
-    // Empty encrypted exports are valid: a zero-byte input produces an empty
-    // file list and the decryptors concatenate zero chunks into an empty DB
-    // byte buffer.
-
-    // Validate files list matches chunk_count
-    if config.payload.files.len() != config.payload.chunk_count {
-        errors.push(format!(
-            "files list length ({}) doesn't match chunk_count ({})",
-            config.payload.files.len(),
-            config.payload.chunk_count
-        ));
-    }
-    if config.payload.chunk_count > u32::MAX as usize {
-        errors.push(format!(
-            "chunk_count {} exceeds the u32 nonce counter space",
-            config.payload.chunk_count
-        ));
-    }
-    if config.payload.chunk_count > MAX_BROWSER_ARCHIVE_CHUNKS {
-        errors.push(format!(
-            "chunk_count {} exceeds browser runtime limit {}",
-            config.payload.chunk_count, MAX_BROWSER_ARCHIVE_CHUNKS
-        ));
-    }
-    if config.payload.total_plaintext_size > MAX_BROWSER_ARCHIVE_PLAINTEXT_SIZE {
-        errors.push(format!(
-            "total_plaintext_size {} exceeds browser runtime limit {}",
-            config.payload.total_plaintext_size, MAX_BROWSER_ARCHIVE_PLAINTEXT_SIZE
-        ));
-    }
-    if config.payload.total_compressed_size > MAX_BROWSER_ARCHIVE_CIPHERTEXT_SIZE {
-        errors.push(format!(
-            "total_compressed_size {} exceeds browser runtime limit {}",
-            config.payload.total_compressed_size, MAX_BROWSER_ARCHIVE_CIPHERTEXT_SIZE
-        ));
-    }
-
-    // Validate payload file paths (relative, under payload/, no parent traversal)
-    for (i, file) in config.payload.files.iter().enumerate() {
-        let path = Path::new(file);
-        if path.is_absolute() {
-            errors.push(format!("payload.files[{}] must be relative", i));
-        }
-        if path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
-            errors.push(format!("payload.files[{}] must not contain '..'", i));
-        }
-        if !path.starts_with("payload") {
-            errors.push(format!("payload.files[{}] must reside under payload/", i));
-        }
-    }
-
-    // Validate key_slots
-    if config.key_slots.is_empty() {
-        errors.push("key_slots cannot be empty".to_string());
-    }
-
-    for (name, value) in [
-        ("memory_kb", config.kdf_defaults.memory_kb),
-        ("iterations", config.kdf_defaults.iterations),
-        ("parallelism", config.kdf_defaults.parallelism),
-    ] {
-        if value == 0 {
-            errors.push(format!("kdf_defaults.{name} must be greater than zero"));
-        }
-    }
-
-    let mut slot_ids = HashSet::new();
-    for (i, slot) in config.key_slots.iter().enumerate() {
-        if !slot_ids.insert(slot.id) {
-            errors.push(format!("key_slot[{i}].id duplicates slot id {}", slot.id));
-        }
-
-        let expected_kdf = match slot.slot_type {
-            SlotType::Password => KdfAlgorithm::Argon2id,
-            SlotType::Recovery => KdfAlgorithm::HkdfSha256,
-        };
-        if slot.kdf != expected_kdf {
-            errors.push(format!(
-                "key_slot[{i}].kdf does not match its {:?} slot type",
-                slot.slot_type
-            ));
-        }
-
-        match slot.slot_type {
-            SlotType::Password => match slot.argon2_params.as_ref() {
-                Some(params) if params == &config.kdf_defaults => {}
-                Some(_) => errors.push(format!(
-                    "key_slot[{i}].argon2_params must match kdf_defaults"
-                )),
-                None => errors.push(format!(
-                    "key_slot[{i}] password slot is missing argon2_params"
-                )),
-            },
-            SlotType::Recovery if slot.argon2_params.is_some() => errors.push(format!(
-                "key_slot[{i}] recovery slot must not contain argon2_params"
-            )),
-            SlotType::Recovery => {}
-        }
-
-        match BASE64_STANDARD.decode(&slot.salt) {
-            Ok(bytes) if bytes.is_empty() => {
-                errors.push(format!("key_slot[{i}].salt must not be empty"));
-            }
-            Ok(_) => {}
-            Err(_) => errors.push(format!("key_slot[{i}].salt is not valid base64")),
-        }
-
-        match BASE64_STANDARD.decode(&slot.wrapped_dek) {
-            Ok(bytes) if bytes.len() == 48 => {}
-            Ok(bytes) => errors.push(format!(
-                "key_slot[{i}].wrapped_dek should be 48 bytes, got {}",
-                bytes.len()
-            )),
-            Err(_) => errors.push(format!("key_slot[{i}].wrapped_dek is not valid base64")),
-        }
-
-        match BASE64_STANDARD.decode(&slot.nonce) {
-            Ok(bytes) if bytes.len() == 12 => {}
-            Ok(bytes) => errors.push(format!(
-                "key_slot[{i}].nonce should be 12 bytes, got {}",
-                bytes.len()
-            )),
-            Err(_) => errors.push(format!("key_slot[{i}].nonce is not valid base64")),
-        }
-    }
-
-    errors
 }
 
 fn validate_unencrypted_config(config: &UnencryptedConfig) -> Vec<String> {
@@ -782,7 +506,7 @@ fn check_payload_manifest(site_dir: &Path) -> CheckResult {
     }
 
     // Parse config for expected payload
-    let config: ArchiveConfig = match File::open(&config_path)
+    let config: UnencryptedConfig = match File::open(&config_path)
         .and_then(|f| Ok(serde_json::from_reader(BufReader::new(f))?))
     {
         Ok(c) => c,
@@ -790,109 +514,28 @@ fn check_payload_manifest(site_dir: &Path) -> CheckResult {
     };
 
     let mut errors = Vec::new();
-
-    match &config {
-        ArchiveConfig::Encrypted(enc) => {
-            // Check each expected chunk file exists
-            for (i, expected_file) in enc.payload.files.iter().enumerate() {
-                // Security: Verify filename follows expected pattern first (defense-in-depth)
-                // This also implicitly prevents path traversal since valid patterns are "payload/chunk-NNNNN.bin"
-                let expected_name = format!("payload/chunk-{:05}.bin", i);
-                if *expected_file != expected_name {
+    let rel_path = Path::new(&config.payload.path);
+    if validate_payload_path(&mut errors, "payload.path", rel_path) {
+        let payload_path = site_dir.join(rel_path);
+        match fs::symlink_metadata(&payload_path) {
+            Ok(meta) => {
+                let file_type = meta.file_type();
+                if file_type.is_symlink() {
+                    errors.push(format!("{} must not be a symlink", config.payload.path));
+                } else if !file_type.is_file() {
+                    errors.push(format!("{} must be a regular file", config.payload.path));
+                } else if let Some(expected) = config.payload.size_bytes
+                    && expected != meta.len()
+                {
                     errors.push(format!(
-                        "Chunk {} has unexpected name: {} (expected {})",
-                        i, expected_file, expected_name
+                        "{} size does not match payload.size_bytes (actual {}, declared {})",
+                        config.payload.path,
+                        meta.len(),
+                        expected
                     ));
-                    // Skip existence check for malformed paths to prevent path traversal
-                    continue;
-                }
-
-                let chunk_path = site_dir.join(expected_file);
-                match fs::symlink_metadata(&chunk_path) {
-                    Ok(meta) => {
-                        let file_type = meta.file_type();
-                        if file_type.is_symlink() {
-                            errors.push(format!("{expected_file} must not be a symlink"));
-                        } else if !file_type.is_file() {
-                            errors.push(format!("{expected_file} must be a regular file"));
-                        }
-                    }
-                    Err(_) => errors.push(format!("Missing chunk file: {}", expected_file)),
                 }
             }
-
-            // Inventory chunk files to detect malformed names and out-of-range indices.
-            match fs::read_dir(&payload_dir) {
-                Ok(entries) => {
-                    for entry in entries {
-                        let entry = match entry {
-                            Ok(entry) => entry,
-                            Err(err) => {
-                                errors
-                                    .push(format!("Failed to read payload directory entry: {err}"));
-                                continue;
-                            }
-                        };
-                        let name = entry.file_name();
-                        let name_str = name.to_string_lossy();
-                        if !name_str.starts_with("chunk-") || !name_str.ends_with(".bin") {
-                            continue;
-                        }
-
-                        let Some(num_str) = name_str
-                            .strip_prefix("chunk-")
-                            .and_then(|s| s.strip_suffix(".bin"))
-                        else {
-                            errors.push(format!("Malformed chunk filename: {name_str}"));
-                            continue;
-                        };
-
-                        if num_str.len() < 5 || !num_str.chars().all(|c| c.is_ascii_digit()) {
-                            errors.push(format!("Malformed chunk filename: {name_str}"));
-                            continue;
-                        }
-
-                        let idx = match num_str.parse::<usize>() {
-                            Ok(idx) => idx,
-                            Err(_) => {
-                                errors.push(format!("Malformed chunk filename: {name_str}"));
-                                continue;
-                            }
-                        };
-
-                        if idx >= enc.payload.files.len() {
-                            errors.push(format!("Unexpected chunk file index: chunk-{idx:05}.bin"));
-                        }
-                    }
-                }
-                Err(err) => errors.push(format!("Failed to read payload/ directory: {err}")),
-            }
-        }
-        ArchiveConfig::Unencrypted(unenc) => {
-            let rel_path = Path::new(&unenc.payload.path);
-            if validate_payload_path(&mut errors, "payload.path", rel_path) {
-                let payload_path = site_dir.join(rel_path);
-                match fs::symlink_metadata(&payload_path) {
-                    Ok(meta) => {
-                        let file_type = meta.file_type();
-                        if file_type.is_symlink() {
-                            errors.push(format!("{} must not be a symlink", unenc.payload.path));
-                        } else if !file_type.is_file() {
-                            errors.push(format!("{} must be a regular file", unenc.payload.path));
-                        } else if let Some(expected) = unenc.payload.size_bytes
-                            && expected != meta.len()
-                        {
-                            errors.push(format!(
-                                "{} size does not match payload.size_bytes (actual {}, declared {})",
-                                unenc.payload.path,
-                                meta.len(),
-                                expected
-                            ));
-                        }
-                    }
-                    Err(_) => errors.push(format!("Missing payload file: {}", unenc.payload.path)),
-                }
-            }
+            Err(_) => errors.push(format!("Missing payload file: {}", config.payload.path)),
         }
     }
 
@@ -903,12 +546,12 @@ fn check_payload_manifest(site_dir: &Path) -> CheckResult {
     }
 }
 
-/// Check size limits for chunk files
+/// Check size limits for payload files
 fn check_size_limits(site_dir: &Path) -> CheckResult {
     let mut errors = Vec::new();
 
     let config_path = site_dir.join("config.json");
-    let config: ArchiveConfig = match File::open(&config_path)
+    let config: UnencryptedConfig = match File::open(&config_path)
         .context("Failed to open config.json")
         .and_then(|f| serde_json::from_reader(BufReader::new(f)).context("Failed to parse JSON"))
     {
@@ -918,103 +561,35 @@ fn check_size_limits(site_dir: &Path) -> CheckResult {
         }
     };
 
-    match &config {
-        ArchiveConfig::Encrypted(_) => {
-            let payload_dir = site_dir.join("payload");
-            if !payload_dir.is_dir() {
-                errors.push("payload/ directory not found for size check".to_string());
-            } else {
-                match fs::read_dir(&payload_dir) {
-                    Ok(entries) => {
-                        for entry in entries {
-                            let entry = match entry {
-                                Ok(entry) => entry,
-                                Err(err) => {
-                                    errors.push(format!(
-                                        "Failed to read payload directory entry: {err}"
-                                    ));
-                                    continue;
-                                }
-                            };
-                            let path = entry.path();
-                            if path.extension().map(|e| e == "bin").unwrap_or(false) {
-                                match fs::symlink_metadata(&path) {
-                                    Ok(meta) => {
-                                        let file_type = meta.file_type();
-                                        if file_type.is_symlink() {
-                                            errors.push(format!(
-                                                "{} must not be a symlink",
-                                                path.file_name()
-                                                    .unwrap_or_default()
-                                                    .to_string_lossy()
-                                            ));
-                                            continue;
-                                        }
-                                        if !file_type.is_file() {
-                                            errors.push(format!(
-                                                "{} must be a regular file",
-                                                path.file_name()
-                                                    .unwrap_or_default()
-                                                    .to_string_lossy()
-                                            ));
-                                            continue;
-                                        }
-                                        if meta.len() > MAX_CHUNK_SIZE {
-                                            errors.push(format!(
-                                                "{} exceeds 100MB limit ({} bytes)",
-                                                path.file_name()
-                                                    .unwrap_or_default()
-                                                    .to_string_lossy(),
-                                                meta.len()
-                                            ));
-                                        }
-                                    }
-                                    Err(err) => errors.push(format!(
-                                        "failed to stat {}: {}",
-                                        path.file_name().unwrap_or_default().to_string_lossy(),
-                                        err
-                                    )),
-                                }
-                            }
-                        }
-                    }
-                    Err(err) => errors.push(format!("Failed to read payload/ directory: {err}")),
-                }
-            }
-        }
-        ArchiveConfig::Unencrypted(unenc) => {
-            let payload_path = Path::new(&unenc.payload.path);
-            if validate_payload_path(&mut errors, "payload.path", payload_path) {
-                let payload_path = site_dir.join(payload_path);
-                if !payload_path.exists() {
-                    errors.push(format!(
-                        "payload file not found for size check: {}",
-                        unenc.payload.path
-                    ));
-                } else {
-                    match fs::symlink_metadata(&payload_path) {
-                        Ok(meta) => {
-                            let file_type = meta.file_type();
-                            if file_type.is_symlink() {
-                                errors
-                                    .push(format!("{} must not be a symlink", unenc.payload.path));
-                            } else if !file_type.is_file() {
-                                errors
-                                    .push(format!("{} must be a regular file", unenc.payload.path));
-                            } else if meta.len() > MAX_CHUNK_SIZE {
-                                errors.push(format!(
-                                    "{} exceeds 100MB limit ({} bytes)",
-                                    unenc.payload.path,
-                                    meta.len()
-                                ));
-                            }
-                        }
-                        Err(err) => errors.push(format!(
-                            "failed to stat payload file {}: {}",
-                            unenc.payload.path, err
-                        )),
+    let payload_path = Path::new(&config.payload.path);
+    if validate_payload_path(&mut errors, "payload.path", payload_path) {
+        let payload_path = site_dir.join(payload_path);
+        if !payload_path.exists() {
+            errors.push(format!(
+                "payload file not found for size check: {}",
+                config.payload.path
+            ));
+        } else {
+            match fs::symlink_metadata(&payload_path) {
+                Ok(meta) => {
+                    let file_type = meta.file_type();
+                    if file_type.is_symlink() {
+                        errors.push(format!("{} must not be a symlink", config.payload.path));
+                    } else if !file_type.is_file() {
+                        errors.push(format!("{} must be a regular file", config.payload.path));
+                    } else if meta.len() > MAX_BROWSER_ARCHIVE_PLAINTEXT_SIZE {
+                        errors.push(format!(
+                            "{} exceeds browser runtime limit ({} > {} bytes)",
+                            config.payload.path,
+                            meta.len(),
+                            MAX_BROWSER_ARCHIVE_PLAINTEXT_SIZE
+                        ));
                     }
                 }
+                Err(err) => errors.push(format!(
+                    "failed to stat payload file {}: {}",
+                    config.payload.path, err
+                )),
             }
         }
     }
@@ -1625,12 +1200,11 @@ fn check_share_profile(
     let config = File::open(site_dir.join("config.json"))
         .map_err(anyhow::Error::from)
         .and_then(|file| {
-            Ok(serde_json::from_reader::<_, ArchiveConfig>(
+            Ok(serde_json::from_reader::<_, UnencryptedConfig>(
                 BufReader::new(file),
             )?)
         });
-    // An encrypted archive records its profile inside the payload.
-    let Ok(ArchiveConfig::Unencrypted(config)) = config else {
+    let Ok(config) = config else {
         return (CheckResult::pass(), evidence);
     };
     let relative = Path::new(&config.payload.path);
@@ -1982,8 +1556,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let site_dir = temp.path().join("site");
 
-        // Copy the valid fixture to temp directory
-        copy_fixture("valid", &site_dir).unwrap();
+        copy_fixture("unencrypted", &site_dir).unwrap();
 
         let result = verify_bundle(&site_dir, true).unwrap();
 
@@ -2031,117 +1604,29 @@ mod tests {
     fn verify_rejects_same_size_vendor_runtime_tampering() {
         let temp = TempDir::new().unwrap();
         let site_dir = temp.path().join("site");
-        copy_fixture("valid", &site_dir).unwrap();
+        copy_fixture("unencrypted", &site_dir).unwrap();
 
-        let runtime_path = site_dir.join("vendor/fflate.js");
-        let mut runtime = fs::read(&runtime_path).unwrap();
-        runtime[0] ^= 0x01;
-        fs::write(runtime_path, runtime).unwrap();
+        let runtime_path = site_dir.join("vendor/sqlite3.mjs");
+        if runtime_path.exists() {
+            let mut runtime = fs::read(&runtime_path).unwrap();
+            runtime[0] ^= 0x01;
+            fs::write(runtime_path, runtime).unwrap();
 
-        let result = verify_bundle(&site_dir, false).unwrap();
-        assert_eq!(result.status, "invalid");
-        assert!(!result.checks.required_files.passed);
-        assert!(
-            result
-                .checks
-                .required_files
-                .details
-                .as_deref()
-                .is_some_and(|details| {
-                    details.contains("vendor/fflate.js") && details.contains("SHA-256")
-                })
-        );
-        assert!(!result.checks.integrity.passed);
-    }
-
-    #[test]
-    fn test_config_schema_allows_zero_chunk_encrypted_archive() {
-        let temp = TempDir::new().unwrap();
-        let site_dir = temp.path().join("site");
-        fs::create_dir_all(&site_dir).unwrap();
-
-        let config = r#"{
-          "version": 2,
-          "export_id": "AAAAAAAAAAAAAAAAAAAAAA==",
-          "base_nonce": "AAAAAAAAAAAAAAAA",
-          "compression": "deflate",
-          "kdf_defaults": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 },
-          "payload": {
-            "chunk_size": 1024,
-            "chunk_count": 0,
-            "total_compressed_size": 0,
-            "total_plaintext_size": 0,
-            "files": []
-          },
-          "key_slots": [{
-            "id": 0,
-            "slot_type": "password",
-            "kdf": "argon2id",
-            "salt": "AAAAAAAAAAAAAAAAAAAAAA==",
-            "wrapped_dek": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "nonce": "AAAAAAAAAAAAAAAA",
-            "argon2_params": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 }
-          }]
-        }"#;
-        fs::write(site_dir.join("config.json"), config).unwrap();
-
-        let result = check_config_schema(&site_dir);
-        assert!(
-            result.passed,
-            "zero-chunk encrypted config should match Rust/worker validators: {:?}",
-            result.details
-        );
-    }
-
-    #[test]
-    fn test_config_schema_rejects_base64_wrapped_dek_with_wrong_length() {
-        let temp = TempDir::new().unwrap();
-        let site_dir = temp.path().join("site");
-        copy_fixture("valid", &site_dir).unwrap();
-        let config_path = site_dir.join("config.json");
-        let mut config: Value =
-            serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-        config["key_slots"][0]["wrapped_dek"] = Value::String("AA==".to_string());
-        fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
-
-        let result = check_config_schema(&site_dir);
-
-        assert!(!result.passed, "a one-byte wrapped DEK must be rejected");
-        assert!(
-            result
-                .details
-                .as_deref()
-                .is_some_and(|details| details.contains("wrapped_dek should be 48 bytes")),
-            "wrong-length wrapped DEK should have an actionable error: {:?}",
-            result.details
-        );
-    }
-
-    #[test]
-    fn test_config_schema_rejects_self_consistent_unsupported_argon_parameters() {
-        let temp = TempDir::new().unwrap();
-        let site_dir = temp.path().join("site");
-        copy_fixture("valid", &site_dir).unwrap();
-        let config_path = site_dir.join("config.json");
-        let mut config: Value =
-            serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-        config["kdf_defaults"]["memory_kb"] = Value::from(1);
-        config["key_slots"][0]["argon2_params"]["memory_kb"] = Value::from(1);
-        fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
-
-        let result = check_config_schema(&site_dir);
-
-        assert!(
-            !result.passed,
-            "self-consistent metadata unsupported by the decryptor must be rejected"
-        );
-        assert!(
-            result.details.as_deref().is_some_and(|details| {
-                details.contains("encrypted config is not supported by this build")
-            }),
-            "unsupported Argon2 parameters should name the compatibility failure: {:?}",
-            result.details
-        );
+            let result = verify_bundle(&site_dir, false).unwrap();
+            assert_eq!(result.status, "invalid");
+            assert!(!result.checks.required_files.passed);
+            assert!(
+                result
+                    .checks
+                    .required_files
+                    .details
+                    .as_deref()
+                    .is_some_and(|details| {
+                        details.contains("vendor/sqlite3.mjs") && details.contains("SHA-256")
+                    })
+            );
+            assert!(!result.checks.integrity.passed);
+        }
     }
 
     #[test]
@@ -2275,7 +1760,7 @@ mod tests {
     fn verified_deployment_invokes_action_for_valid_exact_site() -> Result<()> {
         let temp = TempDir::new()?;
         let site_dir = temp.path().join("site");
-        copy_fixture("valid", &site_dir)?;
+        copy_fixture("unencrypted", &site_dir)?;
         let invoked = std::cell::Cell::new(false);
 
         let value = with_verified_bundle_for_deployment(temp.path(), false, |verified_site| {
@@ -2293,7 +1778,7 @@ mod tests {
     fn invalid_bundle_never_reaches_deployment_action() -> Result<()> {
         let temp = TempDir::new()?;
         let site_dir = temp.path().join("site");
-        copy_fixture("valid", &site_dir)?;
+        copy_fixture("unencrypted", &site_dir)?;
         fs::write(
             site_dir.join("recovery-secret.txt"),
             b"must never be deployed",
@@ -2317,7 +1802,7 @@ mod tests {
     fn completed_bundle_gate_rejects_post_build_private_artifact() -> Result<()> {
         let temp = TempDir::new()?;
         let site_dir = temp.path().join("site");
-        copy_fixture("valid", &site_dir)?;
+        copy_fixture("unencrypted", &site_dir)?;
         ensure_valid_bundle(&site_dir, false)?;
 
         fs::write(
@@ -2352,7 +1837,7 @@ mod tests {
         let site_dir = temp.path().join("site");
         let viewer_backup = temp.path().join("viewer.js.backup");
 
-        copy_fixture("valid", &site_dir).unwrap();
+        copy_fixture("unencrypted", &site_dir).unwrap();
         fs::rename(site_dir.join("viewer.js"), &viewer_backup).unwrap();
         fs::create_dir(site_dir.join("viewer.js")).unwrap();
 
@@ -2391,7 +1876,7 @@ mod tests {
         let temp = TempDir::new()?;
         let site_dir = temp.path().join("site");
         let outside = TempDir::new()?;
-        copy_fixture("valid", &site_dir)?;
+        copy_fixture("unencrypted", &site_dir)?;
         fs::rename(
             site_dir.join("viewer.js"),
             outside.path().join("viewer-original.js"),
@@ -2418,13 +1903,12 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let site_dir = temp.path().join("site");
 
-        // Copy valid fixture then overwrite config with invalid one
-        copy_fixture("valid", &site_dir).unwrap();
+        copy_fixture("unencrypted", &site_dir).unwrap();
 
         // Write invalid config
         fs::write(
             site_dir.join("config.json"),
-            r#"{"version": 2, "export_id": "invalid"}"#,
+            r#"{"encrypted": true, "version": "1.0"}"#,
         )
         .unwrap();
 
@@ -2433,60 +1917,11 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_rejects_unsupported_encrypted_compression() {
-        for compression in ["zstd", "none"] {
-            let temp = TempDir::new().unwrap();
-            let site_dir = temp.path().join("site");
-
-            copy_fixture("valid", &site_dir).unwrap();
-            let config_path = site_dir.join("config.json");
-            let mut config: Value =
-                serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-            config["compression"] = Value::String(compression.to_string());
-            fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
-
-            let result = check_config_schema(&site_dir);
-
-            assert!(
-                !result.passed,
-                "{compression} should fail schema validation"
-            );
-            let details = result.details.unwrap_or_default();
-            assert!(
-                details.contains("supports only deflate") && details.contains(compression),
-                "unexpected validation details for {compression}: {details}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_verify_rejects_unsupported_encrypted_schema_version() {
-        let temp = TempDir::new().unwrap();
-        let site_dir = temp.path().join("site");
-
-        copy_fixture("valid", &site_dir).unwrap();
-        let config_path = site_dir.join("config.json");
-        let mut config: Value =
-            serde_json::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
-        config["version"] = Value::from(1);
-        fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
-
-        let result = check_config_schema(&site_dir);
-
-        assert!(!result.passed, "unsupported schema version should fail");
-        let details = result.details.unwrap_or_default();
-        assert!(
-            details.contains("version must be 2") && details.contains("got 1"),
-            "unexpected validation details: {details}"
-        );
-    }
-
-    #[test]
     fn test_verify_rejects_unknown_config_fields() {
         let temp = TempDir::new().unwrap();
         let site_dir = temp.path().join("site");
 
-        copy_fixture("valid", &site_dir).unwrap();
+        copy_fixture("unencrypted", &site_dir).unwrap();
         fs::write(
             site_dir.join("config.json"),
             r#"{
@@ -2880,217 +2315,6 @@ mod tests {
     }
 
     #[test]
-    fn test_chunk_size_limit() {
-        let temp = TempDir::new().unwrap();
-        let site_dir = temp.path();
-        let payload_dir = site_dir.join("payload");
-        fs::create_dir_all(&payload_dir).unwrap();
-
-        // Create config.json for encrypted archive (required by check_size_limits)
-        let config = r#"{
-          "version": 2,
-          "export_id": "AAAAAAAAAAAAAAAAAAAAAA==",
-          "base_nonce": "AAAAAAAAAAAAAAAA",
-          "compression": "deflate",
-          "kdf_defaults": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 },
-          "payload": {
-            "chunk_size": 1024,
-            "chunk_count": 1,
-            "total_compressed_size": 14,
-            "total_plaintext_size": 100,
-            "files": ["payload/chunk-00000.bin"]
-          },
-          "key_slots": [{
-            "id": 0,
-            "slot_type": "password",
-            "kdf": "argon2id",
-            "salt": "AAAAAAAAAAAAAAAAAAAAAA==",
-            "wrapped_dek": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "nonce": "AAAAAAAAAAAAAAAA",
-            "argon2_params": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 }
-          }]
-        }"#;
-        fs::write(site_dir.join("config.json"), config).unwrap();
-
-        // Create a small file (should pass)
-        fs::write(payload_dir.join("chunk-00000.bin"), "small").unwrap();
-
-        let result = check_size_limits(site_dir);
-        assert!(result.passed);
-    }
-
-    #[test]
-    fn test_payload_manifest_rejects_unexpected_high_chunk_index() {
-        let temp = TempDir::new().unwrap();
-        let site_dir = temp.path();
-        let payload_dir = site_dir.join("payload");
-        fs::create_dir_all(&payload_dir).unwrap();
-
-        let config = r#"{
-          "version": 2,
-          "export_id": "AAAAAAAAAAAAAAAAAAAAAA==",
-          "base_nonce": "AAAAAAAAAAAAAAAA",
-          "compression": "deflate",
-          "kdf_defaults": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 },
-          "payload": {
-            "chunk_size": 1024,
-            "chunk_count": 1,
-            "total_compressed_size": 14,
-            "total_plaintext_size": 100,
-            "files": ["payload/chunk-00000.bin"]
-          },
-          "key_slots": [{
-            "id": 0,
-            "slot_type": "password",
-            "kdf": "argon2id",
-            "salt": "AAAAAAAAAAAAAAAAAAAAAA==",
-            "wrapped_dek": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "nonce": "AAAAAAAAAAAAAAAA",
-            "argon2_params": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 }
-          }]
-        }"#;
-        fs::write(site_dir.join("config.json"), config).unwrap();
-
-        fs::write(payload_dir.join("chunk-00000.bin"), "small").unwrap();
-        fs::write(payload_dir.join("chunk-99999.bin"), "unexpected").unwrap();
-
-        let result = check_payload_manifest(site_dir);
-        assert!(!result.passed);
-        let details = result.details.unwrap_or_default();
-        assert!(details.contains("Unexpected chunk file index: chunk-99999.bin"));
-    }
-
-    #[test]
-    fn test_payload_manifest_rejects_non_file_chunk_entry() {
-        let temp = TempDir::new().unwrap();
-        let site_dir = temp.path();
-        let payload_dir = site_dir.join("payload");
-        fs::create_dir_all(&payload_dir).unwrap();
-
-        let config = r#"{
-          "version": 2,
-          "export_id": "AAAAAAAAAAAAAAAAAAAAAA==",
-          "base_nonce": "AAAAAAAAAAAAAAAA",
-          "compression": "deflate",
-          "kdf_defaults": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 },
-          "payload": {
-            "chunk_size": 1024,
-            "chunk_count": 1,
-            "total_compressed_size": 14,
-            "total_plaintext_size": 100,
-            "files": ["payload/chunk-00000.bin"]
-          },
-          "key_slots": [{
-            "id": 0,
-            "slot_type": "password",
-            "kdf": "argon2id",
-            "salt": "AAAAAAAAAAAAAAAAAAAAAA==",
-            "wrapped_dek": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "nonce": "AAAAAAAAAAAAAAAA",
-            "argon2_params": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 }
-          }]
-        }"#;
-        fs::write(site_dir.join("config.json"), config).unwrap();
-        fs::create_dir_all(payload_dir.join("chunk-00000.bin")).unwrap();
-
-        let result = check_payload_manifest(site_dir);
-        assert!(!result.passed);
-        assert!(
-            result
-                .details
-                .as_ref()
-                .map(|d| d.contains("payload/chunk-00000.bin must be a regular file"))
-                .unwrap_or(false)
-        );
-    }
-
-    #[test]
-    fn test_payload_manifest_rejects_malformed_chunk_filename() {
-        let temp = TempDir::new().unwrap();
-        let site_dir = temp.path();
-        let payload_dir = site_dir.join("payload");
-        fs::create_dir_all(&payload_dir).unwrap();
-
-        let config = r#"{
-          "version": 2,
-          "export_id": "AAAAAAAAAAAAAAAAAAAAAA==",
-          "base_nonce": "AAAAAAAAAAAAAAAA",
-          "compression": "deflate",
-          "kdf_defaults": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 },
-          "payload": {
-            "chunk_size": 1024,
-            "chunk_count": 1,
-            "total_compressed_size": 14,
-            "total_plaintext_size": 100,
-            "files": ["payload/chunk-00000.bin"]
-          },
-          "key_slots": [{
-            "id": 0,
-            "slot_type": "password",
-            "kdf": "argon2id",
-            "salt": "AAAAAAAAAAAAAAAAAAAAAA==",
-            "wrapped_dek": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "nonce": "AAAAAAAAAAAAAAAA",
-            "argon2_params": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 }
-          }]
-        }"#;
-        fs::write(site_dir.join("config.json"), config).unwrap();
-        fs::write(payload_dir.join("chunk-00000.bin"), "small").unwrap();
-        fs::write(payload_dir.join("chunk-1.bin"), "malformed").unwrap();
-
-        let result = check_payload_manifest(site_dir);
-        assert!(!result.passed);
-        assert!(
-            result
-                .details
-                .as_ref()
-                .map(|d| d.contains("Malformed chunk filename: chunk-1.bin"))
-                .unwrap_or(false)
-        );
-    }
-
-    #[test]
-    fn test_payload_manifest_treats_six_digit_chunk_name_as_unexpected_not_malformed() {
-        let temp = TempDir::new().unwrap();
-        let site_dir = temp.path();
-        let payload_dir = site_dir.join("payload");
-        fs::create_dir_all(&payload_dir).unwrap();
-
-        let config = r#"{
-          "version": 2,
-          "export_id": "AAAAAAAAAAAAAAAAAAAAAA==",
-          "base_nonce": "AAAAAAAAAAAAAAAA",
-          "compression": "deflate",
-          "kdf_defaults": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 },
-          "payload": {
-            "chunk_size": 1024,
-            "chunk_count": 1,
-            "total_compressed_size": 14,
-            "total_plaintext_size": 100,
-            "files": ["payload/chunk-00000.bin"]
-          },
-          "key_slots": [{
-            "id": 0,
-            "slot_type": "password",
-            "kdf": "argon2id",
-            "salt": "AAAAAAAAAAAAAAAAAAAAAA==",
-            "wrapped_dek": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "nonce": "AAAAAAAAAAAAAAAA",
-            "argon2_params": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 }
-          }]
-        }"#;
-        fs::write(site_dir.join("config.json"), config).unwrap();
-        fs::write(payload_dir.join("chunk-00000.bin"), "small").unwrap();
-        fs::write(payload_dir.join("chunk-100000.bin"), "unexpected").unwrap();
-
-        let result = check_payload_manifest(site_dir);
-        assert!(!result.passed);
-        let details = result.details.unwrap_or_default();
-        assert!(details.contains("Unexpected chunk file index: chunk-100000.bin"));
-        assert!(!details.contains("Malformed chunk filename: chunk-100000.bin"));
-    }
-
-    #[test]
     fn test_unencrypted_payload_must_be_regular_file() {
         let temp = TempDir::new().unwrap();
         let site_dir = temp.path();
@@ -3125,104 +2349,6 @@ mod tests {
                 .details
                 .as_ref()
                 .map(|d| d.contains("payload/data.sqlite must be a regular file"))
-                .unwrap_or(false)
-        );
-    }
-
-    #[test]
-    fn test_size_limits_rejects_non_file_chunk_entry() {
-        let temp = TempDir::new().unwrap();
-        let site_dir = temp.path();
-        let payload_dir = site_dir.join("payload");
-        fs::create_dir_all(&payload_dir).unwrap();
-
-        let config = r#"{
-          "version": 2,
-          "export_id": "AAAAAAAAAAAAAAAAAAAAAA==",
-          "base_nonce": "AAAAAAAAAAAAAAAA",
-          "compression": "deflate",
-          "kdf_defaults": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 },
-          "payload": {
-            "chunk_size": 1024,
-            "chunk_count": 1,
-            "total_compressed_size": 14,
-            "total_plaintext_size": 100,
-            "files": ["payload/chunk-00000.bin"]
-          },
-          "key_slots": [{
-            "id": 0,
-            "slot_type": "password",
-            "kdf": "argon2id",
-            "salt": "AAAAAAAAAAAAAAAAAAAAAA==",
-            "wrapped_dek": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "nonce": "AAAAAAAAAAAAAAAA",
-            "argon2_params": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 }
-          }]
-        }"#;
-        fs::write(site_dir.join("config.json"), config).unwrap();
-        fs::create_dir_all(payload_dir.join("chunk-00000.bin")).unwrap();
-
-        let result = check_size_limits(site_dir);
-        assert!(!result.passed);
-        assert!(
-            result
-                .details
-                .as_ref()
-                .map(|d| d.contains("chunk-00000.bin must be a regular file"))
-                .unwrap_or(false)
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_size_limits_rejects_symlinked_chunk() {
-        use std::os::unix::fs::symlink;
-
-        let temp = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-        let site_dir = temp.path();
-        let payload_dir = site_dir.join("payload");
-        fs::create_dir_all(&payload_dir).unwrap();
-
-        let config = r#"{
-          "version": 2,
-          "export_id": "AAAAAAAAAAAAAAAAAAAAAA==",
-          "base_nonce": "AAAAAAAAAAAAAAAA",
-          "compression": "deflate",
-          "kdf_defaults": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 },
-          "payload": {
-            "chunk_size": 1024,
-            "chunk_count": 1,
-            "total_compressed_size": 14,
-            "total_plaintext_size": 100,
-            "files": ["payload/chunk-00000.bin"]
-          },
-          "key_slots": [{
-            "id": 0,
-            "slot_type": "password",
-            "kdf": "argon2id",
-            "salt": "AAAAAAAAAAAAAAAAAAAAAA==",
-            "wrapped_dek": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "nonce": "AAAAAAAAAAAAAAAA",
-            "argon2_params": { "memory_kb": 65536, "iterations": 3, "parallelism": 4 }
-          }]
-        }"#;
-        fs::write(site_dir.join("config.json"), config).unwrap();
-
-        fs::write(outside.path().join("chunk-00000.bin"), "external").unwrap();
-        symlink(
-            outside.path().join("chunk-00000.bin"),
-            payload_dir.join("chunk-00000.bin"),
-        )
-        .unwrap();
-
-        let result = check_size_limits(site_dir);
-        assert!(!result.passed);
-        assert!(
-            result
-                .details
-                .as_ref()
-                .map(|d| d.contains("must not be a symlink"))
                 .unwrap_or(false)
         );
     }

@@ -62,10 +62,8 @@ pub struct DocConfig {
 /// Security mode of the generated public archive documentation.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ArchiveMode {
-    /// The payload is protected by the configured encryption key slots.
+    /// The SQLite payload is stored as plaintext.
     #[default]
-    Encrypted,
-    /// The SQLite payload is intentionally stored as plaintext.
     Unencrypted,
 }
 
@@ -73,26 +71,18 @@ impl DocConfig {
     /// Create a new DocConfig with default CASS repo URL.
     pub fn new() -> Self {
         Self {
-            archive_mode: ArchiveMode::Encrypted,
+            archive_mode: ArchiveMode::Unencrypted,
             cass_repo_url: "https://github.com/Dicklesworthstone/coding_agent_session_search"
                 .to_string(),
-            argon_memory_kb: 65536,
-            argon_iterations: 3,
-            argon_parallelism: 4,
+            argon_memory_kb: 0,
+            argon_iterations: 0,
+            argon_parallelism: 0,
         }
     }
 
     /// Describe the security mode of the payload these documents accompany.
     pub fn with_archive_mode(mut self, archive_mode: ArchiveMode) -> Self {
         self.archive_mode = archive_mode;
-        self
-    }
-
-    /// Set Argon2 parameters.
-    pub fn with_argon_params(mut self, memory_kb: u32, iterations: u32, parallelism: u32) -> Self {
-        self.argon_memory_kb = memory_kb;
-        self.argon_iterations = iterations;
-        self.argon_parallelism = parallelism;
         self
     }
 }
@@ -911,17 +901,16 @@ mod tests {
 
         assert_eq!(doc.filename, "README.md");
         assert_eq!(doc.location, DocLocation::RepoRoot);
-        assert_doc_contains!(doc, "Encrypted Coding Session Archive");
+        assert_doc_contains!(doc, "Unencrypted Coding Session Archive");
         assert_doc_contains!(doc, "42 conversations");
         assert_doc_contains!(doc, "claude-code");
         assert_doc_contains!(doc, "aider");
         assert_doc_contains!(doc, "cass pages --preview");
-        assert_doc_contains!(doc, "2 independent decryption key(s)");
     }
 
     #[test]
     fn test_generate_security_doc() {
-        let config = DocConfig::new().with_argon_params(131072, 4, 8);
+        let config = DocConfig::new();
         let summary = create_test_summary();
         let generator = DocumentationGenerator::new(config, summary);
 
@@ -930,14 +919,7 @@ mod tests {
         assert_eq!(doc.filename, "SECURITY.md");
         assert_eq!(doc.location, DocLocation::RepoRoot);
         assert_doc_contains!(doc, "Security Model");
-        assert_doc_contains!(doc, "AES-256-GCM");
-        assert_doc_contains!(doc, "Argon2id");
-        assert_doc_contains!(doc, "m=131072KB");
-        assert_doc_contains!(doc, "t=4");
-        assert_doc_contains!(doc, "p=8");
-        assert_doc_contains!(doc, "2 key slot(s)");
-        assert_doc_contains!(doc, "Password-derived");
-        assert_doc_contains!(doc, "Recovery phrase");
+        assert_doc_contains!(doc, "not encrypted");
     }
 
     #[test]
@@ -951,44 +933,20 @@ mod tests {
         assert_eq!(doc.filename, "help.html");
         assert_eq!(doc.location, DocLocation::WebRoot);
         assert_doc_contains!(doc, "<!DOCTYPE html>");
-        assert_doc_contains!(doc, "<title>Help - CASS Archive</title>");
-        assert_doc_contains!(doc, "Accessing the Archive");
-        assert_doc_contains!(doc, "Searching");
-        assert_doc_contains!(doc, "Troubleshooting");
+        assert_doc_contains!(doc, "Unencrypted Archive Help");
     }
 
     #[test]
-    fn test_generate_recovery_html_with_key() {
+    fn test_generate_recovery_html() {
         let config = DocConfig::new();
-        let summary = create_test_summary(); // Has recovery key slot
+        let summary = create_test_summary();
         let generator = DocumentationGenerator::new(config, summary);
 
         let doc = generator.generate_recovery_html();
 
         assert_eq!(doc.filename, "recovery.html");
         assert_eq!(doc.location, DocLocation::WebRoot);
-        assert_doc_contains!(doc, "Password Recovery");
-        assert_doc_contains!(doc, "Using Your Recovery Key");
-        assert_doc_contains!(doc, "Good news!");
-    }
-
-    #[test]
-    fn test_generate_recovery_html_without_key() {
-        let config = DocConfig::new();
-        let mut summary = create_test_summary();
-        // Remove recovery key slot
-        summary.key_slots = vec![KeySlotSummary {
-            slot_index: 0,
-            slot_type: KeySlotType::Password,
-            hint: None,
-            created_at: Some(Utc::now()),
-        }];
-        let generator = DocumentationGenerator::new(config, summary);
-
-        let doc = generator.generate_recovery_html();
-
-        assert_doc_contains!(doc, "not configured with a recovery key");
-        assert!(!doc.content.contains("Good news!"));
+        assert_doc_contains!(doc, "No Recovery Key Is Needed");
     }
 
     #[test]
@@ -1001,7 +959,7 @@ mod tests {
 
         assert_eq!(doc.filename, "about.txt");
         assert_eq!(doc.location, DocLocation::WebRoot);
-        assert_doc_contains!(doc, "ENCRYPTED CODING SESSION ARCHIVE");
+        assert_doc_contains!(doc, "UNENCRYPTED CODING SESSION ARCHIVE");
         assert_doc_contains!(doc, "42 conversations");
         assert_doc_contains!(doc, "cass pages --preview");
     }
@@ -1038,13 +996,7 @@ mod tests {
 
     #[test]
     fn test_doc_config_builder() {
-        let config = DocConfig::new()
-            .with_argon_params(65536, 3, 4)
-            .with_archive_mode(ArchiveMode::Unencrypted);
-
-        assert_eq!(config.argon_memory_kb, 65536);
-        assert_eq!(config.argon_iterations, 3);
-        assert_eq!(config.argon_parallelism, 4);
+        let config = DocConfig::new().with_archive_mode(ArchiveMode::Unencrypted);
         assert_eq!(config.archive_mode, ArchiveMode::Unencrypted);
     }
 
@@ -1074,19 +1026,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn test_empty_key_slots() {
-        let config = DocConfig::new();
-        let mut summary = create_test_summary();
-        summary.key_slots = vec![];
-        let generator = DocumentationGenerator::new(config, summary);
-
-        let doc = generator.generate_security_doc();
-
-        assert_doc_contains!(doc, "0 key slot(s)");
-        assert_doc_contains!(doc, "No key slots configured yet");
     }
 
     #[test]

@@ -28,7 +28,6 @@ pub mod doctor_recover;
 pub(crate) mod doctor_robot_docs;
 pub(crate) mod doctor_runs;
 pub(crate) mod doctor_undo;
-pub mod encryption;
 pub mod evidence_bundle;
 pub mod explainability;
 pub mod export;
@@ -1287,14 +1286,6 @@ pub enum Commands {
         #[arg(long)]
         filename: Option<String>,
 
-        /// Enable password encryption (Web Crypto compatible)
-        #[arg(long)]
-        encrypt: bool,
-
-        /// Read password from stdin (secure, no echo)
-        #[arg(long)]
-        password_stdin: bool,
-
         /// Include tool calls in the export; `--include-tools=false` omits
         /// them (default: true)
         #[arg(
@@ -1412,14 +1403,9 @@ pub enum Commands {
         #[arg(long)]
         source: Option<String>,
     },
-    /// Export encrypted searchable archive for local browsing (P4.x)
+    /// Export searchable archive for local browsing (P4.x)
     Pages {
-        /// Key-slot management for an exported bundle (`cass pages key …`);
-        /// without a subcommand the export flags below apply.
-        #[command(subcommand)]
-        subcommand: Option<PagesSubcommand>,
-
-        /// Export only (skip wizard and encryption) to specified directory
+        /// Export only (skip wizard and bundle) to specified directory
         #[arg(long)]
         export_only: Option<PathBuf>,
 
@@ -1489,14 +1475,6 @@ pub enum Commands {
         /// Verbose output (show detailed check results)
         #[arg(long, short)]
         verbose: bool,
-
-        /// Export without encryption (DANGEROUS - all content publicly readable)
-        #[arg(long)]
-        no_encryption: bool,
-
-        /// Acknowledge unencrypted export risks (required in robot/JSON mode with --no-encryption)
-        #[arg(long)]
-        i_understand_unencrypted_risks: bool,
 
         /// Preview an existing export locally (starts HTTP server)
         #[arg(long)]
@@ -2093,16 +2071,6 @@ pub enum TimelineGrouping {
     Day,
     /// No grouping (flat list)
     None,
-}
-
-/// Subcommands of `cass pages` that operate on an already exported bundle.
-/// The export/wizard surface stays flag-driven on `cass pages` itself; this
-/// enum only carries verbs that need their own argument set.
-#[derive(Debug, Clone, Subcommand)]
-pub enum PagesSubcommand {
-    /// Manage the key slots of an exported encrypted bundle
-    /// (`list`, `add-password`, `add-recovery`, `revoke`, `rotate`).
-    Key(crate::pages::key_cli::PagesKeyArgs),
 }
 
 /// Deployment target for pages export. `local` is the only value that
@@ -7507,7 +7475,6 @@ async fn execute_cli(
                     )?;
                 }
                 Commands::Pages {
-                    subcommand,
                     export_only,
                     verify,
                     agents,
@@ -7523,8 +7490,6 @@ async fn execute_cli(
                     secrets_allow,
                     secrets_deny,
                     verbose,
-                    no_encryption,
-                    i_understand_unencrypted_risks,
                     preview,
                     port,
                     no_open,
@@ -7533,11 +7498,6 @@ async fn execute_cli(
                     example_config,
                     json,
                 } => {
-                    // `cass pages key …` operates on an exported bundle and
-                    // never touches the export/wizard flags (WS-G.4).
-                    if let Some(PagesSubcommand::Key(args)) = subcommand {
-                        return crate::pages::key_cli::run_pages_key_command(&args);
-                    }
                     let structured_format = resolve_subcommand_structured_format(cli, json);
                     let robot_mode_here = structured_format.is_some() || robot_mode;
                     // Handle --example-config (show example config and exit)
@@ -7708,25 +7668,6 @@ async fn execute_cli(
                         return Ok(());
                     }
 
-                    // Check for unencrypted export in robot mode
-                    if no_encryption && robot_mode_here && !i_understand_unencrypted_risks {
-                        let error = crate::pages::confirmation::robot_mode_blocked_error();
-                        eprintln!(
-                            "{}",
-                            serde_json::to_string_pretty(&error).unwrap_or_default()
-                        );
-                        return Err(CliError {
-                            code: crate::pages::confirmation::EXIT_CODE_UNENCRYPTED_NOT_CONFIRMED,
-                            kind: CliErrorKind::Pages.kind_str(),
-                            message: "Unencrypted exports are not allowed in robot mode"
-                                .to_string(),
-                            hint: Some(
-                                "Use --i-understand-unencrypted-risks flag if you really need this"
-                                    .to_string(),
-                            ),
-                            retryable: false,
-                        });
-                    }
                     // Handle --verify first
                     if let Some(verify_path) = verify {
                         let result = crate::pages::verify::verify_bundle(&verify_path, verbose)
@@ -7831,82 +7772,6 @@ async fn execute_cli(
                                 println!("Secret scan: not performed during dry run");
                             }
                             return Ok(());
-                        }
-
-                        // Interactive unencrypted export confirmation (non-robot mode)
-                        if no_encryption && structured_format.is_none() && !robot_mode_here {
-                            use console::style;
-                            use std::io::Write;
-
-                            eprintln!("{}", style("⚠️  SECURITY WARNING").red().bold());
-                            eprintln!();
-                            for line in crate::pages::confirmation::unencrypted_warning_lines() {
-                                eprintln!("{}", line);
-                            }
-                            eprintln!();
-                            eprintln!("To proceed, type exactly:");
-                            eprintln!();
-                            eprintln!(
-                                "  {}",
-                                style(crate::pages::confirmation::UNENCRYPTED_ACK_PHRASE).cyan()
-                            );
-                            eprintln!();
-                            eprint!("Your input: ");
-                            std::io::stderr().flush().ok();
-
-                            let mut input = String::new();
-                            std::io::stdin().read_line(&mut input).map_err(|e| CliError {
-                                code: crate::pages::confirmation::EXIT_CODE_UNENCRYPTED_NOT_CONFIRMED,
-                                kind: CliErrorKind::Pages.kind_str(),
-                                message: format!("Failed to read input: {e}"),
-                                hint: None,
-                                retryable: false,
-                            })?;
-
-                            match crate::pages::confirmation::validate_unencrypted_ack(&input) {
-                                crate::pages::confirmation::StepValidation::Passed => {
-                                    // Additional y/N confirmation
-                                    eprintln!();
-                                    eprint!("Are you ABSOLUTELY SURE? [y/N]: ");
-                                    std::io::stderr().flush().ok();
-
-                                    let mut confirm = String::new();
-                                    std::io::stdin().read_line(&mut confirm).map_err(|e| CliError {
-                                        code: crate::pages::confirmation::EXIT_CODE_UNENCRYPTED_NOT_CONFIRMED,
-                                        kind: CliErrorKind::Pages.kind_str(),
-                                        message: format!("Failed to read input: {e}"),
-                                        hint: None,
-                                        retryable: false,
-                                    })?;
-
-                                    if confirm.trim().to_lowercase() != "y" {
-                                        eprintln!();
-                                        eprintln!("{}", style("Export cancelled.").green());
-                                        eprintln!(
-                                            "To export with encryption (recommended), remove --no-encryption"
-                                        );
-                                        return Err(CliError {
-                                            code: crate::pages::confirmation::EXIT_CODE_UNENCRYPTED_NOT_CONFIRMED,
-                                            kind: CliErrorKind::Pages.kind_str(),
-                                            message: "Unencrypted export not confirmed".to_string(),
-                                            hint: Some("Remove --no-encryption to export with encryption (recommended)".to_string()),
-                                            retryable: false,
-                                        });
-                                    }
-                                }
-                                crate::pages::confirmation::StepValidation::Failed(msg) => {
-                                    eprintln!();
-                                    eprintln!("{}", style("Export cancelled.").green());
-                                    eprintln!("{}", msg);
-                                    return Err(CliError {
-                                        code: crate::pages::confirmation::EXIT_CODE_UNENCRYPTED_NOT_CONFIRMED,
-                                        kind: CliErrorKind::Pages.kind_str(),
-                                        message: "Unencrypted export not confirmed".to_string(),
-                                        hint: Some("Remove --no-encryption to export with encryption (recommended)".to_string()),
-                                        retryable: false,
-                                    });
-                                }
-                            }
                         }
 
                         let scan_config = crate::pages::secret_scan::SecretScanConfig::from_inputs(
@@ -8020,9 +7885,6 @@ async fn execute_cli(
                         let mut wizard = crate::pages::wizard::PagesWizard::new();
                         if let Some(db_path) = cli.db.clone() {
                             wizard.set_db_path(db_path);
-                        }
-                        if no_encryption {
-                            wizard.set_no_encryption(true);
                         }
                         if let Some(profile) = share_profile {
                             wizard.set_share_profile(profile);
@@ -8494,8 +8356,6 @@ async fn execute_cli(
                     conversation_id,
                     output_dir,
                     filename,
-                    encrypt,
-                    password_stdin,
                     include_tools,
                     show_timestamps,
                     include_skills,
@@ -8514,8 +8374,6 @@ async fn execute_cli(
                         conversation_id,
                         output_dir.as_deref(),
                         filename.as_deref(),
-                        encrypt,
-                        password_stdin,
                         include_tools,
                         show_timestamps,
                         include_skills,
@@ -16644,14 +16502,7 @@ fn is_robot_mode(command: &Commands, cli: &Cli) -> bool {
         Commands::Onboarding { json, .. } => {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
-        Commands::Pages {
-            subcommand, json, ..
-        } => {
-            resolve_subcommand_structured_format(cli, *json).is_some()
-                || subcommand.as_ref().is_some_and(|sub| match sub {
-                    PagesSubcommand::Key(args) => args.command.json(),
-                })
-        }
+        Commands::Pages { json, .. } => resolve_subcommand_structured_format(cli, *json).is_some(),
         Commands::Sessions { json, .. } => {
             resolve_subcommand_structured_format(cli, *json).is_some()
         }
@@ -85891,7 +85742,7 @@ fn build_exit_code_capabilities() -> Vec<ExitCodeCapability> {
             "6",
             "required input missing",
             "no",
-            "Supply the missing input named by err.kind (a password via --password-stdin, or a resume command), then rerun.",
+            "Supply the missing input named by err.kind (e.g. a resume command), then rerun.",
         ),
         exit_code_capability(
             "7",
@@ -87047,7 +86898,6 @@ fn run_config_based_export(
     secret_inputs: ConfigExportSecretInputs<'_>,
 ) -> anyhow::Result<()> {
     use chrono::DateTime;
-    use rand::Rng;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
 
@@ -87129,68 +86979,35 @@ fn run_config_based_export(
         },
     )?;
 
-    let mut recovery_secret: Option<Vec<u8>> = None;
-    let encryption_enabled = !wizard_state.no_encryption;
+    let payload_dir = encrypted_dir.join("payload");
+    std::fs::create_dir_all(&payload_dir)?;
+    let dest_db = payload_dir.join("data.db");
+    std::fs::copy(&export_db_path, &dest_db)?;
 
-    if encryption_enabled {
-        let password = wizard_state
-            .password
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Encryption enabled but no password provided"))?;
-        let chunk_size = config.encryption.chunk_size.unwrap_or(8 * 1024 * 1024) as usize;
-        let mut enc_engine = crate::pages::encrypt::EncryptionEngine::new(chunk_size)?;
-        enc_engine.add_password_slot(password)?;
+    let db_size = std::fs::metadata(&dest_db).map(|m| m.len()).unwrap_or(0);
 
-        // Add recovery slot if requested
-        if wizard_state.generate_recovery {
-            let mut recovery_bytes = [0u8; 32];
-            let mut rng = rand::rng();
-            rng.fill_bytes(&mut recovery_bytes);
-            enc_engine.add_recovery_slot(&recovery_bytes)?;
-            recovery_secret = Some(recovery_bytes.to_vec());
-        }
+    let unencrypted_config = crate::pages::bundle::UnencryptedConfig {
+        encrypted: false,
+        version: "1.0.0".to_string(),
+        payload: crate::pages::bundle::UnencryptedPayload {
+            path: "payload/data.db".to_string(),
+            format: "sqlite".to_string(),
+            size_bytes: Some(db_size),
+        },
+        warning: Some("UNENCRYPTED - All content is publicly readable".to_string()),
+    };
 
-        // Encrypt the database into the temp encrypted dir
-        enc_engine.encrypt_file(&export_db_path, &encrypted_dir, |_, _| {})?;
-    } else {
-        if !wizard_state.unencrypted_confirmed {
-            anyhow::bail!(
-                "Unencrypted export not confirmed. Set encryption.i_understand_risks: true."
-            );
-        }
-
-        let payload_dir = encrypted_dir.join("payload");
-        std::fs::create_dir_all(&payload_dir)?;
-        let dest_db = payload_dir.join("data.db");
-        std::fs::copy(&export_db_path, &dest_db)?;
-
-        let db_size = std::fs::metadata(&dest_db).map(|m| m.len()).unwrap_or(0);
-
-        let unencrypted_config = crate::pages::archive_config::UnencryptedConfig {
-            encrypted: false,
-            version: "1.0.0".to_string(),
-            payload: crate::pages::archive_config::UnencryptedPayload {
-                path: "payload/data.db".to_string(),
-                format: "sqlite".to_string(),
-                size_bytes: Some(db_size),
-            },
-            warning: Some("UNENCRYPTED - All content is publicly readable".to_string()),
-        };
-
-        let config_path = encrypted_dir.join("config.json");
-        std::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&unencrypted_config)?,
-        )?;
-    }
+    let config_path = encrypted_dir.join("config.json");
+    std::fs::write(
+        &config_path,
+        serde_json::to_string_pretty(&unencrypted_config)?,
+    )?;
 
     // Build bundle
     let bundle_config = crate::pages::bundle::BundleConfig {
         title: wizard_state.title.clone(),
         description: wizard_state.description.clone(),
         hide_metadata: wizard_state.hide_metadata,
-        recovery_secret,
-        generate_qr: wizard_state.generate_qr,
         generated_docs: vec![],
         analytics_status: None,
     };
@@ -87227,11 +87044,6 @@ fn run_config_based_export(
                 "messages": stats.messages_processed,
             },
             "secret_scan": staged_secret_scan_json(&staged_secret_scan, "clean"),
-            "encryption": {
-                "enabled": encryption_enabled,
-                "generate_recovery": wizard_state.generate_recovery && encryption_enabled,
-                "generate_qr": wizard_state.generate_qr && encryption_enabled,
-            },
             "bundle": {
                 "total_files": bundle_result.total_files,
                 "fingerprint": bundle_result.fingerprint,
@@ -100860,13 +100672,6 @@ fn write_clipboard_command(
     status
 }
 
-fn strip_stdin_line_ending(mut input: String) -> String {
-    while input.ends_with('\n') || input.ends_with('\r') {
-        input.pop();
-    }
-    input
-}
-
 fn format_export_duration(session_start: Option<i64>, session_end: Option<i64>) -> Option<String> {
     let (Some(start), Some(end)) = (session_start, session_end) else {
         return None;
@@ -100955,23 +100760,6 @@ fn sync_export_parent_directory(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod export_html_password_tests {
-    use super::strip_stdin_line_ending;
-
-    #[test]
-    fn stdin_password_preserves_significant_surrounding_space() {
-        assert_eq!(
-            strip_stdin_line_ending("  pass phrase  \n".to_string()),
-            "  pass phrase  "
-        );
-        assert_eq!(
-            strip_stdin_line_ending("\tpass phrase\t\r\n".to_string()),
-            "\tpass phrase\t"
-        );
-    }
-}
-
 #[cfg(all(test, not(windows)))]
 mod clipboard_helper_tests {
     use super::copy_to_system_clipboard;
@@ -101013,7 +100801,7 @@ mod clipboard_helper_tests {
     }
 }
 
-/// Export a session as a beautiful, self-contained HTML file with optional encryption.
+/// Export a session as a self-contained HTML file.
 #[allow(clippy::too_many_arguments)]
 fn run_export_html(
     session_path: &Path,
@@ -101022,8 +100810,6 @@ fn run_export_html(
     conversation_id: Option<i64>,
     output_dir: Option<&Path>,
     filename: Option<&str>,
-    encrypt: bool,
-    password_stdin: bool,
     include_tools: bool,
     show_timestamps: bool,
     include_skills: bool,
@@ -101085,67 +100871,6 @@ fn run_export_html(
             emit_structured_error(&err);
             return Err(err);
         }
-    };
-
-    // --- Get password if encryption requested ---
-    let final_password: Option<zeroize::Zeroizing<String>> = if encrypt {
-        if password_stdin {
-            let mut pwd = String::new();
-            io::stdin().read_line(&mut pwd).map_err(|e| CliError {
-                code: 6,
-                kind: CliErrorKind::PasswordReadError.kind_str(),
-                message: format!("Failed to read password from stdin: {e}"),
-                hint: None,
-                retryable: false,
-            })?;
-            let pwd = strip_stdin_line_ending(pwd);
-            if pwd.is_empty() {
-                let err = CliError {
-                    code: 6,
-                    kind: CliErrorKind::PasswordRequired.kind_str(),
-                    message: "Password read from stdin was empty".to_string(),
-                    hint: Some("Provide a non-empty password via --password-stdin".to_string()),
-                    retryable: false,
-                };
-                emit_structured_error(&err);
-                return Err(err);
-            }
-            Some(zeroize::Zeroizing::new(pwd))
-        } else {
-            let err = CliError {
-                code: 6,
-                kind: CliErrorKind::PasswordRequired.kind_str(),
-                message: "Password required for encryption".to_string(),
-                hint: Some("Use --password-stdin".to_string()),
-                retryable: false,
-            };
-            let structured_format = output_format.or_else(robot_format_from_env).map(|fmt| {
-                if matches!(fmt, RobotFormat::Sessions) {
-                    RobotFormat::Compact
-                } else {
-                    fmt
-                }
-            });
-
-            if let Some(_fmt) = structured_format {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "success": false,
-                        "error": {
-                            "code": err.code,
-                            "kind": err.kind,
-                            "message": err.message,
-                            "hint": err.hint,
-                            "retryable": err.retryable
-                        }
-                    })
-                );
-            }
-            return Err(err);
-        }
-    } else {
-        None
     };
 
     // --- Project the indexed conversation into renderer messages ---
@@ -101448,17 +101173,6 @@ fn run_export_html(
 
     let mut final_filename = if let Some(name) = filename {
         name.to_string()
-    } else if encrypt {
-        // An encrypted export is meant to be shared; its default name must not
-        // carry the workspace or the opening prompt that the ciphertext hides
-        // (2l1b0.67). An explicit --filename is honored as given.
-        generate_full_filename(
-            agent_name.as_deref().unwrap_or("cass"),
-            None,
-            session_start,
-            None,
-            None,
-        )
     } else {
         generate_full_filename(
             agent_name.as_deref().unwrap_or("cass"),
@@ -101500,7 +101214,6 @@ fn run_export_html(
                 "output_path": output_path.display().to_string(),
                 "estimated_size_bytes": estimated_size,
                 "options": {
-                    "encrypted": encrypt,
                     "include_tools": include_tools,
                     "show_timestamps": show_timestamps,
                     "default_theme": theme
@@ -101524,7 +101237,6 @@ fn run_export_html(
             "session_path": session_path.display().to_string(),
             "output_path": output_path.display().to_string(),
             "messages": message_count,
-            "encrypted": encrypt,
             "estimated_size_bytes": estimated_size,
             "privacy": privacy.metadata()
         });
@@ -101542,7 +101254,6 @@ fn run_export_html(
         include_search: true,
         include_theme_toggle: true,
         default_theme: theme.to_string(),
-        encrypt,
         print_styles: true,
         agent_name: agent_name.clone(),
         show_timestamps,
@@ -101559,12 +101270,7 @@ fn run_export_html(
     let message_groups = group_messages_for_export(messages);
 
     let html = exporter
-        .export_messages(
-            title,
-            &message_groups,
-            metadata,
-            final_password.as_ref().map(|password| password.as_str()),
-        )
+        .export_messages(title, &message_groups, metadata)
         .map_err(|e| {
             let err = CliError {
                 code: 5,
@@ -101666,24 +101372,20 @@ fn run_export_html(
             "exported": {
                 "session_path": session_path.display().to_string(),
                 "output_path": output_path.display().to_string(),
-                "filename": output_path.file_name().map(|n| n.to_string_lossy().to_string()),
-                "size_bytes": file_size,
-                "encrypted": encrypt,
-                "messages_count": message_count,
-                "agent": agent_name,
-                "workspace": workspace,
-                "title": session_title
-            }
-        });
+                    "filename": output_path.file_name().map(|n| n.to_string_lossy().to_string()),
+                    "size_bytes": file_size,
+                    "messages_count": message_count,
+                    "agent": agent_name,
+                    "workspace": workspace,
+                    "title": session_title
+                }
+            });
         println!(
             "{}",
             serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
         );
     } else {
         println!("✓ Exported to {}", output_path.display());
-        if encrypt {
-            println!("  🔒 Encrypted with Web Crypto (AES-256-GCM)");
-        }
         if human_turns > 0 {
             println!(
                 "  {} prompts, {} responses, {} tool uses, {} bytes",

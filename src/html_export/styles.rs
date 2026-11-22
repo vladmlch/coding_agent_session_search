@@ -38,16 +38,7 @@ fn generate_critical_css(options: &ExportOptions) -> String {
         ""
     };
 
-    let encryption_styles = if options.encrypt {
-        ENCRYPTION_STYLES
-    } else {
-        ""
-    };
-
-    format!(
-        "{}\n{}\n{}\n{}",
-        CORE_STYLES, COMPONENT_STYLES, search_styles, encryption_styles
-    )
+    format!("{}\n{}\n{}", CORE_STYLES, COMPONENT_STYLES, search_styles)
 }
 
 /// Core design system - Terminal Noir (exact match to reference)
@@ -1616,81 +1607,6 @@ const SEARCH_STYLES: &str = r#"
 .search-current {
   background: oklch(0.78 0.16 75 / 0.5);
   box-shadow: 0 0 0 1px oklch(0.78 0.16 75 / 0.6);
-}
-"#;
-
-const ENCRYPTION_STYLES: &str = r#"
-/* Encryption modal */
-.decrypt-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: oklch(0 0 0 / 0.85);
-  backdrop-filter: blur(8px);
-}
-
-.decrypt-modal[hidden],
-.decrypt-error[hidden] {
-  display: none !important;
-}
-
-.decrypt-form {
-  width: 100%;
-  max-width: 360px;
-  padding: var(--space-6);
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-xl);
-}
-
-.decrypt-form h2 {
-  margin: 0 0 var(--space-4);
-  font-size: var(--text-lg);
-  color: var(--foreground);
-}
-
-.decrypt-form input {
-  width: 100%;
-  padding: 0.625rem 0.75rem;
-  margin-bottom: var(--space-3);
-  background: var(--input);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--foreground);
-  font-size: var(--text-sm);
-}
-
-.decrypt-form input:focus {
-  outline: none;
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px oklch(0.75 0.18 195 / 0.15);
-}
-
-.decrypt-form button {
-  width: 100%;
-  padding: 0.625rem;
-  background: var(--primary);
-  border: none;
-  border-radius: var(--radius-md);
-  color: var(--primary-foreground);
-  font-size: var(--text-sm);
-  font-weight: 600;
-  cursor: pointer;
-  transition: background var(--transition-fast);
-}
-
-.decrypt-form button:hover {
-  background: oklch(0.8 0.18 195);
-}
-
-.decrypt-error {
-  color: var(--red);
-  font-size: var(--text-sm);
-  margin-top: var(--space-2);
 }
 "#;
 

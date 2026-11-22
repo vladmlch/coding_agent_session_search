@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use console::{Term, style};
-use dialoguer::{Confirm, Input, MultiSelect, Password, Select, theme::ColorfulTheme};
+use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::Write;
 use std::path::PathBuf;
@@ -11,13 +11,11 @@ use std::time::Duration;
 use crate::franken_sync::Connection;
 use crate::pages::bundle::{BundleBuilder, BundleConfig};
 use crate::pages::confirmation::{
-    ConfirmationConfig, ConfirmationFlow, ConfirmationStep, PasswordStrengthAction, StepValidation,
-    UNENCRYPTED_ACK_PHRASE, unencrypted_warning_lines, validate_unencrypted_ack,
+    ConfirmationConfig, ConfirmationFlow, ConfirmationStep, unencrypted_warning_lines,
+    validate_unencrypted_ack,
 };
 use crate::pages::docs::{ArchiveMode, DocConfig, DocumentationGenerator};
-use crate::pages::encrypt::{EncryptionConfig, EncryptionEngine};
 use crate::pages::export::{ExportEngine, ExportFilter, PathMode};
-use crate::pages::password::{PasswordStrength, format_strength_inline, validate_password};
 use crate::pages::profiles::ShareProfile;
 use crate::pages::secret_scan::{
     SecretScanConfig, SecretScanFilters, print_human_report, scan_staged_export_database,
@@ -37,18 +35,11 @@ pub struct WizardState {
     pub time_range: Option<String>,
     pub workspaces: Option<Vec<PathBuf>>,
 
-    // Security configuration
-    pub password: Option<String>,
-    pub recovery_secret: Option<Vec<u8>>,
-    pub generate_recovery: bool,
-    pub generate_qr: bool,
-
     // Site configuration
     pub title: String,
     pub description: String,
     pub hide_metadata: bool,
-    /// Share profile chosen by flag, config or prompt; `None` means the
-    /// default for the encryption mode (see `effective_share_profile`).
+    /// Share profile chosen by flag, config or prompt; `None` means `public`.
     pub share_profile: Option<ShareProfile>,
 
     // Local output
@@ -66,13 +57,6 @@ pub struct WizardState {
     pub secret_scan_has_critical: bool,
     pub secret_scan_count: usize,
 
-    // Password entropy
-    pub password_entropy_bits: f64,
-
-    // Unencrypted export mode (DANGEROUS)
-    pub no_encryption: bool,
-    pub unencrypted_confirmed: bool,
-
     // Final output location (set after export)
     pub final_site_dir: Option<PathBuf>,
 }
@@ -83,13 +67,6 @@ impl std::fmt::Debug for WizardState {
             .field("agents", &self.agents)
             .field("time_range", &self.time_range)
             .field("workspaces", &self.workspaces)
-            .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
-            .field(
-                "recovery_secret",
-                &self.recovery_secret.as_ref().map(|_| "[REDACTED]"),
-            )
-            .field("generate_recovery", &self.generate_recovery)
-            .field("generate_qr", &self.generate_qr)
             .field("title", &self.title)
             .field("description", &self.description)
             .field("hide_metadata", &self.hide_metadata)
@@ -101,9 +78,6 @@ impl std::fmt::Debug for WizardState {
             .field("secret_scan_has_findings", &self.secret_scan_has_findings)
             .field("secret_scan_has_critical", &self.secret_scan_has_critical)
             .field("secret_scan_count", &self.secret_scan_count)
-            .field("password_entropy_bits", &self.password_entropy_bits)
-            .field("no_encryption", &self.no_encryption)
-            .field("unencrypted_confirmed", &self.unencrypted_confirmed)
             .field("final_site_dir", &self.final_site_dir)
             .finish()
     }
@@ -117,12 +91,8 @@ impl Default for WizardState {
             agents: Vec::new(),
             time_range: None,
             workspaces: None,
-            password: None,
-            recovery_secret: None,
-            generate_recovery: true,
-            generate_qr: false,
             title: "cass Archive".to_string(),
-            description: "Encrypted archive of AI coding agent conversations".to_string(),
+            description: "Searchable archive of AI coding agent conversations".to_string(),
             hide_metadata: false,
             share_profile: None,
             output_dir: PathBuf::from("cass-export"),
@@ -132,21 +102,16 @@ impl Default for WizardState {
             secret_scan_has_findings: false,
             secret_scan_has_critical: false,
             secret_scan_count: 0,
-            password_entropy_bits: 0.0,
-            no_encryption: false,
-            unencrypted_confirmed: false,
             final_site_dir: None,
         }
     }
 }
 
 impl WizardState {
-    /// The share profile this export applies (2l1b0.60): the one chosen,
-    /// else the strictest preset for a plaintext export and `team` for an
-    /// encrypted one.
+    /// The share profile this export applies: the one chosen, else `public`.
     pub fn effective_share_profile(&self) -> ShareProfile {
         self.share_profile
-            .unwrap_or_else(|| ShareProfile::default_for(!self.no_encryption))
+            .unwrap_or_else(|| ShareProfile::default_for(false))
     }
 }
 
@@ -158,63 +123,31 @@ fn truncate_sample_title(title: &str) -> String {
     }
 }
 
-fn documentation_summary(
-    summary: &PrePublishSummary,
-    encryption_config: Option<&EncryptionConfig>,
-) -> (PrePublishSummary, ArchiveMode) {
+fn documentation_summary(summary: &PrePublishSummary) -> (PrePublishSummary, ArchiveMode) {
     let mut summary = summary.clone();
-    match encryption_config {
-        Some(config) => {
-            summary.set_encryption_config(&config.key_slots);
-            (summary, ArchiveMode::Encrypted)
-        }
-        None => {
-            summary.encryption_config = None;
-            summary.key_slots.clear();
-            (summary, ArchiveMode::Unencrypted)
-        }
-    }
+    summary.encryption_config = None;
+    summary.key_slots.clear();
+    (summary, ArchiveMode::Unencrypted)
 }
 
-fn wizard_archive_description(no_encryption: bool) -> &'static str {
-    if no_encryption {
-        "Create a searchable web archive without encryption. Published content will be plaintext."
-    } else {
-        "Create an encrypted, searchable web archive of your AI coding agent conversations."
-    }
+fn wizard_archive_description() -> &'static str {
+    "Create a searchable web archive without encryption. Published content will be plaintext."
 }
 
-fn archive_size_summary_line(no_encryption: bool, estimated_size_bytes: usize) -> String {
-    if no_encryption {
-        "  Archive Size:  calculated from the final unencrypted SQLite file after export"
-            .to_string()
-    } else {
-        format!(
-            "  Archive Size:  ~{} (estimated, compressed + encrypted)",
-            format_size(estimated_size_bytes)
-        )
-    }
+fn archive_size_summary_line() -> String {
+    "  Archive Size:  calculated from the final unencrypted SQLite file after export".to_string()
 }
 
-fn summary_security_lines(no_encryption: bool, planned_key_slots: usize) -> [String; 3] {
-    if no_encryption {
-        [
-            "Encryption: Disabled (public plaintext)".to_string(),
-            "Key Derivation: Not applicable".to_string(),
-            "Key Slots: 0".to_string(),
-        ]
-    } else {
-        [
-            "Encryption: AES-256-GCM".to_string(),
-            "Key Derivation: Argon2id".to_string(),
-            format!("Planned Key Slots: {planned_key_slots}"),
-        ]
-    }
+fn summary_security_lines() -> [String; 3] {
+    [
+        "Encryption: Disabled (public plaintext)".to_string(),
+        "Key Derivation: Not applicable".to_string(),
+        "Key Slots: 0".to_string(),
+    ]
 }
 
 pub struct PagesWizard {
     state: WizardState,
-    no_encryption_mode: bool,
 }
 
 impl Default for PagesWizard {
@@ -227,19 +160,12 @@ impl PagesWizard {
     pub fn new() -> Self {
         Self {
             state: WizardState::default(),
-            no_encryption_mode: false,
         }
     }
 
     /// Override the database path used for agent/workspace discovery and export.
     pub fn set_db_path(&mut self, db_path: PathBuf) {
         self.state.db_path = db_path;
-    }
-
-    /// Set whether to skip encryption (DANGEROUS - requires explicit confirmation).
-    pub fn set_no_encryption(&mut self, no_encryption: bool) {
-        self.no_encryption_mode = no_encryption;
-        self.state.no_encryption = no_encryption;
     }
 
     /// Choose the share profile up front (skips the wizard's prompt).
@@ -254,7 +180,7 @@ impl PagesWizard {
         term.clear_screen()?;
         self.print_header(&mut term)?;
 
-        if self.no_encryption_mode && !self.step_unencrypted_warning(&mut term, &theme)? {
+        if !self.step_unencrypted_warning(&mut term, &theme)? {
             writeln!(term, "{}", style("Export cancelled.").yellow())?;
             return Ok(());
         }
@@ -264,14 +190,6 @@ impl PagesWizard {
 
         // Step 2: Secret Scan
         self.step_secret_scan(&mut term, &theme)?;
-
-        // Step 3: Security Configuration
-        if !self.no_encryption_mode {
-            self.step_security_config(&mut term, &theme)?;
-        } else {
-            self.state.generate_recovery = false;
-            self.state.generate_qr = false;
-        }
 
         // Step 4: Site Configuration
         self.step_site_config(&mut term, &theme)?;
@@ -286,7 +204,7 @@ impl PagesWizard {
         }
 
         // Step 7: Safety Confirmation
-        if !self.no_encryption_mode && !self.step_confirmation(&mut term, &theme)? {
+        if !self.step_confirmation(&mut term, &theme)? {
             writeln!(term, "{}", style("Export cancelled.").yellow())?;
             return Ok(());
         }
@@ -348,16 +266,11 @@ impl PagesWizard {
                         writeln!(
                             term,
                             "  {}",
-                            style("Good choice. Export cancelled.").green()
-                        )?;
-                        writeln!(
-                            term,
-                            "  Remove --no-encryption to export with encryption (recommended)."
+                            style("Export cancelled.").yellow()
                         )?;
                         return Ok(false);
                     }
 
-                    self.state.unencrypted_confirmed = true;
                     writeln!(term)?;
                     writeln!(
                         term,
@@ -382,13 +295,9 @@ impl PagesWizard {
         writeln!(
             term,
             "{}",
-            style("🔐 cass Pages Export Wizard").bold().cyan()
+            style("📚 cass Pages Export Wizard").bold().cyan()
         )?;
-        writeln!(
-            term,
-            "{}",
-            wizard_archive_description(self.no_encryption_mode)
-        )?;
+        writeln!(term, "{}", wizard_archive_description())?;
         writeln!(term)?;
         Ok(())
     }
@@ -523,7 +432,7 @@ impl PagesWizard {
         writeln!(term, "{}", style("─".repeat(40)).dim())?;
         writeln!(
             term,
-            "  {} Preliminary source review; the exact staged export will be scanned again before encryption.",
+            "  {} Preliminary source review; the exact staged export will be scanned again before publication.",
             style("ℹ").blue()
         )?;
 
@@ -571,86 +480,8 @@ impl PagesWizard {
             )?;
             writeln!(
                 term,
-                "  Configuration may continue, but only the later exact staged-artifact scan can authorize encryption or publication."
+                "  Configuration may continue, but only the later exact staged-artifact scan can authorize publication."
             )?;
-        }
-
-        Ok(())
-    }
-
-    fn step_security_config(&mut self, term: &mut Term, theme: &ColorfulTheme) -> Result<()> {
-        writeln!(
-            term,
-            "\n{}",
-            style("Step 3 of 9: Security Configuration").bold()
-        )?;
-        writeln!(term, "{}", style("─".repeat(40)).dim())?;
-
-        // Password
-        let password = Password::with_theme(theme)
-            .with_prompt("Archive password (min 8 characters)")
-            .with_confirmation("Confirm password", "Passwords don't match")
-            .validate_with(|input: &String| -> Result<(), &str> {
-                if input.chars().count() >= 8 {
-                    Ok(())
-                } else {
-                    Err("Password must be at least 8 characters")
-                }
-            })
-            .interact()?;
-
-        self.state.password = Some(password.clone());
-        writeln!(term, "  {} Password set", style("✓").green())?;
-
-        // Validate password using new password strength module
-        let validation = validate_password(&password);
-
-        // Calculate and save password entropy for confirmation flow
-        self.state.password_entropy_bits = validation.entropy_bits;
-
-        // Show password strength indicator with visual bar
-        writeln!(
-            term,
-            "    Password strength: {}",
-            format_strength_inline(&validation)
-        )?;
-        writeln!(term, "    Entropy: {:.0} bits", validation.entropy_bits)?;
-
-        // Show improvement suggestions if not strong
-        if validation.strength != PasswordStrength::Strong && !validation.suggestions.is_empty() {
-            writeln!(term, "    {}", style("Suggestions:").dim())?;
-            for suggestion in &validation.suggestions {
-                writeln!(
-                    term,
-                    "      {} {}",
-                    style("•").dim(),
-                    style(suggestion).dim()
-                )?;
-            }
-        }
-
-        // Recovery secret
-        self.state.generate_recovery = Confirm::with_theme(theme)
-            .with_prompt("Generate recovery secret? (recommended)")
-            .default(true)
-            .interact()?;
-
-        if self.state.generate_recovery {
-            writeln!(
-                term,
-                "  {} Recovery secret will be generated",
-                style("✓").green()
-            )?;
-        }
-
-        // QR code
-        self.state.generate_qr = Confirm::with_theme(theme)
-            .with_prompt("Generate QR code for recovery? (for mobile access)")
-            .default(false)
-            .interact()?;
-
-        if self.state.generate_qr {
-            writeln!(term, "  {} QR code will be generated", style("✓").green())?;
         }
 
         Ok(())
@@ -757,10 +588,8 @@ impl PagesWizard {
         // Generate comprehensive summary from database
         writeln!(term, "\n  Generating summary...")?;
         let mut summary = self.generate_prepublish_summary()?;
-        if self.no_encryption_mode {
-            summary.encryption_config = None;
-            summary.key_slots.clear();
-        }
+        summary.encryption_config = None;
+        summary.key_slots.clear();
         self.state.last_summary = Some(summary.clone());
 
         // Display content overview
@@ -782,11 +611,7 @@ impl PagesWizard {
             summary.total_characters,
             format_size(summary.total_characters)
         )?;
-        writeln!(
-            term,
-            "{}",
-            archive_size_summary_line(self.no_encryption_mode, summary.estimated_size_bytes)
-        )?;
+        writeln!(term, "{}", archive_size_summary_line())?;
 
         // Display date range
         writeln!(term, "\n{}", style("📅 DATE RANGE").bold().cyan())?;
@@ -894,9 +719,7 @@ impl PagesWizard {
         // Display security status
         writeln!(term, "\n{}", style("🔒 SECURITY").bold().cyan())?;
         writeln!(term, "{}", style("─".repeat(40)).dim())?;
-        let planned_key_slots =
-            usize::from(self.state.password.is_some()) + usize::from(self.state.generate_recovery);
-        for line in summary_security_lines(self.no_encryption_mode, planned_key_slots) {
+        for line in summary_security_lines() {
             writeln!(term, "  {line}")?;
         }
 
@@ -919,30 +742,8 @@ impl PagesWizard {
         writeln!(term, "\n{}", style("⚙️  CONFIGURATION").bold().cyan())?;
         writeln!(term, "{}", style("─".repeat(40)).dim())?;
         writeln!(term, "  Title: {}", self.state.title)?;
-        writeln!(
-            term,
-            "  Encryption: {}",
-            if self.state.no_encryption {
-                "Disabled (plaintext)"
-            } else {
-                "Enabled"
-            }
-        )?;
+        writeln!(term, "  Encryption: Disabled (plaintext)")?;
         writeln!(term, "  Output: {}", self.state.output_dir.display())?;
-        writeln!(
-            term,
-            "  Recovery Key: {}",
-            if self.state.generate_recovery {
-                "Yes"
-            } else {
-                "No"
-            }
-        )?;
-        writeln!(
-            term,
-            "  QR Code: {}",
-            if self.state.generate_qr { "Yes" } else { "No" }
-        )?;
 
         // Exclusion summary
         let (ws_excluded, conv_excluded, pattern_excluded) =
@@ -1111,14 +912,14 @@ impl PagesWizard {
 
         let config = ConfirmationConfig {
             // Step 2 inspected a mutable live source and is informational only.
-            // Secret-risk approval is intentionally absent here: execute_export
+            // Secret-risk approval is intentionally absent here: step_export
             // scans and gates the exact staged artifact after filtering/export.
             has_secrets: false,
             has_critical_secrets: false,
             secret_count: 0,
-            password_entropy_bits: self.state.password_entropy_bits,
-            has_recovery_key: self.state.generate_recovery,
-            recovery_key_phrase: None, // Will be set after generation
+            password_entropy_bits: f64::INFINITY,
+            has_recovery_key: false,
+            recovery_key_phrase: None,
             summary,
         };
 
@@ -1139,29 +940,8 @@ impl PagesWizard {
                     }
                     flow.complete_current_step();
                 }
-                ConfirmationStep::PasswordStrengthWarning => {
-                    match self.confirm_password_strength(term, theme, &mut flow)? {
-                        PasswordStrengthAction::SetStronger => {
-                            // User wants to set a stronger password - go back
-                            writeln!(
-                                term,
-                                "\n  {} Returning to security configuration...",
-                                style("←").cyan()
-                            )?;
-                            return Ok(false);
-                        }
-                        PasswordStrengthAction::ProceedAnyway => {
-                            flow.complete_current_step();
-                        }
-                        PasswordStrengthAction::Abort => {
-                            return Ok(false);
-                        }
-                    }
-                }
-                ConfirmationStep::RecoveryKeyBackup => {
-                    if !self.confirm_recovery_key(term, theme, &flow)? {
-                        return Ok(false);
-                    }
+                ConfirmationStep::PasswordStrengthWarning
+                | ConfirmationStep::RecoveryKeyBackup => {
                     flow.complete_current_step();
                 }
                 ConfirmationStep::FinalConfirmation => {
@@ -1282,113 +1062,6 @@ impl PagesWizard {
 
         if confirmed {
             writeln!(term, "  {} Content reviewed", style("✓").green())?;
-        }
-        Ok(confirmed)
-    }
-
-    /// Handle password strength warning.
-    fn confirm_password_strength(
-        &self,
-        term: &mut Term,
-        theme: &ColorfulTheme,
-        flow: &mut ConfirmationFlow,
-    ) -> Result<PasswordStrengthAction> {
-        writeln!(
-            term,
-            "\n  {}",
-            style("🔐 PASSWORD STRENGTH WARNING").yellow().bold()
-        )?;
-        writeln!(term)?;
-        writeln!(
-            term,
-            "  Your password has estimated entropy of {:.0} bits.",
-            self.state.password_entropy_bits
-        )?;
-        writeln!(term)?;
-        writeln!(term, "  Recommended minimum: 60 bits")?;
-        writeln!(term)?;
-        writeln!(
-            term,
-            "  A password with low entropy could potentially be cracked"
-        )?;
-        writeln!(
-            term,
-            "  by a determined attacker with sufficient resources."
-        )?;
-        writeln!(term)?;
-        writeln!(term, "  For long-term security, consider:")?;
-        writeln!(term, "  • Using a longer password (16+ characters)")?;
-        writeln!(term, "  • Including numbers, symbols, and mixed case")?;
-        writeln!(term, "  • Using a passphrase of 5+ random words")?;
-        writeln!(term)?;
-
-        let options = vec![
-            "[S] Set a stronger password",
-            "[P] Proceed with current password (not recommended)",
-            "[A] Abort export",
-        ];
-
-        let selection = Select::with_theme(theme)
-            .with_prompt("What would you like to do?")
-            .items(&options)
-            .default(0)
-            .interact()?;
-
-        let action = match selection {
-            0 => PasswordStrengthAction::SetStronger,
-            1 => {
-                writeln!(
-                    term,
-                    "  {} Password warning acknowledged",
-                    style("⚠").yellow()
-                )?;
-                PasswordStrengthAction::ProceedAnyway
-            }
-            _ => PasswordStrengthAction::Abort,
-        };
-
-        flow.set_password_action(action);
-        Ok(action)
-    }
-
-    /// Confirm recovery key backup.
-    fn confirm_recovery_key(
-        &self,
-        term: &mut Term,
-        theme: &ColorfulTheme,
-        _flow: &ConfirmationFlow,
-    ) -> Result<bool> {
-        writeln!(
-            term,
-            "\n  {}",
-            style("💾 RECOVERY KEY BACKUP").cyan().bold()
-        )?;
-        writeln!(term)?;
-        writeln!(
-            term,
-            "  A recovery key will be generated. This is the ONLY way"
-        )?;
-        writeln!(term, "  to recover your data if you forget your password.")?;
-        writeln!(term)?;
-        writeln!(
-            term,
-            "  {} If you lose both your password AND the recovery key,",
-            style("⚠").yellow()
-        )?;
-        writeln!(term, "     your data will be permanently inaccessible.")?;
-        writeln!(term)?;
-
-        let confirmed = Confirm::with_theme(theme)
-            .with_prompt("I understand that I must save the recovery key securely")
-            .default(false)
-            .interact()?;
-
-        if confirmed {
-            writeln!(
-                term,
-                "  {} Recovery key backup confirmed",
-                style("✓").green()
-            )?;
         }
         Ok(confirmed)
     }
@@ -1567,7 +1240,7 @@ impl PagesWizard {
             let theme = ColorfulTheme::default();
             let acknowledgment: String = Input::with_theme(&theme)
                 .with_prompt(
-                    "Type exactly \"I understand the risks\" to encrypt this staged artifact",
+                    "Type exactly \"I understand the risks\" to publish this staged artifact",
                 )
                 .interact_text()?;
             if acknowledgment.trim() != "I understand the risks" {
@@ -1580,76 +1253,26 @@ impl PagesWizard {
             )?;
         }
 
-        // Phase 2: Encryption (skip if no_encryption mode)
-        let encryption_config = if self.no_encryption_mode {
-            writeln!(term)?;
-            writeln!(
-                term,
-                "  {} Skipping encryption (unencrypted mode)",
-                style("⚠").yellow()
-            )?;
-            writeln!(
-                term,
-                "  {}",
-                style("WARNING: All content will be publicly readable!").red()
-            )?;
+        // Phase 2: Stage unencrypted payload
+        writeln!(term)?;
+        writeln!(
+            term,
+            "  {}",
+            style("WARNING: Archive will be exported WITHOUT encryption (publicly readable)!").red()
+        )?;
 
-            // For unencrypted mode, just copy the export.db to payload directory
-            let payload_dir = encrypted_dir.join("payload");
-            std::fs::create_dir_all(&payload_dir)?;
-            let dest_db = payload_dir.join("data.db");
-            std::fs::copy(&export_db_path, &dest_db)?;
+        let payload_dir = encrypted_dir.join("payload");
+        std::fs::create_dir_all(&payload_dir)?;
+        let dest_db = payload_dir.join("data.db");
+        std::fs::copy(&export_db_path, &dest_db)?;
 
-            // Write minimal config.json for unencrypted bundle
-            let db_size = std::fs::metadata(&dest_db).map(|m| m.len()).unwrap_or(0);
-            let config = unencrypted_bundle_config(db_size);
-            let config_path = encrypted_dir.join("config.json");
-            crate::pages::write_file_durably(
-                &config_path,
-                serde_json::to_string_pretty(&config)?.as_bytes(),
-            )?;
-            None
-        } else {
-            let pb2 = ProgressBar::new_spinner();
-            let spinner_style = ProgressStyle::default_spinner()
-                .template("{spinner:.cyan} {msg}")
-                .context("build progress spinner style for encryption phase")?;
-            pb2.set_style(spinner_style);
-            pb2.enable_steady_tick(Duration::from_millis(100));
-            pb2.set_message("Encrypting archive...");
-
-            // Initialize encryption engine
-            let mut enc_engine = EncryptionEngine::default();
-
-            // Add password slot
-            if let Some(password) = &self.state.password {
-                enc_engine.add_password_slot(password)?;
-            }
-
-            // Generate and add recovery secret if requested
-            if self.state.generate_recovery {
-                let mut recovery_bytes = [0u8; 32];
-                use rand::Rng;
-                let mut rng = rand::rng();
-                rng.fill_bytes(&mut recovery_bytes);
-                enc_engine.add_recovery_slot(&recovery_bytes)?;
-                self.state.recovery_secret = Some(recovery_bytes.to_vec());
-            }
-
-            // Guard: refuse to produce an archive with zero key slots
-            if enc_engine.key_slot_count() == 0 {
-                bail!(
-                    "No encryption key slots configured — archive would be permanently undecryptable"
-                );
-            }
-
-            // Encrypt the database
-            let encryption_config =
-                enc_engine.encrypt_file(&export_db_path, &encrypted_dir, |_, _| {})?;
-
-            pb2.finish_with_message("✓ Encryption complete");
-            Some(encryption_config)
-        };
+        let db_size = std::fs::metadata(&dest_db).map(|m| m.len()).unwrap_or(0);
+        let config = unencrypted_bundle_config(db_size);
+        let config_path = encrypted_dir.join("config.json");
+        crate::pages::write_file_durably(
+            &config_path,
+            serde_json::to_string_pretty(&config)?.as_bytes(),
+        )?;
 
         // Phase 3: Build static site bundle
         let pb3 = ProgressBar::new_spinner();
@@ -1662,17 +1285,8 @@ impl PagesWizard {
 
         // Generate documentation
         let generated_docs = if let Some(ref summary) = self.state.last_summary {
-            let (documentation_summary, archive_mode) =
-                documentation_summary(summary, encryption_config.as_ref());
-            let mut doc_config = DocConfig::new().with_archive_mode(archive_mode);
-            if let Some(config) = encryption_config.as_ref() {
-                doc_config = doc_config.with_argon_params(
-                    config.kdf_defaults.memory_kb,
-                    config.kdf_defaults.iterations,
-                    config.kdf_defaults.parallelism,
-                );
-            }
-
+            let (documentation_summary, archive_mode) = documentation_summary(summary);
+            let doc_config = DocConfig::new().with_archive_mode(archive_mode);
             let doc_generator = DocumentationGenerator::new(doc_config, documentation_summary);
             doc_generator.generate_all()
         } else {
@@ -1684,8 +1298,6 @@ impl PagesWizard {
             title: self.state.title.clone(),
             description: self.state.description.clone(),
             hide_metadata: self.state.hide_metadata,
-            recovery_secret: self.state.recovery_secret.clone(),
-            generate_qr: self.state.generate_qr,
             generated_docs,
             analytics_status: None,
         };
@@ -1727,36 +1339,6 @@ impl PagesWizard {
             style("✓").green(),
             style(&bundle_result.fingerprint).cyan()
         )?;
-
-        // Display recovery secret location if generated
-        if self.state.recovery_secret.is_some() {
-            writeln!(term)?;
-            writeln!(
-                term,
-                "  {} Recovery secret saved to: {}",
-                style("⚠").yellow().bold(),
-                style(
-                    bundle_result
-                        .private_dir
-                        .join("recovery-secret.txt")
-                        .display()
-                )
-                .cyan()
-            )?;
-            writeln!(
-                term,
-                "  {}",
-                style("Store this file securely - it can unlock your archive if you forget the password.").dim()
-            )?;
-        }
-
-        if self.state.generate_qr {
-            writeln!(
-                term,
-                "  {} QR codes saved to private directory",
-                style("✓").green()
-            )?;
-        }
 
         Ok(())
     }
@@ -1879,98 +1461,19 @@ mod tests {
     }
 
     #[test]
-    fn documentation_uses_key_slots_from_the_emitted_encryption_config() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let input = temp.path().join("export.db");
-        let encrypted_dir = temp.path().join("encrypted");
-        std::fs::write(&input, b"committed export bytes")?;
-
-        let mut engine = EncryptionEngine::new(1024)?;
-        engine.add_password_slot("correct horse battery staple")?;
-        engine.add_recovery_slot(&[7_u8; 32])?;
-        let emitted = engine.encrypt_file(&input, &encrypted_dir, |_, _| {})?;
-
-        let summary = PrePublishSummary {
-            total_conversations: 0,
-            total_messages: 0,
-            total_characters: 0,
-            estimated_size_bytes: 0,
-            earliest_timestamp: None,
-            latest_timestamp: None,
-            date_histogram: Vec::new(),
-            workspaces: Vec::new(),
-            agents: Vec::new(),
-            secret_scan: Default::default(),
-            encryption_config: None,
-            key_slots: Vec::new(),
-            generated_at: chrono::Utc::now(),
-        };
-
-        let (documented, mode) = documentation_summary(&summary, Some(&emitted));
-        assert_eq!(mode, ArchiveMode::Encrypted);
-        assert_eq!(documented.key_slots.len(), emitted.key_slots.len());
-        assert_eq!(documented.key_slots.len(), 2);
-        assert_eq!(
-            documented.key_slots[0].slot_type,
-            crate::pages::summary::KeySlotType::Password
-        );
-        assert_eq!(
-            documented.key_slots[1].slot_type,
-            crate::pages::summary::KeySlotType::Recovery
-        );
-        assert_eq!(
-            documented
-                .encryption_config
-                .as_ref()
-                .map(|config| config.key_slot_count),
-            Some(2)
-        );
-
-        let security_doc = DocumentationGenerator::new(
-            DocConfig::new().with_archive_mode(mode).with_argon_params(
-                emitted.kdf_defaults.memory_kb,
-                emitted.kdf_defaults.iterations,
-                emitted.kdf_defaults.parallelism,
-            ),
-            documented.clone(),
-        )
-        .generate_security_doc();
-        assert!(security_doc.content.contains(&format!(
-            "m={}KB, t={}, p={}",
-            emitted.kdf_defaults.memory_kb,
-            emitted.kdf_defaults.iterations,
-            emitted.kdf_defaults.parallelism
-        )));
-
-        let (unencrypted, mode) = documentation_summary(&documented, None);
-        assert_eq!(mode, ArchiveMode::Unencrypted);
-        assert!(unencrypted.key_slots.is_empty());
-        assert!(unencrypted.encryption_config.is_none());
-        Ok(())
-    }
-
-    #[test]
     fn unencrypted_summary_copy_never_claims_encrypted_output() {
-        assert!(wizard_archive_description(true).contains("plaintext"));
+        assert!(wizard_archive_description().contains("plaintext"));
 
-        let size_line = archive_size_summary_line(true, 1_048_576);
+        let size_line = archive_size_summary_line();
         assert!(size_line.contains("final unencrypted SQLite file"));
         assert!(!size_line.contains("compressed + encrypted"));
 
-        let security_lines = summary_security_lines(true, 2).join("\n");
+        let security_lines = summary_security_lines().join("\n");
         assert!(security_lines.contains("Encryption: Disabled (public plaintext)"));
         assert!(security_lines.contains("Key Derivation: Not applicable"));
         assert!(security_lines.contains("Key Slots: 0"));
         assert!(!security_lines.contains("AES-256-GCM"));
         assert!(!security_lines.contains("Argon2id"));
-    }
-
-    #[test]
-    fn encrypted_summary_copy_reports_planned_slots() {
-        let security_lines = summary_security_lines(false, 2).join("\n");
-        assert!(security_lines.contains("Encryption: AES-256-GCM"));
-        assert!(security_lines.contains("Key Derivation: Argon2id"));
-        assert!(security_lines.contains("Planned Key Slots: 2"));
     }
 
     // =========================
@@ -1986,17 +1489,11 @@ mod tests {
         assert!(state.time_range.is_none());
         assert!(state.workspaces.is_none());
 
-        // Security defaults
-        assert!(state.password.is_none());
-        assert!(state.recovery_secret.is_none());
-        assert!(state.generate_recovery); // Should default to true
-        assert!(!state.generate_qr); // Should default to false
-
         // Site configuration defaults
         assert_eq!(state.title, "cass Archive");
         assert_eq!(
             state.description,
-            "Encrypted archive of AI coding agent conversations"
+            "Searchable archive of AI coding agent conversations"
         );
         assert!(!state.hide_metadata);
 
@@ -2013,13 +1510,6 @@ mod tests {
         assert!(!state.secret_scan_has_findings);
         assert!(!state.secret_scan_has_critical);
         assert_eq!(state.secret_scan_count, 0);
-
-        // Password entropy default
-        assert_eq!(state.password_entropy_bits, 0.0);
-
-        // Unencrypted mode defaults
-        assert!(!state.no_encryption);
-        assert!(!state.unencrypted_confirmed);
     }
 
     #[test]
@@ -2034,7 +1524,6 @@ mod tests {
         let state = WizardState {
             title: "Custom Title".to_string(),
             agents: vec!["claude".to_string(), "codex".to_string()],
-            no_encryption: true,
             ..Default::default()
         };
 
@@ -2044,7 +1533,6 @@ mod tests {
             cloned.agents,
             vec!["claude".to_string(), "codex".to_string()]
         );
-        assert!(cloned.no_encryption);
     }
 
     // =========================
@@ -2054,31 +1542,14 @@ mod tests {
     #[test]
     fn pages_wizard_new_initializes_default_state() {
         let wizard = PagesWizard::new();
-        // Access state through the no_encryption_mode field which is false by default
-        assert!(!wizard.no_encryption_mode);
+        assert_eq!(wizard.state.title, "cass Archive");
     }
 
     #[test]
     fn pages_wizard_default_impl() {
         let wizard1 = PagesWizard::new();
         let wizard2 = PagesWizard::default();
-        // Both should have same default state
-        assert_eq!(wizard1.no_encryption_mode, wizard2.no_encryption_mode);
-    }
-
-    #[test]
-    fn pages_wizard_set_no_encryption() {
-        let mut wizard = PagesWizard::new();
-        assert!(!wizard.no_encryption_mode);
-        assert!(!wizard.state.no_encryption);
-
-        wizard.set_no_encryption(true);
-        assert!(wizard.no_encryption_mode);
-        assert!(wizard.state.no_encryption);
-
-        wizard.set_no_encryption(false);
-        assert!(!wizard.no_encryption_mode);
-        assert!(!wizard.state.no_encryption);
+        assert_eq!(wizard1.state.title, wizard2.state.title);
     }
 
     // Test for pages_wizard_set_include_attachments removed: flag removed

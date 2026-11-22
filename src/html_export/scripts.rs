@@ -4,7 +4,6 @@
 //! - Search functionality (text search with highlighting)
 //! - Theme toggle (light/dark mode)
 //! - Tool call expand/collapse
-//! - Encryption/decryption (Web Crypto API)
 
 use super::template::ExportOptions;
 use tracing::debug;
@@ -37,11 +36,6 @@ pub fn generate_scripts(options: &ExportOptions) -> ScriptBundle {
         scripts.push(generate_tool_toggle_js());
     }
 
-    // Encryption/decryption
-    if options.encrypt {
-        scripts.push(generate_decryption_js());
-    }
-
     // World-class UI/UX enhancements (always included)
     scripts.push(generate_world_class_js());
 
@@ -55,7 +49,6 @@ pub fn generate_scripts(options: &ExportOptions) -> ScriptBundle {
         include_search = options.include_search,
         include_theme_toggle = options.include_theme_toggle,
         show_tool_calls = options.show_tool_calls,
-        encrypt = options.encrypt,
         inline_bytes = inline_js.len(),
         "Generated inline scripts"
     );
@@ -854,166 +847,6 @@ if ('ontouchstart' in window) {
     .to_string()
 }
 
-fn generate_decryption_js() -> String {
-    r#"// Decryption using Web Crypto API
-const CASS_HTML_PBKDF2_ITERATIONS = 600000;
-const CASS_HTML_SALT_BYTES = 16;
-const CASS_HTML_IV_BYTES = 12;
-const CASS_HTML_GCM_TAG_BYTES = 16;
-
-const Crypto = {
-    modal: null,
-    form: null,
-    errorEl: null,
-
-    init() {
-        this.modal = $('#password-modal');
-        this.form = $('#password-form');
-        this.errorEl = $('#decrypt-error');
-
-        if (!this.modal || !this.form) return;
-
-        this.form.addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.decrypt();
-        });
-    },
-
-    async decrypt() {
-        const passphrase = $('#password-input').value;
-        if (!passphrase) return;
-
-        try {
-            this.errorEl.hidden = true;
-
-            // Get encrypted content
-            const encryptedEl = $('#encrypted-content');
-            if (!encryptedEl) throw new Error('No encrypted content found');
-
-            const encryptedData = JSON.parse(encryptedEl.textContent);
-            const { salt, iv, ciphertext, iterations } = encryptedData;
-            if (
-                typeof salt !== 'string'
-                || typeof iv !== 'string'
-                || typeof ciphertext !== 'string'
-                || iterations !== CASS_HTML_PBKDF2_ITERATIONS
-            ) {
-                throw new Error('Invalid encryption parameters');
-            }
-            const saltBytes = this.base64ToBytes(salt, CASS_HTML_SALT_BYTES, 'salt');
-            const ivBytes = this.base64ToBytes(iv, CASS_HTML_IV_BYTES, 'IV');
-            const ciphertextBytes = this.base64ToBytes(ciphertext, null, 'ciphertext');
-            if (ciphertextBytes.byteLength < CASS_HTML_GCM_TAG_BYTES) {
-                throw new Error('Invalid encrypted ciphertext length');
-            }
-
-            // Derive key from password
-            const enc = new TextEncoder();
-            const keyMaterial = await crypto.subtle.importKey(
-                'raw',
-                enc.encode(passphrase),
-                'PBKDF2',
-                false,
-                ['deriveBits', 'deriveKey']
-            );
-
-            const key = await crypto.subtle.deriveKey(
-                {
-                    name: 'PBKDF2',
-                    salt: saltBytes,
-                    iterations: iterations,
-                    hash: 'SHA-256'
-                },
-                keyMaterial,
-                { name: 'AES-GCM', length: 256 },
-                false,
-                ['decrypt']
-            );
-
-            // Decrypt
-            const decrypted = await crypto.subtle.decrypt(
-                {
-                    name: 'AES-GCM',
-                    iv: ivBytes
-                },
-                key,
-                ciphertextBytes
-            );
-
-            // Replace content
-            const dec = new TextDecoder();
-            const plaintext = dec.decode(decrypted);
-            const conversation = $('#conversation');
-            conversation.innerHTML = plaintext;
-
-            // The real title and header metadata are sealed in the payload;
-            // the page shows only a generic header until unlock.
-            const sealedHeader = conversation.querySelector('#cass-sealed-header');
-            if (sealedHeader) {
-                const headerContent = $('.header .header-content');
-                if (headerContent) {
-                    headerContent.innerHTML = sealedHeader.innerHTML;
-                }
-                const realTitle = sealedHeader.getAttribute('data-title');
-                if (realTitle) {
-                    document.title = realTitle;
-                    const footerTitle = $('.print-footer-title');
-                    if (footerTitle) {
-                        footerTitle.textContent = realTitle;
-                    }
-                }
-                sealedHeader.remove();
-            }
-
-            // Hide modal
-            this.modal.hidden = true;
-            this.form.reset();
-
-            // Re-initialize tool calls and popovers
-            if (typeof ToolCalls !== 'undefined') {
-                ToolCalls.init();
-            }
-            if (typeof ToolPopovers !== 'undefined') {
-                ToolPopovers.init();
-            }
-            if (typeof Search !== 'undefined') {
-                Search.init();
-            }
-            if (typeof WorldClass !== 'undefined') {
-                WorldClass.init();
-            }
-            if (typeof __cassAttachCodeCopyButtons === 'function') {
-                __cassAttachCodeCopyButtons();
-            }
-
-        } catch (e) {
-            this.errorEl.textContent = 'Decryption failed. Wrong password?';
-            this.errorEl.hidden = false;
-        }
-    },
-
-    base64ToBytes(base64, expectedLength = null, fieldName = 'value') {
-        if (
-            typeof base64 !== 'string'
-            || base64.length % 4 !== 0
-            || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64)
-        ) {
-            throw new Error(`Invalid base64 ${fieldName}`);
-        }
-        const binary = atob(base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-            bytes[i] = binary.charCodeAt(i);
-        }
-        if (expectedLength !== null && bytes.byteLength !== expectedLength) {
-            throw new Error(`Invalid ${fieldName} length`);
-        }
-        return bytes;
-    }
-};"#
-    .to_string()
-}
-
 fn generate_init_js(options: &ExportOptions) -> String {
     let mut inits = Vec::new();
 
@@ -1030,10 +863,6 @@ fn generate_init_js(options: &ExportOptions) -> String {
             "try { ToolCalls.init(); } catch (e) { console.error('ToolCalls init failed', e); }",
         );
         inits.push("try { ToolPopovers.init(); } catch (e) { console.error('ToolPopovers init failed', e); }");
-    }
-
-    if options.encrypt {
-        inits.push("try { Crypto.init(); } catch (e) { console.error('Crypto init failed', e); }");
     }
 
     // World-class UI/UX enhancements (always init)
@@ -1120,9 +949,8 @@ mod tests {
     }
 
     #[test]
-    fn test_search_init_is_idempotent_for_decryption_reinit() {
+    fn test_search_init_is_idempotent() {
         let opts = ExportOptions {
-            encrypt: true,
             include_search: true,
             ..Default::default()
         };
@@ -1166,18 +994,6 @@ mod tests {
             bundle,
             "try {\n            localStorage.setItem('cass-theme', next);\n        } catch (_) {}"
         );
-    }
-
-    #[test]
-    fn test_generate_scripts_includes_encryption() {
-        let opts = ExportOptions {
-            encrypt: true,
-            ..Default::default()
-        };
-        let bundle = generate_scripts(&opts);
-
-        assert_inline_js_contains!(bundle, "const Crypto");
-        assert_inline_js_contains!(bundle, "crypto.subtle");
     }
 
     #[test]
@@ -1338,51 +1154,5 @@ mod tests {
 
         // Re-init guards
         assert_inline_js_contains!(bundle, "header.dataset.toolToggleBound");
-    }
-
-    #[test]
-    fn test_tool_popovers_reinit_after_decryption() {
-        let opts = ExportOptions {
-            encrypt: true,
-            show_tool_calls: true,
-            ..Default::default()
-        };
-        let bundle = generate_scripts(&opts);
-
-        // After decryption, both ToolCalls and ToolPopovers should be reinitialized
-        assert_inline_js_contains!(bundle, "ToolCalls.init()");
-        assert_inline_js_contains!(bundle, "ToolPopovers.init()");
-        // No external highlighter ships with the export; the decryption path
-        // must not reference Prism at all.
-        let lowered = bundle.inline_js.to_ascii_lowercase();
-        assert!(
-            !lowered.contains("prism"),
-            "Prism reference left in inline JS"
-        );
-        assert_inline_js_contains!(bundle, "__cassAttachCodeCopyButtons();");
-        assert_inline_js_contains!(bundle, "const __cassAttachCodeCopyButtons");
-        assert_inline_js_contains!(bundle, "pre.querySelector('.copy-code-btn')");
-    }
-
-    #[test]
-    fn test_decryption_rejects_mutated_or_oversized_kdf_metadata() {
-        let opts = ExportOptions {
-            encrypt: true,
-            ..Default::default()
-        };
-        let bundle = generate_scripts(&opts);
-
-        assert_inline_js_contains!(bundle, "const CASS_HTML_PBKDF2_ITERATIONS = 600000;");
-        assert_inline_js_contains!(bundle, "iterations !== CASS_HTML_PBKDF2_ITERATIONS");
-        assert_inline_js_contains!(
-            bundle,
-            "this.base64ToBytes(salt, CASS_HTML_SALT_BYTES, 'salt')"
-        );
-        assert_inline_js_contains!(bundle, "this.base64ToBytes(iv, CASS_HTML_IV_BYTES, 'IV')");
-        assert_inline_js_contains!(
-            bundle,
-            "ciphertextBytes.byteLength < CASS_HTML_GCM_TAG_BYTES"
-        );
-        assert_inline_js_contains!(bundle, "!/^[A-Za-z0-9+/]*={0,2}$/.test(base64)");
     }
 }

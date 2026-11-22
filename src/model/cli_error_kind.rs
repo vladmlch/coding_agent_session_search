@@ -121,8 +121,6 @@ pub enum ErrorKind {
     PackUnsupportedFormat,
     Pages,
     ParseError,
-    PasswordReadError,
-    PasswordRequired,
     /// A query nested deeper than the grammar's stack bound
     /// (`search::query::MAX_QUERY_NESTING_DEPTH`) — refused before any
     /// lane runs (query-nesting-depth campaign, 2026-11-12).
@@ -234,8 +232,6 @@ impl ErrorKind {
             Self::PackUnsupportedFormat => "pack-unsupported-format",
             Self::Pages => "pages",
             Self::ParseError => "parse-error",
-            Self::PasswordReadError => "password-read-error",
-            Self::PasswordRequired => "password-required",
             Self::QueryDepthExceeded => "query-depth-exceeded",
             Self::RebuildError => "rebuild-error",
             Self::RepairError => "repair-error",
@@ -338,8 +334,6 @@ impl ErrorKind {
             "pack-unsupported-format" => Self::PackUnsupportedFormat,
             "pages" => Self::Pages,
             "parse-error" => Self::ParseError,
-            "password-read-error" => Self::PasswordReadError,
-            "password-required" => Self::PasswordRequired,
             "query-depth-exceeded" => Self::QueryDepthExceeded,
             "rebuild-error" => Self::RebuildError,
             "repair-error" => Self::RepairError,
@@ -442,8 +436,6 @@ impl ErrorKind {
             Self::PackUnsupportedFormat,
             Self::Pages,
             Self::ParseError,
-            Self::PasswordReadError,
-            Self::PasswordRequired,
             Self::QueryDepthExceeded,
             Self::RebuildError,
             Self::RepairError,

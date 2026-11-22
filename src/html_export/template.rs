@@ -10,8 +10,8 @@
 
 use std::time::Instant;
 
-use super::{encryption, filename, renderer, scripts, styles};
-use tracing::{debug, info, trace, warn};
+use super::{filename, renderer, scripts, styles};
+use tracing::{debug, info, trace};
 
 /// Errors that can occur during template generation.
 #[derive(Debug, thiserror::Error)]
@@ -22,9 +22,6 @@ pub enum TemplateError {
     /// Rendering failed
     #[error("render failed: {0}")]
     RenderFailed(String),
-    /// Encryption required but not provided
-    #[error("encryption required but no key provided")]
-    EncryptionRequired,
 }
 
 /// Options for HTML export.
@@ -45,9 +42,6 @@ pub struct ExportOptions {
 
     /// Initial theme used when the browser has no saved export preference
     pub default_theme: String,
-
-    /// Encrypt the conversation content
-    pub encrypt: bool,
 
     /// Include print-optimized styles
     pub print_styles: bool,
@@ -149,7 +143,6 @@ impl Default for ExportOptions {
             include_search: true,
             include_theme_toggle: true,
             default_theme: "dark".to_string(),
-            encrypt: false,
             print_styles: true,
             agent_name: None,
             show_timestamps: true,
@@ -176,9 +169,6 @@ pub struct HtmlTemplate {
 
     /// Main content HTML
     pub content: String,
-
-    /// Whether content is encrypted
-    pub encrypted: bool,
 
     /// Metadata for the header section
     pub metadata: TemplateMetadata,
@@ -211,14 +201,6 @@ pub struct TemplateMetadata {
     /// Source project/directory
     pub project: Option<String>,
 }
-
-/// Title shown before an encrypted export is unlocked. Nothing derived from
-/// the conversation may appear outside the ciphertext (2l1b0.67).
-pub const ENCRYPTED_PUBLIC_TITLE: &str = "Encrypted conversation";
-
-/// Id of the `<template>` that carries the real header inside the encrypted
-/// payload; the decrypt handler moves it into the page header after unlock.
-pub const SEALED_HEADER_ID: &str = "cass-sealed-header";
 
 /// Inner HTML of the page header: the title and the metadata line.
 fn header_content_html(title: &str, metadata: &TemplateMetadata) -> String {
@@ -301,27 +283,7 @@ fn header_content_html(title: &str, metadata: &TemplateMetadata) -> String {
     )
 }
 
-/// The real header, sealed inside the encrypted payload. The title is also
-/// carried as an attribute so the decrypt handler can restore
-/// `document.title` and the print footer.
-fn sealed_header_fragment(title: &str, metadata: &TemplateMetadata) -> String {
-    format!(
-        r#"<template id="{SEALED_HEADER_ID}" data-title="{}">{}</template>"#,
-        html_escape(title),
-        header_content_html(title, metadata)
-    )
-}
-
 impl HtmlTemplate {
-    /// The title visible without the password.
-    fn public_title(&self) -> &str {
-        if self.encrypted {
-            ENCRYPTED_PUBLIC_TITLE
-        } else {
-            &self.title
-        }
-    }
-
     /// Generate the complete HTML document.
     pub fn render(&self, options: &ExportOptions) -> String {
         let _started = Instant::now();
@@ -346,24 +308,6 @@ impl HtmlTemplate {
             String::new()
         };
 
-        let password_modal = if self.encrypted {
-            r#"
-        <!-- Password modal for encrypted content -->
-        <div id="password-modal" class="decrypt-modal" role="dialog" aria-labelledby="modal-title" aria-modal="true">
-            <div class="decrypt-form">
-                <h2 id="modal-title">Enter Password</h2>
-                <p>This conversation is encrypted. Enter the password to view.</p>
-                <form id="password-form">
-                    <input type="password" id="password-input" placeholder="Password" autocomplete="current-password" required>
-                    <button type="submit">Decrypt</button>
-                </form>
-                <p id="decrypt-error" class="decrypt-error" hidden></p>
-            </div>
-        </div>"#
-        } else {
-            ""
-        };
-
         let toolbar = self.render_toolbar(options);
         let header = self.render_header();
 
@@ -373,7 +317,6 @@ impl HtmlTemplate {
             syntax_highlighting = options.syntax_highlighting,
             include_search = options.include_search,
             include_theme_toggle = options.include_theme_toggle,
-            encrypt = options.encrypt,
             print_styles = options.print_styles,
             "Preparing HTML render"
         );
@@ -408,7 +351,6 @@ impl HtmlTemplate {
         <main id="conversation" class="conversation" role="main">
 {content}
         </main>
-{password_modal}
     </div>
     <!-- Floating navigation -->
     <nav class="floating-nav" id="floating-nav" aria-label="Quick navigation">
@@ -424,30 +366,20 @@ impl HtmlTemplate {
     </script>
 </body>
 </html>"#,
-            title = html_escape(self.public_title()),
+            title = html_escape(&self.title),
             default_theme = default_theme,
             critical_css = critical_css,
             print_styles = print_styles,
             header = header,
             toolbar = toolbar,
             content = self.content,
-            password_modal = password_modal,
             inline_js = self.inline_js,
             print_footer = print_footer,
         )
     }
 
     fn render_header(&self) -> String {
-        // An encrypted export shows a generic header; the real one is sealed
-        // in the payload (`sealed_header_fragment`) and restored on unlock.
-        let content = if self.encrypted {
-            format!(
-                r#"<h1 class="header-title">{}</h1>"#,
-                html_escape(ENCRYPTED_PUBLIC_TITLE)
-            )
-        } else {
-            header_content_html(&self.title, &self.metadata)
-        };
+        let content = header_content_html(&self.title, &self.metadata);
 
         // Header with terminal-style traffic lights (via CSS ::before)
         // The header-content div is offset to make room for the traffic lights
@@ -509,7 +441,7 @@ impl HtmlTemplate {
         <span class="print-footer-title">{}</span>
         <span class="print-footer-page"></span>
     </div>"#,
-            html_escape(self.public_title())
+            html_escape(&self.title)
         )
     }
 }
@@ -548,7 +480,6 @@ impl HtmlExporter {
             print_css: styles.print_css,
             inline_js: scripts.inline_js,
             content: String::new(),
-            encrypted: self.options.encrypt,
             metadata: TemplateMetadata::default(),
         }
     }
@@ -562,7 +493,6 @@ impl HtmlExporter {
         title: &str,
         groups: &[renderer::MessageGroup],
         metadata: TemplateMetadata,
-        password: Option<&str>,
     ) -> Result<String, TemplateError> {
         let started = Instant::now();
         info!(
@@ -570,7 +500,6 @@ impl HtmlExporter {
             operation = "export_messages",
             group_count = groups.len(),
             total_tool_calls = groups.iter().map(|g| g.tool_count()).sum::<usize>(),
-            encrypt = self.options.encrypt,
             include_search = self.options.include_search,
             include_theme_toggle = self.options.include_theme_toggle,
             print_styles = self.options.print_styles,
@@ -590,47 +519,16 @@ impl HtmlExporter {
         };
 
         let render_started = Instant::now();
-        let rendered = renderer::render_message_groups(groups, &render_options)
+        let content = renderer::render_message_groups(groups, &render_options)
             .map_err(|e| TemplateError::RenderFailed(e.to_string()))?;
         debug!(
             component = "renderer",
             operation = "render_message_groups_complete",
             duration_ms = render_started.elapsed().as_millis(),
-            bytes = rendered.len(),
+            bytes = content.len(),
             groups = groups.len(),
             "Message groups rendered"
         );
-
-        let content = if self.options.encrypt {
-            let password = match password {
-                Some(pw) => pw,
-                None => {
-                    warn!(
-                        component = "encryption",
-                        operation = "encrypt_payload",
-                        "Encryption requested but no password provided"
-                    );
-                    return Err(TemplateError::EncryptionRequired);
-                }
-            };
-            debug!(
-                component = "encryption",
-                operation = "encrypt_payload",
-                plaintext_bytes = rendered.len(),
-                "Encrypting rendered HTML"
-            );
-            // The real title and header metadata travel inside the ciphertext.
-            let sealed = format!("{}{rendered}", sealed_header_fragment(title, &metadata));
-            let encrypted = encryption::encrypt_content(
-                &sealed,
-                password,
-                &encryption::EncryptionParams::default(),
-            )
-            .map_err(|e| TemplateError::RenderFailed(e.to_string()))?;
-            encryption::render_encrypted_placeholder(&encrypted)
-        } else {
-            rendered
-        };
 
         let styles_started = Instant::now();
         let styles = styles::generate_styles(&self.options);
@@ -659,7 +557,6 @@ impl HtmlExporter {
             print_css: styles.print_css,
             inline_js: scripts.inline_js,
             content,
-            encrypted: self.options.encrypt,
             metadata,
         };
 
@@ -738,10 +635,6 @@ mod tests {
             TemplateError::RenderFailed("bad markdown".to_string()).to_string(),
             "render failed: bad markdown"
         );
-        assert_eq!(
-            TemplateError::EncryptionRequired.to_string(),
-            "encryption required but no key provided"
-        );
     }
 
     #[test]
@@ -755,7 +648,6 @@ mod tests {
     fn test_export_options_default() {
         let opts = ExportOptions::default();
         assert!(opts.syntax_highlighting);
-        assert!(!opts.encrypt);
         assert_eq!(opts.default_theme, "dark");
     }
 
@@ -769,7 +661,6 @@ mod tests {
             print_css: String::new(),
             inline_js: String::new(),
             content: "<p>ok</p>".to_string(),
-            encrypted: false,
             metadata: TemplateMetadata::default(),
         };
         let html = template.render(&ExportOptions::default());
@@ -798,7 +689,6 @@ mod tests {
             print_css: "@page { margin: 1in; }".to_string(),
             inline_js: "console.log('loaded');".to_string(),
             content: "<p>Hello, World!</p>".to_string(),
-            encrypted: false,
             metadata: TemplateMetadata::default(),
         };
 
@@ -816,23 +706,6 @@ mod tests {
     }
 
     #[test]
-    fn test_encrypted_template_shows_modal() {
-        let template = HtmlTemplate {
-            title: "Encrypted".to_string(),
-            critical_css: String::new(),
-            print_css: String::new(),
-            inline_js: String::new(),
-            content: "[ENCRYPTED]".to_string(),
-            encrypted: true,
-            metadata: TemplateMetadata::default(),
-        };
-
-        let html = template.render(&ExportOptions::default());
-        assert!(html.contains("password-modal"));
-        assert!(html.contains("Enter Password"));
-    }
-
-    #[test]
     fn test_export_messages_plain() {
         let exporter = HtmlExporter::with_options(ExportOptions::default());
         let message = renderer::Message {
@@ -846,7 +719,7 @@ mod tests {
         let groups = vec![renderer::MessageGroup::user(message)];
 
         let html = exporter
-            .export_messages("Test Export", &groups, TemplateMetadata::default(), None)
+            .export_messages("Test Export", &groups, TemplateMetadata::default())
             .expect("export");
 
         assert!(html.contains("Hello world"));
@@ -877,7 +750,7 @@ mod tests {
 
         let logs = capture_logs(|| {
             exporter
-                .export_messages("Test Export", &groups, TemplateMetadata::default(), None)
+                .export_messages("Test Export", &groups, TemplateMetadata::default())
                 .expect("export");
         });
 
@@ -914,164 +787,6 @@ mod tests {
     }
 
     #[test]
-    fn test_export_messages_requires_password_when_encrypted() {
-        let exporter = HtmlExporter::with_options(ExportOptions {
-            encrypt: true,
-            ..Default::default()
-        });
-        let groups = vec![renderer::MessageGroup::assistant(renderer::Message {
-            role: "assistant".to_string(),
-            content: "Secret".to_string(),
-            timestamp: None,
-            tool_call: None,
-            index: None,
-            author: None,
-        })];
-
-        let result = exporter.export_messages(
-            "Encrypted Export",
-            &groups,
-            TemplateMetadata::default(),
-            None,
-        );
-
-        assert!(matches!(result, Err(TemplateError::EncryptionRequired)));
-    }
-
-    #[test]
-    #[cfg(feature = "encryption")]
-    fn test_export_messages_encrypted_payload() {
-        let exporter = HtmlExporter::with_options(ExportOptions {
-            encrypt: true,
-            ..Default::default()
-        });
-        let groups = vec![renderer::MessageGroup::assistant(renderer::Message {
-            role: "assistant".to_string(),
-            content: "Top secret".to_string(),
-            timestamp: None,
-            tool_call: None,
-            index: None,
-            author: None,
-        })];
-
-        let html = exporter
-            .export_messages(
-                "Encrypted Export",
-                &groups,
-                TemplateMetadata::default(),
-                Some("password"),
-            )
-            .expect("export");
-
-        assert!(html.contains("encrypted-content"));
-        assert!(html.contains("\"iterations\":600000"));
-        assert!(!html.contains("Top secret"));
-    }
-
-    /// 2l1b0.67: an encrypted export used to show the title (the opening
-    /// prompt), the session time, agent, message counts, duration and
-    /// project in plaintext. Nothing derived from the conversation may
-    /// appear outside the ciphertext; the real header is sealed inside it.
-    #[test]
-    #[cfg(feature = "encryption")]
-    fn test_encrypted_export_hides_title_and_metadata_until_unlock() {
-        use aes_gcm::{
-            Aes256Gcm, Nonce,
-            aead::{Aead, KeyInit},
-        };
-        use base64::Engine;
-        use base64::prelude::BASE64_STANDARD;
-        use ring::pbkdf2;
-
-        let title = "Please fix the allocator bug zqtitle0042";
-        let metadata = TemplateMetadata {
-            timestamp: Some("2026-09-22 23:07 UTC".to_string()),
-            agent: Some("claude_code".to_string()),
-            message_count: 2,
-            human_turns: 1,
-            assistant_msgs: 1,
-            tool_use_count: 0,
-            duration: Some("19m".to_string()),
-            project: Some("/work/zqproject0042".to_string()),
-        };
-        let groups = vec![renderer::MessageGroup::user(renderer::Message {
-            role: "user".to_string(),
-            content: "zqbody0042".to_string(),
-            timestamp: None,
-            tool_call: None,
-            index: None,
-            author: None,
-        })];
-        let exporter = HtmlExporter::with_options(ExportOptions {
-            encrypt: true,
-            ..Default::default()
-        });
-        let passphrase = ["sealed", "header", "test"].join("-");
-        let html = exporter
-            .export_messages(title, &groups, metadata.clone(), Some(&passphrase))
-            .expect("export");
-
-        for leaked in [
-            "zqtitle0042",
-            "zqproject0042",
-            "zqbody0042",
-            "2026-09-22 23:07",
-            "19m",
-            "1 prompt",
-        ] {
-            assert!(
-                !html.contains(leaked),
-                "{leaked:?} is visible without the password"
-            );
-        }
-        assert!(html.contains(&format!("<title>{ENCRYPTED_PUBLIC_TITLE}</title>")));
-        assert!(
-            html.contains(SEALED_HEADER_ID),
-            "decrypt handler must know the id"
-        );
-
-        // Decrypt the payload exactly as the browser does and find the real
-        // header in it.
-        let start_tag = r#"<div id="encrypted-content" hidden>"#;
-        let start = html.find(start_tag).expect("payload element") + start_tag.len();
-        let end = start + html[start..].find("</div>").expect("payload end");
-        let payload_json = html[start..end]
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&amp;", "&");
-        let payload: serde_json::Value = serde_json::from_str(&payload_json).expect("payload json");
-        let decode = |field: &str| {
-            BASE64_STANDARD
-                .decode(payload[field].as_str().expect("payload field"))
-                .expect("base64 field")
-        };
-        let iterations = u32::try_from(payload["iterations"].as_u64().expect("iterations"))
-            .expect("iterations fit in u32");
-        let mut key = [0u8; 32];
-        pbkdf2::derive(
-            pbkdf2::PBKDF2_HMAC_SHA256,
-            std::num::NonZeroU32::new(iterations).expect("non-zero iterations"),
-            &decode("salt"),
-            passphrase.as_bytes(),
-            &mut key,
-        );
-        let cipher = Aes256Gcm::new_from_slice(&key).expect("cipher");
-        let iv = decode("iv");
-        let nonce = Nonce::try_from(iv.as_slice()).expect("12-byte iv");
-        let plaintext = String::from_utf8(
-            cipher
-                .decrypt(&nonce, decode("ciphertext").as_ref())
-                .expect("decrypt"),
-        )
-        .expect("utf8 plaintext");
-
-        assert!(plaintext.starts_with(&format!(r#"<template id="{SEALED_HEADER_ID}""#)));
-        assert!(plaintext.contains("data-title=\"Please fix the allocator bug zqtitle0042\""));
-        assert!(plaintext.contains("zqproject0042"));
-        assert!(plaintext.contains("zqbody0042"));
-    }
-
-    #[test]
     fn test_plain_export_keeps_title_and_metadata() {
         let exporter = HtmlExporter::with_options(ExportOptions::default());
         let metadata = TemplateMetadata {
@@ -1079,11 +794,10 @@ mod tests {
             ..TemplateMetadata::default()
         };
         let html = exporter
-            .export_messages("zqtitle0043 plain", &[], metadata, None)
+            .export_messages("zqtitle0043 plain", &[], metadata)
             .expect("export");
         assert!(html.contains("<title>zqtitle0043 plain</title>"));
         assert!(html.contains(r#"<h1 class="header-title">zqtitle0043 plain</h1>"#));
         assert!(html.contains("zqproject0043"));
-        assert!(!html.contains(SEALED_HEADER_ID));
     }
 }

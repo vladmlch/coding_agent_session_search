@@ -7,17 +7,15 @@
 
 // Bump whenever any shipped archive asset or cache policy changes. A new name
 // keeps install from mutating the active generation entry-by-entry.
-const CACHE_VERSION = "v10";
+const CACHE_VERSION = "v11";
 const STATIC_ASSETS = [
   "./",
   "./index.html",
   "./styles.css",
   "./auth.js",
-  "./password-strength.js",
   "./session.js",
   "./storage.js",
   "./coi-detector.js",
-  "./crypto_worker.js",
   "./viewer.js",
   "./router.js",
   "./share.js",
@@ -32,16 +30,8 @@ const STATIC_ASSETS = [
   "./vendor/sqlite3.mjs",
   "./vendor/sqlite3.wasm",
   "./vendor/sqlite3-opfs-async-proxy.js",
-  "./vendor/argon2.js",
-  "./vendor/argon2-wasm.js",
-  "./vendor/argon2.wasm",
-  "./vendor/fflate.js",
-  "./vendor/html5-qrcode.min.js",
   "./vendor/manifest.json",
   "./vendor/LICENSE-sqlite-wasm.txt",
-  "./vendor/LICENSE-argon2-browser.txt",
-  "./vendor/LICENSE-fflate.txt",
-  "./vendor/LICENSE-html5-qrcode.txt",
 ];
 
 // Log levels

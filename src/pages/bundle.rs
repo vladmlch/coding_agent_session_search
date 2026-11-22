@@ -5,10 +5,9 @@
 //! `cass pages --preview` (loopback only).
 
 use anyhow::{Context, Result, anyhow, bail};
-use base64::prelude::*;
 use chrono::Utc;
 use ring::rand::{SecureRandom, SystemRandom};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -19,19 +18,70 @@ use std::io::{BufReader, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use super::archive_config::{ArchiveConfig, UnencryptedConfig};
 use super::docs::{DocLocation, GeneratedDoc};
-use super::encrypt::{EncryptionConfig, validate_supported_payload_format};
+
+/// Unencrypted bundle configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnencryptedConfig {
+    /// Whether the bundle is encrypted (must be false).
+    #[serde(
+        serialize_with = "serialize_unencrypted_false",
+        deserialize_with = "deserialize_unencrypted_false"
+    )]
+    pub encrypted: bool,
+    /// Config version.
+    pub version: String,
+    /// Payload descriptor.
+    pub payload: UnencryptedPayload,
+    /// Optional warning message for viewers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+/// Unencrypted payload descriptor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnencryptedPayload {
+    /// Relative path to the SQLite database payload.
+    pub path: String,
+    /// Payload format (e.g., "sqlite").
+    pub format: String,
+    /// Optional byte size of the payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+}
+
+fn serialize_unencrypted_false<S>(encrypted: &bool, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if *encrypted {
+        return Err(serde::ser::Error::custom(
+            "unencrypted config must set encrypted=false",
+        ));
+    }
+    serializer.serialize_bool(false)
+}
+
+fn deserialize_unencrypted_false<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let encrypted = bool::deserialize(deserializer)?;
+    if encrypted {
+        return Err(serde::de::Error::custom(
+            "unencrypted config must set encrypted=false",
+        ));
+    }
+    Ok(false)
+}
 
 /// Files embedded from pages_assets at compile time
 const PAGES_ASSETS: &[(&str, &[u8])] = &[
     ("index.html", include_bytes!("../pages_assets/index.html")),
     ("styles.css", include_bytes!("../pages_assets/styles.css")),
     ("auth.js", include_bytes!("../pages_assets/auth.js")),
-    (
-        "password-strength.js",
-        include_bytes!("../pages_assets/password-strength.js"),
-    ),
     ("viewer.js", include_bytes!("../pages_assets/viewer.js")),
     ("router.js", include_bytes!("../pages_assets/router.js")),
     ("share.js", include_bytes!("../pages_assets/share.js")),
@@ -48,10 +98,6 @@ const PAGES_ASSETS: &[(&str, &[u8])] = &[
     (
         "sw-register.js",
         include_bytes!("../pages_assets/sw-register.js"),
-    ),
-    (
-        "crypto_worker.js",
-        include_bytes!("../pages_assets/crypto_worker.js"),
     ),
     (
         "virtual-list.js",
@@ -109,59 +155,17 @@ pub(crate) const PAGES_VENDOR_ASSETS: &[PinnedVendorAsset] = &[
         "502762db7bd24130f345df6a42883166ec0a91815207940328c9739bb0f5ec2f"
     ),
     pinned_vendor_asset!(
-        "argon2.js",
-        11_835,
-        "ecfe330a8f3c6d491b92197391088f117ab13ad13c784cb01235a1afb5757a3b"
-    ),
-    pinned_vendor_asset!(
-        "argon2-wasm.js",
-        14_215,
-        "cdb6ef704dbc287ffa0056376d9af297c8691ddeb985f9137b96fc9b0ddea8b0"
-    ),
-    pinned_vendor_asset!(
-        "argon2.wasm",
-        25_725,
-        "0c2149886c13e4eae4a6ca25ee71d47423c5c8740a874cf04ff816d1b2c901d7"
-    ),
-    pinned_vendor_asset!(
-        "fflate.js",
-        33_044,
-        "462ef8041fc970e3615a20a9dd2b2e3047a073b2da729ef4f02b634bba8b7b83"
-    ),
-    pinned_vendor_asset!(
-        "html5-qrcode.min.js",
-        375_364,
-        "660b12437b1d747e3e68b8be0685c08cb728140110ad213f167b14b66f8b1d8e"
-    ),
-    pinned_vendor_asset!(
         "LICENSE-sqlite-wasm.txt",
         11_358,
         "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
     ),
     pinned_vendor_asset!(
-        "LICENSE-argon2-browser.txt",
-        1_058,
-        "524a1d77701975a063a590424637abbd7fa519042a113f2bbe2eaf4cde76296d"
-    ),
-    pinned_vendor_asset!(
-        "LICENSE-fflate.txt",
-        1_069,
-        "0a1df3a083d0c010560aa342e87959c8c1070e6fd54545741f083f22d0c8b551"
-    ),
-    pinned_vendor_asset!(
-        "LICENSE-html5-qrcode.txt",
-        11_361,
-        "306bc450da41244fefb92fec6fba30f27afb9d9b0eaa72b96372c23e2338c612"
-    ),
-    pinned_vendor_asset!(
         "manifest.json",
-        4_802,
-        "bd7571df7a9ddd1553c398474b4f69f2ab64ea8f2f887fe85f14c8518c1c44bb"
+        1_776,
+        "09f68c8e09427ecb21b23032aaa744aca0286aed67d2981b45a66aee8e49561a"
     ),
 ];
 
-const MASTER_KEY_BACKUP_NOTE: &str =
-    "This file contains the wrapped DEK. Keep it with your recovery secret.";
 const BUNDLE_PUBLISH_JOURNAL_FORMAT: &str = "cass-pages-bundle-publish-v1";
 const BUNDLE_PUBLISH_JOURNAL_MAX_BYTES: u64 = 16 * 1024;
 const BUNDLE_PUBLISH_BACKUP_SCAN_LIMIT: usize = 65_536;
@@ -235,10 +239,6 @@ pub struct BundleConfig {
     pub description: String,
     /// Whether to obfuscate metadata (workspace paths etc)
     pub hide_metadata: bool,
-    /// Recovery secret bytes (if generated)
-    pub recovery_secret: Option<Vec<u8>>,
-    /// Whether to generate QR codes for recovery
-    pub generate_qr: bool,
     /// Additional generated documentation files to include
     pub generated_docs: Vec<GeneratedDoc>,
     /// Exact `cass analytics status --json` data projection for the source
@@ -250,10 +250,8 @@ impl Default for BundleConfig {
     fn default() -> Self {
         Self {
             title: "cass Archive".to_string(),
-            description: "Encrypted archive of AI coding agent conversations".to_string(),
+            description: "Searchable archive of AI coding agent conversations".to_string(),
             hide_metadata: false,
-            recovery_secret: None,
-            generate_qr: false,
             generated_docs: Vec::new(),
             analytics_status: None,
         }
@@ -297,39 +295,25 @@ impl BundleBuilder {
         self
     }
 
-    /// Set the recovery secret
-    pub fn recovery_secret(mut self, recovery_material: Option<Vec<u8>>) -> Self {
-        // ubs:ignore — this stores caller-provided recovery bytes; no secret literal is embedded.
-        let recovery_slot = &mut self.config.recovery_secret;
-        *recovery_slot = recovery_material;
-        self
-    }
-
-    /// Set QR code generation option
-    pub fn generate_qr(mut self, generate: bool) -> Self {
-        self.config.generate_qr = generate;
-        self
-    }
-
     /// Add generated documentation files to include in the bundle
     pub fn with_docs(mut self, docs: Vec<GeneratedDoc>) -> Self {
         self.config.generated_docs = docs;
         self
     }
 
-    /// Build the bundle from encrypted output
+    /// Build the bundle from staged export output
     ///
     /// # Arguments
-    /// * `encrypted_dir` - Directory containing encryption output (config.json, payload/)
-    /// * `output_dir` - Directory to write the bundle (will create site/ and private/ subdirs)
+    /// * `source_dir` - Directory containing export output (`config.json`, `payload/`)
+    /// * `output_dir` - Directory to write the bundle (will create `site/` and `private/` subdirs)
     /// * `progress` - Progress callback (phase, message)
     pub fn build<P: AsRef<Path>>(
         &self,
-        encrypted_dir: P,
+        source_dir: P,
         output_dir: P,
         progress: impl Fn(&str, &str),
     ) -> Result<BundleResult> {
-        let encrypted_dir = encrypted_dir.as_ref();
+        let source_dir = source_dir.as_ref();
         let output_dir = output_dir.as_ref();
 
         // Heal an interrupted fallback publish before doing potentially long
@@ -354,34 +338,23 @@ impl BundleBuilder {
             ensure_replaceable_bundle_output_dir(output_dir)?;
         }
 
-        // Validate encrypted_dir has required files
-        let config_path = encrypted_dir.join("config.json");
-        let payload_dir = encrypted_dir.join("payload");
+        // Validate source_dir has required files
+        let config_path = source_dir.join("config.json");
+        let payload_dir = source_dir.join("payload");
 
         if !config_path.exists() {
-            bail!("Missing config.json in encrypted directory");
+            bail!("Missing config.json in export directory");
         }
         if !payload_dir.exists() {
-            bail!("Missing payload/ directory in encrypted directory");
+            bail!("Missing payload/ directory in export directory");
         }
 
-        // Load archive config (encrypted or unencrypted)
-        let archive_config: ArchiveConfig = {
+        // Load unencrypted archive config
+        let unenc_config: UnencryptedConfig = {
             let file = File::open(&config_path).context("Failed to open config.json")?;
-            serde_json::from_reader(BufReader::new(file))?
+            serde_json::from_reader(BufReader::new(file))
+                .context("Unsupported or invalid archive config.json (only unencrypted archives are supported)")?
         };
-        if self.config.generate_qr {
-            if self.config.recovery_secret.is_none() {
-                bail!(
-                    "QR recovery artifacts were requested, but no recovery secret is available; enable recovery-secret generation or disable QR generation"
-                );
-            }
-            if archive_config.as_encrypted().is_none() {
-                bail!(
-                    "QR recovery artifacts were requested for an unencrypted archive, which has no recovery-key slot; disable QR generation"
-                );
-            }
-        }
 
         let temp_output_dir = unique_bundle_dir(output_dir, "tmp")?;
         let final_site_dir = output_dir.join("site");
@@ -423,42 +396,17 @@ impl BundleBuilder {
             }
 
             // Copy payload into site/payload/
-            let (chunk_count, is_encrypted) = match archive_config.as_encrypted() {
-                Some(enc_config) => {
-                    progress("payload", "Copying encrypted payload...");
-                    let count = copy_payload_chunks(
-                        encrypted_dir,
-                        &payload_dir,
-                        &site_payload_dir,
-                        enc_config,
-                    )?;
-                    (count, true)
-                }
-                None => {
-                    progress("payload", "Copying unencrypted payload...");
-                    let unenc_config = archive_config
-                        .as_unencrypted()
-                        .context("Unencrypted config missing")?;
-                    let count = copy_payload_file(encrypted_dir, &site_dir, unenc_config)?;
-                    (count, false)
-                }
-            };
+            progress("payload", "Copying unencrypted payload...");
+            let chunk_count = copy_payload_file(source_dir, &site_dir, &unenc_config)?;
 
-            // Copy attachment blobs if present
-            let blobs_dir = encrypted_dir.join("blobs");
-            let attachment_count = if blobs_dir.exists() && blobs_dir.is_dir() {
-                progress("attachments", "Copying encrypted attachments...");
-                let site_blobs_dir = site_dir.join("blobs");
-                copy_blobs_directory(encrypted_dir, &blobs_dir, &site_blobs_dir)?
-            } else {
-                0
-            };
+            // Attachment bundling is not supported
+            let attachment_count = 0;
 
             progress("config", "Writing configuration files...");
 
-            // Write config.json to site/ (already has public params only)
+            // Write config.json to site/
             let site_config_path = site_dir.join("config.json");
-            let config_json = serde_json::to_vec_pretty(&archive_config)
+            let config_json = serde_json::to_vec_pretty(&unenc_config)
                 .context("Failed to serialize public Pages config")?;
             crate::pages::write_file_durably(&site_config_path, &config_json)
                 .context("Failed to write public Pages config")?;
@@ -496,11 +444,8 @@ impl BundleBuilder {
                 }
             } else {
                 // Fallback to basic README.md
-                let public_readme = generate_public_readme(
-                    &self.config.title,
-                    &self.config.description,
-                    is_encrypted,
-                );
+                let public_readme =
+                    generate_public_readme(&self.config.title, &self.config.description);
                 fs::write(site_dir.join("README.md"), public_readme)?;
             }
 
@@ -524,20 +469,7 @@ impl BundleBuilder {
 
             // Write private artifacts
             write_private_fingerprint(&private_dir, &fingerprint)?;
-            if is_encrypted {
-                let enc_config = archive_config
-                    .as_encrypted()
-                    .context("Encrypted config missing")?;
-                write_private_artifacts_encrypted(
-                    &private_dir,
-                    enc_config,
-                    self.config.recovery_secret.as_deref(),
-                    self.config.generate_qr,
-                    true,
-                )?;
-            } else {
-                write_private_unencrypted_notice(&private_dir)?;
-            }
+            write_private_unencrypted_notice(&private_dir)?;
 
             prepare_bundle_root_for_publish(&temp_output_dir)?;
             sync_tree(&temp_output_dir)?;
@@ -2139,55 +2071,16 @@ fn sync_parent_directory(_path: &Path) -> Result<()> {
 pub struct BundleResult {
     /// Path to site/ directory (serve or preview this locally)
     pub site_dir: PathBuf,
-    /// Path to private/ directory (never share — plaintext key material)
+    /// Path to private/ directory
     pub private_dir: PathBuf,
-    /// Number of encrypted payload chunks
+    /// Number of payload files
     pub chunk_count: usize,
-    /// Number of encrypted attachment blobs
+    /// Number of attachment blobs
     pub attachment_count: usize,
     /// Integrity fingerprint (for visual verification)
     pub fingerprint: String,
     /// Total number of files in site/
     pub total_files: usize,
-}
-
-/// Copy encrypted payload chunks from source to destination.
-///
-/// The archive config is the authority: copying by directory scan can publish
-/// stale chunks left behind by an earlier export.
-fn copy_payload_chunks(
-    src_root: &Path,
-    src_dir: &Path,
-    dest_dir: &Path,
-    config: &EncryptionConfig,
-) -> Result<usize> {
-    ensure_regular_copy_directory_under_root(src_root, src_dir, "Encrypted payload directory")?;
-    validate_supported_payload_format(config)?;
-
-    let mut count = 0;
-
-    for (idx, expected_file) in config.payload.files.iter().enumerate() {
-        let expected_path = format!("payload/chunk-{idx:05}.bin");
-        if expected_file != &expected_path {
-            bail!(
-                "Encrypted payload file entry {idx} must be {expected_path}, got {expected_file}"
-            );
-        }
-
-        let rel_path = Path::new(expected_file);
-        let src_path = src_root.join(rel_path);
-        let label = format!("Encrypted payload chunk {expected_file}");
-        ensure_regular_copy_source_under_root(src_root, &src_path, &label)?;
-
-        let Some(filename) = rel_path.file_name() else {
-            bail!("Encrypted payload chunk path has no file name: {expected_file}");
-        };
-        let dest_path = dest_dir.join(filename);
-        fs::copy(&src_path, &dest_path)?;
-        count += 1;
-    }
-
-    Ok(count)
 }
 
 /// Copy a single unencrypted payload file into the site directory.
@@ -2836,89 +2729,6 @@ fn replace_private_artifact_from_temp(
     }
 }
 
-pub(crate) fn write_private_artifacts_encrypted(
-    private_dir: &Path,
-    enc_config: &EncryptionConfig,
-    recovery_secret: Option<&[u8]>,
-    generate_qr: bool,
-    cleanup_missing_recovery: bool,
-) -> Result<()> {
-    if generate_qr && recovery_secret.is_none() {
-        bail!(
-            "QR recovery artifacts were requested, but no recovery secret is available; enable recovery-secret generation or disable QR generation"
-        );
-    }
-    ensure_private_artifact_dir(private_dir)?;
-
-    let recovery_secret_path = private_dir.join("recovery-secret.txt");
-    let qr_png_path = private_dir.join("qr-code.png");
-    let qr_svg_path = private_dir.join("qr-code.svg");
-
-    // Write recovery secret if provided
-    if let Some(secret) = recovery_secret {
-        let recovery_b64 = BASE64_URL_SAFE_NO_PAD.encode(secret);
-        let recovery_content = format!(
-            "Recovery Secret\n\
-            ================\n\n\
-            This secret can unlock your archive if you forget your password.\n\
-            Store it securely and NEVER share it.\n\n\
-            Secret (base64url):\n\
-            {}\n\n\
-            To use: Click \"Scan Recovery QR Code\" in the web viewer, or\n\
-            use this base64 value with the recovery function.\n\n\
-            Archive Export ID: {}\n\
-            Generated: {}\n",
-            recovery_b64,
-            enc_config.export_id,
-            Utc::now().to_rfc3339()
-        );
-        write_private_artifact_file(
-            private_dir,
-            "recovery-secret.txt",
-            recovery_content.as_bytes(),
-        )?;
-
-        // Generate QR code if requested
-        if generate_qr {
-            generate_qr_codes(private_dir, &recovery_b64)?;
-        } else {
-            remove_file_if_exists(&qr_png_path)?;
-            remove_file_if_exists(&qr_svg_path)?;
-        }
-    } else if cleanup_missing_recovery {
-        remove_file_if_exists(&recovery_secret_path)?;
-        remove_file_if_exists(&qr_png_path)?;
-        remove_file_if_exists(&qr_svg_path)?;
-    }
-
-    // Write master key backup (encrypted DEK wrapped with KEK)
-    let master_key_backup = master_key_backup_json(enc_config, Utc::now().to_rfc3339());
-    let master_key_json = serde_json::to_vec_pretty(&master_key_backup)?;
-    write_private_artifact_file(private_dir, "master-key.json", &master_key_json)?;
-
-    Ok(())
-}
-
-fn master_key_backup_json(
-    enc_config: &EncryptionConfig,
-    generated_at: String,
-) -> serde_json::Value {
-    serde_json::json!({
-        "export_id": &enc_config.export_id,
-        "key_slots": &enc_config.key_slots,
-        "note": MASTER_KEY_BACKUP_NOTE,
-        "generated_at": generated_at,
-    })
-}
-
-fn remove_file_if_exists(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err.into()),
-    }
-}
-
 fn write_private_unencrypted_notice(private_dir: &Path) -> Result<()> {
     let content = format!(
         "UNENCRYPTED ARCHIVE WARNING\n\
@@ -2932,111 +2742,31 @@ fn write_private_unencrypted_notice(private_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Generate QR code images for recovery secret
-fn generate_qr_codes(private_dir: &Path, recovery_b64: &str) -> Result<()> {
-    generate_qr_codes_with(
-        private_dir,
-        recovery_b64,
-        super::qr::generate_qr_png,
-        super::qr::generate_qr_svg,
-    )
-}
-
-fn generate_qr_codes_with<P, S>(
-    private_dir: &Path,
-    recovery_b64: &str,
-    generate_png: P,
-    generate_svg: S,
-) -> Result<()>
-where
-    P: FnOnce(&str) -> Result<Vec<u8>>,
-    S: FnOnce(&str) -> Result<String>,
-{
-    // Generate both representations before writing either one. If a requested
-    // encoder is unavailable or rejects the payload, callers receive an error
-    // and no partial QR artifact set is published.
-    let qr_png = generate_png(recovery_b64)
-        .context("Failed to generate requested recovery QR PNG artifact")?;
-    let qr_svg = generate_svg(recovery_b64)
-        .context("Failed to generate requested recovery QR SVG artifact")?;
-
-    write_private_artifact_file(private_dir, "qr-code.png", &qr_png)
-        .context("Failed to write requested recovery QR PNG artifact")?;
-    write_private_artifact_file(private_dir, "qr-code.svg", qr_svg.as_bytes())
-        .context("Failed to write requested recovery QR SVG artifact")?;
-
-    Ok(())
-}
-
 /// Generate public README for the site directory
-fn generate_public_readme(title: &str, description: &str, is_encrypted: bool) -> String {
-    let about_line = if is_encrypted {
-        "This is an encrypted, searchable archive of AI coding agent conversations"
-    } else {
-        "This is a searchable archive of AI coding agent conversations (not encrypted)"
-    };
-
-    let security_section = if is_encrypted {
-        r#"## Security
-
-- All data is encrypted with AES-256-GCM
-- Password-based key derivation uses Argon2id
-- The archive can be safely shared or stored anywhere
-- No data is accessible without the correct password"#
-    } else {
-        r#"## Security
+fn generate_public_readme(title: &str, description: &str) -> String {
+    let about_line = "This is a searchable archive of AI coding agent conversations (not encrypted)";
+    let security_section = r#"## Security
 
 ⚠️ This archive is **NOT encrypted**.
 Anyone with access to the site can read its contents.
-Host it only on a trusted, private location."#
-    };
-
-    let open_section = if is_encrypted {
-        r#"## How to Open
+Host it only on a trusted, private location."#;
+    let open_section = r#"## How to Open
 
 1. Host these files on any static web server
 2. Open index.html in a modern browser
 3. Verify the fingerprint matches your records
-4. Enter your password to decrypt"#
-    } else {
-        r#"## How to Open
-
-1. Host these files on any static web server
-2. Open index.html in a modern browser
-3. Verify the fingerprint matches your records
-4. The archive loads immediately (no password required)"#
-    };
-
-    let technical_section = if is_encrypted {
-        r#"## Technical Details
-
-- Encryption: AES-256-GCM with chunked streaming
-- KDF: Argon2id (64MB memory, 3 iterations)
-- Search: SQLite with FTS5 (runs in browser via sql.js)
-- Requires: SharedArrayBuffer (COOP/COEP headers)"#
-    } else {
-        r#"## Technical Details
+4. The archive loads immediately (no password required)"#;
+    let technical_section = r#"## Technical Details
 
 - Encryption: none (unencrypted archive)
 - Search: SQLite with FTS5 (runs in browser via sql.js)
-- Requires: SharedArrayBuffer (COOP/COEP headers)"#
-    };
-
-    let files_section = if is_encrypted {
-        r#"- `index.html` - Entry point
-- `config.json` - Public encryption parameters (no secrets)
-- `integrity.json` - SHA256 hashes for all files
-- `payload/` - Encrypted database chunks
-- `*.js` - Application code
-- `styles.css` - Styling"#
-    } else {
-        r#"- `index.html` - Entry point
+- Requires: SharedArrayBuffer (COOP/COEP headers)"#;
+    let files_section = r#"- `index.html` - Entry point
 - `config.json` - Plaintext archive metadata and payload location
 - `integrity.json` - SHA256 hashes for all files
 - `payload/data.db` - Unencrypted SQLite database (publicly readable)
 - `*.js` - Application code
-- `styles.css` - Styling"#
-    };
+- `styles.css` - Styling"#;
 
     format!(
         r#"# {}
@@ -3088,7 +2818,6 @@ Generated by cass v{}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pages::archive_config::{ArchiveConfig, UnencryptedPayload};
     use tempfile::TempDir;
 
     fn write_unencrypted_source(root: &Path, payload_name: &str, body: &str) {
@@ -3097,7 +2826,7 @@ mod tests {
         let payload_path = payload_dir.join(payload_name);
         fs::write(&payload_path, body).unwrap();
 
-        let config = ArchiveConfig::Unencrypted(UnencryptedConfig {
+        let config = UnencryptedConfig {
             encrypted: false,
             version: "1.0.0".to_string(),
             payload: UnencryptedPayload {
@@ -3106,46 +2835,10 @@ mod tests {
                 size_bytes: Some(body.len() as u64),
             },
             warning: Some("UNENCRYPTED".to_string()),
-        });
+        };
 
         let file = File::create(root.join("config.json")).unwrap();
         serde_json::to_writer_pretty(BufWriter::new(file), &config).unwrap();
-    }
-
-    fn encrypted_config_for_files(files: Vec<&str>) -> EncryptionConfig {
-        use base64::prelude::*;
-        let chunk_count = files.len();
-        let total_plaintext_size = if chunk_count == 0 {
-            0
-        } else {
-            ((chunk_count - 1) * 1024 + 1) as u64
-        };
-        EncryptionConfig {
-            version: crate::pages::encrypt::SCHEMA_VERSION,
-            // The shared payload-format validation decodes these as base64
-            // and requires exactly 16 / 12 bytes.
-            export_id: BASE64_STANDARD.encode([0u8; 16]),
-            base_nonce: BASE64_STANDARD.encode([0u8; 12]),
-            compression: "deflate".to_string(),
-            kdf_defaults: crate::pages::encrypt::Argon2Params::default(),
-            payload: crate::pages::encrypt::PayloadMeta {
-                chunk_size: 1024,
-                chunk_count,
-                total_compressed_size: chunk_count as u64,
-                total_plaintext_size,
-                files: files.into_iter().map(str::to_string).collect(),
-            },
-            key_slots: vec![crate::pages::encrypt::KeySlot {
-                id: 0,
-                slot_type: crate::pages::encrypt::SlotType::Password,
-                kdf: crate::pages::encrypt::KdfAlgorithm::Argon2id,
-                salt: BASE64_STANDARD.encode([0u8; 16]),
-                wrapped_dek: BASE64_STANDARD.encode([0u8; 48]),
-                nonce: BASE64_STANDARD.encode([0u8; 12]),
-                argon2_params: Some(crate::pages::encrypt::Argon2Params::default()),
-            }],
-            next_slot_id: None,
-        }
     }
 
     #[test]
@@ -3153,7 +2846,6 @@ mod tests {
         let builder = BundleBuilder::new();
         assert_eq!(builder.config.title, "cass Archive");
         assert!(!builder.config.hide_metadata);
-        assert!(!builder.config.generate_qr);
     }
 
     #[test]
@@ -3161,13 +2853,11 @@ mod tests {
         let builder = BundleBuilder::new()
             .title("My Archive")
             .description("Test description")
-            .hide_metadata(true)
-            .generate_qr(true);
+            .hide_metadata(true);
 
         assert_eq!(builder.config.title, "My Archive");
         assert_eq!(builder.config.description, "Test description");
         assert!(builder.config.hide_metadata);
-        assert!(builder.config.generate_qr);
     }
 
     #[test]
@@ -3196,33 +2886,6 @@ mod tests {
     }
 
     #[test]
-    fn test_master_key_backup_json_shape() {
-        let config = EncryptionConfig {
-            version: 2,
-            export_id: "export-123".to_string(),
-            base_nonce: "nonce".to_string(),
-            compression: "deflate".to_string(),
-            kdf_defaults: crate::pages::encrypt::Argon2Params::default(),
-            payload: crate::pages::encrypt::PayloadMeta {
-                chunk_size: 1024,
-                chunk_count: 0,
-                total_compressed_size: 0,
-                total_plaintext_size: 0,
-                files: Vec::new(),
-            },
-            key_slots: Vec::new(),
-            next_slot_id: None,
-        };
-
-        let backup = master_key_backup_json(&config, "2026-04-25T19:08:00Z".to_string());
-
-        assert_eq!(backup["export_id"], "export-123");
-        assert_eq!(backup["key_slots"], serde_json::json!([]));
-        assert_eq!(backup["note"], MASTER_KEY_BACKUP_NOTE);
-        assert_eq!(backup["generated_at"], "2026-04-25T19:08:00Z");
-    }
-
-    #[test]
     #[cfg(unix)]
     fn private_artifacts_are_owner_only_even_under_permissive_ambient_modes() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
@@ -3232,10 +2895,10 @@ mod tests {
         fs::create_dir_all(&private_dir)?;
         fs::set_permissions(&private_dir, fs::Permissions::from_mode(0o777))?;
 
-        write_private_artifact_file(&private_dir, "recovery-secret.txt", b"unlock material")?;
+        write_private_artifact_file(&private_dir, "fingerprint.txt", b"abcdef123456")?;
 
         let dir_mode = fs::metadata(&private_dir)?.permissions().mode();
-        let file_mode = fs::metadata(private_dir.join("recovery-secret.txt"))?
+        let file_mode = fs::metadata(private_dir.join("fingerprint.txt"))?
             .permissions()
             .mode();
         if dir_mode & 0o077 != 0 {
@@ -3252,110 +2915,14 @@ mod tests {
         let temp = TempDir::new()?;
         let private_dir = temp.path().join("private");
 
-        write_private_artifact_file(&private_dir, "master-key.json", b"old generation")?;
-        write_private_artifact_file(&private_dir, "master-key.json", b"new generation")?;
+        write_private_artifact_file(&private_dir, "fingerprint.txt", b"old generation")?;
+        write_private_artifact_file(&private_dir, "fingerprint.txt", b"new generation")?;
 
-        let installed = fs::read(private_dir.join("master-key.json"))?;
+        let installed = fs::read(private_dir.join("fingerprint.txt"))?;
         if installed != b"new generation" {
             return Err(anyhow!(
                 "private artifact replacement published stale bytes"
             ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn requested_qr_requires_a_recovery_secret() -> Result<()> {
-        let temp = TempDir::new()?;
-        let private_dir = temp.path().join("private");
-        let config = encrypted_config_for_files(Vec::new());
-
-        let error = write_private_artifacts_encrypted(&private_dir, &config, None, true, false)
-            .expect_err("a requested QR without a recovery secret must fail closed");
-
-        if !error
-            .to_string()
-            .contains("no recovery secret is available")
-        {
-            return Err(anyhow!("unexpected missing-recovery error: {error:#}"));
-        }
-        if private_dir.exists() {
-            return Err(anyhow!(
-                "rejected QR request unexpectedly created a private artifact directory"
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn requested_qr_generation_failure_writes_no_partial_artifacts() -> Result<()> {
-        let temp = TempDir::new()?;
-        let private_dir = temp.path().join("private");
-
-        let error = generate_qr_codes_with(
-            &private_dir,
-            "recovery-secret",
-            |_| Ok(vec![1, 2, 3]),
-            |_| Err(anyhow!("SVG encoder unavailable")),
-        )
-        .expect_err("a requested QR encoder failure must propagate");
-
-        let message = format!("{error:#}");
-        if !message.contains("requested recovery QR SVG artifact")
-            || !message.contains("SVG encoder unavailable")
-        {
-            return Err(anyhow!("QR generation error lost its cause: {message}"));
-        }
-        if private_dir.join("qr-code.png").exists() || private_dir.join("qr-code.svg").exists() {
-            return Err(anyhow!(
-                "failed QR generation published a partial artifact set"
-            ));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn requested_qr_png_generation_failure_writes_no_artifacts() -> Result<()> {
-        let temp = TempDir::new()?;
-        let private_dir = temp.path().join("private");
-
-        let error = generate_qr_codes_with(
-            &private_dir,
-            "recovery-secret",
-            |_| Err(anyhow!("PNG encoder unavailable")),
-            |_| Ok("<svg>recovery</svg>".to_string()),
-        )
-        .expect_err("a requested QR PNG encoder failure must propagate");
-
-        let message = format!("{error:#}");
-        if !message.contains("requested recovery QR PNG artifact")
-            || !message.contains("PNG encoder unavailable")
-        {
-            return Err(anyhow!("QR PNG generation error lost its cause: {message}"));
-        }
-        if private_dir.join("qr-code.png").exists() || private_dir.join("qr-code.svg").exists() {
-            return Err(anyhow!("failed QR PNG generation published an artifact"));
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn requested_qr_generation_writes_both_artifacts() -> Result<()> {
-        let temp = TempDir::new()?;
-        let private_dir = temp.path().join("private");
-
-        generate_qr_codes_with(
-            &private_dir,
-            "recovery-secret",
-            |_| Ok(vec![1, 2, 3]),
-            |_| Ok("<svg>recovery</svg>".to_string()),
-        )?;
-
-        if fs::read(private_dir.join("qr-code.png"))? != [1, 2, 3] {
-            return Err(anyhow!("requested QR PNG bytes were not published"));
-        }
-        if fs::read_to_string(private_dir.join("qr-code.svg"))? != "<svg>recovery</svg>" {
-            return Err(anyhow!("requested QR SVG bytes were not published"));
         }
         Ok(())
     }
@@ -3424,116 +2991,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn test_private_artifacts_reject_symlinked_secret_file() {
-        use std::os::unix::fs::symlink;
-
-        let temp = TempDir::new().unwrap();
-        let private_dir = temp.path().join("private");
-        let outside_dir = temp.path().join("outside");
-        fs::create_dir_all(&private_dir).unwrap();
-        fs::create_dir_all(&outside_dir).unwrap();
-        let protected_secret = outside_dir.join("protected-secret.txt");
-        fs::write(&protected_secret, "do not overwrite").unwrap();
-        symlink(&protected_secret, private_dir.join("recovery-secret.txt")).unwrap();
-
-        let config = encrypted_config_for_files(Vec::new());
-        let err = write_private_artifacts_encrypted(
-            &private_dir,
-            &config,
-            Some(&[7u8; 32]),
-            false,
-            false,
-        )
-        .unwrap_err();
-
-        assert!(
-            err.to_string().contains("must not be a symlink"),
-            "unexpected error: {err:#}"
-        );
-        assert_eq!(
-            fs::read_to_string(&protected_secret).unwrap(),
-            "do not overwrite"
-        );
-        assert!(
-            fs::symlink_metadata(private_dir.join("recovery-secret.txt"))
-                .unwrap()
-                .file_type()
-                .is_symlink(),
-            "rejected private artifact symlink should be left intact"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_private_artifacts_cleanup_rejects_symlinked_private_dir_before_removal() {
-        use std::os::unix::fs::symlink;
-
-        let temp = TempDir::new().unwrap();
-        let outside_dir = temp.path().join("outside");
-        let private_dir = temp.path().join("private");
-        fs::create_dir_all(&outside_dir).unwrap();
-        fs::write(outside_dir.join("recovery-secret.txt"), "keep recovery").unwrap();
-        fs::write(outside_dir.join("qr-code.png"), "keep png").unwrap();
-        fs::write(outside_dir.join("qr-code.svg"), "keep svg").unwrap();
-        symlink(&outside_dir, &private_dir).unwrap();
-
-        let config = encrypted_config_for_files(Vec::new());
-        let err = write_private_artifacts_encrypted(&private_dir, &config, None, false, true)
-            .unwrap_err();
-
-        assert!(
-            err.to_string().contains("must not be a symlink"),
-            "unexpected error: {err:#}"
-        );
-        assert_eq!(
-            fs::read_to_string(outside_dir.join("recovery-secret.txt")).unwrap(),
-            "keep recovery"
-        );
-        assert_eq!(
-            fs::read_to_string(outside_dir.join("qr-code.png")).unwrap(),
-            "keep png"
-        );
-        assert_eq!(
-            fs::read_to_string(outside_dir.join("qr-code.svg")).unwrap(),
-            "keep svg"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_private_artifacts_reject_symlinked_parent_before_writing() {
-        use std::os::unix::fs::symlink;
-
-        let temp = TempDir::new().unwrap();
-        let outside_dir = TempDir::new().unwrap();
-        let linked_parent = temp.path().join("linked-parent");
-        let private_dir = linked_parent.join("private");
-        symlink(outside_dir.path(), &linked_parent).unwrap();
-
-        let err = write_private_fingerprint(&private_dir, "fingerprint").unwrap_err();
-
-        assert!(
-            err.to_string().contains("parent must not contain symlinks"),
-            "unexpected error: {err:#}"
-        );
-        assert!(
-            fs::read_dir(outside_dir.path()).unwrap().next().is_none(),
-            "private artifact writer must not create files through a symlinked parent"
-        );
-    }
-
-    #[test]
     fn test_generate_public_readme() {
-        let readme = generate_public_readme("Test Archive", "A test archive", true);
-        assert!(readme.contains("Test Archive"));
-        assert!(readme.contains("A test archive"));
-        assert!(readme.contains("AES-256-GCM"));
-        assert!(readme.contains("Argon2id"));
-        assert!(readme.contains("Public encryption parameters"));
-        assert!(readme.contains("Encrypted database chunks"));
-
-        let unencrypted = generate_public_readme("Test Archive", "A test archive", false);
+        let unencrypted = generate_public_readme("Test Archive", "A test archive");
+        assert!(unencrypted.contains("Test Archive"));
+        assert!(unencrypted.contains("A test archive"));
         assert!(unencrypted.contains("NOT encrypted"));
         assert!(unencrypted.contains("no password required"));
         assert!(unencrypted.contains("Plaintext archive metadata"));
@@ -3588,9 +3049,7 @@ mod tests {
             package_versions.get("@sqlite.org/sqlite-wasm"),
             Some(&"3.53.0-build1")
         );
-        assert_eq!(package_versions.get("argon2-browser"), Some(&"1.18.0"));
-        assert_eq!(package_versions.get("fflate"), Some(&"0.8.3"));
-        assert_eq!(package_versions.get("html5-qrcode"), Some(&"2.3.8"));
+        assert_eq!(package_versions.len(), 1);
     }
 
     #[test]
@@ -3705,79 +3164,6 @@ mod tests {
             err.to_string().contains("outside site directory"),
             "unexpected error: {err:#}"
         );
-    }
-
-    #[test]
-    fn test_copy_payload_chunks_copies_only_manifest_files() {
-        let src = TempDir::new().unwrap();
-        let dst = TempDir::new().unwrap();
-        let payload_dir = src.path().join("payload");
-        fs::create_dir_all(&payload_dir).unwrap();
-
-        fs::write(payload_dir.join("chunk-00000.bin"), "chunk").unwrap();
-        fs::write(payload_dir.join("chunk-99999.bin"), "stale chunk").unwrap();
-        fs::write(payload_dir.join("secret.bin"), "unlisted payload").unwrap();
-
-        let config = encrypted_config_for_files(vec!["payload/chunk-00000.bin"]);
-        let copied = copy_payload_chunks(src.path(), &payload_dir, dst.path(), &config).unwrap();
-        assert_eq!(copied, 1);
-        assert!(dst.path().join("chunk-00000.bin").exists());
-        assert!(!dst.path().join("chunk-99999.bin").exists());
-        assert!(!dst.path().join("secret.bin").exists());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_copy_payload_chunks_rejects_manifest_symlinked_chunk() {
-        use std::os::unix::fs::symlink;
-
-        let src = TempDir::new().unwrap();
-        let dst = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-        let payload_dir = src.path().join("payload");
-        fs::create_dir_all(&payload_dir).unwrap();
-
-        fs::write(outside.path().join("secret.bin"), "secret").unwrap();
-        symlink(
-            outside.path().join("secret.bin"),
-            payload_dir.join("chunk-00000.bin"),
-        )
-        .unwrap();
-
-        let config = encrypted_config_for_files(vec!["payload/chunk-00000.bin"]);
-        let err = copy_payload_chunks(src.path(), &payload_dir, dst.path(), &config).unwrap_err();
-        assert!(
-            err.to_string().contains("must not be a symlink"),
-            "unexpected error: {err:#}"
-        );
-        assert!(!dst.path().join("chunk-00000.bin").exists());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_copy_payload_chunks_rejects_symlinked_source_directory() {
-        use std::os::unix::fs::symlink;
-
-        let source = TempDir::new().unwrap();
-        let dst = TempDir::new().unwrap();
-        let outside = TempDir::new().unwrap();
-
-        fs::write(outside.path().join("chunk-0.bin"), "outside chunk").unwrap();
-        symlink(outside.path(), source.path().join("payload")).unwrap();
-
-        let config = encrypted_config_for_files(vec!["payload/chunk-00000.bin"]);
-        let err = copy_payload_chunks(
-            source.path(),
-            &source.path().join("payload"),
-            dst.path(),
-            &config,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("must not be a symlink"),
-            "unexpected error: {err:#}"
-        );
-        assert!(!dst.path().join("chunk-0.bin").exists());
     }
 
     #[test]
@@ -4061,35 +3447,6 @@ mod tests {
         assert!(
             fs::read_dir(outside.path()).unwrap().next().is_none(),
             "bundle builder must not stage output through a symlinked parent"
-        );
-    }
-
-    #[test]
-    fn test_build_rejects_requested_qr_for_unencrypted_archive() {
-        let temp = TempDir::new().unwrap();
-        let source = temp.path().join("source");
-        let output = temp.path().join("bundle");
-        fs::create_dir_all(&source).unwrap();
-        write_unencrypted_source(&source, "data.db", "plaintext archive");
-
-        let builder = BundleBuilder::with_config(BundleConfig {
-            recovery_secret: Some(vec![7; 32]),
-            generate_qr: true,
-            ..BundleConfig::default()
-        });
-        let error = builder
-            .build(&source, &output, |_, _| {})
-            .expect_err("an unencrypted archive cannot provide recovery QR artifacts");
-
-        assert!(
-            error
-                .to_string()
-                .contains("requested for an unencrypted archive"),
-            "unexpected QR/archive-mode error: {error:#}"
-        );
-        assert!(
-            !output.exists(),
-            "rejected QR request unexpectedly published a bundle"
         );
     }
 

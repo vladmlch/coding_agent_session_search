@@ -3,8 +3,9 @@ use clap::{Parser, ValueEnum};
 use coding_agent_search::model::types::{
     Agent, AgentKind, Conversation, Message, MessageRole, Snippet,
 };
-use coding_agent_search::pages::bundle::{BundleBuilder, BundleConfig};
-use coding_agent_search::pages::encrypt::EncryptionEngine;
+use coding_agent_search::pages::bundle::{
+    BundleBuilder, BundleConfig, UnencryptedConfig, UnencryptedPayload,
+};
 use coding_agent_search::pages::export::{ExportEngine, ExportFilter, PathMode};
 use coding_agent_search::pages::profiles::ShareProfile;
 use coding_agent_search::storage::sqlite::FrankenStorage;
@@ -57,18 +58,6 @@ struct Args {
     #[arg(long, default_value_t = 256)]
     message_len: usize,
 
-    /// Password for encryption
-    #[arg(long, default_value = "test-password")]
-    password: String,
-
-    /// Optional high-entropy recovery secret (at least 24 UTF-8 bytes)
-    #[arg(long)]
-    recovery_secret: Option<String>,
-
-    /// Chunk size for encryption in bytes
-    #[arg(long, default_value_t = 1024 * 1024)]
-    chunk_bytes: usize,
-
     /// Bundle title
     #[arg(long, default_value = "cass Perf Archive")]
     title: String,
@@ -106,12 +95,12 @@ fn main() -> Result<()> {
     let output_root = args.output.clone();
     let db_dir = output_root.join("db");
     let export_dir = output_root.join("export");
-    let encrypt_dir = output_root.join("encrypt");
+    let stage_dir = output_root.join("stage");
     let bundle_dir = output_root.join("bundle");
 
     fs::create_dir_all(&db_dir)?;
     fs::create_dir_all(&export_dir)?;
-    fs::create_dir_all(&encrypt_dir)?;
+    fs::create_dir_all(stage_dir.join("payload"))?;
     fs::create_dir_all(&bundle_dir)?;
 
     let db_path = db_dir.join("agent_search.db");
@@ -137,32 +126,40 @@ fn main() -> Result<()> {
         until: None,
         path_mode: PathMode::Relative,
     };
-    // Measure what an encrypted production export runs, redaction included.
     let export_engine = ExportEngine::new(&db_path, &export_db_path, filter)
-        .with_share_profile(ShareProfile::default_for(true));
+        .with_share_profile(ShareProfile::default_for(false));
     let export_stats = export_engine.execute(|_, _| {}, None)?;
 
-    eprintln!("[perf-bundle] encrypting export...");
-    let mut enc_engine = EncryptionEngine::new(args.chunk_bytes)?;
-    enc_engine.add_password_slot(&args.password)?;
-    if let Some(secret) = &args.recovery_secret {
-        enc_engine.add_recovery_slot(secret.as_bytes())?;
-    }
-    let _config = enc_engine.encrypt_file(&export_db_path, &encrypt_dir, |_, _| {})?;
+    eprintln!("[perf-bundle] staging unencrypted payload...");
+    let staged_db_path = stage_dir.join("payload").join("data.db");
+    fs::copy(&export_db_path, &staged_db_path)?;
+    let db_size = fs::metadata(&staged_db_path)?.len();
+    let unencrypted_config = UnencryptedConfig {
+        encrypted: false,
+        version: "1.0.0".to_string(),
+        payload: UnencryptedPayload {
+            path: "payload/data.db".to_string(),
+            format: "sqlite".to_string(),
+            size_bytes: Some(db_size),
+        },
+        warning: Some("UNENCRYPTED - All content is publicly readable".to_string()),
+    };
+    fs::write(
+        stage_dir.join("config.json"),
+        serde_json::to_vec_pretty(&unencrypted_config)?,
+    )?;
 
     eprintln!("[perf-bundle] building bundle...");
     let bundle_config = BundleConfig {
         title: args.title.clone(),
         description: args.description.clone(),
         hide_metadata: args.hide_metadata,
-        recovery_secret: args.recovery_secret.as_ref().map(|s| s.as_bytes().to_vec()),
-        generate_qr: false,
         generated_docs: Vec::new(),
         analytics_status: None,
     };
 
     let builder = BundleBuilder::with_config(bundle_config);
-    let bundle_result = builder.build(&encrypt_dir, &bundle_dir, |_, _| {})?;
+    let bundle_result = builder.build(&stage_dir, &bundle_dir, |_, _| {})?;
 
     let summary = serde_json::json!({
         "messages": total_messages,
@@ -175,7 +172,7 @@ fn main() -> Result<()> {
             "output": output_root,
             "db": db_path,
             "export_db": export_db_path,
-            "encrypt": encrypt_dir,
+            "stage": stage_dir,
             "bundle": bundle_dir,
             "site": bundle_result.site_dir,
             "private": bundle_result.private_dir

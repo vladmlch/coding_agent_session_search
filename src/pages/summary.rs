@@ -24,7 +24,6 @@
 use crate::franken_sync::Connection;
 use crate::franken_sync::Row;
 use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt};
-use crate::pages::encrypt::{KeySlot, SlotType};
 use crate::pages::secret_scan::{SecretScanReport, SecretScanSummary};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -247,10 +246,10 @@ pub struct EncryptionSummary {
 impl Default for EncryptionSummary {
     fn default() -> Self {
         Self {
-            algorithm: "AES-256-GCM".to_string(),
-            key_derivation: "Argon2id".to_string(),
+            algorithm: "none".to_string(),
+            key_derivation: "none".to_string(),
             key_slot_count: 0,
-            estimated_decrypt_time_secs: 2,
+            estimated_decrypt_time_secs: 0,
         }
     }
 }
@@ -262,15 +261,6 @@ pub enum KeySlotType {
     Password,
     QrCode,
     Recovery,
-}
-
-impl From<SlotType> for KeySlotType {
-    fn from(st: SlotType) -> Self {
-        match st {
-            SlotType::Password => KeySlotType::Password,
-            SlotType::Recovery => KeySlotType::Recovery,
-        }
-    }
 }
 
 impl KeySlotType {
@@ -295,18 +285,6 @@ pub struct KeySlotSummary {
     pub hint: Option<String>,
     /// When the slot was created.
     pub created_at: Option<DateTime<Utc>>,
-}
-
-impl KeySlotSummary {
-    /// Create from a KeySlot.
-    pub fn from_key_slot(slot: &KeySlot, index: usize) -> Self {
-        Self {
-            slot_index: index,
-            slot_type: slot.slot_type.into(),
-            hint: None, // Hints not stored in KeySlot currently
-            created_at: None,
-        }
-    }
 }
 
 /// Set of exclusions to apply before export.
@@ -1384,22 +1362,6 @@ impl PrePublishSummary {
     pub fn set_secret_scan(&mut self, report: &SecretScanReport) {
         self.secret_scan = ScanReportSummary::from_report(report);
     }
-
-    /// Update with encryption config.
-    pub fn set_encryption_config(&mut self, key_slots: &[KeySlot]) {
-        let enc = EncryptionSummary {
-            key_slot_count: key_slots.len(),
-            ..Default::default()
-        };
-
-        self.key_slots = key_slots
-            .iter()
-            .enumerate()
-            .map(|(i, slot)| KeySlotSummary::from_key_slot(slot, i))
-            .collect();
-
-        self.encryption_config = Some(enc);
-    }
 }
 
 #[cfg(test)]
@@ -1881,8 +1843,8 @@ mod tests {
     #[test]
     fn test_encryption_summary() {
         let enc = EncryptionSummary::default();
-        assert_eq!(enc.algorithm, "AES-256-GCM");
-        assert_eq!(enc.key_derivation, "Argon2id");
+        assert_eq!(enc.algorithm, "none");
+        assert_eq!(enc.key_derivation, "none");
     }
 
     #[test]
@@ -1914,25 +1876,6 @@ mod tests {
         assert_eq!(summary.total_characters, 0);
         assert!(summary.workspaces.is_empty());
         assert!(summary.agents.is_empty());
-    }
-
-    #[test]
-    fn test_key_slot_summary() {
-        use crate::pages::encrypt::{KdfAlgorithm, KeySlot, SlotType};
-
-        let slot = KeySlot {
-            id: 0,
-            slot_type: SlotType::Password,
-            kdf: KdfAlgorithm::Argon2id,
-            salt: "test".to_string(),
-            wrapped_dek: "test".to_string(),
-            nonce: "test".to_string(),
-            argon2_params: None,
-        };
-
-        let summary = KeySlotSummary::from_key_slot(&slot, 0);
-        assert_eq!(summary.slot_index, 0);
-        assert_eq!(summary.slot_type, KeySlotType::Password);
     }
 
     #[test]

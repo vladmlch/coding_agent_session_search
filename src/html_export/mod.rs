@@ -29,7 +29,6 @@
 //! std::fs::write("session.html", html)?;
 //! ```
 
-mod encryption;
 mod filename;
 mod renderer;
 mod scripts;
@@ -37,7 +36,6 @@ mod styles;
 mod template;
 
 // Re-export public API
-pub use encryption::{EncryptedContent, EncryptionError, EncryptionParams, encrypt_content};
 pub use filename::{
     FilenameMetadata, FilenameOptions, agent_slug, datetime_slug, extract_topic, generate_filename,
     generate_filepath, generate_full_filename, get_downloads_dir, is_valid_filename,
