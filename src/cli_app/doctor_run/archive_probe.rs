@@ -336,7 +336,7 @@ pub(crate) fn run_bounded_doctor_archive_db_probe(
     let worker_phase = std::sync::Arc::clone(&phase);
     let worker_db_path = db_path.to_path_buf();
     let deep_integrity_skip_reason = doctor_franken_deep_integrity_skip_reason(db_path);
-    let _probe_worker = std::thread::spawn(move || {
+    let probe_worker = std::thread::spawn(move || {
         use crate::franken_sync::compat::RowExt as _;
 
         let set_phase = |value: &'static str| {
@@ -393,7 +393,10 @@ pub(crate) fn run_bounded_doctor_archive_db_probe(
     });
 
     match rx.recv_timeout(timeout) {
-        Ok(probe) => DoctorBoundedArchiveDbProbeOutcome::Completed(probe),
+        Ok(probe) => {
+            let _ = probe_worker.join();
+            DoctorBoundedArchiveDbProbeOutcome::Completed(probe)
+        }
         Err(_) => DoctorBoundedArchiveDbProbeOutcome::TimedOut {
             phase: phase.lock().map(|current| *current).unwrap_or("unknown"),
         },

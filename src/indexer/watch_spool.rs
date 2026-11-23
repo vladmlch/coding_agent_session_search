@@ -83,61 +83,6 @@ impl<T: PartialEq> CmpKeyEq for T {
     }
 }
 
-#[cfg(test)]
-pub(in crate::indexer) mod watch_root_coalescing_tests {
-    use super::{ConnectorKind, ScanRoot, coalesce_nested_watch_roots};
-    use std::path::PathBuf;
-
-    fn local(kind: ConnectorKind, path: &str) -> (ConnectorKind, ScanRoot) {
-        (kind, ScanRoot::local(PathBuf::from(path)))
-    }
-
-    #[test]
-    fn nested_roots_for_one_connector_collapse_to_the_shallowest() {
-        let roots = vec![
-            local(ConnectorKind::Codex, "/home/u/.codex/sessions"),
-            local(ConnectorKind::Codex, "/home/u/.codex"),
-            local(ConnectorKind::Codex, "/home/u/.codex/archived/sessions"),
-            local(ConnectorKind::Codex, "/home/u/.codex"),
-        ];
-        let kept = coalesce_nested_watch_roots(roots);
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].1.path, PathBuf::from("/home/u/.codex"));
-    }
-
-    #[test]
-    fn order_independent_and_siblings_survive() {
-        let kept = coalesce_nested_watch_roots(vec![
-            local(ConnectorKind::Codex, "/a/b"),
-            local(ConnectorKind::Codex, "/a/c"),
-            local(ConnectorKind::Codex, "/a/b/deep"),
-        ]);
-        let paths: Vec<_> = kept.iter().map(|(_, r)| r.path.clone()).collect();
-        assert_eq!(paths, vec![PathBuf::from("/a/b"), PathBuf::from("/a/c")]);
-    }
-
-    #[test]
-    fn different_connectors_never_coalesce() {
-        let kept = coalesce_nested_watch_roots(vec![
-            local(ConnectorKind::Claude, "/shared"),
-            local(ConnectorKind::Gemini, "/shared/sessions"),
-            local(ConnectorKind::Codex, "/shared"),
-        ]);
-        assert_eq!(kept.len(), 3);
-    }
-
-    #[test]
-    fn prefix_only_names_are_not_ancestors() {
-        // `/a/b` is not an ancestor of `/a/bc`; Path::starts_with is
-        // component-wise, so both must survive.
-        let kept = coalesce_nested_watch_roots(vec![
-            local(ConnectorKind::Codex, "/a/b"),
-            local(ConnectorKind::Codex, "/a/bc"),
-        ]);
-        assert_eq!(kept.len(), 2);
-    }
-}
-
 impl ConnectorKind {
     pub(in crate::indexer) fn from_slug(slug: &str) -> Option<Self> {
         match slug {
@@ -881,5 +826,60 @@ impl Drop for WatchIdleWaitScope<'_> {
         // Events, cancellation, errors and unwinding all re-arm the watchdog
         // before any classification, source I/O or persistence can begin.
         self.0.watch_idle.store(false, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+pub(in crate::indexer) mod watch_root_coalescing_tests {
+    use super::{ConnectorKind, ScanRoot, coalesce_nested_watch_roots};
+    use std::path::PathBuf;
+
+    fn local(kind: ConnectorKind, path: &str) -> (ConnectorKind, ScanRoot) {
+        (kind, ScanRoot::local(PathBuf::from(path)))
+    }
+
+    #[test]
+    fn nested_roots_for_one_connector_collapse_to_the_shallowest() {
+        let roots = vec![
+            local(ConnectorKind::Codex, "/home/u/.codex/sessions"),
+            local(ConnectorKind::Codex, "/home/u/.codex"),
+            local(ConnectorKind::Codex, "/home/u/.codex/archived/sessions"),
+            local(ConnectorKind::Codex, "/home/u/.codex"),
+        ];
+        let kept = coalesce_nested_watch_roots(roots);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].1.path, PathBuf::from("/home/u/.codex"));
+    }
+
+    #[test]
+    fn order_independent_and_siblings_survive() {
+        let kept = coalesce_nested_watch_roots(vec![
+            local(ConnectorKind::Codex, "/a/b"),
+            local(ConnectorKind::Codex, "/a/c"),
+            local(ConnectorKind::Codex, "/a/b/deep"),
+        ]);
+        let paths: Vec<_> = kept.iter().map(|(_, r)| r.path.clone()).collect();
+        assert_eq!(paths, vec![PathBuf::from("/a/b"), PathBuf::from("/a/c")]);
+    }
+
+    #[test]
+    fn different_connectors_never_coalesce() {
+        let kept = coalesce_nested_watch_roots(vec![
+            local(ConnectorKind::Claude, "/shared"),
+            local(ConnectorKind::Gemini, "/shared/sessions"),
+            local(ConnectorKind::Codex, "/shared"),
+        ]);
+        assert_eq!(kept.len(), 3);
+    }
+
+    #[test]
+    fn prefix_only_names_are_not_ancestors() {
+        // `/a/b` is not an ancestor of `/a/bc`; Path::starts_with is
+        // component-wise, so both must survive.
+        let kept = coalesce_nested_watch_roots(vec![
+            local(ConnectorKind::Codex, "/a/b"),
+            local(ConnectorKind::Codex, "/a/bc"),
+        ]);
+        assert_eq!(kept.len(), 2);
     }
 }

@@ -2,7 +2,7 @@
   "_meta": {
     "description": "Canonical error kind taxonomy for cass robot-mode error envelopes",
     "rule": "All err.kind values MUST be kebab-case per AGENTS.md",
-    "total_kinds": 86,
+    "total_kinds": 76,
     "regenerate": "UPDATE_GOLDENS=1 cargo test --test golden_error_envelope"
   },
   "kinds": {
@@ -43,8 +43,7 @@
     },
     "archive-token-daily-stats-rebuild": {
       "exit_codes": [
-        5,
-        9
+        5
       ]
     },
     "config": {
@@ -70,11 +69,6 @@
       ]
     },
     "daemon": {
-      "exit_codes": [
-        9
-      ]
-    },
-    "db-error": {
       "exit_codes": [
         9
       ]
@@ -308,34 +302,14 @@
         1
       ]
     },
-    "password-read-error": {
-      "exit_codes": [
-        6
-      ]
-    },
-    "password-required": {
-      "exit_codes": [
-        6
-      ]
-    },
     "query-depth-exceeded": {
       "exit_codes": [
         2
       ]
     },
-    "rebuild-error": {
-      "exit_codes": [
-        9
-      ]
-    },
     "removed-command": {
       "exit_codes": [
         2
-      ]
-    },
-    "repair-error": {
-      "exit_codes": [
-        9
       ]
     },
     "resume-empty-command": {
@@ -346,13 +320,6 @@
     "resume-exec-failed": {
       "exit_codes": [
         7
-      ]
-    },
-    "schedule": {
-      "exit_codes": [
-        9,
-        10,
-        14
       ]
     },
     "search": {
@@ -387,11 +354,6 @@
         9
       ]
     },
-    "session-file-unreadable": {
-      "exit_codes": [
-        4
-      ]
-    },
     "session-id-not-found": {
       "exit_codes": [
         5
@@ -421,21 +383,6 @@
     "timeout": {
       "exit_codes": [
         10
-      ]
-    },
-    "tui": {
-      "exit_codes": [
-        9
-      ]
-    },
-    "tui-headless-once": {
-      "exit_codes": [
-        9
-      ]
-    },
-    "tui-reset-state": {
-      "exit_codes": [
-        9
       ]
     },
     "unknown": {

@@ -442,7 +442,7 @@ fsqlite-vdbe = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55d
 fsqlite-vfs = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
 fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
 # frankensearch-quill resolves from the owner's frankensearch fork
-# https://github.com/vladmlch/frankensearch (branch cass-prefix-expansion,
+# https://github.com/vladmlch/frankensearch (branch main,
 # pushed 2026-11-11) by exact rev (owner decision, 2026-11-10;
 # rev moved 2026-11-11 for the follow-up cost fix, then again the same day
 # for the measured parity fix). The rev is upstream

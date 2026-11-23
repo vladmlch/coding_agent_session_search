@@ -592,115 +592,6 @@ pub(in crate::indexer) fn fallback_fts_repair_pending_detail(
     }
 }
 
-#[cfg(test)]
-pub(in crate::indexer) mod fallback_fts_repair_pending_tests {
-    use super::{FallbackFtsRepairOutcome, fallback_fts_repair_pending_detail};
-    use crate::storage::sqlite::FtsConsistencyRepair;
-
-    #[test]
-    fn only_broken_outcomes_mark_the_shadow_pending() {
-        assert_eq!(
-            fallback_fts_repair_pending_detail(&FallbackFtsRepairOutcome::SkippedRepairFailed {
-                detail: "boom".to_string()
-            }),
-            Some("boom")
-        );
-        assert_eq!(
-            fallback_fts_repair_pending_detail(
-                &FallbackFtsRepairOutcome::SkippedCorruptDerivedIndex {
-                    detail: "corrupt".to_string()
-                }
-            ),
-            Some("corrupt")
-        );
-        assert_eq!(
-            fallback_fts_repair_pending_detail(
-                &FallbackFtsRepairOutcome::SkippedUnsupportedPopulatedShadowReload {
-                    detail: "unsupported".to_string()
-                }
-            ),
-            Some("unsupported")
-        );
-        // Repaired / known-healthy outcomes clear the marker (None).
-        assert_eq!(
-            fallback_fts_repair_pending_detail(
-                &FallbackFtsRepairOutcome::SkippedKnownHealthyForFingerprint {
-                    archive_fingerprint: "fp".to_string()
-                }
-            ),
-            None
-        );
-        assert_eq!(
-            fallback_fts_repair_pending_detail(&FallbackFtsRepairOutcome::Repaired(
-                FtsConsistencyRepair::AlreadyHealthy { rows: 3 }
-            )),
-            None
-        );
-    }
-}
-
-/// #434 defect 3: the persisted consecutive-identical-failure counter behind
-/// the warn-forever → non-zero-exit escalation of `cass index`.
-#[cfg(test)]
-pub(in crate::indexer) mod fts_repair_failure_streak_tests {
-    use super::{
-        FTS_REPAIR_FAILURE_ESCALATION_RUNS, clear_fts_repair_failure_streak,
-        fts_repair_failure_streak_path, read_fts_repair_failure_streak,
-        record_fts_repair_failure_streak,
-    };
-
-    #[test]
-    fn identical_failures_increment_and_changed_failures_reset() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let index_path = tmp.path().join("index");
-
-        assert_eq!(read_fts_repair_failure_streak(&index_path), None);
-        assert_eq!(record_fts_repair_failure_streak(&index_path, "boom"), 1);
-        assert_eq!(record_fts_repair_failure_streak(&index_path, "boom"), 2);
-        // A different failure breaks the "identical" chain.
-        assert_eq!(record_fts_repair_failure_streak(&index_path, "other"), 1);
-        for expected in 2..=FTS_REPAIR_FAILURE_ESCALATION_RUNS {
-            assert_eq!(
-                record_fts_repair_failure_streak(&index_path, "other"),
-                expected
-            );
-        }
-        let (streak, detail) =
-            read_fts_repair_failure_streak(&index_path).expect("streak persisted");
-        assert_eq!(streak, FTS_REPAIR_FAILURE_ESCALATION_RUNS);
-        assert_eq!(detail, "other");
-    }
-
-    #[test]
-    fn clearing_zeroes_the_counter_without_deleting_the_state_file() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let index_path = tmp.path().join("index");
-        assert_eq!(record_fts_repair_failure_streak(&index_path, "boom"), 1);
-
-        clear_fts_repair_failure_streak(&index_path);
-        assert_eq!(
-            read_fts_repair_failure_streak(&index_path),
-            None,
-            "a cleared streak must read back as no streak"
-        );
-        assert!(
-            fts_repair_failure_streak_path(&index_path).exists(),
-            "clearing zeroes the record in place — cass never deletes"
-        );
-        // The next failure restarts from 1.
-        assert_eq!(record_fts_repair_failure_streak(&index_path, "boom"), 1);
-    }
-
-    #[test]
-    fn clearing_a_never_written_streak_is_a_no_op() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let index_path = tmp.path().join("index");
-        clear_fts_repair_failure_streak(&index_path);
-        assert!(!fts_repair_failure_streak_path(&index_path).exists());
-        assert_eq!(read_fts_repair_failure_streak(&index_path), None);
-    }
-}
-
 pub(in crate::indexer) fn full_rebuild_requires_historical_restart(
     _storage: &FrankenStorage,
     _db_path: &Path,
@@ -829,4 +720,113 @@ pub(crate) struct LexicalRebuildCheckpoint {
     pub page_size: i64,
     pub completed: bool,
     pub updated_at_ms: i64,
+}
+
+#[cfg(test)]
+pub(in crate::indexer) mod fallback_fts_repair_pending_tests {
+    use super::{FallbackFtsRepairOutcome, fallback_fts_repair_pending_detail};
+    use crate::storage::sqlite::FtsConsistencyRepair;
+
+    #[test]
+    fn only_broken_outcomes_mark_the_shadow_pending() {
+        assert_eq!(
+            fallback_fts_repair_pending_detail(&FallbackFtsRepairOutcome::SkippedRepairFailed {
+                detail: "boom".to_string()
+            }),
+            Some("boom")
+        );
+        assert_eq!(
+            fallback_fts_repair_pending_detail(
+                &FallbackFtsRepairOutcome::SkippedCorruptDerivedIndex {
+                    detail: "corrupt".to_string()
+                }
+            ),
+            Some("corrupt")
+        );
+        assert_eq!(
+            fallback_fts_repair_pending_detail(
+                &FallbackFtsRepairOutcome::SkippedUnsupportedPopulatedShadowReload {
+                    detail: "unsupported".to_string()
+                }
+            ),
+            Some("unsupported")
+        );
+        // Repaired / known-healthy outcomes clear the marker (None).
+        assert_eq!(
+            fallback_fts_repair_pending_detail(
+                &FallbackFtsRepairOutcome::SkippedKnownHealthyForFingerprint {
+                    archive_fingerprint: "fp".to_string()
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            fallback_fts_repair_pending_detail(&FallbackFtsRepairOutcome::Repaired(
+                FtsConsistencyRepair::AlreadyHealthy { rows: 3 }
+            )),
+            None
+        );
+    }
+}
+
+/// #434 defect 3: the persisted consecutive-identical-failure counter behind
+/// the warn-forever → non-zero-exit escalation of `cass index`.
+#[cfg(test)]
+pub(in crate::indexer) mod fts_repair_failure_streak_tests {
+    use super::{
+        FTS_REPAIR_FAILURE_ESCALATION_RUNS, clear_fts_repair_failure_streak,
+        fts_repair_failure_streak_path, read_fts_repair_failure_streak,
+        record_fts_repair_failure_streak,
+    };
+
+    #[test]
+    fn identical_failures_increment_and_changed_failures_reset() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let index_path = tmp.path().join("index");
+
+        assert_eq!(read_fts_repair_failure_streak(&index_path), None);
+        assert_eq!(record_fts_repair_failure_streak(&index_path, "boom"), 1);
+        assert_eq!(record_fts_repair_failure_streak(&index_path, "boom"), 2);
+        // A different failure breaks the "identical" chain.
+        assert_eq!(record_fts_repair_failure_streak(&index_path, "other"), 1);
+        for expected in 2..=FTS_REPAIR_FAILURE_ESCALATION_RUNS {
+            assert_eq!(
+                record_fts_repair_failure_streak(&index_path, "other"),
+                expected
+            );
+        }
+        let (streak, detail) =
+            read_fts_repair_failure_streak(&index_path).expect("streak persisted");
+        assert_eq!(streak, FTS_REPAIR_FAILURE_ESCALATION_RUNS);
+        assert_eq!(detail, "other");
+    }
+
+    #[test]
+    fn clearing_zeroes_the_counter_without_deleting_the_state_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let index_path = tmp.path().join("index");
+        assert_eq!(record_fts_repair_failure_streak(&index_path, "boom"), 1);
+
+        clear_fts_repair_failure_streak(&index_path);
+        assert_eq!(
+            read_fts_repair_failure_streak(&index_path),
+            None,
+            "a cleared streak must read back as no streak"
+        );
+        assert!(
+            fts_repair_failure_streak_path(&index_path).exists(),
+            "clearing zeroes the record in place — cass never deletes"
+        );
+        // The next failure restarts from 1.
+        assert_eq!(record_fts_repair_failure_streak(&index_path, "boom"), 1);
+    }
+
+    #[test]
+    fn clearing_a_never_written_streak_is_a_no_op() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let index_path = tmp.path().join("index");
+        clear_fts_repair_failure_streak(&index_path);
+        assert!(!fts_repair_failure_streak_path(&index_path).exists());
+        assert_eq!(read_fts_repair_failure_streak(&index_path), None);
+    }
 }

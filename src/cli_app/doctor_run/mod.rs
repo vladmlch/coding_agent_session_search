@@ -285,7 +285,7 @@ pub(crate) fn run_doctor_impl(
             name: "stale_repair_state_self_heal".to_string(),
             status: "pass".to_string(),
             message: format!(
-                "reclaimed stale repair state from a crashed doctor --fix owner                  ({} failure-marker file(s){}) with receipt {}",
+                "reclaimed stale repair state from a crashed doctor --fix owner ({} failure-marker file(s){}) with receipt {}",
                 heal.reclaimed_marker_files,
                 if heal.lock_metadata_cleared {
                     " + stale mutation-lock metadata"

@@ -794,7 +794,7 @@ fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_man
     // the registry-shaped frankensearch requirements still converge and
     // no reindex is needed. Every other frankensearch family crate
     // keeps its crates.io resolution. The fork is the owner's pushed
-    // GitHub fork (branch cass-prefix-expansion, pushed 2026-11-11).
+    // GitHub fork (branch main, pushed 2026-11-11).
     const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensearch";
     const EXPECTED_FORK_REV: &str = "b90177a0b089241ebf7eaaa00c0b4b921a574ad5";
     const EXPECTED_VERSION: &str = "0.4.1";

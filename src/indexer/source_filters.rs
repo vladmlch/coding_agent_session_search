@@ -354,65 +354,6 @@ pub(in crate::indexer) fn should_skip_subagent(conversation: &NormalizedConversa
     skip_subagents_active() && conversation_is_subagent(conversation)
 }
 
-#[cfg(test)]
-pub(in crate::indexer) mod subagent_skip_tests {
-    use super::{
-        NormalizedConversation, conversation_is_subagent, conversation_source_is_subagent,
-    };
-    use std::path::Path;
-
-    #[test]
-    fn detects_subagent_transcripts_by_parent_dir() {
-        // Claude Code subagent transcript: file directly inside a subagents/ dir.
-        assert!(conversation_source_is_subagent(Path::new(
-            "/home/u/.claude/projects/proj/session-1/subagents/agent-abc.jsonl"
-        )));
-        // A top-level session transcript is not a subagent.
-        assert!(!conversation_source_is_subagent(Path::new(
-            "/home/u/.claude/projects/proj/session-1.jsonl"
-        )));
-        // A file merely named like an agent but not under subagents/ is kept.
-        assert!(!conversation_source_is_subagent(Path::new(
-            "/home/u/.codex/sessions/agent-notes.jsonl"
-        )));
-        // A subagents/ dir higher up does not match a file nested deeper under it.
-        assert!(!conversation_source_is_subagent(Path::new(
-            "/home/u/subagents/archive/session.jsonl"
-        )));
-    }
-
-    #[test]
-    fn gh415_shelley_subagent_requires_authoritative_parent_metadata() {
-        let mut conversation = NormalizedConversation {
-            agent_slug: "shelley".into(),
-            external_id: Some("child".into()),
-            title: None,
-            workspace: None,
-            source_path: "/source/sessions.sqlite3".into(),
-            started_at: None,
-            ended_at: None,
-            messages: Vec::new(),
-            metadata: serde_json::json!({"source":"shelley", "shelley":{"parent_conversation_id":"parent"}}),
-        };
-        assert!(conversation_is_subagent(&conversation));
-        for parent in [
-            serde_json::Value::Null,
-            serde_json::json!(""),
-            serde_json::json!("  "),
-            serde_json::json!(123),
-        ] {
-            conversation.metadata["shelley"]["parent_conversation_id"] = parent;
-            assert!(!conversation_is_subagent(&conversation));
-        }
-        conversation.metadata["shelley"]["parent_conversation_id"] = serde_json::json!("parent");
-        conversation.metadata["source"] = serde_json::json!("other");
-        assert!(!conversation_is_subagent(&conversation));
-        conversation.metadata["source"] = serde_json::json!("shelley");
-        conversation.agent_slug = "codex".into();
-        assert!(!conversation_is_subagent(&conversation));
-    }
-}
-
 #[cfg(unix)]
 pub(in crate::indexer) fn source_file_id(path: &Path) -> Option<SourceFileId> {
     use std::os::unix::fs::MetadataExt;
@@ -639,5 +580,64 @@ pub(in crate::indexer) fn saturating_u32_from_i64(raw: i64) -> u32 {
         Ok(value) => value,
         Err(_) if raw.is_negative() => 0,
         Err(_) => u32::MAX,
+    }
+}
+
+#[cfg(test)]
+pub(in crate::indexer) mod subagent_skip_tests {
+    use super::{
+        NormalizedConversation, conversation_is_subagent, conversation_source_is_subagent,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn detects_subagent_transcripts_by_parent_dir() {
+        // Claude Code subagent transcript: file directly inside a subagents/ dir.
+        assert!(conversation_source_is_subagent(Path::new(
+            "/home/u/.claude/projects/proj/session-1/subagents/agent-abc.jsonl"
+        )));
+        // A top-level session transcript is not a subagent.
+        assert!(!conversation_source_is_subagent(Path::new(
+            "/home/u/.claude/projects/proj/session-1.jsonl"
+        )));
+        // A file merely named like an agent but not under subagents/ is kept.
+        assert!(!conversation_source_is_subagent(Path::new(
+            "/home/u/.codex/sessions/agent-notes.jsonl"
+        )));
+        // A subagents/ dir higher up does not match a file nested deeper under it.
+        assert!(!conversation_source_is_subagent(Path::new(
+            "/home/u/subagents/archive/session.jsonl"
+        )));
+    }
+
+    #[test]
+    fn gh415_shelley_subagent_requires_authoritative_parent_metadata() {
+        let mut conversation = NormalizedConversation {
+            agent_slug: "shelley".into(),
+            external_id: Some("child".into()),
+            title: None,
+            workspace: None,
+            source_path: "/source/sessions.sqlite3".into(),
+            started_at: None,
+            ended_at: None,
+            messages: Vec::new(),
+            metadata: serde_json::json!({"source":"shelley", "shelley":{"parent_conversation_id":"parent"}}),
+        };
+        assert!(conversation_is_subagent(&conversation));
+        for parent in [
+            serde_json::Value::Null,
+            serde_json::json!(""),
+            serde_json::json!("  "),
+            serde_json::json!(123),
+        ] {
+            conversation.metadata["shelley"]["parent_conversation_id"] = parent;
+            assert!(!conversation_is_subagent(&conversation));
+        }
+        conversation.metadata["shelley"]["parent_conversation_id"] = serde_json::json!("parent");
+        conversation.metadata["source"] = serde_json::json!("other");
+        assert!(!conversation_is_subagent(&conversation));
+        conversation.metadata["source"] = serde_json::json!("shelley");
+        conversation.agent_slug = "codex".into();
+        assert!(!conversation_is_subagent(&conversation));
     }
 }
