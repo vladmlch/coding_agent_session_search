@@ -12,7 +12,7 @@ use crate::franken_sync::{
     },
 };
 use crate::model::types::{AgentKind, Conversation, Message, MessageRole};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 #[cfg(test)]

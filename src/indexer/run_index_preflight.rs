@@ -407,7 +407,7 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
         require_canonical_rebuild,
         |boundary| {
             match boundary {
-                ReadonlyRebuildBoundary::Rebuild => work_phase!("lexical:rebuild"),
+                ReadonlyRebuildBoundary::Rebuild => ctx.enter_work_phase("lexical:rebuild")?,
                 ReadonlyRebuildBoundary::ArchiveWrite => {
                     if let Some(progress) = ctx.opts.progress.as_ref() {
                         progress.check_stop()?;

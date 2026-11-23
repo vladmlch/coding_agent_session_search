@@ -227,29 +227,35 @@ pub(crate) use archive_fingerprint::{
     prime_archive_fingerprint_cache_from_completed_checkpoint,
     write_archive_fingerprint_cache_best_effort,
 };
+#[cfg(test)]
+pub(crate) use expected_lexical_docs::ExpectedLexicalDocsScanPosition;
 pub(crate) use expected_lexical_docs::{
-    ExpectedLexicalDocsScanPosition, LexicalRebuildOutcome, expected_lexical_docs_scan_position,
+    LexicalRebuildOutcome, expected_lexical_docs_scan_position,
 };
 pub(crate) use fallback_fts_repair::LexicalRebuildCheckpoint;
 #[cfg(test)]
 pub(crate) use fallback_fts_repair::LexicalRebuildSnapshot;
 pub(crate) use index_dispatch::{mirrored_root_owners, run_cli_index};
-pub(crate) use ingest_oom::{WATCH_NOMEM_DEFERRALS_FILE, WatchNomemDeferral, WatchNomemDeferrals};
+#[cfg(test)]
+pub(crate) use ingest_oom::WatchNomemDeferral;
+pub(crate) use ingest_oom::WatchNomemDeferrals;
+#[cfg(test)]
+pub(crate) use ingest_quarantine::acquire_quarantine_mutation_lock;
 #[cfg(any(unix, test))]
 pub(crate) use ingest_quarantine::try_acquire_semantic_backfill_lock;
 pub(crate) use ingest_quarantine::{
-    SearchMaintenanceMutationGuard, acquire_quarantine_mutation_lock,
-    acquire_search_asset_mutation_lock, acquire_search_maintenance_mutation_lock,
-    acquire_semantic_backfill_lock, clear_operator_quarantine_poison_records,
-    operator_quarantine_poison_records, quarantine_source_missing_ids,
+    SearchMaintenanceMutationGuard, acquire_search_asset_mutation_lock,
+    acquire_search_maintenance_mutation_lock, acquire_semantic_backfill_lock,
+    clear_operator_quarantine_poison_records, operator_quarantine_poison_records,
+    quarantine_source_missing_ids,
 };
 pub(crate) use lexical_checkpoint_io::{
     LexicalDocCountMismatch, completed_lexical_storage_fingerprint_matches_total,
     has_usable_lexical_publication_receipt, verify_published_lexical_doc_count,
 };
-pub(crate) use lexical_packet_prep::{
-    LexicalRebuildEquivalenceEvidence, LexicalRebuildEquivalenceGoldenHit,
-};
+pub(crate) use lexical_packet_prep::LexicalRebuildEquivalenceEvidence;
+#[cfg(test)]
+pub(crate) use lexical_packet_prep::LexicalRebuildEquivalenceGoldenHit;
 pub(crate) use lexical_policy::{
     LexicalPopulationStrategy, db_size_bytes_for_incremental_lexical_repair_policy,
     incremental_authoritative_lexical_repair_max_db_bytes,
@@ -267,16 +273,18 @@ pub(crate) use lexical_rebuild_settings::{
     lexical_rebuild_pipeline_settings_snapshot_passive,
 };
 pub(crate) use lexical_rebuild_state::LexicalRebuildPipelineRuntimeSnapshot;
+pub(crate) use lexical_shard_planner::{LexicalShardPlan, LexicalShardPlanShard};
+#[cfg(test)]
 pub(crate) use lexical_shard_planner::{
-    LexicalShardPlan, LexicalShardPlanShard, LexicalShardPlannerBudgets,
-    LexicalShardPlannerConversation, plan_lexical_rebuild_shards,
+    LexicalShardPlannerBudgets, LexicalShardPlannerConversation, plan_lexical_rebuild_shards,
 };
+#[cfg(test)]
+pub(crate) use progress_and_stats::INDEX_PHASE_PREPARING;
 pub(crate) use progress_and_stats::{
     ConnectorScanFailure, INDEX_PHASE_ANALYTICS_REBUILD, INDEX_PHASE_LEXICAL_INDEXING,
-    INDEX_PHASE_PREPARING, INDEX_PHASE_SCANNING, INDEX_PHASE_SEMANTIC_EMBEDDING,
-    INDEX_PHASE_SEMANTIC_FINALIZE, INDEX_PHASE_SEMANTIC_HNSW, INDEX_PHASE_SEMANTIC_INITIALIZE,
-    INDEX_PHASE_SEMANTIC_MANIFEST, INDEX_PHASE_SEMANTIC_REPLAY,
-    INDEX_PHASE_SEMANTIC_VECTOR_PUBLISH,
+    INDEX_PHASE_SCANNING, INDEX_PHASE_SEMANTIC_EMBEDDING, INDEX_PHASE_SEMANTIC_FINALIZE,
+    INDEX_PHASE_SEMANTIC_HNSW, INDEX_PHASE_SEMANTIC_INITIALIZE, INDEX_PHASE_SEMANTIC_MANIFEST,
+    INDEX_PHASE_SEMANTIC_REPLAY, INDEX_PHASE_SEMANTIC_VECTOR_PUBLISH,
 };
 pub(crate) use raw_mirror_capture::inject_provenance;
 pub(crate) use run_lock::{
@@ -285,13 +293,17 @@ pub(crate) use run_lock::{
 pub(crate) use source_filters::LexicalRebuildPacketFingerprintInput;
 pub(crate) use storage_preflight::{
     FULL_REBUILD_HEADROOM_FORMULA, FullRebuildHeadroomProjection, LEXICAL_REBUILD_DISK_STOP_MARKER,
-    LexicalIndexFootprint, existing_headroom_probe_paths, full_rebuild_headroom_projection,
-    index_disk_headroom_check_disabled, lexical_index_footprint,
-    lexical_rebuild_free_space_verdict,
+    existing_headroom_probe_paths, full_rebuild_headroom_projection,
+    index_disk_headroom_check_disabled,
 };
+#[cfg(test)]
+pub(crate) use storage_preflight::{
+    LexicalIndexFootprint, lexical_index_footprint, lexical_rebuild_free_space_verdict,
+};
+#[cfg(test)]
+pub(crate) use wal_close::CASS_TEST_WAL_CHECKPOINT_PARK_MS_ENV;
 pub(crate) use wal_close::{
-    CASS_TEST_WAL_CHECKPOINT_PARK_MS_ENV, checkpoint_wal_truncate_with_deadline,
-    close_storage_with_wal_checkpoint,
+    checkpoint_wal_truncate_with_deadline, close_storage_with_wal_checkpoint,
 };
 
 pub(in crate::indexer) use archive_fingerprint::{
@@ -588,8 +600,8 @@ pub(in crate::indexer) use watch_state::{
     ConnectorKind, additional_scan_roots_for_scan_or_watch, classify_paths,
     create_new_atomic_sidecar_file, expand_local_scan_root_path,
     finalize_watch_once_reindex_result, finalize_watch_reindex_result, load_watch_state,
-    replace_file_from_temp, save_watch_state, set_progress_last_error, state_path,
-    unique_atomic_sidecar_path, unique_atomic_temp_path, unique_failed_seed_backup_root,
+    replace_file_from_temp, save_watch_state, set_progress_last_error, unique_atomic_sidecar_path,
+    unique_atomic_temp_path, unique_failed_seed_backup_root,
     warn_unclaimed_explicit_watch_once_paths, watch_event_should_trigger_reindex,
 };
 
@@ -761,7 +773,8 @@ pub(in crate::indexer) use watch_replay_debt::{
 };
 #[cfg(test)]
 pub(in crate::indexer) use watch_spool::{
-    WATCH_PENDING_MAX_PATHS, WatchSpoolReader, dispatch_watch_callback,
+    WATCH_PENDING_MAX_PATH_BYTES, WATCH_PENDING_MAX_PATHS, WatchSpoolReader,
+    dispatch_watch_callback, next_watch_loop_event,
 };
 #[cfg(test)]
-pub(in crate::indexer) use watch_state::unclaimed_explicit_watch_once_paths;
+pub(in crate::indexer) use watch_state::{state_path, unclaimed_explicit_watch_once_paths};

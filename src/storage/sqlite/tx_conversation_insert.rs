@@ -5,7 +5,7 @@ use super::batch_ingest::{env_flag_enabled, franken_last_rowid};
 use super::conversation_tail_state::{
     conversation_merge_evidence, conversation_merge_key,
     existing_conversation_tail_state_from_cached, franken_existing_conversation_append_tail_state,
-    franken_insert_conversation_tail_state, start_distance_ms,
+    franken_insert_conversation_tail_state,
 };
 use super::fts_rebuild::path_to_string;
 use super::open_and_locks::DEFER_ANALYTICS_UPDATES_GUARD_DEPTH;

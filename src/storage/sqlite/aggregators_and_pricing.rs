@@ -4,7 +4,6 @@ use crate::model::types::Agent;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tracing::info;
 
 // SqliteStorage impl block removed: SqliteStorage is now a type alias for FrankenStorage.
 // All methods are available through FrankenStorage.

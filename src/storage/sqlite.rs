@@ -54,18 +54,20 @@ pub use connection_pool::{
 
 pub(crate) use open_and_locks::{
     DeferAnalyticsUpdatesGuard, DoctorMutationDbOpenBypassGuard, MessageLookupTraceCounters,
-    attempt_dirty_wal_recovery_checkpoint, defer_analytics_updates_guard,
-    enter_doctor_mutation_db_open_bypass, index_engine_migration_is_complete,
-    message_lookup_trace_snapshot, open_current_schema_storage_with_timeout,
-    open_franken_async_readonly_connection_with_timeout,
+    defer_analytics_updates_guard, enter_doctor_mutation_db_open_bypass,
+    index_engine_migration_is_complete, message_lookup_trace_snapshot,
+    open_current_schema_storage_with_timeout, open_franken_async_readonly_connection_with_timeout,
     open_franken_async_strict_readonly_connection_with_timeout,
     open_franken_owner_readonly_connection_with_timeout,
     open_franken_owner_strict_readonly_connection_with_timeout,
     open_franken_raw_connection_with_timeout, open_franken_raw_readonly_connection_with_timeout,
     open_franken_readonly_storage_with_timeout, open_franken_storage_with_timeout,
-    retry_transient_storage_op, retry_transient_storage_op_within, retryable_franken_anyhow,
-    retryable_franken_error, retryable_storage_error_message, set_message_lookup_trace_enabled,
-    sleep_with_franken_retry_backoff,
+    retryable_franken_anyhow, retryable_franken_error, retryable_storage_error_message,
+    set_message_lookup_trace_enabled, sleep_with_franken_retry_backoff,
+};
+#[cfg(test)]
+pub(crate) use open_and_locks::{
+    attempt_dirty_wal_recovery_checkpoint, retry_transient_storage_op,
 };
 
 pub use backup_and_integrity::{
@@ -77,24 +79,22 @@ pub use backup_and_integrity::{
     validate_fts_messages_integrity_for_connection,
 };
 pub(crate) use backup_and_integrity::{
-    FTS_INDEXABLE_MESSAGE_COUNT_SQL, FTS_SHADOW_NOT_VIABLE_ERROR_PREFIX, FtsConsistencyRepair,
-    FtsDryRunParity, FtsShadowParity, FtsShadowParityStatus, HistoricalDatabaseBundle,
-    database_sidecar_path, dedupe_conflicting_fts_schema_rows_via_sqlite3,
-    ensure_fts_consistency_via_rusqlite, move_database_bundle,
-    recovery_conversation_row_from_lenient_columns, remove_database_files,
+    FTS_INDEXABLE_MESSAGE_COUNT_SQL, FtsConsistencyRepair, FtsDryRunParity, FtsShadowParity,
+    FtsShadowParityStatus, database_sidecar_path, move_database_bundle,
     validate_fts_messages_integrity_for_async_connection,
 };
 #[cfg(test)]
 pub(crate) use backup_and_integrity::{
-    SqliteDatabaseHealthProbe, materialize_fresh_fts_schema_via_rusqlite, rebuild_fts_via_rusqlite,
+    ensure_fts_consistency_via_rusqlite, materialize_fresh_fts_schema_via_rusqlite,
+    rebuild_fts_via_rusqlite, recovery_conversation_row_from_lenient_columns,
+    remove_database_files,
 };
 
 pub use historical_salvage::HistoricalSalvageOutcome;
 #[cfg(test)]
-pub(crate) use historical_salvage::probe_database_health_via_frankensqlite;
+pub(crate) use historical_salvage::discover_historical_database_bundles;
 pub(crate) use historical_salvage::{
-    discover_historical_database_bundles, message_extra_to_source_jsonl_line,
-    seed_canonical_from_best_historical_bundle,
+    message_extra_to_source_jsonl_line, seed_canonical_from_best_historical_bundle,
 };
 
 #[cfg(test)]
@@ -113,13 +113,13 @@ pub use lexical_rebuild::{
     lexical_max_message_content_bytes,
 };
 
+#[cfg(test)]
+pub(crate) use storage_core::close_franken_in_place_with_busy_retry;
+pub(crate) use storage_core::error_message_indicates_populated_fts_shadow_without_rowid_reload;
 pub use storage_core::{FrankenStorage, SqliteStorage};
-pub(crate) use storage_core::{
-    close_franken_in_place_with_busy_retry,
-    error_message_indicates_populated_fts_shadow_without_rowid_reload,
-};
 
 pub use schema_repair::active_schema_migration_versions;
+#[cfg(test)]
 pub(crate) use schema_repair::{LegacyFtsTeardownRefusal, OrphanFkCleanupReport};
 
 pub use reconcile_and_codebuff::{InsertOutcome, SourceIngestLedgerEntry};

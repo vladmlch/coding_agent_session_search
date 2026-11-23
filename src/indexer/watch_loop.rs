@@ -697,7 +697,6 @@ where
 
 #[cfg(all(test, unix))]
 pub(in crate::indexer) mod watch_registration_tests {
-    use super::super::*;
     use super::*;
     use std::os::unix::fs::symlink;
     use tempfile::TempDir;

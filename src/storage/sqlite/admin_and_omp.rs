@@ -32,7 +32,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use smallvec::SmallVec;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // =========================================================================
 // FrankenStorage CRUD operations

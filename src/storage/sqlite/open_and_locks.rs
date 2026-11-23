@@ -7,7 +7,7 @@ use super::schema_repair::transition_from_meta_version;
 use super::storage_core::FrankenStorage;
 use super::wal_checkpoint_status;
 use crate::franken_sync::{
-    Connection as FrankenConnection, FrankenError,
+    Connection as FrankenConnection,
     compat::{OpenFlags as FrankenOpenFlags, RowExt as FrankenRowExt},
 };
 use anyhow::{Context, Result, anyhow};
@@ -17,7 +17,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use tracing::info;
 
 pub(super) const DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const DOCTOR_MUTATION_LOCK_MAX_METADATA_READ: u64 = 64 * 1024;

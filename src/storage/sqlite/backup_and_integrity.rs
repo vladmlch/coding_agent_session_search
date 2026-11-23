@@ -4,14 +4,14 @@ use super::open_and_locks::retryable_franken_error;
 use super::schema_migrations::{unique_backup_path, vacuum_stage_backup_path};
 use super::storage_core::FrankenStorage;
 use crate::franken_sync::{
-    Connection as FrankenConnection, FrankenError, Row as FrankenRow, SqliteValue,
+    Connection as FrankenConnection, Row as FrankenRow, SqliteValue,
     compat::{
         ConnectionExt as FrankenConnectionExt, OpenFlags as FrankenOpenFlags,
         RowExt as FrankenRowExt, open_with_flags as open_franken_with_flags,
     },
 };
 use crate::model::types::Conversation;
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use frankensqlite::AsyncConnection as FrankenAsyncConnection;
 use std::collections::HashSet;
 use std::fs;
@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 use thiserror::Error;
-use tracing::info;
 
 // -------------------------------------------------------------------------
 // Binary Metadata Serialization (Opt 3.1)

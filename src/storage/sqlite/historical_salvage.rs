@@ -16,14 +16,13 @@ use crate::franken_sync::{
     },
 };
 use crate::model::types::{Conversation, Message};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::UNIX_EPOCH;
-use tracing::info;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct HistoricalSalvageOutcome {

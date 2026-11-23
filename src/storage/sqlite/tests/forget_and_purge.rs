@@ -6,12 +6,10 @@ use crate::franken_sync::{
         TransactionExt as FrankenTransactionExt,
     },
 };
-use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use crate::sources::provenance::LOCAL_SOURCE_ID;
 use anyhow::{Context, Result};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
 use tempfile::TempDir;
 
 #[test]

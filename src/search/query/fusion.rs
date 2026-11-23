@@ -5,7 +5,7 @@ use frankensearch::{
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::{HashMap, HashSet};
 
-use crate::search::canonicalize::{content_hash, is_search_noise_text};
+use crate::search::canonicalize::is_search_noise_text;
 use crate::sources::provenance::SourceFilter;
 
 use super::cache::cached_prefix_snippet;

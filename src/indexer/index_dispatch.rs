@@ -1,5 +1,4 @@
 use super::*;
-use rayon::prelude::*;
 
 pub(in crate::indexer) type ConnectorFactory = fn() -> Box<dyn Connector + Send>;
 

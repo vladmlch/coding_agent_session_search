@@ -37,16 +37,15 @@ pub(in crate::storage::sqlite::tests) use super::open_and_locks::{
 };
 pub(in crate::storage::sqlite::tests) use super::reconcile_and_codebuff::{
     InsertConversationTreePerfProfile, conversation_external_lookup_key,
-    conversation_tail_ended_at_candidate, conversation_tail_state,
-    franken_reconcile_provider_workspace, provider_workspace_is_authoritative,
-    replay_owns_provider_workspace,
+    conversation_tail_ended_at_candidate, franken_reconcile_provider_workspace,
+    provider_workspace_is_authoritative, replay_owns_provider_workspace,
 };
 pub(in crate::storage::sqlite::tests) use super::schema_migrations::{
     LEGACY_OMP_ANALYTICS_CURSOR_CONTEXT_META_KEY, LEGACY_OMP_ANALYTICS_CURSOR_LAST_ID_META_KEY,
     LEGACY_OMP_ANALYTICS_CURSOR_PROCESSED_META_KEY, LEGACY_OMP_ANALYTICS_REBUILT_META_KEY,
     LEGACY_OMP_LEXICAL_PUBLISHED_META_KEY, LEGACY_OMP_RECLASSIFICATION_META_KEY, MIGRATION_V1,
     MIGRATION_V2, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8,
-    MIGRATION_V9, MIGRATION_V10, MIGRATION_V14, MIGRATION_V15_TAIL_STATE_TABLE,
+    MIGRATION_V9, MIGRATION_V10, MIGRATION_V15_TAIL_STATE_TABLE,
     PREVIOUS_LEGACY_OMP_RECLASSIFICATION_META_KEY, schema_check_error_requires_rebuild,
     vacuum_stage_backup_path,
 };
@@ -69,9 +68,8 @@ pub(in crate::storage::sqlite::tests) use super::tx_analytics_rollups::{
     token_daily_stats_rebuild_stage_ddl, write_token_daily_stats_rebuild_cursor,
 };
 pub(in crate::storage::sqlite::tests) use super::tx_conversation_insert::{
-    ConversationInsertStatus, bounded_fts_marker_detail, franken_find_external_conversation_lookup,
-    franken_insert_conversation, franken_insert_conversation_or_get_existing_after_miss,
-    resolve_defer_analytics_updates,
+    ConversationInsertStatus, bounded_fts_marker_detail, franken_insert_conversation,
+    franken_insert_conversation_or_get_existing_after_miss, resolve_defer_analytics_updates,
 };
 pub(in crate::storage::sqlite::tests) use super::tx_message_insert::franken_batch_insert_fts_on_connection;
 

@@ -3,10 +3,8 @@ use crate::franken_sync::compat::{
     ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt,
     TransactionExt as FrankenTransactionExt,
 };
-use crate::model::types::Conversation;
-use crate::sources::provenance::Source;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
 

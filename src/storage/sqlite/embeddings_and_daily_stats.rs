@@ -21,7 +21,6 @@ use crate::franken_sync::{
     },
 };
 use anyhow::{Context, Result};
-use tracing::info;
 
 impl FrankenStorage {
     /// Fetch all messages for embedding generation.

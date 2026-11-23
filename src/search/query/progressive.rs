@@ -34,7 +34,7 @@ use super::sqlite_hydration::{
 use super::types::{
     FieldMask, MatchType, ProgressivePhaseKind, ProgressiveSearchEvent, ProgressiveSearchRequest,
     SearchFilters, SearchHit, SearchMode, SearchResult, effective_field_mask,
-    frankensearch_two_tier_config,
+    frankensearch_two_tier_config, progressive_phase_fetch_limit,
 };
 
 #[derive(Debug, Clone)]

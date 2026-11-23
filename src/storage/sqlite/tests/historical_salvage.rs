@@ -7,7 +7,6 @@ use crate::franken_sync::{
         open_with_flags as open_franken_with_flags,
     },
 };
-use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use crate::sources::provenance::LOCAL_SOURCE_ID;
 use anyhow::anyhow;
 use serial_test::serial;

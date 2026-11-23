@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::franken_sync::compat::{ParamValue, RowExt};
-use crate::search::canonicalize::content_hash;
 use crate::sources::provenance::SourceFilter;
 
 use super::SearchClient;

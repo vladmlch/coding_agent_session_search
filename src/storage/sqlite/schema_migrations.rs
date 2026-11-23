@@ -1,7 +1,7 @@
 #[cfg(test)]
 use crate::franken_sync::Connection as FrankenConnection;
 use crate::franken_sync::{
-    FrankenError, Row as FrankenRow,
+    Row as FrankenRow,
     compat::{
         ConnectionExt as FrankenConnectionExt, OpenFlags as FrankenOpenFlags,
         RowExt as FrankenRowExt, open_with_flags as open_franken_with_flags,
@@ -10,7 +10,6 @@ use crate::franken_sync::{
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Public schema version constant for external checks.

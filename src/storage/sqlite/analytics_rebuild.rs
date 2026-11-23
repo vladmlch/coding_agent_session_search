@@ -12,24 +12,23 @@ use super::schema_repair::delete_rows_by_i64_chunks;
 use super::storage_core::FrankenStorage;
 use super::tx_analytics_rollups::{
     TOKEN_DAILY_STATS_REBUILD_CURSOR_KEY, TOKEN_DAILY_STATS_REBUILD_STAGE_TABLE,
-    TOKEN_USAGE_REVISION_GENERATION_META_KEY, TokenDailyStatsLedgerFingerprint,
-    TokenDailyStatsRebuildCursor, franken_flush_analytics_rollups_in_tx,
-    franken_insert_message_metrics_batched_in_tx,
+    TOKEN_DAILY_STATS_TABLE, TOKEN_USAGE_REVISION_GENERATION_META_KEY,
+    TokenDailyStatsLedgerFingerprint, TokenDailyStatsRebuildCursor,
+    franken_flush_analytics_rollups_in_tx, franken_insert_message_metrics_batched_in_tx,
     franken_update_token_daily_stats_batched_in_tx_for_table,
     read_token_daily_stats_rebuild_cursor, token_daily_stats_ledger_fingerprint,
     token_daily_stats_rebuild_stage_ddl, write_token_daily_stats_rebuild_cursor,
 };
 use crate::franken_sync::{
-    FrankenError, Row as FrankenRow,
+    Row as FrankenRow,
     compat::{
         ConnectionExt as FrankenConnectionExt, OptionalExtension as FrankenOptionalExtension,
         RowExt as FrankenRowExt, TransactionExt as FrankenTransactionExt,
     },
 };
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::time::Instant;
-use tracing::info;
 
 impl FrankenStorage {
     /// Rebuild token_daily_stats from the token_usage ledger.

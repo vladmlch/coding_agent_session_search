@@ -7,7 +7,6 @@ use super::historical_salvage::{
     discover_historical_database_bundles, historical_import_batch_limits,
     historical_salvage_debug_enabled, message_payload_size_hint,
     open_historical_bundle_for_salvage, parse_historical_json_column, parse_json_column,
-    record_historical_bundle_import,
 };
 use super::storage_core::FrankenStorage;
 use crate::franken_sync::{
@@ -19,10 +18,9 @@ use crate::franken_sync::{
 };
 use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use crate::sources::provenance::{LOCAL_SOURCE_ID, Source, SourceKind};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tracing::info;
 
 impl FrankenStorage {
     /// Get a source by ID.

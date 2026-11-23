@@ -4,16 +4,13 @@ use super::open_and_locks::{
 };
 use super::storage_core::FrankenStorage;
 use crate::franken_sync::{
-    FrankenError, Row as FrankenRow, SqliteValue,
+    Row as FrankenRow, SqliteValue,
     compat::{ParamValue, param_slice_to_values},
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use frankensqlite::AsyncConnection as FrankenAsyncConnection;
 use std::path::{Path, PathBuf};
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::info;
@@ -50,7 +47,7 @@ pub enum LazyDbError {
 /// these methods keep CASS's synchronous call shape while every engine command
 /// remains on that handle's owner worker.
 #[derive(Debug)]
-pub struct FrankenOwnerConnection(FrankenAsyncConnection);
+pub struct FrankenOwnerConnection(pub(super) FrankenAsyncConnection);
 
 impl FrankenOwnerConnection {
     pub(super) fn open(

@@ -6,7 +6,6 @@ use frankensqlite::AsyncConnection as SearchSqliteConnection;
 use std::cmp::Ordering as CmpOrdering;
 
 use crate::franken_sync::compat::{ParamValue, RowExt};
-use crate::search::canonicalize::content_hash;
 use crate::sources::provenance::SourceFilter;
 
 use super::SearchClient;

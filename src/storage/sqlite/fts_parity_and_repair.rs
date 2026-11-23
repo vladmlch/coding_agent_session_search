@@ -19,7 +19,7 @@ use crate::franken_sync::compat::{
     ConnectionExt as FrankenConnectionExt, OptionalExtension as FrankenOptionalExtension,
     RowExt as FrankenRowExt,
 };
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::time::Duration;

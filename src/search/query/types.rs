@@ -10,7 +10,6 @@ use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use crate::search::canonicalize::content_hash;
 use crate::search::vector_index::SemanticAnnUnavailableReason;
 use crate::sources::provenance::SourceFilter;
 
@@ -449,8 +448,8 @@ impl MatchType {
 
 #[derive(Debug, Clone, Copy)]
 pub struct FieldMask {
-    flags: u8,
-    preview_content_chars: Option<usize>,
+    pub(in crate::search::query) flags: u8,
+    pub(in crate::search::query) preview_content_chars: Option<usize>,
 }
 
 impl FieldMask {

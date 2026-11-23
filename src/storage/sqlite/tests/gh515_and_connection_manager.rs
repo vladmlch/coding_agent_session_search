@@ -7,7 +7,6 @@ use crate::franken_sync::{
         open_with_flags as open_franken_with_flags,
     },
 };
-use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};

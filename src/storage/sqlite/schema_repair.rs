@@ -14,7 +14,6 @@ use crate::franken_sync::{
 };
 use anyhow::{Context, Result, anyhow};
 use std::collections::HashSet;
-use std::fs;
 use std::path::Path;
 use std::time::Instant;
 use thiserror::Error;

@@ -982,8 +982,8 @@ fn run_index_watch_or_close(
         storage,
         index_path,
         targeted_semantic_watch_once,
-        initial_needs_rebuild,
-        scan_start_ts,
+        initial_needs_rebuild: _,
+        scan_start_ts: _,
         ..
     } = preflight;
     let RunIndexLexicalOutcome {

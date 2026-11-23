@@ -9,7 +9,7 @@ use rayon::prelude::*;
 
 use crate::connectors::NormalizedConversation;
 use crate::franken_sync::FrankenError;
-use crate::franken_sync::compat::{ConnectionExt, RowExt};
+use crate::franken_sync::compat::RowExt;
 use crate::indexer::{
     LexicalPopulationStrategy, lexical_population_strategy_requires_inline_tantivy,
 };

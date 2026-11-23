@@ -9,9 +9,7 @@ use super::backup_and_integrity::{
     franken_read_message_extra_compat, franken_read_metadata_compat,
 };
 use super::batch_ingest::ensure_workspaces_in_tx;
-use super::conversation_tail_state::{
-    existing_conversation_tail_state_from_cached, start_distance_ms,
-};
+use super::conversation_tail_state::existing_conversation_tail_state_from_cached;
 use super::fts_rebuild::{FtsEntry, path_to_string, role_str};
 use super::schema_migrations::SemanticIdentityTier;
 use super::storage_core::FrankenStorage;
@@ -31,7 +29,7 @@ use crate::franken_sync::{
     },
 };
 use crate::model::types::{Conversation, Message, MessageRole, Snippet};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -904,7 +902,7 @@ pub(super) struct CodebuffRevision {
     started_at: Option<i64>,
     source_id: String,
     previous_content_chars: i64,
-    message: Message,
+    pub(super) message: Message,
     fts: FtsEntry,
 }
 

@@ -11,7 +11,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::search::embedder::Embedder;
-use crate::sources::provenance::SourceFilter;
 
 use super::SearchClient;
 use super::types::{FieldMask, SearchFilters, SearchHit, available_memory_bytes, intern_cache_key};

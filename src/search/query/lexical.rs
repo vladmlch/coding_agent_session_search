@@ -1,16 +1,15 @@
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use frankensearch::quill::query::{
     CassQueryFilters as FsCassQueryFilters, CassSourceFilter as FsCassSourceFilter,
 };
-use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use crate::franken_sync::compat::ParamValue;
 use crate::franken_sync::compat::RowExt;
-use crate::search::canonicalize::content_hash;
 use crate::sources::provenance::SourceFilter;
 
 use super::SearchClient;
@@ -30,9 +29,10 @@ use super::fusion::{SearchHitKey, postprocess_hits_page_core};
 use super::parsing::dominant_match_type;
 #[cfg(any(test, feature = "cass-layer-b-conformance"))]
 use super::progressive::RankedMessageHydrationCandidate;
+use super::sqlite_hydration::sql_placeholders;
 #[cfg(any(test, feature = "cass-layer-b-conformance"))]
 use super::sqlite_hydration::{
-    SQLITE_MAX_VARIABLE_NUMBER, SearchReadTransaction, nfc_sanitize_query, sql_placeholders,
+    SQLITE_MAX_VARIABLE_NUMBER, SearchReadTransaction, nfc_sanitize_query,
 };
 use super::sqlite_hydration::{
     TantivyContentExactKey, TantivyContentFallbackKey, TantivyHydratedContentMaps,

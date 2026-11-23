@@ -74,6 +74,7 @@ pub use cache::CacheStats;
 #[cfg(test)]
 pub(crate) use fusion::deduplicate_hits;
 pub use fusion::rrf_fuse_hits;
+#[cfg(test)]
 pub(crate) use fusion::{
     deduplicate_hits_with_query, is_tool_invocation_noise, stable_content_hash,
 };
@@ -85,6 +86,7 @@ pub use parsing::{
     SuggestionKind, ensure_query_nesting_depth, read_query,
 };
 pub use sqlite_hydration::{sql_placeholders, sql_rowid_literal_list};
+#[cfg(test)]
 pub(crate) use types::ProgressiveSearchRequest;
 #[cfg(any(test, feature = "cass-layer-b-conformance"))]
 pub use types::{

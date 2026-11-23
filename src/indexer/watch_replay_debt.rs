@@ -929,7 +929,6 @@ pub(in crate::indexer) fn plan_remote_mirror_scan_skips(
 
 #[cfg(test)]
 pub(in crate::indexer) mod mirror_scan_skip_tests {
-    use super::super::*;
     use super::*;
     use tempfile::TempDir;
 

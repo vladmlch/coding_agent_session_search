@@ -25,7 +25,7 @@ use super::schema_repair::{
     run_attributed_migration_steps, schema_migration_is_applied, transition_from_meta_version,
 };
 use crate::franken_sync::{
-    Connection as FrankenConnection, FrankenError,
+    Connection as FrankenConnection,
     compat::{
         ConnectionExt as FrankenConnectionExt, OpenFlags as FrankenOpenFlags, ParamValue,
         RowExt as FrankenRowExt, Transaction as FrankenTransaction,
@@ -230,7 +230,7 @@ pub(super) struct EnsuredAgentKey {
     slug: String,
     name: String,
     version: Option<String>,
-    kind: String,
+    pub(super) kind: String,
 }
 
 impl EnsuredAgentKey {
