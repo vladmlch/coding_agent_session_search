@@ -565,7 +565,7 @@ fn accepted_disk_resolution_is_exhaustive_with_robot_and_human_goldens() {
         r#"{
   "schema_version": 1,
   "state": {
-"state": "absent"
+    "state": "absent"
   },
   "reason_code": "semantic_generation_absent",
   "recovery_action": "provision_and_index"
@@ -591,8 +591,8 @@ fn accepted_disk_resolution_is_exhaustive_with_robot_and_human_goldens() {
         r#"{
   "schema_version": 1,
   "state": {
-"state": "legacy_unidentified",
-"artifact_count": 2
+    "state": "legacy_unidentified",
+    "artifact_count": 2
   },
   "reason_code": "semantic_generation_legacy_unidentified",
   "recovery_action": "reindex_required"
@@ -626,9 +626,9 @@ fn accepted_disk_resolution_is_exhaustive_with_robot_and_human_goldens() {
         r#"{
   "schema_version": 1,
   "state": {
-"state": "pointer_missing_with_generation_directories",
-"generation_directory_count": 1,
-"legacy_artifact_count": 1
+    "state": "pointer_missing_with_generation_directories",
+    "generation_directory_count": 1,
+    "legacy_artifact_count": 1
   },
   "reason_code": "semantic_pointer_missing_with_generation_directories",
   "recovery_action": "rollback_or_reindex"
@@ -668,10 +668,10 @@ fn accepted_disk_resolution_is_exhaustive_with_robot_and_human_goldens() {
         r#"{
   "schema_version": 1,
   "state": {
-"state": "building",
-"build_count": 1,
-"unselected_generation_directory_count": 1,
-"legacy_artifact_count": 1
+    "state": "building",
+    "build_count": 1,
+    "unselected_generation_directory_count": 1,
+    "legacy_artifact_count": 1
   },
   "reason_code": "semantic_generation_building",
   "recovery_action": "wait_for_build"
@@ -717,11 +717,11 @@ fn accepted_disk_resolution_is_exhaustive_with_robot_and_human_goldens() {
         r#"{
   "schema_version": 1,
   "state": {
-"state": "interrupted_publish",
-"temporary_entry_count": 1,
-"build_count": 1,
-"unselected_generation_directory_count": 1,
-"legacy_artifact_count": 1
+    "state": "interrupted_publish",
+    "temporary_entry_count": 1,
+    "build_count": 1,
+    "unselected_generation_directory_count": 1,
+    "legacy_artifact_count": 1
   },
   "reason_code": "semantic_pointer_publish_interrupted",
   "recovery_action": "retry_publish"
@@ -778,13 +778,13 @@ fn accepted_disk_resolution_is_exhaustive_with_robot_and_human_goldens() {
             r#"{{
   "schema_version": 1,
   "state": {{
-"state": "ready",
-"generation_id": "gen-ready-1234567890abcdef",
-"manifest_sha256": "{ready_digest}",
-"selection_epoch": 7,
-"selected_at_ms": 1700000000700,
-"requested_topology": "full_progressive",
-"realized_topology": "fast_only"
+    "state": "ready",
+    "generation_id": "gen-ready-1234567890abcdef",
+    "manifest_sha256": "{ready_digest}",
+    "selection_epoch": 7,
+    "selected_at_ms": 1700000000700,
+    "requested_topology": "full_progressive",
+    "realized_topology": "fast_only"
   }},
   "reason_code": null,
   "recovery_action": null
