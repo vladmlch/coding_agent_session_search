@@ -106,22 +106,12 @@ mod tests {
                 "claude",
                 "Claude_Code",
                 "CODEX",
-                "pi-agent",
-                "Oh-My-Pi",
-                "ohmypi",
-                "open-claw",
-                "Open_Claw",
+                "Devin",
+                "Qoder",
                 "UNKNOWN",
             ]))
             .unwrap(),
-            names(&[
-                "claude_code",
-                "codex",
-                "pi_agent",
-                "omp",
-                "openclaw",
-                "unknown"
-            ])
+            names(&["claude_code", "codex", "devin", "qoder", "unknown"])
         );
         // ubs:ignore[rust.panic.assert-macros] -- Test assertions must fail when the agent-scope contract regresses.
         assert!(normalize(&[]).unwrap().is_empty());
@@ -142,7 +132,7 @@ mod tests {
         }
         // Availability on this host is not part of filter admission.
         // ubs:ignore[rust.panic.assert-macros] -- Test assertions must fail when the agent-scope contract regresses.
-        assert_eq!(normalize(&names(&["aider"])).unwrap(), names(&["aider"]));
+        assert_eq!(normalize(&names(&["qoder"])).unwrap(), names(&["qoder"]));
     }
 
     #[test]

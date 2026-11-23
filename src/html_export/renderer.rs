@@ -525,6 +525,7 @@ pub fn agent_css_class(slug: &str) -> &'static str {
         "kiro" => "agent-gemini",
         "devin" => "agent-cursor",
         "codebuff" | "freebuff" | "manicode" => "agent-codex",
+        "qoder" => "agent-codex",
         _ => "agent-default",
     }
 }
@@ -571,6 +572,7 @@ pub fn agent_display_name(slug: &str) -> &'static str {
         "prime_agent" => "Prime Agent",
         "kiro" => "Kiro",
         "devin" => "Devin",
+        "qoder" => "Qoder",
         "shelley" => "Shelley",
         "grok_bot" => "Grok Bot",
         // One shared Manicode store; no per-chat writer marker exists (GH #423).

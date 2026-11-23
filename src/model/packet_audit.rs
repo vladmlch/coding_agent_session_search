@@ -551,11 +551,10 @@ mod tests {
     /// adding a sink without registering it here trips this gate.
     #[test]
     fn packet_sink_migration_catalog_documents_every_consumer_sink() {
-        // The three consumers the bead AC enumerates: lexical,
-        // analytics, semantic. (Canonical persistence is the packet
-        // payload itself — there is no separate "packet helper" for
-        // the storage write because the packet *is* the canonical
-        // form being persisted.)
+        // The two remaining consumers after Phase-0 analytics removal:
+        // lexical, semantic. (Canonical persistence is the packet payload
+        // itself — there is no separate "packet helper" for the storage write
+        // because the packet *is* the canonical form being persisted.)
         let sinks: Vec<&str> = PACKET_SINK_MIGRATIONS
             .iter()
             .map(|migration| migration.sink)
@@ -563,10 +562,6 @@ mod tests {
         assert!(
             sinks.contains(&"lexical"),
             "catalog must list the lexical sink"
-        );
-        assert!(
-            sinks.contains(&"analytics"),
-            "catalog must list the analytics sink"
         );
         assert!(
             sinks.contains(&"semantic"),

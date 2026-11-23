@@ -3023,10 +3023,10 @@ mod tests {
         write_pinned_vendor_assets(temp.path()).unwrap();
         validate_pinned_vendor_assets(temp.path()).unwrap();
 
-        let fflate_path = temp.path().join("vendor/fflate.js");
-        let mut mutated = fs::read(&fflate_path).unwrap();
+        let sqlite_js_path = temp.path().join("vendor/sqlite3.mjs");
+        let mut mutated = fs::read(&sqlite_js_path).unwrap();
         mutated[0] ^= 0x01;
-        fs::write(fflate_path, mutated).unwrap();
+        fs::write(sqlite_js_path, mutated).unwrap();
 
         let error = validate_pinned_vendor_assets(temp.path()).unwrap_err();
         assert!(error.to_string().contains("SHA-256"));

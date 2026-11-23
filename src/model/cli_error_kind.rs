@@ -533,9 +533,12 @@ mod tests {
         // `removed-command` (97 -> 98).
         // The query-nesting-depth bound (2026-11-12) added
         // `query-depth-exceeded` (98 -> 99).
+        // Phase-0 pruning (TUI/Schedule/Encryption removal) dropped 6 variants:
+        // `password-read-error`, `password-required`, `schedule`, `tui`,
+        // `tui-headless-once`, `tui-reset-state` (99 -> 93).
         // If lib.rs grows a new kind, bump this count AND add the variant +
         // arms above.
-        const AUDITED_KIND_COUNT: usize = 99;
+        const AUDITED_KIND_COUNT: usize = 93;
         assert_eq!(
             ErrorKind::all_variants().len(),
             AUDITED_KIND_COUNT,

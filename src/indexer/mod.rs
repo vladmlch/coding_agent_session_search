@@ -62217,7 +62217,7 @@ mod tests {
         fs::write(&source, format!("{messages}\n"))?;
         let factories: Vec<_> = configured_connector_factories()
             .into_iter()
-            .filter(|(name, _)| matches!(*name, "claude" | "cline"))
+            .filter(|(name, _)| matches!(*name, "claude" | "gemini"))
             .collect();
         assert_eq!(factories.len(), 2);
         for (name, factory) in &factories {
@@ -74429,7 +74429,7 @@ c.close()
         // newer provider watermark and a notification backlog overflow.
         let selected = tmp.path().join("selected/claude");
         let missed = selected.join("projects/overflow/session-missed.jsonl");
-        let unrelated = tmp.path().join("unrelated/amp/thread-other.json");
+        let unrelated = tmp.path().join("unrelated/codex/rollout-other.jsonl");
         fs::create_dir_all(missed.parent().unwrap()).unwrap();
         fs::write(
             &missed,
@@ -74638,10 +74638,10 @@ c.close()
         let tmp = TempDir::new().unwrap();
         let data_dir = tmp.path().join("cass");
         fs::create_dir_all(&data_dir).unwrap();
-        let selected = tmp.path().join("selected/amp");
-        let first = selected.join("thread-first.json");
-        let second = selected.join("thread-second.json");
-        let unrelated = tmp.path().join("unrelated/amp/thread-other.json");
+        let selected = tmp.path().join("selected/codex");
+        let first = selected.join("rollout-first.jsonl");
+        let second = selected.join("rollout-second.jsonl");
+        let unrelated = tmp.path().join("unrelated/codex/rollout-other.jsonl");
         write_watch_lexical_source(&first, "thread-first", "amberneedle");
         write_watch_lexical_source(&second, "thread-second", "bronzeneedle");
         write_watch_lexical_source(&unrelated, "thread-other", "copperneedle");

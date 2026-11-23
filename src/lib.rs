@@ -26373,23 +26373,13 @@ mod agent_filter_tests {
             "claude",
             "Claude_Code",
             "CODEX",
-            "pi-agent",
-            "Oh-My-Pi",
-            "ohmypi",
-            "open-claw",
-            "Open_Claw",
+            "Devin",
+            "Qoder",
             "UNKNOWN",
         ]);
         assert_eq!(
             normalize_agent_filters(&filters).unwrap(),
-            names(&[
-                "claude_code",
-                "codex",
-                "pi_agent",
-                "omp",
-                "openclaw",
-                "unknown"
-            ])
+            names(&["claude_code", "codex", "devin", "qoder", "unknown"])
         );
         assert!(normalize_agent_filters(&[]).unwrap().is_empty());
     }
