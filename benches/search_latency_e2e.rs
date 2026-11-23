@@ -17,7 +17,6 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RankingMode {
-    RecentHeavy,
     Balanced,
     RelevanceHeavy,
     MatchQualityHeavy,
@@ -346,7 +345,6 @@ fn ranking_score(
     let quality = hit.match_type.quality_factor();
 
     match ranking {
-        RankingMode::RecentHeavy => lexical * 0.3 + recency * 0.7,
         RankingMode::Balanced => lexical * 0.5 + recency * 0.5,
         RankingMode::RelevanceHeavy => lexical * 0.8 + recency * 0.2,
         RankingMode::MatchQualityHeavy => lexical * 0.7 + recency * 0.2 + quality * 0.1,

@@ -73,7 +73,7 @@ use std::process::{Command, Output};
 use std::time::Duration;
 
 use assert_cmd::cargo::cargo_bin;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use util::e2e_log::{E2eError, PhaseTracker};
 use util::timeout::spawn_with_timeout_or_diag;
@@ -467,6 +467,27 @@ fn isolated_home() -> Result<(tempfile::TempDir, std::path::PathBuf), String> {
     let data_dir = home.path().join("cass-data");
     std::fs::create_dir_all(&data_dir).map_err(|e| format!("create isolated data dir: {e}"))?;
     Ok((home, data_dir))
+}
+
+fn log_surface_outcome(
+    tracker: &PhaseTracker,
+    surface: &SmokeSurface,
+    exit: Option<i32>,
+    result: &Result<(), String>,
+) {
+    match result {
+        Ok(()) => tracker.verbose(&format!("OK surface={} exit={exit:?}", surface.name)),
+        Err(why) => tracker.verbose(&format!("FAIL surface={} {why}", surface.name)),
+    }
+}
+
+/// A single failure detail line (surface + reason + reproduction argv).
+fn failure_detail(surface: &SmokeSurface, why: &str) -> String {
+    format!(
+        "[{}] {why} (argv: cass {})",
+        surface.name,
+        surface.args.join(" ")
+    )
 }
 
 /// The comprehensive gate: every critical robot surface, one real-binary

@@ -6,17 +6,7 @@
 //! outcome itself. This is a sibling with the same close + bounded-checkpoint
 //! sequence that returns the outcome; existing callers are untouched.
 
-use std::path::Path;
-
-use anyhow::{Context, Result};
 use serde_json::json;
-
-use super::{
-    AbortWalCheckpointAttempt, FinalWalCheckpointOutcome, final_wal_checkpoint_timeout,
-    prepare_storage_for_final_checkpoint, run_bounded_abort_wal_checkpoint,
-    run_final_wal_checkpoint,
-};
-use crate::storage::sqlite::FrankenStorage;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WalCheckpointReport {
@@ -29,49 +19,6 @@ pub(crate) enum WalCheckpointReport {
     NotAttempted {
         reason: String,
     },
-}
-
-pub(crate) fn close_storage_with_wal_checkpoint_report(
-    storage: FrankenStorage,
-    db_path: &Path,
-    context: &str,
-) -> Result<WalCheckpointReport> {
-    prepare_storage_for_final_checkpoint(&storage, db_path, context);
-    storage.close().with_context(|| {
-        format!(
-            "closing canonical db before final WAL checkpoint after {context}: {}",
-            db_path.display()
-        )
-    })?;
-    let timeout = final_wal_checkpoint_timeout();
-    match run_bounded_abort_wal_checkpoint(db_path.to_path_buf(), timeout, context, |path| {
-        run_final_wal_checkpoint(path, context)
-    }) {
-        AbortWalCheckpointAttempt::Finished(Ok(FinalWalCheckpointOutcome::Completed)) => {
-            Ok(WalCheckpointReport::Completed)
-        }
-        AbortWalCheckpointAttempt::Finished(Ok(FinalWalCheckpointOutcome::Blocked {
-            busy,
-            log_frames,
-            checkpointed_frames,
-        })) => Ok(WalCheckpointReport::Blocked {
-            busy,
-            log_frames,
-            checkpointed_frames,
-        }),
-        AbortWalCheckpointAttempt::Finished(Err(error)) => Err(anyhow::anyhow!(
-            "final WAL checkpoint after {context} failed: {error}"
-        )),
-        AbortWalCheckpointAttempt::DeadlineUnavailable(error) => {
-            tracing::warn!(
-                db_path = %db_path.display(),
-                context,
-                %error,
-                "final WAL checkpoint deadline timer was unavailable; the WAL is left for the next opener"
-            );
-            Ok(WalCheckpointReport::NotAttempted { reason: error })
-        }
-    }
 }
 
 /// `(wal_checkpoint, wal_checkpoint_detail)` for the analytics payload. The

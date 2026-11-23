@@ -1882,7 +1882,6 @@ fn export_html_requires_session() {
 }
 
 #[test]
-#[test]
 fn export_html_help_shows_options() {
     let mut cmd = simple_cmd();
     cmd.args(["export-html", "--help"]);
@@ -3198,7 +3197,6 @@ fn parse_export_with_format() {
     }
 }
 
-#[test]
 /// cass-local plan, task 6: the negative table for commands, subcommand
 /// pairs and flags removed by the local-only port. Each row activates when
 /// the owning task (7–14) lands its `REMOVED_COMMANDS`/`REMOVED_FLAGS`
