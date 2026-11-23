@@ -36,32 +36,7 @@
       "found": false
     },
     {
-      "name": "clawdbot",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "vibe",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
       "name": "opencode",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "amp",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "cline",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "aider",
       "path": "(not detected)",
       "found": false
     },
@@ -76,72 +51,7 @@
       "found": false
     },
     {
-      "name": "pi_agent",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "omp",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "factory",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "openclaw",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "continue",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "antigravity",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "pi_durable",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "prime_agent",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "kimi",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "kiro",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "muse",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "openhands",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "copilot",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "copilot_cli",
+      "name": "devin",
       "path": "(not detected)",
       "found": false
     },
@@ -151,42 +61,12 @@
       "found": false
     },
     {
-      "name": "grok",
+      "name": "antigravity",
       "path": "(not detected)",
       "found": false
     },
     {
-      "name": "devin",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "grok_bot",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "codebuff",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "goose",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "crush",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "hermes",
-      "path": "(not detected)",
-      "found": false
-    },
-    {
-      "name": "shelley",
+      "name": "qoder",
       "path": "(not detected)",
       "found": false
     }

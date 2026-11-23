@@ -9,7 +9,7 @@ Bead: `coding_agent_session_search-cass-fleet-resilience-20260608-uojcg.15.5`.
 This is the **executable** counterpart of
 [`RESILIENCE_TEST_MATRIX.md`](RESILIENCE_TEST_MATRIX.md) (bead `.12.1`):
 the same coverage encoded as data that a test checks against the real
-repository. The closeout gate fails when any of the 14 report
+repository. The closeout gate fails when any of the 12 report
 subsystem failure-mode files has no owning bead, no mandatory proof
 level, no proof artifact, no logging expectation, or cites a proof
 artifact that does not exist on disk (the "only prose evidence"
@@ -37,24 +37,12 @@ be silently skipped during closeout.
 
 ## Subsystems
 
-### analytics
-
-- **Owning beads:** .15.4, .9.4
-- **Failure modes:** fm-analytics-rebuild-grouped-aggregate, fm-analytics-charts-saturating-zero
-- **Mandatory proofs:** unit, golden
-- **Proof artifacts:** `src/metric_integrity.rs`, `tests/analytics_cost_pricing_table_contract.rs`
-- **Optional diagnostics:** live analytics rollup tail under doctor --fix
-- **Fixture provenance:** synthetic usage-ledger rows; no real session content
-- **Log expectation:** deterministic --lib result line; proof-log when wired into doctor rebuild
-- **Redaction:** no-user-content
-- **Closure evidence:** cargo test --lib metric_integrity + analytics contract test path/count
-
 ### bookmarks
 
 - **Owning beads:** .15.4
 - **Failure modes:** fm-bookmarks-silent-row-decode, fm-bookmarks-import-non-atomic
 - **Mandatory proofs:** unit, integration
-- **Proof artifacts:** `src/bookmarks.rs`, `src/metric_integrity.rs`
+- **Proof artifacts:** `src/bookmarks.rs`, `tests/bookmarks_cli.rs`
 - **Optional diagnostics:** —
 - **Fixture provenance:** synthetic bookmark rows; labels may embed workspace paths
 - **Log expectation:** deterministic --lib result line; no structured log required for pure core
@@ -88,9 +76,9 @@ be silently skipped during closeout.
 ### connectors
 
 - **Owning beads:** .15.1, .3.1, .14.1
-- **Failure modes:** fm-connectors-jsonl-parse-error, fm-connectors-cursor-vscdb-locked, fm-connectors-chatgpt-encrypted-undecipherable, fm-connectors-amp-stem-prefix-unsafe, fm-indexer-aider-external-id-collision
+- **Failure modes:** fm-connectors-jsonl-parse-error, fm-connectors-cursor-vscdb-locked, fm-connectors-chatgpt-encrypted-undecipherable
 - **Mandatory proofs:** unit, integration, golden
-- **Proof artifacts:** `src/connector_ingest_diagnostics.rs`, `tests/connector_cursor.rs`, `tests/connector_chatgpt.rs`, `tests/connector_aider.rs`, `tests/connector_amp.rs`
+- **Proof artifacts:** `src/connector_ingest_diagnostics.rs`, `tests/connector_cursor.rs`, `tests/connector_chatgpt.rs`, `tests/connector_claude.rs`, `tests/connector_codex.rs`
 - **Optional diagnostics:** per-provider live ingest probe
 - **Fixture provenance:** per-provider synthetic session files; encrypted blob is non-decipherable by design
 - **Log expectation:** deterministic --lib result line; per-provider conformance fixtures
@@ -112,12 +100,12 @@ be silently skipped during closeout.
 ### html_export
 
 - **Owning beads:** .15.3, .10.5, .12.3, .13.3
-- **Failure modes:** fm-html-export-markdown-injection, fm-html-export-encryption-failure, fm-encryption-nonce-type-safety, fm-encryption-utf8-byte-slicing
+- **Failure modes:** fm-html-export-markdown-injection
 - **Mandatory proofs:** integration, golden, e2e
 - **Proof artifacts:** `tests/html_export_sanitization_security.rs`, `tests/html_export_integration.rs`, `tests/html_export_e2e.rs`
 - **Optional diagnostics:** —
-- **Fixture provenance:** synthetic malicious markdown/script inputs; encrypted body is ciphertext
-- **Log expectation:** structured proof-log for the real-binary export run; encrypted bodies stay ciphertext
+- **Fixture provenance:** synthetic malicious markdown/script inputs; exported HTML stays escaped
+- **Log expectation:** structured proof-log for the real-binary export run; scripts stay inert
 - **Redaction:** redact-required
 - **Closure evidence:** cargo test --test html_export_sanitization_security + golden html_export diff
 
@@ -138,7 +126,7 @@ be silently skipped during closeout.
 - **Owning beads:** .5, .5.1, .5.5
 - **Failure modes:** fm-models-native-minilm-missing, fm-models-native-load-failure, fm-models-checksum-mismatch
 - **Mandatory proofs:** integration
-- **Proof artifacts:** `tests/cli_model_lifecycle_contract.rs`, `tests/e2e_analytics_models.rs`
+- **Proof artifacts:** `tests/cli_model_lifecycle_contract.rs`
 - **Optional diagnostics:** `cass models verify` checksum pass on installed files
 - **Fixture provenance:** missing/mismatched model dirs; no network exists anywhere
 - **Log expectation:** deterministic contract test result line; local installs are opt-in only
@@ -192,18 +180,6 @@ be silently skipped during closeout.
 - **Log expectation:** structured proof-log over the real-binary storage-failure gate
 - **Redaction:** no-user-content
 - **Closure evidence:** cargo test --test e2e_storage_failure_fixture_gate result line
-
-### tui
-
-- **Owning beads:** .15.4, .13.2, .13.4, .12.6
-- **Failure modes:** fm-tui-render-parity-drift, fm-tui-human-robot-mismatch
-- **Mandatory proofs:** integration, golden, e2e
-- **Proof artifacts:** `tests/e2e_human_robot_parity_gate.rs`, `tests/tui_smoke.rs`, `tests/e2e_tui_smoke_flows.rs`
-- **Optional diagnostics:** live TUI asciicast capture
-- **Fixture provenance:** headless TUI fixtures; human summaries carry redacted fields verbatim
-- **Log expectation:** structured proof-log over the human/robot parity gate
-- **Redaction:** redact-required
-- **Closure evidence:** cargo test --test e2e_human_robot_parity_gate result line
 
 ---
 

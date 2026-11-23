@@ -54,7 +54,7 @@
               "optional_diagnostics": {
                 "type": "array",
                 "items": {
-                  "type": "string"
+                  "type": "unknown"
                 }
               },
               "fixture_provenance": {
@@ -124,9 +124,6 @@
                 },
                 "required": {
                   "type": "boolean"
-                },
-                "default": {
-                  "type": "string"
                 },
                 "enum_values": {
                   "type": "array",

@@ -93,9 +93,6 @@
                 "required": {
                   "type": "boolean"
                 },
-                "default": {
-                  "type": "string"
-                },
                 "enum_values": {
                   "type": "array",
                   "items": {

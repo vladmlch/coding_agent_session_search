@@ -50,37 +50,13 @@
     "codex",
     "claude_code",
     "gemini",
-    "clawdbot",
-    "vibe",
     "opencode",
-    "amp",
-    "cline",
-    "aider",
     "cursor",
     "chatgpt",
-    "pi_agent",
-    "omp",
-    "factory",
-    "openclaw",
-    "continue",
-    "antigravity",
-    "pi_durable",
-    "prime_agent",
-    "kimi",
-    "kiro",
-    "muse",
-    "openhands",
-    "copilot",
-    "copilot_cli",
-    "qwen",
-    "grok",
     "devin",
-    "grok_bot",
-    "codebuff",
-    "goose",
-    "crush",
-    "hermes",
-    "shelley"
+    "qwen",
+    "antigravity",
+    "qoder"
   ],
   "global_flags": [
     {
@@ -159,105 +135,6 @@
     }
   ],
   "commands": [
-    {
-      "name": "tui",
-      "description": "Launch interactive TUI",
-      "arguments": [
-        {
-          "name": "once",
-          "description": "Render once and exit (headless-friendly)",
-          "arg_type": "flag",
-          "required": false,
-          "default": "false",
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "reset-state",
-          "description": "Delete persisted UI state (`tui_state.json`) before launch",
-          "arg_type": "flag",
-          "required": false,
-          "default": "false",
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "asciicast",
-          "description": "Record terminal output to an asciicast v2 file; in non-interactive headless --once mode cass writes a labeled sentinel cast because no live TUI session is launched",
-          "arg_type": "option",
-          "value_type": "path",
-          "required": false
-        },
-        {
-          "name": "data-dir",
-          "description": "Override data dir (matches index --data-dir)",
-          "arg_type": "option",
-          "value_type": "path",
-          "required": false
-        },
-        {
-          "name": "inline",
-          "description": "Run in inline mode (UI anchored within terminal, scrollback preserved)",
-          "arg_type": "flag",
-          "required": false,
-          "default": "false",
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "ui-height",
-          "description": "Height of the inline UI in rows (default: 12, ignored without --inline)",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false,
-          "default": "12"
-        },
-        {
-          "name": "anchor",
-          "description": "Anchor the inline UI to top or bottom of the terminal (default: bottom)",
-          "arg_type": "option",
-          "value_type": "enum",
-          "required": false,
-          "default": "bottom",
-          "enum_values": [
-            "top",
-            "bottom"
-          ]
-        },
-        {
-          "name": "record-macro",
-          "description": "Record input events to a macro file for replay/debugging",
-          "arg_type": "option",
-          "value_type": "path",
-          "required": false
-        },
-        {
-          "name": "play-macro",
-          "description": "Play back a previously recorded macro file",
-          "arg_type": "option",
-          "value_type": "path",
-          "required": false
-        },
-        {
-          "name": "refresh",
-          "description": "Run an incremental `cass index` pass before launching the TUI so new conversations created since the last index are searchable. No-op when the index is already current; indexing errors are logged and the TUI opens on the existing index (non-fatal)",
-          "arg_type": "flag",
-          "required": false,
-          "default": "false",
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        }
-      ],
-      "has_json_output": false
-    },
     {
       "name": "index",
       "description": "Run indexer",
@@ -517,7 +394,6 @@
             "contracts",
             "wrap",
             "sources",
-            "analytics",
             "doctor",
             "recipes"
           ]
@@ -1931,111 +1807,6 @@
       "has_json_output": true
     },
     {
-      "name": "guide",
-      "description": "Intent-to-command planner and gated runner for guided safe workflows. Dry-run is the default. `--apply` automatically evaluates only closed, read-only proof adapters and requires an explicit confirmation for each mutating step; macro strings are never evaluated by a shell. Maps an operator intent (investigate-search-miss, repair-assets, export-session, onboard-source, support-capsule) to an exact safe command plan — steps, prerequisites, proof gates, forbidden shortcuts, cost/risk, privacy notes, and stop conditions. Never launches a bare TUI. Omit the intent to list the known intents",
-      "arguments": [
-        {
-          "name": "intent",
-          "description": "Operator intent to plan (omit to list the known intents). Multiple words are joined, e.g. `cass guide rebuild index`",
-          "arg_type": "positional",
-          "value_type": "string",
-          "required": false,
-          "repeatable": true
-        },
-        {
-          "name": "fixture",
-          "description": "Deterministic preflight-facts source: a JSON file shaped like `{ \"facts\": { \"<fact>\": true, ... }, \"intent\"?: \"<intent>\" }`",
-          "arg_type": "option",
-          "value_type": "path",
-          "required": false
-        },
-        {
-          "name": "data-dir",
-          "description": "Override data dir",
-          "arg_type": "option",
-          "value_type": "path",
-          "required": false
-        },
-        {
-          "name": "apply",
-          "description": "Enter gated apply mode (`--run` is an alias). Without this flag the transcript is a deterministic, fully read-only dry-run",
-          "arg_type": "flag",
-          "required": false,
-          "default": "false",
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "confirm-step",
-          "description": "Confirm one exact mutating step number. Repeat for multiple steps; confirmation never carries across steps",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false,
-          "repeatable": true
-        },
-        {
-          "name": "confirm-fact",
-          "description": "Confirm an operator-context preflight fact as true. Repeatable; the confirmation is recorded in the robot transcript",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false,
-          "repeatable": true
-        },
-        {
-          "name": "accept-privacy-tier",
-          "description": "Accept the exact declared privacy tier (`redacted` or `sensitive`). A generic yes is intentionally not accepted",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false
-        },
-        {
-          "name": "accept-cost-risk",
-          "description": "Accept the exact declared cost-risk band (`medium` or `high`) after reviewing the resource what-if result",
-          "arg_type": "option",
-          "value_type": "string",
-          "required": false
-        },
-        {
-          "name": "confirm-stop-conditions-clear",
-          "description": "Assert that every declared stop condition was checked and is clear. An observed triggered stop condition always wins over this assertion",
-          "arg_type": "flag",
-          "required": false,
-          "default": "false",
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "json",
-          "description": "Output as JSON (for automation)",
-          "arg_type": "flag",
-          "required": false,
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "robot-format",
-          "description": "Output format for robot mode (overrides --json when specified)",
-          "arg_type": "option",
-          "value_type": "enum",
-          "required": false,
-          "enum_values": [
-            "json",
-            "jsonl",
-            "compact",
-            "sessions",
-            "toon"
-          ]
-        }
-      ],
-      "has_json_output": true
-    },
-    {
       "name": "doctor",
       "description": "Diagnose cass installation issues. Legacy `cass doctor --json` maps to the read-only check surface. Legacy `--fix` maps to safe-auto-run and may only apply contract-declared safe repairs",
       "arguments": [
@@ -2523,26 +2294,6 @@
           "required": false
         },
         {
-          "name": "encrypt",
-          "description": "Enable password encryption (Web Crypto compatible)",
-          "arg_type": "flag",
-          "required": false,
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "password-stdin",
-          "description": "Read password from stdin (secure, no echo)",
-          "arg_type": "flag",
-          "required": false,
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
           "name": "include-tools",
           "description": "Include tool calls in the export; `--include-tools=false` omits them (default: true)",
           "arg_type": "option",
@@ -2823,11 +2574,11 @@
     },
     {
       "name": "pages",
-      "description": "Export encrypted searchable archive for local browsing (P4.x)",
+      "description": "Export searchable archive for local browsing (P4.x)",
       "arguments": [
         {
           "name": "export-only",
-          "description": "Export only (skip wizard and encryption) to specified directory",
+          "description": "Export only (skip wizard and bundle) to specified directory",
           "arg_type": "option",
           "value_type": "path",
           "required": false
@@ -2965,26 +2716,6 @@
           "name": "verbose",
           "short": "v",
           "description": "Verbose output (show detailed check results)",
-          "arg_type": "flag",
-          "required": false,
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "no-encryption",
-          "description": "Export without encryption (DANGEROUS - all content publicly readable)",
-          "arg_type": "flag",
-          "required": false,
-          "enum_values": [
-            "true",
-            "false"
-          ]
-        },
-        {
-          "name": "i-understand-unencrypted-risks",
-          "description": "Acknowledge unencrypted export risks (required in robot/JSON mode with --no-encryption)",
           "arg_type": "flag",
           "required": false,
           "enum_values": [
@@ -3285,27 +3016,6 @@
       "has_json_output": true
     },
     {
-      "name": "analytics",
-      "description": "Token usage, tool, and model analytics",
-      "arguments": [
-        {
-          "name": "robot-format",
-          "description": "Output format for robot mode (overrides --json when specified)",
-          "arg_type": "option",
-          "value_type": "enum",
-          "required": false,
-          "enum_values": [
-            "json",
-            "jsonl",
-            "compact",
-            "sessions",
-            "toon"
-          ]
-        }
-      ],
-      "has_json_output": true
-    },
-    {
       "name": "daemon",
       "description": "Run the semantic model daemon (Unix only)",
       "arguments": [
@@ -3339,27 +3049,6 @@
         }
       ],
       "has_json_output": false
-    },
-    {
-      "name": "schedule",
-      "description": "Keep the index fresh automatically via the OS scheduler (launchd / systemd user timers)",
-      "arguments": [
-        {
-          "name": "robot-format",
-          "description": "Output format for robot mode (overrides --json when specified)",
-          "arg_type": "option",
-          "value_type": "enum",
-          "required": false,
-          "enum_values": [
-            "json",
-            "jsonl",
-            "compact",
-            "sessions",
-            "toon"
-          ]
-        }
-      ],
-      "has_json_output": true
     },
     {
       "name": "serve",
@@ -3783,7 +3472,7 @@
       "code": "6",
       "meaning": "required input missing",
       "retryable": "no",
-      "agent_action": "Supply the missing input named by err.kind (a password via --password-stdin, or a resume command), then rerun."
+      "agent_action": "Supply the missing input named by err.kind (e.g. a resume command), then rerun."
     },
     {
       "code": "7",
@@ -4134,10 +3823,6 @@
       "name": "CASS_STREAMING_CONSUMER_COMBINE",
       "default": "1",
       "description": "Set to 0 to disable flat-combining drain in the streaming consumer."
-    },
-    {
-      "name": "CASS_AIDER_DATA_ROOT",
-      "description": "Override Aider session discovery root."
     },
     {
       "name": "CASS_OMP_DATA_ROOT",

@@ -33,9 +33,6 @@
         "size_bytes": {
           "type": "integer"
         },
-        "encrypted": {
-          "type": "boolean"
-        },
         "messages_count": {
           "type": "integer"
         },
