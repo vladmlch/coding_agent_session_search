@@ -262,7 +262,7 @@ fn compressed_source_failures_withhold_completion_and_keep_both_neighbors() -> R
         (text.to_vec(), io::ErrorKind::Other),
         (
             [frame.as_slice(), b"not a frame".as_slice()].concat(),
-            io::ErrorKind::Other,
+            io::ErrorKind::InvalidData,
         ),
         (
             zstd::stream::encode_all(b"\xff\n".as_slice(), 0)?,

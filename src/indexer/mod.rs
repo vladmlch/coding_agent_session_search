@@ -74820,12 +74820,12 @@ c.close()
         let data_dir = tmp.path().join("cass");
         let selected = tmp.path().join("selected");
         let gemini_file = selected.join("chats/session-shared.json");
-        let claude_file = selected.join("projects/demo/session.jsonl");
+        let codex_file = selected.join("sessions/rollout-shared.jsonl");
         fs::create_dir_all(&data_dir).unwrap();
         fs::create_dir_all(gemini_file.parent().unwrap()).unwrap();
-        fs::create_dir_all(claude_file.parent().unwrap()).unwrap();
-        // The nested Gemini shape is a real provider format; Claude's generic
-        // JSONL parser ignores .json files.
+        fs::create_dir_all(codex_file.parent().unwrap()).unwrap();
+        // The nested Gemini shape is a real provider format; Codex only scans
+        // `rollout-*.{jsonl,json}` files and ignores `chats/session-*.json`.
         fs::write(
             &gemini_file,
             serde_json::to_vec(&serde_json::json!({
@@ -74839,20 +74839,13 @@ c.close()
             .unwrap(),
         )
         .unwrap();
-        fs::write(
-            &claude_file,
-            concat!(
-                r#"{"type":"user","cwd":"/workspace","sessionId":"shared-claude","message":{"role":"user","content":"claudeconnectorneedle"},"timestamp":"2025-11-12T18:31:18.000Z"}"#,
-                "\n"
-            ),
-        )
-        .unwrap();
+        write_watch_lexical_source(&codex_file, "shared-codex", "codexconnectorneedle");
         let mut opts = watch_lexical_options(&data_dir);
         opts.watch_once_paths = Some(vec![selected.clone()]);
         let root = ScanRoot::local(selected.clone());
         let roots = [
             (ConnectorKind::Gemini, root.clone()),
-            (ConnectorKind::Claude, root.clone()),
+            (ConnectorKind::Codex, root.clone()),
         ];
         let kinds: HashSet<_> = classify_paths(vec![selected.clone()], &roots, true)
             .into_iter()
@@ -74860,7 +74853,7 @@ c.close()
             .collect();
         assert_eq!(
             kinds,
-            HashSet::from([ConnectorKind::Gemini, ConnectorKind::Claude])
+            HashSet::from([ConnectorKind::Gemini, ConnectorKind::Codex])
         );
         let storage = Mutex::new(FrankenStorage::open(&opts.db_path).unwrap());
         let index_path = index_dir(&data_dir).unwrap();
@@ -74901,7 +74894,7 @@ c.close()
         assert!(
             watch_lexical_replay_debt_for_root(
                 &storage.lock().unwrap(),
-                ConnectorKind::Claude,
+                ConnectorKind::Codex,
                 &root,
             )
             .unwrap()
@@ -74909,12 +74902,12 @@ c.close()
         );
 
         // Configured roots trigger every connector. Fix the order here so a
-        // healthy Claude publication follows Gemini's failed publication exactly.
+        // healthy Codex publication follows Gemini's failed publication exactly.
         assert_eq!(
             reindex_paths(
                 &opts,
                 vec![selected.clone()],
-                &[(ConnectorKind::Claude, root.clone())],
+                &[(ConnectorKind::Codex, root.clone())],
                 &Mutex::new(HashMap::new()),
                 &storage,
                 &index,
@@ -74927,7 +74920,7 @@ c.close()
         let canonical_before = watch_lexical_canonical_rows(&storage.lock().unwrap());
         assert_eq!(canonical_before.len(), 2);
         assert_eq!(canonical_before[0], gemini_rows[0]);
-        assert_eq!(canonical_before[1].3, "claudeconnectorneedle");
+        assert_eq!(canonical_before[1].3, "codexconnectorneedle");
         let expected_id = |source: &Path, row: &(i64, i64, i64, String)| {
             frankensearch::quill::cass::cass_document_identity(
                 "local",
@@ -74939,11 +74932,11 @@ c.close()
             )
         };
         let gemini_ids = BTreeSet::from([expected_id(&gemini_file, &canonical_before[0])]);
-        let claude_ids = BTreeSet::from([expected_id(&claude_file, &canonical_before[1])]);
+        let codex_ids = BTreeSet::from([expected_id(&codex_file, &canonical_before[1])]);
         assert!(watch_lexical_search_ids(&index_path, "geminiconnectorneedle").is_empty());
         assert_eq!(
-            watch_lexical_search_ids(&index_path, "claudeconnectorneedle"),
-            claude_ids
+            watch_lexical_search_ids(&index_path, "codexconnectorneedle"),
+            codex_ids
         );
         let remaining = watch_lexical_replay_debt_for_root(
             &storage.lock().unwrap(),
@@ -74951,16 +74944,12 @@ c.close()
             &root,
         )
         .unwrap();
-        assert_eq!(
-            remaining.len(),
-            1,
-            "Claude must not discharge Gemini's debt"
-        );
+        assert_eq!(remaining.len(), 1, "Codex must not discharge Gemini's debt");
         assert_eq!(remaining[0].metadata().unwrap(), gemini_metadata);
         assert!(
             watch_lexical_replay_debt_for_root(
                 &storage.lock().unwrap(),
-                ConnectorKind::Claude,
+                ConnectorKind::Codex,
                 &root,
             )
             .unwrap()
@@ -75013,10 +75002,10 @@ c.close()
                 gemini_ids
             );
             assert_eq!(
-                watch_lexical_search_ids(&index_path, "claudeconnectorneedle"),
-                claude_ids
+                watch_lexical_search_ids(&index_path, "codexconnectorneedle"),
+                codex_ids
             );
-            for kind in [ConnectorKind::Gemini, ConnectorKind::Claude] {
+            for kind in [ConnectorKind::Gemini, ConnectorKind::Codex] {
                 assert!(
                     watch_lexical_replay_debt_for_root(&storage.lock().unwrap(), kind, &root)
                         .unwrap()
