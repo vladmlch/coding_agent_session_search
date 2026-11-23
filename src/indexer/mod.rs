@@ -62217,7 +62217,7 @@ mod tests {
         fs::write(&source, format!("{messages}\n"))?;
         let factories: Vec<_> = configured_connector_factories()
             .into_iter()
-            .filter(|(name, _)| matches!(*name, "claude" | "gemini"))
+            .filter(|(name, _)| matches!(*name, "claude" | "qwen"))
             .collect();
         assert_eq!(factories.len(), 2);
         for (name, factory) in &factories {
@@ -62242,7 +62242,7 @@ mod tests {
             watch_interval_secs: 30,
         };
         // Real Claude parsing and SourceComplete ingestion, followed by a
-        // real Gemini factory with no roots in the closed scan universe.
+        // real Qwen factory with no roots in the closed scan universe.
         let outcome = run_batch_index_with_connector_factories(
             &storage,
             None,
@@ -62252,7 +62252,7 @@ mod tests {
             Vec::new(),
             Some(Arc::new(HashMap::from([
                 ("claude".to_string(), vec![source]),
-                ("gemini".to_string(), Vec::new()),
+                ("qwen".to_string(), Vec::new()),
             ]))),
             factories,
             None,
