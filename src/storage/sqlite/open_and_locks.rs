@@ -217,27 +217,6 @@ fn doctor_mutation_lock_error_is_active(err: &std::io::Error) -> bool {
             && err.raw_os_error() == fs2::lock_contended_error().raw_os_error())
 }
 
-#[cfg(test)]
-mod doctor_mutation_lock_error_tests {
-    use super::*;
-
-    /// fs2's own contended error must read as a held doctor lock on every
-    /// platform (on Windows it is raw ERROR_LOCK_VIOLATION, not WouldBlock),
-    /// and unrelated failures must not (2l1b0.74).
-    #[test]
-    fn contended_lock_error_is_active_and_other_errors_are_not() {
-        assert!(doctor_mutation_lock_error_is_active(
-            &fs2::lock_contended_error()
-        ));
-        assert!(!doctor_mutation_lock_error_is_active(
-            &std::io::Error::from(std::io::ErrorKind::NotFound)
-        ));
-        assert!(!doctor_mutation_lock_error_is_active(
-            &std::io::Error::other("permission denied")
-        ));
-    }
-}
-
 pub(super) fn acquire_doctor_mutation_db_open_guard(
     db_path: &Path,
     timeout: Duration,
@@ -981,5 +960,26 @@ pub(crate) fn attempt_dirty_wal_recovery_checkpoint(
             }
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod doctor_mutation_lock_error_tests {
+    use super::*;
+
+    /// fs2's own contended error must read as a held doctor lock on every
+    /// platform (on Windows it is raw ERROR_LOCK_VIOLATION, not WouldBlock),
+    /// and unrelated failures must not (2l1b0.74).
+    #[test]
+    fn contended_lock_error_is_active_and_other_errors_are_not() {
+        assert!(doctor_mutation_lock_error_is_active(
+            &fs2::lock_contended_error()
+        ));
+        assert!(!doctor_mutation_lock_error_is_active(
+            &std::io::Error::from(std::io::ErrorKind::NotFound)
+        ));
+        assert!(!doctor_mutation_lock_error_is_active(
+            &std::io::Error::other("permission denied")
+        ));
     }
 }

@@ -1201,6 +1201,35 @@ pub(in crate::indexer) fn colon_separated_exclusion_warning(value: &str) -> Opti
     })
 }
 
+pub(in crate::indexer) fn run_index_inner(
+    opts: IndexOptions,
+    event_channel: Option<(Sender<IndexerEvent>, Receiver<IndexerEvent>)>,
+    local_connector_roots: LocalConnectorRootsOverride,
+    maintain_raw_mirror: bool,
+) -> Result<()> {
+    let progress = opts.progress.clone();
+    let result = run_index_with_storage_ownership(
+        opts,
+        event_channel,
+        local_connector_roots,
+        maintain_raw_mirror,
+    );
+    // Some archive diagnostics intentionally turn engine errors into reason
+    // strings. Once the owner has drained, a requested stop must not escape
+    // as a spurious corruption or migration failure merely because an Abort
+    // lost its concrete type while passing through those diagnostics.
+    if progress
+        .as_ref()
+        .is_some_and(|progress| progress.stop_requested())
+    {
+        if let Err(error) = &result {
+            tracing::debug!(error = %error, "index owner drained after cancellation");
+        }
+        return Err(IndexInterrupted.into());
+    }
+    result
+}
+
 #[cfg(test)]
 pub(in crate::indexer) mod colon_separated_exclusion_warning_tests {
     use super::colon_separated_exclusion_warning;
@@ -1238,33 +1267,4 @@ pub(in crate::indexer) mod colon_separated_exclusion_warning_tests {
         }
         Ok(())
     }
-}
-
-pub(in crate::indexer) fn run_index_inner(
-    opts: IndexOptions,
-    event_channel: Option<(Sender<IndexerEvent>, Receiver<IndexerEvent>)>,
-    local_connector_roots: LocalConnectorRootsOverride,
-    maintain_raw_mirror: bool,
-) -> Result<()> {
-    let progress = opts.progress.clone();
-    let result = run_index_with_storage_ownership(
-        opts,
-        event_channel,
-        local_connector_roots,
-        maintain_raw_mirror,
-    );
-    // Some archive diagnostics intentionally turn engine errors into reason
-    // strings. Once the owner has drained, a requested stop must not escape
-    // as a spurious corruption or migration failure merely because an Abort
-    // lost its concrete type while passing through those diagnostics.
-    if progress
-        .as_ref()
-        .is_some_and(|progress| progress.stop_requested())
-    {
-        if let Err(error) = &result {
-            tracing::debug!(error = %error, "index owner drained after cancellation");
-        }
-        return Err(IndexInterrupted.into());
-    }
-    result
 }
