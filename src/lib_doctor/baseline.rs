@@ -415,67 +415,6 @@ pub(crate) fn doctor_baseline_resolve_path(
     Ok(path)
 }
 
-#[cfg(test)]
-mod doctor_baseline_path_tests {
-    use super::doctor_baseline_resolve_path;
-    use std::path::{Path, PathBuf};
-
-    fn refused(data_dir: &Path, requested: &str) -> bool {
-        doctor_baseline_resolve_path(data_dir, "id", Some(&PathBuf::from(requested)), false)
-            .is_err_and(|error| error.kind == "usage")
-    }
-
-    #[test]
-    fn baseline_ids_and_plain_relative_paths_resolve_under_the_baselines_dir() {
-        let data_dir = std::env::temp_dir().join("cass-baseline-paths");
-        let baselines = data_dir.join("doctor").join("baselines");
-        assert_eq!(
-            doctor_baseline_resolve_path(&data_dir, "known-good", None, false).unwrap(),
-            baselines.join("known-good.json")
-        );
-        assert_eq!(
-            doctor_baseline_resolve_path(
-                &data_dir,
-                "id",
-                Some(&PathBuf::from("nested/known-good.json")),
-                false
-            )
-            .unwrap(),
-            baselines.join("nested").join("known-good.json")
-        );
-        assert!(refused(&data_dir, "../escape.json"));
-        assert!(refused(&data_dir, "nested/../../escape.json"));
-    }
-
-    /// Every absolute Windows path has a drive prefix, the data dir's
-    /// included, so refusing any prefix refused every baseline on Windows
-    /// (coding_agent_session_search-if17v).
-    #[cfg(windows)]
-    #[test]
-    fn windows_baselines_keep_the_drive_and_refuse_drive_relative_requests() {
-        let data_dir = PathBuf::from(r"C:\Users\x\cass-data");
-        assert_eq!(
-            doctor_baseline_resolve_path(&data_dir, "known-good", None, false).unwrap(),
-            PathBuf::from(r"C:\Users\x\cass-data\doctor\baselines\known-good.json")
-        );
-        assert_eq!(
-            doctor_baseline_resolve_path(
-                &data_dir,
-                "id",
-                Some(&PathBuf::from(r"D:\exports\known-good.json")),
-                false
-            )
-            .unwrap(),
-            PathBuf::from(r"D:\exports\known-good.json")
-        );
-        // Not absolute on Windows, and `join` would let each replace the
-        // baselines directory.
-        assert!(refused(&data_dir, "D:escape.json"));
-        assert!(refused(&data_dir, r"\escape.json"));
-        assert!(refused(&data_dir, r"D:\exports\..\escape.json"));
-    }
-}
-
 pub(crate) fn doctor_baseline_write_path_is_safe(
     data_dir: &Path,
     baseline_path: &Path,
@@ -1229,4 +1168,65 @@ pub(crate) fn doctor_baseline_perf_delta(
         "current_elapsed_ms": after,
         "delta_ms": before.zip(after).map(|(before, after)| after as i64 - before as i64),
     })
+}
+
+#[cfg(test)]
+mod doctor_baseline_path_tests {
+    use super::doctor_baseline_resolve_path;
+    use std::path::{Path, PathBuf};
+
+    fn refused(data_dir: &Path, requested: &str) -> bool {
+        doctor_baseline_resolve_path(data_dir, "id", Some(&PathBuf::from(requested)), false)
+            .is_err_and(|error| error.kind == "usage")
+    }
+
+    #[test]
+    fn baseline_ids_and_plain_relative_paths_resolve_under_the_baselines_dir() {
+        let data_dir = std::env::temp_dir().join("cass-baseline-paths");
+        let baselines = data_dir.join("doctor").join("baselines");
+        assert_eq!(
+            doctor_baseline_resolve_path(&data_dir, "known-good", None, false).unwrap(),
+            baselines.join("known-good.json")
+        );
+        assert_eq!(
+            doctor_baseline_resolve_path(
+                &data_dir,
+                "id",
+                Some(&PathBuf::from("nested/known-good.json")),
+                false
+            )
+            .unwrap(),
+            baselines.join("nested").join("known-good.json")
+        );
+        assert!(refused(&data_dir, "../escape.json"));
+        assert!(refused(&data_dir, "nested/../../escape.json"));
+    }
+
+    /// Every absolute Windows path has a drive prefix, the data dir's
+    /// included, so refusing any prefix refused every baseline on Windows
+    /// (coding_agent_session_search-if17v).
+    #[cfg(windows)]
+    #[test]
+    fn windows_baselines_keep_the_drive_and_refuse_drive_relative_requests() {
+        let data_dir = PathBuf::from(r"C:\Users\x\cass-data");
+        assert_eq!(
+            doctor_baseline_resolve_path(&data_dir, "known-good", None, false).unwrap(),
+            PathBuf::from(r"C:\Users\x\cass-data\doctor\baselines\known-good.json")
+        );
+        assert_eq!(
+            doctor_baseline_resolve_path(
+                &data_dir,
+                "id",
+                Some(&PathBuf::from(r"D:\exports\known-good.json")),
+                false
+            )
+            .unwrap(),
+            PathBuf::from(r"D:\exports\known-good.json")
+        );
+        // Not absolute on Windows, and `join` would let each replace the
+        // baselines directory.
+        assert!(refused(&data_dir, "D:escape.json"));
+        assert!(refused(&data_dir, r"\escape.json"));
+        assert!(refused(&data_dir, r"D:\exports\..\escape.json"));
+    }
 }

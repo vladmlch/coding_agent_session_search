@@ -374,36 +374,6 @@ pub(crate) fn lexical_glob_expansion_hint(error: &anyhow::Error) -> Option<Strin
     })
 }
 
-#[cfg(test)]
-mod lexical_engine_invariant_hint_tests {
-    use super::*;
-
-    /// GH #499: the reporter's exact envelope message gets the remedy (and
-    /// therefore `retryable: false` at every call site); fuel exhaustion and
-    /// reader faults keep their existing, retryable handling.
-    #[test]
-    fn only_a_cursor_invariant_failure_gets_the_non_retryable_remedy() {
-        let invariant = anyhow::anyhow!(
-            "executing a Quill lexical query: posting cursor invariant failed: Boolean \
-             children belong to different segment domains"
-        );
-        let hint = lexical_engine_invariant_hint(&invariant)
-            .expect("the #499 engine failure must carry a remedy");
-        assert!(hint.contains("cass index --full --force-rebuild"), "{hint}");
-        assert!(hint.contains("retrying fails the same way"), "{hint}");
-
-        for other in [
-            anyhow::anyhow!(
-                "executing a Quill lexical query: query fuel exhausted after 10/10 units"
-            ),
-            anyhow::anyhow!("opening the Quill CASS reader: manifest missing"),
-            anyhow::anyhow!("database is locked"),
-        ] {
-            assert_eq!(lexical_engine_invariant_hint(&other), None, "{other}");
-        }
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_search_operation(
     client: std::sync::Arc<crate::search::query::SearchClient>,
@@ -993,4 +963,34 @@ pub(crate) fn ensure_cli_query_nesting_depth(query: &str) -> CliResult<()> {
         });
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod lexical_engine_invariant_hint_tests {
+    use super::*;
+
+    /// GH #499: the reporter's exact envelope message gets the remedy (and
+    /// therefore `retryable: false` at every call site); fuel exhaustion and
+    /// reader faults keep their existing, retryable handling.
+    #[test]
+    fn only_a_cursor_invariant_failure_gets_the_non_retryable_remedy() {
+        let invariant = anyhow::anyhow!(
+            "executing a Quill lexical query: posting cursor invariant failed: Boolean \
+             children belong to different segment domains"
+        );
+        let hint = lexical_engine_invariant_hint(&invariant)
+            .expect("the #499 engine failure must carry a remedy");
+        assert!(hint.contains("cass index --full --force-rebuild"), "{hint}");
+        assert!(hint.contains("retrying fails the same way"), "{hint}");
+
+        for other in [
+            anyhow::anyhow!(
+                "executing a Quill lexical query: query fuel exhausted after 10/10 units"
+            ),
+            anyhow::anyhow!("opening the Quill CASS reader: manifest missing"),
+            anyhow::anyhow!("database is locked"),
+        ] {
+            assert_eq!(lexical_engine_invariant_hint(&other), None, "{other}");
+        }
+    }
 }

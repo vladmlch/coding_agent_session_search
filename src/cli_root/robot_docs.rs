@@ -320,32 +320,6 @@ pub(crate) fn marked_spans(text: &str, start_mark: &str, end_mark: &str) -> Vec<
     spans
 }
 
-#[cfg(test)]
-mod highlight_matches_tests {
-    use super::highlight_matches;
-
-    #[test]
-    fn engine_marked_terms_are_not_marked_twice() {
-        // The engine marks the first occurrence; --highlight marks the rest.
-        assert_eq!(
-            highlight_matches("a **hello** b Hello", "hello", "**", "**"),
-            "a **hello** b **Hello**"
-        );
-        // Negative: the old implementation printed `a ****hello**** b **Hello**`.
-        assert!(!highlight_matches("**hello** world", "hello world", "**", "**").contains("****"));
-        // A shorter term inside an already-marked longer word stays untouched.
-        assert_eq!(
-            highlight_matches("**hello** there", "hell", "**", "**"),
-            "**hello** there"
-        );
-        // Other marker styles still mark engine-marked terms in their own style.
-        assert_eq!(
-            highlight_matches("**hello**", "hello", ">>>", "<<<"),
-            "**>>>hello<<<**"
-        );
-    }
-}
-
 /// Extract meaningful search terms from a query string
 ///
 /// Handles:
@@ -1115,4 +1089,30 @@ pub(crate) fn write_trace_line(
         ));
     }
     file.write_all(&fallback_encoded)
+}
+
+#[cfg(test)]
+mod highlight_matches_tests {
+    use super::highlight_matches;
+
+    #[test]
+    fn engine_marked_terms_are_not_marked_twice() {
+        // The engine marks the first occurrence; --highlight marks the rest.
+        assert_eq!(
+            highlight_matches("a **hello** b Hello", "hello", "**", "**"),
+            "a **hello** b **Hello**"
+        );
+        // Negative: the old implementation printed `a ****hello**** b **Hello**`.
+        assert!(!highlight_matches("**hello** world", "hello world", "**", "**").contains("****"));
+        // A shorter term inside an already-marked longer word stays untouched.
+        assert_eq!(
+            highlight_matches("**hello** there", "hell", "**", "**"),
+            "**hello** there"
+        );
+        // Other marker styles still mark engine-marked terms in their own style.
+        assert_eq!(
+            highlight_matches("**hello**", "hello", ">>>", "<<<"),
+            "**>>>hello<<<**"
+        );
+    }
 }

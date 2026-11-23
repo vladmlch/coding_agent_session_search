@@ -424,6 +424,57 @@ where
     }
 }
 
+pub(crate) fn fresh_franken_count_retry(
+    path: &Path,
+    reason: &str,
+    busy_timeout: Duration,
+    sql: &str,
+    params: &[crate::franken_sync::compat::ParamValue],
+) -> Option<i64> {
+    let deadline = std::time::Instant::now() + CLI_DB_QUERY_RETRY_TIMEOUT;
+    let mut backoff = Duration::from_millis(4);
+    loop {
+        let conn = match open_franken_cli_read_db(path.to_path_buf(), reason, busy_timeout) {
+            Ok(conn) => conn,
+            Err(err) => {
+                if !err.retryable {
+                    return None;
+                }
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return None;
+                }
+                let remaining = deadline.saturating_duration_since(now);
+                crate::storage::sqlite::sleep_with_franken_retry_backoff(
+                    &mut backoff,
+                    remaining,
+                    Duration::from_millis(64),
+                );
+                continue;
+            }
+        };
+
+        let result = conn.query_row_map(sql, params, |row| row.get_typed::<i64>(0));
+        let _ = close_franken_cli_read_db(conn, path, reason);
+        match result {
+            Ok(value) => return Some(value),
+            Err(err) if crate::storage::sqlite::retryable_franken_error(&err) => {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return None;
+                }
+                let remaining = deadline.saturating_duration_since(now);
+                crate::storage::sqlite::sleep_with_franken_retry_backoff(
+                    &mut backoff,
+                    remaining,
+                    Duration::from_millis(64),
+                );
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod franken_query_retry_callback_tests {
     use super::{franken_query_map_collect_retry, franken_query_row_map_retry};
@@ -477,56 +528,5 @@ mod franken_query_retry_callback_tests {
             "callback invoked {} times",
             calls.get()
         );
-    }
-}
-
-pub(crate) fn fresh_franken_count_retry(
-    path: &Path,
-    reason: &str,
-    busy_timeout: Duration,
-    sql: &str,
-    params: &[crate::franken_sync::compat::ParamValue],
-) -> Option<i64> {
-    let deadline = std::time::Instant::now() + CLI_DB_QUERY_RETRY_TIMEOUT;
-    let mut backoff = Duration::from_millis(4);
-    loop {
-        let conn = match open_franken_cli_read_db(path.to_path_buf(), reason, busy_timeout) {
-            Ok(conn) => conn,
-            Err(err) => {
-                if !err.retryable {
-                    return None;
-                }
-                let now = std::time::Instant::now();
-                if now >= deadline {
-                    return None;
-                }
-                let remaining = deadline.saturating_duration_since(now);
-                crate::storage::sqlite::sleep_with_franken_retry_backoff(
-                    &mut backoff,
-                    remaining,
-                    Duration::from_millis(64),
-                );
-                continue;
-            }
-        };
-
-        let result = conn.query_row_map(sql, params, |row| row.get_typed::<i64>(0));
-        let _ = close_franken_cli_read_db(conn, path, reason);
-        match result {
-            Ok(value) => return Some(value),
-            Err(err) if crate::storage::sqlite::retryable_franken_error(&err) => {
-                let now = std::time::Instant::now();
-                if now >= deadline {
-                    return None;
-                }
-                let remaining = deadline.saturating_duration_since(now);
-                crate::storage::sqlite::sleep_with_franken_retry_backoff(
-                    &mut backoff,
-                    remaining,
-                    Duration::from_millis(64),
-                );
-            }
-            Err(_) => return None,
-        }
     }
 }
