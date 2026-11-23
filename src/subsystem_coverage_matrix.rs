@@ -178,7 +178,7 @@ pub fn subsystem_coverage_matrix() -> Vec<SubsystemCoverage> {
                 "fm-bookmarks-import-non-atomic",
             ],
             mandatory_proofs: &[ProofLevel::Unit, ProofLevel::Integration],
-            proof_artifacts: &["src/bookmarks.rs", "src/metric_integrity.rs"],
+            proof_artifacts: &["src/bookmarks.rs", "tests/bookmarks_cli.rs"],
             optional_diagnostics: &[],
             fixture_provenance: "synthetic bookmark rows; labels may embed workspace paths",
             log_expectation: "deterministic --lib result line; no structured log required for pure core",
@@ -855,7 +855,7 @@ mod tests {
         assert_eq!(report.schema_version, SUBSYSTEM_COVERAGE_SCHEMA_VERSION);
         let json = serde_json::to_value(&report).expect("matrix report serializes");
         assert_eq!(json["subsystem_count"], REPORT_SUBSYSTEM_FILES.len());
-        assert_eq!(json["subsystems"][0]["subsystem"], "analytics");
+        assert_eq!(json["subsystems"][0]["subsystem"], "bookmarks");
         // Proof levels serialize as their kebab labels.
         assert_eq!(json["subsystems"][0]["mandatory_proofs"][0], "unit");
     }
