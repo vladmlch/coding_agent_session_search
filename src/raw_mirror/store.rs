@@ -6,8 +6,6 @@ pub(super) use std::io::{Read, Write};
 pub(super) use std::path::{Path, PathBuf};
 pub(super) use std::sync::{Mutex, OnceLock};
 pub(super) use std::time::Duration;
-#[cfg(test)]
-pub(super) use std::time::Instant;
 
 #[cfg(test)]
 pub(super) use serde_json::{Value, json};

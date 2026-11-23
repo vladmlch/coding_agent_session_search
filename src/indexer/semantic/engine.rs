@@ -26,8 +26,8 @@ pub(crate) use replay_selection::{
 };
 #[cfg(test)]
 pub(super) use scheduler::{
-    SemanticBackfillSchedulerDecision, SemanticBackfillSchedulerReason,
-    SemanticBackfillSchedulerState, semantic_backfill_scheduler_decision_for_capacity,
+    SemanticBackfillSchedulerReason, SemanticBackfillSchedulerState,
+    semantic_backfill_scheduler_decision_for_capacity,
 };
 pub(crate) use scheduler::{
     SemanticBackfillSchedulerSignals, semantic_backfill_scheduler_decision,
