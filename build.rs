@@ -294,7 +294,7 @@ const CONTRACTS: &[DependencyContract] = &[
         // See that repo's LOCAL_FIXES.md. Return to the upstream URL/rev
         // once upstream carries every row there.
         expected_git: "https://github.com/vladmlch/franken_agent_detection",
-        expected_rev: "f18b0a1fff5f3ccb1574285f8b13cbad8356939b",
+        expected_rev: "cb4085522bb00eb0ee702a8ffe0d4148a80b9c10",
         expected_version: "0.3.11",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.
@@ -796,7 +796,7 @@ fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_man
     // keeps its crates.io resolution. The fork is the owner's pushed
     // GitHub fork (branch main, pushed 2026-11-11).
     const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensearch";
-    const EXPECTED_FORK_REV: &str = "b90177a0b089241ebf7eaaa00c0b4b921a574ad5";
+    const EXPECTED_FORK_REV: &str = "f75d1d551c5fe73d0d4870a26b723faf6921de33";
     const EXPECTED_VERSION: &str = "0.4.1";
     // A full-sha `rev = "<sha>"` git source serializes in Cargo.lock as
     // `git+<url>?rev=<sha>#<sha>`; with a full-sha rev the resolved

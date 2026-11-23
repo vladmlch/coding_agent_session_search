@@ -1660,7 +1660,7 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 [[package]]
 name = "franken-agent-detection"
 version = "0.3.11"
-source = "git+https://github.com/vladmlch/franken_agent_detection?rev=f18b0a1fff5f3ccb1574285f8b13cbad8356939b#f18b0a1fff5f3ccb1574285f8b13cbad8356939b"
+source = "git+https://github.com/vladmlch/franken_agent_detection?rev=cb4085522bb00eb0ee702a8ffe0d4148a80b9c10#cb4085522bb00eb0ee702a8ffe0d4148a80b9c10"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1854,7 +1854,7 @@ dependencies = [
 [[package]]
 name = "frankensearch-quill"
 version = "0.4.1"
-source = "git+https://github.com/vladmlch/frankensearch?rev=b90177a0b089241ebf7eaaa00c0b4b921a574ad5#b90177a0b089241ebf7eaaa00c0b4b921a574ad5"
+source = "git+https://github.com/vladmlch/frankensearch?rev=f75d1d551c5fe73d0d4870a26b723faf6921de33#f75d1d551c5fe73d0d4870a26b723faf6921de33"
 dependencies = [
  "ahash",
  "arc-swap",

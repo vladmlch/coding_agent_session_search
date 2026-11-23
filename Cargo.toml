@@ -213,7 +213,7 @@ frankensearch = { version = "=0.7.1", default-features = false, features = ["has
 # a WAL-only commit — upstream 27a5429 turned boundaries on without them.
 # Source: the owner's pushed FAD fork https://github.com/vladmlch/franken_agent_detection
 # (branch master at 46c4760; the 0d972a9 cass-snapshot-cap pin stays as rollback).
-franken-agent-detection = { version = "=0.3.11", git = "https://github.com/vladmlch/franken_agent_detection", rev = "f18b0a1fff5f3ccb1574285f8b13cbad8356939b", features = ["connectors", "cursor", "chatgpt", "opencode", "devin", "codex-zstd", "qoder-sqlite"] }
+franken-agent-detection = { version = "=0.3.11", git = "https://github.com/vladmlch/franken_agent_detection", rev = "cb4085522bb00eb0ee702a8ffe0d4148a80b9c10", features = ["connectors", "cursor", "chatgpt", "opencode", "devin", "codex-zstd", "qoder-sqlite"] }
 wide = "1.4.0"  # Portable SIMD for P0 Opt 2: SIMD dot product
 arrayvec = "0.7.6"  # Stack-based arrays for P1 Opt 1.4: Edge N-gram optimization
 bloomfilter = "3.0.1"  # Probabilistic membership testing for P2 Opt 3.3: Workspace Cache
@@ -472,7 +472,7 @@ fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55dd
 # redirected entry, a branch/tag/path pin, a duplicate or off-source
 # lockfile resolution, and any other family crate resolving from the
 # fork's git source. Rollback: delete the entry and re-run `cargo fetch`.
-frankensearch-quill = { git = "https://github.com/vladmlch/frankensearch", rev = "b90177a0b089241ebf7eaaa00c0b4b921a574ad5" }
+frankensearch-quill = { git = "https://github.com/vladmlch/frankensearch", rev = "f75d1d551c5fe73d0d4870a26b723faf6921de33" }
 
 # The dependency graph is pinned to the asupersync 0.5.x line (0.5.0). Keep
 # the frankensqlite (owner-fork), frankensearch, and franken-agent-detection
