@@ -154,23 +154,71 @@ class Extraction:
 def mirror(repo, baseline=False):
     mode = "baseline" if baseline else "candidate"
     extraction = Extraction(repo, "mirror-" + mode)
-    path = "src/raw_mirror/store.rs"
-    source = extraction.source(path, baseline)
-    tests_source = extraction.source(path)
-    tests_start = source.index("#[cfg(test)]\nmod tests {")
-    cut1 = source.index("pub fn prune(")
-    cut1_end = source.index("fn apply_prune_entries(", cut1)
-    cut2 = source.index("fn pinned_prune_manifest_ids(", cut1_end)
-    cut2_end = source.index("fn collect_raw_mirror_physical_blobs(", cut2)
-    production = "".join(
-        extraction.piece(path, source, a, b, "production", baseline)
-        for a, b in [(0, cut1), (cut1_end, cut2), (cut2_end, tests_start)]
+    if baseline:
+        path = "src/raw_mirror/store.rs"
+        source = extraction.source(path, baseline)
+        tests_start = source.index("#[cfg(test)]\nmod tests {")
+        cut1 = source.index("pub fn prune(")
+        cut1_end = source.index("fn apply_prune_entries(", cut1)
+        cut2 = source.index("fn pinned_prune_manifest_ids(", cut1_end)
+        cut2_end = source.index("fn collect_raw_mirror_physical_blobs(", cut2)
+        production = "".join(
+            extraction.piece(path, source, a, b, "production", baseline)
+            for a, b in [(0, cut1), (cut1_end, cut2), (cut2_end, tests_start)]
+        )
+    else:
+        prelude = (
+            "use anyhow::{Context, Result, anyhow};\n"
+            "use serde::{Deserialize, Serialize};\n"
+            "use serde_json::{Value, json};\n"
+            "use std::cell::RefCell;\n"
+            "use std::collections::{BTreeMap, HashMap, HashSet};\n"
+            "use std::fs::{self, File, OpenOptions};\n"
+            "use std::io::{Read, Write};\n"
+            "use std::path::{Component, Path, PathBuf};\n"
+            "use std::sync::atomic::{AtomicU64, Ordering};\n"
+            "use std::sync::{Arc, Mutex, OnceLock};\n"
+            "use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};\n\n"
+        )
+        io_src = extraction.source("src/raw_mirror/store/io.rs")
+        types_src = extraction.source("src/raw_mirror/store/types.rs")
+        summary_src = extraction.source("src/raw_mirror/store/summary.rs")
+        prune_src = extraction.source("src/raw_mirror/store/prune.rs")
+        manifest_src = extraction.source("src/raw_mirror/store/manifest.rs")
+        cache_src = extraction.source("src/raw_mirror/store/cache.rs")
+
+        io_start = io_src.index("pub(in crate::raw_mirror) const RAW_MIRROR_SCHEMA_VERSION")
+        types_start = types_src.index("#[derive(Debug, Clone)]\npub struct RawMirrorCaptureInput")
+        summary_start = summary_src.index("pub fn storage_summary(")
+        prune_cut1_end = prune_src.index("pub(in crate::raw_mirror) fn apply_prune_entries(")
+        prune_cut2 = prune_src.index("pub(in crate::raw_mirror) fn pinned_prune_manifest_ids(", prune_cut1_end)
+        prune_cut2_end = prune_src.index("pub(in crate::raw_mirror) fn collect_raw_mirror_physical_blobs(", prune_cut2)
+        manifest_start = manifest_src.index("// Store codec tests route through")
+        cache_start = cache_src.index("pub(in crate::raw_mirror) fn raw_mirror_blob_cache_key(")
+
+        production = prelude + "".join([
+            extraction.piece("src/raw_mirror/store/io.rs", io_src, io_start, len(io_src), "production"),
+            extraction.piece("src/raw_mirror/store/types.rs", types_src, types_start, len(types_src), "production"),
+            extraction.piece("src/raw_mirror/store/summary.rs", summary_src, summary_start, len(summary_src), "production"),
+            extraction.piece("src/raw_mirror/store/prune.rs", prune_src, prune_cut1_end, prune_cut2, "production"),
+            extraction.piece("src/raw_mirror/store/prune.rs", prune_src, prune_cut2_end, len(prune_src), "production"),
+            extraction.piece("src/raw_mirror/store/manifest.rs", manifest_src, manifest_start, len(manifest_src), "production"),
+            extraction.piece("src/raw_mirror/store/cache.rs", cache_src, cache_start, len(cache_src), "production"),
+        ])
+
+    tests_root_src = extraction.source("src/raw_mirror/store/tests.rs")
+    capture_tests_src = extraction.source("src/raw_mirror/store/tests/capture_tests.rs")
+    helper_start = tests_root_src.index("#[derive(Clone)]\nstruct RawMirrorTraceBuffer")
+    helper_end = tests_root_src.index("#[cfg(unix)]\n#[test]\nfn gh461_capture_cache_survives_fresh_process", helper_start)
+    gh538_start = capture_tests_src.index("#[test]\nfn gh538_capture_and_link_publication_trace_real_operation_paths")
+    gh447 = capture_tests_src.index("#[test]\nfn gh447_sensitive_containers", gh538_start)
+    tests = (
+        "#[cfg(test)]\nmod tests {\n    use super::*;\n\n"
+        + extraction.piece("src/raw_mirror/store/tests.rs", tests_root_src, helper_start, helper_end, "GH538 helpers")
+        + extraction.piece("src/raw_mirror/store/tests/capture_tests.rs", capture_tests_src, gh538_start, gh447, "GH538 tests")
     )
-    helper_start = tests_source.index("#[cfg(test)]\nmod tests {")
-    gh447 = tests_source.index("    #[test]\n    fn gh447_sensitive_containers", helper_start)
-    tests = extraction.piece(path, tests_source, helper_start, gh447, "GH538 tests and helpers")
     extraction.tests.extend(re.findall(
-        r"    #\[test\]\n(?:    #\[[^\n]+\]\n)*    fn (\w+)\(", tests
+        r"(?m)^(?:\s*)#\[test\]\n(?:\s*#\[[^\n]+\]\n)*\s*fn (\w+)\(", tests
     ))
     extraction.outputs["src/store.rs"] = production + tests + "}\n"
 
@@ -317,11 +365,11 @@ def watchdog(repo):
         "use std::time::{Duration, Instant};\n"
         + events + stats + carrier + methods + helpers + idle + idle_tests
     )
-    path = "src/raw_mirror/store.rs"
+    path = "src/raw_mirror/store/io.rs"
     source = extraction.source(path)
     raw_io = extraction.between(
         path, source, "#[derive(Clone)]\nstruct RawMirrorIoObserver",
-        "#[derive(Debug)]\nstruct RawMirrorFileLockGuard",
+        "#[derive(Debug)]\npub(in crate::raw_mirror) struct RawMirrorFileLockGuard",
         "exact raw-mirror observer, operation tracker, snapshot and cancellation wrappers",
     )
     extraction.outputs["src/raw_mirror.rs"] = (
