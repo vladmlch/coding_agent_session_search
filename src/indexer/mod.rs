@@ -42619,7 +42619,9 @@ pub mod persist {
         /// (`SkippedUnchanged`, receipt untouched) and the region documents are
         /// neither re-upserted nor re-stamped.
         #[test]
+        #[serial]
         fn unchanged_session_skips_generation_and_region_upsert() {
+            let _defer = set_env("CASS_DEFER_LEXICAL_UPDATES", "0");
             let dir = tempfile::TempDir::new().unwrap();
             let storage = create_franken_db(&dir.path().join("unchanged.db"));
             let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
@@ -42664,7 +42666,9 @@ pub mod persist {
         /// Changed session: the generation republishes at the new revision and
         /// the region documents restage and re-stamp `published` at that revision.
         #[test]
+        #[serial]
         fn changed_session_republishes_and_restages_region_docs() {
+            let _defer = set_env("CASS_DEFER_LEXICAL_UPDATES", "0");
             let dir = tempfile::TempDir::new().unwrap();
             let storage = create_franken_db(&dir.path().join("changed.db"));
             let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();

@@ -244,32 +244,46 @@ fn compressed_source_failures_withhold_completion_and_keep_both_neighbors() -> R
     std::io::Write::write_all(&mut checksum_encoder, text)?;
     let mut bad_checksum = checksum_encoder.finish()?;
     *bad_checksum.last_mut().unwrap() ^= 1;
-    for (damaged, expected) in [
-        (Vec::new(), io::ErrorKind::UnexpectedEof),
+    for (damaged, validate_expected, scan_expected) in [
+        (
+            Vec::new(),
+            io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::UnexpectedEof,
+        ),
         (
             frame[..frame.len() - 1].to_vec(),
+            io::ErrorKind::UnexpectedEof,
             io::ErrorKind::UnexpectedEof,
         ),
         (
             [frame.as_slice(), &frame[..frame.len() - 1]].concat(),
             io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::UnexpectedEof,
         ),
         (
             [frame.as_slice(), bad_checksum.as_slice()].concat(),
             io::ErrorKind::Other,
+            io::ErrorKind::Other,
         ),
-        (bad_checksum, io::ErrorKind::Other),
-        (text.to_vec(), io::ErrorKind::Other),
+        (bad_checksum, io::ErrorKind::Other, io::ErrorKind::Other),
+        (text.to_vec(), io::ErrorKind::Other, io::ErrorKind::Other),
         (
+            // `empty_source::validate` reads via `decompressed_rollout` (`zstd::Decoder`,
+            // which surfaces trailing non-frame bytes as `Other`), whereas FAD's
+            // `CodexConnector` header scan (`codex/reader.rs`) classifies bad trailing
+            // frame magic as `InvalidData`.
             [frame.as_slice(), b"not a frame".as_slice()].concat(),
+            io::ErrorKind::Other,
             io::ErrorKind::InvalidData,
         ),
         (
             zstd::stream::encode_all(b"\xff\n".as_slice(), 0)?,
             io::ErrorKind::InvalidData,
+            io::ErrorKind::InvalidData,
         ),
         (
             zstd::stream::encode_all(b"{\"private_marker\":".as_slice(), 0)?,
+            io::ErrorKind::UnexpectedEof,
             io::ErrorKind::UnexpectedEof,
         ),
     ] {
@@ -282,7 +296,7 @@ fn compressed_source_failures_withhold_completion_and_keep_both_neighbors() -> R
         // ubs:ignore[rust.panic.assert-macros] -- Fallback validation must independently report the expected corruption kind.
         assert_eq!(
             validation_error.downcast_ref::<io::Error>().unwrap().kind(),
-            expected,
+            validate_expected,
             "{validation_error:#}"
         );
         for since in [None, Some(0)] {
@@ -315,7 +329,7 @@ fn compressed_source_failures_withhold_completion_and_keep_both_neighbors() -> R
             // ubs:ignore[rust.panic.assert-macros] -- Corruption must retain its actionable I/O error kind.
             assert_eq!(
                 error.downcast_ref::<io::Error>().unwrap().kind(),
-                expected,
+                scan_expected,
                 "{error:#}"
             );
             // ubs:ignore[rust.perf.string-alloc-in-loop] -- Materialize each fixture's error chain for diagnostic assertions.
@@ -323,7 +337,7 @@ fn compressed_source_failures_withhold_completion_and_keep_both_neighbors() -> R
             let serialized_path = serde_json::to_string(&paths[1].to_string_lossy())?;
             // ubs:ignore[rust.panic.assert-macros] -- The diagnostic must identify the failed physical fixture.
             assert!(diagnostic.contains(&serialized_path), "{diagnostic}");
-            let reason = match expected {
+            let reason = match scan_expected {
                 io::ErrorKind::UnexpectedEof => "unfinished_source",
                 io::ErrorKind::InvalidData => "invalid_source_data",
                 _ => "source_read_failed",
