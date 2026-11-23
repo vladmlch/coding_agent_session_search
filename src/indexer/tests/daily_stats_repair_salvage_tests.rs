@@ -781,7 +781,7 @@ c.commit()
 current = pathlib.Path(seed + '-shm').read_bytes()
 assert old[32:40] != current[32:40]
 for suffix in ['', '-wal']:
-shutil.copyfile(seed + suffix, str(p) + suffix)
+    shutil.copyfile(seed + suffix, str(p) + suffix)
 pathlib.Path(str(p) + '-shm').write_bytes(old)
 c.close()
 "#;
