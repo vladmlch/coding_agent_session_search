@@ -84,7 +84,7 @@ pub(super) fn collect_doctor_recovery_evidence(
         fix_can_mutate,
         not_initialized,
         explanation,
-        mut recommended_action,
+        recommended_action,
         mut checks,
         mut needs_rebuild,
         db_ok,
