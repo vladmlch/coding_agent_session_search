@@ -1,4 +1,4 @@
-use crate::franken_sync::compat::{RowExt, Transaction, TransactionExt};
+use crate::franken_sync::compat::{RowExt, Transaction};
 use crate::franken_sync::{Row as FrankenRow, params};
 use anyhow::{Context, Result, bail};
 use serde_json::Value;

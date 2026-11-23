@@ -1,6 +1,6 @@
 use super::generation_validation::fingerprint_prefix;
 use super::shards::SemanticArtifactShardV2;
-use super::{BTreeMap, Deserialize, FrozenEmbeddingIdentityBundleV1, Path, PathBuf, Serialize};
+use super::{BTreeMap, Deserialize, FrozenEmbeddingIdentityBundleV1, PathBuf, Serialize};
 
 // ─── Immutable semantic generation contract ──────────────────────────────
 

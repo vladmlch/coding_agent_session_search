@@ -20,28 +20,28 @@ mod tests;
 
 use anyhow::Result;
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) use coordination::{
+#[cfg(test)]
+use coordination::{
     MaintenanceCoordinationOutcome, MaintenanceDecision, MaintenanceEvent, MaintenanceEventKind,
-    PollResult, UnifiedMaintenanceView, YieldRequest, append_maintenance_event,
-    check_yield_requested, clear_yield_signal, decide_maintenance_action,
+    append_maintenance_event, check_yield_requested, clear_yield_signal, decide_maintenance_action,
     decide_maintenance_action_from_snapshot, decide_search_failopen,
-    evaluate_maintenance_coordination, evaluate_maintenance_coordination_from_snapshot,
-    poll_maintenance_until_idle, read_maintenance_events, request_yield,
-    truncate_maintenance_event_log, unified_maintenance_view,
+    evaluate_maintenance_coordination_from_snapshot, poll_maintenance_until_idle,
+    read_maintenance_events, request_yield, truncate_maintenance_event_log,
+    unified_maintenance_view,
 };
+#[cfg(test)]
+use lexical::CORRUPT_MANIFEST_STATUS_REASON;
 pub(crate) use lexical::{
-    CORRUPT_MANIFEST_STATUS_REASON, LEGACY_ENGINE_STATUS_REASON,
-    LEXICAL_HOLLOW_LIVE_DOC_FLOOR_PERCENT, LexicalHollowVerdict,
     completed_lexical_checkpoint_indexed_docs, lexical_generation_hollow_verdict,
     lexical_storage_fingerprints_match,
 };
+#[cfg(test)]
+use maintenance::maintenance_stall_age_ms;
 pub(crate) use maintenance::{
-    REBUILD_STALL_DETECT_SECS_DEFAULT, SearchMaintenanceJobKind, SearchMaintenanceMode,
-    SearchMaintenanceSnapshot, clear_index_run_lock_metadata_sidecar,
-    index_run_lock_metadata_sidecar_path, index_run_lock_path, maintenance_stall_age_ms,
-    read_search_maintenance_snapshot, read_search_maintenance_snapshot_reaping,
-    rebuild_stall_detect_threshold_ms, windows_lock_conflict,
+    SearchMaintenanceJobKind, SearchMaintenanceMode, SearchMaintenanceSnapshot,
+    clear_index_run_lock_metadata_sidecar, index_run_lock_metadata_sidecar_path,
+    index_run_lock_path, read_search_maintenance_snapshot,
+    read_search_maintenance_snapshot_reaping, windows_lock_conflict,
     write_index_run_lock_metadata_sidecar,
 };
 pub(crate) use semantic::{inspect_semantic_assets, semantic_state_from_availability};
@@ -49,8 +49,7 @@ pub(crate) use semantic::{inspect_semantic_assets, semantic_state_from_availabil
 pub(crate) use types::SemanticPreference;
 pub(crate) use types::{
     InspectSearchAssetsInput, LexicalAssetState, LexicalCheckpointState, LexicalFingerprintState,
-    SearchAssetSnapshot, SemanticAssetState, SemanticBacklogProgressState,
-    SemanticCheckpointProgressState, SemanticTierAssetState,
+    SearchAssetSnapshot, SemanticAssetState,
 };
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use super::federated::{
 };
 use super::*;
 use crate::connectors::{NormalizedConversation, NormalizedMessage};
-use crate::evidence_bundle::{EvidenceBundleChunkRole, EvidenceBundleManifest};
+use crate::evidence_bundle::EvidenceBundleChunkRole;
 use frankensearch::quill::cass::CASS_SCHEMA_HASH;
 use serde_json::Value;
 use std::fs;

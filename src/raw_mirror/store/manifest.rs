@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // Store codec tests route through `policy::capture` so test and production share
 // a single capture and admission implementation.

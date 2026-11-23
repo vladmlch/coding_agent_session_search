@@ -93,10 +93,10 @@ use super::policy::{
     SemanticAssetManifest as PolicyManifest, SemanticPolicy,
 };
 
+#[cfg(test)]
+use atomic_io::create_unique_manifest_temp_file;
 #[cfg(all(unix, test))]
 use atomic_io::replacement_path_entry_exists;
-#[cfg(test)]
-use atomic_io::{create_unique_manifest_temp_file, persist_named_temp};
 #[cfg(test)]
 use generation_manifest::ManifestSealCheckpoint;
 #[cfg(test)]

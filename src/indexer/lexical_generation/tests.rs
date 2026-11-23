@@ -2,6 +2,7 @@ use super::cleanup::*;
 use super::*;
 use tempfile::TempDir;
 
+#[path = "cleanup_tests.rs"]
 mod cleanup_tests;
 
 #[test]

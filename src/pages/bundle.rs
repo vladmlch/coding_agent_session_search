@@ -19,9 +19,8 @@ pub use builder::{
 };
 pub use integrity::{IntegrityEntry, IntegrityManifest};
 
-pub(crate) use assets::{
-    PAGES_VENDOR_ASSETS, PinnedVendorAsset, validate_pinned_vendor_assets,
-    write_pinned_vendor_assets,
-};
+pub(crate) use assets::validate_pinned_vendor_assets;
+#[cfg(test)]
+pub(crate) use assets::{PAGES_VENDOR_ASSETS, PinnedVendorAsset, write_pinned_vendor_assets};
+#[cfg(test)]
 pub(crate) use integrity::{compute_fingerprint, generate_integrity_manifest};
-pub(crate) use private_artifacts::write_private_fingerprint;

@@ -5,7 +5,9 @@ pub(super) use std::fs::{self, File};
 pub(super) use std::io::{Read, Write};
 pub(super) use std::path::{Path, PathBuf};
 pub(super) use std::sync::{Mutex, OnceLock};
-pub(super) use std::time::{Duration, Instant};
+pub(super) use std::time::Duration;
+#[cfg(test)]
+pub(super) use std::time::Instant;
 
 #[cfg(test)]
 pub(super) use serde_json::{Value, json};
@@ -52,7 +54,6 @@ pub(crate) use manifest::{
     read_source_bytes, verify_source_capture, verify_source_capture_observed,
 };
 pub(crate) use summary::physical_storage_bytes;
-pub(crate) use types::RawMirrorVerifiedCapture;
 
 #[cfg(test)]
 pub(super) use cache::cache_raw_mirror_blob_record;
@@ -67,18 +68,19 @@ pub(super) use cache::{
 };
 pub(super) use io::{
     BLOB_CAPTURE_CACHE, RAW_MIRROR_CHUNK_SIZE_BYTES, RAW_MIRROR_CHUNK_THRESHOLD_BYTES,
-    RAW_MIRROR_HASH_ALGORITHM, RAW_MIRROR_MANIFEST_KIND, RAW_MIRROR_MANIFEST_MAX_BYTES,
-    RAW_MIRROR_SCHEMA_VERSION, acquire_raw_mirror_mutation_lock, ensure_private_dir_descendant,
-    ensure_raw_mirror_root, now_ms, private_create_new_file, raw_mirror_checkpoint, raw_mirror_io,
-    raw_mirror_path_has_symlink_below_root, raw_mirror_root, raw_mirror_symlink_metadata,
-    raw_mirror_tracked_io, redacted_original_path, remove_empty_temp_dir_best_effort,
-    remove_temp_best_effort, sync_open_file_if_required, sync_parent, system_time_to_ms,
-    try_acquire_index_run_lock_for_prune, unique_capture_temp_dir, unique_temp_path,
+    RAW_MIRROR_FIXED_CHUNKS_KIND, RAW_MIRROR_HASH_ALGORITHM, RAW_MIRROR_MANIFEST_KIND,
+    RAW_MIRROR_MANIFEST_MAX_BYTES, RAW_MIRROR_SCHEMA_VERSION, acquire_raw_mirror_mutation_lock,
+    ensure_private_dir_descendant, ensure_raw_mirror_root, now_ms, private_create_new_file,
+    raw_mirror_checkpoint, raw_mirror_io, raw_mirror_path_has_symlink_below_root, raw_mirror_root,
+    raw_mirror_symlink_metadata, raw_mirror_tracked_io, redacted_original_path,
+    remove_empty_temp_dir_best_effort, remove_temp_best_effort, sync_open_file_if_required,
+    sync_parent, system_time_to_ms, try_acquire_index_run_lock_for_prune, unique_capture_temp_dir,
+    unique_temp_path,
 };
 #[cfg(test)]
 pub(super) use io::{
-    RAW_MIRROR_BLOB_CACHE_MAX_ENTRIES, RAW_MIRROR_FIXED_CHUNKS_KIND, RAW_MIRROR_MUTATION_LOCK_FILE,
-    RAW_MIRROR_ROOT_DIR, RAW_MIRROR_VERSION_DIR, file_blake3, sync_parent_unconditionally,
+    RAW_MIRROR_BLOB_CACHE_MAX_ENTRIES, RAW_MIRROR_MUTATION_LOCK_FILE, RAW_MIRROR_ROOT_DIR,
+    RAW_MIRROR_VERSION_DIR, file_blake3, sync_parent_unconditionally,
 };
 pub(super) use manifest::{
     content_addressed_blob_is_verified, merge_raw_mirror_manifest_db_links,

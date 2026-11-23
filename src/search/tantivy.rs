@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::connectors::NormalizedConversation;
 use crate::model::conversation_packet::{ConversationPacket, ConversationPacketProvenance};

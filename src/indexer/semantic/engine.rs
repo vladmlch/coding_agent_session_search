@@ -24,10 +24,13 @@ pub(crate) use replay_selection::{
     saturating_u32_from_i64, semantic_inputs_from_packets,
     visit_packet_embedding_inputs_from_storage,
 };
-pub(crate) use scheduler::{
+#[cfg(test)]
+pub(super) use scheduler::{
     SemanticBackfillSchedulerDecision, SemanticBackfillSchedulerReason,
-    SemanticBackfillSchedulerSignals, SemanticBackfillSchedulerState,
-    semantic_backfill_scheduler_decision, semantic_backfill_scheduler_decision_for_capacity,
+    SemanticBackfillSchedulerState, semantic_backfill_scheduler_decision_for_capacity,
+};
+pub(crate) use scheduler::{
+    SemanticBackfillSchedulerSignals, semantic_backfill_scheduler_decision,
 };
 pub(crate) use storage_paths::{
     invalidate_identity_stale_semantic_shards, semantic_doc_id_for_input,
@@ -67,7 +70,8 @@ use std::time::Instant;
 use anyhow::{Context, bail};
 #[cfg(test)]
 use frankensearch::index::{
-    FsHnswIndex, FsQuantization, FsVectorIndex, wal_path_for as fsvi_wal_path_for,
+    HnswIndex as FsHnswIndex, Quantization as FsQuantization, VectorIndex as FsVectorIndex,
+    wal_path_for as fsvi_wal_path_for,
 };
 #[cfg(test)]
 use indicatif::ProgressBar;

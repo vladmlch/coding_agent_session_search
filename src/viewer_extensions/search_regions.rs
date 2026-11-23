@@ -45,7 +45,8 @@ mod tests;
 
 pub use derive_message::derive_message_regions;
 pub use derive_meta::derive_meta_regions;
-pub(crate) use docs::pack_region_boundaries;
+#[cfg(test)]
+use docs::pack_region_boundaries;
 pub use docs::{
     RegionDocStamp, SessionScopeDoc, hydrate_region_text, region_doc_stage, region_docs,
     region_docs_published_current, session_scope_cass_documents, session_scope_docs,

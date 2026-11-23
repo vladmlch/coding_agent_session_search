@@ -1,5 +1,6 @@
 use super::super::loader::{canonical_message_number, conversation_view_matches_hit};
 use super::super::*;
+use crate::franken_sync::compat::ConnectionExt;
 use crate::model::types::{Conversation, Message, MessageRole};
 use crate::search::query::{MatchType, SearchHit};
 use crate::storage::sqlite::FrankenStorage;
