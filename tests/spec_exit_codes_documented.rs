@@ -75,11 +75,9 @@ fn documented_exit_codes() -> Result<BTreeSet<i32>, Box<dyn Error>> {
     Ok(codes)
 }
 
-/// Every source file that constructs `CliError { code: N, kind: .. }`.
-/// Embedded at compile time so the test has no filesystem dependency at run
-/// time and stays correct when the suite runs under local Cargo.
-const SOURCES: &[(&str, &str)] = &[
-    ("src/lib.rs", include_str!("../src/lib.rs")),
+/// Additional source files outside `src/lib.rs` and `src/{cli_root,lib_doctor,cli_app}/**`
+/// that construct `CliError { code: N, kind: .. }` or exit directly.
+const EXTRA_SOURCES: &[(&str, &str)] = &[
     ("src/doctor.rs", include_str!("../src/doctor.rs")),
     ("src/doctor_undo.rs", include_str!("../src/doctor_undo.rs")),
     ("src/doctor_runs.rs", include_str!("../src/doctor_runs.rs")),
@@ -115,6 +113,59 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("../src/search_service/once.rs"),
     ),
 ];
+
+fn is_src_test_only(rel: &str) -> bool {
+    rel.ends_with("_tests.rs")
+        || rel.ends_with(".tests.rs")
+        || rel.contains("/tests/")
+        || rel.ends_with("/tests.rs")
+}
+
+fn collect_non_test_rs_files(
+    manifest_dir: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<(String, String)>,
+) {
+    if !dir.is_dir() {
+        return;
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_non_test_rs_files(manifest_dir, &path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            let rel = path
+                .strip_prefix(manifest_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !is_src_test_only(&rel) {
+                let src =
+                    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+                out.push((rel, src));
+            }
+        }
+    }
+}
+
+fn scanned_sources() -> Vec<(String, String)> {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src_dir = manifest_dir.join("src");
+    let lib_src = std::fs::read_to_string(src_dir.join("lib.rs")).expect("read src/lib.rs");
+    let mut sources = vec![("src/lib.rs".to_string(), lib_src)];
+    for subdir in ["cli_root", "lib_doctor", "cli_app"] {
+        collect_non_test_rs_files(manifest_dir, &src_dir.join(subdir), &mut sources);
+    }
+    for (name, src) in EXTRA_SOURCES {
+        sources.push(((*name).to_string(), (*src).to_string()));
+    }
+    sources
+}
 
 /// Extract the integer from every `code: N,` line that is immediately followed
 /// (next non-blank line) by a `kind:` line — the `CliError` field signature.
@@ -185,7 +236,7 @@ fn emitted_terminate_codes(src: &str) -> BTreeSet<i32> {
 }
 
 fn emitted_exit_codes() -> BTreeSet<i32> {
-    SOURCES
+    scanned_sources()
         .iter()
         .flat_map(|(_, src)| {
             let mut codes = emitted_cli_error_codes(src);
@@ -309,7 +360,8 @@ fn terminate_extractor_reads_only_literal_supervisor_codes() -> TestResult {
     )?;
     // The scanned search-service sources really do emit the documented
     // supervisor set — a drifted extractor would silently pass parity tests.
-    let supervised: BTreeSet<i32> = SOURCES
+    let sources = scanned_sources();
+    let supervised: BTreeSet<i32> = sources
         .iter()
         .filter(|(name, _)| name.contains("search_service"))
         .flat_map(|(_, src)| emitted_terminate_codes(src))
@@ -326,13 +378,14 @@ fn terminate_extractor_reads_only_literal_supervisor_codes() -> TestResult {
 /// would silently pass by finding nothing.
 #[test]
 fn extractor_finds_the_cli_error_surface() -> TestResult {
-    let total: usize = SOURCES
+    let sources = scanned_sources();
+    let total: usize = sources
         .iter()
         .map(|(_, src)| emitted_cli_error_codes(src).len())
         .sum::<usize>();
     // Distinct codes per file collapse to a small set; assert we at least see
     // the core spread (0-9 plus several domain codes) rather than nothing.
-    let distinct: BTreeSet<i32> = SOURCES
+    let distinct: BTreeSet<i32> = sources
         .iter()
         .flat_map(|(_, src)| emitted_cli_error_codes(src))
         .collect();

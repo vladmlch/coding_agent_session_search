@@ -1285,19 +1285,30 @@ fn nextest_config_keeps_local_only_invariants() {
 fn removed_command_matrix_is_fully_active() {
     let root = repo_root();
     let cov = read_text(&root.join("tests/cli_dispatch_coverage.rs"));
-    let lib = read_text(&root.join("src/lib.rs"));
+    let mut lib_paths = vec![root.join("src/lib.rs")];
+    for subdir in ["cli_root", "lib_doctor", "cli_app"] {
+        collect_files(&root.join("src").join(subdir), &mut lib_paths);
+    }
+    lib_paths.retain(|p| {
+        p.extension().and_then(|e| e.to_str()) == Some("rs") && !is_src_test_only(&rel(p))
+    });
+    let lib: String = lib_paths
+        .iter()
+        .map(|p| production_view(&read_text(p)))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     assert!(
         lib.contains("REMOVED_COMMANDS"),
-        "audit: src/lib.rs no longer defines REMOVED_COMMANDS"
+        "audit: split lib production sources no longer define REMOVED_COMMANDS"
     );
     assert!(
         lib.contains("REMOVED_FLAGS"),
-        "audit: src/lib.rs no longer defines REMOVED_FLAGS"
+        "audit: split lib production sources no longer define REMOVED_FLAGS"
     );
     assert!(
         lib.contains("was removed"),
-        "audit: src/lib.rs no longer emits the removed-command diagnostic"
+        "audit: split lib production sources no longer emit the removed-command diagnostic"
     );
 
     let pending_true = cov.matches("pending: true").count();

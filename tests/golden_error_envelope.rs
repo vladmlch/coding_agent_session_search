@@ -22,10 +22,51 @@ fn golden_path() -> PathBuf {
         .join("error_envelope_kinds.json.golden")
 }
 
-fn lib_rs_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("lib.rs")
+fn is_src_test_only(rel: &str) -> bool {
+    rel.ends_with("_tests.rs")
+        || rel.ends_with(".tests.rs")
+        || rel.contains("/tests/")
+        || rel.ends_with("/tests.rs")
+}
+
+fn collect_non_test_rs_files(
+    manifest_dir: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<PathBuf>,
+) {
+    if !dir.is_dir() {
+        return;
+    }
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_non_test_rs_files(manifest_dir, &path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            let rel = path
+                .strip_prefix(manifest_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !is_src_test_only(&rel) {
+                out.push(path);
+            }
+        }
+    }
+}
+
+fn lib_split_production_files() -> Vec<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src_dir = manifest_dir.join("src");
+    let mut files = vec![src_dir.join("lib.rs")];
+    for subdir in ["cli_root", "lib_doctor", "cli_app"] {
+        collect_non_test_rs_files(&manifest_dir, &src_dir.join(subdir), &mut files);
+    }
+    files
 }
 
 fn error_kind_rs_path() -> PathBuf {
@@ -59,8 +100,18 @@ fn extract_kind_literals() -> BTreeMap<String, Vec<usize>> {
 }
 
 fn extract_kind_exit_codes() -> BTreeMap<String, Vec<i32>> {
-    let source = std::fs::read_to_string(lib_rs_path()).expect("read src/lib.rs");
-    extract_kind_exit_codes_from_source(&source)
+    let mut merged: BTreeMap<String, BTreeSet<i32>> = BTreeMap::new();
+    for path in lib_split_production_files() {
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        for (kind, codes) in extract_kind_exit_codes_from_source(&source) {
+            merged.entry(kind).or_default().extend(codes);
+        }
+    }
+    merged
+        .into_iter()
+        .map(|(k, v)| (k, v.into_iter().collect()))
+        .collect()
 }
 
 fn extract_kind_exit_codes_from_source(source: &str) -> BTreeMap<String, Vec<i32>> {

@@ -119,7 +119,7 @@ jq -r '.data[0].files[] |
     while IFS='|' read -r percent uncovered filename; do
         # Categorize the file
         case "$filename" in
-            src/lib.rs) category="CLI entry point" ;;
+            src/lib.rs|src/cli_root/*|src/lib_doctor/*|src/cli_app/*) category="CLI entry point" ;;
             src/ui/*) category="UI" ;;
             src/pages/wizard*) category="Export wizard" ;;
             src/pages/secret*) category="Security" ;;

@@ -1538,8 +1538,7 @@ mod tests {
         // regression detector — the in-tree fixture suite captures the
         // expected presence so a future pass that accidentally drops the
         // field gets a failing test.
-        let manifest = env!("CARGO_MANIFEST_DIR");
-        let lib = fs::read_to_string(format!("{manifest}/src/lib.rs")).expect("lib.rs readable");
+        let lib = crate::lib_split_production_concat_source();
         let envelope_marker = "\"schema_version\": 2,\n            \"doctor_contract_version\": 1,\n            \"capabilities_url\": \"cass capabilities --json\",\n";
         // Source-level grep — the marker prevents an accidental revert.
         assert!(

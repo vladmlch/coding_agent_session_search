@@ -47,7 +47,7 @@ fsqlite-types = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55
 fsqlite-vdbe = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
 fsqlite-vfs = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
 fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-frankensearch-quill = { git = "https://github.com/vladmlch/frankensearch", rev = "f68200088434c2ed81437090a5e93c3c66d883e2" }
+frankensearch-quill = { git = "https://github.com/vladmlch/frankensearch", rev = "b90177a0b089241ebf7eaaa00c0b4b921a574ad5" }
 
 # Fuzz targets - each gets its own binary
 

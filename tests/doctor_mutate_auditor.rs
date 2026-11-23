@@ -172,12 +172,62 @@ fn pass4_doctor_undo_uses_chokepoint_run_dir_layout() {
     }
 }
 
+fn is_src_test_only(rel: &str) -> bool {
+    rel.ends_with("_tests.rs")
+        || rel.ends_with(".tests.rs")
+        || rel.contains("/tests/")
+        || rel.ends_with("/tests.rs")
+}
+
+fn collect_non_test_rs_files(
+    manifest_dir: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<std::path::PathBuf>,
+) {
+    if !dir.is_dir() {
+        return;
+    }
+    let mut entries: Vec<_> = fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .filter_map(|e| e.ok())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_non_test_rs_files(manifest_dir, &path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            let rel = path
+                .strip_prefix(manifest_dir)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !is_src_test_only(&rel) {
+                out.push(path);
+            }
+        }
+    }
+}
+
+fn read_lib_split_production_sources() -> String {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let src_dir = manifest_dir.join("src");
+    let mut files = vec![src_dir.join("lib.rs")];
+    for subdir in ["cli_root", "lib_doctor", "cli_app"] {
+        collect_non_test_rs_files(manifest_dir, &src_dir.join(subdir), &mut files);
+    }
+    files
+        .iter()
+        .map(|p| fs::read_to_string(p).unwrap_or_else(|e| panic!("{} readable: {e}", p.display())))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn pass4_lib_dispatch_routes_through_doctor_chokepoint_apis() {
     // Pass-3 dispatch must reach into the doctor_runs/doctor_undo/doctor_robot_docs
     // modules. Source-level grep ensures the wire-up didn't get reverted.
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let lib = fs::read_to_string(format!("{manifest}/src/lib.rs")).expect("lib.rs readable");
+    let lib = read_lib_split_production_sources();
     for marker in [
         "crate::doctor_runs::list_runs",
         "crate::doctor_runs::find_latest_run",
@@ -188,15 +238,14 @@ fn pass4_lib_dispatch_routes_through_doctor_chokepoint_apis() {
     ] {
         assert!(
             lib.contains(marker),
-            "src/lib.rs missing pass-2/pass-3 dispatch marker: {marker}"
+            "split lib sources missing pass-2/pass-3 dispatch marker: {marker}"
         );
     }
 }
 
 #[test]
 fn pass4_pass_3_subcommands_wired_in_clap() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let lib = fs::read_to_string(format!("{manifest}/src/lib.rs")).expect("lib.rs readable");
+    let lib = read_lib_split_production_sources();
     // Pass-3 added these clap fields under Commands::Doctor.
     for marker in [
         "robot_triage:",
@@ -221,8 +270,7 @@ fn pass4_pass_3_subcommands_wired_in_clap() {
 
 #[test]
 fn pass8_explain_and_emit_capabilities_dispatch_present() {
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let lib = std::fs::read_to_string(format!("{manifest}/src/lib.rs")).expect("lib.rs readable");
+    let lib = read_lib_split_production_sources();
     for marker in [
         "fn run_doctor_explain",
         "fn run_doctor_emit_capabilities",
@@ -231,7 +279,7 @@ fn pass8_explain_and_emit_capabilities_dispatch_present() {
     ] {
         assert!(
             lib.contains(marker),
-            "src/lib.rs missing pass-8 explain/capabilities dispatch marker: {marker}"
+            "split lib sources missing pass-8 explain/capabilities dispatch marker: {marker}"
         );
     }
 }
@@ -239,8 +287,7 @@ fn pass8_explain_and_emit_capabilities_dispatch_present() {
 #[test]
 fn pass6_watch_helper_routes_through_doctor_runs_apis() {
     // Pass-6 watch dispatch must consume list_runs + find_in_flight_band.
-    let manifest = env!("CARGO_MANIFEST_DIR");
-    let lib = std::fs::read_to_string(format!("{manifest}/src/lib.rs")).expect("lib.rs readable");
+    let lib = read_lib_split_production_sources();
     for marker in [
         "fn run_doctor_watch",
         "crate::doctor_runs::list_runs",
@@ -249,7 +296,7 @@ fn pass6_watch_helper_routes_through_doctor_runs_apis() {
     ] {
         assert!(
             lib.contains(marker),
-            "src/lib.rs missing pass-6 watch dispatch marker: {marker}"
+            "split lib sources missing pass-6 watch dispatch marker: {marker}"
         );
     }
 }

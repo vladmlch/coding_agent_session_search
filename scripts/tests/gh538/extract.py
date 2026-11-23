@@ -286,26 +286,50 @@ def mirror(repo, baseline=False):
 
 def watchdog(repo):
     extraction = Extraction(repo, "watchdog")
-    path = "src/lib.rs"
-    source = extraction.source(path)
-    core = extraction.between(
-        path, source, "fn collect_stall_diagnostics(data_dir: &Path)",
-        "fn abort_after_index_stall_if_requested(",
-        "exact diagnostic collection, single-flight probe, watchdog and abort envelope",
+    artifacts_path = "src/cli_app/index_cmd/artifacts_and_refresh.rs"
+    artifacts_source = extraction.source(artifacts_path)
+    core_diagnostics = extraction.piece(
+        artifacts_path,
+        artifacts_source,
+        artifacts_source.index("pub(crate) fn collect_stall_diagnostics(data_dir: &Path)"),
+        len(artifacts_source),
+        "exact diagnostic collection and bounded diagnostic reader",
     )
-    exit_helper = extraction.between(
-        path, source, "fn exit_without_this_threads_tls_destructors(",
-        "#[cfg(test)]\nmod stall_diagnostics_tests", "production platform exit helper",
+    watchdog_path = "src/cli_app/index_cmd/stall_watchdog.rs"
+    watchdog_source = extraction.source(watchdog_path)
+    core_watchdog = extraction.between(
+        watchdog_path,
+        watchdog_source,
+        "/// At most one filesystem probe belongs to a watchdog",
+        "pub(crate) fn abort_after_index_stall_if_requested(",
+        "exact single-flight probe, watchdog and abort envelope",
     )
+    core = re.sub(
+        r"(?m)^(\s*)pub\(crate\) ",
+        r"\1",
+        core_diagnostics.rstrip("\n") + "\n\n" + core_watchdog,
+    )
+    exit_helper = re.sub(
+        r"(?m)^(\s*)pub\(crate\) ",
+        r"\1",
+        extraction.piece(
+            watchdog_path,
+            watchdog_source,
+            watchdog_source.index("pub(crate) fn exit_without_this_threads_tls_destructors("),
+            len(watchdog_source),
+            "production platform exit helper",
+        ),
+    )
+    tests_path = "src/cli_app/tests/stall_diagnostics.rs"
+    tests_source = extraction.source(tests_path)
     tests = (
         "#[cfg(test)]\nmod stall_diagnostics_tests {\n"
         "use super::collect_stall_diagnostics;\nuse tempfile::TempDir;\n"
     )
-    a = source.index("#[cfg(test)]\nmod stall_diagnostics_tests")
-    b = source.index("fn run_lexical_reconcile_cli(", a)
-    for name in re.findall(r"    #\[test\]\n    fn (\w+)\(", source[a:b]):
+    a = tests_source.index("#[cfg(test)]\nmod stall_diagnostics_tests")
+    for name in re.findall(r"    #\[test\]\n    fn (\w+)\(", tests_source[a:]):
         if name != "issue_342_index_help_documents_semantic_stall_controls":
-            tests += extraction.test(path, source, name)
+            tests += extraction.test(tests_path, tests_source, name)
     tests += "}\n"
     extraction.outputs["src/lib.rs"] = (
         '#![allow(dead_code)]\n#![recursion_limit = "256"]\n'

@@ -1711,7 +1711,7 @@ dependencies = [
 [[package]]
 name = "frankensearch-quill"
 version = "0.4.1"
-source = "git+https://github.com/vladmlch/frankensearch?rev=f68200088434c2ed81437090a5e93c3c66d883e2#f68200088434c2ed81437090a5e93c3c66d883e2"
+source = "git+https://github.com/vladmlch/frankensearch?rev=b90177a0b089241ebf7eaaa00c0b4b921a574ad5#b90177a0b089241ebf7eaaa00c0b4b921a574ad5"
 dependencies = [
  "ahash",
  "arc-swap",
