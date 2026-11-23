@@ -42133,7 +42133,9 @@ pub mod persist {
         /// This models the persist step of a rescan (the scan calls the same
         /// batched persist path). Synthetic fixture only.
         #[test]
+        #[serial]
         fn codex_merged_thread_retires_stale_per_segment_rows() {
+            let _defer = set_env("CASS_DEFER_LEXICAL_UPDATES", "0");
             let dir = tempfile::TempDir::new().unwrap();
             let storage = create_franken_db(&dir.path().join("paginated.db"));
             crate::viewer_extensions::schema::ensure_schema(storage.raw()).unwrap();
@@ -42337,7 +42339,9 @@ pub mod persist {
         /// streaming limits make every oversized session its own batch —
         /// which measured ~3 s per session on a 6,107-session archive.
         #[test]
+        #[serial]
         fn republish_grind_defers_region_staging_to_one_final_drain() {
+            let _defer = set_env("CASS_DEFER_LEXICAL_UPDATES", "0");
             let dir = tempfile::TempDir::new().unwrap();
             let storage = create_franken_db(&dir.path().join("grind.db"));
             let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
@@ -42476,7 +42480,9 @@ pub mod persist {
         /// incremental runs, watch events and crash leftovers keep today's
         /// converge-with-your-batch behavior.
         #[test]
+        #[serial]
         fn republish_deferral_engages_only_above_the_stale_threshold() {
+            let _defer = set_env("CASS_DEFER_LEXICAL_UPDATES", "0");
             let dir = tempfile::TempDir::new().unwrap();
             let storage = create_franken_db(&dir.path().join("below.db"));
             let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
@@ -42513,7 +42519,9 @@ pub mod persist {
         /// and a remote-mirror session stay detected, because the lane
         /// replays the persisted archive, not the source.
         #[test]
+        #[serial]
         fn reproject_detection_covers_marks_facts_and_projection_staleness() {
+            let _defer = set_env("CASS_DEFER_LEXICAL_UPDATES", "0");
             use crate::viewer_extensions::facts::FACTS_EXTRACTOR_VERSION;
             use crate::viewer_extensions::projection::PROJECTION_VERSION;
             use crate::viewer_extensions::search_regions::{
@@ -43191,7 +43199,9 @@ pub mod persist {
         /// so they must restage every marked session even though its marks are
         /// `published`; the incremental helper must still skip it.
         #[test]
+        #[serial]
         fn rebuild_lanes_restage_published_sessions() {
+            let _defer = set_env("CASS_DEFER_LEXICAL_UPDATES", "0");
             let dir = tempfile::TempDir::new().unwrap();
             let storage = create_franken_db(&dir.path().join("rebuild.db"));
             let index_path = crate::search::tantivy::index_dir(dir.path()).unwrap();
