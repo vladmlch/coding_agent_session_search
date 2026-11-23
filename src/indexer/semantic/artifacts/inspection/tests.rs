@@ -165,6 +165,8 @@ fn restored_mtime_does_not_hide_a_same_length_scratch_rewrite() -> Result<()> {
     let (staging, reuse) = scratch(temp.path())?;
     let modified = fs::metadata(&staging)?.modified()?;
     let plan = plan_backfill_artifacts(temp.path())?;
+    // Advance past Linux's 4ms coarse ctime tick so same-length rewrites update ctime cleanly.
+    std::thread::sleep(std::time::Duration::from_millis(15));
     fs::write(&staging, b"changed! staging")?;
     File::options()
         .write(true)
