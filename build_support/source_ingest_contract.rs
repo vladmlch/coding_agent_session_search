@@ -18,10 +18,7 @@ use std::path::{Path, PathBuf};
 use toml::Value;
 
 const PRESENTATION_DIRECTORIES: &[&str] = &["src/html_export", "src/pages_assets"];
-const PRESENTATION_FILES: &[&str] = &[
-    "src/doctor_robot_docs.rs",
-    "src/recipes_robot_docs.rs",
-];
+const PRESENTATION_FILES: &[&str] = &["src/doctor_robot_docs.rs", "src/recipes_robot_docs.rs"];
 
 fn presentation_only(path: &Path) -> bool {
     PRESENTATION_DIRECTORIES

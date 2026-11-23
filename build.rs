@@ -796,7 +796,7 @@ fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_man
     // keeps its crates.io resolution. The fork is the owner's pushed
     // GitHub fork (branch cass-prefix-expansion, pushed 2026-11-11).
     const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensearch";
-    const EXPECTED_FORK_REV: &str = "bb7d899a176a2de3d6106449448d020fe3f1e6e5";
+    const EXPECTED_FORK_REV: &str = "f68200088434c2ed81437090a5e93c3c66d883e2";
     const EXPECTED_VERSION: &str = "0.4.1";
     // A full-sha `rev = "<sha>"` git source serializes in Cargo.lock as
     // `git+<url>?rev=<sha>#<sha>`; with a full-sha rev the resolved

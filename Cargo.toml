@@ -472,7 +472,7 @@ fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55dd
 # redirected entry, a branch/tag/path pin, a duplicate or off-source
 # lockfile resolution, and any other family crate resolving from the
 # fork's git source. Rollback: delete the entry and re-run `cargo fetch`.
-frankensearch-quill = { git = "https://github.com/vladmlch/frankensearch", rev = "bb7d899a176a2de3d6106449448d020fe3f1e6e5" }
+frankensearch-quill = { git = "https://github.com/vladmlch/frankensearch", rev = "f68200088434c2ed81437090a5e93c3c66d883e2" }
 
 # The dependency graph is pinned to the asupersync 0.5.x line (0.5.0). Keep
 # the frankensqlite (owner-fork), frankensearch, and franken-agent-detection
