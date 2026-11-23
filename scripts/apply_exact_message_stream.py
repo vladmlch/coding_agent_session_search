@@ -8,7 +8,7 @@ workflow then runs the real Rust differential/exact/ANN suites and lib Clippy.
 from pathlib import Path
 import hashlib
 
-PATH = Path('src/search/query.rs')
+PATH = Path('src/search/query/semantic.rs')
 TEST_PATH = Path('src/search/query/message_stream/tests.rs')
 SIGNATURE = '''    fn search_exact_semantic_indexes(
         context: &SemanticCandidateContext,

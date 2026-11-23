@@ -74,10 +74,11 @@ class Extraction:
         b = text.index(end, a)
         return self.piece(path, text, a, b, label)
 
-    def test(self, path, text, name):
-        marker = "    #[test]\n    fn " + name + "("
+    def test(self, path, text, name, indent="    "):
+        marker = f"{indent}#[test]\n{indent}fn {name}("
         a = text.index(marker)
-        b = text.index("\n    }\n", a) + len("\n    }\n")
+        end_marker = f"\n{indent}}}\n"
+        b = text.index(end_marker, a) + len(end_marker)
         self.tests.append(name)
         return self.piece(path, text, a, b, "verbatim test: " + name)
 
@@ -313,7 +314,7 @@ def watchdog(repo):
         + "\n#[cfg(test)]\nmod fifo_tests;\n"
     )
 
-    path = "src/indexer/mod.rs"
+    path = "src/indexer/progress_and_stats.rs"
     source = extraction.source(path)
     events = extraction.between(
         path, source, "#[derive(Debug, Clone)]\npub enum ReindexCommand",
@@ -348,15 +349,22 @@ def watchdog(repo):
         b = source.index("\n", a) + 1
         fields.append(extraction.piece(path, source, a, b, "IndexingStats field: " + name))
     stats = "#[derive(Debug, Default)]\npub struct IndexingStats {\n" + "".join(fields) + "}\n"
-    idle = extraction.between(
-        path, source, "enum WatchLoopEvent {", "fn is_database_watch_root(",
+    spool_path = "src/indexer/watch_spool.rs"
+    spool_source = extraction.source(spool_path)
+    idle = extraction.piece(
+        spool_path,
+        spool_source,
+        spool_source.index("pub(in crate::indexer) enum WatchLoopEvent {"),
+        len(spool_source),
         "exact channel selection, idle wait, cancellation checks and idle RAII",
-    )
+    ).replace("pub(in crate::indexer) ", "")
+    idle_tests_path = "src/indexer/tests/watch_lexical_spool_tests.rs"
+    idle_tests_source = extraction.source(idle_tests_path)
     idle_tests = "#[cfg(test)]\nmod tests {\nuse super::*;\n"
     for name in ["watch_idle_wait_honors_cancellation_without_activity",
                  "watch_idle_wait_preserves_deadline_without_activity",
                  "gh538_watch_idle_marker_clears_before_event_or_disconnect"]:
-        idle_tests += extraction.test(path, source, name)
+        idle_tests += extraction.test(idle_tests_path, idle_tests_source, name, indent="")
     idle_tests += "}\n"
     extraction.outputs["src/indexer.rs"] = (
         "use anyhow::Result;\nuse crossbeam_channel::{Receiver, bounded, never};\n"

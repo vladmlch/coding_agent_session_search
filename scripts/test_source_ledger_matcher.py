@@ -175,13 +175,22 @@ def watch_component_sources(
         policy, "cass:src/connectors/source_dependencies.rs",
         "/// Whether discovery of a new sibling", "pub(crate) struct ConnectorRegistration",
     )
-    indexer = read(root / "src/indexer/mod.rs", "cass:src/indexer/mod.rs")
-    observation_helper = piece(
-        indexer, "cass:src/indexer/mod.rs", "fn source_file_observation(",
-        "fn source_ledger_matches_with_contract(",
+    streaming_limiter = read(
+        root / "src/indexer/streaming_limiter.rs",
+        "cass:src/indexer/streaming_limiter.rs",
     )
-    folder_helper = piece(indexer, "cass:src/indexer/mod.rs", "fn source_folder_is_dependency(",
-                          "fn source_parent_observation(")
+    observation_helper = piece(
+        streaming_limiter,
+        "cass:src/indexer/streaming_limiter.rs",
+        "pub(in crate::indexer) fn source_file_observation(",
+        "pub(in crate::indexer) fn source_ledger_matches_with_contract(",
+    ).replace("pub(in crate::indexer) ", "")
+    folder_helper = piece(
+        streaming_limiter,
+        "cass:src/indexer/streaming_limiter.rs",
+        "pub(in crate::indexer) fn source_folder_is_dependency(",
+        "pub(in crate::indexer) fn source_parent_observation(",
+    ).replace("pub(in crate::indexer) ", "")
     # These carriers only satisfy the copied FAD constructor's provenance
     # fields. They perform no filesystem I/O and are not parser substitutes.
     outputs["src/lib.rs"] = """#![allow(dead_code)]
@@ -265,21 +274,56 @@ mod indexer {
             + piece(fad_connector, "pinned-fad:src/connectors/mod.rs",
                     "pub trait Connector {", "#[cfg(test)]\npub(crate) fn assert_discovery_covers_scan_sources")
         )
-        storage = read(root / "src/storage/sqlite.rs", "cass:src/storage/sqlite.rs")
-        entry = piece(storage, "cass:src/storage/sqlite.rs", "pub struct SourceIngestLedgerEntry {",
-                      "/// Whether a replayed conversation's workspace")
+        sqlite_candidates = [root / "src/storage/sqlite.rs"] + sorted(
+            (root / "src/storage/sqlite").rglob("*.rs")
+        )
+        entry = None
+        for sqlite_path in sqlite_candidates:
+            sqlite_label = f"cass:{sqlite_path.relative_to(root)}"
+            sqlite_text = sqlite_path.read_text()
+            for prefix in ("pub ", "pub(crate) ", "pub(in crate::storage::sqlite) "):
+                marker = f"{prefix}struct SourceIngestLedgerEntry {{"
+                if marker in sqlite_text:
+                    sqlite_text = read(sqlite_path, sqlite_label)
+                    entry = piece(
+                        sqlite_text,
+                        sqlite_label,
+                        marker,
+                        "/// Whether a replayed conversation's workspace",
+                    )
+                    if prefix != "pub ":
+                        entry = entry.replace(prefix, "pub ", 1)
+                    break
+            if entry is not None:
+                break
+        if entry is None:
+            raise RuntimeError("missing SourceIngestLedgerEntry in src/storage/sqlite*")
         source_helpers = piece(
-            indexer, "cass:src/indexer/mod.rs", "fn source_ledger_key(",
+            streaming_limiter,
+            "cass:src/indexer/streaming_limiter.rs",
+            "pub(in crate::indexer) fn source_ledger_key(",
             "/// Keep only the final bounded batch",
+        ).replace("pub(in crate::indexer) ", "")
+        source_filters = read(
+            root / "src/indexer/source_filters.rs",
+            "cass:src/indexer/source_filters.rs",
         )
         workspace_policy = piece(
-            indexer, "cass:src/indexer/mod.rs", "#[derive(Debug, Clone, Default)]\nstruct WorkspaceExclusions",
+            source_filters,
+            "cass:src/indexer/source_filters.rs",
+            "#[derive(Debug, Clone, Default)]\npub(in crate::indexer) struct WorkspaceExclusions",
             "const WORKSPACE_EXCLUSION_SCAN_PREFIX:",
+        ).replace("pub(in crate::indexer) ", "")
+        streaming_pipeline = read(
+            root / "src/indexer/streaming_pipeline.rs",
+            "cass:src/indexer/streaming_pipeline.rs",
         )
         exclusion_check = piece(
-            indexer, "cass:src/indexer/mod.rs", "fn scan_path_exclusions_value_active(",
+            streaming_pipeline,
+            "cass:src/indexer/streaming_pipeline.rs",
+            "pub(in crate::indexer) fn scan_path_exclusions_value_active(",
             "fn active_session_source_skip_observed(",
-        )
+        ).replace("pub(in crate::indexer) ", "")
         # The two SQL methods are absent, not replaced with fake transactions.
         scan_core = piece(
             ledger, "cass:src/indexer/watch_source_ledger.rs", "const MAX_RECEIPT_ENTRIES:",
