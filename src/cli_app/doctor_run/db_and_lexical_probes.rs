@@ -1014,7 +1014,8 @@ pub(super) fn probe_doctor_lexical_and_workspace(
         } else {
             build_doctor_storage_integrity(signals, storage_checks)
         };
-        let mut report = apply_dedicated_storage_probe(base_report, dedicated_storage_probe);
+        let mut report =
+            apply_dedicated_storage_probe(base_report, dedicated_storage_probe.clone());
         if let Some(attestation) = live_attestation {
             report.attestation_source = Some("live".to_string());
             report.attestation_check_depth = Some(attestation.check_depth.clone());

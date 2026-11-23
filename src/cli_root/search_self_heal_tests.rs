@@ -40,7 +40,6 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 
 include!("../search/gh494_repair_tests.rs");
 
-use super::*;
 use crate::connectors::{NormalizedConversation, NormalizedMessage};
 use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use crate::search::query::{FieldMask, SearchClient, SearchFilters};

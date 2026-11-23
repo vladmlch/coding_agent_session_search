@@ -985,6 +985,6 @@ pub(crate) fn build_response_schemas() -> std::collections::BTreeMap<String, ser
         }),
     );
 
-    registry_doctor::insert_doctor_response_schemas(&mut schemas);
+    super::registry_doctor::insert_doctor_response_schemas(&mut schemas);
     schemas
 }

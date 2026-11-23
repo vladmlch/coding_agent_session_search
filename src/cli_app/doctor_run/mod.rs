@@ -136,7 +136,7 @@ pub(super) struct DoctorLexicalWorkspaceReport {
 pub(super) struct DoctorRecoveryEvidence {
     pub(super) raw_mirror: DoctorRawMirrorReport,
     pub(super) raw_mirror_backfill: DoctorRawMirrorBackfillReport,
-    pub(super) sole_copy_warnings: Vec<String>,
+    pub(super) sole_copy_warnings: Vec<DoctorSoleCopyWarning>,
     pub(super) coverage_summary: DoctorCoverageSummary,
     pub(super) coverage_risk: DoctorCoverageRiskSummary,
     pub(super) source_authority: DoctorSourceAuthorityReport,

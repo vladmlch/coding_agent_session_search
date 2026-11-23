@@ -106,7 +106,7 @@ pub(super) fn execute_doctor_repairs_and_cleanup(
         matching_cached_integrity_attestation,
         mut auto_fix_actions,
         mut auto_fix_applied,
-        fs_mutation_receipts,
+        mut fs_mutation_receipts,
         mut candidate_promotion_report,
         storage_pressure,
     } = state;

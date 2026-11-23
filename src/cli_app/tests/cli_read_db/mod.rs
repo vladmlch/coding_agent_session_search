@@ -27,9 +27,6 @@ pub(crate) fn seed_cli_db() -> (TempDir, PathBuf) {
     (temp, db_path)
 }
 
-/// zn1xn: a full index run that leaves the canonical FTS shadow half-built
-/// records a marker that `state_meta_json` (hence `index --json`/`status`)
-
 pub(crate) fn write_index_lock_metadata(
     lock_path: &Path,
     lock_file: &mut std::fs::File,

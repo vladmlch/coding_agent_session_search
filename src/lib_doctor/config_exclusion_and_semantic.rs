@@ -139,9 +139,6 @@ pub(crate) fn doctor_path_to_slash_string(path: &Path) -> String {
 }
 
 #[cfg(test)]
-#[allow(unused_imports)]
-use crate::cli_root::doctor_path_identity_for_fingerprint;
-#[cfg(test)]
 mod doctor_path_slash_string_tests {
     use super::{doctor_path_identity_for_fingerprint, doctor_path_to_slash_string};
     use std::path::Path;
