@@ -1,4 +1,6 @@
 use anyhow::Result;
+#[cfg(any(test, feature = "cass-layer-b-conformance"))]
+use anyhow::anyhow;
 use frankensearch::quill::query::{
     CassQueryFilters as FsCassQueryFilters, CassSourceFilter as FsCassSourceFilter,
 };

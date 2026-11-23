@@ -133,7 +133,7 @@ pub(super) struct HistoricalBundleProgress {
     pub(super) path: String,
     pub(super) bytes: u64,
     pub(super) modified_at_ms: i64,
-    method: String,
+    pub(super) method: String,
     pub(super) last_completed_source_row_id: i64,
     pub(super) conversations_imported: usize,
     pub(super) messages_imported: usize,

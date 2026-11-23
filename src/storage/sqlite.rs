@@ -119,8 +119,6 @@ pub(crate) use storage_core::error_message_indicates_populated_fts_shadow_withou
 pub use storage_core::{FrankenStorage, SqliteStorage};
 
 pub use schema_repair::active_schema_migration_versions;
-#[cfg(test)]
-pub(crate) use schema_repair::{LegacyFtsTeardownRefusal, OrphanFkCleanupReport};
 
 pub use reconcile_and_codebuff::{InsertOutcome, SourceIngestLedgerEntry};
 

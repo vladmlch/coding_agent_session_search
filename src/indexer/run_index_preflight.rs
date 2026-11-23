@@ -138,7 +138,7 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
     // Preparation includes SQL between the named breadcrumbs as well as
     // inside them. Keep one scope until actual scan/rebuild work is admitted;
     // that work retains the existing finish-current-batch stop contract.
-    let mut storage_cancellation_scope = opts
+    let storage_cancellation_scope = opts
         .progress
         .as_ref()
         .map(|progress| progress.enter_storage_cancellation());
@@ -182,7 +182,7 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
     } else {
         ArchiveAdmission::Writable
     };
-    let mut index_run_lock = acquire_index_run_lock_with_archive_admission(
+    let index_run_lock = acquire_index_run_lock_with_archive_admission(
         &opts.data_dir,
         &opts.db_path,
         initial_lock_mode,
@@ -654,7 +654,7 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
     ctx.complete_preflight_phase()?;
 
     ctx.enter_preflight_phase("watch_startup:reclassify_legacy_omp")?;
-    let mut legacy_omp_upgrade = storage
+    let legacy_omp_upgrade = storage
         .reclassify_legacy_omp_conversations()
         .with_context(|| "reclassifying legacy Pi-labeled OMP archive rows")?;
     if legacy_omp_upgrade.conversations_reclassified > 0 {

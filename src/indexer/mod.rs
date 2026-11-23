@@ -227,8 +227,6 @@ pub(crate) use archive_fingerprint::{
     prime_archive_fingerprint_cache_from_completed_checkpoint,
     write_archive_fingerprint_cache_best_effort,
 };
-#[cfg(test)]
-pub(crate) use expected_lexical_docs::ExpectedLexicalDocsScanPosition;
 pub(crate) use expected_lexical_docs::{
     LexicalRebuildOutcome, expected_lexical_docs_scan_position,
 };
@@ -239,8 +237,6 @@ pub(crate) use index_dispatch::{mirrored_root_owners, run_cli_index};
 #[cfg(test)]
 pub(crate) use ingest_oom::WatchNomemDeferral;
 pub(crate) use ingest_oom::WatchNomemDeferrals;
-#[cfg(test)]
-pub(crate) use ingest_quarantine::acquire_quarantine_mutation_lock;
 #[cfg(any(unix, test))]
 pub(crate) use ingest_quarantine::try_acquire_semantic_backfill_lock;
 pub(crate) use ingest_quarantine::{
@@ -300,8 +296,6 @@ pub(crate) use storage_preflight::{
 pub(crate) use storage_preflight::{
     LexicalIndexFootprint, lexical_index_footprint, lexical_rebuild_free_space_verdict,
 };
-#[cfg(test)]
-pub(crate) use wal_close::CASS_TEST_WAL_CHECKPOINT_PARK_MS_ENV;
 pub(crate) use wal_close::{
     checkpoint_wal_truncate_with_deadline, close_storage_with_wal_checkpoint,
 };
