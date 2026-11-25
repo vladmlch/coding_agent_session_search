@@ -27,7 +27,7 @@ indicatif = "0.18.4"
 console = "0.16.3"
 colored = "3.1.1"
 serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
 # The external HTTP embedding provider (reqwest/rustls) was removed by the
 # local-only conversion; cass makes no outbound network calls.
 toon = { version = "=0.2.4", package = "tru" }
@@ -40,77 +40,12 @@ which = "8.0.2"
 shell-words = "1.1.1"
 dotenvy = "0.15.7"
 notify = "8.2.0"
-# The exact registry release below retains the fsqlite 0.3.13 and 0.3.0
-# asupersync-0.4.3 runtime migration
-# and bug-fix wave (GH#333 concurrent-open BusyRecovery retries, GH#334
-# FileIdentity re-derivation after file replacement — the cass#393
-# st_dev/namespace-sidecar repair d29339c — 8-writer rollback cascade,
-# cross-connection visibility) plus the 0.3.1 correctness wave: allocator
-# post-savepoint page-aliasing quarantine, committed-freelist resurrection
-# refusal, shared concurrent-writer EOF high-water, sidecar-less read-only
-# first-contact opens (GH#140), Darwin OFD locking; and the 0.3.9 Windows
-# sidecar-less read-only close fix (GH#438), without which CASS cannot reopen
-# its canonical archive during indexing on Windows. Revisions 22af0753 and
-# 027f62f2 admit FTS5's semantically read-only `integrity-check` command through
-# both the physically read-only pager and `PRAGMA query_only` guards while
-# retaining `ReadOnly` for every mutating FTS maintenance command. That exact
-# behavior is required by CASS's pre-mutation full-rebuild integrity gate on
-# Windows. 0.3.13 adds the
-# autoindex-vanish corruption-writer fixes (the cass#434 writer class).
-# 0.3.16 (adopted 2026-09-04) adds the GH#382 appended-WAL-tail fix
-# (8d012706a — the per-page WAL rescan that looped the owner-archive
-# writable open, bead g3zyo), the GH#405 FTS5 savepoint undo log
-# (savepoints no longer clone the whole table per statement), and the
-# GH#406 content-backed INSERT persisted as an incremental segment append.
-# 0.3.17 adds incremental WAL-tail folding, reserved lock-byte/freelist
-# repair (GH#410), FTS metadata and foreign-write visibility fixes (GH#408),
-# and prepared-read schema-retry transaction cleanup. 0.3.18 adds parameterized
-# rowid IN-list seeks (GH#415/cass#382), mutation-free read-only WAL readers,
-# reader-registration error propagation and I/O buffer lifetime fixes.
-# 0.4.1 adds GH#462's reserved-page WAL freelist repair and consumes the
-# Asupersync 0.5 runtime. The 0.4.2 candidate adds explicit derived WAL-index
-# recovery for read-only opens (GH#477). The published 0.4.4 family adds
-# durable pending-freelist repairs. 0.4.6 stops a live B-tree page from being
-# freed and granted again across a WAL generation (bd-b5vmw: integrity_check's
-# "page N is referenced multiple times") and fixes a lost-index-entry race
-# (bd-11sz4). 0.4.7 keeps index entries whole in large multi-row INSERTs
-# (register writes past 65,535 were dropped: bd-2eebi), fixes the serialized
-# DDL index race (bd-4iaoi), lets the deferred-FTS5 repair open bind a missing
-# shadow autoindex (GH#503), caps the shared page plane (5s1la) and stops a
-# connection's first sqlite_master query from reading the whole file (k2k20).
-# 0.4.7 also made strict read-only opens spend ~30 s on a stale WAL index, so
-# CASS skipped it. 0.4.9 (replacing the withdrawn 0.4.8) refuses that stale
-# index promptly again (48c6cf6b2) and lets the first write after stock
-# SQLite's empty, unindexed WAL index establish the WAL generation instead of
-# failing BusyRecovery on every later commit (GH#443 / cass#509, 4b48c95d8).
-# 0.4.12 carries the 0.4.10 data-integrity advisory fix (an explicit
-# transaction's inserts appended through a stale retained right-edge leaf and
-# corrupted the table b-tree: bd-obwsy), ROLLBACK returning the AUTOINCREMENT
-# rowids it reserved (bd-gwoit), reading a WAL a stock writer truncated to zero
-# bytes as empty (bd-yxqs9, cass GH#519), and index seeks for IN lists and
-# k = ? ORDER BY id (GH#497/#498).
-# 0.4.13 (upstream tag e4137af3) adds the GH#507 duplicate-implicit-rowid
-# fix (the silent-PK corruption class on CASS's parallel BEGIN CONCURRENT
-# ingest path), the close/io-Cx, read-only-open (GH#515/#528) and
-# savepoint/WAL fixes, and — through the owner fork — the strict read-only
-# open mode (`SQLITE_OPEN_STRICT_READ_ONLY`): an open that never writes or
-# creates any sidecar of the store it reads, refusing every WAL-index state
-# that needs recovery with the typed BusyRecovery instead of rebuilding a
-# never-initialized `-shm` in place. CASS's doctor verify probe and FAD's
-# external-store readers depend on that never-write contract.
-# All family packages use 0.4.13 and resolve from the owner's frankensqlite
-# fork (github.com/vladmlch/frankensqlite) at the exact rev named in the
-# committed [patch.crates-io] table below — owner decisions 2026-11-07
-# (fork), 2026-11-08 (DML seeks), 2026-11-09 (0.4.13 + strict read-only),
-# 2026-11-11 (merged main lineage).
-# These registry-shaped `=0.4.13` requirements stay here so the
-# [patch.crates-io] table redirects every consumer (including
-# franken-agent-detection's `^0.4.1` ask) to one fork resolution per
-# package. build.rs checks each resolved package exactly.
-frankensqlite = { version = "=0.4.13", package = "fsqlite", features = ["fts5", "async-api"] }
-# The production storage-integrity probe calls FrankenSQLite's public VFS API
-# directly so it can inspect native writer locks without opening the pager.
-fsqlite-types = { version = "=0.4.13", package = "fsqlite-types" }
+# SQLite storage runs on the bundled rusqlite engine (owner decision, the
+# rusqlite migration): `bundled` compiles the SQLite amalgamation into the
+# binary and `modern_sqlite` enables the current SQL surface. The exact
+# `=0.40.2` pin keeps the engine reproducible; franken-agent-detection's
+# SQLite connectors resolve the same release through feature unification.
+rusqlite = { version = "=0.40.2", features = ["bundled", "modern_sqlite"] }
 rayon = "1.12.0"
 crossbeam-channel = "0.5.15"
 parking_lot = "0.12.5"
@@ -181,13 +116,9 @@ frankensearch = { version = "=0.7.1", default-features = false, features = ["has
 # textless identity-bearing Codex tool outputs as linked messages (F13), and
 # archives the raw source records/parts for Copilot, Antigravity and OpenCode
 # (F14-F16).
-# fd071f9 (cass-strict-ro, F17) opens every external store with the fork's
-# strict read-only mode (SQLITE_OPEN_STRICT_READ_ONLY), so a crashed store's
-# unusable WAL-index never gets an in-place `-shm` rebuild on 0.4.13 — the
-# typed BusyRecovery refusal engages the F9 snapshot fallback instead and the
-# originals stay byte- and mtime-identical — and repoints FAD's own
-# [patch.crates-io] table at the fork rev 898c4361 (FAD-internal table;
-# cass's own committed patch table governs cass's resolution).
+# fd071f9 (cass-strict-ro, F17) opens every external store strict read-only
+# (never writes or creates any sidecar on disk, engaging the F9 snapshot
+# fallback on an unusable WAL-index so originals stay byte- and mtime-identical).
 # 0d972a9 (cass-snapshot-cap, F18) caps that snapshot fallback at 2 GiB of
 # db + -wal and refuses a copy the temp dir has no room for, reporting a
 # typed scan error instead (a crashed 27 GB Devin store is not copied).
@@ -211,9 +142,12 @@ frankensearch = { version = "=0.7.1", default-features = false, features = ["has
 # crush, goose, hermes and openclaw declare their live -wal/-shm in source
 # boundaries (as shelley does), so cass's durable-source ledger never skips
 # a WAL-only commit — upstream 27a5429 turned boundaries on without them.
+# Fork rev b44f0b5d (main) migrates the SQLite-backed connectors and
+# fixtures off fsqlite onto the same bundled rusqlite =0.40.2 engine cass
+# pins above; the enabled 7-feature set is unchanged.
 # Source: the owner's pushed FAD fork https://github.com/vladmlch/franken_agent_detection
-# (branch master at 46c4760; the 0d972a9 cass-snapshot-cap pin stays as rollback).
-franken-agent-detection = { version = "=0.3.11", git = "https://github.com/vladmlch/franken_agent_detection", rev = "cb4085522bb00eb0ee702a8ffe0d4148a80b9c10", features = ["connectors", "cursor", "chatgpt", "opencode", "devin", "codex-zstd", "qoder-sqlite"] }
+# (branch main at b44f0b5d; the cb408552 pin stays as rollback).
+franken-agent-detection = { version = "=0.3.11", git = "https://github.com/vladmlch/franken_agent_detection", rev = "b44f0b5d3085002c0bae406d33569e7864606e84", features = ["connectors", "cursor", "chatgpt", "opencode", "devin", "codex-zstd", "qoder-sqlite"] }
 wide = "1.4.0"  # Portable SIMD for P0 Opt 2: SIMD dot product
 arrayvec = "0.7.6"  # Stack-based arrays for P1 Opt 1.4: Edge N-gram optimization
 bloomfilter = "3.0.1"  # Probabilistic membership testing for P2 Opt 3.3: Workspace Cache
@@ -290,17 +224,6 @@ zstd = { version = "0.13", default-features = false }
 # GH470 measures native model input tokens without padding or silent truncation.
 # Reuse the tokenizer and regex backend already resolved by native MiniLM.
 tokenizers = { version = "*", default-features = false, features = ["fancy-regex"] }
-# rusqlite is retained only for C-SQLite interop fixtures in tests; production
-# storage and historical salvage paths use frankensqlite.
-rusqlite = { version = "0.40.2", features = ["bundled", "modern_sqlite"] }
-# The manifest-policy build gate requires this explicit dev entry for compat
-# fixture assertions, even though production also uses the same pinned crate.
-fsqlite-types = { version = "=0.4.13", package = "fsqlite-types" }
-
-# The fsqlite family resolves from the owner's frankensqlite fork (see the
-# committed [patch.crates-io] table below) for every direct and transitive
-# consumer, at uniform reviewed 0.4.13 versions. build.rs rejects duplicates
-# and mixed sources.
 
 [[bin]]
 name = "cass"
@@ -322,21 +245,12 @@ debug = "line-tables-only"
 [profile.test]
 debug = "line-tables-only"
 
-# fsqlite 0.3.x's async engine builds enormous debug-mode futures; at
-# opt-level 0 a single statement poll can overflow even a 16 MiB test-thread
-# stack (analytics::query storage tests SIGABRT'd during the 0.3.1 gate).
-# Upstream frankensqlite develops at `[profile.dev] opt-level = 1` and
-# franken_agent_detection uses this exact dependencies-only form for the same
-# reason. Applies to dependencies only, never this crate's own code/tests.
-#
-# The fsqlite 0.3.4 uptake pushed these futures past what opt-level 1 covers:
-# `cli_read_db_tests::state_meta_json_reports_active_data_dir_lock_without_db_path_metadata`
-# SIGABRT'd on a stack overflow. Verified as a size problem, not a logic
-# regression — the same test passes unchanged under a larger thread stack — so
-# the fix is `RUST_MIN_STACK` in `.cargo/config.toml` rather than opt-level 2
-# here. opt-level 2 also works but forces a full rebuild of every dependency
-# at roughly double the artifact size, which is not worth it for a test-thread
-# stack bound.
+# Keep dependencies at opt-level 1 in dev/test builds: at opt-level 0 the
+# bundled SQLite amalgamation that rusqlite's `bundled` feature compiles is
+# several times slower, and the storage-heavy test suites pay that cost on
+# every run. Applies to dependencies only, never this crate's own
+# code/tests; opt-level 2 would roughly double dependency artifact size for
+# no measured need.
 [profile.dev.package."*"]
 opt-level = 1
 
@@ -367,80 +281,12 @@ inherits = "release"
 debug = "line-tables-only"
 strip = false
 
-# ── fsqlite family: owner-fork resolution (2026-11-07 owner decision) ──────
-# Every fsqlite family crate resolves from the owner's frankensqlite fork,
-# github.com/vladmlch/frankensqlite (branch merge/cass-into-main since the
-# 2026-11-11 rev move), at the exact rev below. The rev is upstream main at
-# v0.4.13-22 (22 commits past the v0.4.13 tag e4137af3: WAL size limits
-# honored under write pressure (bd-5lw60), cached SHM mappings revalidated
-# after truncation (bd-7do1d), window rows numbered independently of
-# aggregate frames, wrapped ORDER BY parameters kept from becoming
-# ordinals, correlated RETURNING evaluated at the DML and FK boundary,
-# malformed catalog columns and virtual-table triggers rejected, self-read
-# cursor images kept coherent across writes and rollback, plus the #531
-# grouped-aggregate/index-prefix perf series) plus the fork's perf/feature
-# commits rebased onto that lineage, so every family crate publishes
-# version 0.4.13 and satisfies the registry-shaped `=0.4.13` requirements:
-#   - e4c17486 (rebase of 10eadc63) perf(vdbe): seek the index range when
-#     the WHERE carries residual conjuncts — `WHERE <indexed col> <range>
-#     AND <residual>` no longer falls back to a full table scan; the walk
-#     re-applies the whole WHERE per row (row set byte-identical, ~208x on
-#     the motivating UNIQUE-text-key shape).
-#   - aed53a33 (rebase of d9414f97) perf(vdbe): rowid range seeks accept
-#     numbered placeholder bounds — `WHERE id > ?1 AND ...` now uses the
-#     rowid range seek instead of a full scan, proven bit-identical to
-#     stock SQLite by the fork's differential e2e oracle (~160x on its
-#     fixture).
-#   - bd-j9gub (db5d846e+1fcc81e8 rebased onto the v0.4.13-22 base; the
-#     2026-11-08 0.4.12 line carried f39c8eb0+e8901664): DML
-#     equality-prefix index seeks — a DELETE or UPDATE whose equality
-#     conjuncts pin a PREFIX of a composite index key (`DELETE FROM
-#     viewer_search_regions WHERE conversation_id = ?1`) SEARCHes the
-#     leading-column index instead of full-scanning, proven row-for-row
-#     against stock SQLite by the fork's differential oracle over affected
-#     rows, changes(), RETURNING, triggers and AUTOINCREMENT; removes
-#     cass's O(N^2) per-conversation viewer DELETEs
-#     (.scratch/glm/2026-11-08-fsq-dml-backport/report.md).
-#   - 898c4361 SQLITE_OPEN_STRICT_READ_ONLY (compat open_strict_read_only,
-#     core Connection::open_strict_read_only, async
-#     open_strict_read_only_sync): an open that never writes or creates
-#     any sidecar of the store it reads — no `-shm` rebuild, no `-wal`
-#     touch, no checkpoint, no journal replay — and refuses every
-#     WAL-index state needing recovery with the typed BusyRecovery. FAD's
-#     external-store readers (F17) and cass's doctor verify probe open
-#     strict-read-only so user files and recorded backup bundles stay
-#     byte- and mtime-identical
-#     (.scratch/glm/2026-11-09-fsq-strict-ro/report.md).
-#   - 9ead2d35 merges the fork line into the upstream main lineage and
-#     2d55ddbd is the tip; the 2026-11-09 branch
-#     cass-local-fixes-0413-ro (rev 898c4361) stays as rollback.
-# Patching crates.io (rather than rewriting the [dependencies] entries to
-# git) keeps one resolution per package across every consumer: FAD's own
-# `^0.4.1` requirement converges on the same fork source. build.rs
-# (validate_fsqlite_source_pin) refuses any family redirect that misses this
-# exact URL+rev, any duplicate resolution, any version drift off 0.4.13, and
-# any lockfile entry that resolves from elsewhere.
+# The fsqlite family [patch.crates-io] redirects were removed with the
+# rusqlite migration: every SQLite consumer (cass and FAD's connectors) now
+# resolves the crates.io `rusqlite =0.40.2` release with the bundled
+# amalgamation, so no family redirect is needed. The only remaining patch
+# is frankensearch-quill.
 [patch.crates-io]
-fsqlite = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-ast = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-btree = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-core = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-error = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-ext-fts5 = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-ext-icu = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-ext-json = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-ext-misc = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-ext-rtree = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-func = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-mvcc = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-observability = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-pager = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-parser = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-planner = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-types = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-vdbe = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-vfs = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
-fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00" }
 # frankensearch-quill resolves from the owner's frankensearch fork
 # https://github.com/vladmlch/frankensearch (branch main,
 # pushed 2026-11-11) by exact rev (owner decision, 2026-11-10;
@@ -475,8 +321,8 @@ fsqlite-wal = { git = "https://github.com/vladmlch/frankensqlite", rev = "2d55dd
 frankensearch-quill = { git = "https://github.com/vladmlch/frankensearch", rev = "f75d1d551c5fe73d0d4870a26b723faf6921de33" }
 
 # The dependency graph is pinned to the asupersync 0.5.x line (0.5.0). Keep
-# the frankensqlite (owner-fork), frankensearch, and franken-agent-detection
-# pins aligned so Cargo.lock does not reintroduce an older parallel runtime stack.
+# the rusqlite, frankensearch, and franken-agent-detection pins aligned so
+# Cargo.lock does not reintroduce an older parallel runtime stack.
 #
 # If you need to build against a local checkout of asupersync (sibling
 # at ../asupersync) during runtime-level hacking, add the following
@@ -500,11 +346,8 @@ frankensearch-quill = { git = "https://github.com/vladmlch/frankensearch", rev =
 # Never commit any of these sibling-path [patch] blocks re-enabled: a fresh
 # clone without the sibling checkouts would no longer build.
 #
-# The fsqlite family has NO sibling-path override anymore: it resolves from
-# the owner's fork through the committed [patch.crates-io] table above, and
-# build.rs rejects any family entry that is not that exact git URL+rev. To
-# hack the engine, work in the fork clone (../frankensqlite) and move the
-# table's rev to the fork commit; do not re-enable a path patch for it.
+# rusqlite is a plain crates.io pin: it has no sibling-path override, and
+# build.rs validates the exact registry requirement and feature set.
 # [patch."https://github.com/Dicklesworthstone/franken_agent_detection"]
 # franken-agent-detection = { path = "../franken_agent_detection" }
 #

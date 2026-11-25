@@ -45,149 +45,23 @@ const STRICT_PATH_DEP_ENV: &str = "CASS_STRICT_PATH_DEP_VALIDATION";
 
 const CONTRACTS: &[DependencyContract] = &[
     DependencyContract {
-        label: "frankensqlite facade",
+        label: "rusqlite",
         dep_table: "dependencies",
-        dep_key: "frankensqlite",
-        crate_package_name: "fsqlite",
-        manifest_package_field: Some("fsqlite"),
-        // Exact upstream source pin (established with the fsqlite 0.2.1
-        // migration, bead bo000; now at 0.4.13. 0.3.15 was evaluated on
-        // 2026-09-02 (bead gh382-fsqlite-pin) and NOT adopted: cass's own
-        // writable open still looped on a large archive with a large WAL
-        // (reclaim sweep x per-page WAL rescan, cass GH #382 / bead g3zyo).
-        // 0.3.16 carries that fix — frankensqlite 8d012706a, index the
-        // appended WAL tail once per stable tail instead of rescanning it
-        // per page — plus the GH#405 FTS5 undo log (savepoints no longer
-        // clone the whole table), the GH#406 content-backed INSERT as an
-        // incremental segment append, lazy contentless FTS5 on the ordinary
-        // open path, prefix-BM25 scoring parity, and the 0.3.15 line (FTS5
-        // 'optimize', origin-poison self-heal, macOS clippy gate). Adopted
-        // 2026-09-04 by owner instruction. The 0.3.13 semantics CASS relies
-        // on (asupersync 0.4.3 runtime migration, GH#333/GH#334, the
-        // cass#393 namespace-sidecar repair, the GH#438 Windows sidecar-less
-        // read-only close, integrity-check through read-only guards, and
-        // the cass#434 autoindex-vanish fixes) all carry forward.
-        // 0.3.17 adds incremental WAL-tail folding, reserved lock-byte and
-        // freelist repair (GH#410), FTS metadata/visibility fixes (GH#408),
-        // and prepared-read schema-retry cleanup. 0.3.18 adds parameterized
-        // rowid seeks (GH#415/cass#382), read-only WAL preservation, reader
-        // registration error propagation and I/O lifetime fixes. The 0.4.1
-        // release preserves the facade API and requires asupersync 0.5.0.
-        // It includes the GH#462 reserved-page WAL repair and GH#411 shared
-        // WAL-index publication fixes; CASS archive acceptance is separate.
-        // 0.4.2 adds explicit derived WAL-index recovery for read-only
-        // connections, including the dedicated async owner (GH#477).
-        // 0.4.6 stops a live B-tree page from being freed and granted again
-        // across a WAL generation (bd-b5vmw) and fixes the lost-index-entry
-        // race (bd-11sz4). 0.4.7 keeps index entries whole past register
-        // 65,535 in large multi-row INSERTs (bd-2eebi), fixes the serialized
-        // DDL index race (bd-4iaoi), carries the GH#503 legacy FTS5
-        // shadow-autoindex repair open (ENGINE_REPAIRS_MISSING_FTS5_SHADOW_
-        // AUTOINDEX is true), bounds the published-page plane (5s1la) and
-        // stops the first sqlite_master query reading the whole file (k2k20).
-        // 0.4.7 also slowed strict read-only opens on a stale WAL index to
-        // ~30 s, so CASS skipped it; 0.4.9 (replacing the withdrawn 0.4.8)
-        // refuses that index promptly again (48c6cf6b2) and lets the first
-        // write after stock SQLite's empty, unindexed WAL index establish the
-        // WAL generation instead of failing BusyRecovery forever (GH#443,
-        // cass#509). 0.4.12 carries the 0.4.10 data-integrity advisory fix
-        // (stale retained right-edge leaf corrupting a table b-tree on
-        // explicit-transaction inserts, bd-obwsy), ROLLBACK returning
-        // reserved AUTOINCREMENT rowids (bd-gwoit) and reading a WAL a stock
-        // writer truncated to zero bytes as empty (bd-yxqs9, cass GH#519).
-        // 0.4.13 (upstream tag e4137af3) adds the GH#507
-        // duplicate-implicit-rowid fix (the silent-PK corruption class on
-        // CASS's parallel BEGIN CONCURRENT ingest path) and the close/io-Cx,
-        // read-only-open (GH#515/#528) and savepoint/WAL fixes; a plain
-        // read-only open rebuilds a never-initialized `-shm` in place, which
-        // is why the fork's strict read-only mode and the doctor snapshot
-        // doctrine exist.
-        // Since the 2026-11-07 owner decision the whole family resolves
-        // from the owner's fork github.com/vladmlch/frankensqlite (branch
-        // merge/cass-into-main since the 2026-11-11 rev move) at rev
-        // 2d55ddbd6f630f4036f53629c9c0f080dc5a1f00 — upstream main at
-        // v0.4.13-22 (22 commits past the v0.4.13 tag e4137af3: WAL size
-        // limits honored under write pressure bd-5lw60, cached SHM
-        // mappings revalidated after truncation bd-7do1d, window rows
-        // numbered independently of aggregate frames, wrapped ORDER BY
-        // parameters kept from becoming ordinals, correlated RETURNING
-        // evaluated at the DML/FK boundary, malformed catalog columns
-        // and virtual-table triggers rejected, self-read cursor images
-        // kept coherent across writes and rollback, plus the #531
-        // grouped-aggregate perf series) plus the fork's commits rebased
-        // onto that lineage — the vdbe range seeks (e4c17486 seeks the
-        // single-column index range when the WHERE carries residual
-        // conjuncts; aed53a33 lets rowid range seeks take
-        // numbered-placeholder bounds), the DML equality-prefix index
-        // seeks (bd-j9gub as db5d846e+1fcc81e8: a DELETE or UPDATE
-        // whose equality conjuncts pin an index prefix SEARCHes the
-        // leading-column index instead of scanning, proven against
-        // stock SQLite; removes cass's O(N^2) per-conversation viewer
-        // DELETEs) and the strict read-only open mode
-        // (SQLITE_OPEN_STRICT_READ_ONLY: an open that never writes or
-        // creates any sidecar of the store it reads, refusing every
-        // WAL-index state that needs recovery with the typed
-        // BusyRecovery), merged into the lineage by 9ead2d35 with
-        // 2d55ddbd as the tip; the 2026-11-09 branch
-        // cass-local-fixes-0413-ro stays as rollback — so the manifest keeps
-        // registry-shaped `=0.4.13` requirements and the committed
-        // [patch.crates-io] table redirects every family crate
-        // (including FAD's `^0.4.1` ask) to that rev. Empty
-        // `expected_git` keeps this contract registry-shaped;
-        // validate_fsqlite_source_pin enforces the fork URL, rev, uniform
-        // 0.4.13 version and single resolution per package against the
-        // [patch.crates-io] table and Cargo.lock.
+        dep_key: "rusqlite",
+        crate_package_name: "rusqlite",
+        manifest_package_field: None,
+        // crates.io-only exact pin: the bundled SQLite amalgamation plus
+        // modern_sqlite, shared by cass and FAD's SQLite connectors through
+        // feature unification. Empty `expected_git` keeps this contract
+        // registry-shaped, like asupersync/toon; StrictOptIn skips the sibling
+        // check when no ../rusqlite checkout exists.
         expected_git: "",
         expected_rev: "",
-        expected_version: "0.4.13",
-        // `async-api` exposes frankensqlite::AsyncConnection, which
-        // src/search/query.rs uses (as SearchSqliteConnection) for the
-        // no-hit alternate-agent suggestions without a full storage open.
-        expected_features: &["fts5", "async-api"],
+        expected_version: "0.40.2",
+        expected_features: &["bundled", "modern_sqlite"],
         expected_default_features: None,
-        repo_rel: "../frankensqlite",
-        manifest_rel: "crates/fsqlite/Cargo.toml",
-        patch_url: None,
-        patch_key: None,
-        mode: ValidationMode::StrictOptIn,
-    },
-    DependencyContract {
-        label: "frankensqlite shared types (production)",
-        dep_table: "dependencies",
-        dep_key: "fsqlite-types",
-        crate_package_name: "fsqlite-types",
-        manifest_package_field: Some("fsqlite-types"),
-        // The 0.4.13 release publishes the entire family at one version,
-        // and the owner fork keeps those versions; the committed
-        // [patch.crates-io] table redirects the shared types to the fork
-        // rev (see the facade contract and validate_fsqlite_source_pin).
-        expected_git: "",
-        expected_rev: "",
-        expected_version: "0.4.13",
-        expected_features: &[],
-        expected_default_features: None,
-        repo_rel: "../frankensqlite",
-        manifest_rel: "crates/fsqlite-types/Cargo.toml",
-        patch_url: None,
-        patch_key: None,
-        mode: ValidationMode::StrictOptIn,
-    },
-    DependencyContract {
-        label: "frankensqlite shared types (test)",
-        dep_table: "dev-dependencies",
-        dep_key: "fsqlite-types",
-        crate_package_name: "fsqlite-types",
-        manifest_package_field: Some("fsqlite-types"),
-        // Match the production shared types: same fork-pinned 0.4.13 family
-        // resolution (the [patch.crates-io] table covers dev-dependencies
-        // too; validate_fsqlite_source_pin checks the single resolution).
-        expected_git: "",
-        expected_rev: "",
-        expected_version: "0.4.13",
-        expected_features: &[],
-        expected_default_features: None,
-        repo_rel: "../frankensqlite",
-        manifest_rel: "crates/fsqlite-types/Cargo.toml",
+        repo_rel: "../rusqlite",
+        manifest_rel: "Cargo.toml",
         patch_url: None,
         patch_key: None,
         mode: ValidationMode::StrictOptIn,
@@ -198,103 +72,17 @@ const CONTRACTS: &[DependencyContract] = &[
         dep_key: "franken-agent-detection",
         crate_package_name: "franken-agent-detection",
         manifest_package_field: None,
-        // GH#416: registry pin. crates.io 0.2.3 (2026-09-07) probes the
-        // Antigravity IDE store as well as the agy CLI store (cass#454),
-        // honors CLAUDE_CONFIG_DIR/XDG_CONFIG_HOME for Claude Code (cass#448),
-        // and carries the Codex token-usage, Claude tool-result, Cursor/OpenCode
-        // dedupe and Shelley canonical-discovery fixes on top of 0.2.2's
-        // (upstream tag f19e7e0) cursor/antigravity/grok scan-root scoping and
-        // aider/copilot-cli/amp/opencode/clawdbot/muse session-loss fixes.
-        // The Shelley connector, FAD#22 source-boundary seam, and the
-        // chatgpt/omp injection seams are published in 0.2.3.
-        // 0.2.4 (2026-09-10) restores the legacy Copilot CLI
-        // `history.json` `workspacePath` alias that 0.2.3 dropped when CLI
-        // parsing moved out of copilot.rs -- those sessions were coming back
-        // with no workspace at all -- and reads Cursor Agent workspaces from
-        // the `.workspace-trusted` sidecar instead of guessing them from the
-        // hyphenated project slug (cass#459), which no decoder can do
-        // correctly because `parent-project/my-app` and `parent/project/my/app`
-        // encode identically.
-        // The 0.3.0 candidate moves SQLite connectors onto the same 0.4.x
-        // engine and 0.5.x runtime as CASS; publication must precede adoption.
-        // 0.3.1 (2026-09-25) indexes Claude Code prompts typed mid-turn
-        // (queued_command attachments, cass#500), honors CASS_EXCLUDE_PATHS in
-        // the Codex and Pi-family connectors (cass#486), and caps session
-        // reads while reading. 0.3.2 (2026-09-26) lets CASS set that Codex
-        // rollout read cap, which 0.3.1 fixed at 100 MiB regardless of
-        // CASS_CODEX_MAX_SOURCE_BYTES. 0.3.3 (2026-09-28) indexes OpenCode 2.x
-        // sessions from session_v2/session_message (cass#504) and decodes
-        // OpenClaw's zstd-compressed transcript events (FAD#25). 0.3.4
-        // (2026-10-05) indexes native Codebuff transcripts, whose timestamps
-        // are a locale time of day, taking each instant from the message ID
-        // (cass#511); 0.3.5 keeps indexing a Codebuff store's other chats when
-        // one transcript does not parse, and names that transcript. 0.3.6
-        // (codex-zstd) reads Codex rollouts compressed to .jsonl.zst (cass#513).
-        // 0.3.7 adds the pi_durable connector (FAD#28; its SQLite stores need
-        // pi-durable) and pi_agent_rust SQLite sessions (pi-sqlite). 0.3.8
-        // resolves `..`, relative and symlink-alias CASS_EXCLUDE_PATHS
-        // entries for the Claude, Pi and Codex readers (cass 0f1k0).
-        // 0.3.10 exposes SQLite connector runtime shutdown before Windows
-        // process teardown (cass#519) and preserves the full read-error chain.
-        // GH#520's remote-mirror metadata reached upstream 0.3.11, but the
-        // git pin stays: the merged F7–F18 wave and the hermetic
-        // allow_local_default_stores flag below are fork-only.
-        // LOCAL FORK (review 2026-11-08): cass-agy-passthrough branch of
-        // ../franken_agent_detection (the F9 cass-sqlite-snapshot-fallback
-        // branch merged with F10, on top of the cass-local-fixes F7+F8 tip),
-        // based on upstream 6b337ba434b72c65c6c5a748b7ec47885f840ac0. F9
-        // reads an external SQLite store whose WAL-index is unusable (the
-        // app crashed) through a private snapshot copy; store-style scans
-        // fail on an unreadable store instead of hiding it as zero sessions,
-        // while a provably empty store (0-byte file with no -wal content, or
-        // a schema with no tables) scans to Ok with no sessions. F10 keeps
-        // the antigravity truncated_fields/status/error/media source fields
-        // in message extras and emits error-only ERROR_MESSAGE and
-        // text-bearing CONVERSATION_HISTORY records. F11 merges a Cursor
-        // composer conversation with its same-id agent transcript into one
-        // conversation (transcript order, composer timestamps donated), so
-        // storage no longer drops the second fragment. F12 keeps full
-        // message extras at every session size (no large-session
-        // compaction). F13 emits textless identity-bearing Codex tool
-        // outputs (image-only results) as linked empty-content messages.
-        // F14/F15/F16 archive the raw source records/parts for Copilot
-        // (response parts), Antigravity (`agy_raw`) and OpenCode (tool parts)
-        // so cass proves completeness from the source instead of guessing.
-        // F17 (cass-strict-ro) opens every external store with the fork's
-        // strict read-only mode (SQLITE_OPEN_STRICT_READ_ONLY), so a crashed
-        // store's unusable WAL-index never gets an in-place `-shm` rebuild on
-        // 0.4.13 — the typed BusyRecovery refusal engages the F9 snapshot
-        // fallback instead and the originals stay byte- and
-        // mtime-identical — and repoints FAD's own [patch.crates-io] table
-        // at the fork rev 898c4361 (FAD-internal table; cass's own committed
-        // patch table governs cass's resolution). F18 caps that snapshot
-        // fallback at 2 GiB of db + -wal and checks temp-dir free space,
-        // refusing with a typed scan error instead of copying a huge store.
-        // 0.3.11 (fork master 832a812, merged 2026-11-11) unifies upstream's
-        // v0.3.11 release wave — public canonical_connector_slug with
-        // alias-aware agent rewrites, 34-connector token/model/invocation
-        // attribution, Continue IDE/CLI and Cline SDK sessions, Qwen
-        // subagents, Copilot/Amp/Crush usage, Vibe native turns,
-        // 15-provider remote-mirror discovery (GH#520), 18-provider
-        // CASS_EXCLUDE_PATHS + per-source boundary hooks, mirrored-store
-        // discovery with ambiguous-fallback refusal and qualified streaming
-        // roots, and mid-read failures discarding the whole incomplete
-        // transcript instead of yielding a partial session — with the merged
-        // F7–F18 wave above and the hermetic scan flag:
-        // ScanContext.allow_local_default_stores is true in both
-        // constructors (the issue #174 local default-store behavior cass's
-        // production scan sites rely on) with a without_local_default_stores()
-        // opt-out hermetic harnesses use so in-process tests can never read
-        // the developer's real agent stores; only the opencode connector
-        // consults it today. Fork master 46c4760 (2026-11-12) adds the
-        // WAL-sidecar fix (F19): devin, crush, goose, hermes and openclaw
-        // declare their live -wal/-shm in source boundaries, as shelley
-        // does, so cass's durable-source ledger never skips a WAL-only
-        // commit (upstream 27a5429 turned boundaries on without them).
-        // See that repo's LOCAL_FIXES.md. Return to the upstream URL/rev
-        // once upstream carries every row there.
+        // Fork pin on vladmlch/franken_agent_detection (branch main at
+        // b44f0b5d): Phase-0 pruned to the 10 active connectors and migrated
+        // off fsqlite onto the same bundled rusqlite =0.40.2 engine cass pins
+        // directly, reimplementing the strict never-write read-only policy on
+        // rusqlite (`open_external_strict_in_place` /
+        // `open_read_only_with_snapshot_fallback` in `sqlite_sync.rs`), plus
+        // the F7-F19 wave and the hermetic `allow_local_default_stores` flag.
+        // See that repo's LOCAL_FIXES.md. Return to the upstream URL/rev once
+        // upstream carries every row there.
         expected_git: "https://github.com/vladmlch/franken_agent_detection",
-        expected_rev: "cb4085522bb00eb0ee702a8ffe0d4148a80b9c10",
+        expected_rev: "b44f0b5d3085002c0bae406d33569e7864606e84",
         expected_version: "0.3.11",
         // Match the always-on SQLite transcript readers in Cargo.toml. Their
         // features are required even for --no-default-features CASS builds.
@@ -320,11 +108,11 @@ const CONTRACTS: &[DependencyContract] = &[
         dep_key: "asupersync",
         crate_package_name: "asupersync",
         manifest_package_field: None,
-        // crates.io-only exact pin: every source (direct dep, frankensqlite
-        // transitive, frankensearch transitive) resolves to a single published
-        // release. SQLite 0.4.x, FAD 0.3.0 and FrankenSearch 0.7.1 use
-        // asupersync 0.5.x native contexts; mixing the old runtime would
-        // split caller context, cancellation and capability identity.
+        // crates.io-only exact pin: every source (direct dep, frankensearch
+        // transitive) resolves to a single published release. FAD 0.3.11 and
+        // FrankenSearch 0.7.1 use asupersync 0.5.x native contexts; mixing the
+        // old runtime would split caller context, cancellation and capability
+        // identity.
         // Empty `expected_git` signals `validate_manifest_dependency_spec`
         // to skip git/rev checks.
         expected_git: "",
@@ -576,7 +364,6 @@ fn validate_path_dependency_contracts(
     packaged_manifest: bool,
 ) {
     let strict_enabled = strict_path_dep_validation_enabled();
-    validate_fsqlite_source_pin(manifest_dir, manifest, packaged_manifest);
     validate_quill_source_pin(manifest_dir, manifest, packaged_manifest);
 
     for contract in CONTRACTS {
@@ -589,178 +376,6 @@ fn validate_path_dependency_contracts(
         if contract.mode == ValidationMode::ActivePathOverride || strict_enabled {
             validate_local_contract(manifest_dir, contract, strict_enabled);
         }
-    }
-}
-
-fn validate_fsqlite_source_pin(manifest_dir: &Path, manifest: &Value, packaged_manifest: bool) {
-    // The fsqlite engine family resolves exclusively from the owner's
-    // frankensqlite fork at the exact rev below, at the uniform published
-    // 0.4.13 family version, including the shared types (owner decision,
-    // 2026-11-07; rev moved to the DML-seek tip 2026-11-08, then to the
-    // 0.4.13 strict-read-only tip 2026-11-09, then to the merged main
-    // lineage 2026-11-11). The fork rev is upstream main at v0.4.13-22
-    // (22 commits past the v0.4.13 tag e4137af3, carrying the WAL
-    // size-limit, SHM-revalidation, window-row, ORDER BY-parameter,
-    // correlated-RETURNING, catalog-column and cursor-image fixes plus
-    // the #531 grouped-aggregate perf series) plus the fork's commits
-    // rebased onto that lineage: the vdbe range-seek commits (e4c17486:
-    // seek the single-column index range when the WHERE carries residual
-    // conjuncts; aed53a33: rowid range seeks accept numbered placeholder
-    // bounds), the DML equality-prefix index seeks (bd-j9gub as
-    // db5d846e+1fcc81e8: DELETE/UPDATE equality conjuncts pinning an
-    // index prefix SEARCH the leading-column index instead of scanning)
-    // and the strict read-only open mode
-    // (SQLITE_OPEN_STRICT_READ_ONLY: never write or create any sidecar
-    // of the store being read; refuse every WAL-index state that needs
-    // recovery with the typed BusyRecovery), merged into the lineage by
-    // 9ead2d35 with 2d55ddbd as the tip, so
-    // the fork's crates keep version 0.4.13 and satisfy the registry-shaped
-    // `=0.4.13` requirements in [dependencies]/[dev-dependencies] through
-    // the committed [patch.crates-io] table. One source per package remains
-    // load-bearing for read-only integrity.
-    const EXPECTED_FORK_GIT: &str = "https://github.com/vladmlch/frankensqlite";
-    const EXPECTED_FORK_REV: &str = "2d55ddbd6f630f4036f53629c9c0f080dc5a1f00";
-    // A `rev = "<full-sha>"` git source serializes in Cargo.lock as
-    // `git+<url>?rev=<rev>#<resolved-commit>`; with a full-sha rev the
-    // resolved commit equals the rev.
-    let expected_lock_source =
-        format!("git+{EXPECTED_FORK_GIT}?rev={EXPECTED_FORK_REV}#{EXPECTED_FORK_REV}");
-
-    // 1. Every fsqlite-family [patch.crates-io] redirect must name exactly
-    //    the fork's URL and rev: never a path source, another remote, a
-    //    floating branch/tag, or a stale rev. A family member missing from
-    //    the patch table is not caught here — it would resolve from
-    //    crates.io, and check 2 fails on its registry source.
-    if !packaged_manifest
-        && let Some(patch_tables) = manifest.get("patch")
-        && let Some(crates_io) = patch_tables.get("crates-io").and_then(Value::as_table)
-    {
-        for (dependency, spec) in crates_io {
-            let dependency = dependency.as_str();
-            if dependency != "fsqlite" && !dependency.starts_with("fsqlite-") {
-                continue;
-            }
-            let Some(spec) = spec.as_table() else {
-                fatal(format!(
-                    "dependency source contract violation for {dependency}: the fsqlite \
-                     family [patch.crates-io] entry must be a table pinning the owner fork"
-                ));
-            };
-            let actual_git = spec.get("git").and_then(Value::as_str).unwrap_or("");
-            let actual_rev = spec.get("rev").and_then(Value::as_str).unwrap_or("");
-            let floating = spec.contains_key("branch") || spec.contains_key("tag");
-            if actual_git != EXPECTED_FORK_GIT
-                || actual_rev != EXPECTED_FORK_REV
-                || floating
-                || spec.contains_key("path")
-            {
-                fatal(format!(
-                    "dependency source contract violation for {dependency}: the fsqlite \
-                     family resolves from the owner fork at git = `{EXPECTED_FORK_GIT}`, \
-                     rev = `{EXPECTED_FORK_REV}`; found git = `{actual_git}`, rev = \
-                     `{actual_rev}`"
-                ));
-            }
-        }
-    }
-
-    // 2. Lockfile convergence: every resolved fsqlite-family package must be
-    //    0.4.13, resolve from the pinned fork rev, and appear exactly once
-    //    per crate. Cargo resolves the lockfile before running build
-    //    scripts, so the lockfile is authoritative here. Packaged manifests
-    //    (`cargo package` verification builds) re-resolve into a fresh
-    //    lockfile that inherits these same requirements from the manifest
-    //    pin (and cannot express the fork [patch] table at all).
-    let lock_path = manifest_dir.join("Cargo.lock");
-    println!("cargo:rerun-if-changed={}", lock_path.display());
-    let lock_text = match fs::read_to_string(&lock_path) {
-        Ok(text) => text,
-        Err(err) => {
-            if packaged_manifest {
-                return;
-            }
-            fatal(format!(
-                "dependency source contract: failed to read {}: {err}",
-                lock_path.display()
-            ))
-        }
-    };
-    let lock: Value = match toml::from_str(&lock_text) {
-        Ok(value) => value,
-        Err(err) => fatal(format!(
-            "dependency source contract: failed to parse {}: {err}",
-            lock_path.display()
-        )),
-    };
-    let packages = lock
-        .get("package")
-        .and_then(Value::as_array)
-        .unwrap_or_else(|| {
-            fatal("dependency source contract: Cargo.lock has no [[package]] entries")
-        });
-    // Collect EVERY off-pin family member before failing, and print the
-    // exact remediation for each (GH#417): reporting only the first
-    // mismatch made a multi-member drift a whack-a-mole loop, and only 2 of
-    // the ~20 family members are direct dependencies, so a bare
-    // `cargo update` can float any transitive member off-pin.
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
-    let mut violations: Vec<String> = Vec::new();
-    let mut remediations: Vec<String> = Vec::new();
-    for package in packages {
-        let name = package.get("name").and_then(Value::as_str).unwrap_or("");
-        if !(name == "fsqlite" || name.starts_with("fsqlite-")) {
-            continue;
-        }
-        let expected_version = "0.4.13";
-        let version = package.get("version").and_then(Value::as_str).unwrap_or("");
-        if !seen.insert(name) {
-            violations.push(format!(
-                "`{name}` resolves more than once; the fsqlite family must converge on \
-                 a single resolution per package"
-            ));
-        }
-        if version != expected_version {
-            violations.push(format!(
-                "`{name}` resolves at `{version}`, expected `{expected_version}`"
-            ));
-            remediations.push(format!(
-                "the fork at rev {EXPECTED_FORK_REV} must publish `{name}` at \
-                 {expected_version}; move the family version pins, the [patch.crates-io] \
-                 table and this guard together"
-            ));
-        }
-        let source = package.get("source").and_then(Value::as_str).unwrap_or("");
-        if source != expected_lock_source {
-            violations.push(format!(
-                "`{name}` resolves from `{source}`, expected the pinned owner fork \
-                 (`{expected_lock_source}`)"
-            ));
-        }
-    }
-    if !seen.contains("fsqlite") {
-        violations.push(
-            "Cargo.lock does not resolve `fsqlite`; the engine dependency is missing".to_owned(),
-        );
-    }
-    if !violations.is_empty() {
-        let mut message = format!(
-            "dependency source contract violation: {} fsqlite-family problem(s) in Cargo.lock:\n",
-            violations.len()
-        );
-        for violation in &violations {
-            message.push_str("  - ");
-            message.push_str(violation);
-            message.push('\n');
-        }
-        if !remediations.is_empty() {
-            message.push_str("remediate every off-pin member, then rebuild:\n");
-            for remediation in &remediations {
-                message.push_str("  ");
-                message.push_str(remediation);
-                message.push('\n');
-            }
-        }
-        fatal(message);
     }
 }
 
@@ -893,8 +508,8 @@ fn validate_quill_source_pin(manifest_dir: &Path, manifest: &Value, packaged_man
         .unwrap_or_else(|| {
             fatal("dependency source contract: Cargo.lock has no [[package]] entries")
         });
-    // Collect every off-pin problem before failing, mirroring the fsqlite
-    // guard: report the whole drift in one build, not one member at a time.
+    // Collect every off-pin problem before failing: report the whole drift
+    // in one build, not one member at a time.
     let fork_git_prefix = format!("git+{EXPECTED_FORK_GIT}");
     let mut quill_resolutions = 0_usize;
     for package in packages {

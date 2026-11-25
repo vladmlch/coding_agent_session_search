@@ -9,9 +9,9 @@
 
 use coding_agent_search::franken_sync::Connection;
 use coding_agent_search::franken_sync::Connection as FrankenConnection;
+use coding_agent_search::franken_sync::SqliteValue;
 use coding_agent_search::franken_sync::compat::RowExt;
 use coding_agent_search::franken_sync::compat::{OpenFlags, open_with_flags};
-use fsqlite_types::value::SqliteValue;
 use std::fmt::Write as _;
 
 use coding_agent_search::storage::sqlite::{CURRENT_SCHEMA_VERSION, FrankenStorage, SqliteStorage};
@@ -261,10 +261,9 @@ fn frankensqlite_fork_source_identity_is_exact_and_coherent() {
 }
 
 /// `fuzz/` is its own Cargo workspace, so the root [patch.crates-io] table
-/// does not reach it. When the two drifted, the fuzz build resolved the
-/// crates.io fsqlite family and FAD's fork-only API failed to compile, which
-/// silently disabled every cass fuzz target. The fuzz workspace must carry
-/// the root table entry for entry.
+/// does not reach it. When the two drift, the fuzz build resolves the
+/// crates.io `frankensearch-quill` instead of the owner fork. The fuzz
+/// workspace must carry the root table entry for entry.
 #[test]
 fn fuzz_workspace_patch_table_matches_root() {
     let patch_table = |manifest_text: &str, name: &str| -> toml::Table {

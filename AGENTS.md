@@ -51,7 +51,6 @@ cass and its forked dependencies are developed only in the owner's GitHub forks:
 | cass | `coding_agent_session_search` | https://github.com/vladmlch/coding_agent_session_search |
 | FAD | `../franken_agent_detection` | https://github.com/vladmlch/franken_agent_detection |
 | frankensearch | `../frankensearch` | https://github.com/vladmlch/frankensearch |
-| frankensqlite | `../frankensqlite` | https://github.com/vladmlch/frankensqlite |
 
 In every checkout `origin` is the owner fork and `upstream` is Dicklesworthstone's repo with its
 push URL disabled. Push work branches to `origin`; cass pins fork revs by GitHub URL (never
@@ -90,22 +89,16 @@ Keep commits small, early, and limited to the paths you edited:
 
 ---
 
-## RULE NUMBER 2: ABSOLUTELY NO RUSQLITE IN NEW CODE — FRANKENSQLITE ONLY
+## RULE NUMBER 2: BUNDLED RUSQLITE IS THE SOLE SQLITE ENGINE
 
 **THIS IS A HARD, NON-NEGOTIABLE RULE. IT HAS BEEN VIOLATED OVER 10 TIMES AND THE OWNER IS DONE TOLERATING IT.**
 
-- **ALL new SQLite code MUST use `frankensqlite` (`fsqlite`).** This applies to CASS, franken_agent_detection, and ANY project in this ecosystem.
-- **NEVER add `rusqlite` as a dependency.** NEVER write `use rusqlite::`. NEVER use `rusqlite::Connection`. Not even "temporarily." Not even "to match the existing pattern."
-- **The existing rusqlite usage is LEGACY DEBT**, not a pattern to follow. Do NOT copy it. Do NOT extend it.
-- **If frankensqlite is missing a feature you need, FIX FRANKENSQLITE.** It lives at `/data/projects/frankensqlite`. Add the missing API there. That is the entire point of the project.
-- **The frankensqlite API** uses `frankensqlite::Connection`, `fsqlite::compat::{ConnectionExt, RowExt, OpenFlags, open_with_flags, ParamValue}`, and `row.get_typed::<T>(idx)` instead of rusqlite's `row.get(idx)`.
-- **For franken_agent_detection connectors**: use `frankensqlite` with the compat layer. Import pattern:
-  ```rust
-  use frankensqlite::Connection as FrankenConnection;
-  use frankensqlite::compat::{ConnectionExt, RowExt, OpenFlags, open_with_flags, param_slice_to_values};
-  ```
+- **ALL SQLite code MUST use the bundled `rusqlite =0.40.2` pin** (features `bundled` + `modern_sqlite`; `bundled` compiles the SQLite C amalgamation into the binary). This applies to CASS, franken_agent_detection, and ANY project in this ecosystem.
+- **NEVER add `fsqlite`/`frankensqlite` (or any other SQLite engine) as a dependency.** NEVER write `use fsqlite::` or `use frankensqlite::`. The fsqlite family was removed by the rusqlite migration; do not reintroduce it, and do not copy leftover fsqlite-era patterns from old code.
+- **The rusqlite API** is `rusqlite::Connection`, `rusqlite::params!`, and `rusqlite::OpenFlags`. For external app stores, use FAD's `sqlite_sync` helpers (`open_external_strict_in_place`, `open_read_only_with_snapshot_fallback`), which own the strict never-write read-only policy and the crashed-store snapshot fallback.
+- **If rusqlite is missing a feature you need, add it where it belongs** — upstream rusqlite, or the owning crate's helper layer. Do not fork in a second engine.
 
-**If you are an AI agent reading this and you write `rusqlite` in new code, you are wasting the owner's time and money. This rule exists because agents have repeatedly ignored it. DO NOT BE THE NEXT ONE.**
+**If you are an AI agent reading this and you write `fsqlite`/`frankensqlite` in new code, you are wasting the owner's time and money. This rule exists because agents have repeatedly ignored it. DO NOT BE THE NEXT ONE.**
 
 ---
 
@@ -114,7 +107,7 @@ Keep commits small, early, and limited to the paths you edited:
 We only use **Cargo** in this project, NEVER any other package manager.
 
 - **Edition:** Rust 2024 (dated nightly pinned by `rust-toolchain.toml`)
-- **Dependency versions:** Caret minimums resolved through the committed `Cargo.lock`. The SQLite family, Asupersync, Frankensearch, FAD, FrankenTUI and toon use exact `=` pins (see the dependency source contract below). `sysinfo`, `libc` and the dev-only `tokenizers` use `*`
+- **Dependency versions:** Caret minimums resolved through the committed `Cargo.lock`. rusqlite, Asupersync, Frankensearch, FAD, FrankenTUI and toon use exact `=` pins (see the dependency source contract below). `sysinfo`, `libc` and the dev-only `tokenizers` use `*`
 - **Configuration:** Cargo.toml only (single-crate project, no workspace)
 - **Unsafe code:** Forbidden as a general tool. Tightly scoped, narrowly audited `unsafe` is allowed only where it is unavoidable (e.g., the few Rust 2024 `std::env::set_var`/`remove_var` calls at controlled startup/teardown, or unavoidable FFI with no safe wrapper). Unsafe cross-thread connection wrappers and unjustified `Send`/`Sync` impls remain prohibited and must be UBS-gated.
 
@@ -147,8 +140,7 @@ The `.env` file exists and **MUST NEVER be overwritten**.
 | `asupersync` | Async runtime (multi-thread, fs, spawn_blocking, signals) |
 | `clap` | CLI argument parsing with derive macros |
 | `serde` + `serde_json` | Serialization |
-| `frankensqlite` (`fsqlite`) | Pure-Rust SQLite reimplementation — primary storage backend |
-| `rusqlite` | Dev-dependency only: C-SQLite interop fixtures in tests. Production never links it (historical salvage uses the external `sqlite3` CLI) |
+| `rusqlite` | Bundled C SQLite (`=0.40.2`, `bundled` + `modern_sqlite`) — the sole SQLite engine |
 | `frankensearch` | Unified search engine: lexical BM25 + semantic + RRF fusion |
 | `franken_agent_detection` | Agent session auto-detection across 34 providers |
 | `frankentorch` (via `frankensearch`) | Pure-Rust native MiniLM embeddings and reranking |
@@ -169,7 +161,6 @@ The `.env` file exists and **MUST NEVER be overwritten**.
 | `unicode-normalization` | NFC text canonicalization |
 
 **Optional local sibling checkouts** (under `/data/projects/`, via commented local patches only):
-- `frankensqlite` — Pure-Rust SQLite with BEGIN CONCURRENT (MVCC multi-writer)
 - `frankensearch` — Unified search: BM25 lexical + semantic embeddings + RRF fusion + reranking
 - `franken_agent_detection` — Auto-discovers agent sessions from 34 providers
 - `frankentui` (`ftui` + `ftui-extras` + `ftui-runtime` + `ftui-tty`) — Terminal UI framework
@@ -389,15 +380,30 @@ enrichment, a codex ObserveParentDirectory dependency policy, and
 retirement of the stale per-segment rows keyed on metadata.segments; see
 the 2026-11-13 FAD codex-paginated-merge report §7.
 
-The strict family guard requires uniform 0.4.13 versions and the pinned
-owner-fork source (`https://github.com/vladmlch/frankensqlite` at rev
-`2d55ddbd6f630f4036f53629c9c0f080dc5a1f00`) for every family member.
+Dependency update (2026-11-25, owner decision): the rusqlite migration
+replaces the entire fsqlite family. `Cargo.toml` now pins the crates.io
+`rusqlite =0.40.2` release directly (`bundled` + `modern_sqlite`; the
+`bundled` feature compiles the SQLite C amalgamation into the binary)
+as the sole SQLite engine, and all twenty `[patch.crates-io]` fsqlite
+redirects are gone — the only remaining patch entry is
+`frankensearch-quill`, still at the owner fork (`f75d1d55`). FAD moves
+to git rev `b44f0b5d3085002c0bae406d33569e7864606e84` (branch `main`):
+the Phase-0 pruned 10 active connectors migrate off fsqlite onto the same
+bundled `rusqlite =0.40.2` release through feature unification, and the
+strict read-only open policy is reimplemented on rusqlite (`sqlite_sync`'s
+`open_external_strict_in_place` / `open_read_only_with_snapshot_fallback`).
+`frankensearch-quill` stays at rev `f75d1d551c5fe73d0d4870a26b723faf6921de33`
+of the owner's frankensearch fork (branch `main`); version stays `0.4.1` and
+the CASS schema hash stays `v9-quill`, so no reindex is needed. The `build.rs`
+fsqlite family guard is removed; the quill source-pin guard and the
+per-dependency manifest contracts (now including a StrictOptIn rusqlite
+contract) remain.
 
 | Dependency | Pinned source |
 |------------|-----------------|
-| `frankensqlite` (`fsqlite`) / `fsqlite-types` and the whole SQLite family | git fork `=0.4.13` at rev `2d55ddbd6f630f4036f53629c9c0f080dc5a1f00` — the owner's frankensqlite fork `https://github.com/vladmlch/frankensqlite` (branch merge/cass-into-main), resolved through the committed `[patch.crates-io]` table; `build.rs` refuses a mixed family, any family redirect that misses this exact git URL+rev, duplicate package resolution, wrong version, or a non-fork lockfile source. The rev is upstream main at v0.4.13-22 (bd-5lw60 WAL size limits and truncation fences, bd-7do1d SHM revalidation after truncation, window rows numbered independently of aggregate frames, wrapped ORDER BY parameters kept from becoming ordinals, correlated RETURNING at the DML/FK boundary, malformed catalog columns and virtual-table triggers rejected, self-read cursor images coherent, and the #531 grouped-aggregate/index-prefix planner series) plus the fork's line rebased on it — `e4c17486` (rebase of `10eadc63`) seeks the single-column index range when the WHERE carries residual conjuncts (`WHERE key >= ? AND key < ? AND value IS NOT NULL` no longer falls back to a full table scan; ~208x on the motivating UNIQUE-text-key shape) and `aed53a33` (rebase of `d9414f97`) lets rowid range seeks take numbered-placeholder bounds (`WHERE id > ?1 AND ...`, proven bit-identical to stock SQLite by the fork's differential e2e oracle; ~160x on its fixture) — the DML equality-prefix index seeks (bd-j9gub, rebased as `db5d846e`+`1fcc81e8`: a DELETE or UPDATE whose equality conjuncts pin an index prefix now SEARCHes the leading-column index instead of scanning, with `EXPLAIN QUERY PLAN` rendering the seek and a stock-SQLite differential oracle proving affected rows, `changes()`, RETURNING, triggers and AUTOINCREMENT row-for-row; removes cass's O(N^2) per-conversation viewer DELETEs — receipts in .scratch/glm/2026-11-08-fsq-dml-backport/report.md; the NOT EXISTS-residual sort orphan-cleanup DELETE still SCANs, pinned by tests/frankensqlite_compat_gates.rs), and the strict read-only open mode `SQLITE_OPEN_STRICT_READ_ONLY` (compat `open_strict_read_only`, core `Connection::open_strict_read_only`, async `open_strict_read_only_sync`): an open that never writes or creates any sidecar of the store it reads — a valid `-shm` is read as-is, a missing or header-less WAL reads the main file, and every WAL-index state needing recovery is refused with the typed `BusyRecovery`, where plain 0.4.13 read-only opens rebuild a never-initialized `-shm` in place (GH#528); FAD's external-store readers (F17) and cass's doctor verify probe open strict-read-only so user files and recorded backup bundles stay byte- and mtime-identical (fork receipts in .scratch/glm/2026-11-09-fsq-strict-ro/report.md). Upstream v0.4.13 adds the GH#507 duplicate-implicit-rowid fix (the silent-PK corruption class on cass's parallel BEGIN CONCURRENT ingest path) plus the close/io-Cx, read-only-open (GH#515/#528) and savepoint/WAL fixes; all fork commits keep the row set byte-identical to the full scan, and the fork keeps every family crate at 0.4.13 so FAD's `^0.4.1` ask converges on the same single resolution. Carries 0.4.12's bd-obwsy (the 0.4.10 advisory), bd-gwoit, bd-yxqs9 and largest-rowid explicit-write (9308c4bb6) fixes, 0.4.1's GH#462 reserved-page WAL repair, 0.4.2's derived WAL-index recovery for read-only opens (GH#477), 0.4.4's durable pending-freelist repairs, 0.4.6's page-referenced-twice (bd-b5vmw) and lost-index-entry (bd-11sz4) fixes, 0.4.7's large multi-row INSERT index fix (bd-2eebi), serialized-DDL race fix (bd-4iaoi), GH#503 shadow-autoindex repair open, bounded published-page plane (5s1la) and first-`sqlite_master` full-file read fix (k2k20), and 0.4.9's prompt stale-WAL-index refusal (48c6cf6b2) and stock-empty-WAL-index first-write fix (4b48c95d8, cass GH#509). CASS runtime qualification of 0.4.12 passed (gi7k7); the 2026-11-09 branch `cass-local-fixes-0413-ro` (rev `898c4361`) stays as rollback. 0.4.6 included upstream's likely fix (fd8c16a94) for a long-lived connection left refusing every BEGIN (2l1b0.75, frankensqlite GH#429), not yet verified on the owner-archive scenario; the legacy OMP analytics phase keeps its own fresh writer regardless |
-| `franken-agent-detection` | `=0.3.11` at git rev `cb4085522bb00eb0ee702a8ffe0d4148a80b9c10` of the owner's fork `https://github.com/vladmlch/franken_agent_detection` (branch `main`, Phase-0 pruned to the 10 active connectors `claude_code`, `codex`, `cursor`, `antigravity`, `gemini`, `opencode`, `qwen`, `chatgpt`, `devin`, `qoder` with `qoder-sqlite`; the `18e2ffaf` `feat/codex-paginated-merge` pin stays as rollback), features `connectors`, `cursor`, `chatgpt`, `opencode`, `devin`, `codex-zstd`, `qoder-sqlite` |
-| `asupersync` | crates.io `=0.5.0` (the line fsqlite 0.4.x requires) |
+| `rusqlite` | crates.io `=0.40.2` (features `bundled` + `modern_sqlite`; `bundled` compiles the SQLite C amalgamation into the binary — the sole SQLite engine after the rusqlite migration. cass and franken-agent-detection's SQLite connectors both resolve the same `=0.40.2` release through feature unification, so `Cargo.lock` carries exactly one rusqlite and no fsqlite package; `build.rs` enforces the exact version and feature set) |
+| `franken-agent-detection` | `=0.3.11` at git rev `b44f0b5d3085002c0bae406d33569e7864606e84` of the owner's fork `https://github.com/vladmlch/franken_agent_detection` (branch `main`, Phase-0 pruned to the 10 active connectors `claude_code`, `codex`, `cursor`, `antigravity`, `gemini`, `opencode`, `qwen`, `chatgpt`, `devin`, `qoder` with `qoder-sqlite`, migrated off fsqlite onto bundled `rusqlite =0.40.2` with `open_external_strict_in_place`/`open_read_only_with_snapshot_fallback` in `sqlite_sync.rs`; the `cb408552` pin stays as rollback), features `connectors`, `cursor`, `chatgpt`, `opencode`, `devin`, `codex-zstd`, `qoder-sqlite` |
+| `asupersync` | crates.io `=0.5.0` (the shared async runtime line for cass, FAD and frankensearch) |
 | `frankensearch` | crates.io `=0.7.1` (tag `crates-v0.7.1`), resolving `frankensearch-index 0.4.2` (hotfix, tag `frankensearch-index-v0.4.2`: files are installed with `std::fs::rename`, so on Windows an open reader no longer blocks an install, bead if17v; and the dumped HNSW sidecars are flushed through write handles, so an HNSW build works on Windows, bead ujxiq), `frankensearch-quill 0.4.1` (hotfix, tag `frankensearch-quill-v0.4.1`: opening a writer verifies each segment once instead of four times; bead hfosx — since 2026-11-10 resolved from the owner's fork `https://github.com/vladmlch/frankensearch` (branch `main`) at rev `f75d1d551c5fe73d0d4870a26b723faf6921de33` through the committed `[patch.crates-io]` table: per-leaf glob expansion plus the two-arm Exact/Prefix lowering with the bulk k-way-merged, literal-dropped glob arm, so bare terms match past the 4 KiB `content_prefix` window with a typed over-broad-prefix refusal; see the 2026-11-10 dependency-update paragraph), `frankensearch-rerank 0.5.0`, `frankenhnsw 0.3.5` and the `frankentorch-*` family; features `hash`, `cass-compat`, `quill`, `ann`, `native`. Quill 0.4.0 is the first main-branch release after the 0.3.4 hotfix and carries all three of its fixes: the GH#499 live-doc numeric scoring, the standard CASS Boolean grammar (NOT > AND > OR, parentheses; frankensearch#56) and the union seek_danger fix (a disjunction under a conjunction lost matches on concat-merged segments). It also verifies snapshot segments concurrently on open (GH#501; up to 8 threads, the same bytes are still hashed), builds snippets only for returned hits, and skips a read-only reopen when nothing was published. The CASS schema hash is unchanged (`v9-quill`), so the upgrade does not rebuild the lexical index |
 | `toon` (`tru`) | crates.io `=0.2.4` (2026-08-24; production sources byte-identical to the previously pinned git rev `d7185c78` — registry 0.2.3 was rejected because its tree differs from the rev in real source despite the matching version field) |
 
@@ -601,33 +607,42 @@ The pinned UBS version lives in `scripts/ubs-version.txt`. Local installs should
 
 ---
 
-## Database Guidelines (frankensqlite + rusqlite)
+## Database Guidelines (rusqlite)
 
-The project is migrating from rusqlite to frankensqlite. Both are available:
-- `frankensqlite` (import as `fsqlite`) — Pure-Rust SQLite with BEGIN CONCURRENT support
-- `rusqlite` — C-binding SQLite, retained as fallback during migration
+The project uses bundled `rusqlite` (`=0.40.2`, features `bundled` +
+`modern_sqlite`) as the sole SQLite engine — the rusqlite migration
+replaced the fsqlite family. `bundled` compiles the SQLite C amalgamation
+into the binary, so there is exactly one engine in the tree.
 
-### frankensqlite Patterns
+### rusqlite Patterns
 
 ```rust
-use frankensqlite::Connection;
+use rusqlite::{Connection, OpenFlags, params};
 
 // Open with WAL mode (REQUIRED for concurrent access)
 let conn = Connection::open(path)?;
-conn.execute("PRAGMA journal_mode = WAL;")?;
-conn.execute("PRAGMA busy_timeout = 5000;")?;
+conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")?;
 
-// Use params! macro (needs explicit import)
-use fsqlite::params;
-conn.execute_with_params("INSERT INTO t (a) VALUES (?1)", params![42])?;
+// Use params! macro
+conn.execute("INSERT INTO t (a) VALUES (?1)", params![42])?;
 ```
 
-### Verified Standard SQLite File Reads
+### Reading Standard SQLite Files
 
-`frankensqlite::Connection::open()` can open and read standard SQLite database files created by SQLite/rusqlite. That includes external app databases such as Cursor `state.vscdb`, OpenCode `opencode.db`, and historical cass databases.
+`rusqlite::Connection::open()` opens and reads standard SQLite database
+files — it *is* SQLite. That includes external app databases such as
+Cursor `state.vscdb`, OpenCode `opencode.db`, and historical cass
+databases written by the retired fsqlite engine.
 
-- Do not add `rusqlite` just to read an existing SQLite file.
-- If a specific query shape fails against one of these files, treat it as a targeted engine/query bug and file a reproducer instead of assuming the file format is unsupported.
+- External app stores go through FAD's `sqlite_sync` helpers
+  (`open_external_strict_in_place`, `open_read_only_with_snapshot_fallback`),
+  which own the strict never-write read-only policy: a valid WAL store
+  opens in place `SQLITE_OPEN_READ_ONLY` after WAL-index validation, and a
+  crashed store's unusable WAL-index engages a private snapshot copy so
+  the originals stay byte- and mtime-identical.
+- If a specific query shape fails against one of these files, treat it as
+  a targeted query bug and file a reproducer instead of assuming the file
+  format is unsupported.
 
 ### FrankenConnectionManager (production pattern)
 
@@ -639,18 +654,20 @@ Use `FrankenConnectionManager` for concurrent access:
 ### Concurrent Writer Best Practices
 
 1. **Always use WAL mode** — without it, concurrent writes corrupt the DB
-2. **Use jittered exponential backoff** on `BusySnapshot` / `WriteConflict` errors
+2. **Use jittered exponential backoff** on the SQLITE_BUSY-family errors
 3. **Batch writes** — 10-20 rows per transaction (not 1 row per commit)
 4. **Limit concurrent writers** to 4 threads (matches production rayon parallelism)
-5. **Retryable errors:** `Busy`, `BusyRecovery`, `BusySnapshot`, `WriteConflict`, `SerializationFailure`, `DatabaseCorrupt`
+5. **Retryable errors:** `Busy`, `BusySnapshot`, `BusyRecovery`, `Locked`, `CantOpen` (the `SqliteFailure` busy/locked codes)
 
-### Known frankensqlite Differences
+### rusqlite Notes
 
-- **File format interop:** As of rev `9cedb30b`, frankensqlite databases are
-  readable by C SQLite (rusqlite) and vice versa. Historical bundle salvage
-  still uses rusqlite as a proven read bridge for pre-migration databases.
-- **`PRAGMA writable_schema`:** Not supported for write operations (INSERT/UPDATE
-  on sqlite_master). SELECT from sqlite_master works.
+- **File format:** the bundled amalgamation reads and writes standard
+  SQLite files; databases written by the retired fsqlite engine remain
+  readable. Historical bundle salvage still uses the external `sqlite3`
+  CLI as a proven read bridge.
+- rusqlite has no `BEGIN CONCURRENT`/MVCC mode — concurrent writers
+  serialize on the WAL write lock; keep the single-writer discipline
+  above.
 
 ### General Rules
 
@@ -692,7 +709,7 @@ Integration and E2E tests live in the `tests/` directory. Benchmarks live in `be
 ### Unit Tests
 
 > **Test stack:** use `RUST_MIN_STACK=134217728`, matching `.cargo/config.toml`
-> and `scripts/gate.sh`. fsqlite 0.3.x's deep debug-mode futures have exceeded
+> and `scripts/gate.sh`. Deep debug-mode futures have exceeded
 > even a 16 MiB test-thread stack in storage tests. The 128 MiB setting reserves
 > virtual address space; pages are committed as needed. Do not override it with
 > the older 16 MiB value when running the full suite.
@@ -851,7 +868,7 @@ coding_agent_session_search/
 │   │   ├── canonicalize.rs       # Query canonicalization
 │   │   └── daemon_client.rs      # Search daemon RPC client
 │   ├── indexer/                  # Session indexing pipeline
-│   ├── storage/                  # SQLite persistence (frankensqlite)
+│   ├── storage/                  # SQLite persistence (rusqlite)
 │   ├── ui/                       # TUI components
 │   ├── pages/                    # Web pages generation
 │   ├── pages_assets/             # Static assets for pages

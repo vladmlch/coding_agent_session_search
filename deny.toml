@@ -115,172 +115,7 @@ expression = "MIT"
 license-files = []
 
 [[licenses.clarify]]
-name = "fsqlite"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-ast"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-btree"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-core"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-error"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-mvcc"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-pager"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-parser"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-planner"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-vdbe"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-vfs"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-wal"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui-extras"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui-runtime"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui-tty"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
 name = "toon"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-ext-fts5"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-ext-icu"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-ext-json"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-ext-misc"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-ext-rtree"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-func"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-observability"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "fsqlite-types"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui-a11y"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui-backend"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui-core"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui-i18n"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui-layout"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui-render"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui-style"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui-text"
-expression = "MIT"
-license-files = []
-
-[[licenses.clarify]]
-name = "ftui-widgets"
 expression = "MIT"
 license-files = []
 
@@ -312,13 +147,11 @@ unknown-registry = "deny"
 unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # Sibling projects pinned via [patch] entries in Cargo.toml or as path-deps.
-# Github org `Dicklesworthstone` covers frankensqlite, frankensearch,
-# franken_agent_detection, frankentui, asupersync, toon.
+# Github org `Dicklesworthstone` covers frankensearch,
+# franken_agent_detection, asupersync, toon.
 allow-git = [
-    "https://github.com/Dicklesworthstone/frankensqlite",
     "https://github.com/Dicklesworthstone/frankensearch",
     "https://github.com/Dicklesworthstone/franken_agent_detection",
-    "https://github.com/Dicklesworthstone/frankentui",
     "https://github.com/Dicklesworthstone/asupersync",
     "https://github.com/Dicklesworthstone/toon",
 ]
