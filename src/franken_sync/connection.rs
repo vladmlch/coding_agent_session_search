@@ -76,35 +76,53 @@ pub(super) fn lock_taking_begin_verb(sql: &str) -> Option<&'static str> {
     }
 }
 
-/// Execute a statement to completion, discarding any rows it returns.
+/// Execute a statement (or semicolon-separated batch) to completion,
+/// discarding any rows returned.
 ///
-/// `PRAGMA journal_mode = WAL`, `BEGIN`, etc. all return rows under rusqlite's
-/// strict `execute`, so the facade steps the statement manually instead.
-/// Multi-statement SQL falls back to `execute_batch` (bound parameters apply
-/// to the first statement only, which matches sqlite semantics anyway).
+/// `PRAGMA journal_mode = WAL`, `BEGIN`, `... RETURNING`, etc. all return rows
+/// under rusqlite's strict `execute`, so each statement is stepped via `query`
+/// instead. Iterating `rusqlite::Batch` prepares and runs one statement at a
+/// time so earlier DDL/DML takes effect before later statements are prepared
+/// (and failures preserve prior side effects in execution order); bound
+/// parameters apply to the first statement only.
 fn run_execute(
     conn: &rusqlite::Connection,
     sql: &str,
     params: &[SqliteValue],
 ) -> Result<usize, rusqlite::Error> {
-    match conn.prepare(sql) {
-        Ok(mut stmt) => {
-            // Always step through `query` — even with zero params — because
-            // `raw_execute` still fails with `ExecuteReturnedResults` on
-            // row-returning statements (`PRAGMA journal_mode = WAL`,
-            // `BEGIN`, `... RETURNING`). `dynamic_params(&[])` allocates
-            // nothing and `query` drains `SQLITE_ROW` results cleanly.
-            let refs = dynamic_params(params);
-            let mut rows = stmt.query(&refs[..])?;
-            while let Some(_row) = rows.next()? {}
-            Ok(conn.changes() as usize)
+    use rusqlite::fallible_iterator::FallibleIterator as _;
+
+    let mut batch = rusqlite::Batch::new(conn, sql);
+    let mut is_first = true;
+    while let Some(mut stmt) = batch.next()? {
+        // An interrupt arriving during `sqlite3_prepare_v3` (when
+        // `nVdbeActive == 0`) is a C SQLite no-op; re-check between
+        // statements so cancellation never slips into the next statement.
+        if current_is_cancelled() {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+                None,
+            ));
         }
-        Err(rusqlite::Error::MultipleStatement) => {
-            conn.execute_batch(sql)?;
-            Ok(conn.changes() as usize)
-        }
-        Err(error) => Err(error),
+        let bound_params = if is_first {
+            is_first = false;
+            params
+        } else {
+            &[]
+        };
+        let refs = dynamic_params(bound_params);
+        let mut rows = stmt.query(&refs[..])?;
+        while let Some(_row) = rows.next()? {}
     }
+    if is_first && !params.is_empty() {
+        // Empty / comment-only SQL with bound parameters: mirror single-stmt
+        // `prepare` + `query(params)` so excess parameters are rejected.
+        let mut stmt = conn.prepare(sql)?;
+        let refs = dynamic_params(params);
+        let mut rows = stmt.query(&refs[..])?;
+        while let Some(_row) = rows.next()? {}
+    }
+    Ok(conn.changes() as usize)
 }
 
 /// Small deterministic jitter for busy-retry pacing: exponential base
@@ -377,9 +395,9 @@ impl Connection {
             self.begin_with_retry(verb, None)?;
             return Ok(0);
         }
-        let changed = self.guarded(|conn| run_execute(conn, sql, &[]))?;
+        let result = self.guarded(|conn| run_execute(conn, sql, &[]));
         self.maybe_refresh_wal_state(sql);
-        Ok(changed)
+        result
     }
 
     /// Execute with bound parameters. A parameterless lock-taking
@@ -399,9 +417,9 @@ impl Connection {
             self.begin_with_retry(verb, None)?;
             return Ok(0);
         }
-        let changed = self.guarded(|conn| run_execute(conn, sql, params))?;
+        let result = self.guarded(|conn| run_execute(conn, sql, params));
         self.maybe_refresh_wal_state(sql);
-        Ok(changed)
+        result
     }
 
     /// Execute a semicolon-separated script. A lone lock-taking
@@ -412,9 +430,9 @@ impl Connection {
         if let Some(verb) = lock_taking_begin_verb(sql) {
             return self.begin_with_retry(verb, None);
         }
-        self.guarded(|conn| conn.execute_batch(sql))?;
+        let result = self.guarded(|conn| conn.execute_batch(sql));
         self.maybe_refresh_wal_state(sql);
-        Ok(())
+        result
     }
 
     pub(super) fn maybe_refresh_wal_state(&self, sql: &str) {

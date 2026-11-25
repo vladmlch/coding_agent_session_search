@@ -985,3 +985,84 @@ use std::time::{Duration, Instant};
         assert_eq!(probe_child(&wal_db), "ACQUIRED");
         wal_writer.close().expect("close wal");
     }
+
+    #[test]
+    fn multi_statement_execute_updates_live_wal_state_even_on_later_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("multi_wal_state.db");
+        let db_str = db_path.to_string_lossy().into_owned();
+
+        let conn = Connection::open(&db_str).expect("open");
+        let id = conn.file_identity().expect("id").expect("some id");
+        assert_eq!(
+            super::sidecar_probes::live_connection_state(id),
+            Some(Some(false))
+        );
+
+        conn.execute("CREATE TABLE t(x); PRAGMA journal_mode = WAL; INSERT INTO t VALUES (1);")
+            .expect("multi-statement wal switch");
+        assert_eq!(
+            super::sidecar_probes::live_connection_state(id),
+            Some(Some(true))
+        );
+        let row = conn.query_row("SELECT x FROM t").expect("query row");
+        assert_eq!(row.get_typed::<i64>(0).unwrap(), 1);
+
+        conn.execute("PRAGMA journal_mode = DELETE; THIS IS NOT VALID SQL;")
+            .expect_err("trailing invalid statement must fail");
+        assert_eq!(
+            super::sidecar_probes::live_connection_state(id),
+            Some(Some(false))
+        );
+        conn.close().expect("close");
+    }
+
+    #[test]
+    fn multi_statement_execute_with_params_binds_first_statement_only() {
+        let conn = conn();
+        conn.execute("CREATE TABLE t(x INTEGER);").expect("create");
+        conn.execute_with_params(
+            "INSERT INTO t(x) VALUES (?1); INSERT INTO t(x) VALUES (20);",
+            &[SqliteValue::Integer(10)],
+        )
+        .expect("multi-statement with params");
+        let rows = conn.query("SELECT x FROM t ORDER BY x").expect("select");
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.get_typed::<i64>(0).unwrap())
+                .collect::<Vec<_>>(),
+            vec![10, 20]
+        );
+    }
+
+    #[test]
+    fn multi_statement_execute_drains_multi_row_returning_statements() {
+        let conn = conn();
+        conn.execute(
+            "CREATE TABLE t(x INTEGER);
+             INSERT INTO t(x) VALUES (1), (2) RETURNING x;
+             INSERT INTO t(x) VALUES (3);",
+        )
+        .expect("multi-statement returning");
+        let rows = conn.query("SELECT x FROM t ORDER BY x").expect("select");
+        assert_eq!(
+            rows.iter()
+                .map(|r| r.get_typed::<i64>(0).unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn multi_statement_execute_stops_on_cancellation_scope() {
+        let conn = conn();
+        let cancellation = CancellationHandle::new();
+        {
+            let _scope = cancellation.enter();
+            cancellation.cancel();
+            let err = conn
+                .execute("CREATE TABLE t(x); INSERT INTO t VALUES (1);")
+                .expect_err("cancelled multi-statement execute must abort");
+            assert!(matches!(err, FrankenError::Abort), "got {err:?}");
+        }
+    }
