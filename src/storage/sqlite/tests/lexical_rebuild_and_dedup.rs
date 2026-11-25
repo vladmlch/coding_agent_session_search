@@ -563,7 +563,7 @@ fn fetch_messages_for_lexical_rebuild_caps_each_message_of_a_long_conversation()
                  FROM messages INDEXED BY sqlite_autoindex_messages_1 \
                  WHERE conversation_id = ?1 ORDER BY idx",
             fparams![conversation_id],
-            |row| Ok((row.get_typed(1)?, row.get_typed::<String>(4).ok())),
+            |row| Ok((row.get_typed(1)?, row.get_typed::<String>(5).ok())),
         )
         .expect("explain bounded lexical projection");
     assert!(
