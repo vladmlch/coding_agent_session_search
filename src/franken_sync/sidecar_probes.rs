@@ -335,6 +335,11 @@ fn strict_readonly_rusqlite_flags(flags: compat::OpenFlags) -> rusqlite::OpenFla
     open_flags
 }
 
+/// Narrow compatibility view returned by `Connection::as_async()`.
+///
+/// The engine is synchronous now; this only preserves the
+/// `.as_async().in_transaction()` shape used by semantic replay and archive
+/// code.
 pub struct AsyncView<'conn> {
     inner: &'conn rusqlite::Connection,
 }

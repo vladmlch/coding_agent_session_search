@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::Path;
 
 use super::value_and_error::{franken_error_to_rusqlite, sqlite_value_from_ref};
-use super::{Connection, FrankenError, Row, SqliteValue, params};
+use super::{Connection, FrankenError, Row, SqliteValue};
 
 // ---------------------------------------------------------------------------
 // compat module — rusqlite-shaped API surface
@@ -22,7 +22,7 @@ pub mod compat {
         BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Deref, Not, Sub, SubAssign,
     };
 
-    pub use super::params;
+    pub use crate::__cass_franken_params as params;
     pub use rusqlite::TransactionBehavior;
 
     // -- OpenFlags ------------------------------------------------------------
