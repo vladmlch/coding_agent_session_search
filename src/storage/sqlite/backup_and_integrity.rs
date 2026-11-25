@@ -347,17 +347,14 @@ pub struct ConnectorScanState {
     pub scan_contract_pending: bool,
 }
 
-/// SQL to register the FTS5 virtual table on a frankensqlite connection.
-///
-/// FrankenSQLite skips virtual-table entries (rootpage=0) when loading
-/// `sqlite_master` from a stock-SQLite database.  Executing this CREATE
-/// triggers the legacy FTS5 fallback path and materialises the table so
-/// subsequent FTS queries work.
+/// SQL to register the derived FTS5 shadow on a connection. Canonical
+/// schema-v1 shape: two indexed columns plus the implicit rowid
+/// (`contentless_delete=1` lets row removal propagate through the
+/// `messages_fts_delete` trigger's `DELETE FROM fts_messages`).
 pub const FTS5_REGISTER_SQL: &str = "\
     CREATE VIRTUAL TABLE IF NOT EXISTS fts_messages USING fts5(\
-        content, title, agent, workspace, source_path, \
-        created_at UNINDEXED, \
-        content='', contentless_delete=1, tokenize='porter'\
+        content, title, \
+        content='', contentless_delete=1, tokenize='porter unicode61'\
     )";
 
 pub(super) const FTS_FRANKEN_REBUILD_META_KEY: &str = "fts_frankensqlite_rebuild_generation";
@@ -422,9 +419,8 @@ pub(super) const DAILY_STATS_CONTENT_REVISION_PENDING: i64 = -1;
 /// the statement, preserving their published contents through rollback.
 pub const FTS5_DELETE_ALL_SQL: &str = "DELETE FROM fts_messages;";
 
-pub const FTS_MESSAGES_REQUIRED_SHADOW_TABLES: [&str; 5] = [
+pub const FTS_MESSAGES_REQUIRED_SHADOW_TABLES: [&str; 4] = [
     "fts_messages_config",
-    "fts_messages_content",
     "fts_messages_data",
     "fts_messages_docsize",
     "fts_messages_idx",
@@ -550,6 +546,12 @@ fn validate_fts_messages_integrity_with_queries(
     }
 
     let probe_error = probe(FTS_MESSAGES_INTEGRITY_PROBE_SQL).err();
+    if let Some(ref err) = probe_error
+        && (retryable_franken_error(err)
+            || matches!(err, crate::franken_sync::FrankenError::Abort))
+    {
+        return Err(anyhow::Error::new(probe_error.unwrap()));
+    }
     if probe_error.is_none()
         && fts_schema_sql
             .iter()
@@ -563,7 +565,6 @@ fn validate_fts_messages_integrity_with_queries(
              WHERE type = 'table'
                AND name IN (
                  'fts_messages_config',
-                 'fts_messages_content',
                  'fts_messages_data',
                  'fts_messages_docsize',
                  'fts_messages_idx'
@@ -575,7 +576,7 @@ fn validate_fts_messages_integrity_with_queries(
                 Vec::new(),
                 Some(
                     "SELECT name FROM sqlite_master WHERE name IN \
-                     ('fts_messages_config','fts_messages_content','fts_messages_data','fts_messages_docsize','fts_messages_idx')",
+                     ('fts_messages_config','fts_messages_data','fts_messages_docsize','fts_messages_idx')",
                 ),
                 Some(err.to_string()),
             )
@@ -633,20 +634,6 @@ pub(crate) fn validate_fts_messages_integrity_for_async_connection(
     )
 }
 
-/// Remove historical duplicate `fts_messages` rows from `sqlite_master`,
-/// keeping the earliest (canonical) row.
-///
-/// fsqlite 0.3.x refuses to open a database whose sqlite_master carries the
-/// pre-fix duplicate `fts_messages` virtual-table row ("conflicting
-/// virtual-table entries"), so this repair must run before the engine open.
-/// writable_schema WRITES are the one documented operation frankensqlite does
-/// not support (AGENTS.md: "PRAGMA writable_schema: Not supported for write
-/// operations"), so the surgery shells to the `sqlite3` CLI — the same
-/// production pattern `scrub_staged_derived_fts_metadata_via_sqlite3` uses
-/// for staged-seed sqlite_master repair.
-/// Error for a failed launch of the external `sqlite3` CLI. A host without it
-/// (Windows by default, minimal containers) used to see only "No such file or
-/// directory"; say which tool is missing and what needed it (2l1b0.65).
 pub(super) fn sqlite3_cli_launch_error(error: std::io::Error, action: &str) -> anyhow::Error {
     if error.kind() == std::io::ErrorKind::NotFound {
         anyhow::anyhow!(
@@ -656,67 +643,6 @@ pub(super) fn sqlite3_cli_launch_error(error: std::io::Error, action: &str) -> a
     } else {
         anyhow::Error::new(error).context(format!("launching sqlite3 for {action}"))
     }
-}
-
-pub(crate) fn dedupe_conflicting_fts_schema_rows_via_sqlite3(db_path: &Path) -> Result<()> {
-    let dedupe_sql = "PRAGMA writable_schema = ON;
-         DELETE FROM sqlite_master
-          WHERE type = 'table'
-            AND name = 'fts_messages'
-            AND rowid NOT IN (
-                SELECT MIN(rowid) FROM sqlite_master
-                 WHERE type = 'table' AND name = 'fts_messages'
-            );
-         PRAGMA writable_schema = OFF;";
-
-    let run_dedupe = |disable_defensive: bool| -> Result<std::process::Output> {
-        let mut command = Command::new("sqlite3");
-        command.arg("-batch").arg(db_path);
-        if disable_defensive {
-            command.arg(".dbconfig defensive off");
-        }
-        command.arg(dedupe_sql).output().map_err(|error| {
-            sqlite3_cli_launch_error(
-                error,
-                &format!(
-                    "the duplicate fts schema-row repair of {}",
-                    db_path.display()
-                ),
-            )
-        })
-    };
-    let render_output = |output: &std::process::Output| -> String {
-        format!(
-            "status {}; stdout: {}; stderr: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
-    };
-
-    let defensive_off_output = run_dedupe(true)?;
-    if defensive_off_output.status.success() {
-        tracing::info!(
-            db = %db_path.display(),
-            "removed duplicate fts_messages schema rows via sqlite3 bridge"
-        );
-        return Ok(());
-    }
-    let fallback_output = run_dedupe(false)?;
-    if !fallback_output.status.success() {
-        anyhow::bail!(
-            "sqlite3 duplicate fts schema-row repair failed for {}; defensive-off attempt {}; \
-             fallback without .dbconfig {}",
-            db_path.display(),
-            render_output(&defensive_off_output),
-            render_output(&fallback_output)
-        );
-    }
-    tracing::info!(
-        db = %db_path.display(),
-        "removed duplicate fts_messages schema rows via sqlite3 bridge (defensive fallback)"
-    );
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1041,7 +967,7 @@ pub(crate) fn remove_database_files(path: &Path) -> std::io::Result<()> {
     }
 
     // Best-effort removal of sidecar files (ignore errors if they don't exist)
-    for suffix in ["-wal", "-shm"] {
+    for suffix in ["-wal", "-shm", "-journal"] {
         match fs::remove_file(database_sidecar_path(path, suffix)) {
             Ok(()) => removed_any = true,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}

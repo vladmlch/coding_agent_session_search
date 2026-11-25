@@ -4,9 +4,30 @@ use crate::franken_sync::{Row as FrankenRow, compat::RowExt as FrankenRowExt};
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 
-/// Public schema version constant for external checks.
-pub const CURRENT_SCHEMA_VERSION: i64 = 23;
-pub(crate) const MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION: i64 = 13;
+/// Canonical schema version of freshly bootstrapped archives.
+///
+/// Under the bundled-rusqlite engine (Task C3) the former v1-v23
+/// FrankenSQLite migration chain collapsed into a single baseline: the
+/// complete ex-v23 DDL is applied once by
+/// `open::initialize_schema_v1`, and archive identity is the
+/// `(application_id = 0x43415353, user_version = 1)` header stamp. There is
+/// no migration ledger to advance, so the canonical version is `1`.
+pub const CURRENT_SCHEMA_VERSION: i64 = 1;
+/// Oldest schema generation an in-place (non-rebuild) storage open may
+/// upgrade. Under the schema-v1 contract the only admissible generation is
+/// `CURRENT_SCHEMA_VERSION` itself; the constant is retained because
+/// `search::storage_integrity` compares against it.
+pub(crate) const MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION: i64 = CURRENT_SCHEMA_VERSION;
+
+/// Schema versions the storage open path admits.
+///
+/// Under the bundled-rusqlite contract (Task C3) there is a single canonical
+/// version; the iterator shape is retained so `logical_archive::import`
+/// callers keep compiling while still treating the "admitted version set" as
+/// an exhaustive list, not a maximum.
+pub fn active_schema_migration_versions() -> impl Iterator<Item = i64> {
+    std::iter::once(CURRENT_SCHEMA_VERSION)
+}
 pub(super) const LEGACY_OMP_RECLASSIFICATION_META_KEY: &str = "legacy_omp_reclassification_v2";
 pub(super) const PREVIOUS_LEGACY_OMP_RECLASSIFICATION_META_KEY: &str =
     "legacy_omp_reclassification_v1";

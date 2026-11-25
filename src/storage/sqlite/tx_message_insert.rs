@@ -9,7 +9,7 @@ use super::conversation_tail_state::{
     trace_existing_conversation_lookup_fallback,
 };
 use super::fts_rebuild::{FTS5_BATCH_SIZE, FtsEntry, path_to_string, role_as_str};
-use super::historical_salvage::historical_raw_json;
+use super::source_and_historical_import::historical_raw_json;
 use super::open_and_locks::{
     record_message_lookup_bounded_queries, record_message_lookup_full_scan_query,
 };
@@ -829,34 +829,20 @@ pub(super) fn franken_batch_insert_fts(
             .iter()
             .enumerate()
             .map(|(i, _)| {
-                let base = i * 7 + 1; // +1 for 1-indexed params
-                format!(
-                    "(?{},?{},?{},?{},?{},?{},?{})",
-                    base,
-                    base + 1,
-                    base + 2,
-                    base + 3,
-                    base + 4,
-                    base + 5,
-                    base + 6
-                )
+                let base = i * 3 + 1; // +1 for 1-indexed params
+                format!("(?{},?{},?{})", base, base + 1, base + 2)
             })
             .collect::<Vec<_>>()
             .join(",");
 
-        let sql = format!(
-            "INSERT INTO fts_messages(rowid, content, title, agent, workspace, source_path, created_at) VALUES {placeholders}"
-        );
+        let sql =
+            format!("INSERT INTO fts_messages(rowid, content, title) VALUES {placeholders}");
 
-        let mut param_values: Vec<SqliteValue> = Vec::with_capacity(chunk.len() * 7);
+        let mut param_values: Vec<SqliteValue> = Vec::with_capacity(chunk.len() * 3);
         for entry in chunk {
             param_values.push(SqliteValue::from(entry.message_id));
             param_values.push(SqliteValue::from(entry.content.as_str()));
             param_values.push(SqliteValue::from(entry.title.as_str()));
-            param_values.push(SqliteValue::from(entry.agent.as_str()));
-            param_values.push(SqliteValue::from(entry.workspace.as_str()));
-            param_values.push(SqliteValue::from(entry.source_path.as_str()));
-            param_values.push(SqliteValue::from(entry.created_at));
         }
 
         // GH #413 (bead cjugu): frankensqlite wraps every statement in an
@@ -919,34 +905,20 @@ pub(super) fn franken_batch_insert_fts_on_connection(
             .iter()
             .enumerate()
             .map(|(i, _)| {
-                let base = i * 7 + 1;
-                format!(
-                    "(?{},?{},?{},?{},?{},?{},?{})",
-                    base,
-                    base + 1,
-                    base + 2,
-                    base + 3,
-                    base + 4,
-                    base + 5,
-                    base + 6
-                )
+                let base = i * 3 + 1;
+                format!("(?{},?{},?{})", base, base + 1, base + 2)
             })
             .collect::<Vec<_>>()
             .join(",");
 
-        let sql = format!(
-            "INSERT INTO fts_messages(rowid, content, title, agent, workspace, source_path, created_at) VALUES {placeholders}"
-        );
+        let sql =
+            format!("INSERT INTO fts_messages(rowid, content, title) VALUES {placeholders}");
 
-        let mut param_values: Vec<SqliteValue> = Vec::with_capacity(chunk.len() * 7);
+        let mut param_values: Vec<SqliteValue> = Vec::with_capacity(chunk.len() * 3);
         for entry in chunk {
             param_values.push(SqliteValue::from(entry.message_id));
             param_values.push(SqliteValue::from(entry.content.as_str()));
             param_values.push(SqliteValue::from(entry.title.as_str()));
-            param_values.push(SqliteValue::from(entry.agent.as_str()));
-            param_values.push(SqliteValue::from(entry.workspace.as_str()));
-            param_values.push(SqliteValue::from(entry.source_path.as_str()));
-            param_values.push(SqliteValue::from(entry.created_at));
         }
 
         conn.execute_with_params(&sql, &param_values)

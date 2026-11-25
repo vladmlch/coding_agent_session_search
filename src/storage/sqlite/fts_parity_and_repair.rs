@@ -1095,7 +1095,11 @@ impl FrankenStorage {
         self.conn
             .execute("DROP TABLE IF EXISTS fts_messages")
             .with_context(|| "dropping the residue-bearing FTS5 registration")?;
-        for table in FTS_MESSAGES_REQUIRED_SHADOW_TABLES {
+        for table in FTS_MESSAGES_REQUIRED_SHADOW_TABLES
+            .iter()
+            .copied()
+            .chain(std::iter::once("fts_messages_content"))
+        {
             self.conn
                 .execute(&format!("DROP TABLE IF EXISTS {table}"))
                 .with_context(|| format!("dropping FTS5 residue table {table}"))?;
