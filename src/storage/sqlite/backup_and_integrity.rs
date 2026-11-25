@@ -7,9 +7,8 @@ use super::storage_core::FrankenStorage;
 use crate::franken_sync::{
     Connection as FrankenConnection, Row as FrankenRow, SqliteValue,
     compat::{
-        ConnectionExt as FrankenConnectionExt, OpenFlags as FrankenOpenFlags,
-        OptionalExtension as FrankenOptionalExtension, RowExt as FrankenRowExt,
-        open_with_flags as open_franken_with_flags,
+        ConnectionExt as FrankenConnectionExt, OptionalExtension as FrankenOptionalExtension,
+        RowExt as FrankenRowExt,
     },
 };
 use crate::model::types::Conversation;
@@ -747,10 +746,8 @@ fn vacuum_into_backup_stage(
     db_path: &Path,
     stage_path: &Path,
 ) -> std::result::Result<(), crate::franken_sync::FrankenError> {
-    let mut conn = open_franken_with_flags(
-        &db_path.to_string_lossy(),
-        FrankenOpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
+    let mut conn =
+        FrankenConnection::open_schema_only_with_wal_index_recovery(&db_path.to_string_lossy())?;
     let result = (|| {
         conn.execute(BACKUP_VACUUM_BUSY_TIMEOUT_PRAGMA)?;
         let path_str = stage_path.to_string_lossy();
@@ -1624,8 +1621,7 @@ pub(super) fn historical_bundle_has_queryable_core_tables(conn: &FrankenConnecti
 
 pub(super) fn open_historical_bundle_readonly(root_path: &Path) -> Result<FrankenConnection> {
     let path_str = root_path.to_string_lossy();
-    let flags = FrankenOpenFlags::SQLITE_OPEN_READ_ONLY;
-    let conn = open_franken_with_flags(&path_str, flags)
+    let conn = FrankenConnection::open_schema_only_with_wal_index_recovery(&*path_str)
         .with_context(|| format!("opening historical database {}", root_path.display()))?;
     Ok(conn)
 }

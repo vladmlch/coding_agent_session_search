@@ -10,7 +10,7 @@ use crate::franken_sync::{
     Connection as FrankenConnection, FrankenError,
     compat::{
         ConnectionExt as FrankenConnectionExt, OpenFlags as FrankenOpenFlags,
-        RowExt as FrankenRowExt, open_with_flags as open_franken_with_flags,
+        RowExt as FrankenRowExt,
     },
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -902,10 +902,8 @@ pub(super) fn schema_check_error_requires_rebuild(err: &crate::franken_sync::Fra
 pub(super) fn check_schema_compatibility(
     path: &Path,
 ) -> std::result::Result<SchemaCheck, crate::franken_sync::FrankenError> {
-    let mut conn = open_franken_with_flags(
-        &path.to_string_lossy(),
-        FrankenOpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
+    let mut conn =
+        FrankenConnection::open_schema_only_with_wal_index_recovery(&path.to_string_lossy())?;
 
     let result = (|| {
         // Check if meta table exists
