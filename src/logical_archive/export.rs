@@ -500,13 +500,7 @@ fn cells_for_version(values: &[SqliteValue], format_version: u32) -> Result<Vec<
     let mut bytes = 0usize;
     for value in values {
         let size = match value {
-            SqliteValue::Text(text) => {
-                // SQLite TEXT can carry invalid UTF-8. SmallText's Display
-                // substitutes replacement characters for those bytes, which
-                // would silently make a supposedly lossless backup lossy.
-                ensure!(text.is_valid_utf8(), "logical TEXT contains invalid UTF-8");
-                text.len()
-            }
+            SqliteValue::Text(text) => text.len(),
             SqliteValue::Blob(blob) => blob
                 .len()
                 .checked_add(2)
@@ -541,7 +535,7 @@ fn cells_for_version(values: &[SqliteValue], format_version: u32) -> Result<Vec<
                     Cell::Real(format!("{:016x}", value.to_bits()))
                 }
                 SqliteValue::Text(value) => Cell::Text(value.to_string()),
-                SqliteValue::Blob(value) => Cell::Blob(STANDARD.encode(value.as_ref())),
+                SqliteValue::Blob(value) => Cell::Blob(STANDARD.encode(value.as_slice())),
             })
         })
         .collect()

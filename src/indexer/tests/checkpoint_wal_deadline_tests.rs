@@ -1,7 +1,7 @@
 use super::super::*;
 use super::helpers::*;
 use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt};
-use fsqlite_types::value::SqliteValue;
+use crate::franken_sync::SqliteValue;
 use serial_test::serial;
 use tempfile::TempDir;
 

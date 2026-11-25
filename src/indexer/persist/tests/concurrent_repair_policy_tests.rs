@@ -7,7 +7,7 @@ use crate::model::types::{Agent, AgentKind, Conversation, MessageRole};
 use crate::search::tantivy::TantivyIndex;
 use crate::sources::provenance::{Source, SourceKind};
 use crate::storage::sqlite::FrankenStorage;
-use fsqlite_types::value::SqliteValue;
+use crate::franken_sync::SqliteValue;
 use serial_test::serial;
 use std::collections::HashSet;
 

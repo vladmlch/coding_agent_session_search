@@ -3350,6 +3350,7 @@ fn seed_sort_scale_canonical(db: &Path, count: usize) -> Result<()> {
             },
         ]))?;
     }
+    drop(insert);
     conn.execute("COMMIT")?;
     drop(conn);
     Ok(())
@@ -3388,6 +3389,7 @@ fn seed_sort_scale_extensions(db: &Path, count: usize) -> Result<()> {
             },
         ]))?;
     }
+    drop(insert);
     for id in [100_i64, 25_001, 49_999] {
         conn.execute_with_params(
             "INSERT INTO viewer_annotations (conversation_id,is_pinned,revision) \

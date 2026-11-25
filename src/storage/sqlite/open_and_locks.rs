@@ -1,7 +1,7 @@
 use super::backup_and_integrity::{
     database_sidecar_path, dedupe_conflicting_fts_schema_rows_via_sqlite3,
 };
-use super::connection_pool::FrankenOwnerConnection;
+use super::connection_pool::{FrankenAsyncConnection, FrankenOwnerConnection};
 use super::schema_migrations::CURRENT_SCHEMA_VERSION;
 use super::schema_repair::transition_from_meta_version;
 use super::storage_core::FrankenStorage;
@@ -11,7 +11,6 @@ use crate::franken_sync::{
     compat::{OpenFlags as FrankenOpenFlags, RowExt as FrankenRowExt},
 };
 use anyhow::{Context, Result, anyhow};
-use frankensqlite::AsyncConnection as FrankenAsyncConnection;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -780,7 +779,7 @@ pub(crate) fn open_franken_owner_readonly_connection_with_timeout(
     path: &Path,
     timeout: Duration,
 ) -> Result<FrankenOwnerConnection> {
-    open_franken_async_readonly_connection_with_timeout(path, timeout).map(FrankenOwnerConnection)
+    open_franken_async_readonly_connection_with_timeout(path, timeout)
 }
 
 /// Dedicated-owner facade over the strict (mutation-free) readonly opener:
@@ -792,7 +791,6 @@ pub(crate) fn open_franken_owner_strict_readonly_connection_with_timeout(
     timeout: Duration,
 ) -> Result<FrankenOwnerConnection> {
     open_franken_async_strict_readonly_connection_with_timeout(path, timeout)
-        .map(FrankenOwnerConnection)
 }
 
 pub(crate) fn retryable_franken_error(err: &crate::franken_sync::FrankenError) -> bool {

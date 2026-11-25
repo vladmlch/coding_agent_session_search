@@ -8,12 +8,13 @@ use crate::franken_sync::{
     compat::{ParamValue, param_slice_to_values},
 };
 use anyhow::{Result, anyhow};
-use frankensqlite::AsyncConnection as FrankenAsyncConnection;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::info;
+
+pub(super) type FrankenAsyncConnection = FrankenOwnerConnection;
 
 // -------------------------------------------------------------------------
 // Lazy FrankenSQLite Connection (bd-1ueu)
@@ -38,29 +39,59 @@ pub enum LazyDbError {
 // LazyFrankenDb — lazy wrapper around a dedicated-owner connection
 // -------------------------------------------------------------------------
 
-/// Synchronous dispatch facade whose raw FrankenSQLite connection is born,
-/// used, closed, and dropped on one dedicated owner thread.
+/// Synchronous `Send + Sync` facade over [`crate::franken_sync::Connection`].
 ///
-/// Pinned fsqlite 0.3.x deliberately makes its raw `Connection` `!Send`: its
-/// internal `Rc<RefCell<_>>` state is thread-affine even when callers serialize
-/// access with a mutex. `AsyncConnection` is the supported cross-thread handle;
-/// these methods keep CASS's synchronous call shape while every engine command
-/// remains on that handle's owner worker.
+/// The underlying synchronous `rusqlite`-backed connection is `Send` but `!Sync`;
+/// serializing access with `parking_lot::Mutex` preserves `Send + Sync` safely
+/// without manual `unsafe` auto-trait overrides while keeping CASS's existing
+/// synchronous and `*_sync` method surface.
 #[derive(Debug)]
-pub struct FrankenOwnerConnection(pub(super) FrankenAsyncConnection);
+pub struct FrankenOwnerConnection(pub(super) parking_lot::Mutex<crate::franken_sync::Connection>);
 
 impl FrankenOwnerConnection {
     pub(super) fn open(
         path: impl Into<String>,
     ) -> std::result::Result<Self, crate::franken_sync::FrankenError> {
-        FrankenAsyncConnection::open_sync(path).map(Self)
+        crate::franken_sync::Connection::open(path.into())
+            .map(parking_lot::Mutex::new)
+            .map(Self)
+    }
+
+    pub(crate) fn open_sync(
+        path: impl Into<String>,
+    ) -> std::result::Result<Self, crate::franken_sync::FrankenError> {
+        Self::open(path)
+    }
+
+    pub(crate) fn open_schema_only_with_wal_index_recovery_sync(
+        path: impl Into<String>,
+    ) -> std::result::Result<Self, crate::franken_sync::FrankenError> {
+        crate::franken_sync::Connection::open_schema_only_with_wal_index_recovery(path.into())
+            .map(parking_lot::Mutex::new)
+            .map(Self)
+    }
+
+    pub(crate) fn open_with_flags_sync(
+        path: impl Into<String>,
+        flags: crate::franken_sync::compat::OpenFlags,
+    ) -> std::result::Result<Self, crate::franken_sync::FrankenError> {
+        crate::franken_sync::compat::open_with_flags(path.into(), flags)
+            .map(parking_lot::Mutex::new)
+            .map(Self)
     }
 
     pub fn execute(
         &self,
         sql: &str,
     ) -> std::result::Result<usize, crate::franken_sync::FrankenError> {
-        self.0.execute_sync(sql)
+        self.0.lock().execute(sql)
+    }
+
+    pub(crate) fn execute_sync(
+        &self,
+        sql: &str,
+    ) -> std::result::Result<usize, crate::franken_sync::FrankenError> {
+        self.execute(sql)
     }
 
     pub fn execute_with_params(
@@ -68,21 +99,43 @@ impl FrankenOwnerConnection {
         sql: &str,
         params: &[SqliteValue],
     ) -> std::result::Result<usize, crate::franken_sync::FrankenError> {
-        self.0.execute_with_params_sync(sql, params)
+        self.0.lock().execute_with_params(sql, params)
+    }
+
+    pub(crate) fn execute_with_params_sync(
+        &self,
+        sql: &str,
+        params: &[SqliteValue],
+    ) -> std::result::Result<usize, crate::franken_sync::FrankenError> {
+        self.execute_with_params(sql, params)
     }
 
     pub fn execute_batch(
         &self,
         sql: &str,
     ) -> std::result::Result<(), crate::franken_sync::FrankenError> {
-        self.0.execute_batch_sync(sql)
+        self.0.lock().execute_batch(sql)
+    }
+
+    pub(crate) fn execute_batch_sync(
+        &self,
+        sql: &str,
+    ) -> std::result::Result<(), crate::franken_sync::FrankenError> {
+        self.execute_batch(sql)
     }
 
     pub fn query(
         &self,
         sql: &str,
     ) -> std::result::Result<Vec<FrankenRow>, crate::franken_sync::FrankenError> {
-        self.0.query_sync(sql)
+        self.0.lock().query(sql)
+    }
+
+    pub(crate) fn query_sync(
+        &self,
+        sql: &str,
+    ) -> std::result::Result<Vec<FrankenRow>, crate::franken_sync::FrankenError> {
+        self.query(sql)
     }
 
     pub fn query_with_params(
@@ -90,7 +143,15 @@ impl FrankenOwnerConnection {
         sql: &str,
         params: &[SqliteValue],
     ) -> std::result::Result<Vec<FrankenRow>, crate::franken_sync::FrankenError> {
-        self.0.query_with_params_sync(sql, params)
+        self.0.lock().query_with_params(sql, params)
+    }
+
+    pub(crate) fn query_with_params_sync(
+        &self,
+        sql: &str,
+        params: &[SqliteValue],
+    ) -> std::result::Result<Vec<FrankenRow>, crate::franken_sync::FrankenError> {
+        self.query_with_params(sql, params)
     }
 
     pub fn query_row_with_params(
@@ -98,7 +159,15 @@ impl FrankenOwnerConnection {
         sql: &str,
         params: &[SqliteValue],
     ) -> std::result::Result<FrankenRow, crate::franken_sync::FrankenError> {
-        self.0.query_row_with_params_sync(sql, params)
+        self.0.lock().query_row_with_params(sql, params)
+    }
+
+    pub(crate) fn query_row_with_params_sync(
+        &self,
+        sql: &str,
+        params: &[SqliteValue],
+    ) -> std::result::Result<FrankenRow, crate::franken_sync::FrankenError> {
+        self.query_row_with_params(sql, params)
     }
 
     pub fn query_row_map<T, F>(
@@ -111,7 +180,7 @@ impl FrankenOwnerConnection {
         F: FnOnce(&FrankenRow) -> std::result::Result<T, crate::franken_sync::FrankenError>,
     {
         let values = param_slice_to_values(params);
-        let row = self.0.query_row_with_params_sync(sql, &values)?;
+        let row = self.0.lock().query_row_with_params(sql, &values)?;
         map(&row)
     }
 
@@ -125,7 +194,7 @@ impl FrankenOwnerConnection {
         F: FnMut(&FrankenRow) -> std::result::Result<T, crate::franken_sync::FrankenError>,
     {
         let values = param_slice_to_values(params);
-        let rows = self.0.query_with_params_sync(sql, &values)?;
+        let rows = self.0.lock().query_with_params(sql, &values)?;
         rows.iter().map(&mut map).collect()
     }
 
@@ -135,20 +204,32 @@ impl FrankenOwnerConnection {
         params: &[ParamValue],
     ) -> std::result::Result<usize, crate::franken_sync::FrankenError> {
         let values = param_slice_to_values(params);
-        self.0.execute_with_params_sync(sql, &values)
+        self.0.lock().execute_with_params(sql, &values)
+    }
+
+    pub(crate) fn begin_transaction_sync(
+        &self,
+    ) -> std::result::Result<(), crate::franken_sync::FrankenError> {
+        self.execute("BEGIN;").map(|_| ())
+    }
+
+    pub(crate) fn rollback_transaction_sync(
+        &self,
+    ) -> std::result::Result<(), crate::franken_sync::FrankenError> {
+        self.execute("ROLLBACK;").map(|_| ())
     }
 
     pub(crate) fn close_without_checkpoint_sync(
         &mut self,
-    ) -> std::result::Result<(), Arc<crate::franken_sync::FrankenError>> {
-        self.0.close_without_checkpoint_sync()
+    ) -> std::result::Result<(), crate::franken_sync::FrankenError> {
+        self.0.get_mut().close_without_checkpoint_in_place()
     }
 
     pub(super) fn close_best_effort_in_place(&mut self) {
         if let Err(err) = self.close_without_checkpoint_sync() {
             tracing::debug!(
                 error = %err,
-                "failed to close dedicated-owner frankensqlite connection without checkpoint"
+                "failed to close dedicated-owner connection without checkpoint"
             );
         }
     }

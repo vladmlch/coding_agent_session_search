@@ -1,4 +1,5 @@
 use super::batch_ingest::normalized_storage_source_parts;
+use super::connection_pool::FrankenAsyncConnection;
 use super::historical_salvage::is_backup_root_name;
 use super::open_and_locks::retryable_franken_error;
 use super::schema_migrations::{unique_backup_path, vacuum_stage_backup_path};
@@ -12,7 +13,6 @@ use crate::franken_sync::{
 };
 use crate::model::types::Conversation;
 use anyhow::{Context, Result, bail};
-use frankensqlite::AsyncConnection as FrankenAsyncConnection;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};

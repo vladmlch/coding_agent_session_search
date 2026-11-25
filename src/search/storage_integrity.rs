@@ -857,27 +857,53 @@ fn probe_writer_lock_state(
 }
 
 #[cfg(unix)]
-fn inspect_native_writer_lock(db_path: &std::path::Path) -> LockAdmissionProbe {
-    use crate::franken_sync::fsqlite_vfs::{UnixVfs, Vfs as _, VfsFile as _};
-    use fsqlite_types::cx::Cx;
-    use fsqlite_types::flags::VfsOpenFlags;
+fn read_only_lock_probe_uri(db_path: &std::path::Path) -> String {
+    use std::os::unix::ffi::OsStrExt as _;
 
-    let cx = Cx::new();
-    let vfs = UnixVfs::new();
-    let flags = VfsOpenFlags::MAIN_DB | VfsOpenFlags::READONLY;
-    let (mut file, _) = match vfs.open(&cx, Some(db_path), flags) {
-        Ok(opened) => opened,
-        Err(err) => return lock_admission_outcome_from_error(&err),
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let absolute = std::fs::canonicalize(db_path)
+        .unwrap_or_else(|_| std::path::absolute(db_path).unwrap_or_else(|_| db_path.to_path_buf()));
+    let mut encoded = String::with_capacity(absolute.as_os_str().len() + 32);
+    let mut prev_was_slash = false;
+    for &byte in absolute.as_os_str().as_bytes() {
+        if byte == b'/' {
+            if !prev_was_slash {
+                encoded.push('/');
+            }
+            prev_was_slash = true;
+            continue;
+        }
+        prev_was_slash = false;
+        if byte <= b' ' || matches!(byte, b'%' | b'?' | b'#') || byte >= 0x80 {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        } else {
+            encoded.push(char::from(byte));
+        }
+    }
+    format!("file:{encoded}?mode=ro&readonly_shm=1")
+}
+
+#[cfg(unix)]
+fn inspect_native_writer_lock(db_path: &std::path::Path) -> LockAdmissionProbe {
+    use rusqlite::OpenFlags;
+
+    // Open read-only with URI `readonly_shm=1` so C SQLite checks locks
+    // through its inode table without calling raw `close()` on a live
+    // same-process fd and without creating or mutating `-shm`/`-wal`.
+    let uri = read_only_lock_probe_uri(db_path);
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+        | OpenFlags::SQLITE_OPEN_URI
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = match rusqlite::Connection::open_with_flags(&uri, flags) {
+        Ok(conn) => conn,
+        Err(err) => return lock_admission_outcome_from_rusqlite_error(&err),
     };
-    let outcome = match file.check_reserved_lock(&cx) {
-        Ok(true) => LockAdmissionProbe::BusyOrLocked,
-        Ok(false) => LockAdmissionProbe::Available,
-        Err(err) => lock_admission_outcome_from_error(&err),
-    };
-    if file.close(&cx).is_err() && outcome == LockAdmissionProbe::Available {
-        LockAdmissionProbe::Unclassified
-    } else {
-        outcome
+    let _ = conn.busy_timeout(std::time::Duration::ZERO);
+    match conn.query_row("PRAGMA schema_version;", [], |row| row.get::<usize, i64>(0)) {
+        Ok(_) => LockAdmissionProbe::Available,
+        Err(err) => lock_admission_outcome_from_rusqlite_error(&err),
     }
 }
 
@@ -890,19 +916,19 @@ fn inspect_native_writer_lock(_db_path: &std::path::Path) -> LockAdmissionProbe 
 }
 
 #[cfg(unix)]
-fn lock_admission_outcome_from_error(
-    err: &crate::franken_sync::FrankenError,
-) -> LockAdmissionProbe {
-    use crate::search::contention_diagnostics::{ContentionClass, classify_franken_error};
+fn lock_admission_outcome_from_rusqlite_error(err: &rusqlite::Error) -> LockAdmissionProbe {
+    use rusqlite::ffi::ErrorCode as C;
 
-    if classify_franken_error(err).is_some_and(|class| {
-        matches!(
-            class,
-            ContentionClass::BusyLocked
-                | ContentionClass::BusyRecovery
-                | ContentionClass::SnapshotConflict
+    if matches!(
+        err,
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: C::DatabaseBusy | C::DatabaseLocked | C::FileLockingProtocolFailed,
+                ..
+            },
+            ..
         )
-    }) {
+    ) {
         LockAdmissionProbe::BusyOrLocked
     } else {
         LockAdmissionProbe::Unclassified

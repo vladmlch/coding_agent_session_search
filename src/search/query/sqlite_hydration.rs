@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use frankensearch::lexical_tantivy::cass_sanitize_query as fs_cass_sanitize_query;
-use frankensqlite::AsyncConnection as SearchSqliteConnection;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use super::SearchSqliteConnection;
 use crate::franken_sync::compat::{ParamValue, RowExt, param_slice_to_values};
 
 /// Row-mapping conveniences for the dedicated-owner search connection.

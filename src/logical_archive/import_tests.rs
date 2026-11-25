@@ -339,12 +339,12 @@ fn late_constraint_failure_keeps_safe_row_coordinates_and_engine_cause() -> Resu
 
 #[test]
 fn cancellation_after_reading_a_late_row_retains_the_insert_failure() -> Result<()> {
-    use fsqlite_types::cx::{CancelReason, LocalCancelRelay};
+    use coding_agent_search::franken_sync::CancellationHandle;
 
     struct CancelAtRow<'a> {
         inner: Cursor<&'a [u8]>,
         cancel_at: u64,
-        relay: Option<LocalCancelRelay>,
+        cancel: Option<CancellationHandle>,
     }
 
     impl Read for CancelAtRow<'_> {
@@ -365,9 +365,9 @@ fn cancellation_after_reading_a_late_row_retains_the_insert_failure() -> Result<
         fn consume(&mut self, count: usize) {
             self.inner.consume(count);
             if self.inner.position() >= self.cancel_at
-                && let Some(relay) = self.relay.take()
+                && let Some(cancel) = self.cancel.take()
             {
-                assert!(relay.cancel_local(CancelReason::UserInterrupt));
+                cancel.cancel();
             }
         }
     }
@@ -396,20 +396,17 @@ fn cancellation_after_reading_a_late_row_retains_the_insert_failure() -> Result<
     }
 
     let target = fixture();
-    let (operation, relay) = target
-        .as_async()
-        .root_cx()
-        .create_child_with_local_cancel_relay();
+    let cancellation = CancellationHandle::new();
     let mut input = Input::new(CancelAtRow {
         inner: Cursor::new(bytes.as_slice()),
         cancel_at: cancel_at.expect("fixture contains the final parent row"),
-        relay: Some(relay),
+        cancel: Some(cancellation.clone()),
     });
     let Some(Record::Header { header }) = input.record(1)? else {
         bail!("fixture lacks its header");
     };
     let error = {
-        let _binding = target.as_async().bind_operation_cx(&operation);
+        let _binding = cancellation.enter();
         restore(&target, &mut input, header).expect_err("cancelled INSERT must fail replay")
     };
     let message = error.to_string();
@@ -432,7 +429,7 @@ fn cancellation_after_reading_a_late_row_retains_the_insert_failure() -> Result<
             Some(FrankenError::Abort)
         )
     }));
-    assert!(target.as_async().root_cx().checkpoint().is_ok());
+    assert!(target.query_row("SELECT 1").is_ok());
     target.execute("ROLLBACK")?;
     assert_eq!(
         replay(&target, &bytes)?.1,
@@ -443,16 +440,13 @@ fn cancellation_after_reading_a_late_row_retains_the_insert_failure() -> Result<
 
 #[test]
 fn cancelled_database_verification_reports_a_probe_failure_without_private_payload() -> Result<()> {
-    use fsqlite_types::cx::CancelReason;
+    use coding_agent_search::franken_sync::CancellationHandle;
 
     let connection = fixture();
-    let (operation, relay) = connection
-        .as_async()
-        .root_cx()
-        .create_child_with_local_cancel_relay();
-    assert!(relay.cancel_local(CancelReason::UserInterrupt));
+    let cancellation = CancellationHandle::new();
+    cancellation.cancel();
     let error = {
-        let _binding = connection.as_async().bind_operation_cx(&operation);
+        let _binding = cancellation.enter();
         verify_database(&connection).expect_err("cancelled relationship probe cannot certify a DB")
     };
     let message = error.to_string();

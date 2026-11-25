@@ -3,7 +3,7 @@ use frankensearch::lexical_tantivy::{
     CASS_SCHEMA_HASH as FS_CASS_SCHEMA_HASH,
     cass_has_boolean_operators as fs_cass_has_boolean_operators,
 };
-use frankensqlite::AsyncConnection as SearchSqliteConnection;
+use super::SearchSqliteConnection;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
