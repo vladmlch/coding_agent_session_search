@@ -464,7 +464,9 @@ mod tests {
         }
         let before = snapshot_bundle(&path);
 
-        let err = FrankenStorage::open(&path).unwrap_err();
+        let err = FrankenStorage::open(&path)
+            .err()
+            .expect("open must refuse legacy archive");
         let refusal = err
             .chain()
             .find_map(|cause| cause.downcast_ref::<SchemaRebuildRequired>())
@@ -502,7 +504,6 @@ mod tests {
         fs::File::create(&path).unwrap();
         let storage = FrankenStorage::open(&path).unwrap();
         storage.close().unwrap();
-        drop(storage);
 
         assert!(matches!(
             archive_disposition(&path),
@@ -609,7 +610,16 @@ mod tests {
                     let _ = probe.execute_batch("ROLLBACK");
                     println!("LOCK_PROBE=ACQUIRED");
                 }
-                Err(error) if error.is_busy_class() => {
+                Err(error)
+                    if matches!(
+                        error,
+                        crate::franken_sync::FrankenError::Busy
+                            | crate::franken_sync::FrankenError::BusyRecovery
+                            | crate::franken_sync::FrankenError::BusySnapshot { .. }
+                            | crate::franken_sync::FrankenError::DatabaseLocked { .. }
+                            | crate::franken_sync::FrankenError::LockFailed { .. }
+                    ) =>
+                {
                     println!("LOCK_PROBE=HELD_BY_PARENT");
                 }
                 Err(error) => panic!("unexpected child lock probe error: {error:?}"),
