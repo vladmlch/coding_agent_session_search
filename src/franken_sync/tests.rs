@@ -720,3 +720,262 @@ use std::time::{Duration, Instant};
         );
         assert!(std::fs::symlink_metadata(&link).is_ok());
     }
+
+    #[cfg(unix)]
+    fn recompute_shm_checksums(shm_bytes: &mut [u8]) {
+        let mut s0 = 0_u32;
+        let mut s1 = 0_u32;
+        for pair in shm_bytes[..40].chunks_exact(8) {
+            let x0 = u32::from_ne_bytes([pair[0], pair[1], pair[2], pair[3]]);
+            let x1 = u32::from_ne_bytes([pair[4], pair[5], pair[6], pair[7]]);
+            s0 = s0.wrapping_add(x0).wrapping_add(s1);
+            s1 = s1.wrapping_add(x1).wrapping_add(s0);
+        }
+        shm_bytes[40..44].copy_from_slice(&s0.to_ne_bytes());
+        shm_bytes[44..48].copy_from_slice(&s1.to_ne_bytes());
+        let first_hdr: [u8; 48] = shm_bytes[..48].try_into().unwrap();
+        shm_bytes[48..96].copy_from_slice(&first_hdr);
+    }
+
+    #[test]
+    fn clean_one_file_wal_strict_and_recovery_readonly_leave_zero_sidecars() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("clean_wal.db");
+        let path_str = path.to_string_lossy().into_owned();
+        let wal_path = sidecar_path(&path, "-wal");
+        let shm_path = sidecar_path(&path, "-shm");
+
+        {
+            let conn = Connection::open(&path_str).expect("open");
+            conn.execute("PRAGMA journal_mode = WAL;").expect("wal");
+            conn.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (99);")
+                .expect("seed");
+            conn.close().expect("clean close checkpoints away sidecars");
+        }
+        assert!(!wal_path.exists(), "clean close must remove -wal");
+        assert!(!shm_path.exists(), "clean close must remove -shm");
+        let bytes_before = std::fs::read(&path).expect("db bytes before");
+        let mtime_before = std::fs::metadata(&path)
+            .expect("meta before")
+            .modified()
+            .expect("mtime before");
+
+        let strict = compat::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY;
+        let ro_strict = compat::open_with_flags(&path_str, strict)
+            .expect("P0-2: cleanly closed 1-file WAL must open via snapshot");
+        assert_eq!(
+            ro_strict
+                .query_row("SELECT x FROM t")
+                .expect("read")
+                .get_typed::<i64>(0)
+                .unwrap(),
+            99
+        );
+        ro_strict.close().expect("close strict snapshot");
+        assert!(!wal_path.exists(), "strict open must not create -wal");
+        assert!(!shm_path.exists(), "strict open must not create -shm");
+        assert_eq!(std::fs::read(&path).expect("db bytes"), bytes_before);
+        assert_eq!(
+            std::fs::metadata(&path).expect("meta").modified().unwrap(),
+            mtime_before
+        );
+
+        let ro_recovery = Connection::open_schema_only_with_wal_index_recovery(&path_str)
+            .expect("P0-3: recovery readonly must open cleanly closed 1-file WAL without sidecars");
+        assert_eq!(
+            ro_recovery
+                .query_row("SELECT x FROM t")
+                .expect("read")
+                .get_typed::<i64>(0)
+                .unwrap(),
+            99
+        );
+        ro_recovery.close().expect("close recovery snapshot");
+        assert!(!wal_path.exists(), "recovery open must not create -wal");
+        assert!(!shm_path.exists(), "recovery open must not create -shm");
+        assert_eq!(std::fs::read(&path).expect("db bytes"), bytes_before);
+
+        // Also verify P0-3 snapshot fallback when `-wal` has frames and `-shm` is absent.
+        {
+            let conn = Connection::open(&path_str).expect("reopen");
+            conn.execute("INSERT INTO t VALUES (100);").expect("insert");
+            conn.close_without_checkpoint().expect("preserve wal");
+        }
+        std::fs::remove_file(&shm_path).expect("remove shm");
+        let wal_before = std::fs::read(&wal_path).expect("wal before");
+        let err = compat::open_with_flags(&path_str, strict)
+            .expect_err("strict open with -wal but no -shm must still return BusyRecovery");
+        assert!(matches!(err, FrankenError::BusyRecovery));
+        assert!(!shm_path.exists(), "strict open must not create -shm");
+
+        let ro_wal_only = Connection::open_schema_only_with_wal_index_recovery(&path_str)
+            .expect("P0-3: recovery readonly must snapshot-read -wal without -shm");
+        let count: i64 = ro_wal_only
+            .query_row("SELECT COUNT(*) FROM t")
+            .expect("count")
+            .get_typed(0)
+            .unwrap();
+        assert_eq!(count, 2);
+        ro_wal_only.close().expect("close wal-only snapshot");
+        assert!(!shm_path.exists(), "snapshot fallback must not create -shm");
+        assert_eq!(std::fs::read(&wal_path).expect("wal after"), wal_before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_readonly_rejects_shm_salt_and_mx_frame_mismatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("coherent_wal.db");
+        let path_str = path.to_string_lossy().into_owned();
+
+        let conn = Connection::open(&path_str).expect("open");
+        conn.execute("PRAGMA journal_mode = WAL;").expect("wal");
+        conn.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (1);")
+            .expect("seed");
+        conn.close_without_checkpoint().expect("close");
+
+        let shm_path = sidecar_path(&path, "-shm");
+        let orig_shm = std::fs::read(&shm_path).expect("orig shm");
+        let strict = compat::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY;
+
+        // 1) aSalt mismatch (valid header checksum, wrong salt[0]).
+        let mut bad_salt = orig_shm.clone();
+        bad_salt[32] ^= 0xFF;
+        recompute_shm_checksums(&mut bad_salt);
+        std::fs::write(&shm_path, &bad_salt).expect("write bad salt shm");
+        let err = compat::open_with_flags(&path_str, strict)
+            .expect_err("salt mismatch must return BusyRecovery");
+        assert!(matches!(err, FrankenError::BusyRecovery), "got {err:?}");
+
+        // 2) mxFrame beyond actual -wal byte length (valid header checksum).
+        let mut bad_mx_frame = orig_shm.clone();
+        let inflated_frames = 9999_u32;
+        bad_mx_frame[16..20].copy_from_slice(&inflated_frames.to_ne_bytes());
+        recompute_shm_checksums(&mut bad_mx_frame);
+        std::fs::write(&shm_path, &bad_mx_frame).expect("write bad mxFrame shm");
+        let err = compat::open_with_flags(&path_str, strict)
+            .expect_err("mxFrame exceeding -wal size must return BusyRecovery");
+        assert!(matches!(err, FrankenError::BusyRecovery), "got {err:?}");
+
+        // Restore valid shm -> strict open succeeds again.
+        std::fs::write(&shm_path, &orig_shm).expect("restore shm");
+        let ok = compat::open_with_flags(&path_str, strict).expect("valid shm opens");
+        assert_eq!(
+            ok.query_row("SELECT x FROM t")
+                .expect("read")
+                .get_typed::<i64>(0)
+                .unwrap(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn p0_8_stamp_probe_preserves_live_writer_posix_locks() {
+        const CHILD_ENV: &str = "CASS_TEST_FRANKEN_SYNC_STAMP_LOCK_PROBE_DB";
+        const TEST_NAME: &str =
+            "franken_sync::tests::p0_8_stamp_probe_preserves_live_writer_posix_locks";
+
+        if let Some(probe_db) = std::env::var_os(CHILD_ENV) {
+            let probe_str = probe_db.to_string_lossy().into_owned();
+            let probe = Connection::open(&probe_str).expect("child open");
+            probe
+                .execute("PRAGMA busy_timeout = 0")
+                .expect("child timeout");
+            match probe.execute("BEGIN IMMEDIATE") {
+                Ok(_) => {
+                    let _ = probe.execute_batch("ROLLBACK");
+                    println!("LOCK_PROBE=ACQUIRED");
+                }
+                Err(error) if error.is_busy_class() => {
+                    println!("LOCK_PROBE=HELD_BY_PARENT");
+                }
+                Err(error) => panic!("unexpected child lock probe error: {error:?}"),
+            }
+            return;
+        }
+
+        let probe_child = |db_path: &std::path::Path| -> String {
+            let output = std::process::Command::new(std::env::current_exe().expect("current_exe"))
+                .args(["--exact", TEST_NAME, "--test-threads=1", "--nocapture"])
+                .env(CHILD_ENV, db_path)
+                .output()
+                .expect("spawn lock probe child");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "child lock probe failed ({}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                output.status
+            );
+            stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("LOCK_PROBE="))
+                .map(str::to_owned)
+                .unwrap_or_else(|| panic!("missing LOCK_PROBE line in stdout:\n{stdout}"))
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // Rollback mode writer holding BEGIN IMMEDIATE.
+        let rb_db = dir.path().join("rb_stamp.db");
+        let rb_str = rb_db.to_string_lossy().into_owned();
+        let rb_writer = Connection::open(&rb_str).expect("open rb");
+        rb_writer
+            .execute("PRAGMA journal_mode = DELETE;")
+            .expect("delete");
+        rb_writer
+            .execute_batch(
+                "PRAGMA application_id = 1128354643;
+                 PRAGMA user_version = 1;
+                 CREATE TABLE t(x);",
+            )
+            .expect("seed rb");
+        rb_writer.execute("BEGIN IMMEDIATE;").expect("begin rb");
+        assert_eq!(probe_child(&rb_db), "HELD_BY_PARENT");
+        assert_eq!(
+            super::probe_sqlite_header_stamp_safely(&rb_db).expect("probe rb"),
+            super::SqliteHeaderStamp::Stamp {
+                application_id: 0x4341_5353,
+                user_version: 1,
+            }
+        );
+        assert_eq!(probe_child(&rb_db), "HELD_BY_PARENT");
+        rb_writer.execute_batch("ROLLBACK;").expect("rollback rb");
+        assert_eq!(probe_child(&rb_db), "ACQUIRED");
+        rb_writer.close().expect("close rb");
+
+        // WAL mode writer holding BEGIN IMMEDIATE + uncommitted row.
+        let wal_db = dir.path().join("wal_stamp.db");
+        let wal_str = wal_db.to_string_lossy().into_owned();
+        let wal_writer = Connection::open(&wal_str).expect("open wal");
+        wal_writer
+            .execute("PRAGMA journal_mode = WAL;")
+            .expect("wal");
+        wal_writer
+            .execute_batch(
+                "PRAGMA application_id = 1128354643;
+                 PRAGMA user_version = 1;
+                 CREATE TABLE t(x);
+                 INSERT INTO t VALUES (1);",
+            )
+            .expect("seed wal");
+        wal_writer.execute("BEGIN IMMEDIATE;").expect("begin wal");
+        wal_writer
+            .execute("INSERT INTO t VALUES (2);")
+            .expect("insert wal");
+        assert_eq!(probe_child(&wal_db), "HELD_BY_PARENT");
+        assert_eq!(
+            super::probe_sqlite_header_stamp_safely(&wal_db).expect("probe wal"),
+            super::SqliteHeaderStamp::Stamp {
+                application_id: 0x4341_5353,
+                user_version: 1,
+            }
+        );
+        assert_eq!(probe_child(&wal_db), "HELD_BY_PARENT");
+        wal_writer.execute_batch("ROLLBACK;").expect("rollback wal");
+        assert_eq!(probe_child(&wal_db), "ACQUIRED");
+        wal_writer.close().expect("close wal");
+    }

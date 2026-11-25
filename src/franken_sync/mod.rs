@@ -42,5 +42,8 @@ pub use connection::Connection;
 pub(crate) use deadline_and_cancel::check_connection_admission;
 pub use deadline_and_cancel::{CancellationHandle, CancellationScope, DeadlineGuard};
 pub use sidecar_probes::AsyncView;
+pub(crate) use sidecar_probes::{
+    SqliteHeaderStamp, probe_sqlite_header_stamp_safely, record_live_archive_stamp,
+};
 pub use statement::PreparedStatement;
 pub use value_and_error::{ErrorCode, FileIdentity, FrankenError, Row, SqliteValue};

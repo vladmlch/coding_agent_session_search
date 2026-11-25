@@ -10,6 +10,22 @@ use super::{Connection, FileIdentity, FrankenError, Row, SqliteValue, compat};
 struct LiveDbState {
     count: usize,
     known_wal: Option<bool>,
+    known_stamp: Option<(i64, i64)>,
+}
+
+/// Result of safely probing the 100-byte SQLite header stamp without dropping
+/// any in-process POSIX `fcntl` locks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SqliteHeaderStamp {
+    /// File is shorter than 100 bytes or lacks the `SQLite format 3\0` header.
+    NotSqlite,
+    /// `(application_id, user_version)` read from the 100-byte header (when no
+    /// connection on this inode is open in-process) or via a live SQLite
+    /// connection (`PRAGMA application_id` / `PRAGMA user_version`).
+    Stamp {
+        application_id: i64,
+        user_version: i64,
+    },
 }
 
 static LIVE_DB_CONNECTIONS: OnceLock<Mutex<HashMap<FileIdentity, LiveDbState>>> = OnceLock::new();
@@ -40,6 +56,22 @@ pub(super) fn update_live_wal_state(id: FileIdentity, is_wal: bool) {
     }
 }
 
+pub(crate) fn record_live_archive_stamp(
+    id: FileIdentity,
+    application_id: i64,
+    user_version: i64,
+) {
+    let mut map = match live_db_map().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(entry) = map.get_mut(&id)
+        && entry.count > 0
+    {
+        entry.known_stamp = Some((application_id, user_version));
+    }
+}
+
 pub(super) fn unregister_live_connection(id: FileIdentity) {
     let mut map = match live_db_map().lock() {
         Ok(guard) => guard,
@@ -61,6 +93,150 @@ pub(super) fn live_connection_state(id: FileIdentity) -> Option<Option<bool>> {
     map.get(&id)
         .filter(|entry| entry.count > 0)
         .map(|entry| entry.known_wal)
+}
+
+fn live_archive_stamp(id: FileIdentity) -> Option<(i64, i64)> {
+    let map = match live_db_map().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    map.get(&id)
+        .filter(|entry| entry.count > 0)
+        .and_then(|entry| entry.known_stamp)
+}
+
+fn acquire_pre_reg_in_map(
+    map: &mut HashMap<FileIdentity, LiveDbState>,
+    id: Option<FileIdentity>,
+) -> LivePreRegistration {
+    if let Some(id) = id {
+        let entry = map.entry(id).or_default();
+        entry.count = entry.count.saturating_add(1);
+    }
+    LivePreRegistration { id }
+}
+
+fn parse_sqlite_header_stamp(header: &[u8; SQLITE_HEADER_PROBE_SIZE]) -> SqliteHeaderStamp {
+    if header[..16] != SQLITE_HEADER_MAGIC {
+        return SqliteHeaderStamp::NotSqlite;
+    }
+    let user_version = i64::from(i32::from_be_bytes([
+        header[60], header[61], header[62], header[63],
+    ]));
+    let application_id = i64::from(i32::from_be_bytes([
+        header[68], header[69], header[70], header[71],
+    ]));
+    SqliteHeaderStamp::Stamp {
+        application_id,
+        user_version,
+    }
+}
+
+/// Read `(application_id, user_version)` for `path` without dropping any
+/// in-process POSIX `fcntl` locks.
+///
+/// * If no `franken_sync::Connection` on `path`'s inode is open in this
+///   process, the 100-byte SQLite header is read and closed while holding
+///   `LIVE_DB_CONNECTIONS`, so no concurrent `Connection::open` can race with
+///   the raw `File::open` + `close()`.
+/// * If a connection on this inode IS open in this process, no raw `File` is
+///   opened on `path` at all; instead `PRAGMA application_id` and
+///   `PRAGMA user_version` are queried through a strict read-only SQLite
+///   connection (C SQLite's `unixClose` retains descriptors while another
+///   in-process connection holds locks), falling back to the registered live
+///   stamp only if the live WAL store has no sidecars yet or is exclusively
+///   locked.
+pub(crate) fn probe_sqlite_header_stamp_safely(
+    path: &Path,
+) -> std::io::Result<SqliteHeaderStamp> {
+    let db_id = FileIdentity::from_path(path)?;
+    {
+        let map = match live_db_map().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let is_live = db_id.is_some_and(|id| map.get(&id).is_some_and(|entry| entry.count > 0));
+        if !is_live {
+            let mut file = std::fs::File::open(path)?;
+            let mut header = [0_u8; SQLITE_HEADER_PROBE_SIZE];
+            let stamp = match file.read_exact(&mut header) {
+                Ok(()) => parse_sqlite_header_stamp(&header),
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                    SqliteHeaderStamp::NotSqlite
+                }
+                Err(error) => return Err(error),
+            };
+            drop(file);
+            return Ok(stamp);
+        }
+    }
+
+    let path_str = path.to_string_lossy();
+    let strict_flags =
+        compat::OpenFlags::SQLITE_OPEN_READ_ONLY | compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY;
+    let mut attempts = 0u32;
+    loop {
+        match Connection::open_strict_readonly(&path_str, strict_flags) {
+            Ok(conn) => {
+                let _ = conn.raw().busy_timeout(Duration::from_millis(250));
+                let app_res = conn.query_row("PRAGMA application_id;");
+                let ver_res = conn.query_row("PRAGMA user_version;");
+                match (app_res, ver_res) {
+                    (Ok(app_row), Ok(ver_row)) => {
+                        let application_id = row_i64(&app_row, 0);
+                        let user_version = row_i64(&ver_row, 0);
+                        if let Some(id) = db_id {
+                            record_live_archive_stamp(id, application_id, user_version);
+                        }
+                        return Ok(SqliteHeaderStamp::Stamp {
+                            application_id,
+                            user_version,
+                        });
+                    }
+                    (Err(err), _) | (_, Err(err)) if err.is_busy_class() => {
+                        if let Some((application_id, user_version)) =
+                            db_id.and_then(live_archive_stamp)
+                        {
+                            return Ok(SqliteHeaderStamp::Stamp {
+                                application_id,
+                                user_version,
+                            });
+                        }
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WouldBlock,
+                            err.to_string(),
+                        ));
+                    }
+                    (Err(FrankenError::NotADatabase { .. }), _)
+                    | (_, Err(FrankenError::NotADatabase { .. })) => {
+                        return Ok(SqliteHeaderStamp::NotSqlite);
+                    }
+                    (Err(err), _) | (_, Err(err)) => {
+                        return Err(std::io::Error::other(err.to_string()));
+                    }
+                }
+            }
+            Err(FrankenError::NotADatabase { .. }) => return Ok(SqliteHeaderStamp::NotSqlite),
+            Err(FrankenError::BusyRecovery) => {
+                if db_id.and_then(live_connection_state).flatten().is_none() && attempts < 20 {
+                    attempts += 1;
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                if let Some((application_id, user_version)) = db_id.and_then(live_archive_stamp) {
+                    return Ok(SqliteHeaderStamp::Stamp {
+                        application_id,
+                        user_version,
+                    });
+                }
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "archive is live in-process without readable WAL sidecars",
+                ));
+            }
+            Err(err) => return Err(std::io::Error::other(err.to_string())),
+        }
+    }
 }
 
 /// RAII pre-registration guard: increments `LIVE_DB_CONNECTIONS` before
@@ -162,6 +338,7 @@ impl Connection {
         path: &str,
         flags: compat::OpenFlags,
     ) -> Result<Self, FrankenError> {
+        super::check_connection_admission()?;
         let db_path = Path::new(path);
         let meta = std::fs::metadata(db_path).map_err(|error| match error.kind() {
             std::io::ErrorKind::NotFound => FrankenError::CannotOpen {
@@ -181,78 +358,118 @@ impl Connection {
             });
         }
         let db_id = FileIdentity::from_path(db_path).map_err(FrankenError::Io)?;
-        if let Some(known_wal) = db_id.and_then(live_connection_state) {
-            return Self::open_strict_readonly_live_process(
-                db_path, path, db_id, known_wal, flags,
-            );
-        }
-        let mut header = [0_u8; SQLITE_HEADER_PROBE_SIZE];
-        std::fs::File::open(db_path)
-            .and_then(|mut file| file.read_exact(&mut header))
-            .map_err(|error| {
-                if error.kind() == std::io::ErrorKind::UnexpectedEof {
-                    FrankenError::NotADatabase {
-                        path: db_path.to_path_buf(),
-                    }
-                } else {
-                    FrankenError::Io(error)
-                }
-            })?;
-        if header[..16] != SQLITE_HEADER_MAGIC {
-            return Err(FrankenError::NotADatabase {
-                path: db_path.to_path_buf(),
-            });
+        enum StrictPlan {
+            Live(Option<bool>),
+            Mode1Rollback(LivePreRegistration),
+            CleanWalSnapshot,
+            #[cfg(unix)]
+            Mode2Wal(LivePreRegistration),
         }
 
-        // A live rollback journal means the store needs recovery a
-        // read-only open must not perform.
         let journal_path = sidecar_path(db_path, "-journal");
-        if std::fs::metadata(&journal_path).is_ok_and(|meta| meta.is_file() && meta.len() > 0) {
-            let mut first = [0_u8; 1];
-            match std::fs::File::open(&journal_path).and_then(|mut f| f.read_exact(&mut first)) {
-                Ok(()) if first[0] != 0 => return Err(FrankenError::BusyRecovery),
-                Ok(()) => {}
-                Err(error) => return Err(FrankenError::Io(error)),
-            }
-        }
-
-        let is_wal_header = header[18] == 2 || header[19] == 2;
         let wal_path = sidecar_path(db_path, "-wal");
         let shm_path = sidecar_path(db_path, "-shm");
-        let wal_exists = sidecar_exists(&wal_path);
-        let shm_exists = sidecar_exists(&shm_path);
+
+        // Synchronize offline `File::open` + `close()` checks against
+        // `LIVE_DB_CONNECTIONS` so no concurrent `Connection::open` can acquire
+        // POSIX `fcntl` locks on the same inode while our temporary fd closes.
+        let plan = {
+            let mut map = match live_db_map().lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if let Some(known_wal) = db_id.and_then(|id| {
+                map.get(&id)
+                    .filter(|entry| entry.count > 0)
+                    .map(|entry| entry.known_wal)
+            }) {
+                StrictPlan::Live(known_wal)
+            } else {
+                let mut header = [0_u8; SQLITE_HEADER_PROBE_SIZE];
+                std::fs::File::open(db_path)
+                    .and_then(|mut file| file.read_exact(&mut header))
+                    .map_err(|error| {
+                        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                            FrankenError::NotADatabase {
+                                path: db_path.to_path_buf(),
+                            }
+                        } else {
+                            FrankenError::Io(error)
+                        }
+                    })?;
+                if header[..16] != SQLITE_HEADER_MAGIC {
+                    return Err(FrankenError::NotADatabase {
+                        path: db_path.to_path_buf(),
+                    });
+                }
+
+                // A live rollback journal means the store needs recovery a
+                // read-only open must not perform.
+                if std::fs::metadata(&journal_path)
+                    .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+                {
+                    let mut first = [0_u8; 1];
+                    match std::fs::File::open(&journal_path)
+                        .and_then(|mut f| f.read_exact(&mut first))
+                    {
+                        Ok(()) if first[0] != 0 => return Err(FrankenError::BusyRecovery),
+                        Ok(()) => {}
+                        Err(error) => return Err(FrankenError::Io(error)),
+                    }
+                }
+
+                let is_wal_header = header[18] == 2 || header[19] == 2;
+                let wal_exists = sidecar_exists(&wal_path);
+                let shm_exists = sidecar_exists(&shm_path);
+
+                if !is_wal_header && !wal_exists && !shm_exists {
+                    StrictPlan::Mode1Rollback(acquire_pre_reg_in_map(&mut map, db_id))
+                } else if is_wal_header && !wal_exists && !shm_exists {
+                    // Cleanly closed 1-file WAL database (no sidecars, no live
+                    // journal, not open in-process): read through a private
+                    // `TempDir` snapshot so C SQLite never creates `-wal`/`-shm`
+                    // beside the original archive (P0-2).
+                    StrictPlan::CleanWalSnapshot
+                } else {
+                    #[cfg(unix)]
+                    if wal_exists && shm_exists {
+                        if !wal_and_shm_are_coherent(&wal_path, &shm_path)? {
+                            return Err(FrankenError::BusyRecovery);
+                        }
+                        StrictPlan::Mode2Wal(acquire_pre_reg_in_map(&mut map, db_id))
+                    } else {
+                        return Err(FrankenError::BusyRecovery);
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = (wal_exists, shm_exists);
+                        return Err(FrankenError::BusyRecovery);
+                    }
+                }
+            }
+        };
 
         let open_flags = strict_readonly_rusqlite_flags(flags);
-
-        // Mode 1 — pure rollback-mode store: no WAL marker anywhere, so a
-        // read-only open cannot create `-wal` / `-shm`.
-        if !is_wal_header && !wal_exists && !shm_exists {
-            let pre_reg = LivePreRegistration::acquire_id(db_id);
-            let inner = rusqlite::Connection::open_with_flags(path, open_flags)
-                .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
-            return Ok(Self::from_parts(
-                inner,
-                Some(PathBuf::from(path)),
-                pre_reg,
-                Some(false),
-            ));
-        }
-
-        // Mode 2 (Unix only) — WAL store with both sidecars: validate each
-        // byte-for-byte, then open through the `readonly_shm=1` URI.
-        #[cfg(unix)]
-        if wal_exists && shm_exists {
-            if !wal_file_is_valid(&wal_path)? || !shm_file_is_valid(&shm_path)? {
-                return Err(FrankenError::BusyRecovery);
+        match plan {
+            StrictPlan::Live(known_wal) => {
+                Self::open_strict_readonly_live_process(db_path, path, db_id, known_wal, flags)
             }
-            return Self::open_wal_strict_in_place(db_path, path, db_id);
+            StrictPlan::Mode1Rollback(pre_reg) => {
+                let inner = rusqlite::Connection::open_with_flags(path, open_flags)
+                    .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
+                Ok(Self::from_parts(
+                    inner,
+                    Some(PathBuf::from(path)),
+                    pre_reg,
+                    Some(false),
+                ))
+            }
+            StrictPlan::CleanWalSnapshot => Self::open_snapshot_copy(db_path),
+            #[cfg(unix)]
+            StrictPlan::Mode2Wal(pre_reg) => {
+                Self::open_wal_strict_in_place(db_path, path, pre_reg)
+            }
         }
-        #[cfg(not(unix))]
-        let _ = (wal_exists, shm_exists, open_flags);
-
-        // Trap 1 (and every ambiguous sidecar shape): never let C SQLite
-        // near the original path; callers snapshot-copy on BusyRecovery.
-        Err(FrankenError::BusyRecovery)
     }
 
     /// Strict read-only open when this process already has `db_id` open:
@@ -312,7 +529,11 @@ impl Connection {
             if !shm_meta.is_file() || shm_meta.len() < SQLITE_SHM_MIN_SIZE {
                 return Err(FrankenError::BusyRecovery);
             }
-            return Self::open_wal_strict_in_place(db_path, path, db_id);
+            return Self::open_wal_strict_in_place(
+                db_path,
+                path,
+                LivePreRegistration::acquire_id(db_id),
+            );
         }
         #[cfg(not(unix))]
         let _ = open_flags;
@@ -329,13 +550,12 @@ impl Connection {
     fn open_wal_strict_in_place(
         db_path: &Path,
         path: &str,
-        db_id: Option<FileIdentity>,
+        pre_reg: LivePreRegistration,
     ) -> Result<Self, FrankenError> {
         let uri = read_only_uri(db_path);
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
             | rusqlite::OpenFlags::SQLITE_OPEN_URI
             | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let pre_reg = LivePreRegistration::acquire_id(db_id);
         let inner = match rusqlite::Connection::open_with_flags(uri.as_str(), flags) {
             Ok(inner) => inner,
             Err(error) if wal_index_open_failure(&error) => {
@@ -504,44 +724,85 @@ const fn read_be_u32(buf: &[u8], offset: usize) -> u32 {
     ])
 }
 
-/// Whether the `-wal` file's header is internally sane. A 0-byte `-wal` is
-/// valid (a cleanly checkpointed store); anything shorter than the 32-byte
-/// header, or a header whose magic, format version, or page size is wrong,
-/// means the wal-index cannot be trusted and the store must not be opened
-/// in place.
 #[cfg(unix)]
-fn wal_file_is_valid(wal_path: &Path) -> Result<bool, FrankenError> {
+enum WalHeaderInfo {
+    Empty,
+    Present {
+        len: u64,
+        page_size: u32,
+        salts: [u8; 8],
+    },
+}
+
+#[cfg(unix)]
+struct ShmHeaderInfo {
+    page_size: u32,
+    mx_frame: u32,
+    salts: [u8; 8],
+}
+
+/// Read and validate the `-wal` file's header. A 0-byte `-wal` returns
+/// `Ok(Some(WalHeaderInfo::Empty))` (a cleanly checkpointed store); absent,
+/// non-regular, sub-header, or header-invalid `-wal` files return `Ok(None)`.
+#[cfg(unix)]
+fn read_valid_wal_header(wal_path: &Path) -> Result<Option<WalHeaderInfo>, FrankenError> {
     let meta = match std::fs::metadata(wal_path) {
         Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(FrankenError::Io(error)),
     };
     if !meta.is_file() {
-        return Ok(false);
+        return Ok(None);
     }
-    let len = meta.len();
-    if len == 0 {
-        return Ok(true);
-    }
-    if len < SQLITE_WAL_HEADER_SIZE as u64 {
-        return Ok(false);
-    }
-    let mut header = [0_u8; SQLITE_WAL_HEADER_SIZE];
     let mut file = match std::fs::File::open(wal_path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(FrankenError::Io(error)),
     };
-    file.read_exact(&mut header).map_err(FrankenError::Io)?;
+    let opened_meta = file.metadata().map_err(FrankenError::Io)?;
+    if !opened_meta.is_file() {
+        return Ok(None);
+    }
+    let len = opened_meta.len();
+    if len == 0 {
+        return Ok(Some(WalHeaderInfo::Empty));
+    }
+    if len < SQLITE_WAL_HEADER_SIZE as u64 {
+        return Ok(None);
+    }
+    let mut header = [0_u8; SQLITE_WAL_HEADER_SIZE];
+    match file.read_exact(&mut header) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(FrankenError::Io(error)),
+    }
     let magic = read_be_u32(&header, 0);
     if magic != SQLITE_WAL_MAGIC_LE && magic != SQLITE_WAL_MAGIC_BE {
-        return Ok(false);
+        return Ok(None);
     }
     if read_be_u32(&header, 4) != SQLITE_WAL_FORMAT_VERSION {
-        return Ok(false);
+        return Ok(None);
     }
     let page_size = read_be_u32(&header, 8);
-    Ok(page_size == 65_536 || (512..65_536).contains(&page_size) && page_size.is_power_of_two())
+    let valid_page_size =
+        page_size == 65_536 || (512..65_536).contains(&page_size) && page_size.is_power_of_two();
+    if !valid_page_size {
+        return Ok(None);
+    }
+    let salts = [
+        header[16], header[17], header[18], header[19], header[20], header[21], header[22],
+        header[23],
+    ];
+    Ok(Some(WalHeaderInfo::Present {
+        len,
+        page_size,
+        salts,
+    }))
+}
+
+#[cfg(unix)]
+fn wal_file_is_valid(wal_path: &Path) -> Result<bool, FrankenError> {
+    Ok(read_valid_wal_header(wal_path)?.is_some())
 }
 
 /// The SQLite wal-index header checksum: five pairs of native-endian
@@ -559,41 +820,113 @@ fn wal_index_checksum(header_40: &[u8]) -> (u32, u32) {
     (s0, s1)
 }
 
-/// Whether the `-shm` file is a coherent wal-index: a regular file at
-/// least [`SQLITE_SHM_MIN_SIZE`] bytes, whose two 48-byte header copies
-/// agree and whose first header carries format version `3007000`, the
-/// `isInit` marker, a plausible `bigEndCksum` flag, a valid `szPage`, and a
-/// matching header checksum.
+/// Read and validate the `-shm` wal-index header: a regular file at least
+/// [`SQLITE_SHM_MIN_SIZE`] bytes, whose two 48-byte header copies agree and
+/// whose first header carries format version `3007000`, the `isInit` marker, a
+/// plausible `bigEndCksum` flag, a valid `szPage`, and a matching header
+/// checksum.
 #[cfg(unix)]
-fn shm_file_is_valid(shm_path: &Path) -> Result<bool, FrankenError> {
+fn read_valid_shm_header(shm_path: &Path) -> Result<Option<ShmHeaderInfo>, FrankenError> {
     let meta = match std::fs::metadata(shm_path) {
         Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(FrankenError::Io(error)),
     };
     if !meta.is_file() || meta.len() < SQLITE_SHM_MIN_SIZE {
-        return Ok(false);
+        return Ok(None);
+    }
+    let mut file = match std::fs::File::open(shm_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(FrankenError::Io(error)),
+    };
+    let opened_meta = file.metadata().map_err(FrankenError::Io)?;
+    if !opened_meta.is_file() || opened_meta.len() < SQLITE_SHM_MIN_SIZE {
+        return Ok(None);
     }
     let mut buf = [0_u8; SQLITE_SHM_HEADER_PAIR];
-    let mut file = std::fs::File::open(shm_path).map_err(FrankenError::Io)?;
-    file.read_exact(&mut buf).map_err(FrankenError::Io)?;
+    match file.read_exact(&mut buf) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(FrankenError::Io(error)),
+    }
+    drop(file);
     let (h0, h1) = buf.split_at(48);
     if h0 != h1 {
-        return Ok(false);
+        return Ok(None);
     }
     if u32::from_ne_bytes([h0[0], h0[1], h0[2], h0[3]]) != SQLITE_WAL_FORMAT_VERSION {
-        return Ok(false);
+        return Ok(None);
     }
     if h0[12] != 1 || h0[13] > 1 {
-        return Ok(false);
+        return Ok(None);
     }
     let sz_page = u16::from_ne_bytes([h0[14], h0[15]]);
     if !(sz_page == 1 || (sz_page >= 512 && sz_page.is_power_of_two())) {
-        return Ok(false);
+        return Ok(None);
     }
     let (s0, s1) = wal_index_checksum(&h0[..40]);
-    Ok(s0 == u32::from_ne_bytes([h0[40], h0[41], h0[42], h0[43]])
-        && s1 == u32::from_ne_bytes([h0[44], h0[45], h0[46], h0[47]]))
+    if s0 != u32::from_ne_bytes([h0[40], h0[41], h0[42], h0[43]])
+        || s1 != u32::from_ne_bytes([h0[44], h0[45], h0[46], h0[47]])
+    {
+        return Ok(None);
+    }
+    let page_size = if sz_page == 1 {
+        65_536
+    } else {
+        u32::from(sz_page)
+    };
+    let mx_frame = u32::from_ne_bytes([h0[16], h0[17], h0[18], h0[19]]);
+    // `WalIndexHdr.aSalt[2]` (bytes 32..40) is `memcpy`'d verbatim from the
+    // WAL header's `salt[0..2]` (bytes 16..24).
+    let salts = [
+        h0[32], h0[33], h0[34], h0[35], h0[36], h0[37], h0[38], h0[39],
+    ];
+    Ok(Some(ShmHeaderInfo {
+        page_size,
+        mx_frame,
+        salts,
+    }))
+}
+
+/// Verify that `-wal` and `-shm` are both individually valid and mutually
+/// coherent for a `readonly_shm=1` open:
+///
+/// - A 0-byte `-wal` is only coherent when `shm.mxFrame == 0`.
+/// - Otherwise `wal.aSalt == shm.aSalt`, `wal.page_size == shm.page_size`, and
+///   `-wal` has at least `32 + mxFrame * (24 + page_size)` bytes (checked `u64`
+///   arithmetic so `mxFrame` cannot overflow).
+#[cfg(unix)]
+fn wal_and_shm_are_coherent(wal_path: &Path, shm_path: &Path) -> Result<bool, FrankenError> {
+    let Some(wal) = read_valid_wal_header(wal_path)? else {
+        return Ok(false);
+    };
+    let Some(shm) = read_valid_shm_header(shm_path)? else {
+        return Ok(false);
+    };
+    match wal {
+        WalHeaderInfo::Empty => Ok(shm.mx_frame == 0),
+        WalHeaderInfo::Present {
+            len,
+            page_size,
+            salts,
+        } => {
+            if page_size != shm.page_size || salts != shm.salts {
+                return Ok(false);
+            }
+            let Some(frame_bytes) = 24_u64.checked_add(u64::from(page_size)) else {
+                return Ok(false);
+            };
+            let Some(frames_total) = u64::from(shm.mx_frame).checked_mul(frame_bytes) else {
+                return Ok(false);
+            };
+            let Some(min_wal_len) = (SQLITE_WAL_HEADER_SIZE as u64).checked_add(frames_total)
+            else {
+                return Ok(false);
+            };
+            Ok(len >= min_wal_len)
+        }
+    }
 }
 
 /// Build a `file:` URI for `db_path` in pure `std` (no `urlencoding`
@@ -632,8 +965,9 @@ fn read_only_uri(db_path: &Path) -> String {
 }
 
 /// Whether an open or first-read failure is the WAL-index class a snapshot
-/// copy resolves (busy, cannot-open, or read-only), as opposed to the
-/// caller's own problem (SQL errors, missing file, ...).
+/// copy resolves (busy, cannot-open, read-only, or `SQLITE_PROTOCOL` /
+/// `FileLockingProtocolFailed`), as opposed to the caller's own problem
+/// (SQL errors, missing file, ...).
 #[cfg(unix)]
 const fn wal_index_open_failure(error: &rusqlite::Error) -> bool {
     matches!(
@@ -642,11 +976,97 @@ const fn wal_index_open_failure(error: &rusqlite::Error) -> bool {
             rusqlite::ffi::Error {
                 code: rusqlite::ErrorCode::DatabaseBusy
                     | rusqlite::ErrorCode::CannotOpen
-                    | rusqlite::ErrorCode::ReadOnly,
+                    | rusqlite::ErrorCode::ReadOnly
+                    | rusqlite::ErrorCode::FileLockingProtocolFailed,
                 ..
             },
             ..
         )
     )
+}
+
+#[cfg(all(test, unix))]
+mod stamp_probe_tests {
+    use super::*;
+
+    #[test]
+    fn header_stamp_probe_preserves_writer_posix_lock() {
+        const CHILD_ENV: &str = "CASS_TEST_HEADER_STAMP_LOCK_PROBE_DB";
+        const TEST_NAME: &str =
+            "franken_sync::sidecar_probes::stamp_probe_tests::header_stamp_probe_preserves_writer_posix_lock";
+
+        if let Some(probe_db) = std::env::var_os(CHILD_ENV) {
+            let probe_str = probe_db.to_string_lossy().into_owned();
+            let probe = Connection::open(&probe_str).expect("child open");
+            probe
+                .execute("PRAGMA busy_timeout = 0")
+                .expect("child timeout");
+            match probe.execute("BEGIN IMMEDIATE") {
+                Ok(_) => {
+                    let _ = probe.execute_batch("ROLLBACK");
+                    println!("LOCK_PROBE=ACQUIRED");
+                }
+                Err(error) if error.is_busy_class() => {
+                    println!("LOCK_PROBE=HELD_BY_PARENT");
+                }
+                Err(error) => panic!("unexpected child lock probe error: {error:?}"),
+            }
+            return;
+        }
+
+        let probe_child = |db_path: &Path| -> String {
+            let output = std::process::Command::new(std::env::current_exe().expect("current_exe"))
+                .args(["--exact", TEST_NAME, "--test-threads=1", "--nocapture"])
+                .env(CHILD_ENV, db_path)
+                .output()
+                .expect("spawn lock probe child");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "child lock probe failed ({}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                output.status
+            );
+            stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("LOCK_PROBE="))
+                .map(str::to_owned)
+                .unwrap_or_else(|| panic!("missing LOCK_PROBE line in stdout:\n{stdout}"))
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("stamp_probe_wal.db");
+        let db_str = db_path.to_string_lossy().into_owned();
+        let writer = Connection::open(&db_str).expect("open writer");
+        writer.execute("PRAGMA journal_mode = WAL;").expect("wal");
+        writer
+            .execute_batch(
+                "PRAGMA application_id = 1128354643;
+                 PRAGMA user_version = 1;
+                 CREATE TABLE t(x);
+                 INSERT INTO t VALUES (1);",
+            )
+            .expect("seed");
+        writer.execute("BEGIN IMMEDIATE;").expect("begin");
+        writer.execute("INSERT INTO t VALUES (2);").expect("insert");
+        assert_eq!(probe_child(&db_path), "HELD_BY_PARENT");
+
+        assert_eq!(
+            probe_sqlite_header_stamp_safely(&db_path).expect("safe stamp probe"),
+            SqliteHeaderStamp::Stamp {
+                application_id: 0x4341_5353,
+                user_version: 1,
+            }
+        );
+        assert_eq!(
+            probe_child(&db_path),
+            "HELD_BY_PARENT",
+            "header stamp probe must not drop writer POSIX lock"
+        );
+
+        writer.execute_batch("ROLLBACK;").expect("rollback");
+        assert_eq!(probe_child(&db_path), "ACQUIRED");
+        writer.close().expect("close");
+    }
 }
 

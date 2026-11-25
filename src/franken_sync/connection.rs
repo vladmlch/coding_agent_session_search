@@ -147,6 +147,10 @@ pub struct Connection {
     open_identity: Option<FileIdentity>,
     /// Key currently registered in the in-process live-connection table.
     live_registration: Option<FileIdentity>,
+    /// Optional private snapshot directory for zero-mutation read-only opens.
+    /// Kept as the final field so `inner` drops before the temporary copy is
+    /// removed.
+    snapshot_dir: Option<tempfile::TempDir>,
 }
 
 impl fmt::Debug for Connection {
@@ -195,6 +199,22 @@ impl Connection {
             savepoint_seq: AtomicU64::new(0),
             open_identity,
             live_registration,
+            snapshot_dir: None,
+        }
+    }
+
+    pub(super) fn from_snapshot_parts(
+        inner: rusqlite::Connection,
+        original_path: PathBuf,
+        snapshot_dir: tempfile::TempDir,
+    ) -> Self {
+        Self {
+            inner: Some(inner),
+            path: Some(original_path),
+            savepoint_seq: AtomicU64::new(0),
+            open_identity: None,
+            live_registration: None,
+            snapshot_dir: Some(snapshot_dir),
         }
     }
 
@@ -226,12 +246,31 @@ impl Connection {
         Self::open_existing_schema_only(path)
     }
 
-    /// Open an existing database read-only, permitting SQLite's built-in
-    /// WAL-index recovery (heap walindex / shm rebuild as needed).
+    /// Open an existing database read-only without mutating the original files.
+    ///
+    /// Tries [`Self::open_strict_readonly`] first; on `BusyRecovery` (e.g.
+    /// `-wal` without `-shm`, damaged/mismatched `-shm`, or active `-journal`),
+    /// falls back to a bounded private `TempDir` snapshot copy instead of
+    /// letting C SQLite create 0-byte `-wal`/`-shm` sidecars in place.
     pub fn open_schema_only_with_wal_index_recovery(
         path: impl AsRef<str>,
     ) -> Result<Self, FrankenError> {
-        Self::open_with_flags_inner(path.as_ref(), compat::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        let path = path.as_ref();
+        if path.is_empty()
+            || path == ":memory:"
+            || (path.starts_with("file:")
+                && (path.starts_with("file::memory:") || path.contains("mode=memory")))
+        {
+            return Self::open_with_flags_inner(path, compat::OpenFlags::SQLITE_OPEN_READ_ONLY);
+        }
+        check_connection_admission()?;
+        let strict_flags = compat::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY;
+        match Self::open_strict_readonly(path, strict_flags) {
+            Ok(conn) => Ok(conn),
+            Err(FrankenError::BusyRecovery) => Self::open_snapshot_copy(Path::new(path)),
+            Err(error) => Err(error),
+        }
     }
 
     /// Historical alias preserved for callers referencing the
@@ -806,6 +845,7 @@ impl Connection {
                 if let Some(id) = self.live_registration.take() {
                     unregister_live_connection(id);
                 }
+                self.snapshot_dir.take();
                 Ok(())
             }
             Err((conn, error)) => {
@@ -835,6 +875,7 @@ impl Connection {
                 if let Some(id) = self.live_registration.take() {
                     unregister_live_connection(id);
                 }
+                self.snapshot_dir.take();
                 Ok(())
             }
             Err((conn, error)) => {
@@ -857,6 +898,7 @@ impl Connection {
         if let Some(id) = self.live_registration.take() {
             unregister_live_connection(id);
         }
+        self.snapshot_dir.take();
     }
 
     // -- internal -------------------------------------------------------------
@@ -951,6 +993,157 @@ impl Connection {
         conn.execute_batch(sql)
             .map_err(|error| FrankenError::from_rusqlite(error, self.path.as_deref()))
     }
+
+    /// Open a private bounded `TempDir` snapshot copy of `db_path` (plus `-wal`
+    /// and `-journal`, never `-shm`) so WAL recovery or journal rollback runs
+    /// strictly inside the temp copy with zero mutation on the original files.
+    pub(super) fn open_snapshot_copy(db_path: &Path) -> Result<Self, FrankenError> {
+        let budget = SnapshotBudget::for_temp_dir()?;
+        Self::open_snapshot_copy_with_budget(db_path, &budget)
+    }
+
+    pub(super) fn open_snapshot_copy_with_budget(
+        db_path: &Path,
+        budget: &SnapshotBudget,
+    ) -> Result<Self, FrankenError> {
+        let file_name = db_path.file_name().ok_or_else(|| {
+            FrankenError::Internal(format!(
+                "cannot snapshot a non-file SQLite path: {}",
+                db_path.display()
+            ))
+        })?;
+        let wal_path = super::sidecar_probes::sidecar_path(db_path, "-wal");
+        let journal_path = super::sidecar_probes::sidecar_path(db_path, "-journal");
+        for attempt in 0..2 {
+            let before_db = stable_stamp(db_path)?;
+            let before_wal = stable_stamp(&wal_path)?;
+            let before_journal = stable_stamp(&journal_path)?;
+            let Some(before_db) = before_db else {
+                return Err(FrankenError::CannotOpen {
+                    path: db_path.to_path_buf(),
+                });
+            };
+            let wal_bytes = before_wal.map_or(0, |wal| wal.len);
+            let total_bytes = before_db.len.saturating_add(wal_bytes);
+            if total_bytes > budget.max_bytes {
+                let db_bytes = before_db.len;
+                let max_bytes = budget.max_bytes;
+                return Err(FrankenError::Internal(format!(
+                    "the SQLite store {} is too large to read through a private snapshot copy \
+                     ({db_bytes} bytes db + {wal_bytes} bytes write-ahead log = {total_bytes} \
+                     bytes, over the {max_bytes}-byte snapshot limit): no copy is made and the \
+                     store's files are never modified",
+                    db_path.display()
+                )));
+            }
+            let free_bytes = budget.free_bytes;
+            if free_bytes < total_bytes.saturating_mul(2) {
+                return Err(FrankenError::Internal(format!(
+                    "too little free space in the temp dir to copy the SQLite store {} for a \
+                     read-only snapshot ({total_bytes} bytes to copy, {free_bytes} bytes \
+                     available: the copy would leave less than the copy's own size free): no \
+                     copy is made and the store's files are never modified",
+                    db_path.display()
+                )));
+            }
+            let snapshot_dir = tempfile::Builder::new()
+                .prefix("cass-sqlite-snapshot-")
+                .tempdir()
+                .map_err(FrankenError::Io)?;
+            let copy_db = snapshot_dir.path().join(file_name);
+            std::fs::copy(db_path, &copy_db).map_err(FrankenError::Io)?;
+            clear_copy_readonly(&copy_db)?;
+            if wal_path.is_file() {
+                let copy_wal = super::sidecar_probes::sidecar_path(&copy_db, "-wal");
+                std::fs::copy(&wal_path, &copy_wal).map_err(FrankenError::Io)?;
+                clear_copy_readonly(&copy_wal)?;
+            }
+            if journal_path.is_file() {
+                let copy_journal = super::sidecar_probes::sidecar_path(&copy_db, "-journal");
+                std::fs::copy(&journal_path, &copy_journal).map_err(FrankenError::Io)?;
+                clear_copy_readonly(&copy_journal)?;
+            }
+            let stable = stable_stamp(db_path)?.is_some_and(|after| after == before_db)
+                && stable_stamp(&wal_path)? == before_wal
+                && stable_stamp(&journal_path)? == before_journal;
+            if !stable {
+                drop(snapshot_dir);
+                if attempt == 1 {
+                    return Err(FrankenError::BusyRecovery);
+                }
+                continue;
+            }
+            let inner = rusqlite::Connection::open(&copy_db)
+                .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
+            inner
+                .execute_batch("PRAGMA query_only = 1;")
+                .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
+            return Ok(Self::from_snapshot_parts(
+                inner,
+                db_path.to_path_buf(),
+                snapshot_dir,
+            ));
+        }
+        unreachable!("snapshot copy retry loop returns from both arms")
+    }
+}
+
+/// Default 2 GiB cap on total db + `-wal` size for private snapshot-copy
+/// read-only opens (matching `franken_agent_detection::connectors::sqlite_sync`).
+const SNAPSHOT_FALLBACK_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+pub(super) struct SnapshotBudget {
+    pub(super) max_bytes: u64,
+    pub(super) free_bytes: u64,
+}
+
+impl SnapshotBudget {
+    fn for_temp_dir() -> Result<Self, FrankenError> {
+        let free_bytes = fs2::available_space(std::env::temp_dir()).map_err(|error| {
+            FrankenError::Internal(format!(
+                "could not check free space in the temp dir before snapshotting a SQLite store: {error}"
+            ))
+        })?;
+        Ok(Self {
+            max_bytes: SNAPSHOT_FALLBACK_MAX_BYTES,
+            free_bytes,
+        })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StableStamp {
+    len: u64,
+    mtime: std::time::SystemTime,
+}
+
+fn stable_stamp(path: &Path) -> Result<Option<StableStamp>, FrankenError> {
+    match std::fs::metadata(path) {
+        Ok(meta) => Ok(Some(StableStamp {
+            len: meta.len(),
+            mtime: meta.modified().map_err(FrankenError::Io)?,
+        })),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(FrankenError::Io(error)),
+    }
+}
+
+fn clear_copy_readonly(dst: &Path) -> Result<(), FrankenError> {
+    let mut permissions = std::fs::metadata(dst)
+        .map_err(FrankenError::Io)?
+        .permissions();
+    if !permissions.readonly() {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        permissions = std::fs::Permissions::from_mode(permissions.mode() | 0o600);
+    }
+    #[cfg(not(unix))]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(dst, permissions).map_err(FrankenError::Io)
 }
 
 fn sql_mentions_journal_mode(sql: &str) -> bool {
