@@ -1,4 +1,4 @@
-use super::connection_pool::FrankenAsyncConnection;
+use super::connection_pool::{FrankenAsyncConnection, FrankenOwnerConnection};
 use super::omp_and_semantic_meta::{
     CURRENT_SCHEMA_VERSION, MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION,
 };
