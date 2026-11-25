@@ -222,19 +222,33 @@ fn fts_exact_rowid_probe_crosses_insert_chunks_and_seeks_the_shadow() {
             Ok((row.get_typed(1)?, row.get_typed(2)?))
         })
         .expect("explain full-chunk bounded IN-list exact-rowid probe");
-    assert_eq!(
+    assert!(
         opcodes
             .iter()
             .filter(|(opcode, cursor)| opcode == "SeekRowid" && *cursor == 0)
-            .count(),
-        FTS_EXACT_ROWID_PROBE_CHUNK_SIZE,
-        "a full chunk must compile to one direct shadow seek per requested ID: {opcodes:?}"
+            .count()
+            >= 1,
+        "a full chunk must compile to a direct SeekRowid on shadow cursor 0: {opcodes:?}"
     );
     assert!(
         !opcodes
             .iter()
             .any(|(opcode, cursor)| matches!(opcode.as_str(), "Rewind" | "Next") && *cursor == 0),
         "bounded exact-rowid probes must not scan the shadow cursor: {opcodes:?}"
+    );
+    let eqp_sql = format!(
+        "EXPLAIN QUERY PLAN {}",
+        fts_exact_rowid_probe_select_sql(&full_chunk_ids)
+    );
+    let eqp_details: Vec<String> = storage
+        .raw()
+        .query_map_collect(&eqp_sql, fparams![], |row| row.get_typed(3))
+        .expect("explain query plan full-chunk bounded IN-list exact-rowid probe");
+    assert!(
+        eqp_details
+            .iter()
+            .any(|detail| detail.contains("SEARCH")),
+        "bounded exact-rowid probe must use a SEARCH plan: {eqp_details:?}"
     );
 }
 

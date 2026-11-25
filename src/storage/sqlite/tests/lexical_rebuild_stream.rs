@@ -386,9 +386,10 @@ fn lexical_rebuild_batch_messages_query_avoids_sorter_temp_btrees() {
         .unwrap();
 
     assert!(
-        plan_details
-            .iter()
-            .any(|detail| detail.contains("sqlite_autoindex_messages_1")),
+        plan_details.iter().any(|detail| {
+            detail.contains("sqlite_autoindex_messages_1")
+                || detail.contains("idx_messages_conv_idx")
+        }),
         "expected batched lexical rebuild fetch to use the conversation_id/idx composite index, got {plan_details:?}"
     );
     assert!(

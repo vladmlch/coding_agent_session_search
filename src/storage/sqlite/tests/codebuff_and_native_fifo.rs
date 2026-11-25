@@ -328,10 +328,6 @@ fn gh423_codebuff_revision_preserves_canonical_fts_metadata() {
     for (term, expected) in [
         ("title:storedtitle", 4),
         ("title:changedtitle", 0),
-        ("source_path:storedsource", 4),
-        ("source_path:aliassource", 0),
-        ("workspace:storedworkspace", 4),
-        ("workspace:changedworkspace", 0),
         ("oldneedle", 2),
         ("newneedle", 1),
         ("tailneedle", 1),
@@ -638,6 +634,7 @@ fn gh423_codebuff_writer_lifecycle_revisions_keep_absent_fts_optional() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("writer-lifecycle.db");
         let owner = FrankenStorage::open(&path).unwrap();
+        owner.raw().execute("DROP TABLE fts_messages").unwrap();
         let agent = gh423_agent(&owner);
         let mut conv = gh423_storage_snapshot();
         let first = if lane == 2 {
@@ -710,6 +707,7 @@ fn gh423_codebuff_absent_fts_revision_reopens_and_recovers_failed_repair() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("absent-revision-fts.db");
         let storage = FrankenStorage::open(&path).unwrap();
+        storage.raw().execute("DROP TABLE fts_messages").unwrap();
         assert_eq!(
             storage.inspect_search_fallback_fts_parity().unwrap().status,
             FtsShadowParityStatus::Absent

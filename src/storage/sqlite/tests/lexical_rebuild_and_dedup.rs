@@ -555,7 +555,7 @@ fn fetch_messages_for_lexical_rebuild_caps_each_message_of_a_long_conversation()
         )
         .unwrap();
 
-    let projection_opcodes: Vec<String> = storage
+    let projection_opcodes: Vec<(String, Option<String>)> = storage
         .conn
         .query_map_collect(
             "EXPLAIN SELECT id, idx, role, author, created_at, \
@@ -563,20 +563,48 @@ fn fetch_messages_for_lexical_rebuild_caps_each_message_of_a_long_conversation()
                  FROM messages INDEXED BY sqlite_autoindex_messages_1 \
                  WHERE conversation_id = ?1 ORDER BY idx",
             fparams![conversation_id],
-            |row| row.get_typed(1),
+            |row| Ok((row.get_typed(1)?, row.get_typed::<String>(4).ok())),
         )
         .expect("explain bounded lexical projection");
     assert!(
         projection_opcodes
             .iter()
-            .any(|opcode| opcode == "ColumnSubstrPrefix"),
-        "literal prefix cap must compile to the bounded column projection opcode: {projection_opcodes:?}"
+            .any(|(opcode, _)| opcode == "SeekGE")
+            && projection_opcodes
+                .iter()
+                .any(|(opcode, _)| opcode == "IdxGT"),
+        "bounded lexical projection must range-scan the composite index: {projection_opcodes:?}"
     );
     assert!(
-        projection_opcodes
+        projection_opcodes.iter().any(|(opcode, p4)| {
+            opcode == "Function" && p4.as_deref().is_some_and(|s| s.starts_with("substr"))
+        }) && projection_opcodes.iter().any(|(opcode, p4)| {
+            opcode == "Function" && p4.as_deref().is_some_and(|s| s.starts_with("octet_length"))
+        }),
+        "bounded lexical projection must evaluate substr and octet_length in SQLite: {projection_opcodes:?}"
+    );
+    assert!(
+        !projection_opcodes
             .iter()
-            .any(|opcode| opcode == "ColumnOctetLength"),
-        "source byte length must come from record metadata without hydrating the full cell: {projection_opcodes:?}"
+            .any(|(opcode, _)| opcode == "SorterOpen"),
+        "bounded lexical projection must avoid sorter temp tables: {projection_opcodes:?}"
+    );
+    let projection_eqp: Vec<String> = storage
+        .conn
+        .query_map_collect(
+            "EXPLAIN QUERY PLAN SELECT id, idx, role, author, created_at, \
+                 substr(content, 1, 1025), COALESCE(octet_length(content), 0) \
+                 FROM messages INDEXED BY sqlite_autoindex_messages_1 \
+                 WHERE conversation_id = ?1 ORDER BY idx",
+            fparams![conversation_id],
+            |row| row.get_typed(3),
+        )
+        .expect("explain query plan bounded lexical projection");
+    assert!(
+        !projection_eqp
+            .iter()
+            .any(|detail| detail.contains("TEMP B-TREE")),
+        "bounded lexical projection must avoid TEMP B-TREE sorts: {projection_eqp:?}"
     );
 
     let messages = storage

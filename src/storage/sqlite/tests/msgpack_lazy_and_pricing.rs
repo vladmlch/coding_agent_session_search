@@ -634,18 +634,33 @@ fn lazy_franken_db_reuses_connection() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("lazy_test.db");
     let _storage = SqliteStorage::open(&db_path).unwrap();
+    _storage
+        .raw()
+        .execute_batch("CREATE TABLE IF NOT EXISTS test_tbl (id INTEGER)")
+        .unwrap();
     drop(_storage);
 
     let lazy = LazyFrankenDb::new(db_path);
 
-    // First access opens
+    // First access opens strictly read-only (`query_only = 1`).
     {
         let conn = lazy.get("first").unwrap();
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS test_tbl (id INTEGER)")
+        let err = conn
+            .execute_batch("INSERT INTO test_tbl (id) VALUES (1)")
+            .unwrap_err();
+        assert!(
+            matches!(err, crate::franken_sync::FrankenError::ReadOnly),
+            "LazyFrankenDb must reject writes as ReadOnly, got {err:?}"
+        );
+        let count: i64 = conn
+            .query_row_map("SELECT COUNT(*) FROM test_tbl", fparams![], |r| {
+                r.get_typed(0)
+            })
             .unwrap();
+        assert_eq!(count, 0);
     }
 
-    // Second access reuses (table still exists)
+    // Second access reuses the same read-only connection.
     {
         let conn = lazy.get("second").unwrap();
         let count: i64 = conn

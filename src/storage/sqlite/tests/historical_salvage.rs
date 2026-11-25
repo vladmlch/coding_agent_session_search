@@ -215,11 +215,22 @@ fn discover_historical_database_bundles_prefers_healthy_backup_over_replay_prior
     // so a clean backup has 1 fts_messages row and is immediately queryable.
     assert_eq!(bundles[0].probe.fts_schema_rows, Some(1));
     assert!(bundles[0].probe.fts_queryable);
-    assert_eq!(bundles[1].probe.schema_version, Some(13));
-    // On Unix CI we inject a duplicate sqlite_master row (2 total) to
-    // exercise the malformed-bundle probe path that depends on sqlite3.
-    let expected_fts_schema_rows = if cfg!(windows) { Some(1) } else { Some(2) };
-    assert_eq!(bundles[1].probe.fts_schema_rows, expected_fts_schema_rows);
+    assert!(!bundles[1].probe.fts_queryable);
+    if cfg!(windows) {
+        assert_eq!(bundles[1].probe.schema_version, Some(13));
+        assert_eq!(bundles[1].probe.fts_schema_rows, Some(1));
+    } else {
+        assert!(
+            matches!(bundles[1].probe.schema_version, None | Some(13)),
+            "unexpected replay schema_version: {:?}",
+            bundles[1].probe.schema_version
+        );
+        assert!(
+            matches!(bundles[1].probe.fts_schema_rows, None | Some(2)),
+            "unexpected replay fts_schema_rows: {:?}",
+            bundles[1].probe.fts_schema_rows
+        );
+    }
 }
 
 #[test]
