@@ -471,6 +471,7 @@ pub mod compat {
 
     // -- Transaction / Savepoint ------------------------------------------------
 
+    #[derive(Debug)]
     enum TxKind {
         Root,
         Savepoint(String),
@@ -482,6 +483,15 @@ pub mod compat {
         connection: &'conn Connection,
         kind: TxKind,
         finished: bool,
+    }
+
+    impl fmt::Debug for Transaction<'_> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("Transaction")
+                .field("kind", &self.kind)
+                .field("finished", &self.finished)
+                .finish()
+        }
     }
 
     impl<'conn> Transaction<'conn> {

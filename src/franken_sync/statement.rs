@@ -12,8 +12,8 @@ use super::{Connection, FrankenError, Row, SqliteValue, check_connection_admissi
 /// Prepared statement wrapper holding the rusqlite statement under a
 /// `RefCell` so all operations take `&self` (facade contract).
 pub struct PreparedStatement<'conn> {
-    stmt: RefCell<rusqlite::Statement<'conn>>,
-    connection: &'conn Connection,
+    pub(super) stmt: RefCell<rusqlite::Statement<'conn>>,
+    pub(super) connection: &'conn Connection,
 }
 
 impl<'conn> PreparedStatement<'conn> {

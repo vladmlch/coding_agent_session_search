@@ -162,7 +162,7 @@ impl CancellationHandle {
 }
 
 /// RAII token removing a registered interrupt handle when an op completes.
-struct CancellationRegistration {
+pub(super) struct CancellationRegistration {
     state: std::sync::Weak<CancellationState>,
     id: u64,
 }
@@ -408,16 +408,20 @@ fn deadline_worker(timer: &Arc<DeadlineTimer>) {
                     if delay.is_zero() {
                         continue;
                     }
-                    let _ = timer
-                        .woken
-                        .wait_timeout(state, delay)
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    drop(
+                        timer
+                            .woken
+                            .wait_timeout(state, delay)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                    );
                 }
                 None => {
-                    let _ = timer
-                        .woken
-                        .wait(state)
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    drop(
+                        timer
+                            .woken
+                            .wait(state)
+                            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                    );
                 }
             }
         }

@@ -341,7 +341,7 @@ fn strict_readonly_rusqlite_flags(flags: compat::OpenFlags) -> rusqlite::OpenFla
 /// `.as_async().in_transaction()` shape used by semantic replay and archive
 /// code.
 pub struct AsyncView<'conn> {
-    inner: &'conn rusqlite::Connection,
+    pub(super) inner: &'conn rusqlite::Connection,
 }
 
 impl AsyncView<'_> {
