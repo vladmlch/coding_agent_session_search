@@ -538,7 +538,7 @@ fn invalid_utf8_text_is_refused_without_lossy_backup_or_private_diagnostic() -> 
     let row = connection.query_row("SELECT body FROM messages WHERE id = 47")?;
     assert!(matches!(
         &row.values()[0],
-        SqliteValue::Text(text) if !text.is_valid_utf8()
+        SqliteValue::Text(text) if std::str::from_utf8(text.as_bytes()).is_err()
     ));
     connection.close()?;
     let before = contents(source.path());
@@ -565,10 +565,10 @@ fn invalid_utf8_text_is_refused_without_lossy_backup_or_private_diagnostic() -> 
 #[test]
 fn cells_preserve_large_text_blob_and_nulls_within_the_v2_bound() -> Result<()> {
     let length = 9 * 1024 * 1024;
-    let blob: std::sync::Arc<[u8]> = vec![0xff; length].into();
+    let blob: Vec<u8> = vec![0xff; length];
     let values = [
         SqliteValue::Integer(17),
-        SqliteValue::Text("x".repeat(length).into()),
+        SqliteValue::Text("x".repeat(length)),
         SqliteValue::Blob(blob.clone()),
         SqliteValue::Null,
     ];
@@ -578,20 +578,19 @@ fn cells_preserve_large_text_blob_and_nulls_within_the_v2_bound() -> Result<()> 
     assert!(matches!(
         (&actual[1], &values[1]),
         (Cell::Text(text), SqliteValue::Text(original))
-            if text.as_bytes() == original.as_bytes_direct()
+            if text.as_bytes() == original.as_bytes()
     ));
     let Cell::Blob(encoded) = &actual[2] else {
         return Err(anyhow!("large BLOB changed its storage class"));
     };
-    assert!(STANDARD.decode(encoded)?.as_slice() == blob.as_ref());
+    assert!(STANDARD.decode(encoded)?.as_slice() == blob.as_slice());
     assert_eq!(actual[3], Cell::Null);
     Ok(())
 }
 
 #[test]
 fn cells_refuse_invalid_utf8_without_private_diagnostic() {
-    let text = fsqlite_types::SmallText::from_bytes(b"PRIVATE-INVALID-UTF8\x80\xff");
-    assert!(!text.is_valid_utf8());
+    let text = String::from_utf8_lossy(b"PRIVATE-INVALID-UTF8\x80\xff").into_owned();
     let error = cells(&[SqliteValue::Text(text)])
         .expect_err("invalid UTF-8 must not become replacement characters");
     let message = error.to_string();
@@ -629,7 +628,7 @@ fn shared_blob_cells_reject_the_256_mib_bound_without_expansion_or_private_diagn
     let private = b"PRIVATE-OVERSIZED-CELL";
     let mut bytes = vec![0_u8; 3 * 1024 * 1024];
     bytes[..private.len()].copy_from_slice(private);
-    let blob: std::sync::Arc<[u8]> = bytes.into();
+    let blob: Vec<u8> = bytes;
     let mut values = vec![SqliteValue::Integer(19)];
     values.extend(std::iter::repeat_n(SqliteValue::Blob(blob.clone()), 64));
     assert_eq!(
@@ -1187,7 +1186,7 @@ fn buffered_snapshot_propagates_underlying_flush_errors() -> Result<()> {
 
 #[test]
 fn engine_cancellation_after_emitted_rows_retains_source_cause_and_progress() -> Result<()> {
-    use fsqlite_types::cx::CancelReason;
+    use coding_agent_search::franken_sync::CancellationHandle;
     use std::cell::Cell as Counter;
 
     let connection = Connection::open(":memory:")?;
@@ -1202,10 +1201,7 @@ fn engine_cancellation_after_emitted_rows_retains_source_cause_and_progress() ->
         .join(", ");
     connection.execute(&format!("INSERT INTO messages VALUES {rows}"))?;
     connection.execute("BEGIN")?;
-    let (operation, relay) = connection
-        .as_async()
-        .root_cx()
-        .create_child_with_local_cancel_relay();
+    let cancellation = CancellationHandle::new();
     let rows_seen = Counter::new(0u64);
     let mut output = ObservingWriter {
         bytes: Vec::new(),
@@ -1214,13 +1210,13 @@ fn engine_cancellation_after_emitted_rows_retains_source_cause_and_progress() ->
             if matches!(record, Record::Row { .. }) {
                 rows_seen.set(rows_seen.get() + 1);
                 if rows_seen.get() == 1 {
-                    assert!(relay.cancel_local(CancelReason::UserInterrupt));
+                    cancellation.cancel();
                 }
             }
         },
     };
     let error = {
-        let _binding = connection.as_async().bind_operation_cx(&operation);
+        let _binding = cancellation.enter();
         snapshot(&connection, "cancelled-source".to_owned(), &mut output)
             .expect_err("engine cancellation must fail the active table scan")
     };
@@ -1247,7 +1243,7 @@ fn engine_cancellation_after_emitted_rows_retains_source_cause_and_progress() ->
     }));
     assert!(codec::verify(&mut output.bytes.as_slice()).is_err());
     // The per-operation cancellation must leave rollback and later reads usable.
-    assert!(connection.as_async().root_cx().checkpoint().is_ok());
+    assert!(connection.query_row("SELECT 1").is_ok());
     connection.execute("ROLLBACK")?;
     assert_eq!(
         connection

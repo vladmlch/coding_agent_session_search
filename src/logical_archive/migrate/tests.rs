@@ -449,7 +449,7 @@ fn projection_database_read_failure_retains_its_safe_typed_cause() -> Result<()>
 
 #[test]
 fn projection_cancellation_reports_the_completed_prefix_and_preserves_database() -> Result<()> {
-    use fsqlite_types::cx::CancelReason;
+    use coding_agent_search::franken_sync::CancellationHandle;
     use std::cell::Cell as Counter;
 
     struct CancelOnFirstRecord<'a, F> {
@@ -510,15 +510,13 @@ fn projection_cancellation_reports_the_completed_prefix_and_preserves_database()
     drop(statement);
     connection.execute("COMMIT")?;
     connection.execute("BEGIN")?;
-    let (operation, relay) = connection
-        .as_async()
-        .root_cx()
-        .create_child_with_local_cancel_relay();
+    let cancellation = CancellationHandle::new();
+    let cancel_handle = cancellation.clone();
     let records = Counter::new(0);
     let input = CancelOnFirstRecord {
         remaining: &encoded,
         records: &records,
-        cancel: Some(|| assert!(relay.cancel_local(CancelReason::UserInterrupt))),
+        cancel: Some(move || cancel_handle.cancel()),
     };
     let descriptor = Cursor::new(codec::encode(&Record::Table {
         table: table.clone(),
@@ -529,7 +527,7 @@ fn projection_cancellation_reports_the_completed_prefix_and_preserves_database()
     )?;
     assert!(matches!(cursor.next()?, Some(Record::Table { .. })));
     let error = {
-        let _binding = connection.as_async().bind_operation_cx(&operation);
+        let _binding = cancellation.enter();
         compare_table_rows(&connection, &table, &mut cursor)
             .expect_err("cancellation must stop a running database comparison")
     };

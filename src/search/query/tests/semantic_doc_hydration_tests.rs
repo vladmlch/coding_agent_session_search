@@ -44,20 +44,20 @@ fn hydrate_semantic_hits_with_ids_snippet_only_uses_full_content_for_snippets_an
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, 1, ?2, 'assistant', ?3, ?4)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(1),
-            fsqlite_types::value::SqliteValue::Integer(0),
-            fsqlite_types::value::SqliteValue::Text(first.clone().into()),
-            fsqlite_types::value::SqliteValue::Integer(101),
+            crate::franken_sync::SqliteValue::Integer(1),
+            crate::franken_sync::SqliteValue::Integer(0),
+            crate::franken_sync::SqliteValue::Text(first.clone().into()),
+            crate::franken_sync::SqliteValue::Integer(101),
         ],
     )?;
     conn.execute_with_params(
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, 1, ?2, 'assistant', ?3, ?4)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(2),
-            fsqlite_types::value::SqliteValue::Integer(1),
-            fsqlite_types::value::SqliteValue::Text(second.clone().into()),
-            fsqlite_types::value::SqliteValue::Integer(102),
+            crate::franken_sync::SqliteValue::Integer(2),
+            crate::franken_sync::SqliteValue::Integer(1),
+            crate::franken_sync::SqliteValue::Text(second.clone().into()),
+            crate::franken_sync::SqliteValue::Integer(102),
         ],
     )?;
 
@@ -500,8 +500,8 @@ fn hydrate_semantic_hits_with_ids_normalizes_trimmed_local_source_metadata() -> 
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, 1, 0, 'assistant', ?2, 101)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(1),
-            fsqlite_types::value::SqliteValue::Text("trimmed local semantic body".into()),
+            crate::franken_sync::SqliteValue::Integer(1),
+            crate::franken_sync::SqliteValue::Text("trimmed local semantic body".into()),
         ],
     )?;
 
@@ -575,8 +575,8 @@ fn hydrate_semantic_hits_with_ids_preserves_remote_origin_without_source_row() -
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, 1, 0, 'assistant', ?2, 101)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(1),
-            fsqlite_types::value::SqliteValue::Text("remote semantic body".into()),
+            crate::franken_sync::SqliteValue::Integer(1),
+            crate::franken_sync::SqliteValue::Text("remote semantic body".into()),
         ],
     )?;
 
@@ -656,18 +656,18 @@ fn resolve_semantic_doc_ids_for_hits_distinguishes_same_source_path_line_by_cont
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, ?2, 0, 'assistant', ?3, 100)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(11),
-            fsqlite_types::value::SqliteValue::Integer(1),
-            fsqlite_types::value::SqliteValue::Text(first.clone().into()),
+            crate::franken_sync::SqliteValue::Integer(11),
+            crate::franken_sync::SqliteValue::Integer(1),
+            crate::franken_sync::SqliteValue::Text(first.clone().into()),
         ],
     )?;
     conn.execute_with_params(
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, ?2, 0, 'assistant', ?3, 100)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(22),
-            fsqlite_types::value::SqliteValue::Integer(2),
-            fsqlite_types::value::SqliteValue::Text(second.clone().into()),
+            crate::franken_sync::SqliteValue::Integer(22),
+            crate::franken_sync::SqliteValue::Integer(2),
+            crate::franken_sync::SqliteValue::Text(second.clone().into()),
         ],
     )?;
 
@@ -775,8 +775,8 @@ fn hydrate_semantic_hits_with_ids_keeps_missing_title_empty() -> Result<()> {
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, 1, 0, 'assistant', ?2, 101)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(1),
-            fsqlite_types::value::SqliteValue::Text("untitled semantic body".into()),
+            crate::franken_sync::SqliteValue::Integer(1),
+            crate::franken_sync::SqliteValue::Text("untitled semantic body".into()),
         ],
     )?;
 
@@ -853,18 +853,18 @@ fn resolve_semantic_doc_ids_for_hits_prefers_conversation_id_over_ambiguous_prov
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, ?2, 0, 'assistant', ?3, 100)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(11),
-            fsqlite_types::value::SqliteValue::Integer(1),
-            fsqlite_types::value::SqliteValue::Text(content.clone().into()),
+            crate::franken_sync::SqliteValue::Integer(11),
+            crate::franken_sync::SqliteValue::Integer(1),
+            crate::franken_sync::SqliteValue::Text(content.clone().into()),
         ],
     )?;
     conn.execute_with_params(
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, ?2, 0, 'assistant', ?3, 100)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(22),
-            fsqlite_types::value::SqliteValue::Integer(2),
-            fsqlite_types::value::SqliteValue::Text(content.clone().into()),
+            crate::franken_sync::SqliteValue::Integer(22),
+            crate::franken_sync::SqliteValue::Integer(2),
+            crate::franken_sync::SqliteValue::Text(content.clone().into()),
         ],
     )?;
 
@@ -958,8 +958,8 @@ fn resolve_semantic_doc_ids_for_hits_treats_null_source_as_local() -> Result<()>
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, 1, 0, 'assistant', ?2, 100)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(11),
-            fsqlite_types::value::SqliteValue::Text(content.clone().into()),
+            crate::franken_sync::SqliteValue::Integer(11),
+            crate::franken_sync::SqliteValue::Text(content.clone().into()),
         ],
     )?;
 
@@ -1043,8 +1043,8 @@ fn resolve_semantic_doc_ids_for_hits_matches_trimmed_local_source_id() -> Result
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, 1, 0, 'assistant', ?2, 100)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(11),
-            fsqlite_types::value::SqliteValue::Text(content.clone().into()),
+            crate::franken_sync::SqliteValue::Integer(11),
+            crate::franken_sync::SqliteValue::Text(content.clone().into()),
         ],
     )?;
 
@@ -1128,8 +1128,8 @@ fn resolve_semantic_doc_ids_for_hits_normalizes_blank_local_source_id() -> Resul
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, 1, 0, 'assistant', ?2, 100)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(11),
-            fsqlite_types::value::SqliteValue::Text(content.clone().into()),
+            crate::franken_sync::SqliteValue::Integer(11),
+            crate::franken_sync::SqliteValue::Text(content.clone().into()),
         ],
     )?;
 
@@ -1214,8 +1214,8 @@ fn resolve_semantic_doc_ids_for_hits_infers_remote_source_from_origin_host_when_
         "INSERT INTO messages(id, conversation_id, idx, role, content, created_at)
          VALUES(?1, 1, 0, 'assistant', ?2, 100)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(11),
-            fsqlite_types::value::SqliteValue::Text(content.clone().into()),
+            crate::franken_sync::SqliteValue::Integer(11),
+            crate::franken_sync::SqliteValue::Text(content.clone().into()),
         ],
     )?;
 
@@ -1318,20 +1318,20 @@ fn gh395_browse_by_date_snippet_only_uses_full_content_for_hit_identity() -> Res
         "INSERT INTO messages(id, conversation_id, idx, content, created_at)
          VALUES(?1, 1, ?2, ?3, ?4)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(1),
-            fsqlite_types::value::SqliteValue::Integer(0),
-            fsqlite_types::value::SqliteValue::Text(first.clone().into()),
-            fsqlite_types::value::SqliteValue::Integer(101),
+            crate::franken_sync::SqliteValue::Integer(1),
+            crate::franken_sync::SqliteValue::Integer(0),
+            crate::franken_sync::SqliteValue::Text(first.clone().into()),
+            crate::franken_sync::SqliteValue::Integer(101),
         ],
     )?;
     conn.execute_with_params(
         "INSERT INTO messages(id, conversation_id, idx, content, created_at)
          VALUES(?1, 2, ?2, ?3, ?4)",
         &[
-            fsqlite_types::value::SqliteValue::Integer(2),
-            fsqlite_types::value::SqliteValue::Integer(0),
-            fsqlite_types::value::SqliteValue::Text(second.clone().into()),
-            fsqlite_types::value::SqliteValue::Integer(102),
+            crate::franken_sync::SqliteValue::Integer(2),
+            crate::franken_sync::SqliteValue::Integer(0),
+            crate::franken_sync::SqliteValue::Text(second.clone().into()),
+            crate::franken_sync::SqliteValue::Integer(102),
         ],
     )?;
     conn.execute(

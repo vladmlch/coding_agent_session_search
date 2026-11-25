@@ -203,7 +203,7 @@ fn index_creates_db_and_index() {
 fn cdzcl_index_idempotency_rejects_invalid_cached_payloads() {
     use coding_agent_search::franken_sync::compat::ConnectionExt;
     use coding_agent_search::storage::sqlite::FrankenStorage;
-    use frankensqlite::compat::RowExt;
+    use coding_agent_search::franken_sync::compat::RowExt;
     use serde_json::{Value, json};
     use std::io::Write;
 
@@ -381,7 +381,7 @@ fn cdzcl_index_idempotency_rejects_invalid_cached_payloads() {
 fn gh459_full_scan_repairs_cursor_workspace_without_reinserting_messages() {
     use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
     use coding_agent_search::search::model_manager::load_hash_semantic_context_strict;
-    use frankensqlite::compat::RowExt;
+    use coding_agent_search::franken_sync::compat::RowExt;
     use serde_json::{Value, json};
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -1667,7 +1667,7 @@ fn watch_once_indexes_real_codex_session_with_deferred_tantivy_open() {
 #[test]
 fn gh478_watch_once_retains_codex_hint_when_symlink_target_has_no_provider_marker() {
     use coding_agent_search::storage::sqlite::FrankenStorage;
-    use frankensqlite::compat::RowExt;
+    use coding_agent_search::franken_sync::compat::RowExt;
 
     let tmp = TempDir::new().unwrap();
     let home = tmp.path();
@@ -3173,7 +3173,7 @@ fn fts_repair_liveness_index_cmd(home: &std::path::Path, data_dir: &std::path::P
 #[test]
 fn gh495_residue_fts_shadows_converge_through_doctor_and_full_index() {
     use coding_agent_search::franken_sync::compat::ConnectionExt;
-    use frankensqlite::compat::RowExt;
+    use coding_agent_search::franken_sync::compat::RowExt;
 
     const LEGACY_DDL: &str = "CREATE VIRTUAL TABLE fts_messages USING fts5(
         content, title, agent, workspace, source_path,
@@ -3340,7 +3340,7 @@ fn gh495_residue_fts_shadows_converge_through_doctor_and_full_index() {
 #[test]
 fn gh497_oversized_residue_retires_successfully_and_settles() {
     use coding_agent_search::franken_sync::compat::ConnectionExt;
-    use frankensqlite::compat::RowExt;
+    use coding_agent_search::franken_sync::compat::RowExt;
 
     // The registration the reporter's archive carried (cass before 2026-08-04).
     const CONTENT_ONLY_DDL: &str = "CREATE VIRTUAL TABLE IF NOT EXISTS fts_messages USING fts5(\
@@ -3902,7 +3902,7 @@ fn gh413_legacy_readonly_resume_drops_oversized_shadow_before_opening_readers() 
 }
 
 fn assert_gh413_fts_shadow_bound(legacy_checkpoint: bool) {
-    use frankensqlite::compat::RowExt;
+    use coding_agent_search::franken_sync::compat::RowExt;
 
     let tmp = TempDir::new().unwrap();
     let home = tmp.path();
@@ -5681,7 +5681,7 @@ fn rvt_qwen_session(home: &std::path::Path, needle: &str) -> std::path::PathBuf 
 /// Read `(conversation_id, source_path)` rows from the archive.
 fn rvt_conversations(db_path: &std::path::Path) -> Vec<(i64, String)> {
     use coding_agent_search::storage::sqlite::FrankenStorage;
-    use frankensqlite::compat::RowExt;
+    use coding_agent_search::franken_sync::compat::RowExt;
     let storage = FrankenStorage::open_readonly(db_path).unwrap();
     let rows = storage
         .raw()
@@ -5705,7 +5705,7 @@ fn rvt_conversations(db_path: &std::path::Path) -> Vec<(i64, String)> {
 /// docs_state))`.
 fn rvt_region_marks(db_path: &std::path::Path) -> std::collections::HashMap<i64, (i64, String)> {
     use coding_agent_search::storage::sqlite::FrankenStorage;
-    use frankensqlite::compat::RowExt;
+    use coding_agent_search::franken_sync::compat::RowExt;
     let storage = FrankenStorage::open_readonly(db_path).unwrap();
     let rows = storage
         .raw()
@@ -5796,7 +5796,7 @@ fn rvt_connector_conversations(payload: &serde_json::Value, name: &str) -> i64 {
 fn rvt_repair_global_scan_watermark(db_path: &std::path::Path) {
     use coding_agent_search::franken_sync::compat::ConnectionExt;
     use coding_agent_search::storage::sqlite::FrankenStorage;
-    use frankensqlite::compat::RowExt;
+    use coding_agent_search::franken_sync::compat::RowExt;
     let storage = FrankenStorage::open_readonly(db_path).unwrap();
     let rows = storage
         .raw()
@@ -6149,7 +6149,7 @@ fn rvt_extension_rows(db_path: &std::path::Path, conversation_ids: &[i64]) -> se
 fn rvt_extension_versions(db_path: &std::path::Path, conversation_id: i64) -> (i64, i64, i64) {
     use coding_agent_search::storage::sqlite::FrankenStorage;
     use coding_agent_search::viewer_extensions::facts::FactsDb;
-    use frankensqlite::compat::RowExt;
+    use coding_agent_search::franken_sync::compat::RowExt;
     let storage = FrankenStorage::open_readonly(db_path).unwrap();
     let facts_version = storage
         .raw()

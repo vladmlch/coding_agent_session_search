@@ -1309,7 +1309,7 @@ mod publication_tests {
 
     #[test]
     fn unreadable_schema_authority_keeps_typed_private_engine_failures() -> Result<()> {
-        use fsqlite_types::cx::CancelReason;
+        use coding_agent_search::franken_sync::CancellationHandle;
 
         let connection = Connection::open(":memory:")?;
         connection.execute_batch(
@@ -1334,13 +1334,10 @@ mod publication_tests {
                 .any(|cause| cause.downcast_ref::<FrankenError>().is_some())
         );
 
-        let (operation, relay) = connection
-            .as_async()
-            .root_cx()
-            .create_child_with_local_cancel_relay();
-        assert!(relay.cancel_local(CancelReason::UserInterrupt));
+        let cancellation = CancellationHandle::new();
+        cancellation.cancel();
         let error = {
-            let _binding = connection.as_async().bind_operation_cx(&operation);
+            let _binding = cancellation.enter();
             verify_schema_authority(&connection, "22")
                 .expect_err("a cancelled authority probe cannot certify the database")
         };
@@ -1360,7 +1357,7 @@ mod publication_tests {
                 Some(FrankenError::Abort)
             )
         }));
-        assert!(connection.as_async().root_cx().checkpoint().is_ok());
+        assert!(connection.query_row("SELECT 1").is_ok());
         Ok(())
     }
 }
