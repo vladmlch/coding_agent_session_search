@@ -45,17 +45,6 @@ pub(in crate::storage::sqlite::tests) use super::reconcile_and_codebuff::{
     conversation_tail_ended_at_candidate, franken_reconcile_provider_workspace,
     provider_workspace_is_authoritative, replay_owns_provider_workspace,
 };
-pub(in crate::storage::sqlite::tests) use super::schema_migrations::{
-    MIGRATION_V1, MIGRATION_V2, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7,
-    MIGRATION_V8, MIGRATION_V9, MIGRATION_V10, MIGRATION_V15_TAIL_STATE_TABLE,
-};
-pub(in crate::storage::sqlite::tests) use super::schema_repair::{
-    BASE_MIGRATION_STEPS, CURRENT_SCHEMA_REPAIR_BATCHES, LEGACY_FTS_TEARDOWN_BUDGET_ENV,
-    POST_TAIL_CACHE_MIGRATION_STEPS, REQUIRED_CONVERSATION_TOKEN_COLUMNS,
-    REQUIRED_CURRENT_SCHEMA_TABLE_PROBES, apply_conversation_tail_state_cache_migration,
-    current_schema_repair_batches_for_missing_tables, run_attributed_migration_steps,
-    transition_from_meta_version,
-};
 pub(in crate::storage::sqlite::tests) use super::source_and_historical_import::{
     HISTORICAL_RECOVERY_CORE_SCHEMA, HistoricalBatchEntry, HistoricalBatchImportTotals,
     historical_raw_json, historical_table_exists, json_value_size_hint,

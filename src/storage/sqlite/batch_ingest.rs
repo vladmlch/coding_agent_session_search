@@ -10,7 +10,7 @@ use super::fts_rebuild::{
     FTS_ENTRY_BATCH_MAX_CHARS, FTS_ENTRY_BATCH_MAX_DOCS, FtsEntry, flush_pending_fts_entries,
     role_str,
 };
-use super::historical_salvage::historical_raw_json;
+use super::source_and_historical_import::historical_raw_json;
 use super::reconcile_and_codebuff::{
     ExistingConversationNewMessages, InsertOutcome, MessageMergeFingerprint,
     MessageReplayFingerprintSet, PendingConversationKey, SourceIngestLedgerEntry,
@@ -21,7 +21,7 @@ use super::reconcile_and_codebuff::{
     message_merge_fingerprint, message_replay_parts, provider_workspace_is_authoritative,
     shelley_metadata_is_authoritative,
 };
-use super::schema_migrations::SemanticIdentityTier;
+use super::omp_and_semantic_meta::SemanticIdentityTier;
 use super::storage_core::{EnsuredConversationSourceKey, FrankenStorage};
 use super::tx_analytics_rollups::{
     TOKEN_DAILY_STATS_REBUILD_CURSOR_KEY, TOKEN_USAGE_REVISION_GENERATION_META_KEY,

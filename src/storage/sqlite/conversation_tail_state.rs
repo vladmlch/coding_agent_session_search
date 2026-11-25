@@ -1,5 +1,5 @@
 use super::fts_rebuild::path_to_string;
-use super::historical_salvage::SOURCE_PATH_MERGE_START_TOLERANCE_MS;
+use super::source_and_historical_import::SOURCE_PATH_MERGE_START_TOLERANCE_MS;
 use super::open_and_locks::MESSAGE_LOOKUP_TRACE_ENABLED;
 use super::reconcile_and_codebuff::{
     ConversationMergeEvidence, ExistingConversationNewMessages, ExistingConversationTailMetadata,

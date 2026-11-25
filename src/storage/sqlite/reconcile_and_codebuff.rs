@@ -11,7 +11,7 @@ use super::backup_and_integrity::{
 use super::batch_ingest::ensure_workspaces_in_tx;
 use super::conversation_tail_state::existing_conversation_tail_state_from_cached;
 use super::fts_rebuild::{FtsEntry, path_to_string, role_str};
-use super::schema_migrations::SemanticIdentityTier;
+use super::omp_and_semantic_meta::SemanticIdentityTier;
 use super::storage_core::FrankenStorage;
 use super::tx_analytics_rollups::{
     franken_flush_analytics_rollups_in_tx, franken_relocate_rollup_subtract,

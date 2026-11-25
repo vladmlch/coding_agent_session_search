@@ -7,7 +7,7 @@ use super::backup_and_integrity::{
 };
 use super::conversation_tail_state::MessageForEmbedding;
 use super::lexical_rebuild::EmbeddingJobRow;
-use super::schema_migrations::SemanticIdentityTier;
+use super::omp_and_semantic_meta::SemanticIdentityTier;
 use super::storage_core::FrankenStorage;
 use super::tx_analytics_rollups::{
     DailyStatsBatchTarget, franken_update_daily_stats_batched_in_tx_for_target,

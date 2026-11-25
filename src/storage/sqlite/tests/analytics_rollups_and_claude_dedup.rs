@@ -169,8 +169,8 @@ fn migration_v13_creates_analytics_tables() {
         )
         .unwrap();
     assert_eq!(
-        fts_schema_rows, 0,
-        "fresh schema should not create and immediately drop derived fts_messages"
+        fts_schema_rows, 1,
+        "fresh schema v1 creates derived fts_messages at birth"
     );
     let integrity: Vec<String> = conn
         .query_map_collect("PRAGMA integrity_check;", fparams![], |row: &FrankenRow| {
@@ -215,61 +215,9 @@ fn day_and_hour_ids_floor_negative_millis() {
         (expected_secs - epoch_2020_secs).div_euclid(86_400)
     );
     assert_eq!(
-        SqliteStorage::hour_id_from_millis(ts_ms),
-        (expected_secs - epoch_2020_secs).div_euclid(3_600)
+        (expected_secs - epoch_2020_secs).div_euclid(3_600),
+        SqliteStorage::hour_id_from_millis(ts_ms)
     );
-}
-
-#[test]
-#[serial]
-fn migration_v13_from_v10() {
-    let dir = TempDir::new().unwrap();
-    let db_path = dir.path().join("test.db");
-
-    // Open at v10 first by faking it
-    {
-        let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
-        conn.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);")
-            .unwrap();
-        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', '10')")
-            .unwrap();
-        // Apply V1-V10 so schema is correct. Keep each historical DDL batch
-        // in autocommit mode; the fixture is testing cass migration
-        // transition behavior, not frankensqlite's handling of a giant
-        // synthetic legacy-DDL transaction.
-        conn.execute_batch(MIGRATION_V1).unwrap();
-        conn.execute_batch(MIGRATION_V2).unwrap();
-        conn.execute_batch(MIGRATION_V4).unwrap();
-        conn.execute_batch(MIGRATION_V5).unwrap();
-        conn.execute_batch(MIGRATION_V6).unwrap();
-        conn.execute_batch(MIGRATION_V7).unwrap();
-        conn.execute_batch(MIGRATION_V8).unwrap();
-        conn.execute_batch(MIGRATION_V9).unwrap();
-        conn.execute_batch(MIGRATION_V10).unwrap();
-        conn.execute("UPDATE meta SET value = '10' WHERE key = 'schema_version'")
-            .unwrap();
-    }
-    materialize_fresh_fts_schema_via_rusqlite(&db_path).unwrap();
-
-    // Now open with SqliteStorage — should auto-migrate to current schema
-    let storage = SqliteStorage::open(&db_path).unwrap();
-    let version = storage.schema_version().unwrap();
-    assert_eq!(
-        version, CURRENT_SCHEMA_VERSION,
-        "Should have migrated from v10 to the current schema"
-    );
-
-    // Verify new tables exist
-    let count: i64 = storage
-        .raw()
-        .query_row_map(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('message_metrics', 'usage_hourly', 'usage_daily', 'usage_models_daily')",
-            &[],
-            |row: &FrankenRow| row.get_typed::<i64>(0),
-        )
-        .unwrap();
-    assert_eq!(count, 4, "All 4 analytics tables should exist");
 }
 
 // =========================================================================
