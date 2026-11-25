@@ -1004,10 +1004,10 @@ mod stamp_probe_tests {
             match probe.execute("BEGIN IMMEDIATE") {
                 Ok(_) => {
                     let _ = probe.execute_batch("ROLLBACK");
-                    println!("LOCK_PROBE=ACQUIRED");
+                    println!("\nLOCK_PROBE=ACQUIRED");
                 }
                 Err(error) if error.is_busy_class() => {
-                    println!("LOCK_PROBE=HELD_BY_PARENT");
+                    println!("\nLOCK_PROBE=HELD_BY_PARENT");
                 }
                 Err(error) => panic!("unexpected child lock probe error: {error:?}"),
             }
@@ -1029,7 +1029,10 @@ mod stamp_probe_tests {
             );
             stdout
                 .lines()
-                .find_map(|line| line.strip_prefix("LOCK_PROBE="))
+                .find_map(|line| {
+                    line.split_once("LOCK_PROBE=")
+                        .and_then(|(_, rest)| rest.split_whitespace().next())
+                })
                 .map(str::to_owned)
                 .unwrap_or_else(|| panic!("missing LOCK_PROBE line in stdout:\n{stdout}"))
         };
