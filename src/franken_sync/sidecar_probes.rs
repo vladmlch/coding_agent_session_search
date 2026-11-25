@@ -53,7 +53,7 @@ pub(super) fn unregister_live_connection(id: FileIdentity) {
     }
 }
 
-fn live_connection_state(id: FileIdentity) -> Option<Option<bool>> {
+pub(super) fn live_connection_state(id: FileIdentity) -> Option<Option<bool>> {
     let map = match live_db_map().lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -61,6 +61,79 @@ fn live_connection_state(id: FileIdentity) -> Option<Option<bool>> {
     map.get(&id)
         .filter(|entry| entry.count > 0)
         .map(|entry| entry.known_wal)
+}
+
+/// RAII pre-registration guard: increments `LIVE_DB_CONNECTIONS` before
+/// `rusqlite::Connection::open*` so concurrent `open_strict_readonly` calls
+/// never observe `live_connection_state == None` after the fd is opened.
+/// Rolls back the registration on error and hands ownership to `Connection` on
+/// success.
+pub(super) struct LivePreRegistration {
+    id: Option<FileIdentity>,
+}
+
+impl LivePreRegistration {
+    pub(super) fn acquire_for_path(
+        path_str: &str,
+        fs_path: Option<&Path>,
+        flags: Option<compat::OpenFlags>,
+    ) -> Result<Self, FrankenError> {
+        let id = compute_open_identity(path_str, fs_path, flags)?;
+        Ok(Self::acquire_id(id))
+    }
+
+    pub(super) fn acquire_id(id: Option<FileIdentity>) -> Self {
+        if let Some(id) = id {
+            register_live_connection(id, None);
+        }
+        Self { id }
+    }
+
+    pub(super) fn id(&self) -> Option<FileIdentity> {
+        self.id
+    }
+
+    pub(super) fn commit(&mut self, known_wal: Option<bool>) -> Option<FileIdentity> {
+        let id = self.id.take()?;
+        if let Some(is_wal) = known_wal {
+            update_live_wal_state(id, is_wal);
+        }
+        Some(id)
+    }
+}
+
+impl Drop for LivePreRegistration {
+    fn drop(&mut self) {
+        if let Some(id) = self.id.take() {
+            unregister_live_connection(id);
+        }
+    }
+}
+
+pub(super) fn compute_open_identity(
+    path_str: &str,
+    fs_path: Option<&Path>,
+    flags: Option<compat::OpenFlags>,
+) -> Result<Option<FileIdentity>, FrankenError> {
+    if flags.is_some_and(|f| f.contains(compat::OpenFlags::SQLITE_OPEN_MEMORY)) {
+        return Ok(None);
+    }
+    if let Some(path) = fs_path {
+        return FileIdentity::from_path(path).map_err(FrankenError::Io);
+    }
+    if path_str.is_empty() || path_str == ":memory:" {
+        return Ok(None);
+    }
+    if path_str.starts_with("file:")
+        && (path_str.starts_with("file::memory:") || path_str.contains("mode=memory"))
+    {
+        return Ok(None);
+    }
+    match FileIdentity::from_path(Path::new(path_str)) {
+        Ok(identity) => Ok(identity),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(FrankenError::Io(error)),
+    }
 }
 
 impl Connection {
@@ -154,12 +227,13 @@ impl Connection {
         // Mode 1 — pure rollback-mode store: no WAL marker anywhere, so a
         // read-only open cannot create `-wal` / `-shm`.
         if !is_wal_header && !wal_exists && !shm_exists {
+            let pre_reg = LivePreRegistration::acquire_id(db_id);
             let inner = rusqlite::Connection::open_with_flags(path, open_flags)
                 .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
             return Ok(Self::from_parts(
                 inner,
                 Some(PathBuf::from(path)),
-                db_id,
+                pre_reg,
                 Some(false),
             ));
         }
@@ -204,56 +278,21 @@ impl Connection {
 
         if !wal_exists && !shm_exists {
             return match known_wal {
-                Some(true) => Err(FrankenError::BusyRecovery),
                 Some(false) => {
+                    let pre_reg = LivePreRegistration::acquire_id(db_id);
                     let inner = rusqlite::Connection::open_with_flags(path, open_flags)
                         .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
                     Ok(Self::from_parts(
                         inner,
                         Some(PathBuf::from(path)),
-                        db_id,
+                        pre_reg,
                         Some(false),
                     ))
                 }
-                None => {
-                    #[cfg(unix)]
-                    {
-                        let uri = read_only_uri(db_path);
-                        let uri_flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                            | rusqlite::OpenFlags::SQLITE_OPEN_URI
-                            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-                        let inner = rusqlite::Connection::open_with_flags(uri.as_str(), uri_flags)
-                            .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
-                        match inner
-                            .query_row("PRAGMA schema_version;", [], |row| row.get::<usize, i64>(0))
-                        {
-                            Ok(_) => Ok(Self::from_parts(
-                                inner,
-                                Some(PathBuf::from(path)),
-                                db_id,
-                                None,
-                            )),
-                            Err(rusqlite::Error::SqliteFailure(
-                                rusqlite::ffi::Error {
-                                    code:
-                                        rusqlite::ErrorCode::CannotOpen
-                                        | rusqlite::ErrorCode::ReadOnly,
-                                    ..
-                                },
-                                ..,
-                            )) => {
-                                drop(inner);
-                                Err(FrankenError::BusyRecovery)
-                            }
-                            Err(error) => Err(FrankenError::from_rusqlite(error, Some(db_path))),
-                        }
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        let _ = open_flags;
-                        Err(FrankenError::BusyRecovery)
-                    }
-                }
+                // `Some(true)` means WAL header with missing sidecars; `None`
+                // means WAL vs rollback is unknown while another connection is
+                // live — refuse without letting C SQLite create `<db>-wal`.
+                Some(true) | None => Err(FrankenError::BusyRecovery),
             };
         }
 
@@ -275,6 +314,8 @@ impl Connection {
             }
             return Self::open_wal_strict_in_place(db_path, path, db_id);
         }
+        #[cfg(not(unix))]
+        let _ = open_flags;
 
         Err(FrankenError::BusyRecovery)
     }
@@ -294,6 +335,7 @@ impl Connection {
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
             | rusqlite::OpenFlags::SQLITE_OPEN_URI
             | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let pre_reg = LivePreRegistration::acquire_id(db_id);
         let inner = match rusqlite::Connection::open_with_flags(uri.as_str(), flags) {
             Ok(inner) => inner,
             Err(error) if wal_index_open_failure(&error) => {
@@ -310,7 +352,7 @@ impl Connection {
             Ok(_) => Ok(Self::from_parts(
                 inner,
                 Some(PathBuf::from(path)),
-                db_id,
+                pre_reg,
                 Some(true),
             )),
             Err(error) if wal_index_open_failure(&error) => {

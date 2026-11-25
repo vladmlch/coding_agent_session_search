@@ -14,6 +14,7 @@ use super::{Connection, FrankenError, Row, SqliteValue, check_connection_admissi
 pub struct PreparedStatement<'conn> {
     pub(super) stmt: RefCell<rusqlite::Statement<'conn>>,
     pub(super) connection: &'conn Connection,
+    pub(super) refreshes_wal: bool,
 }
 
 impl<'conn> PreparedStatement<'conn> {
@@ -55,24 +56,30 @@ impl<'conn> PreparedStatement<'conn> {
             return Err(FrankenError::Abort);
         }
         let refs = dynamic_params(params);
-        let mut stmt = self.stmt.borrow_mut();
-        let column_count = stmt.column_count();
-        let mut rows = stmt
-            .query(&refs[..])
-            .map_err(|error| self.connection.map_err_cancellable(error))?;
-        if current_is_cancelled() {
-            return Err(FrankenError::Abort);
-        }
-        loop {
-            match rows.next() {
-                Err(error) => return Err(self.connection.map_err_cancellable(error)),
-                Ok(None) => return Ok(()),
-                Ok(Some(row)) => {
-                    let materialized = materialize_row(row, column_count)?;
-                    f(&materialized)?;
+        {
+            let mut stmt = self.stmt.borrow_mut();
+            let column_count = stmt.column_count();
+            let mut rows = stmt
+                .query(&refs[..])
+                .map_err(|error| self.connection.map_err_cancellable(error))?;
+            if current_is_cancelled() {
+                return Err(FrankenError::Abort);
+            }
+            loop {
+                match rows.next() {
+                    Err(error) => return Err(self.connection.map_err_cancellable(error)),
+                    Ok(None) => break,
+                    Ok(Some(row)) => {
+                        let materialized = materialize_row(row, column_count)?;
+                        f(&materialized)?;
+                    }
                 }
             }
         }
+        if self.refreshes_wal {
+            self.connection.refresh_wal_state_now();
+        }
+        Ok(())
     }
 
     /// Streaming per-row callback (no params).
@@ -102,13 +109,18 @@ impl<'conn> PreparedStatement<'conn> {
             return Err(FrankenError::Abort);
         }
         let refs = dynamic_params(params);
-        let mut stmt = self.stmt.borrow_mut();
-        stmt.query(&refs[..])
-            .and_then(|mut rows| {
-                while let Some(_row) = rows.next()? {}
-                Ok(())
-            })
-            .map_err(|error| self.connection.map_err_cancellable(error))?;
+        {
+            let mut stmt = self.stmt.borrow_mut();
+            stmt.query(&refs[..])
+                .and_then(|mut rows| {
+                    while let Some(_row) = rows.next()? {}
+                    Ok(())
+                })
+                .map_err(|error| self.connection.map_err_cancellable(error))?;
+        }
+        if self.refreshes_wal {
+            self.connection.refresh_wal_state_now();
+        }
         Ok(conn.changes() as usize)
     }
 
@@ -128,21 +140,27 @@ impl<'conn> PreparedStatement<'conn> {
             return Err(FrankenError::Abort);
         }
         let refs = dynamic_params(params);
-        let mut stmt = self.stmt.borrow_mut();
-        let column_count = stmt.column_count();
-        let mut rows = stmt
-            .query(&refs[..])
-            .map_err(|error| self.connection.map_err_cancellable(error))?;
-        let first = match rows.next() {
-            Err(error) => return Err(self.connection.map_err_cancellable(error)),
-            Ok(None) => return Err(FrankenError::QueryReturnedNoRows),
-            Ok(Some(row)) => materialize_row(row, column_count)?,
+        let first = {
+            let mut stmt = self.stmt.borrow_mut();
+            let column_count = stmt.column_count();
+            let mut rows = stmt
+                .query(&refs[..])
+                .map_err(|error| self.connection.map_err_cancellable(error))?;
+            let first = match rows.next() {
+                Err(error) => return Err(self.connection.map_err_cancellable(error)),
+                Ok(None) => return Err(FrankenError::QueryReturnedNoRows),
+                Ok(Some(row)) => materialize_row(row, column_count)?,
+            };
+            match rows.next() {
+                Err(error) => return Err(self.connection.map_err_cancellable(error)),
+                Ok(None) => first,
+                Ok(Some(_)) => return Err(FrankenError::QueryReturnedMultipleRows),
+            }
         };
-        match rows.next() {
-            Err(error) => Err(self.connection.map_err_cancellable(error)),
-            Ok(None) => Ok(first),
-            Ok(Some(_)) => Err(FrankenError::QueryReturnedMultipleRows),
+        if self.refreshes_wal {
+            self.connection.refresh_wal_state_now();
         }
+        Ok(first)
     }
 }
 

@@ -638,6 +638,62 @@ use std::time::{Duration, Instant};
         wal_writer.close().expect("close wal writer");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn query_pragma_journal_mode_updates_live_wal_state_for_strict_readonly() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("switch_wal_via_query.db");
+        let db_str = db_path.to_string_lossy().into_owned();
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let shm_path = sidecar_path(&db_path, "-shm");
+        let strict = compat::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY;
+
+        // Open a rollback DB (`known_wal = Some(false)`), seed a table, then
+        // switch to WAL via `Connection::query("PRAGMA journal_mode = WAL;")`.
+        let conn = Connection::open(&db_str).expect("open");
+        conn.execute("CREATE TABLE t(x); INSERT INTO t VALUES (1);")
+            .expect("seed");
+        let id = conn.file_identity().expect("id").expect("some id");
+        assert_eq!(
+            super::sidecar_probes::live_connection_state(id),
+            Some(Some(false))
+        );
+
+        let rows = conn.query("PRAGMA journal_mode = WAL;").expect("query wal");
+        assert_eq!(
+            rows[0].get_typed::<String>(0).unwrap().to_lowercase(),
+            "wal"
+        );
+        assert_eq!(
+            super::sidecar_probes::live_connection_state(id),
+            Some(Some(true))
+        );
+
+        // If `-wal`/`-shm` were not created yet (or after removing clean empty
+        // sidecars / reopening the WAL header without sidecars), strict
+        // read-only open must refuse with BusyRecovery and create zero files.
+        if !wal_path.exists() && !shm_path.exists() {
+            let err = compat::open_with_flags(&db_str, strict)
+                .expect_err("WAL header without sidecars must refuse");
+            assert!(matches!(err, FrankenError::BusyRecovery), "got {err:?}");
+            assert!(!wal_path.exists(), "strict open must not create -wal");
+            assert!(!shm_path.exists(), "strict open must not create -shm");
+        }
+
+        // Also verify PreparedStatement refreshes `LIVE_DB_CONNECTIONS` back to
+        // non-WAL when switching via prepared statement.
+        let ps = PreparedStatement::new(&conn, "PRAGMA journal_mode = DELETE;")
+            .expect("prepare delete");
+        let _ = ps.query_row().expect("switch back to delete");
+        assert_eq!(
+            super::sidecar_probes::live_connection_state(id),
+            Some(Some(false))
+        );
+        drop(ps);
+        conn.close().expect("close");
+    }
+
     #[cfg(all(unix, not(target_arch = "wasm32")))]
     #[test]
     fn backup_exact_to_rejects_dangling_symlink() {

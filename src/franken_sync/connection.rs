@@ -13,8 +13,8 @@ use super::BackupReport;
 use super::compat_surface::read_backup_report;
 use super::deadline_and_cancel::{current_cancellation, current_is_cancelled};
 use super::sidecar_probes::{
-    BusyTimeoutRestore, register_live_connection, row_i64, unregister_live_connection,
-    update_live_wal_state,
+    BusyTimeoutRestore, LivePreRegistration, compute_open_identity, register_live_connection,
+    row_i64, unregister_live_connection, update_live_wal_state,
 };
 use super::value_and_error::materialize_row;
 use super::{
@@ -168,19 +168,27 @@ impl Connection {
     pub(super) fn from_parts(
         inner: rusqlite::Connection,
         path: Option<PathBuf>,
-        open_identity: Option<FileIdentity>,
+        mut pre_reg: LivePreRegistration,
         known_wal: Option<bool>,
     ) -> Self {
-        let live_registration = open_identity.map(|id| {
-            let detected_wal = known_wal.or_else(|| {
-                inner
-                    .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
-                    .ok()
-                    .map(|mode| mode.eq_ignore_ascii_case("wal"))
-            });
-            register_live_connection(id, detected_wal);
-            id
+        let detected_wal = known_wal.or_else(|| {
+            inner
+                .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
+                .ok()
+                .map(|mode| mode.eq_ignore_ascii_case("wal"))
         });
+        let open_identity = pre_reg.id().or_else(|| {
+            path.as_deref()
+                .and_then(|p| compute_open_identity(&p.to_string_lossy(), None, None).ok().flatten())
+        });
+        let live_registration = if let Some(id) = pre_reg.commit(detected_wal) {
+            Some(id)
+        } else {
+            open_identity.map(|id| {
+                register_live_connection(id, detected_wal);
+                id
+            })
+        };
         Self {
             inner: Some(inner),
             path,
@@ -194,13 +202,13 @@ impl Connection {
     pub fn open(path: impl AsRef<str>) -> Result<Self, FrankenError> {
         check_connection_admission()?;
         let path = path.as_ref().to_owned();
+        let pre_reg = LivePreRegistration::acquire_for_path(&path, None, None)?;
         let inner = rusqlite::Connection::open(&path)
             .map_err(|error| FrankenError::from_rusqlite(error, Some(Path::new(&path))))?;
-        let open_identity = compute_open_identity(&path, None, None)?;
         Ok(Self::from_parts(
             inner,
             Some(PathBuf::from(path)),
-            open_identity,
+            pre_reg,
             None,
         ))
     }
@@ -370,22 +378,19 @@ impl Connection {
         Ok(())
     }
 
-    fn maybe_refresh_wal_state(&self, sql: &str) {
+    pub(super) fn maybe_refresh_wal_state(&self, sql: &str) {
+        if self.live_registration.is_some() && sql_mentions_journal_mode(sql) {
+            self.refresh_wal_state_now();
+        }
+    }
+
+    pub(super) fn refresh_wal_state_now(&self) {
         let Some(id) = self.live_registration else {
             return;
         };
-        if sql.len() >= 12
-            && sql
-                .as_bytes()
-                .windows(12)
-                .any(|w| w.eq_ignore_ascii_case(b"journal_mode"))
-        {
-            if let Some(raw) = self.inner.as_ref() {
-                if let Ok(mode) =
-                    raw.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0))
-                {
-                    update_live_wal_state(id, mode.eq_ignore_ascii_case("wal"));
-                }
+        if let Some(raw) = self.inner.as_ref() {
+            if let Ok(mode) = raw.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)) {
+                update_live_wal_state(id, mode.eq_ignore_ascii_case("wal"));
             }
         }
     }
@@ -448,14 +453,17 @@ impl Connection {
             loop {
                 match rows.next() {
                     Err(error) => return Err(self.map_err_cancellable(error)),
-                    Ok(None) => return Ok(()),
+                    Ok(None) => break,
                     Ok(Some(row)) => {
                         let materialized = materialize_row(row, column_count)?;
                         f(&materialized)?;
                     }
                 }
             }
-        })
+            Ok(())
+        })?;
+        self.maybe_refresh_wal_state(sql);
+        Ok(())
     }
 
     /// Zero-copy streaming map: `f` borrows each `rusqlite::Row<'_>` directly
@@ -470,7 +478,7 @@ impl Connection {
     where
         F: FnMut(&rusqlite::Row<'_>) -> Result<T, FrankenError>,
     {
-        self.guarded_result(|conn| {
+        let out = self.guarded_result(|conn| {
             let refs = dynamic_params(params);
             let mut stmt = conn
                 .prepare(sql)
@@ -490,7 +498,9 @@ impl Connection {
                 }
             }
             Ok(out)
-        })
+        })?;
+        self.maybe_refresh_wal_state(sql);
+        Ok(out)
     }
 
     /// Execute `sql` expecting exactly one row.
@@ -505,7 +515,7 @@ impl Connection {
         sql: &str,
         params: &[SqliteValue],
     ) -> Result<Row, FrankenError> {
-        self.guarded_result(|conn| {
+        let row = self.guarded_result(|conn| {
             let refs = dynamic_params(params);
             let mut stmt = conn
                 .prepare(sql)
@@ -524,7 +534,9 @@ impl Connection {
                 Ok(None) => Ok(first),
                 Ok(Some(_)) => Err(FrankenError::QueryReturnedMultipleRows),
             }
-        })
+        })?;
+        self.maybe_refresh_wal_state(sql);
+        Ok(row)
     }
 
     /// Prepare a statement for repeated use.
@@ -533,6 +545,7 @@ impl Connection {
         Ok(PreparedStatement {
             stmt: RefCell::new(stmt),
             connection: self,
+            refreshes_wal: sql_mentions_journal_mode(sql),
         })
     }
 
@@ -857,13 +870,13 @@ impl Connection {
             return Self::open_strict_readonly(path, flags);
         }
         let rusqlite_flags = flags.to_rusqlite();
+        let pre_reg = LivePreRegistration::acquire_for_path(path, None, Some(flags))?;
         let inner = rusqlite::Connection::open_with_flags(path, rusqlite_flags)
             .map_err(|error| FrankenError::from_rusqlite(error, Some(Path::new(path))))?;
-        let open_identity = compute_open_identity(path, None, Some(flags))?;
         Ok(Self::from_parts(
             inner,
             Some(PathBuf::from(path)),
-            open_identity,
+            pre_reg,
             None,
         ))
     }
@@ -940,28 +953,10 @@ impl Connection {
     }
 }
 
-fn compute_open_identity(
-    path_str: &str,
-    fs_path: Option<&Path>,
-    flags: Option<compat::OpenFlags>,
-) -> Result<Option<FileIdentity>, FrankenError> {
-    if flags.is_some_and(|f| f.contains(compat::OpenFlags::SQLITE_OPEN_MEMORY)) {
-        return Ok(None);
-    }
-    if let Some(path) = fs_path {
-        return FileIdentity::from_path(path).map_err(FrankenError::Io);
-    }
-    if path_str.is_empty() || path_str == ":memory:" {
-        return Ok(None);
-    }
-    if path_str.starts_with("file:")
-        && (path_str.starts_with("file::memory:") || path_str.contains("mode=memory"))
-    {
-        return Ok(None);
-    }
-    match FileIdentity::from_path(Path::new(path_str)) {
-        Ok(identity) => Ok(identity),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(FrankenError::Io(error)),
-    }
+fn sql_mentions_journal_mode(sql: &str) -> bool {
+    sql.len() >= 12
+        && sql
+            .as_bytes()
+            .windows(12)
+            .any(|w| w.eq_ignore_ascii_case(b"journal_mode"))
 }
