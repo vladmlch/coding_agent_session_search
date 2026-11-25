@@ -1,4 +1,5 @@
 use super::*;
+use crate::franken_sync::compat::TransactionExt as FrankenTransactionExt;
 use std::time::Duration;
 use tempfile::TempDir;
 
