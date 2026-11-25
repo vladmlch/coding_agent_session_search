@@ -740,7 +740,7 @@ fn normal_open_creates_snippets_message_id_index() {
     let storage = SqliteStorage::open(&dir.path().join("a.db")).unwrap();
     assert_eq!(
         snippets_index_names(&storage),
-        vec![SNIPPETS_MESSAGE_ID_INDEX.to_string()]
+        vec!["idx_snippets_message_id".to_string()]
     );
 }
 
@@ -754,7 +754,7 @@ fn open_accepts_equivalent_snippets_index_without_duplicate() {
         let storage = SqliteStorage::open(&db_path).unwrap();
         storage
             .conn
-            .execute(&format!("DROP INDEX {};", SNIPPETS_MESSAGE_ID_INDEX))
+            .execute("DROP INDEX idx_snippets_message_id;")
             .unwrap();
         storage
             .conn
@@ -998,6 +998,13 @@ fn dedicated_owner_readonly_open_reads_nonempty_wal_without_mutating_it() {
     {
         let mut conn =
             crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
+        conn.execute_batch(
+            "PRAGMA application_id = 1128354643;
+             PRAGMA user_version = 1;
+             PRAGMA journal_mode = WAL;
+             PRAGMA wal_autocheckpoint = 0;",
+        )
+        .unwrap();
         conn.execute("CREATE TABLE t (x INTEGER);").unwrap();
         conn.execute("INSERT INTO t (x) VALUES (1), (2), (3);")
             .unwrap();
@@ -1051,6 +1058,11 @@ fn gh422_strict_read_openers_do_not_create_lock_state_or_change_database_bundle(
     {
         let conn =
             crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
+        conn.execute_batch(
+            "PRAGMA application_id = 1128354643;
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
         conn.execute("CREATE TABLE t (x INTEGER);").unwrap();
         conn.execute("INSERT INTO t (x) VALUES (1), (2), (3);")
             .unwrap();
