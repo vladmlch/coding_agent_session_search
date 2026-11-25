@@ -822,7 +822,7 @@ fn real_binary_continued_rows_round_trip_with_bounded_frames_and_identical_bytes
             );
             assert!(
                 matches!(&row.values()[1], SqliteValue::Blob(actual)
-                    if actual.as_ref() == blob.as_slice()),
+                    if actual.as_slice() == blob.as_slice()),
                 "{case}: restored BLOB bytes or storage class changed"
             );
         }
