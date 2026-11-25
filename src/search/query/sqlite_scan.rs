@@ -2,8 +2,9 @@ use anyhow::{Context, Result, bail};
 use frankensearch::lexical_tantivy::{
     CassQueryToken as FsCassQueryToken, CassWildcardPattern as FsCassWildcardPattern,
 };
-use frankensqlite::AsyncConnection as SearchSqliteConnection;
 use std::cmp::Ordering as CmpOrdering;
+
+use super::SearchSqliteConnection;
 
 use crate::franken_sync::compat::{ParamValue, RowExt};
 use crate::sources::provenance::SourceFilter;

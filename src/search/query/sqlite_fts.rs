@@ -1,5 +1,4 @@
 use anyhow::{Result, anyhow};
-use frankensqlite::AsyncConnection as SearchSqliteConnection;
 use std::cmp::Ordering as CmpOrdering;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -7,7 +6,7 @@ use std::path::Path;
 use crate::franken_sync::compat::{ParamValue, RowExt};
 use crate::sources::provenance::SourceFilter;
 
-use super::SearchClient;
+use super::{SearchClient, SearchSqliteConnection};
 use super::fusion::{
     normalize_search_source_filter_value, normalized_search_hit_origin_kind,
     normalized_search_hit_source_id_parts, normalized_search_origin_kind_sql_expr,

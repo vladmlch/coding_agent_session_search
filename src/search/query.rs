@@ -16,7 +16,7 @@ pub(in crate::search::query) use frankensearch::lexical_tantivy::{
 };
 #[cfg(test)]
 pub(in crate::search::query) use frankensearch::quill::query::CassQueryFilters as FsCassQueryFilters;
-pub(in crate::search::query) use frankensqlite::AsyncConnection as SearchSqliteConnection;
+pub(in crate::search::query) use crate::storage::sqlite::FrankenOwnerConnection as SearchSqliteConnection;
 pub(in crate::search::query) use std::collections::{HashMap, HashSet};
 #[cfg(test)]
 pub(in crate::search::query) use std::path::Path;
