@@ -817,7 +817,7 @@ fn real_binary_continued_rows_round_trip_with_bounded_frames_and_identical_bytes
             let (content, blob) = continued_message_values(raw_payload);
             assert!(
                 matches!(&row.values()[0], SqliteValue::Text(actual)
-                    if actual.as_bytes_direct() == content.as_bytes()),
+                    if actual.as_bytes() == content.as_bytes()),
                 "{case}: restored TEXT bytes or storage class changed"
             );
             assert!(
