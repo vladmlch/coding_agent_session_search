@@ -1,6 +1,10 @@
+use super::open::{
+    ArchiveDisposition, SchemaRebuildRequired, archive_disposition,
+    archive_disposition_with_doctor_guard,
+};
 use super::open_and_locks::{
-    DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT, acquire_doctor_mutation_db_open_guard,
-    open_archive_writer_connection,
+    DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT, DoctorMutationDbOpenGuard,
+    acquire_doctor_mutation_db_open_guard, open_archive_writer_connection_with_guard,
 };
 use super::storage_core::FrankenStorage;
 use crate::franken_sync::{
@@ -9,7 +13,6 @@ use crate::franken_sync::{
 };
 use anyhow::{Result, anyhow};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::info;
@@ -33,6 +36,19 @@ pub enum LazyDbError {
         path: PathBuf,
         source: crate::franken_sync::FrankenError,
     },
+    #[error(transparent)]
+    SchemaRebuildRequired(#[from] SchemaRebuildRequired),
+}
+
+fn apply_owner_readonly_pragmas(
+    conn: &crate::franken_sync::Connection,
+) -> std::result::Result<(), crate::franken_sync::FrankenError> {
+    conn.execute("PRAGMA query_only = 1;")?;
+    conn.execute("PRAGMA foreign_keys = ON;")?;
+    conn.execute("PRAGMA temp_store = MEMORY;")?;
+    conn.execute("PRAGMA busy_timeout = 5000;")?;
+    conn.execute("PRAGMA cache_size = -16384;")?;
+    Ok(())
 }
 
 // -------------------------------------------------------------------------
@@ -49,14 +65,56 @@ pub enum LazyDbError {
 pub struct FrankenOwnerConnection(pub(super) parking_lot::Mutex<crate::franken_sync::Connection>);
 
 impl FrankenOwnerConnection {
+    pub(super) fn open_readonly_with_doctor_guard(
+        path: &Path,
+        guard: &DoctorMutationDbOpenGuard,
+    ) -> std::result::Result<Self, LazyDbError> {
+        match archive_disposition_with_doctor_guard(path, guard)? {
+            ArchiveDisposition::Current => {}
+            ArchiveDisposition::Uninitialized => {
+                return Err(LazyDbError::NotFound(path.to_path_buf()));
+            }
+        }
+        let path_str = path.to_string_lossy().into_owned();
+        let conn = crate::franken_sync::Connection::open_schema_only_with_wal_index_recovery(
+            path_str,
+        )
+        .map_err(|source| LazyDbError::FrankenOpenFailed {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        apply_owner_readonly_pragmas(&conn).map_err(|source| LazyDbError::FrankenOpenFailed {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Ok(Self(parking_lot::Mutex::new(conn)))
+    }
+
+    #[allow(dead_code)]
     pub(super) fn open(
         path: impl Into<String>,
     ) -> std::result::Result<Self, crate::franken_sync::FrankenError> {
-        crate::franken_sync::Connection::open(path.into())
-            .map(parking_lot::Mutex::new)
-            .map(Self)
+        let path_string: String = path.into();
+        let path_ref = Path::new(&path_string);
+        match archive_disposition(path_ref) {
+            Ok(ArchiveDisposition::Current) => {}
+            Ok(ArchiveDisposition::Uninitialized) => {
+                return Err(crate::franken_sync::FrankenError::CannotOpen {
+                    path: path_ref.to_path_buf(),
+                });
+            }
+            Err(err) => {
+                return Err(crate::franken_sync::FrankenError::Internal(err.to_string()));
+            }
+        }
+        let conn = crate::franken_sync::Connection::open_schema_only_with_wal_index_recovery(
+            path_string,
+        )?;
+        apply_owner_readonly_pragmas(&conn)?;
+        Ok(Self(parking_lot::Mutex::new(conn)))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn open_sync(
         path: impl Into<String>,
     ) -> std::result::Result<Self, crate::franken_sync::FrankenError> {
@@ -290,9 +348,6 @@ impl LazyFrankenDb {
     pub fn get(&self, reason: &str) -> std::result::Result<LazyFrankenDbGuard<'_>, LazyDbError> {
         let mut guard = self.conn.lock();
         if guard.is_none() {
-            if !self.path.exists() {
-                return Err(LazyDbError::NotFound(self.path.clone()));
-            }
             let start = Instant::now();
             let _doctor_guard = acquire_doctor_mutation_db_open_guard(
                 &self.path,
@@ -302,11 +357,10 @@ impl LazyFrankenDb {
                 path: self.path.clone(),
                 source: crate::franken_sync::FrankenError::Internal(err.to_string()),
             })?;
-            let conn = FrankenOwnerConnection::open(self.path.to_string_lossy().into_owned())
-                .map_err(|e| LazyDbError::FrankenOpenFailed {
-                    path: self.path.clone(),
-                    source: e,
-                })?;
+            let conn = FrankenOwnerConnection::open_readonly_with_doctor_guard(
+                &self.path,
+                &_doctor_guard,
+            )?;
             let elapsed_ms = start.elapsed().as_millis();
             info!(
                 path = %self.path.display(),
@@ -331,11 +385,7 @@ impl LazyFrankenDb {
     ) -> std::result::Result<LazyFrankenDbGuard<'_>, LazyDbError> {
         let mut guard = self.conn.lock();
         if guard.is_none() {
-            if !self.path.exists() {
-                return Err(LazyDbError::NotFound(self.path.clone()));
-            }
             let start = Instant::now();
-            let path_owned = self.path.to_string_lossy().into_owned();
             let path_for_guard = self.path.clone();
             let (tx, rx) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
@@ -343,31 +393,33 @@ impl LazyFrankenDb {
                     match acquire_doctor_mutation_db_open_guard(&path_for_guard, timeout) {
                         Ok(guard) => guard,
                         Err(err) => {
-                            let _ = tx.send(Err(crate::franken_sync::FrankenError::Internal(
-                                err.to_string(),
-                            )));
+                            let _ = tx.send(Err(LazyDbError::FrankenOpenFailed {
+                                path: path_for_guard,
+                                source: crate::franken_sync::FrankenError::Internal(
+                                    err.to_string(),
+                                ),
+                            }));
                             return;
                         }
                     };
-                if let Err(std::sync::mpsc::SendError(Ok(mut conn))) =
-                    tx.send(FrankenOwnerConnection::open(path_owned))
-                {
+                if let Err(std::sync::mpsc::SendError(Ok(mut conn))) = tx.send(
+                    FrankenOwnerConnection::open_readonly_with_doctor_guard(
+                        &path_for_guard,
+                        &_doctor_guard,
+                    ),
+                ) {
                     conn.close_best_effort_in_place();
                 }
             });
-            let conn = rx
-                .recv_timeout(timeout)
-                .map_err(|_| LazyDbError::FrankenOpenFailed {
+            let conn = rx.recv_timeout(timeout).map_err(|_| {
+                LazyDbError::FrankenOpenFailed {
                     path: self.path.clone(),
                     source: crate::franken_sync::FrankenError::Internal(format!(
                         "database open timed out after {}s (possible corruption or lock contention)",
                         timeout.as_secs()
                     )),
-                })?
-                .map_err(|e| LazyDbError::FrankenOpenFailed {
-                    path: self.path.clone(),
-                    source: e,
-                })?;
+                }
+            })??;
             let elapsed_ms = start.elapsed().as_millis();
             info!(
                 path = %self.path.display(),
@@ -441,6 +493,8 @@ pub struct FrankenConnectionManager {
     db_path: PathBuf,
     readers: Vec<parking_lot::Mutex<FrankenOwnerConnection>>,
     pub(super) reader_idx: std::sync::atomic::AtomicUsize,
+    write_epoch: std::sync::atomic::AtomicU64,
+    reader_epochs: Vec<std::sync::atomic::AtomicU64>,
     /// Token-based writer limit: channel pre-filled with `max_writers` tokens.
     /// `recv()` = acquire slot, `send()` = release slot.
     writer_tokens: (
@@ -457,27 +511,35 @@ impl FrankenConnectionManager {
     /// Writer connections are created on demand (up to `config.max_writers`).
     pub fn new(db_path: impl Into<PathBuf>, config: ConnectionManagerConfig) -> Result<Self> {
         let db_path = db_path.into();
-        let path_str = db_path.to_string_lossy().to_string();
+        let _doctor_guard = acquire_doctor_mutation_db_open_guard(
+            &db_path,
+            DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT,
+        )?;
 
         let reader_count = config.reader_count.max(1);
         let mut readers: Vec<parking_lot::Mutex<FrankenOwnerConnection>> =
             Vec::with_capacity(reader_count);
         for _ in 0..reader_count {
-            let conn = match FrankenOwnerConnection::open(path_str.clone()) {
+            let conn = match FrankenOwnerConnection::open_readonly_with_doctor_guard(
+                &db_path,
+                &_doctor_guard,
+            ) {
                 Ok(conn) => conn,
                 Err(source) => {
                     for reader in &mut readers {
                         reader.get_mut().close_best_effort_in_place();
                     }
-                    return Err(anyhow::Error::from(source).context(format!(
-                        "opening reader connection at {}",
-                        db_path.display()
-                    )));
+                    return Err(match source {
+                        LazyDbError::SchemaRebuildRequired(rebuild) => {
+                            anyhow::Error::new(rebuild)
+                        }
+                        other => anyhow::Error::from(other).context(format!(
+                            "opening reader connection at {}",
+                            db_path.display()
+                        )),
+                    });
                 }
             };
-            // Apply read-tuned config (no migration, no write PRAGMAs)
-            let _ = conn.execute("PRAGMA busy_timeout = 5000;"); // match writer config
-            let _ = conn.execute("PRAGMA cache_size = -16384;"); // 16MB reader cache
             readers.push(parking_lot::Mutex::new(conn));
         }
 
@@ -491,11 +553,16 @@ impl FrankenConnectionManager {
             tx.send(())
                 .map_err(|_| anyhow!("writer token channel closed during initialization"))?;
         }
+        let reader_epochs = (0..reader_count)
+            .map(|_| std::sync::atomic::AtomicU64::new(0))
+            .collect();
 
         Ok(Self {
             db_path,
             readers,
             reader_idx: std::sync::atomic::AtomicUsize::new(0),
+            write_epoch: std::sync::atomic::AtomicU64::new(0),
+            reader_epochs,
             writer_tokens: (tx, rx),
             config: ConnectionManagerConfig {
                 reader_count,
@@ -507,12 +574,25 @@ impl FrankenConnectionManager {
     /// Get a reader connection (round-robin from the pool).
     ///
     /// Returns a mutex guard wrapping the connection. The guard prevents
-    /// concurrent command streams through the same owner handle.
+    /// concurrent command streams through the same owner handle. Reopens a
+    /// reader slot when a writer has committed since that slot was opened
+    /// (so snapshot-backed readers stay fresh across writes).
     pub fn reader(&self) -> parking_lot::MutexGuard<'_, FrankenOwnerConnection> {
         let idx = self
             .reader_idx
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.readers[idx % self.readers.len()].lock()
+        let slot = idx % self.readers.len();
+        let mut guard = self.readers[slot].lock();
+        let current_epoch = self.write_epoch.load(std::sync::atomic::Ordering::Acquire);
+        if self.reader_epochs[slot].load(std::sync::atomic::Ordering::Acquire) != current_epoch
+            && let Ok(new_conn) =
+                FrankenOwnerConnection::open(self.db_path.to_string_lossy().into_owned())
+        {
+            guard.close_best_effort_in_place();
+            *guard = new_conn;
+            self.reader_epochs[slot].store(current_epoch, std::sync::atomic::Ordering::Release);
+        }
+        guard
     }
 
     /// Acquire a writer connection.
@@ -525,7 +605,17 @@ impl FrankenConnectionManager {
             .1
             .recv()
             .map_err(|_| anyhow!("writer token channel closed"))?;
-        let conn = match open_archive_writer_connection(&self.db_path) {
+        let _doctor_guard = match acquire_doctor_mutation_db_open_guard(
+            &self.db_path,
+            DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT,
+        ) {
+            Ok(guard) => guard,
+            Err(e) => {
+                let _ = self.writer_tokens.0.send(());
+                return Err(e);
+            }
+        };
+        let conn = match open_archive_writer_connection_with_guard(&self.db_path, &_doctor_guard) {
             Ok(c) => c,
             Err(e) => {
                 let _ = self.writer_tokens.0.send(());
@@ -541,7 +631,7 @@ impl FrankenConnectionManager {
             return Err(e);
         }
         Ok(WriterGuard {
-            storage,
+            storage: Some(storage),
             mgr: self,
             committed: false,
         })
@@ -556,7 +646,17 @@ impl FrankenConnectionManager {
             .1
             .recv()
             .map_err(|_| anyhow!("writer token channel closed"))?;
-        let conn = match open_archive_writer_connection(&self.db_path) {
+        let _doctor_guard = match acquire_doctor_mutation_db_open_guard(
+            &self.db_path,
+            DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT,
+        ) {
+            Ok(guard) => guard,
+            Err(e) => {
+                let _ = self.writer_tokens.0.send(());
+                return Err(e);
+            }
+        };
+        let conn = match open_archive_writer_connection_with_guard(&self.db_path, &_doctor_guard) {
             Ok(c) => c,
             Err(e) => {
                 let _ = self.writer_tokens.0.send(());
@@ -574,7 +674,7 @@ impl FrankenConnectionManager {
         // Reduced cache for concurrent writers (they're short-lived)
         let _ = storage.raw().execute("PRAGMA cache_size = -4096;");
         Ok(WriterGuard {
-            storage,
+            storage: Some(storage),
             mgr: self,
             committed: false,
         })
@@ -609,7 +709,7 @@ impl Drop for FrankenConnectionManager {
 /// Provides access to a [`FrankenStorage`] for write operations.
 /// Releases the writer semaphore slot when dropped.
 pub struct WriterGuard<'a> {
-    storage: FrankenStorage,
+    storage: Option<FrankenStorage>,
     mgr: &'a FrankenConnectionManager,
     committed: bool,
 }
@@ -617,7 +717,9 @@ pub struct WriterGuard<'a> {
 impl<'a> WriterGuard<'a> {
     /// Access the underlying storage for read/write operations.
     pub fn storage(&self) -> &FrankenStorage {
-        &self.storage
+        self.storage
+            .as_ref()
+            .expect("WriterGuard storage must be present before drop")
     }
 
     /// Mark this writer as successfully committed.
@@ -631,11 +733,19 @@ impl<'a> WriterGuard<'a> {
 
 impl Drop for WriterGuard<'_> {
     fn drop(&mut self) {
-        if !self.committed {
-            // Best-effort rollback — connection may already be in autocommit
-            let _ = self.storage.raw().execute("ROLLBACK;");
+        if let Some(mut storage) = self.storage.take() {
+            if !self.committed {
+                // Best-effort rollback — connection may already be in autocommit
+                let _ = storage.raw().execute("ROLLBACK;");
+            }
+            storage.close_best_effort_in_place();
+            drop(storage);
         }
-        self.storage.close_best_effort_in_place();
+        if self.committed {
+            self.mgr
+                .write_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
         // Release writer token
         let _ = self.mgr.writer_tokens.0.send(());
     }

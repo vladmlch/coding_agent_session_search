@@ -69,7 +69,7 @@ fn reinclude_ledger_failure_rolls_back_both_exclusion_kinds() -> Result<()> {
     assert_eq!(applied.legacy_sources_removed, 1);
     assert_eq!(applied.source_observations_removed, 1);
     assert!(storage.source_ingest_ledger_entries()?.is_empty());
-    assert_eq!(storage.schema_version()?, 23);
+    assert_eq!(storage.schema_version()?, CURRENT_SCHEMA_VERSION);
     assert!(storage.forget_derived_rebuild_pending()?);
     Ok(())
 }
@@ -399,106 +399,6 @@ fn forget_selection_continues_past_an_unmatched_page() -> Result<()> {
     let applied = storage.forget_conversations_by_source_glob("**/selected.jsonl", false)?;
     assert_eq!(applied.conversations_deleted, 1);
     assert_eq!(storage.total_conversation_count()?, 256);
-    Ok(())
-}
-
-#[test]
-fn forget_v23_migration_preserves_existing_tombstones_and_readonly_preview() -> Result<()> {
-    let directory = TempDir::new()?;
-    let path = directory.path().join("v22-forget.db");
-    let conn = FrankenConnection::open(path.to_string_lossy().into_owned())?;
-    run_attributed_migration_steps(&conn, BASE_MIGRATION_STEPS)?;
-    apply_conversation_tail_state_cache_migration(&conn)?;
-    let old_steps: Vec<_> = POST_TAIL_CACHE_MIGRATION_STEPS
-        .iter()
-        .copied()
-        .filter(|(version, _, _)| *version <= 22)
-        .collect();
-    run_attributed_migration_steps(&conn, &old_steps)?;
-    let storage = FrankenStorage::new(conn, path.clone());
-    storage.apply_config()?;
-    storage.sync_meta_schema_version(22)?;
-    seed_forget_fixture(
-        &storage,
-        &forget_fixture_conversation(
-            "/fixture/current.jsonl",
-            Some("current"),
-            Some("/work/retired"),
-            &[Some(10)],
-        ),
-    )?;
-    storage.raw().execute("INSERT INTO forgotten_sources(source_path, forgotten_at_ms) VALUES('/fixture/already-forgotten.jsonl', 1)")?;
-    storage.close()?;
-
-    let reader = FrankenStorage::open_strict_readonly(&path)?;
-    assert!(
-        reader
-            .forgotten_conversation_keys_for(&[ForgottenConversationKey {
-                source_id: LOCAL_SOURCE_ID.into(),
-                agent_slug: "opencode".into(),
-                source_path: "/fixture/current.jsonl".into(),
-                external_id: "current".into(),
-            }])?
-            .is_empty()
-    );
-    assert!(!reader.forget_derived_rebuild_pending()?);
-    let listed = reader.list_forget_exclusions(&ForgetExclusionSelector::default())?;
-    assert!(listed.exclusions.is_empty());
-    assert_eq!(listed.legacy_sources.len(), 1);
-    assert_eq!(
-        listed.legacy_sources[0].source_path,
-        "/fixture/already-forgotten.jsonl"
-    );
-    assert_eq!(listed.legacy_sources[0].forgotten_at_ms, 1);
-    let json = serde_json::to_value(&listed.legacy_sources[0])?;
-    assert!(json.get("source_id").is_none());
-    assert!(json.get("workspace").is_none());
-    assert!(
-        reader
-            .list_forget_exclusions(&ForgetExclusionSelector {
-                source_id: Some(LOCAL_SOURCE_ID),
-                ..Default::default()
-            })?
-            .legacy_sources
-            .is_empty(),
-        "legacy source stamps must not be assigned invented provenance"
-    );
-    let reinclude = reader.reinclude_forget_exclusions(
-        &ForgetExclusionSelector {
-            source_glob: Some("/fixture/already-*.jsonl"),
-            ..Default::default()
-        },
-        true,
-    )?;
-    assert_eq!(reinclude.exclusions_matched, 0);
-    assert_eq!(reinclude.legacy_sources_matched, 1);
-    assert_eq!(reinclude.legacy_sources_removed, 0);
-    assert_eq!(reader.forgotten_source_stamps()?.len(), 1);
-    let filter = ForgetConversationsFilter {
-        workspace_glob: Some("/work/retired"),
-        ..Default::default()
-    };
-    assert_eq!(
-        reader
-            .forget_conversations(&filter, true)?
-            .conversations_matched,
-        1
-    );
-    assert_eq!(reader.schema_version()?, 22);
-    assert!(
-        reader
-            .raw()
-            .query("SELECT name FROM sqlite_master WHERE name = 'forgotten_conversations'")?
-            .is_empty()
-    );
-    reader.close_without_checkpoint()?;
-
-    let migrated = FrankenStorage::open(&path)?;
-    assert_eq!(migrated.schema_version()?, 23);
-    assert_eq!(migrated.total_conversation_count()?, 1);
-    assert_eq!(migrated.total_message_count()?, 1);
-    assert_eq!(migrated.forgotten_source_stamps()?.len(), 1);
-    assert!(migrated.forgotten_conversation_keys()?.is_empty());
     Ok(())
 }
 

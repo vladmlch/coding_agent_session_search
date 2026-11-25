@@ -270,17 +270,28 @@ fn fts_indexable_count_and_intersection_plans_are_bounded_and_exact() {
         )
         .expect("explain fused indexable-message parent-run count");
     assert!(
-        count_opcodes
-            .iter()
-            .any(|(opcode, _)| opcode == "CountIndexEqRun"),
-        "parity cardinality must use fused duplicate-prefix run counting: {count_opcodes:?}"
+        count_opcodes.iter().any(|(opcode, _)| opcode == "SeekGE")
+            && count_opcodes.iter().any(|(opcode, _)| opcode == "IdxGT"),
+        "parity cardinality must range-scan the composite index: {count_opcodes:?}"
     );
     assert!(
-        !count_opcodes.iter().any(|(opcode, _)| matches!(
-            opcode.as_str(),
-            "OpenAutoindex" | "Count" | "AggStep" | "AggFinal"
-        )),
-        "parent-run cardinality must avoid probe materialization and generic aggregate counting: {count_opcodes:?}"
+        !count_opcodes
+            .iter()
+            .any(|(opcode, _)| matches!(opcode.as_str(), "OpenAutoindex" | "SorterOpen")),
+        "parent-run cardinality must avoid autoindex/sorter materialization: {count_opcodes:?}"
+    );
+    let count_eqp: Vec<String> = storage
+        .raw()
+        .query_map_collect(
+            &format!("EXPLAIN QUERY PLAN {FTS_INDEXABLE_MESSAGE_COUNT_SQL}"),
+            fparams![],
+            |row| row.get_typed(3),
+        )
+        .expect("explain query plan indexable-message parent-run count");
+    assert!(
+        count_eqp.iter().any(|detail| detail.contains("SEARCH"))
+            && !count_eqp.iter().any(|detail| detail.contains("TEMP B-TREE")),
+        "parity cardinality must use SEARCH without TEMP B-TREE: {count_eqp:?}"
     );
     let open_read_rootpages: Vec<i64> = count_opcodes
         .iter()

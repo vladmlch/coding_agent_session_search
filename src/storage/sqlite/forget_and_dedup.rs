@@ -1,4 +1,4 @@
-use super::historical_salvage::historical_table_exists;
+use super::source_and_historical_import::historical_table_exists;
 use super::reconcile_and_codebuff::{
     clear_semantic_embed_watermark_after_deletion, delete_duplicate_conversation_rows,
 };
@@ -674,8 +674,9 @@ impl FrankenStorage {
             }
         }
         // A source remains shared even after earlier forgets removed all but
-        // one of its sessions. A read-only v22 preview has no session table yet.
-        let previously_shared: HashSet<String> = if self.schema_version()? >= 23 {
+        // one of its sessions.
+        let previously_shared: HashSet<String> =
+            if historical_table_exists(&self.conn, "forgotten_conversations")? {
             tx.query_map_collect(
                 "SELECT source_path FROM forgotten_conversations",
                 fparams![],

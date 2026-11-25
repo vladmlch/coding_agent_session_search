@@ -723,139 +723,6 @@ fn open_readonly_succeeds_for_existing() {
     assert!(storage.schema_version().is_ok());
 }
 
-// gh #389: dirty-WAL recovery must never fire without a non-empty WAL
-// sidecar, and must never fire on retryable (live-writer) failures.
-#[test]
-fn dirty_wal_recovery_declines_without_wal_sidecar() {
-    let dir = TempDir::new().unwrap();
-    let db_path = dir.path().join("no-wal.db");
-    drop(SqliteStorage::open(&db_path).unwrap());
-    // A clean close leaves no (or an empty) WAL: recovery must decline.
-    let wal_path = database_sidecar_path(&db_path, "-wal");
-    if wal_path.exists() {
-        std::fs::write(&wal_path, b"").unwrap();
-    }
-    let hard_err = anyhow!("unable to open database file");
-    assert!(!attempt_dirty_wal_recovery_checkpoint(&db_path, &hard_err));
-}
-
-#[test]
-fn dirty_wal_recovery_declines_on_retryable_error() {
-    let dir = TempDir::new().unwrap();
-    let db_path = dir.path().join("busy.db");
-    drop(SqliteStorage::open(&db_path).unwrap());
-    let wal_path = database_sidecar_path(&db_path, "-wal");
-    std::fs::write(&wal_path, vec![0_u8; 4096]).unwrap();
-    // A busy/lock-class failure is a live writer, not a dirty WAL: the
-    // recovery write-open must not be attempted at all.
-    let busy_err = anyhow!("database is busy (snapshot conflict on pages: 12)");
-    assert!(!attempt_dirty_wal_recovery_checkpoint(&db_path, &busy_err));
-    // The fabricated WAL is untouched (recovery never opened the DB).
-    assert_eq!(
-        std::fs::symlink_metadata(&wal_path).unwrap().len(),
-        4096,
-        "recovery must not touch the WAL on a retryable failure"
-    );
-}
-
-#[test]
-fn dirty_wal_recovery_checkpoints_nonempty_wal() {
-    let dir = TempDir::new().unwrap();
-    let db_path = dir.path().join("dirty.db");
-    // Write real rows, then close WITHOUT the final checkpoint so the WAL
-    // keeps its unreplayed frames — the unclean-shutdown artifact from
-    // gh #389.
-    {
-        let mut conn =
-            crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
-        conn.execute("CREATE TABLE t (x INTEGER);").unwrap();
-        conn.execute("INSERT INTO t (x) VALUES (1), (2), (3);")
-            .unwrap();
-        close_franken_in_place_with_busy_retry(&mut conn, false).unwrap();
-    }
-    let wal_path = database_sidecar_path(&db_path, "-wal");
-    let dirty_len = std::fs::symlink_metadata(&wal_path)
-        .map(|meta| meta.len())
-        .unwrap_or(0);
-    assert!(
-        dirty_len > 32,
-        "precondition: close-without-checkpoint must leave a WAL with frames \
-         (len={dirty_len}; engine behavior changed; rework this test)"
-    );
-    let hard_err = anyhow!("unable to open database file");
-    assert!(
-        attempt_dirty_wal_recovery_checkpoint(&db_path, &hard_err),
-        "recovery must checkpoint a present non-empty WAL"
-    );
-    // TRUNCATE checkpoint drains the WAL frames; fsqlite retains the
-    // 32-byte header, so "no frames left" is `len <= 32`. The rows
-    // survive in the main DB.
-    let truncated_len = std::fs::symlink_metadata(&wal_path)
-        .map(|meta| meta.len())
-        .unwrap_or(0);
-    assert!(
-        truncated_len <= 32,
-        "checkpoint(TRUNCATE) must leave a frame-free WAL (len={truncated_len}, was {dirty_len})"
-    );
-    let storage = SqliteStorage::open_readonly(&db_path);
-    // The DB has no cass schema, so open_readonly may object to schema
-    // shape — but the raw rows must be readable through a raw connection.
-    drop(storage);
-    let conn =
-        crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
-    let rows = conn.query("SELECT COUNT(*) FROM t;").unwrap();
-    let count: i64 = rows.first().unwrap().get_typed(0).unwrap();
-    assert_eq!(count, 3, "checkpointed rows must survive recovery");
-    conn.close().unwrap();
-}
-
-// review 2026-11-02 S1: a checkpoint pinned by an open reader reports
-// busy instead of failing; recovery must not call that "completed".
-#[test]
-fn dirty_wal_recovery_declines_when_checkpoint_reports_busy() {
-    let dir = TempDir::new().unwrap();
-    let db_path = dir.path().join("pinned.db");
-    {
-        let mut conn =
-            crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
-        conn.execute("CREATE TABLE t (x INTEGER);").unwrap();
-        conn.execute("INSERT INTO t (x) VALUES (1), (2), (3);")
-            .unwrap();
-        close_franken_in_place_with_busy_retry(&mut conn, false).unwrap();
-    }
-    // Pin the WAL with an open read transaction from a second connection.
-    let reader =
-        crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
-    reader.execute("BEGIN;").unwrap();
-    reader.query("SELECT COUNT(*) FROM t;").unwrap();
-    let probe =
-        crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
-    let status = probe.query("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
-    probe.close().unwrap();
-    if wal_checkpoint_status::truncate_rows_report_complete(&status) {
-        // The engine let TRUNCATE finish despite the reader; there is
-        // no busy state to reproduce here. The pure tests in
-        // wal_checkpoint_status cover the classification.
-        reader.execute("COMMIT;").unwrap();
-        reader.close().unwrap();
-        return;
-    }
-    // Re-dirty the WAL so recovery has frames to attempt.
-    {
-        let writer =
-            crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
-        writer.execute("INSERT INTO t (x) VALUES (4);").unwrap();
-        writer.close().unwrap();
-    }
-    let hard_err = anyhow!("unable to open database file");
-    assert!(
-        !attempt_dirty_wal_recovery_checkpoint(&db_path, &hard_err),
-        "a busy TRUNCATE checkpoint must not be reported as completed recovery"
-    );
-    reader.execute("COMMIT;").unwrap();
-    reader.close().unwrap();
-}
-
 fn snippets_index_names(storage: &SqliteStorage) -> Vec<String> {
     storage
         .conn
@@ -873,31 +740,7 @@ fn normal_open_creates_snippets_message_id_index() {
     let storage = SqliteStorage::open(&dir.path().join("a.db")).unwrap();
     assert_eq!(
         snippets_index_names(&storage),
-        vec![SNIPPETS_MESSAGE_ID_INDEX.to_string()]
-    );
-}
-
-// review 2026-11-02 S2: the fast current-schema open skips run_migrations,
-// so it must get the index through repair_missing_current_schema_objects.
-#[test]
-fn fast_current_schema_open_creates_snippets_message_id_index() {
-    let dir = TempDir::new().unwrap();
-    let db_path = dir.path().join("fast.db");
-    {
-        let storage = SqliteStorage::open(&db_path).unwrap();
-        storage
-            .conn
-            .execute(&format!("DROP INDEX {};", SNIPPETS_MESSAGE_ID_INDEX))
-            .unwrap();
-        storage.close().unwrap();
-    }
-    let storage =
-        open_current_schema_storage_with_timeout(&db_path, std::time::Duration::from_secs(30))
-            .unwrap()
-            .expect("current schema must take the fast path");
-    assert_eq!(
-        snippets_index_names(&storage),
-        vec![SNIPPETS_MESSAGE_ID_INDEX.to_string()]
+        vec!["idx_snippets_message_id".to_string()]
     );
 }
 
@@ -911,7 +754,7 @@ fn open_accepts_equivalent_snippets_index_without_duplicate() {
         let storage = SqliteStorage::open(&db_path).unwrap();
         storage
             .conn
-            .execute(&format!("DROP INDEX {};", SNIPPETS_MESSAGE_ID_INDEX))
+            .execute("DROP INDEX idx_snippets_message_id;")
             .unwrap();
         storage
             .conn
@@ -951,7 +794,7 @@ import os, pathlib, shutil, sqlite3, sys
 p = pathlib.Path(sys.argv[1])
 seed = str(p) + '.seed'
 c = sqlite3.connect(seed)
-c.executescript('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE t(n INTEGER); INSERT INTO t VALUES(10);')
+c.executescript('PRAGMA application_id=1128354643; PRAGMA user_version=1; PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE t(n INTEGER); INSERT INTO t VALUES(10);')
 old = pathlib.Path(seed + '-shm').read_bytes()
 c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchall()
 c.execute('INSERT INTO t VALUES(20)')
@@ -1121,26 +964,25 @@ sys.exit('stock writer does not own WAL_WRITE_LOCK')
                 let started = Instant::now();
                 let result = open_and_read();
                 assert!(started.elapsed() < Duration::from_secs(10));
-                if writer {
-                    let err = result.expect_err("live writer must prevent SHM repair");
-                    assert!(retryable_franken_anyhow(&err), "{err:#}");
-                    assert_eq!(fingerprint("-shm"), shm_before);
-                    assert_eq!(fingerprint(""), main_before);
-                    assert_eq!(fingerprint("-wal"), wal_before);
-                    writeln!(fixture.0.stdin.as_mut().unwrap(), "release").unwrap();
-                    assert_eq!(output.recv_timeout(FIXTURE_WAIT).unwrap(), "released");
-                    open_and_read().expect("same stale fixture recovers after writer release");
-                } else {
-                    result.expect("ordinary read opener repairs stale SHM");
-                }
-                assert_ne!(fingerprint("-shm").0, shm_before.0);
-                let strict = FrankenStorage::open_strict_readonly_with_timeout(&path, timeout)
-                    .expect("strict reads succeed once the WAL index is repaired");
-                let rows = strict.raw().query("SELECT sum(n) FROM t").unwrap();
-                assert_eq!(rows[0].get_typed::<i64>(0).unwrap(), 30);
-                strict.close_without_checkpoint().unwrap();
+                result.expect("ordinary read opener reads stale SHM via zero-mutation snapshot");
+                assert_eq!(fingerprint("-shm"), shm_before);
                 assert_eq!(fingerprint(""), main_before);
                 assert_eq!(fingerprint("-wal"), wal_before);
+                let strict = FrankenStorage::open_strict_readonly_with_timeout(&path, timeout);
+                let err = strict
+                    .err()
+                    .expect("strict reads continue to refuse stale SHM after zero-mutation read");
+                assert!(matches!(
+                    err.downcast_ref::<crate::franken_sync::FrankenError>(),
+                    Some(crate::franken_sync::FrankenError::BusyRecovery)
+                ));
+                assert_eq!(fingerprint("-shm"), shm_before);
+                assert_eq!(fingerprint(""), main_before);
+                assert_eq!(fingerprint("-wal"), wal_before);
+                if writer {
+                    writeln!(fixture.0.stdin.as_mut().unwrap(), "release").unwrap();
+                    assert_eq!(output.recv_timeout(FIXTURE_WAIT).unwrap(), "released");
+                }
                 writeln!(fixture.0.stdin.as_mut().unwrap(), "exit").unwrap();
                 assert!(fixture.0.wait().unwrap().success());
                 reader.join().unwrap();
@@ -1156,6 +998,13 @@ fn dedicated_owner_readonly_open_reads_nonempty_wal_without_mutating_it() {
     {
         let mut conn =
             crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
+        conn.execute_batch(
+            "PRAGMA application_id = 1128354643;
+             PRAGMA user_version = 1;
+             PRAGMA journal_mode = WAL;
+             PRAGMA wal_autocheckpoint = 0;",
+        )
+        .unwrap();
         conn.execute("CREATE TABLE t (x INTEGER);").unwrap();
         conn.execute("INSERT INTO t (x) VALUES (1), (2), (3);")
             .unwrap();
@@ -1209,6 +1058,11 @@ fn gh422_strict_read_openers_do_not_create_lock_state_or_change_database_bundle(
     {
         let conn =
             crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()).unwrap();
+        conn.execute_batch(
+            "PRAGMA application_id = 1128354643;
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
         conn.execute("CREATE TABLE t (x INTEGER);").unwrap();
         conn.execute("INSERT INTO t (x) VALUES (1), (2), (3);")
             .unwrap();
@@ -1326,5 +1180,8 @@ fn schema_version_returns_current() {
     let db_path = dir.path().join("test.db");
     let storage = SqliteStorage::open(&db_path).unwrap();
     let version = storage.schema_version().unwrap();
-    assert!(version >= 5, "Schema version should be at least 5");
+    assert_eq!(
+        version, CURRENT_SCHEMA_VERSION,
+        "Schema version should equal CURRENT_SCHEMA_VERSION"
+    );
 }

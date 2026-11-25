@@ -1,20 +1,20 @@
-use super::backup_and_integrity::{
-    database_sidecar_path, dedupe_conflicting_fts_schema_rows_via_sqlite3,
-};
 use super::connection_pool::{FrankenAsyncConnection, FrankenOwnerConnection};
-use super::omp_and_semantic_meta::{CURRENT_SCHEMA_VERSION, MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION};
-use super::schema_repair::transition_from_meta_version;
+use super::omp_and_semantic_meta::{
+    CURRENT_SCHEMA_VERSION, MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION,
+};
+use super::open::{
+    ArchiveDisposition, archive_disposition, archive_disposition_with_doctor_guard,
+};
 use super::storage_core::FrankenStorage;
-use super::wal_checkpoint_status;
 use crate::franken_sync::{
-    Connection as FrankenConnection,
+    Connection as FrankenConnection, FrankenError,
     compat::{
         ConnectionExt as FrankenConnectionExt, OpenFlags as FrankenOpenFlags,
-        RowExt as FrankenRowExt, open_with_flags as open_franken_with_flags,
+        RowExt as FrankenRowExt,
     },
 };
-use anyhow::{Context, Result, anyhow};
-use serde::{Deserialize, Serialize};
+use anyhow::{Context, Result, anyhow, bail};
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -358,12 +358,53 @@ pub(super) fn acquire_existing_doctor_mutation_db_open_guard(
     }
 }
 
+fn apply_raw_writer_pragmas(conn: &FrankenConnection) -> Result<()> {
+    conn.execute("PRAGMA foreign_keys = ON;")
+        .with_context(|| "setting foreign_keys")?;
+    let _ = conn.execute("PRAGMA temp_store = MEMORY;");
+    conn.execute("PRAGMA busy_timeout = 5000;")
+        .with_context(|| "setting busy_timeout")?;
+    Ok(())
+}
+
+fn apply_raw_readonly_pragmas(conn: &FrankenConnection, cache_kib: i64) -> Result<()> {
+    conn.execute("PRAGMA query_only = 1;")
+        .with_context(|| "setting query_only")?;
+    conn.execute("PRAGMA foreign_keys = ON;")
+        .with_context(|| "setting foreign_keys")?;
+    let _ = conn.execute("PRAGMA temp_store = MEMORY;");
+    conn.execute("PRAGMA busy_timeout = 5000;")
+        .with_context(|| "setting busy_timeout")?;
+    conn.execute(&format!("PRAGMA cache_size = {cache_kib};"))
+        .with_context(|| "setting cache_size")?;
+    Ok(())
+}
+
+fn apply_async_readonly_pragmas(conn: &FrankenAsyncConnection, cache_kib: i64) -> Result<()> {
+    conn.execute_sync("PRAGMA query_only = 1;")
+        .with_context(|| "setting query_only")?;
+    conn.execute_sync("PRAGMA foreign_keys = ON;")
+        .with_context(|| "setting foreign_keys")?;
+    let _ = conn.execute_sync("PRAGMA temp_store = MEMORY;");
+    conn.execute_sync("PRAGMA busy_timeout = 5000;")
+        .with_context(|| "setting busy_timeout")?;
+    conn.execute_sync(&format!("PRAGMA cache_size = {cache_kib};"))
+        .with_context(|| "setting cache_size")?;
+    Ok(())
+}
+
 pub(crate) fn open_franken_storage_with_timeout(
     path: &Path,
     timeout: Duration,
 ) -> Result<FrankenStorage> {
-    if !path.exists() {
-        return Err(anyhow!("Database not found at {}", path.display()));
+    {
+        let _doctor_guard = acquire_doctor_mutation_db_open_guard(path, timeout)?;
+        if matches!(
+            archive_disposition_with_doctor_guard(path, &_doctor_guard)?,
+            ArchiveDisposition::Uninitialized
+        ) {
+            return Err(anyhow!("Database not found at {}", path.display()));
+        }
     }
 
     let deadline = Instant::now() + timeout;
@@ -392,12 +433,18 @@ pub(crate) fn open_current_schema_storage_with_timeout(
     path: &Path,
     timeout: Duration,
 ) -> Result<Option<FrankenStorage>> {
-    if !path.exists() {
+    let _doctor_guard = acquire_doctor_mutation_db_open_guard(path, timeout)?;
+    // Legacy/foreign/uninitialized archives are not "current schema" — report
+    // them as absent rather than opening or mutating anything.
+    if !matches!(
+        archive_disposition_with_doctor_guard(path, &_doctor_guard),
+        Ok(ArchiveDisposition::Current)
+    ) {
         return Ok(None);
     }
 
-    let mut storage = FrankenStorage::new(
-        open_index_schema_connection_with_timeout(path, timeout)?,
+    let storage = FrankenStorage::new(
+        open_index_schema_connection_with_timeout_and_guard(path, timeout, &_doctor_guard)?,
         path.to_path_buf(),
     );
     storage.apply_open_stage_busy_timeout();
@@ -411,6 +458,7 @@ pub(crate) fn open_current_schema_storage_with_timeout(
         .and_then(|raw| raw.parse::<i64>().ok());
 
     if version != Some(CURRENT_SCHEMA_VERSION) {
+        let mut storage = storage;
         if let Err(close_err) = storage.close_without_checkpoint_in_place() {
             tracing::debug!(
                 error = %close_err,
@@ -422,35 +470,36 @@ pub(crate) fn open_current_schema_storage_with_timeout(
         return Ok(None);
     }
 
-    transition_from_meta_version(&storage.conn)?;
-    storage.repair_missing_current_schema_objects()?;
     storage.apply_config()?;
     Ok(Some(storage))
 }
 
-/// Ordinary engine handles permit prepared-query optimization to hydrate the
-/// whole compatibility database. Schema-only handles prohibit that promotion
-/// (fsqlite #402). Use one only when the pinned engine would skip its first-open
-/// repair anyway (GH #443/#450); FTS validation and CASS repair remain enabled.
-/// An archive whose repair is pending gets an ordinary open to run it, then
-/// continues in the schema-only lane once the engine has recorded it.
-fn open_index_schema_connection_with_timeout(
+/// Bounded retry lane for opening the canonical archive's schema on the
+/// bundled-rusqlite engine. The archive stamp is verified first under the
+/// doctor guard: a legacy or foreign archive refuses before the engine ever
+/// touches the file.
+fn open_index_schema_connection_with_timeout_and_guard(
     path: &Path,
     timeout: Duration,
+    doctor_guard: &DoctorMutationDbOpenGuard,
 ) -> Result<FrankenConnection> {
-    if !index_engine_migration_is_complete(path) {
-        let repairing = open_franken_raw_connection_with_timeout(path, timeout)?;
-        if !index_engine_migration_is_complete(path) {
-            return Ok(repairing);
+    match archive_disposition_with_doctor_guard(path, doctor_guard)? {
+        ArchiveDisposition::Current => {}
+        ArchiveDisposition::Uninitialized => {
+            bail!(
+                "cass index archive is not initialized at {}",
+                path.display()
+            );
         }
-        close_first_open_repair_handle(repairing, path);
     }
     let deadline = Instant::now() + timeout;
     let mut backoff = Duration::from_millis(4);
     loop {
-        let _doctor_guard = acquire_doctor_mutation_db_open_guard(path, timeout)?;
         match FrankenConnection::open_existing_schema_only(path.to_string_lossy().to_string()) {
-            Ok(conn) => return Ok(conn),
+            Ok(conn) => {
+                apply_raw_writer_pragmas(&conn)?;
+                return Ok(conn);
+            }
             Err(err) if retryable_franken_error(&err) && Instant::now() < deadline => {
                 sleep_with_franken_retry_backoff(
                     &mut backoff,
@@ -460,10 +509,7 @@ fn open_index_schema_connection_with_timeout(
             }
             Err(err) => {
                 return Err(err).with_context(|| {
-                    format!(
-                        "opening migrated index archive schema at {}",
-                        path.display()
-                    )
+                    format!("opening index archive schema at {}", path.display())
                 });
             }
         }
@@ -471,91 +517,52 @@ fn open_index_schema_connection_with_timeout(
 }
 
 /// Writer handles on an existing archive take the same bounded lane as the
-/// index open. An ordinary handle's first autocommit point lookup (for example
-/// `SELECT value FROM meta WHERE key = ?1`) hydrates every row of every table
-/// into the compatibility MemDatabase: on a 16 GB archive the legacy OMP
-/// analytics writer passed a 24 GB memory limit that way before its first
-/// chunk (xcqqa). An archive whose engine migration is still pending gets the
-/// ordinary constructor so the engine's first-open repair runs, then the
-/// bounded lane once the repair is recorded.
-///
-/// The bounded lane can fail to open while peers commit: fsqlite's
-/// `open_existing_schema_only` returns `BusyRecovery` ("recovery in progress")
-/// or `Busy` when it meets a peer's WAL-index recovery, where the ordinary
-/// constructor waits it out. With 4 threads each opening a writer per commit,
-/// 2-9 of 400 schema-only opens failed per round on fsqlite 0.4.4 and 0 of
-/// 2,000 ordinary opens did (same worker); cass's
-/// frankensqlite_concurrent_stress hit it in `concurrent_writer()`. Opening is
-/// idempotent, so both opens retry busy-class errors, with a budget long
-/// enough to outlast a loaded host (a 5 s budget was exhausted there).
-pub(super) fn open_archive_writer_connection(path: &Path) -> Result<FrankenConnection> {
+/// index open. rusqlite `open_existing_schema_only` never creates or
+/// zero-initializes the path; the archive stamp is verified first under the
+/// held doctor guard so a legacy archive refuses instead of being opened for
+/// writes.
+pub(super) fn open_archive_writer_connection_with_guard(
+    path: &Path,
+    doctor_guard: &DoctorMutationDbOpenGuard,
+) -> Result<FrankenConnection> {
     const OPEN_RETRY_BUDGET: Duration = Duration::from_secs(30);
     let path_str = path.to_string_lossy().to_string();
-    if !index_engine_migration_is_complete(path) {
-        let repairing =
-            retry_transient_storage_op_within("open_archive_writer", OPEN_RETRY_BUDGET, || {
-                FrankenConnection::open(path_str.clone()).map_err(anyhow::Error::new)
-            })?;
-        if !index_engine_migration_is_complete(path) {
-            return Ok(repairing);
+    match archive_disposition_with_doctor_guard(path, doctor_guard)? {
+        ArchiveDisposition::Current => {}
+        ArchiveDisposition::Uninitialized => {
+            bail!(
+                "cass index archive is not initialized at {}",
+                path.display()
+            );
         }
-        close_first_open_repair_handle(repairing, path);
     }
-    retry_transient_storage_op_within("open_archive_writer_schema_only", OPEN_RETRY_BUDGET, || {
-        FrankenConnection::open_existing_schema_only(path_str.clone()).map_err(anyhow::Error::new)
-    })
+    let conn = retry_transient_storage_op_within(
+        "open_archive_writer_schema_only",
+        OPEN_RETRY_BUDGET,
+        || FrankenConnection::open_existing_schema_only(path_str.clone()).map_err(anyhow::Error::new),
+    )?;
+    apply_raw_writer_pragmas(&conn)?;
+    Ok(conn)
 }
 
-/// Close the ordinary handle whose open ran the engine's first-open repair.
-/// Keeping it for the rest of a run would let its first autocommit point lookup
-/// hydrate the whole archive (xcqqa); callers reopen in the schema-only lane.
-fn close_first_open_repair_handle(mut conn: FrankenConnection, path: &Path) {
-    if let Err(err) = conn.close_without_checkpoint_in_place() {
-        tracing::debug!(
-            error = %err,
-            db_path = %path.display(),
-            "closing the first-open repair handle failed; falling back to best-effort close"
-        );
-        conn.close_best_effort_in_place();
-    }
+#[allow(dead_code)]
+pub(super) fn open_archive_writer_connection(path: &Path) -> Result<FrankenConnection> {
+    const OPEN_RETRY_BUDGET: Duration = Duration::from_secs(30);
+    let _doctor_guard = acquire_doctor_mutation_db_open_guard(path, OPEN_RETRY_BUDGET)?;
+    open_archive_writer_connection_with_guard(path, &_doctor_guard)
 }
 
+/// Whether the archive already carries the engine's completed schema
+/// identity. Under bundled rusqlite there is no engine-migration marker file;
+/// "migration complete" means the archive is stamped `(0x43415353, 1)`.
 pub(crate) fn index_engine_migration_is_complete(path: &Path) -> bool {
-    // fsqlite-core 0.3.18 migration::MigrationMarker and
-    // CURRENT_MIGRATION_VERSION. build.rs enforces this exact engine family;
-    // review this admission when changing the pin. The engine's marker is
-    // pathname-scoped, not an integrity attestation or content fingerprint.
-    // Missing/old/malformed markers must still reach its repair constructor.
-    #[derive(Deserialize)]
-    struct EngineMigrationMarker {
-        last_upgrade_version: u32,
-        last_run_at: u64,
-        repairs_applied: Vec<String>,
-    }
-    let mut marker_path = path.as_os_str().to_os_string();
-    marker_path.push(".fsqlite-migration-state");
-    let Ok(file) = fs::File::open(Path::new(&marker_path)) else {
-        return false;
-    };
-    let Ok(marker) =
-        serde_json::from_reader::<_, EngineMigrationMarker>(std::io::Read::take(file, 64 * 1024))
-    else {
-        return false;
-    };
-    // Deserialize the entire engine contract, including fields not used by
-    // the decision, rather than accepting a truncated version-only object.
-    let _ = (marker.last_run_at, marker.repairs_applied);
-    marker.last_upgrade_version >= 1
+    matches!(archive_disposition(path), Ok(ArchiveDisposition::Current))
 }
 
 pub(crate) fn open_franken_readonly_storage_with_timeout(
     path: &Path,
     timeout: Duration,
 ) -> Result<FrankenStorage> {
-    if !path.exists() {
-        return Err(anyhow!("Database not found at {}", path.display()));
-    }
-
     let deadline = Instant::now() + timeout;
     let mut backoff = Duration::from_millis(4);
     loop {
@@ -582,19 +589,26 @@ pub(crate) fn open_franken_raw_connection_with_timeout(
     path: &Path,
     timeout: Duration,
 ) -> Result<FrankenConnection> {
-    if !path.exists() {
-        return Err(anyhow!("Database not found at {}", path.display()));
-    }
-
     let path_str = path.to_string_lossy().to_string();
     let deadline = Instant::now() + timeout;
     let mut backoff = Duration::from_millis(4);
     loop {
         let _doctor_guard = acquire_doctor_mutation_db_open_guard(path, timeout)?;
+        // A read/write open must never touch a legacy or foreign archive:
+        // `SchemaRebuildRequired` refuses those; `Uninitialized` fails here.
+        match archive_disposition_with_doctor_guard(path, &_doctor_guard)? {
+            ArchiveDisposition::Current => {}
+            ArchiveDisposition::Uninitialized => {
+                return Err(anyhow!("Database not found at {}", path.display()));
+            }
+        }
         match FrankenConnection::open(&path_str)
             .with_context(|| format!("opening raw frankensqlite db at {}", path.display()))
         {
-            Ok(conn) => return Ok(conn),
+            Ok(conn) => {
+                apply_raw_writer_pragmas(&conn)?;
+                return Ok(conn);
+            }
             Err(err) if retryable_franken_anyhow(&err) => {
                 let now = Instant::now();
                 if now >= deadline {
@@ -616,16 +630,17 @@ pub(crate) fn open_franken_raw_readonly_connection_with_timeout(
     path: &Path,
     timeout: Duration,
 ) -> Result<FrankenConnection> {
-    if !path.exists() {
-        return Err(anyhow!("Database not found at {}", path.display()));
-    }
-
     let path_str = path.to_string_lossy().to_string();
     let deadline = Instant::now() + timeout;
     let mut backoff = Duration::from_millis(4);
-    let mut wal_recovery_attempted = false;
     loop {
         let _doctor_guard = acquire_doctor_mutation_db_open_guard(path, timeout)?;
+        match archive_disposition_with_doctor_guard(path, &_doctor_guard)? {
+            ArchiveDisposition::Current => {}
+            ArchiveDisposition::Uninitialized => {
+                return Err(anyhow!("Database not found at {}", path.display()));
+            }
+        }
         match FrankenConnection::open_schema_only_with_wal_index_recovery(&path_str).with_context(
             || {
                 format!(
@@ -634,7 +649,10 @@ pub(crate) fn open_franken_raw_readonly_connection_with_timeout(
                 )
             },
         ) {
-            Ok(conn) => return Ok(conn),
+            Ok(conn) => {
+                apply_raw_readonly_pragmas(&conn, -65536)?;
+                return Ok(conn);
+            }
             Err(err) if retryable_franken_anyhow(&err) => {
                 let now = Instant::now();
                 if now >= deadline {
@@ -647,53 +665,43 @@ pub(crate) fn open_franken_raw_readonly_connection_with_timeout(
                     Duration::from_millis(128),
                 );
             }
-            // gh #389: hard readonly failure + non-empty `-wal` sidecar is
-            // the unclean-shutdown dirty-WAL shape; checkpoint it through the
-            // write path (under the doctor guard held above) and retry the
-            // readonly open exactly once.
-            Err(err)
-                if !wal_recovery_attempted && attempt_dirty_wal_recovery_checkpoint(path, &err) =>
-            {
-                wal_recovery_attempted = true;
-            }
             Err(err) => return Err(err),
         }
     }
 }
 
-/// Open a read-only FrankenSQLite connection whose raw engine remains on one
-/// dedicated owner thread for its entire lifetime.
+/// Open a read-only connection on the canonical archive for shared search
+/// clients.
 ///
-/// This mirrors [`open_franken_raw_readonly_connection_with_timeout`]'s doctor
-/// lock, explicit WAL-index repair, bounded contention retry, and one-shot
-/// dirty-WAL recovery contract,
-/// and retains the canonical storage opener's duplicate-FTS-schema repair. It
-/// returns the thread-safe dispatch handle required by shared search clients.
-/// The worker creates, uses, closes, and drops the `!Send` raw connection on
-/// that same worker thread.
+/// Mirrors [`open_franken_raw_readonly_connection_with_timeout`]'s doctor
+/// lock, bounded contention retry, and archive-stamp refusal, returning the
+/// `Send + Sync` dispatch facade expected by shared search callers.
 pub(crate) fn open_franken_async_readonly_connection_with_timeout(
     path: &Path,
     timeout: Duration,
 ) -> Result<FrankenAsyncConnection> {
-    if !path.exists() {
-        return Err(anyhow!("Database not found at {}", path.display()));
-    }
-
     let path_str = path.to_string_lossy().to_string();
     let deadline = Instant::now() + timeout;
     let mut backoff = Duration::from_millis(4);
-    let mut wal_recovery_attempted = false;
-    let mut duplicate_fts_repair_attempted = false;
     loop {
         let _doctor_guard = acquire_doctor_mutation_db_open_guard(path, timeout)?;
+        match archive_disposition_with_doctor_guard(path, &_doctor_guard)? {
+            ArchiveDisposition::Current => {}
+            ArchiveDisposition::Uninitialized => {
+                return Err(anyhow!("Database not found at {}", path.display()));
+            }
+        }
         match FrankenAsyncConnection::open_schema_only_with_wal_index_recovery_sync(&path_str)
             .with_context(|| {
                 format!(
-                    "opening dedicated-owner frankensqlite db readonly at {}",
+                    "opening shared frankensqlite db readonly at {}",
                     path.display()
                 )
             }) {
-            Ok(conn) => return Ok(conn),
+            Ok(conn) => {
+                apply_async_readonly_pragmas(&conn, -65536)?;
+                return Ok(conn);
+            }
             Err(err) if retryable_franken_anyhow(&err) => {
                 let now = Instant::now();
                 if now >= deadline {
@@ -706,63 +714,55 @@ pub(crate) fn open_franken_async_readonly_connection_with_timeout(
                     Duration::from_millis(128),
                 );
             }
-            Err(err)
-                if !duplicate_fts_repair_attempted
-                    && format!("{err:#}").contains("conflicting virtual-table entries") =>
-            {
-                tracing::warn!(
-                    db = %path.display(),
-                    error = %err,
-                    "dedicated-owner readonly open found duplicate fts_messages schema rows; deduplicating through the sanctioned sqlite3 bridge"
-                );
-                dedupe_conflicting_fts_schema_rows_via_sqlite3(path)?;
-                duplicate_fts_repair_attempted = true;
-            }
-            Err(err)
-                if !wal_recovery_attempted && attempt_dirty_wal_recovery_checkpoint(path, &err) =>
-            {
-                wal_recovery_attempted = true;
-            }
             Err(err) => return Err(err),
         }
     }
 }
 
-/// Open a dedicated-owner read connection without performing or preparing any
-/// repair. Unlike the ordinary read opener, this path never creates the doctor
-/// lock hierarchy, repairs the WAL index, deduplicates schema rows, or
-/// checkpoints a dirty WAL. It is
-/// the storage seam for `search --no-maintenance`: an archive that requires
-/// recovery is reported as unavailable instead of being changed by a read.
+/// Open a strict read-only connection without performing or preparing any
+/// mutation. This path never creates the doctor lock hierarchy, repairs the
+/// WAL index, or checkpoints a dirty WAL. It is the storage seam for
+/// `search --no-maintenance`: an archive that requires recovery is reported
+/// as unavailable instead of being changed by a read.
 pub(crate) fn open_franken_async_strict_readonly_connection_with_timeout(
     path: &Path,
     timeout: Duration,
 ) -> Result<FrankenAsyncConnection> {
-    if !path.exists() {
-        return Err(anyhow!("Database not found at {}", path.display()));
-    }
-
     let path_str = path.to_string_lossy().to_string();
     let deadline = Instant::now() + timeout;
     let mut backoff = Duration::from_millis(4);
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let _doctor_guard = acquire_existing_doctor_mutation_db_open_guard(path, remaining)?;
+        match archive_disposition_with_doctor_guard(path, &_doctor_guard)? {
+            ArchiveDisposition::Current => {}
+            ArchiveDisposition::Uninitialized => {
+                return Err(anyhow!("Database not found at {}", path.display()));
+            }
+        }
         match FrankenAsyncConnection::open_with_flags_sync(
             &path_str,
-            FrankenOpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .with_context(|| {
-            format!(
-                "strictly opening dedicated-owner frankensqlite db readonly at {}",
-                path.display()
-            )
-        }) {
-            Ok(conn) => return Ok(conn),
-            Err(err) if retryable_franken_anyhow(&err) => {
+            FrankenOpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
+        ) {
+            Ok(conn) => {
+                apply_async_readonly_pragmas(&conn, -65536)?;
+                return Ok(conn);
+            }
+            Err(err @ FrankenError::BusyRecovery) => {
+                // BusyRecovery on strict read-only open is deterministic; do
+                // not spin for the full 30 s timeout.
+                return Err(anyhow::Error::new(err).context(format!(
+                    "strictly opening frankensqlite db readonly at {}",
+                    path.display()
+                )));
+            }
+            Err(err) if retryable_franken_error(&err) => {
                 let now = Instant::now();
                 if now >= deadline {
-                    return Err(err);
+                    return Err(anyhow::Error::new(err).context(format!(
+                        "strictly opening frankensqlite db readonly at {}",
+                        path.display()
+                    )));
                 }
                 let remaining = deadline.saturating_duration_since(now);
                 sleep_with_franken_retry_backoff(
@@ -771,7 +771,12 @@ pub(crate) fn open_franken_async_strict_readonly_connection_with_timeout(
                     Duration::from_millis(128),
                 );
             }
-            Err(err) => return Err(err),
+            Err(err) => {
+                return Err(anyhow::Error::new(err).context(format!(
+                    "strictly opening frankensqlite db readonly at {}",
+                    path.display()
+                )));
+            }
         }
     }
 }
@@ -867,103 +872,6 @@ pub(crate) fn retry_transient_storage_op_within<T>(
     }
 }
 
-/// gh #389: recover a dirty WAL before surfacing a hard readonly-open failure.
-///
-/// A readonly-first open of a WAL-mode archive whose WAL still holds
-/// unreplayed frames (the normal artifact of an unclean host shutdown) fails
-/// with a CANTOPEN-class error, because a readonly connection may not write
-/// the wal-index it needs to recover the WAL. Every cass surface probes
-/// readonly-first, so one unclean shutdown used to wedge the whole tool and
-/// route doctor toward a multi-hour archive reconstruction — while the actual
-/// repair is the same read-write open + TRUNCATE checkpoint that
-/// `run_final_wal_checkpoint` performs on every clean indexer shutdown.
-///
-/// This helper attempts that checkpoint exactly once, and only when it is the
-/// safe interpretation of the failure:
-/// - never on a retryable busy/lock-class error — that is a live writer doing
-///   real work, not a dirty WAL (the caller's bounded retry loop owns that
-///   case);
-/// - only when a non-empty regular-file `-wal` sidecar is actually present.
-///
-/// Returns `true` when a checkpoint ran to completion, in which case the
-/// caller should retry its readonly open once. A failed recovery attempt is
-/// logged and returns `false`; the caller then surfaces the ORIGINAL open
-/// error, so recovery can never mask the underlying failure.
-pub(crate) fn attempt_dirty_wal_recovery_checkpoint(
-    db_path: &Path,
-    original_err: &anyhow::Error,
-) -> bool {
-    if retryable_franken_anyhow(original_err) {
-        return false;
-    }
-    // Never let the recovery write-open CREATE a database: a stray `-wal`
-    // next to a missing main file must surface the original open failure.
-    if !db_path.is_file() {
-        return false;
-    }
-    let wal_path = database_sidecar_path(db_path, "-wal");
-    let Ok(meta) = std::fs::symlink_metadata(&wal_path) else {
-        return false;
-    };
-    // A WAL of 32 bytes or fewer is header-only (or empty): no frames to
-    // recover, so a checkpoint cannot explain or fix the open failure.
-    if !meta.file_type().is_file() || meta.len() <= 32 {
-        return false;
-    }
-    let conn = match crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned()) {
-        Ok(conn) => conn,
-        Err(err) => {
-            tracing::warn!(
-                db = %db_path.display(),
-                wal_bytes = meta.len(),
-                error = %err,
-                "dirty-WAL recovery: read-write open failed; surfacing the original readonly failure"
-            );
-            return false;
-        }
-    };
-    let checkpoint = conn.query("PRAGMA wal_checkpoint(TRUNCATE);");
-    let close_result = conn.close();
-    match (&checkpoint, &close_result) {
-        // Local fix (review 2026-11-02, S1): a blocked checkpoint returns
-        // Ok with busy=1 or unbackfilled frames; only a complete status row
-        // counts as recovery.
-        (Ok(rows), Ok(())) if wal_checkpoint_status::truncate_rows_report_complete(rows) => {
-            tracing::info!(
-                db = %db_path.display(),
-                wal_bytes = meta.len(),
-                "dirty-WAL recovery: checkpoint(TRUNCATE) completed after failed readonly open; retrying readonly open"
-            );
-            true
-        }
-        (Ok(_), Ok(())) => {
-            tracing::warn!(
-                db = %db_path.display(),
-                wal_bytes = meta.len(),
-                "dirty-WAL recovery: checkpoint(TRUNCATE) was blocked or left frames; surfacing the original readonly failure"
-            );
-            false
-        }
-        _ => {
-            if let Err(err) = &checkpoint {
-                tracing::warn!(
-                    db = %db_path.display(),
-                    error = %err,
-                    "dirty-WAL recovery: checkpoint failed; surfacing the original readonly failure"
-                );
-            }
-            if let Err(err) = &close_result {
-                tracing::warn!(
-                    db = %db_path.display(),
-                    error = %err,
-                    "dirty-WAL recovery: close failed after checkpoint attempt"
-                );
-            }
-            false
-        }
-    }
-}
-
 /// Result of checking schema compatibility.
 #[derive(Debug, Clone)]
 pub enum SchemaCheck {
@@ -994,10 +902,8 @@ pub(super) fn schema_check_error_requires_rebuild(err: &crate::franken_sync::Fra
 pub(super) fn check_schema_compatibility(
     path: &Path,
 ) -> std::result::Result<SchemaCheck, crate::franken_sync::FrankenError> {
-    let mut conn = open_franken_with_flags(
-        &path.to_string_lossy(),
-        FrankenOpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
+    let mut conn =
+        FrankenConnection::open_schema_only_with_wal_index_recovery(&path.to_string_lossy())?;
 
     let result = (|| {
         // Check if meta table exists

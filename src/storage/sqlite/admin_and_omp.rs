@@ -10,7 +10,7 @@ use super::reconcile_and_codebuff::{
     codebuff_snippet_rows_match, provider_workspace_is_authoritative,
     replay_owns_provider_workspace, role_from_str,
 };
-use super::schema_migrations::{
+use super::omp_and_semantic_meta::{
     LEGACY_OMP_ANALYTICS_CURSOR_CONTEXT_META_KEY, LEGACY_OMP_ANALYTICS_CURSOR_LAST_ID_META_KEY,
     LEGACY_OMP_ANALYTICS_CURSOR_PROCESSED_META_KEY, LEGACY_OMP_ANALYTICS_REBUILT_META_KEY,
     LEGACY_OMP_LEXICAL_PUBLISHED_META_KEY, LEGACY_OMP_RECLASSIFICATION_META_KEY,

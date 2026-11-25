@@ -577,58 +577,6 @@ fn forgotten_source_batch_lookup_is_indexed_bounded_and_observes_changes() -> Re
 }
 
 #[test]
-fn forgotten_source_batch_lookup_accepts_readonly_pre_v22_without_migration() -> Result<()> {
-    let directory = TempDir::new()?;
-    let path = directory.path().join("v21-source-stamps.db");
-    let conn = FrankenConnection::open(path.to_string_lossy().into_owned())?;
-    run_attributed_migration_steps(&conn, BASE_MIGRATION_STEPS)?;
-    apply_conversation_tail_state_cache_migration(&conn)?;
-    let old_steps: Vec<_> = POST_TAIL_CACHE_MIGRATION_STEPS
-        .iter()
-        .copied()
-        .filter(|(version, _, _)| *version <= 21)
-        .collect();
-    run_attributed_migration_steps(&conn, &old_steps)?;
-    let storage = FrankenStorage::new(conn, path.clone());
-    storage.apply_config()?;
-    storage.sync_meta_schema_version(21)?;
-    storage.close()?;
-    let before = fs::read(&path)?;
-
-    let reader = FrankenStorage::open_strict_readonly(&path)?;
-    assert!(reader.forgotten_source_stamps_for(&[])?.is_empty());
-    assert_eq!(
-        reader.list_forget_exclusions(&ForgetExclusionSelector::default())?,
-        ForgetExclusionList::default()
-    );
-    let reinclude = reader.reinclude_forget_exclusions(
-        &ForgetExclusionSelector {
-            source_path: Some("/fixture/history/rollout.jsonl"),
-            ..Default::default()
-        },
-        true,
-    )?;
-    assert_eq!(reinclude.exclusions_matched, 0);
-    assert_eq!(reinclude.legacy_sources_matched, 0);
-    assert_eq!(reinclude.source_observations_removed, 0);
-    assert!(
-        reader
-            .forgotten_source_stamps_for(&["/fixture/history/rollout.jsonl".into()])?
-            .is_empty()
-    );
-    assert_eq!(reader.schema_version()?, 21);
-    assert!(
-        reader
-            .raw()
-            .query("SELECT name FROM sqlite_master WHERE name = 'forgotten_sources'")?
-            .is_empty()
-    );
-    reader.close_without_checkpoint()?;
-    assert_eq!(fs::read(&path)?, before);
-    Ok(())
-}
-
-#[test]
 fn forgotten_conversation_batch_lookup_uses_exact_indexed_keys() -> Result<()> {
     let directory = TempDir::new()?;
     let storage = FrankenStorage::open(&directory.path().join("batch-exclusions.db"))?;

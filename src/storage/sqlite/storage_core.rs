@@ -1,33 +1,30 @@
 use super::backup_and_integrity::{
-    MAX_BACKUPS, MigrationError, cleanup_old_backups, create_backup,
-    dedupe_conflicting_fts_schema_rows_via_sqlite3, remove_database_files,
+    MAX_BACKUPS, MigrationError, cleanup_old_backups, create_backup, remove_database_files,
 };
 use super::fts_rebuild::agent_kind_str;
+use super::omp_and_semantic_meta::CURRENT_SCHEMA_VERSION;
+use super::open::{
+    ArchiveDisposition, SchemaRebuildRequired, archive_disposition_with_doctor_guard,
+    initialize_schema_v1,
+};
 use super::open_and_locks::{
     DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT, SchemaCheck, acquire_doctor_mutation_db_open_guard,
-    acquire_existing_doctor_mutation_db_open_guard, attempt_dirty_wal_recovery_checkpoint,
-    check_schema_compatibility, open_archive_writer_connection, retry_transient_storage_op,
-    retryable_franken_anyhow, schema_check_error_requires_rebuild,
+    acquire_existing_doctor_mutation_db_open_guard, check_schema_compatibility,
+    open_archive_writer_connection_with_guard, retry_transient_storage_op,
+    retryable_franken_error, schema_check_error_requires_rebuild,
     sleep_with_franken_retry_backoff,
 };
 use super::orphan_fk_cleanup::{
     ORPHAN_DIRECT_CHILD_TABLES, OrphanFkCleanupReport, collect_direct_orphan_id_page,
     collect_orphan_message_ids, delete_direct_orphan_ids_bisecting_oom,
     delete_orphan_message_ids_bisecting_oom, error_indicates_missing_column,
-    error_indicates_missing_table, franken_table_column_names,
+    error_indicates_missing_table,
 };
-use super::schema_repair::{
-    BASE_MIGRATION_STEPS, LEGACY_FTS_TEARDOWN_BUDGET_ENV, LegacyFtsTeardownRefusal,
-    POST_TAIL_CACHE_MIGRATION_STEPS, REQUIRED_CONVERSATION_TOKEN_COLUMNS,
-    REQUIRED_CURRENT_SCHEMA_TABLE_PROBES, apply_conversation_tail_state_cache_migration,
-    archive_family_bytes, current_schema_repair_batches_for_missing_tables,
-    legacy_fts_teardown_budget_bytes, run_attributed_migration_steps, schema_migration_is_applied,
-    transition_from_meta_version,
-};
+use super::schema_v1::{CASS_APPLICATION_ID, SCHEMA_V1_USER_VERSION};
 use crate::franken_sync::{
-    Connection as FrankenConnection,
+    Connection as FrankenConnection, FrankenError,
     compat::{
-        ConnectionExt as FrankenConnectionExt, OpenFlags as FrankenOpenFlags, ParamValue,
+        ConnectionExt as FrankenConnectionExt, OpenFlags as FrankenOpenFlags,
         RowExt as FrankenRowExt, Transaction as FrankenTransaction,
         open_with_flags as open_franken_with_flags,
     },
@@ -43,7 +40,6 @@ use std::sync::{
     atomic::{AtomicBool, AtomicI8, AtomicI64, AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
-use tracing::info;
 
 /// Compatibility alias retained while call sites finish converging on `FrankenStorage`.
 pub type SqliteStorage = FrankenStorage;
@@ -293,11 +289,13 @@ impl EnsuredDailyStatsKey {
     }
 }
 
+#[cfg(test)]
 pub(super) const AUTOCOMMIT_RETAIN_OFF_PRAGMAS: [&str; 2] = [
     "PRAGMA fsqlite.autocommit_retain = OFF;",
     "PRAGMA autocommit_retain = OFF;",
 ];
 
+#[cfg(test)]
 pub(super) fn disable_autocommit_retain<E>(
     mut execute: impl FnMut(&'static str) -> std::result::Result<(), E>,
 ) -> Result<&'static str>
@@ -423,11 +421,17 @@ impl FrankenStorage {
         }
     }
 
-    /// Open a frankensqlite connection, run migrations, and apply config.
+    /// Open a connection, initialize schema v1 on a fresh archive, and apply
+    /// config.
     ///
-    /// This initializes canonical schema state only. Derived fallback search
-    /// structures like the in-database `fts_messages` table are repaired
-    /// separately so ordinary opens never block on heavyweight maintenance.
+    /// Fresh paths (missing, zero-byte, `:memory:`) are bootstrapped to the
+    /// canonical schema-v1 baseline in one transaction; `journal_mode = WAL`
+    /// is applied only after that commit so a crashed bootstrap can never
+    /// leave a half-stamped WAL archive looking valid. A pre-existing archive
+    /// that lacks the `(0x43415353, 1)` stamp is refused with
+    /// [`SchemaRebuildRequired`] — never deleted, truncated, or rebuilt in
+    /// place. Derived fallback search structures are repaired separately so
+    /// ordinary opens never block on heavyweight maintenance.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -437,87 +441,63 @@ impl FrankenStorage {
         let path_str = path.to_string_lossy().to_string();
         let _doctor_guard =
             acquire_doctor_mutation_db_open_guard(path, DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT)?;
-        let existing_archive = match fs::metadata(path) {
-            Ok(metadata) => metadata.len() > 0,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => false,
-            Err(err) => {
-                return Err(err).with_context(|| {
-                    format!("inspecting frankensqlite db path at {}", path.display())
-                });
+        let disposition = archive_disposition_with_doctor_guard(path, &_doctor_guard)?;
+        match disposition {
+            ArchiveDisposition::Uninitialized => {
+                let conn = FrankenConnection::open(&path_str)
+                    .with_context(|| format!("creating frankensqlite db at {}", path.display()))?;
+                conn.execute("PRAGMA foreign_keys = ON;")
+                    .with_context(|| "enabling foreign_keys before schema-v1 bootstrap")?;
+                #[cfg(debug_assertions)]
+                index_storage_open_rendezvous_for_test(path)?;
+                let storage = Self::new(conn, path.to_path_buf());
+                storage.apply_open_stage_busy_timeout();
+                retry_transient_storage_op("run_migrations", || storage.run_migrations())?;
+                storage.apply_config()?;
+                Ok(storage)
             }
-        };
-        let conn = if existing_archive {
-            // `open_existing_schema_only` never creates or zero-initializes
-            // the archive path. FrankenSQLite 0.1.19 loads only the schema
-            // image for this writable existing-only lane (rows stay
-            // pager-backed; the compatibility `MemDatabase` is not hydrated
-            // eagerly), so ordinary opens stay bounded on multi-gigabyte
-            // archives.
-            match FrankenConnection::open_existing_schema_only(&path_str) {
-                Ok(conn) => conn,
-                // fsqlite 0.3.x validates sqlite_master at schema load and
-                // refuses the historical duplicate `fts_messages` row debris
-                // that 0.2.x tolerated (and that cass used to dedupe lazily in
-                // `ensure_search_fallback_fts_consistency`). Repair the
-                // duplicate rows through the rusqlite salvage bridge, then
-                // retry the open once.
-                Err(err)
-                    if err
-                        .to_string()
-                        .contains("conflicting virtual-table entries") =>
-                {
-                    tracing::warn!(
-                        db = %path.display(),
-                        error = %err,
-                        "frankensqlite refused open due to duplicate fts_messages \
-                         schema rows; deduplicating via sqlite3 bridge and retrying"
-                    );
-                    dedupe_conflicting_fts_schema_rows_via_sqlite3(path)?;
-                    FrankenConnection::open_existing_schema_only(&path_str).with_context(|| {
-                        format!(
-                            "opening existing frankensqlite db at {} after \
-                                 duplicate fts schema-row repair",
-                            path.display()
-                        )
-                    })?
+            ArchiveDisposition::Current => {
+                let conn = FrankenConnection::open_existing_schema_only(&path_str).with_context(
+                    || format!("opening existing frankensqlite db at {}", path.display()),
+                )?;
+                #[cfg(debug_assertions)]
+                index_storage_open_rendezvous_for_test(path)?;
+                let storage = Self::new(conn, path.to_path_buf());
+                storage.apply_open_stage_busy_timeout();
+                storage.apply_config()?;
+                let version = storage.schema_version()?;
+                if version != CURRENT_SCHEMA_VERSION {
+                    return Err(anyhow::Error::new(SchemaRebuildRequired {
+                        path: path.to_path_buf(),
+                        found_application_id: CASS_APPLICATION_ID,
+                        found_user_version: SCHEMA_V1_USER_VERSION,
+                        found_meta_version: (version > 0).then_some(version),
+                        reason: format!(
+                            "archive meta.schema_version ({version}) disagrees with schema v{CURRENT_SCHEMA_VERSION}"
+                        ),
+                    }));
                 }
-                Err(err) => {
-                    return Err(err).with_context(|| {
-                        format!("opening existing frankensqlite db at {}", path.display())
-                    });
-                }
+                Ok(storage)
             }
-        } else {
-            FrankenConnection::open(&path_str)
-                .with_context(|| format!("creating frankensqlite db at {}", path.display()))?
-        };
-        #[cfg(debug_assertions)]
-        index_storage_open_rendezvous_for_test(path)?;
-        let storage = Self::new(conn, path.to_path_buf());
-        storage.apply_open_stage_busy_timeout();
-        retry_transient_storage_op("run_migrations", || storage.run_migrations())?;
-        retry_transient_storage_op("repair_missing_current_schema_objects", || {
-            storage.repair_missing_current_schema_objects()
-        })?;
-        storage.apply_config()?;
-        // Migrations intentionally leave the derived FTS shadow absent.
-        // Keep UNKNOWN until a write transaction observes the real catalog.
-        Ok(storage)
+        }
     }
 
     /// Open an existing archive for a narrowly scoped derived-FTS repair.
     ///
-    /// Unlike [`Self::open`], this uses FrankenSQLite's existing-only
-    /// read-write lane: the path must already exist (never created or
-    /// zero-initialized), and 0.1.19 keeps canonical rows pager-backed
-    /// instead of hydrating them into the compatibility `MemDatabase`. It
-    /// intentionally does not run migrations or repair canonical schema
-    /// objects. The caller may inspect ordinary B-trees and mutate only the
-    /// rebuildable FTS shadow under an explicit doctor repair contract.
+    /// The path must already carry the schema-v1 stamp (never created or
+    /// zero-initialized), and no bootstrap runs. The caller may inspect
+    /// ordinary B-trees and mutate only the rebuildable FTS shadow under an
+    /// explicit doctor repair contract.
     pub(crate) fn open_existing_schema_only_for_fts_repair(path: &Path) -> Result<Self> {
         let path_str = path.to_string_lossy().to_string();
         let _doctor_guard =
             acquire_doctor_mutation_db_open_guard(path, DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT)?;
+        match archive_disposition_with_doctor_guard(path, &_doctor_guard)? {
+            ArchiveDisposition::Current => {}
+            ArchiveDisposition::Uninitialized => {
+                return Err(anyhow!("Database not found at {}", path.display()));
+            }
+        }
         let conn = FrankenConnection::open_existing_schema_only(&path_str).with_context(|| {
             format!(
                 "opening existing frankensqlite db for FTS repair at {}",
@@ -531,15 +511,21 @@ impl FrankenStorage {
     }
 
     /// #368 defect 3: open an archive for FTS repair with FTS5 shadow
-    /// validation/hydration DEFERRED, so a database whose FTS5 `%_data` is
-    /// structurally corrupt (which fails an ordinary open during the schema
-    /// reload) can still be opened to drop+recreate the corrupt shadow. FTS5
+    /// validation DEFERRED, so a database whose FTS5 `%_data` is
+    /// structurally corrupt can still be opened to drop+recreate the corrupt shadow. FTS5
     /// queries on this connection see an empty index until the shadow is
-    /// rebuilt — it is for repair only (see `rebuild_fts_shadow_via_drop_recreate`).
+    /// rebuilt — it is for repair only (see
+    /// `rebuild_fts_shadow_via_drop_recreate`).
     pub(crate) fn open_deferred_fts5_for_repair(path: &Path) -> Result<Self> {
         let path_str = path.to_string_lossy().to_string();
         let _doctor_guard =
             acquire_doctor_mutation_db_open_guard(path, DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT)?;
+        match archive_disposition_with_doctor_guard(path, &_doctor_guard)? {
+            ArchiveDisposition::Current => {}
+            ArchiveDisposition::Uninitialized => {
+                return Err(anyhow!("Database not found at {}", path.display()));
+            }
+        }
         let conn =
             FrankenConnection::open_existing_schema_only_deferred_fts5(&path_str).with_context(
                 || {
@@ -583,7 +569,7 @@ impl FrankenStorage {
     ) -> Result<Self> {
         let _doctor_guard =
             acquire_doctor_mutation_db_open_guard(path, DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT)?;
-        let conn = open_archive_writer_connection(path)
+        let conn = open_archive_writer_connection_with_guard(path, &_doctor_guard)
             .with_context(|| format!("opening frankensqlite writer at {}", path.display()))?;
         let storage = Self::new_with_shared_caches(
             conn,
@@ -853,57 +839,25 @@ impl FrankenStorage {
     ///
     /// This is primarily useful for probes that need to prove a reader would
     /// not enter the archive while `cass doctor --fix` owns the repair lock.
+    /// A legacy or foreign archive refuses via [`SchemaRebuildRequired`]
+    /// before the engine touches it.
     pub fn open_readonly_with_doctor_lock_timeout(path: &Path, timeout: Duration) -> Result<Self> {
         let path_str = path.to_string_lossy().to_string();
         let _doctor_guard = acquire_doctor_mutation_db_open_guard(path, timeout)?;
-        // fsqlite 0.3.x surfaces transient `BusyRecovery` from a readonly open
-        // while a peer connection's WAL-index recovery is in flight (the same
-        // class upstream retries in prepare's prologue since 55d7f2c5). The
-        // lexical-rebuild page-prep workers open readonly right next to the
-        // active writer, so a bounded retry here is load-bearing.
-        let conn = match retry_transient_storage_op("open_readonly", || {
+        match archive_disposition_with_doctor_guard(path, &_doctor_guard)? {
+            ArchiveDisposition::Current => {}
+            ArchiveDisposition::Uninitialized => {
+                return Err(anyhow!("Database not found at {}", path.display()));
+            }
+        }
+        // Bounded retry for transient contention while a peer's WAL-index
+        // recovery is in flight; the lexical-rebuild page-prep workers open
+        // readonly right next to the active writer.
+        let conn = retry_transient_storage_op("open_readonly", || {
             FrankenConnection::open_schema_only_with_wal_index_recovery(&path_str)
                 .map_err(anyhow::Error::new)
-        }) {
-            Ok(conn) => conn,
-            // Same duplicate-fts_messages debris handling as the canonical
-            // open: fsqlite 0.3.x refuses the historical duplicate schema row
-            // at load. The dedupe is a sanctioned mutation from an ordinary
-            // read lane — it repairs sqlite_master metadata only (the lexical
-            // self-healing contract), then the readonly open is retried.
-            Err(err) if format!("{err:#}").contains("conflicting virtual-table entries") => {
-                tracing::warn!(
-                    db = %path.display(),
-                    error = %err,
-                    "frankensqlite refused readonly open due to duplicate \
-                     fts_messages schema rows; deduplicating via sqlite3 bridge"
-                );
-                dedupe_conflicting_fts_schema_rows_via_sqlite3(path)?;
-                FrankenConnection::open_schema_only_with_wal_index_recovery(&path_str)
-                    .map_err(anyhow::Error::new)?
-            }
-            // gh #389: a hard (non-busy) readonly failure with a non-empty
-            // `-wal` present is the unclean-shutdown dirty-WAL shape — the
-            // readonly connection cannot write the wal-index it needs to
-            // recover. Run the same RW-open + TRUNCATE checkpoint the clean
-            // shutdown path uses, then retry the readonly open once. The
-            // doctor mutation guard acquired above is still held here.
-            Err(err) if attempt_dirty_wal_recovery_checkpoint(path, &err) => {
-                FrankenConnection::open_schema_only_with_wal_index_recovery(&path_str)
-                    .map_err(anyhow::Error::new)
-                    .with_context(|| {
-                        format!(
-                            "reopening frankensqlite db readonly after dirty-WAL checkpoint recovery at {}",
-                            path.display()
-                        )
-                    })?
-            }
-            Err(err) => {
-                return Err(err).with_context(|| {
-                    format!("opening frankensqlite db readonly at {}", path.display())
-                });
-            }
-        };
+        })
+        .with_context(|| format!("opening frankensqlite db readonly at {}", path.display()))?;
         let storage = Self::new(conn, path.to_path_buf());
         storage.apply_readonly_config()?;
         Ok(storage)
@@ -911,11 +865,11 @@ impl FrankenStorage {
 
     /// Open an archive for a strict non-mutating read.
     ///
-    /// This deliberately omits the ordinary read opener's sanctioned recovery
-    /// writes (WAL-index repair, duplicate-FTS repair and dirty-WAL checkpoint)
-    /// and observes only an already-existing doctor lock. Callers must surface
-    /// any recovery-required error and leave repair to an explicitly mutating
-    /// command.
+    /// This deliberately omits the ordinary read opener's WAL-index recovery
+    /// and observes only an already-existing doctor lock. Callers must
+    /// surface any recovery-required error and leave repair to an explicitly
+    /// mutating command. A legacy or foreign archive refuses via
+    /// [`SchemaRebuildRequired`] before the engine touches it.
     pub(crate) fn open_strict_readonly(path: &Path) -> Result<Self> {
         Self::open_strict_readonly_with_timeout(path, DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT)
     }
@@ -932,21 +886,35 @@ impl FrankenStorage {
         // strict-open bound.
         let deadline = Instant::now() + timeout;
         let _doctor_guard = acquire_existing_doctor_mutation_db_open_guard(path, timeout)?;
+        match archive_disposition_with_doctor_guard(path, &_doctor_guard)? {
+            ArchiveDisposition::Current => {}
+            ArchiveDisposition::Uninitialized => {
+                return Err(anyhow!("Database not found at {}", path.display()));
+            }
+        }
         let mut backoff = Duration::from_millis(4);
         let conn = loop {
-            match open_franken_with_flags(&path_str, FrankenOpenFlags::SQLITE_OPEN_READ_ONLY)
-                .map_err(anyhow::Error::new)
+            // SQLITE_OPEN_STRICT_READ_ONLY: not one byte, mtime, or sidecar
+            // may be created or modified (franken_sync::compat contract).
+            match open_franken_with_flags(&path_str, FrankenOpenFlags::SQLITE_OPEN_STRICT_READ_ONLY)
             {
                 Ok(conn) => break conn,
-                Err(err) if retryable_franken_anyhow(&err) => {
+                Err(err @ FrankenError::BusyRecovery) => {
+                    // BusyRecovery on a strict read-only open is deterministic
+                    // (missing/stale -shm or live -wal without -shm); refuse
+                    // immediately instead of spinning for the 30 s timeout.
+                    return Err(anyhow::Error::new(err).context(format!(
+                        "strictly opening frankensqlite db readonly at {}",
+                        path.display()
+                    )));
+                }
+                Err(err) if retryable_franken_error(&err) => {
                     let now = Instant::now();
                     if now >= deadline {
-                        return Err(err).with_context(|| {
-                            format!(
-                                "strictly opening frankensqlite db readonly at {}",
-                                path.display()
-                            )
-                        });
+                        return Err(anyhow::Error::new(err).context(format!(
+                            "strictly opening frankensqlite db readonly at {}",
+                            path.display()
+                        )));
                     }
                     let remaining = deadline.saturating_duration_since(now);
                     sleep_with_franken_retry_backoff(
@@ -956,12 +924,10 @@ impl FrankenStorage {
                     );
                 }
                 Err(err) => {
-                    return Err(err).with_context(|| {
-                        format!(
-                            "strictly opening frankensqlite db readonly at {}",
-                            path.display()
-                        )
-                    });
+                    return Err(anyhow::Error::new(err).context(format!(
+                        "strictly opening frankensqlite db readonly at {}",
+                        path.display()
+                    )));
                 }
             }
         };
@@ -1010,14 +976,13 @@ impl FrankenStorage {
 
     /// Apply connection PRAGMAs for parity with SqliteStorage's `apply_pragmas()`.
     ///
-    /// Frankensqlite supports all PRAGMAs cass uses (journal_mode, synchronous,
-    /// cache_size, foreign_keys, busy_timeout). Its default journal_mode is already
-    /// WAL and default synchronous is NORMAL, matching cass's requirements.
-    ///
+    /// Runs on the bundled-rusqlite engine after the schema-v1 bootstrap has
+    /// committed, which is the only point at which `journal_mode = WAL` may
+    /// be set (a WAL archive whose bootstrap crashed mid-transaction must
+    /// never carry the schema-v1 stamp).
     pub fn apply_config(&self) -> Result<()> {
-        // journal_mode: frankensqlite defaults to WAL, same as cass.
-        // synchronous: frankensqlite defaults to NORMAL, same as cass.
-        // Both are set explicitly for clarity.
+        // journal_mode: WAL (only reached post-bootstrap-commit).
+        // synchronous: NORMAL.
         self.conn
             .execute("PRAGMA journal_mode = WAL;")
             .with_context(|| "setting journal_mode")?;
@@ -1035,15 +1000,13 @@ impl FrankenStorage {
             .execute("PRAGMA foreign_keys = ON;")
             .with_context(|| "setting foreign_keys")?;
 
+        // temp_store: keep temp B-trees in memory.
+        let _ = self.conn.execute("PRAGMA temp_store = MEMORY;");
+
         // busy_timeout: 5 seconds (in milliseconds).
         self.conn
             .execute("PRAGMA busy_timeout = 5000;")
             .with_context(|| "setting busy_timeout")?;
-
-        // temp_store = MEMORY and mmap_size are C SQLite performance knobs.
-        // In frankensqlite's architecture (in-memory MVCC engine with pager
-        // backend), temp_store is always memory-resident and mmap_size does not
-        // apply. Skipped intentionally — these are no-ops or errors.
 
         // wal_autocheckpoint: use a bounded cadence that avoids checkpointing
         // inside common append batches without deferring checkpoints forever.
@@ -1052,39 +1015,6 @@ impl FrankenStorage {
         let _ = self.conn.execute(&checkpoint_pragma);
         self.index_writer_checkpoint_pages
             .store(DEFAULT_WAL_AUTOCHECKPOINT_PAGES, Ordering::Relaxed);
-        // Explicitly enable concurrent writer mode for BEGIN/transaction paths.
-        // Try both namespace variants for compatibility across fsqlite builds.
-        let _ = self.conn.execute("PRAGMA fsqlite.concurrent_mode = ON;");
-        let _ = self.conn.execute("PRAGMA concurrent_mode = ON;");
-        // Frankensqlite retained autocommit currently mis-serves same-connection
-        // read-after-write queries on cass's storage paths; keep it off here
-        // until the upstream visibility bug is fixed.
-        //
-        // CASS #163 item 3: If neither PRAGMA variant succeeds, the MVCC engine
-        // will accumulate write snapshots for the lifetime of the connection,
-        // causing unbounded memory growth on long-lived watch-mode handles.
-        // Log at warn level so the failure is visible instead of silently
-        // swallowed, and set a flag for callers that need to periodically
-        // recycle the connection.
-        match disable_autocommit_retain(|pragma| self.conn.execute(pragma).map(|_| ())) {
-            Ok(autocommit_pragma) => {
-                tracing::debug!(
-                    pragma = autocommit_pragma,
-                    "disabled frankensqlite autocommit_retain for storage connection"
-                );
-            }
-            Err(err) => {
-                let detail = format!("{err:#}");
-                if error_message_indicates_populated_fts_shadow_without_rowid_reload(&detail) {
-                    tracing::warn!(
-                        error = %detail,
-                        "frankensqlite could not disable autocommit_retain because a populated derived FTS shadow table cannot yet be reloaded; continuing so canonical indexing can proceed"
-                    );
-                } else {
-                    return Err(err);
-                }
-            }
-        }
 
         Ok(())
     }
@@ -1102,176 +1032,30 @@ impl FrankenStorage {
         self.conn
             .execute("PRAGMA foreign_keys = ON;")
             .with_context(|| "setting foreign_keys")?;
+        let _ = self.conn.execute("PRAGMA temp_store = MEMORY;");
         Ok(())
     }
 
-    /// Run all schema migrations, handling transition from meta table versioning.
+    /// Initialize the canonical schema-v1 baseline.
     ///
-    /// The existing `SqliteStorage` tracks schema version in a `meta` table entry.
-    /// The new `MigrationRunner` uses a `_schema_migrations` table. This method:
-    /// 1. Transitions existing databases from meta table → `_schema_migrations`
-    /// 2. Runs pending migrations via `MigrationRunner`
-    /// 3. Syncs `meta.schema_version` for backward compatibility
+    /// Under the bundled-rusqlite contract there is exactly one schema
+    /// transition: an uninitialized archive is bootstrapped to v1 in a
+    /// single `BEGIN IMMEDIATE` transaction that stamps `application_id`,
+    /// `user_version`, and `meta.schema_version` together with the complete
+    /// baseline DDL. The call is idempotent (`IF NOT EXISTS` /
+    /// `ON CONFLICT DO UPDATE`), so on an already-stamped archive it is a
+    /// no-op. `PRAGMA journal_mode = WAL` is only applied later, in
+    /// [`Self::apply_config`], after the bootstrap commits.
     ///
-    /// # Fresh vs existing databases
-    ///
-    /// Fresh databases use a single combined migration (`MIGRATION_FRESH_SCHEMA`)
-    /// that creates the complete V13 schema directly. This avoids the incremental
-    /// V5 migration which uses `DROP TABLE` — an operation that triggers a known
-    /// frankensqlite autoindex limitation.
-    ///
-    /// Existing databases (transitioned from SqliteStorage) are typically at
-    /// V13 or newer already; additive post-V13 migrations are applied normally.
+    /// The historical name is kept because several caller sites still speak
+    /// of "running migrations"; there is no `_schema_migrations` ledger
+    /// anymore — schema version is the `(application_id, user_version)`
+    /// header stamp plus `meta.schema_version = '1'`.
     pub fn run_migrations(&self) -> Result<()> {
-        transition_from_meta_version(&self.conn)?;
-        self.refuse_unbounded_legacy_fts_teardown()?;
-
-        let (mut applied, was_fresh) =
-            run_attributed_migration_steps(&self.conn, BASE_MIGRATION_STEPS)?;
-        if apply_conversation_tail_state_cache_migration(&self.conn)
-            .with_context(|| "running conversation tail-state cache migration")?
-        {
-            applied.push(15);
-        }
-
-        let (post_applied, _) =
-            run_attributed_migration_steps(&self.conn, POST_TAIL_CACHE_MIGRATION_STEPS)?;
-        applied.extend(post_applied);
-
-        let current = self.schema_version()?;
-        if !applied.is_empty() {
-            info!(
-                applied = ?applied,
-                current,
-                was_fresh,
-                "frankensqlite schema migrations applied"
-            );
-        }
-
-        // Keep meta.schema_version in sync for backward compatibility.
-        self.sync_meta_schema_version(current)?;
-
-        Ok(())
-    }
-
-    /// GH #349: bounded pre-flight for the V14 `fts_contentless` migration.
-    ///
-    /// When the archive still carries a legacy `fts_messages` FTS5 shadow,
-    /// the migration must DROP it, and that teardown is unbounded inside
-    /// frankensqlite — on multi-GB archives it aborts with `out of memory`
-    /// after minutes at multi-GiB RSS. Above the configured byte budget this
-    /// refuses up front with a typed, actionable error instead of attempting
-    /// the drop, leaving the archive untouched. Small archives migrate
-    /// exactly as before, and `CASS_MIGRATION_LEGACY_FTS_DROP_BUDGET_BYTES`
-    /// (see [`LEGACY_FTS_TEARDOWN_BUDGET_ENV`]) tunes or disables the gate.
-    ///
-    /// Every probe here is bounded: one indexed sqlite_master row read, one
-    /// `_schema_migrations` point query, and file metadata for the archive
-    /// family. Probes that themselves fail fail open — the migration then
-    /// runs and any real failure surfaces attributed per step.
-    fn refuse_unbounded_legacy_fts_teardown(&self) -> Result<()> {
-        let carries_fts_messages = self
-            .conn
-            .query(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' \
-                 AND name = 'fts_messages' LIMIT 1;",
-            )
-            .map(|rows| !rows.is_empty())
-            .unwrap_or(false);
-        if !carries_fts_messages {
-            return Ok(());
-        }
-        let Some(budget_bytes) = legacy_fts_teardown_budget_bytes() else {
-            return Ok(());
-        };
-        let v14_pending = !schema_migration_is_applied(&self.conn, 14).unwrap_or(true);
-        if !v14_pending {
-            return Ok(());
-        }
-        let archive_bytes = archive_family_bytes(&self.db_path);
-        if archive_bytes <= budget_bytes {
-            return Ok(());
-        }
-        tracing::warn!(
-            archive_bytes,
-            budget_bytes,
-            env = LEGACY_FTS_TEARDOWN_BUDGET_ENV,
-            "refusing unbounded legacy fts_messages teardown during schema migration"
-        );
-        Err(anyhow::Error::new(LegacyFtsTeardownRefusal {
-            archive_bytes,
-            budget_bytes,
-        }))
-    }
-
-    /// Some historical canonical rebuild paths produced databases whose
-    /// version markers claim the current schema while post-V10 analytics
-    /// tables were never materialized. Detect that drift and backfill the
-    /// idempotent table/index set from the combined schema migration.
-    pub(super) fn repair_missing_current_schema_objects(&self) -> Result<()> {
-        let mut missing_tables = Vec::new();
-        for &(table_name, probe_sql) in REQUIRED_CURRENT_SCHEMA_TABLE_PROBES {
-            if let Err(err) = self.conn.query(probe_sql) {
-                if error_indicates_missing_table(&err) {
-                    missing_tables.push(table_name);
-                    continue;
-                }
-                return Err(err).with_context(|| {
-                    format!("probing required schema table {table_name} for completeness")
-                });
-            }
-        }
-
-        if !missing_tables.is_empty() {
-            info!(
-                missing_tables = ?missing_tables,
-                "repairing missing current-schema tables on an already-versioned cass database"
-            );
-
-            for batch in current_schema_repair_batches_for_missing_tables(&missing_tables)? {
-                self.conn
-                    .execute_batch(batch.sql)
-                    .with_context(|| format!("repairing current-schema batch {}", batch.name))?;
-            }
-
-            for &(table_name, probe_sql) in REQUIRED_CURRENT_SCHEMA_TABLE_PROBES {
-                if !missing_tables.contains(&table_name) {
-                    continue;
-                }
-                self.conn
-                    .query(probe_sql)
-                    .with_context(|| format!("verifying repaired schema table {table_name}"))?;
-            }
-        }
-        self.repair_missing_conversation_token_columns()?;
-        // Local fix (review 2026-11-02, S2).
-        ensure_snippets_message_id_index(&self.conn)?;
-        Ok(())
-    }
-
-    pub(super) fn repair_missing_conversation_token_columns(&self) -> Result<()> {
-        let columns = franken_table_column_names(&self.conn, "conversations")
-            .with_context(|| "inspecting conversations columns for token-summary repair")?;
-        let mut missing_columns = Vec::new();
-        for &(column_name, column_type) in REQUIRED_CONVERSATION_TOKEN_COLUMNS {
-            if columns.contains(column_name) {
-                continue;
-            }
-            let sql = format!("ALTER TABLE conversations ADD COLUMN {column_name} {column_type};");
-            self.conn.execute(&sql).with_context(|| {
-                format!("adding missing conversations.{column_name} token-summary column")
-            })?;
-            missing_columns.push(column_name);
-        }
-        if !missing_columns.is_empty() {
-            tracing::warn!(
-                target: "cass::schema_repair",
-                db_path = %self.db_path.display(),
-                missing_columns = ?missing_columns,
-                "cass#222: repaired missing conversations token-summary columns"
-            );
-        }
-        Ok(())
+        self.conn
+            .execute("PRAGMA foreign_keys = ON;")
+            .with_context(|| "enabling foreign_keys before schema-v1 bootstrap")?;
+        initialize_schema_v1(&self.conn)
     }
 
     /// Detect and remove orphan rows whose FK parent has gone missing.
@@ -1376,48 +1160,25 @@ impl FrankenStorage {
         Ok(report)
     }
 
-    /// Return the current schema version from `_schema_migrations`.
+    /// Return the stamped schema version.
+    ///
+    /// The v1 contract keeps `meta.schema_version` in lockstep with
+    /// `PRAGMA user_version`; the disposition gate has already refused any
+    /// archive whose header stamp differs, so a missing/parse-failing row
+    /// only occurs mid-bootstrap and reports `0`.
     pub fn schema_version(&self) -> Result<i64> {
         let rows = self
             .conn
-            .query("SELECT MAX(version) FROM _schema_migrations;")
-            .with_context(|| "reading schema version from _schema_migrations")?;
+            .query("SELECT value FROM meta WHERE key = 'schema_version' LIMIT 1;")
+            .with_context(|| "reading schema version from meta")?;
 
         if let Some(row) = rows.first()
-            && let Ok(v) = row.get_typed::<Option<i64>>(0)
+            && let Ok(v) = row.get_typed::<String>(0)
+            && let Ok(version) = v.trim().parse::<i64>()
         {
-            return Ok(v.unwrap_or(0));
+            return Ok(version);
         }
         Ok(0)
-    }
-
-    /// Keep `meta.schema_version` in sync for backward compatibility with `SqliteStorage`.
-    pub(super) fn sync_meta_schema_version(&self, version: i64) -> Result<()> {
-        // The meta table is created by V1 migration. If it doesn't exist yet,
-        // there's nothing to sync.
-        if self.conn.query("SELECT key FROM meta LIMIT 1;").is_err() {
-            return Ok(());
-        }
-
-        // Only write if the version needs updating to avoid write lock contention
-        if let Ok(rows) = self
-            .conn
-            .query("SELECT value FROM meta WHERE key = 'schema_version';")
-            && let Some(row) = rows.first()
-            && let Ok(val) = row.get_typed::<String>(0)
-            && val == version.to_string()
-        {
-            return Ok(()); // Already up to date
-        }
-
-        self.conn
-            .execute_compat(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?1);",
-                &[ParamValue::from(version.to_string())],
-            )
-            .with_context(|| "syncing meta schema_version")?;
-
-        Ok(())
     }
 
     /// Resolve the database file path for this connection.
