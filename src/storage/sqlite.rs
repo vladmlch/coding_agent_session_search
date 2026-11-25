@@ -15,14 +15,12 @@ macro_rules! fparams {
 
 // Local fix (review 2026-11-02, S1): read the TRUNCATE checkpoint status row.
 mod wal_checkpoint_status;
-// Local fix (review 2026-11-02, S2): snippets(message_id) lookup index.
-mod local_lookup_indexes;
 // Local fix (review 2026-11-02, S3): live index hint for lexical-rebuild tail.
 mod footprint_tail_sql;
 // Local fix (review 2026-11-02, U1): deduplicate multi-record Claude reply usage.
 mod claude_usage_dedup;
 
-// Production submodules (23 modules):
+// Production submodules:
 mod admin_and_omp;
 mod aggregators_and_pricing;
 mod analytics_rebuild;
@@ -37,7 +35,9 @@ mod fts_parity_and_repair;
 mod fts_rebuild;
 mod historical_salvage;
 mod lexical_rebuild;
+mod omp_and_semantic_meta;
 mod open_and_locks;
+mod orphan_fk_cleanup;
 mod reconcile_and_codebuff;
 mod schema_migrations;
 mod schema_repair;
@@ -90,17 +90,18 @@ pub(crate) use backup_and_integrity::{
     remove_database_files,
 };
 
-pub use historical_salvage::HistoricalSalvageOutcome;
+pub use source_and_historical_import::HistoricalSalvageOutcome;
 #[cfg(test)]
-pub(crate) use historical_salvage::discover_historical_database_bundles;
-pub(crate) use historical_salvage::{
+pub(crate) use backup_and_integrity::discover_historical_database_bundles;
+pub(crate) use source_and_historical_import::{
     message_extra_to_source_jsonl_line, seed_canonical_from_best_historical_bundle,
 };
 
 #[cfg(test)]
-pub(crate) use schema_migrations::legacy_omp_analytics_pending;
-pub use schema_migrations::{CURRENT_SCHEMA_VERSION, LegacyOmpReclassificationResult, SchemaCheck};
-pub(crate) use schema_migrations::{
+pub(crate) use omp_and_semantic_meta::legacy_omp_analytics_pending;
+pub use omp_and_semantic_meta::{CURRENT_SCHEMA_VERSION, LegacyOmpReclassificationResult};
+pub use open_and_locks::SchemaCheck;
+pub(crate) use omp_and_semantic_meta::{
     MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION, SemanticIdentityTier,
     legacy_omp_analytics_pending_with_query,
 };

@@ -5,10 +5,10 @@ use super::backup_and_integrity::{
 use super::batch_ingest::normalized_storage_source_parts;
 use super::footprint_tail_sql;
 use super::fts_rebuild::role_str;
-use super::historical_salvage::message_extra_to_source_jsonl_line;
-use super::schema_repair::{
+use super::orphan_fk_cleanup::{
     error_indicates_missing_column, error_indicates_missing_table, franken_table_column_names,
 };
+use super::source_and_historical_import::message_extra_to_source_jsonl_line;
 use super::storage_core::FrankenStorage;
 use crate::franken_sync::{
     Row as FrankenRow, SqliteValue,

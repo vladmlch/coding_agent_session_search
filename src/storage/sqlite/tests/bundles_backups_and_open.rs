@@ -873,7 +873,7 @@ fn normal_open_creates_snippets_message_id_index() {
     let storage = SqliteStorage::open(&dir.path().join("a.db")).unwrap();
     assert_eq!(
         snippets_index_names(&storage),
-        vec![local_lookup_indexes::SNIPPETS_MESSAGE_ID_INDEX.to_string()]
+        vec![SNIPPETS_MESSAGE_ID_INDEX.to_string()]
     );
 }
 
@@ -887,10 +887,7 @@ fn fast_current_schema_open_creates_snippets_message_id_index() {
         let storage = SqliteStorage::open(&db_path).unwrap();
         storage
             .conn
-            .execute(&format!(
-                "DROP INDEX {};",
-                local_lookup_indexes::SNIPPETS_MESSAGE_ID_INDEX
-            ))
+            .execute(&format!("DROP INDEX {};", SNIPPETS_MESSAGE_ID_INDEX))
             .unwrap();
         storage.close().unwrap();
     }
@@ -900,7 +897,7 @@ fn fast_current_schema_open_creates_snippets_message_id_index() {
             .expect("current schema must take the fast path");
     assert_eq!(
         snippets_index_names(&storage),
-        vec![local_lookup_indexes::SNIPPETS_MESSAGE_ID_INDEX.to_string()]
+        vec![SNIPPETS_MESSAGE_ID_INDEX.to_string()]
     );
 }
 
@@ -914,10 +911,7 @@ fn open_accepts_equivalent_snippets_index_without_duplicate() {
         let storage = SqliteStorage::open(&db_path).unwrap();
         storage
             .conn
-            .execute(&format!(
-                "DROP INDEX {};",
-                local_lookup_indexes::SNIPPETS_MESSAGE_ID_INDEX
-            ))
+            .execute(&format!("DROP INDEX {};", SNIPPETS_MESSAGE_ID_INDEX))
             .unwrap();
         storage
             .conn

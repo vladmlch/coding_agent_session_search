@@ -3,26 +3,26 @@ use super::backup_and_integrity::{
     dedupe_conflicting_fts_schema_rows_via_sqlite3, remove_database_files,
 };
 use super::fts_rebuild::agent_kind_str;
-use super::local_lookup_indexes;
 use super::open_and_locks::{
-    DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT, acquire_doctor_mutation_db_open_guard,
+    DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT, SchemaCheck, acquire_doctor_mutation_db_open_guard,
     acquire_existing_doctor_mutation_db_open_guard, attempt_dirty_wal_recovery_checkpoint,
-    open_archive_writer_connection, retry_transient_storage_op, retryable_franken_anyhow,
+    check_schema_compatibility, open_archive_writer_connection, retry_transient_storage_op,
+    retryable_franken_anyhow, schema_check_error_requires_rebuild,
     sleep_with_franken_retry_backoff,
 };
-use super::schema_migrations::{
-    SchemaCheck, check_schema_compatibility, schema_check_error_requires_rebuild,
+use super::orphan_fk_cleanup::{
+    ORPHAN_DIRECT_CHILD_TABLES, OrphanFkCleanupReport, collect_direct_orphan_id_page,
+    collect_orphan_message_ids, delete_direct_orphan_ids_bisecting_oom,
+    delete_orphan_message_ids_bisecting_oom, error_indicates_missing_column,
+    error_indicates_missing_table, franken_table_column_names,
 };
 use super::schema_repair::{
     BASE_MIGRATION_STEPS, LEGACY_FTS_TEARDOWN_BUDGET_ENV, LegacyFtsTeardownRefusal,
-    ORPHAN_DIRECT_CHILD_TABLES, OrphanFkCleanupReport, POST_TAIL_CACHE_MIGRATION_STEPS,
-    REQUIRED_CONVERSATION_TOKEN_COLUMNS, REQUIRED_CURRENT_SCHEMA_TABLE_PROBES,
-    apply_conversation_tail_state_cache_migration, archive_family_bytes,
-    collect_direct_orphan_id_page, collect_orphan_message_ids,
-    current_schema_repair_batches_for_missing_tables, delete_direct_orphan_ids_bisecting_oom,
-    delete_orphan_message_ids_bisecting_oom, error_indicates_missing_column,
-    error_indicates_missing_table, franken_table_column_names, legacy_fts_teardown_budget_bytes,
-    run_attributed_migration_steps, schema_migration_is_applied, transition_from_meta_version,
+    POST_TAIL_CACHE_MIGRATION_STEPS, REQUIRED_CONVERSATION_TOKEN_COLUMNS,
+    REQUIRED_CURRENT_SCHEMA_TABLE_PROBES, apply_conversation_tail_state_cache_migration,
+    archive_family_bytes, current_schema_repair_batches_for_missing_tables,
+    legacy_fts_teardown_budget_bytes, run_attributed_migration_steps, schema_migration_is_applied,
+    transition_from_meta_version,
 };
 use crate::franken_sync::{
     Connection as FrankenConnection,
@@ -1245,7 +1245,7 @@ impl FrankenStorage {
         }
         self.repair_missing_conversation_token_columns()?;
         // Local fix (review 2026-11-02, S2).
-        local_lookup_indexes::ensure_snippets_message_id_index(&self.conn)?;
+        ensure_snippets_message_id_index(&self.conn)?;
         Ok(())
     }
 
@@ -1514,5 +1514,76 @@ impl FrankenStorage {
 
         let storage = Self::open(path).map_err(|e| MigrationError::Other(e.to_string()))?;
         Ok(storage)
+    }
+}
+
+pub(super) const SNIPPETS_MESSAGE_ID_INDEX: &str = "idx_snippets_message_id_local";
+
+/// True when `create_sql` is a non-partial index on `snippets` whose first
+/// key column is `message_id`.
+pub(super) fn sql_indexes_snippets_message_id_first(create_sql: &str) -> bool {
+    let normalized: String = create_sql
+        .chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, '"' | '`' | '[' | ']'))
+        .flat_map(char::to_lowercase)
+        .collect();
+    normalized.contains("onsnippets(message_id") && !normalized.contains(")where")
+}
+
+pub(super) fn ensure_snippets_message_id_index(conn: &FrankenConnection) -> Result<()> {
+    // Archives older than the `snippets` table's schema version have nothing
+    // to index: a repair pass that still created the index here failed the
+    // whole open with `no such table: main.snippets` (v13 fixture).
+    let table_exists = conn
+        .query(
+            "SELECT 1 FROM sqlite_master \
+             WHERE type = 'table' AND name = 'snippets' LIMIT 1;",
+        )
+        .with_context(|| "checking snippets table")?;
+    if table_exists.is_empty() {
+        return Ok(());
+    }
+    let rows = conn
+        .query(
+            "SELECT sql FROM sqlite_master \
+             WHERE type = 'index' AND tbl_name = 'snippets' AND sql IS NOT NULL;",
+        )
+        .with_context(|| "listing snippets indexes")?;
+    for row in &rows {
+        let sql: String = row
+            .get_typed(0)
+            .with_context(|| "reading snippets index sql")?;
+        if sql_indexes_snippets_message_id_first(&sql) {
+            return Ok(());
+        }
+    }
+    conn.execute(&format!(
+        "CREATE INDEX IF NOT EXISTS {SNIPPETS_MESSAGE_ID_INDEX} ON snippets(message_id);"
+    ))
+    .with_context(|| format!("creating {SNIPPETS_MESSAGE_ID_INDEX}"))?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod local_lookup_index_tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_equivalent_index_shapes() {
+        assert!(sql_indexes_snippets_message_id_first(
+            "CREATE INDEX idx_snippets_message_id_local ON snippets(message_id)"
+        ));
+        assert!(sql_indexes_snippets_message_id_first(
+            "CREATE INDEX \"remote_name\" ON \"snippets\" ( message_id , id )"
+        ));
+        assert!(!sql_indexes_snippets_message_id_first(
+            "CREATE INDEX x ON snippets(id, message_id)"
+        ));
+        assert!(!sql_indexes_snippets_message_id_first(
+            "CREATE INDEX x ON snippets(message_id) WHERE id > 0"
+        ));
+        assert!(!sql_indexes_snippets_message_id_first(
+            "CREATE INDEX x ON messages(message_id)"
+        ));
     }
 }

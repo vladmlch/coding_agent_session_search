@@ -7,8 +7,9 @@ pub(in crate::storage::sqlite::tests) use super::backup_and_integrity::{
     FTS_FRANKEN_CONTENT_REVISION_PENDING, FTS_FRANKEN_REBUILD_GENERATION,
     FTS_FRANKEN_REBUILD_META_KEY, FTS_INDEXED_CANONICAL_INTERSECTION_SQL,
     backup_vacuum_error_requires_consistent_retry, copy_database_bundle,
-    deserialize_msgpack_to_json, franken_read_message_extra_compat, serialize_json_to_msgpack,
-    sqlite3_cli_launch_error,
+    deserialize_msgpack_to_json, franken_fts_schema_rows, franken_read_message_extra_compat,
+    is_backup_root_name, serialize_json_to_msgpack, sqlite3_cli_launch_error,
+    vacuum_stage_backup_path,
 };
 pub(in crate::storage::sqlite::tests) use super::batch_ingest::{
     defer_storage_lexical_updates_enabled, normalized_storage_source_parts,
@@ -25,15 +26,19 @@ pub(in crate::storage::sqlite::tests) use super::fts_rebuild::{
     arm_fts_page_diagnostics, arm_fts_rebuild_interruption, emit_fts_page_diagnostics,
     fts_exact_rowid_probe_select_sql, path_to_string, plan_fts_rebuild_message_page, role_str,
 };
-pub(in crate::storage::sqlite::tests) use super::historical_salvage::{
-    HISTORICAL_RECOVERY_CORE_SCHEMA, HistoricalBatchEntry, HistoricalBatchImportTotals,
-    franken_fts_schema_rows, historical_raw_json, historical_table_exists, is_backup_root_name,
-    json_value_size_hint, parse_historical_json_column, wrap_historical_raw_json,
-};
 pub(in crate::storage::sqlite::tests) use super::lexical_rebuild::truncate_lexical_rebuild_message_content;
+pub(in crate::storage::sqlite::tests) use super::omp_and_semantic_meta::{
+    LEGACY_OMP_ANALYTICS_CURSOR_CONTEXT_META_KEY, LEGACY_OMP_ANALYTICS_CURSOR_LAST_ID_META_KEY,
+    LEGACY_OMP_ANALYTICS_CURSOR_PROCESSED_META_KEY, LEGACY_OMP_ANALYTICS_REBUILT_META_KEY,
+    LEGACY_OMP_LEXICAL_PUBLISHED_META_KEY, LEGACY_OMP_RECLASSIFICATION_META_KEY,
+    PREVIOUS_LEGACY_OMP_RECLASSIFICATION_META_KEY,
+};
 pub(in crate::storage::sqlite::tests) use super::open_and_locks::{
     defer_analytics_updates_guard_for, doctor_lock_metadata_pid_is_current_process,
-    doctor_mutation_lock_path_for_db_open,
+    doctor_mutation_lock_path_for_db_open, schema_check_error_requires_rebuild,
+};
+pub(in crate::storage::sqlite::tests) use super::orphan_fk_cleanup::{
+    ORPHAN_FK_ID_CHUNK_SIZE, franken_table_column_names,
 };
 pub(in crate::storage::sqlite::tests) use super::reconcile_and_codebuff::{
     InsertConversationTreePerfProfile, conversation_external_lookup_key,
@@ -41,23 +46,23 @@ pub(in crate::storage::sqlite::tests) use super::reconcile_and_codebuff::{
     provider_workspace_is_authoritative, replay_owns_provider_workspace,
 };
 pub(in crate::storage::sqlite::tests) use super::schema_migrations::{
-    LEGACY_OMP_ANALYTICS_CURSOR_CONTEXT_META_KEY, LEGACY_OMP_ANALYTICS_CURSOR_LAST_ID_META_KEY,
-    LEGACY_OMP_ANALYTICS_CURSOR_PROCESSED_META_KEY, LEGACY_OMP_ANALYTICS_REBUILT_META_KEY,
-    LEGACY_OMP_LEXICAL_PUBLISHED_META_KEY, LEGACY_OMP_RECLASSIFICATION_META_KEY, MIGRATION_V1,
-    MIGRATION_V2, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7, MIGRATION_V8,
-    MIGRATION_V9, MIGRATION_V10, MIGRATION_V15_TAIL_STATE_TABLE,
-    PREVIOUS_LEGACY_OMP_RECLASSIFICATION_META_KEY, schema_check_error_requires_rebuild,
-    vacuum_stage_backup_path,
+    MIGRATION_V1, MIGRATION_V2, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6, MIGRATION_V7,
+    MIGRATION_V8, MIGRATION_V9, MIGRATION_V10, MIGRATION_V15_TAIL_STATE_TABLE,
 };
 pub(in crate::storage::sqlite::tests) use super::schema_repair::{
     BASE_MIGRATION_STEPS, CURRENT_SCHEMA_REPAIR_BATCHES, LEGACY_FTS_TEARDOWN_BUDGET_ENV,
-    ORPHAN_FK_ID_CHUNK_SIZE, POST_TAIL_CACHE_MIGRATION_STEPS, REQUIRED_CONVERSATION_TOKEN_COLUMNS,
+    POST_TAIL_CACHE_MIGRATION_STEPS, REQUIRED_CONVERSATION_TOKEN_COLUMNS,
     REQUIRED_CURRENT_SCHEMA_TABLE_PROBES, apply_conversation_tail_state_cache_migration,
-    current_schema_repair_batches_for_missing_tables, franken_table_column_names,
-    run_attributed_migration_steps, transition_from_meta_version,
+    current_schema_repair_batches_for_missing_tables, run_attributed_migration_steps,
+    transition_from_meta_version,
+};
+pub(in crate::storage::sqlite::tests) use super::source_and_historical_import::{
+    HISTORICAL_RECOVERY_CORE_SCHEMA, HistoricalBatchEntry, HistoricalBatchImportTotals,
+    historical_raw_json, historical_table_exists, json_value_size_hint,
+    parse_historical_json_column, wrap_historical_raw_json,
 };
 pub(in crate::storage::sqlite::tests) use super::storage_core::{
-    AUTOCOMMIT_RETAIN_OFF_PRAGMAS, disable_autocommit_retain,
+    AUTOCOMMIT_RETAIN_OFF_PRAGMAS, SNIPPETS_MESSAGE_ID_INDEX, disable_autocommit_retain,
 };
 pub(in crate::storage::sqlite::tests) use super::tx_analytics_rollups::{
     TOKEN_DAILY_STATS_REBUILD_STAGE_TABLE, TokenDailyStatsRebuildCursor,

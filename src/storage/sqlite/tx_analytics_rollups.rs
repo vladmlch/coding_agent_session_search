@@ -5,7 +5,7 @@ use super::aggregators_and_pricing::{
 use super::reconcile_and_codebuff::{
     provider_workspace_is_authoritative, shelley_metadata_is_authoritative,
 };
-use super::schema_repair::sql_placeholders;
+use super::orphan_fk_cleanup::sql_placeholders;
 use super::storage_core::{EnsuredDailyStatsKey, FrankenStorage};
 use crate::franken_sync::{
     Connection as FrankenConnection,

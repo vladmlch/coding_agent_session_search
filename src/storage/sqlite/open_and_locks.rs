@@ -2,13 +2,16 @@ use super::backup_and_integrity::{
     database_sidecar_path, dedupe_conflicting_fts_schema_rows_via_sqlite3,
 };
 use super::connection_pool::{FrankenAsyncConnection, FrankenOwnerConnection};
-use super::schema_migrations::CURRENT_SCHEMA_VERSION;
+use super::omp_and_semantic_meta::{CURRENT_SCHEMA_VERSION, MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION};
 use super::schema_repair::transition_from_meta_version;
 use super::storage_core::FrankenStorage;
 use super::wal_checkpoint_status;
 use crate::franken_sync::{
     Connection as FrankenConnection,
-    compat::{OpenFlags as FrankenOpenFlags, RowExt as FrankenRowExt},
+    compat::{
+        ConnectionExt as FrankenConnectionExt, OpenFlags as FrankenOpenFlags,
+        RowExt as FrankenRowExt, open_with_flags as open_franken_with_flags,
+    },
 };
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -959,6 +962,115 @@ pub(crate) fn attempt_dirty_wal_recovery_checkpoint(
             false
         }
     }
+}
+
+/// Result of checking schema compatibility.
+#[derive(Debug, Clone)]
+pub enum SchemaCheck {
+    /// Schema is up to date, no migration needed.
+    Compatible,
+    /// Schema needs migration but can be done incrementally.
+    NeedsMigration,
+    /// Schema is incompatible and needs a full rebuild (with reason).
+    NeedsRebuild(String),
+}
+
+pub(super) fn schema_check_error_requires_rebuild(err: &crate::franken_sync::FrankenError) -> bool {
+    // Only on-disk corruption classes justify destructive rebuild.
+    // Locking, open, and generic I/O failures are often transient and must
+    // surface as errors rather than deleting the database under the caller.
+    matches!(
+        err,
+        crate::franken_sync::FrankenError::DatabaseCorrupt { .. }
+            | crate::franken_sync::FrankenError::WalCorrupt { .. }
+            | crate::franken_sync::FrankenError::NotADatabase { .. }
+            | crate::franken_sync::FrankenError::ShortRead { .. }
+    )
+}
+
+/// Check schema compatibility without modifying the database.
+///
+/// Opens the database read-only and checks the schema version.
+pub(super) fn check_schema_compatibility(
+    path: &Path,
+) -> std::result::Result<SchemaCheck, crate::franken_sync::FrankenError> {
+    let mut conn = open_franken_with_flags(
+        &path.to_string_lossy(),
+        FrankenOpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+
+    let result = (|| {
+        // Check if meta table exists
+        let meta_exists: i32 = conn.query_row_map(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='meta'",
+            fparams![],
+            |row| row.get_typed(0),
+        )?;
+
+        if meta_exists == 0 {
+            // No meta table - could be empty or very old schema, needs rebuild
+            // But first check if there are any tables at all
+            let table_count: i32 = conn.query_row_map(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
+                fparams![],
+                |row| row.get_typed(0),
+            )?;
+
+            if table_count == 0 {
+                // Empty database, will be initialized fresh
+                return Ok(SchemaCheck::NeedsMigration);
+            }
+
+            // Has tables but no meta - very old or corrupted
+            return Ok(SchemaCheck::NeedsRebuild(
+                "Database missing schema version metadata".to_string(),
+            ));
+        }
+
+        // Get the schema version
+        let version: Option<i64> = conn
+            .query_row_map(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                fparams![],
+                |row| Ok(row.get_typed::<String>(0)?.parse().ok()),
+            )
+            .ok()
+            .flatten();
+
+        match version {
+            Some(v) if v == CURRENT_SCHEMA_VERSION => Ok(SchemaCheck::Compatible),
+            Some(v) if (MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION..CURRENT_SCHEMA_VERSION).contains(&v) => {
+                Ok(SchemaCheck::NeedsMigration)
+            }
+            Some(v) if v > 0 && v < MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION => {
+                Ok(SchemaCheck::NeedsRebuild(format!(
+                    "Schema version {} is too old for in-place migration; supported upgrade path starts at version {}",
+                    v, MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION
+                )))
+            }
+            Some(v) => {
+                // v > CURRENT_SCHEMA_VERSION - database is from a newer version
+                Ok(SchemaCheck::NeedsRebuild(format!(
+                    "Schema version {} is newer than supported version {}",
+                    v, CURRENT_SCHEMA_VERSION
+                )))
+            }
+            None => Ok(SchemaCheck::NeedsRebuild(
+                "Schema version not found or invalid".to_string(),
+            )),
+        }
+    })();
+
+    if let Err(close_err) = conn.close_in_place() {
+        tracing::warn!(
+            error = %close_err,
+            db_path = %path.display(),
+            "check_schema_compatibility: close_in_place failed; falling back to best-effort close"
+        );
+        conn.close_best_effort_in_place();
+    }
+
+    result
 }
 
 #[cfg(test)]

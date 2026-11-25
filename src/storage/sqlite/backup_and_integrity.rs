@@ -1,23 +1,24 @@
 use super::batch_ingest::normalized_storage_source_parts;
 use super::connection_pool::FrankenAsyncConnection;
-use super::historical_salvage::is_backup_root_name;
+use super::omp_and_semantic_meta::CURRENT_SCHEMA_VERSION;
 use super::open_and_locks::retryable_franken_error;
-use super::schema_migrations::{unique_backup_path, vacuum_stage_backup_path};
+use super::source_and_historical_import::historical_table_exists;
 use super::storage_core::FrankenStorage;
 use crate::franken_sync::{
     Connection as FrankenConnection, Row as FrankenRow, SqliteValue,
     compat::{
         ConnectionExt as FrankenConnectionExt, OpenFlags as FrankenOpenFlags,
-        RowExt as FrankenRowExt, open_with_flags as open_franken_with_flags,
+        OptionalExtension as FrankenOptionalExtension, RowExt as FrankenRowExt,
+        open_with_flags as open_franken_with_flags,
     },
 };
 use crate::model::types::Conversation;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 // -------------------------------------------------------------------------
@@ -1295,4 +1296,498 @@ pub(super) fn classify_fts_shadow_parity(
             }
         }
     }
+}
+
+pub(super) fn unique_backup_path(path: &Path) -> PathBuf {
+    static NEXT_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let nonce = NEXT_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("db");
+
+    path.with_file_name(format!(
+        "{file_name}.backup.{}.{}.{}",
+        std::process::id(),
+        timestamp,
+        nonce
+    ))
+}
+
+pub(super) fn vacuum_stage_backup_path(backup_path: &Path) -> PathBuf {
+    let file_name = backup_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("db.backup");
+    backup_path.with_file_name(format!(".{file_name}.vacuum-in-progress"))
+}
+
+pub(super) fn is_backup_root_name(name: &str, prefix: &str) -> bool {
+    name.starts_with(prefix) && !name.ends_with("-wal") && !name.ends_with("-shm")
+}
+
+// Suffixes that mark sqlite sidecar files we must never re-open as a DB root.
+// Includes the standard -wal/-shm pair plus frankensqlite's Windows advisory-
+// lock sidecars (-lock-shared/-lock-reserved/-lock-pending). Used by directory
+// enumeration paths in `historical_bundle_root_paths`; deliberately NOT used
+// by `is_backup_root_name`, because the existing backup-rotation cleanup must
+// continue to sweep up any pre-existing orphan lock sidecars.
+fn has_db_sidecar_suffix(name: &str) -> bool {
+    const SIDECAR_SUFFIXES: &[&str] = &[
+        "-wal",
+        "-shm",
+        "-lock-shared",
+        "-lock-reserved",
+        "-lock-pending",
+        // frankensqlite VFS namespace sidecars (fsqlite-vfs namespace.rs).
+        // The pinned family creates these next to every opened database;
+        // without this exclusion a `<stem>.corrupt.<ts>-fsqlite-ns-use`
+        // lock file (40 bytes, non-empty) is discovered as a historical
+        // bundle candidate and can even be seeded into the canonical path.
+        "-fsqlite-ns-gate",
+        "-fsqlite-ns-use",
+        // fsqlite 0.2.x WAL certification sidecars. Created next to any
+        // database with WAL content; advisory at open (a copied bundle
+        // without them recovers normally, probe-verified), but they are
+        // runtime artifacts, never independent archives.
+        "-wal-cert",
+        "-wal-cert-head",
+        // fsqlite 0.3.x stamps a migration-state marker at birth on every
+        // database it creates. Without this exclusion a
+        // `<stem>.corrupt.<ts>.fsqlite-migration-state` marker matches the
+        // corrupt-bundle prefix and salvage counts a phantom third bundle.
+        ".fsqlite-migration-state",
+        ".fsqlite-migration-state.tmp",
+    ];
+    SIDECAR_SUFFIXES.iter().any(|suffix| name.ends_with(suffix))
+}
+
+fn historical_bundle_root_paths(db_path: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let Some(parent) = db_path.parent() else {
+        return roots;
+    };
+    let db_name = db_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("agent_search.db");
+    let db_stem = db_path
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or("agent_search");
+
+    let mut push_root = |path: PathBuf| {
+        if path == db_path {
+            return;
+        }
+        if !roots.iter().any(|existing| existing == &path) {
+            roots.push(path);
+        }
+    };
+
+    if let Ok(entries) = fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if has_db_sidecar_suffix(name) {
+                continue;
+            }
+            if name.starts_with(&format!("{db_name}.backup."))
+                || name.starts_with(&format!("{db_stem}.corrupt."))
+            {
+                push_root(path);
+            }
+        }
+    }
+
+    let backups_dir = parent.join("backups");
+    if let Ok(entries) = fs::read_dir(backups_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if has_db_sidecar_suffix(name) {
+                continue;
+            }
+            if name.starts_with(&format!("{db_name}.")) && name.ends_with(".bak") {
+                push_root(path);
+            }
+        }
+    }
+
+    push_named_database_children(&mut roots, db_path, &parent.join("repair-lab"), db_name);
+    push_named_database_children(&mut roots, db_path, &parent.join("snapshots"), db_name);
+
+    roots
+}
+
+fn push_named_database_children(
+    roots: &mut Vec<PathBuf>,
+    canonical_db_path: &Path,
+    dir: &Path,
+    db_name: &str,
+) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let candidate = entry.path().join(db_name);
+            if candidate == canonical_db_path {
+                continue;
+            }
+            if candidate.exists() && !roots.iter().any(|existing| existing == &candidate) {
+                roots.push(candidate);
+            }
+        }
+    }
+}
+
+fn file_mtime_ms(path: &Path) -> i64 {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|ts| ts.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn bundle_total_bytes(root_path: &Path) -> u64 {
+    let mut total = fs::metadata(root_path).map(|meta| meta.len()).unwrap_or(0);
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = database_sidecar_path(root_path, suffix);
+        total = total.saturating_add(fs::metadata(sidecar).map(|meta| meta.len()).unwrap_or(0));
+    }
+    total
+}
+
+pub(crate) fn discover_historical_database_bundles(
+    db_path: &Path,
+) -> Vec<HistoricalDatabaseBundle> {
+    let mut bundles: Vec<_> = historical_bundle_root_paths(db_path)
+        .into_iter()
+        .filter(|root| root.exists())
+        .map(|root_path| {
+            let modified_at_ms = file_mtime_ms(&root_path);
+            let total_bytes = bundle_total_bytes(&root_path);
+            let supports_direct_readonly = historical_bundle_supports_direct_readonly(&root_path);
+            let probe = probe_historical_bundle(&root_path);
+            HistoricalDatabaseBundle {
+                modified_at_ms,
+                total_bytes,
+                supports_direct_readonly,
+                root_path,
+                probe,
+            }
+        })
+        .filter(|bundle| bundle.total_bytes > 0)
+        .collect();
+
+    fn bundle_priority(path: &Path) -> i32 {
+        let path_str = path.to_string_lossy();
+        if path_str.contains("/repair-lab/replay-") {
+            return 5;
+        }
+        if path_str.contains("/repair-lab/") {
+            return 4;
+        }
+        if path_str.contains("/snapshots/") {
+            return 3;
+        }
+        if path_str.contains(".corrupt.") || path_str.contains("failed-baseline-seed") {
+            return 0;
+        }
+        1
+    }
+
+    fn bundle_health_rank(bundle: &HistoricalDatabaseBundle) -> i32 {
+        // Classify FTS health. The probe only sets `fts_queryable = true`
+        // when `fts_schema_rows == Some(1)` (see
+        // `historical_bundle_fts_queryable_via_frankensqlite`), so we have
+        // two legitimate "clean" shapes for a bundle:
+        //
+        //   * `fts_schema_rows == Some(1) && fts_queryable` — a pre-V14
+        //     bundle where the FTS virtual table was eagerly created by
+        //     migration and is queryable right now.
+        //
+        //   * `fts_schema_rows == Some(0) && schema_version == Some(V14+)` —
+        //     a modern bundle where `MIGRATION_V14` dropped fts_messages on
+        //     purpose and cass recreates it lazily via
+        //     `ensure_search_fallback_fts_consistency` on the first open.
+        //     Gating on `schema_version == CURRENT_SCHEMA_VERSION` is critical
+        //     so an incomplete pre-V14 bundle with 0 fts rows is not promoted
+        //     alongside real lazy-V14+ bundles. A `None` schema_version
+        //     (schema marker unreadable) is excluded for the same reason.
+        //
+        // Everything else — `Some(1)` without queryability, `Some(n)` for
+        // n >= 2 (duplicated CREATE VIRTUAL TABLE rows from a broken legacy
+        // rebuild), `None` entirely, or `Some(0)` on a non-current schema —
+        // is not "fts clean".
+        let fts_clean = match bundle.probe.fts_schema_rows {
+            Some(1) => bundle.probe.fts_queryable,
+            Some(0) => bundle.probe.schema_version == Some(CURRENT_SCHEMA_VERSION),
+            _ => false,
+        };
+
+        let clean_schema14_fts =
+            bundle.probe.schema_version == Some(CURRENT_SCHEMA_VERSION) && fts_clean;
+        if clean_schema14_fts {
+            return 5;
+        }
+
+        if fts_clean {
+            return 4;
+        }
+
+        if bundle.probe.schema_version == Some(CURRENT_SCHEMA_VERSION)
+            && bundle.supports_direct_readonly
+        {
+            return 3;
+        }
+
+        if bundle.supports_direct_readonly {
+            return 2;
+        }
+
+        1
+    }
+
+    bundles.sort_by(|left, right| {
+        bundle_health_rank(right)
+            .cmp(&bundle_health_rank(left))
+            .then_with(|| right.probe.max_message_id.cmp(&left.probe.max_message_id))
+            .then_with(|| bundle_priority(&right.root_path).cmp(&bundle_priority(&left.root_path)))
+            .then_with(|| {
+                right
+                    .supports_direct_readonly
+                    .cmp(&left.supports_direct_readonly)
+            })
+            .then_with(|| right.total_bytes.cmp(&left.total_bytes))
+            .then_with(|| right.modified_at_ms.cmp(&left.modified_at_ms))
+            .then_with(|| right.root_path.cmp(&left.root_path))
+    });
+    bundles
+}
+
+fn probe_historical_bundle(root_path: &Path) -> HistoricalBundleProbe {
+    let Ok(conn) = open_historical_bundle_readonly(root_path) else {
+        return probe_historical_bundle_via_sqlite3_metadata(root_path).unwrap_or_default();
+    };
+
+    let schema_version = read_meta_schema_version(&conn).ok().flatten();
+    let fts_schema_rows: Option<i64> = conn
+        .query_row_map(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name = 'fts_messages'",
+            fparams![],
+            |row| row.get_typed(0),
+        )
+        .ok();
+    let fts_queryable =
+        historical_bundle_fts_queryable_via_frankensqlite(root_path, fts_schema_rows);
+    let max_message_id: i64 = conn
+        .query_row_map(
+            "SELECT COALESCE(MAX(id), 0) FROM messages",
+            fparams![],
+            |row| row.get_typed(0),
+        )
+        .unwrap_or(0);
+
+    let probe = HistoricalBundleProbe {
+        schema_version,
+        fts_schema_rows,
+        fts_queryable,
+        max_message_id,
+    };
+
+    if probe.schema_version.is_none()
+        && probe.fts_schema_rows.is_none()
+        && probe.max_message_id == 0
+    {
+        return probe_historical_bundle_via_sqlite3_metadata(root_path).unwrap_or(probe);
+    }
+
+    probe
+}
+
+fn probe_historical_bundle_via_sqlite3_metadata(root_path: &Path) -> Option<HistoricalBundleProbe> {
+    let bundle_uri = format!("file:{}?immutable=1", root_path.to_string_lossy());
+    let output = Command::new("sqlite3")
+        .arg("-batch")
+        .arg("-noheader")
+        .arg(&bundle_uri)
+        // `writable_schema=ON` is deliberate: it relaxes schema-integrity
+        // enforcement so this probe can still read `schema_version` out of a
+        // bundle whose sqlite_master is damaged. Nothing here writes, and the
+        // connection is opened `?immutable=1`, so the relaxed setting cannot
+        // corrupt anything — but it is bracketed with an explicit OFF so a
+        // future edit that adds a statement here does not silently inherit an
+        // unprotected connection.
+        .arg(
+            "PRAGMA writable_schema=ON;
+             SELECT COALESCE((SELECT value FROM meta WHERE key = 'schema_version'), '');
+             SELECT COUNT(*) FROM sqlite_master WHERE name = 'fts_messages';
+             SELECT COALESCE(MAX(id), 0) FROM messages;
+             PRAGMA writable_schema=OFF;",
+        )
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let mut lines = stdout.lines();
+    let schema_version = lines.next().and_then(|raw| raw.trim().parse::<i64>().ok());
+    let fts_schema_rows = lines.next().and_then(|raw| raw.trim().parse::<i64>().ok());
+    let max_message_id = lines
+        .next()
+        .and_then(|raw| raw.trim().parse::<i64>().ok())
+        .unwrap_or(0);
+
+    Some(HistoricalBundleProbe {
+        schema_version,
+        fts_schema_rows,
+        fts_queryable: false,
+        max_message_id,
+    })
+}
+
+fn historical_bundle_fts_queryable_via_frankensqlite(
+    root_path: &Path,
+    fts_schema_rows: Option<i64>,
+) -> bool {
+    matches!(fts_schema_rows, Some(1))
+        && FrankenStorage::open_readonly(root_path)
+            .map(|storage| {
+                storage
+                    .raw()
+                    .query("SELECT COUNT(*) FROM fts_messages")
+                    .is_ok()
+            })
+            .unwrap_or(false)
+}
+
+fn historical_bundle_supports_direct_readonly(root_path: &Path) -> bool {
+    open_historical_bundle_readonly(root_path)
+        .and_then(|conn| historical_bundle_has_queryable_core_tables(&conn))
+        .is_ok()
+}
+
+fn probe_historical_table_reads(conn: &FrankenConnection, table: &str) -> Result<()> {
+    if !historical_table_exists(conn, table)? {
+        return Err(anyhow!(
+            "historical database missing required table {table}"
+        ));
+    }
+
+    let sql = format!("SELECT rowid FROM {table} LIMIT 1");
+    let _: Option<i64> = conn
+        .query_row_map(&sql, fparams![], |row| row.get_typed(0))
+        .optional()
+        .with_context(|| format!("probing rows from historical table {table}"))?;
+    Ok(())
+}
+
+pub(super) fn historical_bundle_has_queryable_core_tables(conn: &FrankenConnection) -> Result<()> {
+    probe_historical_table_reads(conn, "conversations")?;
+    probe_historical_table_reads(conn, "messages")?;
+    Ok(())
+}
+
+pub(super) fn open_historical_bundle_readonly(root_path: &Path) -> Result<FrankenConnection> {
+    let path_str = root_path.to_string_lossy();
+    let flags = FrankenOpenFlags::SQLITE_OPEN_READ_ONLY;
+    let conn = open_franken_with_flags(&path_str, flags)
+        .with_context(|| format!("opening historical database {}", root_path.display()))?;
+    Ok(conn)
+}
+
+pub(super) fn read_meta_schema_version(conn: &FrankenConnection) -> Result<Option<i64>> {
+    let version: Option<String> = conn
+        .query_row_map(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            fparams![],
+            |row| row.get_typed(0),
+        )
+        .optional()?;
+    Ok(version.and_then(|raw| raw.parse::<i64>().ok()))
+}
+
+#[cfg(test)]
+pub(super) fn franken_fts_schema_rows(conn: &FrankenConnection) -> Result<i64> {
+    conn.query_row_map(
+        "SELECT COUNT(*) FROM sqlite_master WHERE name = 'fts_messages'",
+        fparams![],
+        |row| row.get_typed(0),
+    )
+    .context("counting sqlite_master rows for fts_messages via frankensqlite")
+}
+
+#[cfg(test)]
+fn franken_fts_limit_probe(conn: &FrankenConnection) -> bool {
+    conn.query("SELECT COUNT(*) FROM fts_messages").is_ok()
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn probe_database_health_via_frankensqlite(
+    db_path: &Path,
+) -> Result<SqliteDatabaseHealthProbe> {
+    let path_str = db_path.to_string_lossy();
+    let conn = FrankenConnection::open(path_str.as_ref()).with_context(|| {
+        format!(
+            "opening frankensqlite db at {} for database health probe",
+            db_path.display()
+        )
+    })?;
+    conn.execute_batch("PRAGMA busy_timeout = 30000;")
+        .with_context(|| {
+            format!(
+                "configuring busy timeout for database health probe at {}",
+                db_path.display()
+            )
+        })?;
+
+    let schema_version = read_meta_schema_version(&conn)?;
+    let quick_check_status: String = conn
+        .query_row_map("PRAGMA quick_check(1)", fparams![], |row| row.get_typed(0))
+        .with_context(|| format!("running PRAGMA quick_check(1) for {}", db_path.display()))?;
+    let quick_check_ok = quick_check_status.trim().eq_ignore_ascii_case("ok");
+    let fts_schema_rows = franken_fts_schema_rows(&conn)?;
+    let fts_queryable = fts_schema_rows == 1 && franken_fts_limit_probe(&conn);
+
+    if !quick_check_ok {
+        return Ok(SqliteDatabaseHealthProbe {
+            schema_version,
+            quick_check_ok,
+            fts_schema_rows,
+            fts_queryable,
+            message_count: 0,
+            max_message_id: 0,
+        });
+    }
+
+    let message_count: i64 = conn
+        .query_row_map("SELECT COUNT(*) FROM messages", fparams![], |row| {
+            row.get_typed(0)
+        })
+        .context("counting messages during frankensqlite database health probe")?;
+    let max_message_id: i64 = conn
+        .query_row_map(
+            "SELECT COALESCE(MAX(id), 0) FROM messages",
+            fparams![],
+            |row| row.get_typed(0),
+        )
+        .context("reading max message id during frankensqlite database health probe")?;
+
+    Ok(SqliteDatabaseHealthProbe {
+        schema_version,
+        quick_check_ok,
+        fts_schema_rows,
+        fts_queryable,
+        message_count,
+        max_message_id,
+    })
 }
