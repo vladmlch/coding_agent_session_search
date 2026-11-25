@@ -493,6 +493,8 @@ pub struct FrankenConnectionManager {
     db_path: PathBuf,
     readers: Vec<parking_lot::Mutex<FrankenOwnerConnection>>,
     pub(super) reader_idx: std::sync::atomic::AtomicUsize,
+    write_epoch: std::sync::atomic::AtomicU64,
+    reader_epochs: Vec<std::sync::atomic::AtomicU64>,
     /// Token-based writer limit: channel pre-filled with `max_writers` tokens.
     /// `recv()` = acquire slot, `send()` = release slot.
     writer_tokens: (
@@ -551,11 +553,16 @@ impl FrankenConnectionManager {
             tx.send(())
                 .map_err(|_| anyhow!("writer token channel closed during initialization"))?;
         }
+        let reader_epochs = (0..reader_count)
+            .map(|_| std::sync::atomic::AtomicU64::new(0))
+            .collect();
 
         Ok(Self {
             db_path,
             readers,
             reader_idx: std::sync::atomic::AtomicUsize::new(0),
+            write_epoch: std::sync::atomic::AtomicU64::new(0),
+            reader_epochs,
             writer_tokens: (tx, rx),
             config: ConnectionManagerConfig {
                 reader_count,
@@ -567,12 +574,25 @@ impl FrankenConnectionManager {
     /// Get a reader connection (round-robin from the pool).
     ///
     /// Returns a mutex guard wrapping the connection. The guard prevents
-    /// concurrent command streams through the same owner handle.
+    /// concurrent command streams through the same owner handle. Reopens a
+    /// reader slot when a writer has committed since that slot was opened
+    /// (so snapshot-backed readers stay fresh across writes).
     pub fn reader(&self) -> parking_lot::MutexGuard<'_, FrankenOwnerConnection> {
         let idx = self
             .reader_idx
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.readers[idx % self.readers.len()].lock()
+        let slot = idx % self.readers.len();
+        let mut guard = self.readers[slot].lock();
+        let current_epoch = self.write_epoch.load(std::sync::atomic::Ordering::Acquire);
+        if self.reader_epochs[slot].load(std::sync::atomic::Ordering::Acquire) != current_epoch
+            && let Ok(new_conn) =
+                FrankenOwnerConnection::open(self.db_path.to_string_lossy().into_owned())
+        {
+            guard.close_best_effort_in_place();
+            *guard = new_conn;
+            self.reader_epochs[slot].store(current_epoch, std::sync::atomic::Ordering::Release);
+        }
+        guard
     }
 
     /// Acquire a writer connection.
@@ -611,7 +631,7 @@ impl FrankenConnectionManager {
             return Err(e);
         }
         Ok(WriterGuard {
-            storage,
+            storage: Some(storage),
             mgr: self,
             committed: false,
         })
@@ -654,7 +674,7 @@ impl FrankenConnectionManager {
         // Reduced cache for concurrent writers (they're short-lived)
         let _ = storage.raw().execute("PRAGMA cache_size = -4096;");
         Ok(WriterGuard {
-            storage,
+            storage: Some(storage),
             mgr: self,
             committed: false,
         })
@@ -689,7 +709,7 @@ impl Drop for FrankenConnectionManager {
 /// Provides access to a [`FrankenStorage`] for write operations.
 /// Releases the writer semaphore slot when dropped.
 pub struct WriterGuard<'a> {
-    storage: FrankenStorage,
+    storage: Option<FrankenStorage>,
     mgr: &'a FrankenConnectionManager,
     committed: bool,
 }
@@ -697,7 +717,9 @@ pub struct WriterGuard<'a> {
 impl<'a> WriterGuard<'a> {
     /// Access the underlying storage for read/write operations.
     pub fn storage(&self) -> &FrankenStorage {
-        &self.storage
+        self.storage
+            .as_ref()
+            .expect("WriterGuard storage must be present before drop")
     }
 
     /// Mark this writer as successfully committed.
@@ -711,11 +733,19 @@ impl<'a> WriterGuard<'a> {
 
 impl Drop for WriterGuard<'_> {
     fn drop(&mut self) {
-        if !self.committed {
-            // Best-effort rollback — connection may already be in autocommit
-            let _ = self.storage.raw().execute("ROLLBACK;");
+        if let Some(mut storage) = self.storage.take() {
+            if !self.committed {
+                // Best-effort rollback — connection may already be in autocommit
+                let _ = storage.raw().execute("ROLLBACK;");
+            }
+            storage.close_best_effort_in_place();
+            drop(storage);
         }
-        self.storage.close_best_effort_in_place();
+        if self.committed {
+            self.mgr
+                .write_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
         // Release writer token
         let _ = self.mgr.writer_tokens.0.send(());
     }
