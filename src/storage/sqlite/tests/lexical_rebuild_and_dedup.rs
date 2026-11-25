@@ -1392,6 +1392,24 @@ fn list_conversation_footprints_for_lexical_rebuild_tolerates_legacy_search_demo
         );
     }
 
+    let rebuild_err = FrankenStorage::open_readonly(&staged_db)
+        .err()
+        .expect("unstamped legacy fixture must be refused by schema-v1 open_readonly");
+    assert!(
+        rebuild_err.downcast_ref::<SchemaRebuildRequired>().is_some(),
+        "expected SchemaRebuildRequired, got {rebuild_err:#}"
+    );
+
+    let stamp_conn =
+        crate::franken_sync::Connection::open(staged_db.to_string_lossy().into_owned()).unwrap();
+    stamp_conn
+        .execute_batch(
+            "PRAGMA application_id = 1128354643;
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+    stamp_conn.close().unwrap();
+
     let storage = FrankenStorage::open_readonly(&staged_db).unwrap();
 
     let footprints = storage
