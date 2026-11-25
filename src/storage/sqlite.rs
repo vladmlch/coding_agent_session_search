@@ -33,19 +33,21 @@ mod embeddings_and_daily_stats;
 mod forget_and_dedup;
 mod fts_parity_and_repair;
 mod fts_rebuild;
-mod historical_salvage;
 mod lexical_rebuild;
 mod omp_and_semantic_meta;
+mod open;
 mod open_and_locks;
 mod orphan_fk_cleanup;
 mod reconcile_and_codebuff;
-mod schema_migrations;
-mod schema_repair;
+mod schema_v1;
 mod source_and_historical_import;
 mod storage_core;
 mod tx_analytics_rollups;
 mod tx_conversation_insert;
 mod tx_message_insert;
+
+pub use open::SchemaRebuildRequired;
+pub use schema_v1::BASELINE_SCHEMA_V1_SQL;
 
 pub use connection_pool::{
     ConnectionManagerConfig, FrankenConnectionManager, FrankenOwnerConnection, LazyDbError,
@@ -66,9 +68,7 @@ pub(crate) use open_and_locks::{
     set_message_lookup_trace_enabled, sleep_with_franken_retry_backoff,
 };
 #[cfg(test)]
-pub(crate) use open_and_locks::{
-    attempt_dirty_wal_recovery_checkpoint, retry_transient_storage_op,
-};
+pub(crate) use open_and_locks::retry_transient_storage_op;
 
 pub use backup_and_integrity::{
     ConnectorScanState, DatabaseBundleMoveResult, FTS_MESSAGES_CORRUPTION_RECOVERY_HINT,
@@ -119,7 +119,7 @@ pub(crate) use storage_core::close_franken_in_place_with_busy_retry;
 pub(crate) use storage_core::error_message_indicates_populated_fts_shadow_without_rowid_reload;
 pub use storage_core::{FrankenStorage, SqliteStorage};
 
-pub use schema_repair::active_schema_migration_versions;
+pub use omp_and_semantic_meta::active_schema_migration_versions;
 
 pub use reconcile_and_codebuff::{InsertOutcome, SourceIngestLedgerEntry};
 
