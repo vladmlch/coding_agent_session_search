@@ -598,7 +598,7 @@ mod tests {
             BASELINE_SCHEMA_V1_SQL
                 .matches("idx_messages_conv_idx")
                 .count(),
-            2, // index name + its comment mention
+            1,
             "idx_messages_conv_idx must be declared exactly once"
         );
     }
@@ -606,9 +606,9 @@ mod tests {
     #[test]
     fn baseline_executes_and_delete_trigger_works_with_contentless_delete() {
         let conn = FrankenConnection::open(":memory:").expect("open memory db");
-        conn.execute(BASELINE_SCHEMA_V1_SQL)
+        conn.execute_batch(BASELINE_SCHEMA_V1_SQL)
             .expect("baseline DDL must execute cleanly");
-        conn.execute(
+        conn.execute_batch(
             "INSERT INTO agents (id, slug, name, kind, created_at, updated_at)
              VALUES (1, 'codex', 'Codex', 'local', 1, 1);
              INSERT INTO conversations (id, agent_id, source_path)

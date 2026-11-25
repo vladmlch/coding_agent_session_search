@@ -327,7 +327,7 @@ pub(crate) fn initialize_schema_v1(conn: &FrankenConnection) -> Result<()> {
             .with_context(|| "stamping application_id for schema v1")?;
         conn.execute(&format!("PRAGMA user_version = {SCHEMA_V1_USER_VERSION};"))
             .with_context(|| "stamping user_version for schema v1")?;
-        conn.execute(BASELINE_SCHEMA_V1_SQL)
+        conn.execute_batch(BASELINE_SCHEMA_V1_SQL)
             .with_context(|| "creating baseline schema v1")?;
         Ok(())
     })();
