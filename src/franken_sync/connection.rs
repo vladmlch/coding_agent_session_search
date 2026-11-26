@@ -319,6 +319,41 @@ impl Connection {
         )
     }
 
+    /// Open an existing database read-only while recovering `-shm` wal-index in
+    /// place (`SQLITE_OPEN_READ_WRITE | SQLITE_OPEN_NO_MUTEX` so
+    /// `unixShmNode.isReadonly == 0`, immediately latched with
+    /// `PRAGMA query_only = 1` + `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE = true` and
+    /// `is_readonly = true`). Zero writes occur on `.db` or `-wal`.
+    pub(crate) fn open_readonly_recovering_wal_index_in_place(
+        path: impl AsRef<str>,
+    ) -> Result<Self, FrankenError> {
+        let path = path.as_ref();
+        check_connection_admission()?;
+        let pre_reg = LivePreRegistration::acquire_for_path(
+            path,
+            None,
+            Some(compat::OpenFlags::SQLITE_OPEN_READ_ONLY | compat::OpenFlags::SQLITE_OPEN_NO_MUTEX),
+        )?;
+        let rw_flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let inner = rusqlite::Connection::open_with_flags(path, rw_flags)
+            .map_err(|error| FrankenError::from_rusqlite(error, Some(Path::new(path))))?;
+        let _ = inner.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true);
+        inner
+            .execute_batch("PRAGMA query_only = 1;")
+            .map_err(|error| FrankenError::from_rusqlite(error, Some(Path::new(path))))?;
+        inner
+            .query_row("PRAGMA schema_version;", [], |row| row.get::<usize, i64>(0))
+            .map_err(|error| FrankenError::from_rusqlite(error, Some(Path::new(path))))?;
+        Ok(Self::from_parts(
+            inner,
+            Some(PathBuf::from(path)),
+            pre_reg,
+            None,
+            true,
+        ))
+    }
+
     /// Historical alias preserved for callers referencing the
     /// `open_existing_schema_only...` variants.
     pub fn open_existing(path: impl AsRef<str>) -> Result<Self, FrankenError> {

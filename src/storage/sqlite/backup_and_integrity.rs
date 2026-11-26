@@ -745,7 +745,7 @@ fn vacuum_into_backup_stage(
 pub(super) fn backup_vacuum_error_requires_consistent_retry(
     err: &crate::franken_sync::FrankenError,
 ) -> bool {
-    retryable_franken_error(err)
+    retryable_franken_error(err) || matches!(err, crate::franken_sync::FrankenError::BusyRecovery)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

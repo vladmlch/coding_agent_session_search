@@ -859,6 +859,36 @@ impl FrankenStorage {
         Ok(storage)
     }
 
+    /// Open read-only while recovering `-shm` wal-index in place (under held
+    /// archive write ownership / doctor lock) without mutating `.db` or `-wal`.
+    pub(crate) fn open_readonly_recovering_wal_index_in_place(path: &Path) -> Result<Self> {
+        let path_str = path.to_string_lossy().to_string();
+        let _doctor_guard =
+            acquire_doctor_mutation_db_open_guard(path, DOCTOR_MUTATION_DB_OPEN_LOCK_TIMEOUT)?;
+        match archive_disposition_with_doctor_guard(path, &_doctor_guard)? {
+            ArchiveDisposition::Current => {}
+            ArchiveDisposition::Uninitialized => {
+                return Err(anyhow!("Database not found at {}", path.display()));
+            }
+        }
+        let conn = retry_transient_storage_op(
+            "open_readonly_recovering_wal_index_in_place",
+            || {
+                FrankenConnection::open_readonly_recovering_wal_index_in_place(&path_str)
+                    .map_err(anyhow::Error::new)
+            },
+        )
+        .with_context(|| {
+            format!(
+                "opening sqlite db readonly with in-place wal-index recovery at {}",
+                path.display()
+            )
+        })?;
+        let storage = Self::new(conn, path.to_path_buf());
+        storage.apply_readonly_config()?;
+        Ok(storage)
+    }
+
     /// Open an archive for a strict non-mutating read.
     ///
     /// This deliberately omits the ordinary read opener's WAL-index recovery

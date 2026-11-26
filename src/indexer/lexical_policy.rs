@@ -1181,7 +1181,8 @@ pub(in crate::indexer) fn open_readonly_rebuild_storage(
         Err(error) if readonly_rebuild_needs_archive_recovery(db_path, &error) => {
             before_recovery()?;
             let canonical_db_path = archive_lease::canonical_database_path(db_path)?;
-            FrankenStorage::open_readonly(&canonical_db_path).with_context(|| {
+            FrankenStorage::open_readonly_recovering_wal_index_in_place(&canonical_db_path)
+                .with_context(|| {
                 format!(
                     "opening canonical rebuild reader after admitted recovery for {} (strict read: {error:#})",
                     db_path.display()

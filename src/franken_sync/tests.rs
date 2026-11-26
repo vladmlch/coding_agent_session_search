@@ -1202,3 +1202,136 @@ use std::time::{Duration, Instant};
             .expect("writer must not hit SQLITE_READONLY");
         drop(ro);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_readonly_accepts_zero_byte_wal_with_sz_page_zero_shm() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("empty_wal_shm.db");
+        let db_str = db_path.to_string_lossy().into_owned();
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let shm_path = sidecar_path(&db_path, "-shm");
+
+        {
+            let rw = Connection::open(&db_str).expect("open rw");
+            rw.execute("PRAGMA journal_mode = WAL;").expect("wal");
+            rw.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (7);")
+                .expect("seed");
+            rw.close().expect("clean close");
+        }
+        // Simulate a 0-byte `-wal` + valid `sz_page=0, mx_frame=0` `-shm` written
+        // by C SQLite `walIndexRecover` on `nSize == 0`.
+        std::fs::write(&wal_path, &[]).expect("create 0-byte wal");
+        let mut shm = vec![0_u8; 32768];
+        shm[0..4].copy_from_slice(&3_007_000_u32.to_ne_bytes());
+        shm[12] = 1; // isInit
+        shm[13] = 0; // bigEndCksum
+        shm[14..16].copy_from_slice(&0_u16.to_ne_bytes()); // szPage = 0
+        shm[16..20].copy_from_slice(&0_u32.to_ne_bytes()); // mxFrame = 0
+        recompute_shm_checksums(&mut shm);
+        std::fs::write(&shm_path, &shm).expect("write zero-sz_page shm");
+
+        let strict = compat::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY;
+        let ro = compat::open_with_flags(&db_str, strict)
+            .expect("0-byte wal with szPage=0,mxFrame=0 shm must be valid");
+        assert_eq!(
+            ro.query_row("SELECT x FROM t")
+                .expect("read")
+                .get_typed::<i64>(0)
+                .unwrap(),
+            7
+        );
+    }
+
+    #[test]
+    fn recovery_readonly_succeeds_while_live_writer_has_no_wal_sidecars_yet() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("live_wal_no_sidecars.db");
+        let db_str = db_path.to_string_lossy().into_owned();
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let shm_path = sidecar_path(&db_path, "-shm");
+
+        {
+            let seed = Connection::open(&db_str).expect("seed open");
+            seed.execute("PRAGMA journal_mode = WAL;").expect("wal");
+            seed.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (5);")
+                .expect("seed");
+            seed.close().expect("clean close");
+        }
+        assert!(!wal_path.exists());
+        assert!(!shm_path.exists());
+
+        let live_rw = Connection::open(&db_str).expect("reopen live rw");
+        let ro = Connection::open_schema_only_with_wal_index_recovery(&db_str)
+            .expect("live RW handle with !wal && !shm must allow in-place recovery ro");
+        assert_eq!(
+            ro.query_row("SELECT x FROM t")
+                .expect("read")
+                .get_typed::<i64>(0)
+                .unwrap(),
+            5
+        );
+        drop(ro);
+        live_rw
+            .execute_batch("BEGIN IMMEDIATE; INSERT INTO t VALUES (6); COMMIT;")
+            .expect("live writer remains writable");
+    }
+
+    #[test]
+    fn in_place_wal_index_recovery_fixes_missing_shm_without_mutating_db_or_wal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("recover_shm_inplace.db");
+        let db_str = db_path.to_string_lossy().into_owned();
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let shm_path = sidecar_path(&db_path, "-shm");
+
+        {
+            let rw = Connection::open(&db_str).expect("open rw");
+            rw.execute("PRAGMA journal_mode = WAL;").expect("wal");
+            rw.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (21);")
+                .expect("seed");
+            rw.close_without_checkpoint().expect("preserve wal");
+        }
+        std::fs::remove_file(&shm_path).expect("remove shm");
+        let main_before = std::fs::read(&db_path).expect("main before");
+        let wal_before = std::fs::read(&wal_path).expect("wal before");
+
+        let recovered = Connection::open_readonly_recovering_wal_index_in_place(&db_str)
+            .expect("recover shm in place");
+        assert_eq!(
+            recovered
+                .query_row("SELECT x FROM t")
+                .expect("read")
+                .get_typed::<i64>(0)
+                .unwrap(),
+            21
+        );
+        assert!(
+            recovered.execute("INSERT INTO t VALUES (99);").is_err(),
+            "in-place recovery handle must stay query_only"
+        );
+        drop(recovered);
+
+        assert_eq!(std::fs::read(&db_path).expect("main after"), main_before);
+        assert_eq!(std::fs::read(&wal_path).expect("wal after"), wal_before);
+        assert!(shm_path.exists(), "-shm must be recovered in place");
+
+        let strict = compat::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY;
+        let strict_ro =
+            compat::open_with_flags(&db_str, strict).expect("strict readonly after shm recovery");
+        assert_eq!(
+            strict_ro
+                .query_row("SELECT x FROM t")
+                .expect("strict read")
+                .get_typed::<i64>(0)
+                .unwrap(),
+            21
+        );
+        drop(strict_ro);
+
+        let rw2 = Connection::open(&db_str).expect("writer after in-place shm recovery");
+        rw2.execute_batch("BEGIN IMMEDIATE; INSERT INTO t VALUES (22); COMMIT;")
+            .expect("writer must not hit SQLITE_READONLY");
+    }
