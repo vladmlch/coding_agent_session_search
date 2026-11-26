@@ -24,34 +24,31 @@ impl FrankenStorage {
     /// #368 defect 3: rebuild the canonical FTS5 shadow by DROPPING the
     /// (possibly structurally corrupt) shadow and recreating it fresh from
     /// canonical rows, rather than the DELETE-based clear in
-    /// [`Self::rebuild_fts_via_frankensqlite`], which routes through the FTS5
-    /// vtab update path and hydrates the corrupt `%_data`.
+    /// [`Self::rebuild_fts_native`], which routes through the FTS5
+    /// vtab update path and reads the corrupt `%_data`.
     ///
     /// For the corrupt-`%_data` case this must be called on a connection
     /// opened via [`Self::open_deferred_fts5_for_repair`], so the corrupt
-    /// shadow was never read at open. [`Self::rebuild_fts_via_frankensqlite`]
+    /// shadow was never read at open. [`Self::rebuild_fts_native`]
     /// also routes here from ordinarily opened connections when the surviving
     /// `fts_messages` CREATE is not cass's canonical contentless registration
     /// (legacy or stale-duplicate catalog rows): the open already succeeded
     /// there, and DROP TABLE removes every same-named catalog row, which the
-    /// in-place DELETE path cannot. The FTS5 vtab's destructor is a no-op that never reads
-    /// `%_data`, and its backing shadow tables are plain, so `DROP TABLE`
-    /// removes the corrupt structure without decoding it. Canonical rows are
-    /// never modified. NOT fully failure-atomic: the drop+recreate runs in
-    /// autocommit (frankensqlite cannot recreate a virtual table in the same
-    /// transaction as its DROP), so only the repopulate is transactional — a
-    /// failed repopulate leaves an EMPTY (not corrupt) shadow, and re-running
-    /// the repair is safe because the shadow is fully derived from canonical.
+    /// in-place clear path cannot. The FTS5 vtab's destructor is a no-op that
+    /// never reads `%_data`, and its backing shadow tables are plain, so
+    /// `DROP TABLE` removes the corrupt structure without decoding it.
+    /// Canonical rows are never modified. The drop+recreate runs in
+    /// autocommit and only the repopulate is transactional — a failed
+    /// repopulate leaves an EMPTY (not corrupt) shadow, and re-running the
+    /// repair is safe because the shadow is fully derived from canonical.
     pub(crate) fn rebuild_fts_shadow_via_drop_recreate(&self) -> Result<usize> {
         self.invalidate_fts_messages_present_cache();
 
-        // Drop + recreate the shadow in autocommit: frankensqlite does not
-        // support recreating a virtual table in the SAME transaction as its
-        // DROP. The corrupt shadow is replaced by a fresh empty one here; the
-        // repopulate below is transactional. Full failure-atomicity (preserving
-        // the ORIGINAL) has no value in this path because the original shadow is
-        // corrupt — if the repopulate fails, the shadow is empty (not corrupt)
-        // and re-running the repair is safe, since it is fully derived from
+        // Drop + recreate the shadow in autocommit; the repopulate below is
+        // transactional. Full failure-atomicity (preserving the ORIGINAL) has
+        // no value in this path because the original shadow is corrupt — if
+        // the repopulate fails, the shadow is empty (not corrupt) and
+        // re-running the repair is safe, since it is fully derived from
         // canonical rows.
         self.conn
             .execute("DROP TABLE IF EXISTS fts_messages")
@@ -65,8 +62,11 @@ impl FrankenStorage {
             .execute_batch("BEGIN IMMEDIATE TRANSACTION;")
             .with_context(|| "starting the corrupt-FTS shadow repopulate transaction")?;
         let repopulate = (|| -> Result<usize> {
-            let inserted_rows = self.stream_fts_rows_via_frankensqlite(false)?;
+            let inserted_rows = self.stream_fts_rows(false)?;
             self.require_healthy_fts_parity("corrupt-FTS drop+recreate rebuild")?;
+            self.conn
+                .execute("INSERT INTO fts_messages(fts_messages) VALUES('integrity-check')")
+                .with_context(|| "verifying corrupt-FTS drop+recreate FTS5 integrity")?;
             self.record_fts_franken_rebuild_generation()?;
             self.conn
                 .execute_batch("COMMIT;")
@@ -101,13 +101,8 @@ impl FrankenStorage {
     /// the current reader rejects, wedging every ingest that touched it; it
     /// also cannot take the transactional DELETE rebuild),
     /// or a stale duplicate row left behind by an interrupted legacy
-    /// migration. FrankenSQLite 0.1.19 keeps such a duplicate visible when
-    /// the canonical `fts_messages_content` shadow table exists on disk, and
-    /// its schema reload resolves the surviving DDL last-row-wins — so a
-    /// non-contentless row can shadow canonically persisted contentless
-    /// state, and rows written through one connection's view are invisible
-    /// to the next open (content lands in `%_data`/`%_docsize` while the
-    /// reader hydrates from the empty `%_content`).
+    /// migration. Keep such non-canonical rows off the in-place rebuild path so
+    /// writes and reads never split across divergent shadow schemas.
     pub(super) fn fts_messages_schema_is_canonical_contentless(&self) -> Result<bool> {
         let mut saw_row = false;
         let mut all_contentless = true;
@@ -136,20 +131,22 @@ impl FrankenStorage {
         Ok(saw_row && all_contentless)
     }
 
+    /// Compat wrapper retained for callers; delegates to [`Self::rebuild_fts_native`].
     pub(crate) fn rebuild_fts_via_frankensqlite(&self) -> Result<usize> {
+        self.rebuild_fts_native()
+    }
+
+    pub(super) fn rebuild_fts_native(&self) -> Result<usize> {
         self.invalidate_fts_messages_present_cache();
         let mut before = self
             .inspect_search_fallback_fts_parity()
             .with_context(|| "inspecting the published FTS shadow before atomic rebuild")?;
         // GH #495: residue (shadow tables surviving without a registration, or
         // a single registration cass never writes) cannot enter the atomic
-        // rebuild: a leftover `fts_messages_*` table makes the CREATE fail, and
-        // frankensqlite cannot recreate a virtual table in the transaction that
-        // drops it. Every direct caller (`rebuild_fts`, dedup, forget, the
-        // agent-exclusion purge, reset) previously reached a drop+recreate for
-        // the legacy-DDL shape, so remove the derived residue in autocommit and
-        // rebuild from an absent shadow. Only derived tables are dropped;
-        // canonical rows are never touched.
+        // rebuild: a leftover `fts_messages_*` table makes the CREATE fail.
+        // Remove the derived residue in autocommit and rebuild from an absent
+        // shadow. Only derived tables are dropped; canonical rows are never
+        // touched.
         if before.status == FtsShadowParityStatus::Residue {
             self.drop_fts_shadow_residue()
                 .with_context(|| "removing derived FTS residue before the rebuild")?;
@@ -221,8 +218,11 @@ impl FrankenStorage {
             #[cfg(test)]
             injected_fts_rebuild_interruption(1)?;
 
-            let inserted_rows = self.stream_fts_rows_via_frankensqlite(false)?;
+            let inserted_rows = self.stream_fts_rows(false)?;
             self.require_healthy_fts_parity("transactional FTS rebuild")?;
+            self.conn
+                .execute("INSERT INTO fts_messages(fts_messages) VALUES('integrity-check')")
+                .with_context(|| "verifying transactional FTS5 rebuild integrity")?;
             self.record_fts_franken_rebuild_generation()?;
             self.conn
                 .execute_batch("COMMIT;")
@@ -266,10 +266,10 @@ impl FrankenStorage {
     /// `cass index --full` path; this wrapper only reconciles the in-DB
     /// shadow that the dedup deletion left stale.
     pub fn rebuild_lexical_index_after_dedup(&self) -> Result<()> {
-        self.rebuild_fts_via_frankensqlite().map(|_| ())
+        self.rebuild_fts_native().map(|_| ())
     }
 
-    pub(super) fn stream_fts_rows_via_frankensqlite(&self, missing_only: bool) -> Result<usize> {
+    pub(super) fn stream_fts_rows(&self, missing_only: bool) -> Result<usize> {
         let batch_size = fts_rebuild_batch_size().max(1);
         let batch_limit = i64::try_from(batch_size).unwrap_or(i64::MAX);
         let mut total_inserted: usize = 0;
@@ -391,10 +391,9 @@ impl FrankenStorage {
                     anyhow::bail!(
                         "fallback FTS shadow maintenance stopped: a page of {fetched_count} rows \
                          took {:.1} s, over the {} s per-page budget \
-                         (CASS_FTS_REPAIR_PAGE_BUDGET_SECS); fsqlite's FTS5 does O(table) work \
-                         per statement on a shadow this size (GH #413, frankensqlite#405/#406). \
-                         {total_inserted} rows were streamed before stopping; the shadow stays \
-                         Partial and Quill lexical search is unaffected",
+                         (CASS_FTS_REPAIR_PAGE_BUDGET_SECS). {total_inserted} rows were streamed \
+                         before stopping; the shadow stays Partial and Quill lexical search is \
+                         unaffected",
                         page_elapsed.as_secs_f64(),
                         budget.as_secs()
                     );
@@ -597,17 +596,11 @@ impl FrankenStorage {
 
         // A rowid range is not bounded by `rows.len()`: imported archives can
         // have sparse message IDs, so MIN..MAX could materialize millions of
-        // unrelated docsize rows for a 5,000-row repair page. On fsqlite
-        // 0.2.1 the correct bounded shape is a chunked *bound IN-list*: the
-        // planner compiles one `SeekRowid` into the shadow per element with
-        // no rewind/residual scan (the plan tests pin this). The pre-0.2
-        // TEMP-driver join is no longer usable: at 0.2.1, join point-seeks
-        // into fts5 shadow tables silently drop sparse high rowids
-        // (probe-verified against a standalone fsqlite 0.2.1 binary), while
-        // IN-list point-seeks return them correctly. Work and memory stay
-        // O(page size) at one dispatch per `FTS_EXACT_ROWID_PROBE_CHUNK_SIZE`
-        // IDs; the ignored two-million-row regression below measures the
-        // complete page.
+        // unrelated docsize rows for a 5,000-row repair page. A chunked
+        // IN-list compiles to one `SeekRowid` into the shadow per element with
+        // no rewind/residual scan (the plan tests pin this). Work and memory
+        // stay O(page size) at one dispatch per
+        // `FTS_EXACT_ROWID_PROBE_CHUNK_SIZE` IDs.
         let mut existing = HashSet::with_capacity(rows.len());
         for chunk in rows.chunks(FTS_EXACT_ROWID_PROBE_CHUNK_SIZE) {
             let ids: Vec<i64> = chunk.iter().map(|row| row.message_id).collect();
@@ -685,23 +678,8 @@ impl FrankenStorage {
 // -------------------------------------------------------------------------
 
 /// Rows per FTS5 INSERT statement during db-resident `fts_messages`
-/// maintenance/rebuild. Each row binds 7 columns (rowid + 6 cols), and
-/// frankensqlite's `MAX_VARIABLE_NUMBER` is 32766, so the hard ceiling is
-/// 32766 / 7 = 4680 rows per statement; 4096 leaves margin (28672 params).
-///
-/// This value is performance-critical, NOT just a memory knob
-/// (`coding_agent_session_search-nhqw0` / gh #301): `fts_messages` is a
-/// contentless FTS5 table (`content=''`), which routes every INSERT through
-/// frankensqlite's `persist_rootpage_zero_fts5_shadow_rows` full-table
-/// re-encode (`build_pending_hash` re-tokenizes *all* rows). The cost of one
-/// INSERT is therefore O(rows-so-far) regardless of the statement's row count,
-/// so the total rebuild cost is (number of INSERT statements) × O(table). The
-/// old value of 100 fragmented a single ~512-row flush into ~6 statements and
-/// turned a multi-MB rebuild into ~120 whole-table re-encodes (O(N²)), which
-/// wedged `cass index --full` above ~15-30 MB of content. Issuing one large
-/// param-safe statement per flush collapses that to a handful of re-encodes.
-/// The asymptotic fix (incremental contentless persistence) is tracked in
-/// frankensqlite bd-sf8dx.
+/// maintenance/rebuild. Each row binds 3 columns (rowid, content, title),
+/// well below SQLite's default 32766 bind-variable limit (4096 * 3 = 12288).
 pub(super) const FTS5_BATCH_SIZE: usize = 4096;
 
 #[derive(Debug, Clone)]
@@ -770,11 +748,8 @@ impl FtsEntry {
 // Per-flush accumulation caps for the streaming FTS rebuild/maintenance paths.
 // A flush is emitted once either cap is hit, then handed to
 // `franken_batch_insert_fts_on_connection`, which splits it into
-// `FTS5_BATCH_SIZE`-row INSERT statements. Because each contentless-FTS INSERT
-// re-encodes the whole table (see `FTS5_BATCH_SIZE` above /
-// `coding_agent_session_search-nhqw0`), these caps must be large enough that a
-// flush is a single param-safe statement — keeping the doc cap at/under
-// `FTS5_BATCH_SIZE` means one flush == one INSERT == one re-encode. The
+// `FTS5_BATCH_SIZE`-row INSERT statements. Keeping the doc cap at/under
+// `FTS5_BATCH_SIZE` means one flush == one INSERT statement. The
 // historically named `MAX_CHARS` cap is intentionally measured with
 // `String::len()` / `LENGTH(CAST(... AS BLOB))`: it is a UTF-8 byte cap, not a
 // Unicode scalar count, and bounds message-body buffer memory.
@@ -819,10 +794,9 @@ pub(super) fn plan_fts_rebuild_message_page(
     })
 }
 
-/// Literal (not bound) rowid IN-list: on fsqlite 0.2.1 a literal IN-list
-/// compiles to one `SeekRowid` per element, while a bound-parameter IN-list
-/// still compiles to a full rewind + residual-filter scan of the shadow.
-/// Message rowids are `i64`, so inlining them is injection-safe.
+/// Literal (not bound) rowid IN-list so SQLite compiles one `SeekRowid` per
+/// element against `fts_messages_docsize`. Message rowids are `i64`, so
+/// inlining them is injection-safe.
 pub(super) fn fts_exact_rowid_probe_select_sql(ids: &[i64]) -> String {
     debug_assert!(!ids.is_empty() && ids.len() <= FTS_EXACT_ROWID_PROBE_CHUNK_SIZE);
     let mut sql = String::from("SELECT id FROM fts_messages_docsize WHERE id IN (");

@@ -32,7 +32,7 @@ impl FrankenStorage {
     /// canonical parity and the transaction commits. A process interruption
     /// rolls the create-or-clear operation and every insert back together.
     pub fn rebuild_fts(&self) -> Result<()> {
-        self.rebuild_fts_via_frankensqlite().map(|_| ())
+        self.rebuild_fts_native().map(|_| ())
     }
 
     /// Best-effort repair for the derived SQLite FTS fallback index.
@@ -40,7 +40,7 @@ impl FrankenStorage {
     /// The canonical archive and Tantivy index remain authoritative, so callers
     /// should invoke this from maintenance paths rather than ordinary opens.
     pub(crate) fn ensure_search_fallback_fts_consistency(&self) -> Result<FtsConsistencyRepair> {
-        self.ensure_fts_consistency_via_frankensqlite()
+        self.ensure_fts_consistency_native()
     }
 
     /// GH #413 follow-up: charge one inline shadow flush against this run's
@@ -63,9 +63,8 @@ impl FrankenStorage {
         let detail = format!(
             "inline fts_messages shadow writes suspended for this run: {spent_ms} ms spent \
              (last flush: {docs} docs in {elapsed_ms} ms) exceeded the {budget_secs} s budget \
-             (CASS_FTS_INLINE_BUDGET_SECS); fsqlite's FTS5 does O(table) work per statement \
-             on a shadow this size (GH #413, frankensqlite#405/#406). The shadow is behind \
-             until a repair; Quill lexical search is unaffected"
+             (CASS_FTS_INLINE_BUDGET_SECS). The shadow is behind until a repair; Quill lexical \
+             search is unaffected"
         );
         if self.suspend_fts_inline_writes(detail) {
             tracing::warn!(
@@ -126,10 +125,8 @@ impl FrankenStorage {
         Ok(rows > 0)
     }
 
-    /// GH #413 follow-up (iify0): may the derived shadow exist for this
-    /// archive's corpus? Reads only the catalog and `conversations`, so it is
-    /// safe before the first write on a fresh connection (the point at which
-    /// fsqlite would materialize a populated shadow in memory).
+    /// May the derived shadow exist for this archive's corpus? Reads only the
+    /// catalog and `conversations`, so it stays cheap before any write path.
     pub(crate) fn fts_shadow_viability(&self) -> Result<FtsShadowViability> {
         self.fts_shadow_viability_with_bound(fts_shadow_max_messages())
     }
@@ -303,15 +300,21 @@ impl FrankenStorage {
     }
 
     pub(crate) fn validate_fts_messages_integrity(&self) -> Result<()> {
-        validate_fts_messages_integrity_for_connection(&self.conn)
+        validate_fts_messages_integrity_for_connection(&self.conn)?;
+        let query_only: i64 = self
+            .conn
+            .query_row_map("PRAGMA query_only", fparams![], |row| row.get_typed(0))
+            .unwrap_or(0);
+        if query_only == 0 && self.fts_shadow_registered()? {
+            self.conn
+                .execute("INSERT INTO fts_messages(fts_messages) VALUES('integrity-check')")
+                .with_context(|| "running FTS5 integrity-check on fts_messages")?;
+        }
+        Ok(())
     }
 
-    /// GH #438: rewrite the `fts_messages` segments with the current writer.
-    /// fsqlite's FTS5 'optimize' merges every segment into one freshly written
-    /// segment, which is the in-place migration for segments written before
-    /// frankensqlite#404 (the format stock SQLite's validators reject even
-    /// though reads work). On an already optimized modern index it is a no-op
-    /// decided before any hydration. Parity cannot change: only derived
+    /// Rewrite and merge the `fts_messages` FTS5 segments into one optimized
+    /// segment via native FTS5 `'optimize'`. Parity cannot change: only derived
     /// segment storage is rewritten.
     pub(crate) fn optimize_fts_messages_segments(&self) -> Result<()> {
         self.conn
@@ -345,7 +348,7 @@ impl FrankenStorage {
                     archive_fingerprint.to_string()
                 ],
             )
-            .with_context(|| "recording frankensqlite FTS archive fingerprint")?;
+            .with_context(|| "recording fallback FTS archive fingerprint")?;
         Ok(())
     }
 
@@ -561,7 +564,7 @@ impl FrankenStorage {
                     FTS_FRANKEN_REBUILD_GENERATION.to_string()
                 ],
             )
-            .with_context(|| "recording frankensqlite FTS rebuild generation")?;
+            .with_context(|| "recording fallback FTS rebuild generation")?;
         Ok(())
     }
 
@@ -716,11 +719,9 @@ impl FrankenStorage {
 
     fn load_fts_conversation_id_set(&self) -> Result<HashSet<i64>> {
         self.conn
-            .query_map_collect(
-                "SELECT id FROM conversations NOT INDEXED",
-                fparams![],
-                |row| row.get_typed(0),
-            )
+            .query_map_collect("SELECT id FROM conversations", fparams![], |row| {
+                row.get_typed(0)
+            })
             .with_context(|| "loading bounded canonical conversation IDs for FTS parity")
             .map(|ids| ids.into_iter().collect())
     }
@@ -1038,7 +1039,7 @@ impl FrankenStorage {
                 before.status.as_str()
             );
         }
-        self.rebuild_fts_via_frankensqlite()
+        self.rebuild_fts_native()
     }
 
     /// Identify catalog shapes for which `_docsize` is not the complete
@@ -1123,13 +1124,13 @@ impl FrankenStorage {
         Ok(parity)
     }
 
-    fn ensure_fts_consistency_via_frankensqlite(&self) -> Result<FtsConsistencyRepair> {
+    fn ensure_fts_consistency_native(&self) -> Result<FtsConsistencyRepair> {
         if self.read_fts_franken_rebuild_generation()? == Some(FTS_FRANKEN_CONTENT_REVISION_PENDING)
         {
             if let Some(detail) = self.fts_shadow_recreate_refused()? {
                 anyhow::bail!("{detail}");
             }
-            let inserted_rows = self.rebuild_fts_via_frankensqlite()?;
+            let inserted_rows = self.rebuild_fts_native()?;
             return Ok(FtsConsistencyRepair::Rebuilt { inserted_rows });
         }
         let before = self.inspect_search_fallback_fts_parity()?;
@@ -1143,9 +1144,12 @@ impl FrankenStorage {
             }
             FtsShadowParityStatus::Partial => {
                 let inserted_rows = self
-                    .stream_fts_rows_via_frankensqlite(true)
-                    .with_context(|| "resuming missing FTS rows via frankensqlite")?;
+                    .stream_fts_rows(true)
+                    .with_context(|| "resuming missing FTS rows")?;
                 let after = self.require_healthy_fts_parity("resumable FTS catch-up")?;
+                self.conn
+                    .execute("INSERT INTO fts_messages(fts_messages) VALUES('integrity-check')")
+                    .with_context(|| "verifying FTS5 integrity after resumable catch-up")?;
                 self.record_fts_franken_rebuild_generation()?;
                 self.set_fts_messages_present_cache(true);
                 Ok(FtsConsistencyRepair::IncrementalCatchUp {
@@ -1181,7 +1185,7 @@ impl FrankenStorage {
                     anyhow::bail!("{detail}");
                 }
                 self.drop_fts_shadow_residue()?;
-                let inserted_rows = self.rebuild_fts_via_frankensqlite()?;
+                let inserted_rows = self.rebuild_fts_native()?;
                 self.require_healthy_fts_parity("residue-aware FTS recreation")?;
                 self.record_fts_franken_rebuild_generation()?;
                 self.set_fts_messages_present_cache(true);

@@ -39,8 +39,8 @@ pub struct EmbeddingJobRow {
 ///
 /// This intentionally omits `metadata_json` / `metadata_bin` and other bulky
 /// fields because Tantivy only needs the stable envelope plus provenance
-/// identifiers. Reading full metadata here can force frankensqlite to traverse
-/// large overflow chains before the first lexical checkpoint is committed.
+/// identifiers, avoiding large overflow-chain reads before the first lexical
+/// checkpoint is committed.
 #[derive(Debug, Clone)]
 pub struct LexicalRebuildConversationRow {
     pub id: Option<i64>,
@@ -203,8 +203,7 @@ pub(super) fn truncate_lexical_rebuild_message_content(messages: &mut [Message],
 
 impl FrankenStorage {
     /// Messages of one conversation, counted through `idx_messages_conv_idx`
-    /// where the schema has it: FrankenSQLite runs
-    /// `COUNT(*) ... WHERE conversation_id = ?` as a whole-table scan.
+    /// where the schema has it, avoiding a whole-table scan of `messages`.
     pub(super) fn conversation_message_count(&self, conversation_id: i64) -> Result<usize> {
         let indexed: bool = self
             .conn
@@ -250,12 +249,10 @@ impl FrankenStorage {
 
     /// List conversations with pagination.
     pub fn list_conversations(&self, limit: i64, offset: i64) -> Result<Vec<Conversation>> {
-        // Avoid the multi-table JOIN with LIMIT/OFFSET that triggers
-        // frankensqlite's materialization fallback (see c38edcd9, 860acb12).
-        // Use correlated subqueries for the tiny agents (~20 rows) and
-        // workspaces (~30 rows) lookup tables and degrade NULL agent_id to
-        // the same 'unknown' sentinel that 8a0c547c established for the
-        // lexical rebuild path.
+        // Avoid the multi-table JOIN with LIMIT/OFFSET by using correlated
+        // subqueries for the tiny agents (~20 rows) and workspaces (~30 rows)
+        // lookup tables, and degrade NULL agent_id to the same 'unknown'
+        // sentinel that 8a0c547c established for the lexical rebuild path.
         // Pre-v15 archives reached through no-migration lanes lack
         // conversation_tail_state; fall back to the parent ended_at there.
         let ended_at_projection = if self.conversation_tail_state_table_present() {
@@ -795,8 +792,7 @@ impl FrankenStorage {
         agent_slugs: &HashMap<i64, String>,
         workspace_paths: &HashMap<i64, PathBuf>,
     ) -> Result<Vec<LexicalRebuildConversationRow>> {
-        // Single-table query avoids the 3-table JOIN that triggers
-        // frankensqlite's full-materialization fallback path.
+        // Single-table query avoids the 3-table JOIN on the paged rebuild path.
         self.conn
             .query_map_collect(
                 &format!(
@@ -1206,13 +1202,11 @@ impl FrankenStorage {
     }
 
     /// Stream a conversation's lexical projections (optionally one inclusive
-    /// `idx` range) through FrankenSQLite's row callback instead of collecting
-    /// the complete result. SQL bounds each projected text cell by `cap`
+    /// `idx` range) through the row callback instead of collecting the
+    /// complete result. SQL bounds each projected text cell by `cap`
     /// Unicode scalar values and the callback applies the stricter per-message
     /// UTF-8 byte cap before handing the row on. `f` returns `false` to stop
     /// early; the return value says whether every row was visited.
-    /// FrankenSQLite can still transiently materialize a full non-ASCII source
-    /// cell until upstream issue #400 is fixed.
     pub(crate) fn for_each_lexical_rebuild_message<F>(
         &self,
         conversation_id: i64,
@@ -1222,10 +1216,9 @@ impl FrankenStorage {
     where
         F: FnMut(Message) -> Result<bool>,
     {
-        // FrankenSQLite's allocation-avoiding ASCII ColumnSubstrPrefix path
-        // requires a literal signed-32-bit prefix length. This value is parsed
-        // from our own numeric cap, never from SQL/user text, so embedding it
-        // cannot introduce SQL injection.
+        // `substr(content, 1, cap)` uses a literal signed-32-bit prefix
+        // length. This value is parsed from our own numeric cap, never from
+        // SQL/user text, so embedding it cannot introduce SQL injection.
         let cap = lexical_max_message_content_bytes().min(i32::MAX as usize);
         let range_clause = if idx_range.is_some() {
             " AND idx >= ?2 AND idx <= ?3"
@@ -1310,10 +1303,9 @@ impl FrankenStorage {
         let mut total_messages = 0usize;
         let mut total_content_bytes = 0usize;
 
-        // The apparent single-query shape (`WHERE conversation_id IN (...) ORDER BY ...`)
-        // is a bad frankensqlite plan for large live databases: it can
-        // materialize far more of `messages` than the requested conversations.
-        // Reuse the hinted per-conversation primary-key lookup instead.
+        // Reuse the hinted per-conversation primary-key lookup instead of a
+        // broad `WHERE conversation_id IN (...) ORDER BY ...` query on large
+        // live databases.
         for conversation_id in conversation_ids {
             if !fetched_conversation_ids.insert(*conversation_id) {
                 continue;
