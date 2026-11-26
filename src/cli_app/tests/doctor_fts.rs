@@ -8,8 +8,8 @@ mod doctor_fts_tests {
     fn create_search_schema(
         conn: &crate::franken_sync::Connection,
     ) -> Result<(), crate::franken_sync::FrankenError> {
-        // BEGIN/COMMIT keeps the fixture schema atomic so a transient
-        // fsqlite-0.3.x BusySnapshot abort can be retried wholesale.
+        // BEGIN/COMMIT keeps the fixture schema atomic so transient
+        // lock contention can be retried wholesale.
         conn.execute_batch(
             "BEGIN;
              CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE);
@@ -35,7 +35,7 @@ mod doctor_fts_tests {
     }
 
     #[test]
-    fn doctor_fts_probe_accepts_frankensqlite_fts_table() -> Result<(), Box<dyn std::error::Error>>
+    fn doctor_fts_probe_accepts_sqlite_fts_table() -> Result<(), Box<dyn std::error::Error>>
     {
         let temp_dir = tempfile::TempDir::new()?;
         let db_path = temp_dir.path().join("legacy-fts.db");
@@ -43,7 +43,7 @@ mod doctor_fts_tests {
         let conn = crate::franken_sync::Connection::open(db_path.to_string_lossy().as_ref())?;
         // create_search_schema is IF-NOT-EXISTS idempotent and the fixture
         // batch below is BEGIN/COMMIT-atomic, so both survive a bounded retry
-        // of the transient fsqlite-0.3.x BusySnapshot flake (stale registry
+        // of transient lock contention (stale registry
         // state after tempdir inode reuse).
         crate::storage::sqlite::retry_transient_storage_op("doctor_fts_fixture_schema", || {
             create_search_schema(&conn).map_err(anyhow::Error::new)
@@ -76,7 +76,7 @@ mod doctor_fts_tests {
         let state = probe_doctor_fts_table(&conn);
         assert!(
             matches!(state, DoctorFtsTableState::QueryableViaFrankensqlite),
-            "frankensqlite FTS table should be accepted by doctor: {state:?}"
+            "SQLite FTS table should be accepted by doctor: {state:?}"
         );
 
         Ok(())

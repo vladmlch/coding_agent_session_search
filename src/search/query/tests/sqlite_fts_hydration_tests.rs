@@ -1,4 +1,3 @@
-use super::super::sqlite_hydration::SearchSqliteConnectionExt;
 use super::super::*;
 use super::helpers::*;
 use crate::connectors::{NormalizedConversation, NormalizedMessage};
@@ -465,7 +464,7 @@ fn sqlite_guard_does_not_repair_fts_when_generation_key_stale() -> Result<()> {
         .context("count schema rows before generation key deletion")?;
 
     // Simulate a stale generation by deleting the rebuild marker.
-    // This is the condition ensure_fts_consistency_via_frankensqlite
+    // This is the condition ensure_fts_consistency
     // detects to trigger a full FTS rebuild.
     {
         let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())?;
@@ -552,7 +551,9 @@ fn gh395_browse_by_date_hydrates_one_lazy_connection_from_multiple_workers() -> 
     {
         let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())?;
         conn.execute_batch(
-            "CREATE TABLE sources (id TEXT PRIMARY KEY, kind TEXT NOT NULL);
+            "PRAGMA application_id = 0x43415353;
+             PRAGMA user_version = 1;
+             CREATE TABLE sources (id TEXT PRIMARY KEY, kind TEXT NOT NULL);
              CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT NOT NULL);
              CREATE TABLE workspaces (id INTEGER PRIMARY KEY, path TEXT NOT NULL);
              CREATE TABLE conversations (
@@ -691,9 +692,20 @@ fn sqlite_fts_fallback_ignores_metadata_only_terms() -> Result<()> {
 
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("metadata-only-fallback.db");
-    let storage = FrankenStorage::open(&db_path)?;
-    storage.ensure_search_fallback_fts_consistency()?;
-    let conn = storage.raw();
+    let conn = FrankenConnection::open(db_path.to_string_lossy().as_ref())?;
+    conn.execute_batch(
+        "PRAGMA application_id = 0x43415353;
+         PRAGMA user_version = 1;
+         CREATE VIRTUAL TABLE fts_messages USING fts5(
+             content,
+             title,
+             agent,
+             workspace,
+             source_path,
+             created_at UNINDEXED,
+             tokenize='porter'
+         );",
+    )?;
     let seed = |rowid: i64, content: &str, title: &str, agent: &str, ws: &str, src: &str| {
         conn.execute_compat(
             "INSERT INTO fts_messages(rowid, content, title, agent, workspace, source_path, created_at)
@@ -738,7 +750,7 @@ fn sqlite_fts_fallback_ignores_metadata_only_terms() -> Result<()> {
     )?;
 
     let transpiled = transpile_to_fts5("zebraterm").expect("transpiled query");
-    if let Some(count) = fts_match_count(conn, transpiled.as_str())? {
+    if let Some(count) = fts_match_count(&conn, transpiled.as_str())? {
         assert_eq!(
             count, 2,
             "only the content/title rows may match; metadata-only text is not query text"
@@ -746,7 +758,7 @@ fn sqlite_fts_fallback_ignores_metadata_only_terms() -> Result<()> {
     }
     // Control: a term nowhere in the table matches nothing.
     let absent = transpile_to_fts5("quokkaterm").expect("transpiled query");
-    if let Some(count) = fts_match_count(conn, absent.as_str())? {
+    if let Some(count) = fts_match_count(&conn, absent.as_str())? {
         assert_eq!(count, 0);
     }
     Ok(())
@@ -813,8 +825,8 @@ fn sqlite_path_rusqlite_fallback_matches_hyphenated_ids_with_workspace_filter() 
 
     {
         let storage = FrankenStorage::open(&db_path)?;
-        // V14 drops fts_messages during migration — run the lazy repair
-        // so the direct INSERT INTO fts_messages below can land.
+        // Ensure the FTS shadow table is initialized so the direct
+        // INSERT INTO fts_messages below can land.
         storage.ensure_search_fallback_fts_consistency()?;
         let conn = storage.raw();
         conn.execute(
@@ -840,29 +852,21 @@ fn sqlite_path_rusqlite_fallback_matches_hyphenated_ids_with_workspace_filter() 
              VALUES(12, 2, 0, 'user', 'Need follow-up on br-123 user report', 101)",
         )?;
         conn.execute_compat(
-            "INSERT INTO fts_messages(rowid, content, title, agent, workspace, source_path, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO fts_messages(rowid, content, title)
+             VALUES(?1, ?2, ?3)",
             &[
                 ParamValue::from(11_i64),
                 ParamValue::from("Need follow-up on br-123 root cause"),
                 ParamValue::from("alpha bead"),
-                ParamValue::from("codex"),
-                ParamValue::from("/ws/alpha"),
-                ParamValue::from("/tmp/alpha.jsonl"),
-                ParamValue::from(100_i64),
             ],
         )?;
         conn.execute_compat(
-            "INSERT INTO fts_messages(rowid, content, title, agent, workspace, source_path, created_at)
-             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO fts_messages(rowid, content, title)
+             VALUES(?1, ?2, ?3)",
             &[
                 ParamValue::from(12_i64),
                 ParamValue::from("Need follow-up on br-123 user report"),
                 ParamValue::from("beta bead"),
-                ParamValue::from("codex"),
-                ParamValue::from("/ws/beta"),
-                ParamValue::from("/tmp/beta.jsonl"),
-                ParamValue::from(101_i64),
             ],
         )?;
         let preclose_total_rows: i64 =
@@ -1126,7 +1130,7 @@ fn sqlite_fts5_hydration_chunks_stay_below_bind_variable_limit() {
     );
     assert!(
         unchunked_sql.matches('?').count() > SQLITE_MAX_VARIABLE_NUMBER,
-        "the pre-fix one-shot hydration query would exceed frankensqlite's bind limit"
+        "the pre-fix one-shot hydration query would exceed SQLite's bind limit"
     );
 
     let ranked_rows: Vec<(i64, f64)> = (0..(SQLITE_FTS5_HYDRATE_PARAM_CHUNK + 17))
@@ -1145,7 +1149,7 @@ fn sqlite_fts5_hydration_chunks_stay_below_bind_variable_limit() {
         chunk_sizes
             .iter()
             .all(|chunk_size| *chunk_size <= SQLITE_MAX_VARIABLE_NUMBER),
-        "every hydration chunk must fit under frankensqlite's bind-variable ceiling"
+        "every hydration chunk must fit under SQLite's bind-variable ceiling"
     );
 }
 

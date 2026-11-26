@@ -1250,7 +1250,7 @@ mod stall_diagnostics_tests {
 
     /// Regression for #319/#321: the post-publish finalize WAL checkpoint of a
     /// large deferred bulk-ingest WAL runs as a synchronous, `!Send`
-    /// frankensqlite call on the indexer thread (inside
+    /// SQLite call on the indexer thread (inside
     /// `close_storage_after_index`). It cannot advance the progress atomics, so
     /// it looks exactly like a #297 finalize wedge — phase 0, `current == total`,
     /// pipeline quiescent — while the process is actually alive and checkpointing

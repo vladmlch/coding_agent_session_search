@@ -481,7 +481,9 @@ mod legacy_source_filter_tests {
         let db_path = tmp.path().join("agent_search.db");
         let shared_path = PathBuf::from("/legacy/shared/session.jsonl");
 
-        with_frankensqlite_connection(&db_path, "legacy source test", |conn| {
+        with_sqlite_connection(&db_path, "legacy source test", |conn| {
+            conn.execute("PRAGMA application_id = 0x43415353;")?;
+            conn.execute("PRAGMA user_version = 1;")?;
             conn.execute("PRAGMA journal_mode = WAL;")?;
             conn.execute("CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT NOT NULL);")?;
             conn.execute(
@@ -619,7 +621,9 @@ mod legacy_source_filter_tests {
         for unique_index in [true, false] {
             let tmp = TempDir::new().expect("temp dir");
             let db_path = tmp.path().join("agent_search.db");
-            with_frankensqlite_connection(&db_path, "stats source rows test", |conn| {
+            with_sqlite_connection(&db_path, "stats source rows test", |conn| {
+                conn.execute("PRAGMA application_id = 0x43415353;")?;
+                conn.execute("PRAGMA user_version = 1;")?;
                 conn.execute(
                     "CREATE TABLE conversations (id INTEGER PRIMARY KEY, source_id TEXT, origin_host TEXT)",
                 )?;
@@ -772,6 +776,12 @@ mod legacy_source_filter_tests {
         let path = tmp.path().join("stats.db");
         let writer = crate::franken_sync::Connection::open(path.to_string_lossy().into_owned())
             .expect("create archive");
+        writer
+            .execute("PRAGMA application_id = 0x43415353;")
+            .expect("application_id");
+        writer
+            .execute("PRAGMA user_version = 1;")
+            .expect("user_version");
         writer.execute("CREATE TABLE conversations (id INTEGER PRIMARY KEY, agent_id INTEGER, workspace_id INTEGER, source_id TEXT, origin_host TEXT, payload TEXT, started_at INTEGER)").expect("conversations");
         assert_fold_matches_sql(&writer);
         writer

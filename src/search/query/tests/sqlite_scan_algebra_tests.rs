@@ -1,4 +1,3 @@
-use super::super::sqlite_hydration::SearchSqliteConnectionExt;
 use super::super::*;
 use super::helpers::*;
 use crate::franken_sync::compat::RowExt;
@@ -900,7 +899,7 @@ fn sqlite_message_scan_pushes_all_filters_into_the_bounded_page() {
         session_paths: HashSet::from(["/tmp/session.jsonl".to_string()]),
     };
     let (sql, params) = SearchClient::sqlite_message_scan_query_sql(FieldMask::FULL, &filters, 7);
-    // The page must be a bare rowid range: FrankenSQLite full-scans a
+    // The page must be a bare rowid range: the query planner full-scans a
     // rowid range that shares its WHERE with anything else, which made
     // every page read the whole `messages` table.
     let page_end = sql

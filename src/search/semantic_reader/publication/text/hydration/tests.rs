@@ -203,7 +203,7 @@ fn budget_overflows_and_elapsed_requests_are_not_accepted() {
     assert_eq!(work.check(), Err(HydrationError::DeadlineExceeded));
 }
 
-// Real retained FSVI and real FrankenSQLite. The hash embedder is an explicit
+// Real retained FSVI and real SQLite. The hash embedder is an explicit
 // control producer: these are identity/ownership tests, not relevance evidence.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 mod retained {

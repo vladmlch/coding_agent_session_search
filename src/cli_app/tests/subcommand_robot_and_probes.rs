@@ -634,7 +634,7 @@ mod state_db_integrity_probe_tests {
 
     /// GH #413: once the physical bundle exceeds the explicit ceiling, the
     /// pre-index guard must stop after the fixed header read and never open
-    /// fsqlite. Namespace identity sidecars are a causal open marker.
+    /// SQLite. Namespace identity sidecars are a causal open marker.
     #[test]
     fn bounded_corruption_probe_does_not_open_large_archive() {
         use std::io::Write as _;
@@ -673,7 +673,7 @@ mod state_db_integrity_probe_tests {
             let sidecar = doctor_sqlite_sidecar_path(&db_path, suffix).expect("sidecar path");
             assert!(
                 !sidecar.exists(),
-                "large-archive guard opened fsqlite and created {}",
+                "large-archive guard opened SQLite and created {}",
                 sidecar.display()
             );
         }

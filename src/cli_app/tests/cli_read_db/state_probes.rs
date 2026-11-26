@@ -309,7 +309,7 @@ fn strict_open_error_message_is_truthful_about_the_503_legacy_shadow_catalog() {
     let legacy = anyhow::anyhow!(
         "database disk image is malformed: sqlite_master is missing implicit autoindex slot 1 for table `fts_messages_config`"
     )
-    .context("strictly opening dedicated-owner frankensqlite db readonly");
+    .context("strictly opening dedicated-owner SQLite db readonly");
     let message = state_db_strict_open_error_message(&db_path, "status", &legacy, false);
     assert!(
         message.contains("not the conversations or messages"),
@@ -824,7 +824,7 @@ fn index_result_counts_from_progress_only_uses_exact_totals() {
 }
 
 /// Regression for CASS #192: when `total_counts_exact` is false the code
-/// previously reopened the live DB through frankensqlite to collect
+/// previously reopened the live DB through SQLite to collect
 /// `SELECT COUNT(*)` values, which triggered `Connection::open ->
 /// reload_memdb_from_pager_with_mode` and advanced the DB fingerprint past
 /// the just-written lexical checkpoint. The post-#192 path derives counts

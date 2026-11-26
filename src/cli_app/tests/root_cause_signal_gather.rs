@@ -26,8 +26,8 @@ mod root_cause_signal_gather_tests {
     #[test]
     fn storage_integrity_fault_without_open_error_attributes_storage() {
         // #374 Issue 3: no /database/open_error, but the storage-integrity
-        // verdict reports a canonical-store fault — must still attribute to the
-        // frankensqlite-storage family instead of returning unknown.
+        // verdict reports a canonical-store fault — must still attribute to
+        // RootCauseFamily::FrankensqliteStorage instead of returning unknown.
         let state = serde_json::json!({
             "database": { "opened": true, "open_retryable": false }
         });
