@@ -163,7 +163,7 @@ pub(crate) fn doctor_candidate_reconstruct_archive_from_raw_mirror(
 ) -> std::result::Result<(usize, usize, Vec<String>, Vec<DoctorFsMutationReceipt>), String> {
     let storage = crate::storage::sqlite::SqliteStorage::open(candidate_db_path).map_err(|err| {
         format!(
-            "failed to initialize reconstructed candidate archive DB {} with frankensqlite storage: {err}",
+            "failed to initialize reconstructed candidate archive DB {} with SQLite storage: {err}",
             candidate_db_path.display()
         )
     })?;
@@ -717,7 +717,7 @@ pub(crate) fn build_doctor_reconstruct_candidate(
     report.parse_error_count = parse_errors.len();
 
     let (candidate_conversations, candidate_messages) =
-        match doctor_candidate_probe_frankensqlite(&candidate_db_path, &candidate_id) {
+        match doctor_candidate_probe_sqlite(&candidate_db_path, &candidate_id) {
             Ok((conversations, messages)) => {
                 report.frankensqlite_open_ok = true;
                 report.frankensqlite_write_ok = true;

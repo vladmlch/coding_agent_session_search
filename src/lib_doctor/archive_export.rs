@@ -799,10 +799,9 @@ pub(crate) fn doctor_archive_export_verify_target(
             }));
         }
     }
-    let frankensqlite_probe = if let Some(db_path) = db_probe_path {
-        match open_franken_with_flags(
+    let probe = if let Some(db_path) = db_probe_path {
+        match crate::franken_sync::Connection::open_schema_only_with_wal_index_recovery(
             db_path.to_string_lossy().as_ref(),
-            FrankenOpenFlags::SQLITE_OPEN_READ_ONLY,
         ) {
             Ok(conn) => {
                 let conversation_count = doctor_candidate_table_count(&conn, "conversations");
@@ -815,7 +814,7 @@ pub(crate) fn doctor_archive_export_verify_target(
             }
             Err(err) => {
                 issues.push(serde_json::json!({
-                    "kind": "frankensqlite_open_failed",
+                    "kind": "sqlite_open_failed",
                     "path": db_path.display().to_string(),
                     "message": err.to_string(),
                 }));
@@ -841,7 +840,7 @@ pub(crate) fn doctor_archive_export_verify_target(
         "checked_asset_count": checked_asset_count,
         "issue_count": issues.len(),
         "issues": issues,
-        "frankensqlite_probe": frankensqlite_probe,
+        "frankensqlite_probe": probe,
         "raw_mirror_manifest_count": manifest.get("raw_mirror_manifest_count").cloned().unwrap_or(serde_json::Value::Null),
         "backup_manifest_count": manifest.get("backup_manifest_count").cloned().unwrap_or(serde_json::Value::Null),
     })

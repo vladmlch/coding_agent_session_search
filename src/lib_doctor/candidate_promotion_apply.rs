@@ -345,7 +345,7 @@ pub(crate) fn promote_doctor_reconstruct_candidate_bundle(
         }
         if item.live_exists && !item.candidate_exists {
             // A live `-shm` without a candidate replacement is legitimate:
-            // the pinned frankensqlite's shm lifecycle creates one on any
+            // SQLite's shm lifecycle creates one on any
             // WAL-mode open, but shm is a transient shared-memory index that
             // SQLite rebuilds on the next open — a candidate bundle never
             // needs to ship one. The stale live copy is backed up and then
