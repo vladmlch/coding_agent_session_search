@@ -936,8 +936,11 @@ pub(super) fn normalized_conversation_for_storage<'a>(
 }
 
 impl FrankenStorage {
-    pub(super) fn ensure_source_for_conversation(&self, conv: &Conversation) -> Result<()> {
-        let source = normalized_source_for_conversation(conv);
+    fn ensure_normalized_source_for_conversation(
+        &self,
+        conv: &Conversation,
+        mut source: Source,
+    ) -> Result<()> {
         if is_bootstrap_local_source(&source) {
             // `open()` and schema repair always seed the canonical local source row.
             // Avoid an autocommit UPDATE on every local conversation insert.
@@ -947,21 +950,46 @@ impl FrankenStorage {
         if self.conversation_source_already_ensured(&cache_key) {
             return Ok(());
         }
-        if conversation_origin_kind(conv).is_none()
-            && let Some(existing) = self.get_source(source.id.as_str())?
-        {
-            // A conversation without explicit provenance cannot supersede the
-            // authoritative registry classification. This matters for legacy
-            // archive imports whose `sources` rows carry kind but whose older
-            // conversation metadata does not.
-            self.mark_conversation_source_ensured(EnsuredConversationSourceKey::from_source(
-                &existing,
-            ));
-            return Ok(());
+        if let Some(existing) = self.get_source(source.id.as_str())? {
+            if conversation_origin_kind(conv).is_none() {
+                // A conversation without explicit provenance cannot supersede the
+                // authoritative registry classification. This matters for legacy
+                // archive imports whose `sources` rows carry kind but whose older
+                // conversation metadata does not.
+                self.mark_conversation_source_ensured(EnsuredConversationSourceKey::from_source(
+                    &existing,
+                ));
+                return Ok(());
+            }
+            if source.machine_id.is_none() {
+                source.machine_id = existing.machine_id.clone();
+            }
+            if source.platform.is_none() {
+                source.platform = existing.platform.clone();
+            }
+            if source.config_json.is_none() {
+                source.config_json = existing.config_json.clone();
+            }
+            if source.kind == existing.kind
+                && source.host_label == existing.host_label
+                && source.machine_id == existing.machine_id
+                && source.platform == existing.platform
+                && source.config_json == existing.config_json
+            {
+                self.mark_conversation_source_ensured(EnsuredConversationSourceKey::from_source(
+                    &existing,
+                ));
+                return Ok(());
+            }
         }
         self.upsert_source(&source)?;
-        self.mark_conversation_source_ensured(cache_key);
+        self.mark_conversation_source_ensured(EnsuredConversationSourceKey::from_source(&source));
         Ok(())
+    }
+
+    pub(super) fn ensure_source_for_conversation(&self, conv: &Conversation) -> Result<()> {
+        let source = normalized_source_for_conversation(conv);
+        self.ensure_normalized_source_for_conversation(conv, source)
     }
 
     fn ensure_sources_for_batch(
@@ -972,21 +1000,7 @@ impl FrankenStorage {
         for &(_, _, conv) in conversations {
             let source = normalized_source_for_conversation(conv);
             if seen.insert(source.id.clone()) {
-                if is_bootstrap_local_source(&source) {
-                    continue;
-                }
-                if conversation_origin_kind(conv).is_none()
-                    && let Some(existing) = self.get_source(source.id.as_str())?
-                {
-                    self.mark_conversation_source_ensured(
-                        EnsuredConversationSourceKey::from_source(&existing),
-                    );
-                    continue;
-                }
-                self.upsert_source(&source)?;
-                self.mark_conversation_source_ensured(EnsuredConversationSourceKey::from_source(
-                    &source,
-                ));
+                self.ensure_normalized_source_for_conversation(conv, source)?;
             }
         }
         Ok(())

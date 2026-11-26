@@ -126,7 +126,8 @@ fn assert_golden(name: &str, actual: &str) {
              Expected: {}\n\
              Actual:   {}\n\n\
              diff the two files, then either fix the code or regenerate with:\n\
-             \tUPDATE_GOLDENS=1 cargo test --test golden_readiness",
+             \tUPDATE_GOLDENS=1 cargo test --test golden_readiness\n\n\
+             --- Expected ---\n{expected}\n--- Actual ---\n{actual}",
             golden_path.display(),
             actual_path.display(),
         );
