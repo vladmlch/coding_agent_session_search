@@ -22,7 +22,9 @@
 //!
 //! The schema and its dedicated read-only refinements live together here so
 //! doctor/status/search cannot drift into different classifications. Probe SQL
-//! uses bound parameters for variable values and adds no new rusqlite code.
+//! uses bound parameters for variable values and avoids raw `File::open` +
+//! `close` on live database inodes so in-process POSIX `fcntl` locks are never
+//! dropped.
 //! All enums serialize as snake_case, matching the readiness vocabulary; the
 //! associated root-cause family reuses
 //! [`crate::root_cause_taxonomy::RootCauseFamily`].
@@ -180,8 +182,8 @@ impl StorageState {
         }
     }
 
-    /// The root-cause family this state attributes to. Storage states are
-    /// frankensqlite-storage except the explicit deferred fallback.
+    /// The root-cause family this state attributes to. Storage states map to
+    /// `RootCauseFamily::FrankensqliteStorage` except the explicit deferred fallback.
     pub(crate) fn root_cause_family(self) -> RootCauseFamily {
         match self {
             Self::UnknownDeferred | Self::Unchecked => RootCauseFamily::Unknown,
@@ -467,12 +469,13 @@ pub(crate) fn build_readiness_storage_integrity(
 /// Run the dedicated, bounded, non-mutating probes that distinguish contention,
 /// schema drift, legacy interoperability, and suspect WAL/SHM sidecars.
 ///
-/// The schema leg queries a capped isolated snapshot instead of opening the
-/// canonical pager or a migration-aware storage wrapper. Main DB plus present
-/// sidecars must total at most 16 MiB; larger archives defer schema/legacy
-/// classification with an explicit skip reason. The contention leg inspects
-/// the native VFS reservation state without opening the pager or acquiring a
-/// transaction; neither leg changes canonical rows.
+/// The schema leg enforces the 16 MiB archive+sidecar size budget before
+/// opening through `franken_sync`'s non-mutating strict read-only opener
+/// (`open_schema_only_with_wal_index_recovery`), which never mutates the
+/// archive and never calls raw `File::open` + `close` on live inodes. The
+/// contention leg opens read-only with `readonly_shm=1` and `busy_timeout=0`
+/// so C SQLite checks locks through its inode table without mutating sidecars;
+/// neither leg changes canonical rows.
 /// That preserves the archive and lets an old but structurally openable schema
 /// be classified without upgrading it. Any open/query error is inspected by
 /// concrete `FrankenError` type; text and the generic CLI retryability flag
@@ -621,14 +624,14 @@ enum SchemaSnapshotProbe {
 const SCHEMA_SNAPSHOT_MAX_BYTES: u64 = 16 * 1024 * 1024;
 const SCHEMA_SNAPSHOT_OVERSIZED_REASON: &str = "isolated_snapshot_exceeds_16_mib_budget";
 
-/// Query schema metadata only on an isolated copy. FrankenSQLite's current
-/// pager-backed read-only open can perform WAL recovery while establishing a
-/// readable view, so opening the canonical pathname would violate the
-/// diagnostic contract even when the SQL itself is read-only.
+/// Query schema metadata without mutating the canonical archive or dropping
+/// in-process POSIX `fcntl` locks.
 ///
-/// Copying costs O(main DB + present sidecars) I/O. The caller's wait is
-/// bounded; a worker that reaches the deadline finishes and removes its temp
-/// snapshot in the background without ever opening the canonical pager.
+/// Archives larger than 16 MiB (main DB + sidecars) are deferred without
+/// opening. Smaller archives open on a bounded worker via
+/// `Connection::open_schema_only_with_wal_index_recovery`, which preserves
+/// live in-process locks and isolates any offline WAL-recovery snapshot in a
+/// private `TempDir`.
 fn probe_schema_state_from_isolated_snapshot(
     db_path: &std::path::Path,
     timeout: std::time::Duration,
@@ -659,52 +662,14 @@ fn inspect_schema_state_from_isolated_snapshot(
 ) -> SchemaSnapshotProbe {
     use crate::franken_sync::compat::{ConnectionExt as _, RowExt as _};
 
-    let snapshot_dir = match tempfile::Builder::new()
-        .prefix("cass-storage-schema-probe-")
-        .tempdir()
-    {
-        Ok(dir) => dir,
-        Err(_) => return SchemaSnapshotProbe::Unclassified,
-    };
-    let file_name = match db_path.file_name() {
-        Some(name) => name,
-        None => return SchemaSnapshotProbe::Unclassified,
-    };
-    let snapshot_db = snapshot_dir.path().join(file_name);
-    let mut copied_bytes = 0_u64;
-    match copy_snapshot_file_bounded(db_path, &snapshot_db, &mut copied_bytes) {
-        SnapshotCopyOutcome::Copied => {}
-        SnapshotCopyOutcome::Oversized => return SchemaSnapshotProbe::SkippedOversized,
-        SnapshotCopyOutcome::Failed => return SchemaSnapshotProbe::Unclassified,
-    }
-    for source in isolated_snapshot_sidecar_paths(db_path) {
-        let Ok(metadata) = std::fs::symlink_metadata(&source) else {
-            continue;
-        };
-        if !metadata.file_type().is_file() {
-            return SchemaSnapshotProbe::Unclassified;
-        }
-        let Some(name) = source.file_name() else {
-            return SchemaSnapshotProbe::Unclassified;
-        };
-        match copy_snapshot_file_bounded(
-            &source,
-            &snapshot_dir.path().join(name),
-            &mut copied_bytes,
-        ) {
-            SnapshotCopyOutcome::Copied => {}
-            SnapshotCopyOutcome::Oversized => return SchemaSnapshotProbe::SkippedOversized,
-            SnapshotCopyOutcome::Failed => return SchemaSnapshotProbe::Unclassified,
-        }
-    }
-
-    let mut conn = match crate::storage::sqlite::open_franken_raw_readonly_connection_with_timeout(
-        &snapshot_db,
-        timeout,
+    let path_str = db_path.to_string_lossy();
+    let mut conn = match crate::franken_sync::Connection::open_schema_only_with_wal_index_recovery(
+        path_str.as_ref(),
     ) {
         Ok(conn) => conn,
         Err(_) => return SchemaSnapshotProbe::Unclassified,
     };
+    let _ = conn.raw().busy_timeout(timeout);
     let table_count = conn.query_row_map(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'",
         &[],
@@ -784,60 +749,12 @@ fn isolated_snapshot_preflight_bytes(db_path: &std::path::Path) -> Result<u64, (
     Ok(total)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SnapshotCopyOutcome {
-    Copied,
-    Oversized,
-    Failed,
-}
-
-fn copy_snapshot_file_bounded(
-    source: &std::path::Path,
-    destination: &std::path::Path,
-    copied_bytes: &mut u64,
-) -> SnapshotCopyOutcome {
-    use std::io::{Read as _, Write as _};
-
-    let mut input = match std::fs::File::open(source) {
-        Ok(file) => file,
-        Err(_) => return SnapshotCopyOutcome::Failed,
-    };
-    let mut output = match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(destination)
-    {
-        Ok(file) => file,
-        Err(_) => return SnapshotCopyOutcome::Failed,
-    };
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = match input.read(&mut buffer) {
-            Ok(0) => return SnapshotCopyOutcome::Copied,
-            Ok(read) => read,
-            Err(_) => return SnapshotCopyOutcome::Failed,
-        };
-        let Ok(read_u64) = u64::try_from(read) else {
-            return SnapshotCopyOutcome::Failed;
-        };
-        let Some(next_total) = copied_bytes.checked_add(read_u64) else {
-            return SnapshotCopyOutcome::Oversized;
-        };
-        if next_total > SCHEMA_SNAPSHOT_MAX_BYTES {
-            return SnapshotCopyOutcome::Oversized;
-        }
-        if output.write_all(&buffer[..read]).is_err() {
-            return SnapshotCopyOutcome::Failed;
-        }
-        *copied_bytes = next_total;
-    }
-}
-
-/// Inspect the native VFS reservation state without acquiring a transaction or
-/// opening the pager. On Unix, `check_reserved_lock` delegates to `F_GETLK` on
-/// SQLite's reserved byte, so it neither changes the main file nor recovers or
-/// checkpoints sidecars. The work runs on a bounded thread because a storage
-/// diagnosis must never inherit an engine-level wait indefinitely.
+/// Inspect writer lock contention on `db_path` without mutating the database or
+/// its sidecars and without dropping in-process POSIX `fcntl` locks. On Unix,
+/// `inspect_native_writer_lock` opens read-only with `readonly_shm=1` and
+/// `busy_timeout=0` so C SQLite checks locks through its inode table. The work
+/// runs on a bounded thread because a storage diagnosis must never inherit an
+/// engine-level wait indefinitely.
 fn probe_writer_lock_state(
     db_path: &std::path::Path,
     timeout: std::time::Duration,
@@ -981,23 +898,16 @@ fn suffixed_db_path(db_path: &std::path::Path, suffix: &str) -> std::path::PathB
     db_path.with_file_name(name)
 }
 
-/// Check only the immutable SQLite file-header signature needed for sidecar
-/// attribution. This deliberately does not claim that the database is
-/// readable or passes integrity checks.
+/// Check only the SQLite file-header signature without opening raw
+/// descriptors on live in-process database inodes (preserving POSIX `fcntl`
+/// locks). This deliberately does not claim that the database is readable or
+/// passes integrity checks.
 fn sqlite_main_db_header_is_plausible(db_path: &std::path::Path) -> bool {
-    use std::io::Read as _;
-
-    let mut header = [0_u8; 18];
-    let mut file = match std::fs::File::open(db_path) {
-        Ok(file) => file,
-        Err(_) => return false,
-    };
-    if file.read_exact(&mut header).is_err() || !header.starts_with(b"SQLite format 3\0") {
-        return false;
+    match crate::franken_sync::probe_sqlite_header_stamp_safely(db_path) {
+        Ok(crate::franken_sync::SqliteHeaderStamp::Stamp { .. }) => true,
+        Ok(crate::franken_sync::SqliteHeaderStamp::NotSqlite) => false,
+        Err(err) => err.kind() == std::io::ErrorKind::WouldBlock,
     }
-    let raw_page_size = u16::from_be_bytes([header[16], header[17]]);
-    raw_page_size == 1
-        || ((512..=32_768).contains(&raw_page_size) && raw_page_size.is_power_of_two())
 }
 
 /// Require structural evidence before calling a WAL/SHM sidecar suspect.
@@ -1318,3 +1228,81 @@ fn serde_plain_label<T: Serialize>(value: T) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, unix))]
+mod lock_preservation_tests {
+    use super::probe_dedicated_storage_state;
+    use crate::franken_sync::Connection;
+    use std::path::Path;
+    use std::time::Duration;
+
+    #[test]
+    fn dedicated_probe_preserves_live_writer_posix_lock() {
+        const CHILD_ENV: &str = "CASS_TEST_STORAGE_INTEGRITY_LOCK_PROBE_DB";
+        const TEST_NAME: &str = "search::storage_integrity::lock_preservation_tests::dedicated_probe_preserves_live_writer_posix_lock";
+
+        if let Some(probe_db) = std::env::var_os(CHILD_ENV) {
+            let probe_str = probe_db.to_string_lossy().into_owned();
+            let probe = Connection::open(&probe_str).expect("child open");
+            probe
+                .execute("PRAGMA busy_timeout = 0")
+                .expect("child timeout");
+            match probe.execute("BEGIN IMMEDIATE") {
+                Ok(_) => {
+                    let _ = probe.execute_batch("ROLLBACK");
+                    println!("\nLOCK_PROBE=ACQUIRED");
+                }
+                Err(error) if error.is_busy_class() => {
+                    println!("\nLOCK_PROBE=HELD_BY_PARENT");
+                }
+                Err(error) => panic!("unexpected child lock probe error: {error:?}"),
+            }
+            return;
+        }
+
+        let probe_child = |db_path: &Path| -> String {
+            let output = std::process::Command::new(std::env::current_exe().expect("current_exe"))
+                .args(["--exact", TEST_NAME, "--test-threads=1", "--nocapture"])
+                .env(CHILD_ENV, db_path)
+                .output()
+                .expect("spawn lock probe child");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "child lock probe failed ({}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                output.status
+            );
+            stdout
+                .lines()
+                .find_map(|line| {
+                    line.split_once("LOCK_PROBE=")
+                        .and_then(|(_, rest)| rest.split_whitespace().next())
+                })
+                .map(str::to_owned)
+                .unwrap_or_else(|| panic!("missing LOCK_PROBE line in stdout:\n{stdout}"))
+        };
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("agent_search.db");
+        let storage = crate::storage::sqlite::FrankenStorage::open(&db_path).expect("seed archive");
+        let conn = storage.raw();
+        conn.execute("BEGIN IMMEDIATE").expect("begin immediate");
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('lock_probe', '1')")
+            .expect("acquire WAL write lock");
+        assert_eq!(probe_child(&db_path), "HELD_BY_PARENT");
+
+        let probe = probe_dedicated_storage_state(&db_path, Duration::from_secs(1));
+        assert!(!probe.schema_drift);
+        assert!(!probe.legacy_interop_failed);
+        assert_eq!(
+            probe_child(&db_path),
+            "HELD_BY_PARENT",
+            "probe_dedicated_storage_state must not drop live in-process POSIX locks"
+        );
+
+        conn.execute_batch("ROLLBACK;").expect("rollback");
+        assert_eq!(probe_child(&db_path), "ACQUIRED");
+        drop(storage);
+    }
+}

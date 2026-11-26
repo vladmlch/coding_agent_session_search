@@ -873,8 +873,8 @@ impl SearchClient {
             }
         }
 
-        // Retain the literal rowid path: see `sql_rowid_literal_list`.
-        // FrankenSQLite through 0.3.17 scanned parameterized IN-lists.
+        // Retain the literal rowid path: see `sql_rowid_literal_list`
+        // (avoids parameterized IN-list scans on older query plans).
         let message_rowids = unique_message_ids
             .iter()
             .map(|message_id| i64::try_from(*message_id))

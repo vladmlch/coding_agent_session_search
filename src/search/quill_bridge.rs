@@ -3,8 +3,8 @@
 //! CASS's lexical layer is synchronous because Tantivy is synchronous. Quill is
 //! `asupersync`-async. Rather than colour 54k lines of indexer call sites with
 //! `async fn`, this module drives each Quill future to completion on the calling
-//! thread — the same bridge pattern [`crate::franken_sync`] already uses for the
-//! async FrankenSQLite engine, for exactly the same reason.
+//! thread — the same bridge pattern [`crate::franken_sync`] uses for its
+//! synchronous SQLite facade, for the same reason.
 //!
 //! The runtime lives in a thread-local slot and is *taken out* while a future is
 //! being driven, so a reentrant bridge call finds the slot empty and builds a

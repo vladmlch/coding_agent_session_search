@@ -1026,7 +1026,7 @@ impl SearchClient {
 
         // 4. Suggest alternative agents if SQLite is already open and no agent
         // filter is set. Avoid lazy-opening storage solely for no-hit advice:
-        // large read-only frankensqlite opens can dominate fast lexical misses.
+        // large read-only SQLite opens can dominate fast lexical misses.
         if filters.agents.is_empty()
             && let Ok(sqlite_guard) = self.sqlite.lock()
             && let Some(conn) = sqlite_guard.as_ref()

@@ -4,7 +4,7 @@
 //! currently occupies its message primary key. This adapter checks the encoded
 //! metadata and SHA-256 of the selected canonical passage before returning any
 //! text. It never opens a database, installs a model, repairs an index, or writes
-//! archive rows. The caller supplies its existing FrankenSQLite connection.
+//! archive rows. The caller supplies its existing SQLite connection.
 //!
 //! This is deliberately separate from ordinary SearchClient hydration. It is
 //! callable on both retained and publication-selected batches, including each
