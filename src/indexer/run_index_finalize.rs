@@ -115,12 +115,8 @@ fn run_index_post_scan_and_semantic(
             let check_analytics_stop =
                 || check_legacy_omp_analytics_stop(ctx.opts.progress.as_ref());
             // 2l1b0.75: the phase gets its own writer connection. Ingest and
-            // repair commit through ephemeral writers, which can leave this
-            // long-lived handle with an execution visibility ahead of its
-            // pager's publication. fsqlite 0.4.4 then refuses every BEGIN on
-            // it ("opened pager visibility N predates connection execution
-            // visibility M"), and no retry clears that. A connection opened
-            // now loads the current publication.
+            // repair commit through ephemeral writers, so opening a fresh
+            // connection here picks up the latest database state cleanly.
             let analytics_writer = FrankenStorage::open_writer(&ctx.opts.db_path)
                 .with_context(|| "opening a writer for the legacy OMP analytics rebuild")?;
             let rebuilt = analytics_writer
@@ -801,7 +797,7 @@ fn run_index_post_scan_and_semantic(
     }
     if let Some(repair) = fallback_fts_repair.with_context(|| {
         format!(
-            "repairing frankensqlite-owned fallback FTS after full index run for {}",
+            "repairing SQLite-owned fallback FTS after full index run for {}",
             ctx.opts.db_path.display()
         )
     })? {
@@ -824,7 +820,7 @@ fn run_index_post_scan_and_semantic(
                 tracing::warn!(
                     db_path = %ctx.opts.db_path.display(),
                     error = %detail,
-                    "skipping derived fallback FTS repair because frankensqlite cannot yet reload populated FTS shadow WITHOUT ROWID tables; canonical SQLite rows and Tantivy remain authoritative"
+                    "skipping derived fallback FTS repair because populated FTS shadow WITHOUT ROWID reload is unsupported; canonical SQLite rows and Tantivy remain authoritative"
                 );
             }
             FallbackFtsRepairOutcome::SkippedCorruptDerivedIndex { detail } => {
@@ -921,7 +917,7 @@ fn run_index_post_scan_and_semantic(
         tracing::info!(
             db_path = %ctx.opts.db_path.display(),
             canonical_only_full_rebuild,
-            "skipping frankensqlite-owned fallback FTS rebuild because this full run only rebuilt Tantivy from the existing canonical database"
+            "skipping SQLite-owned fallback FTS rebuild because this full run only rebuilt Tantivy from the existing canonical database"
         );
     }
 
@@ -1077,9 +1073,8 @@ fn run_index_watch_or_close(
         }
         let index_path_for_watch = index_path.clone();
 
-        // CASS #163 item 3: When autocommit_retain cannot be disabled, the
-        // long-lived read handle accumulates MVCC snapshots. Periodically
-        // close and reopen it to release that memory.
+        // CASS #163 item 3: Periodically close and reopen the long-lived
+        // watch storage handle to release accumulated connection/cache state.
         let watch_recycle_counter: std::cell::Cell<u32> = std::cell::Cell::new(0);
         let watch_recycle_interval: u32 = dotenvy::var("CASS_WATCH_RECYCLE_INTERVAL")
             .ok()
@@ -1359,9 +1354,8 @@ fn run_index_watch_or_close(
                     }
                 }
 
-                // CASS #163 item 3: Periodically recycle the long-lived read
-                // handle to shed accumulated MVCC snapshots when
-                // autocommit_retain could not be disabled.
+                // CASS #163 item 3: Periodically recycle the long-lived watch
+                // storage handle to release retained connection/cache state.
                 let count = watch_recycle_counter.get().wrapping_add(1);
                 watch_recycle_counter.set(count);
                 if count.is_multiple_of(watch_recycle_interval) {
@@ -1378,7 +1372,7 @@ fn run_index_watch_or_close(
                     )?;
                     tracing::debug!(
                         cycle = count,
-                        "recycled long-lived storage handle to shed MVCC state"
+                        "recycled long-lived storage handle"
                     );
                 }
 
@@ -1412,7 +1406,7 @@ fn run_index_watch_or_close(
     }
 
     // #319/#321: `close_storage_after_index` runs the final WAL checkpoint of
-    // the deferred bulk-ingest WAL — a synchronous, `!Send` frankensqlite
+    // the deferred bulk-ingest WAL — a synchronous, `!Send` SQLite
     // `conn.close()` + `wal_checkpoint(TRUNCATE)` that executes on THIS thread
     // and cannot report progress. On a large corpus (the report: ~1.1 GB /
     // ~290k-frame WAL) it legitimately takes minutes, especially on macOS.

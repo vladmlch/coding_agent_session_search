@@ -258,7 +258,7 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
     // startup. Plain incremental runs used to expose just the (sidecar-only,
     // millisecond) `classify_nonresumable_checkpoint` step and then go dark:
     // the lock file kept naming that step while the process was actually
-    // inside the writable frankensqlite open (`open_storage`) or a later
+    // inside the writable SQLite open (`open_storage`) or a later
     // preflight, so a wedge there was reported — by `cass status`, the stall
     // event and the reporter — against a function that had already returned.
     // A stale breadcrumb is worse than none; see
@@ -443,8 +443,8 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
         ));
     }
 
-    // GH #450: this writable open is where frankensqlite runs its one-time
-    // migration repair, which copies and rewrites the whole archive and took
+    // GH #450: this writable open is where SQLite schema migrations or
+    // one-time migration repair run, which can copy/rewrite the archive and took
     // ~25 minutes on a 2.6 GiB bundle. It posts no progress of its own, so the
     // #258 stall detector saw `last_progress_at_ms` frozen and reported
     // `status: "stalled"` at 0/N conversations while the process was doing
@@ -473,14 +473,14 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
     let storage_open_elapsed = storage_open_started.elapsed();
     if storage_open_elapsed >= SLOW_STORAGE_OPEN_WARN_THRESHOLD {
         // GH #450: name the cost. An open this long is a schema migration or
-        // frankensqlite's one-time migration repair, and the operator otherwise
+        // one-time archive repair, and the operator otherwise
         // sees only a long silence before the first indexing phase.
         tracing::warn!(
             db_path = %ctx.opts.db_path.display(),
             elapsed_secs = storage_open_elapsed.as_secs_f64(),
             bundle_bytes = database_bundle_size_bytes(&ctx.opts.db_path),
             "opening the canonical archive for writing took a long time; this phase covers schema \
-             migration and frankensqlite's one-time migration repair, and its cost scales with the \
+             migration and one-time archive repair, and its cost scales with the \
              archive size"
         );
     }
@@ -488,7 +488,7 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
 
     ctx.enter_preflight_phase("watch_startup:fts_shadow_viability")?;
     // GH #413 follow-up (iify0): decide BEFORE the first write on this
-    // connection — the moment fsqlite rebuilds the whole in-memory index of a
+    // connection — the moment the engine could materialize/rebuild a large
     // populated shadow (20 GB and minutes on a 10 GB archive) — whether the
     // derived shadow may exist at all. The drop goes through a deferred-FTS5
     // connection so it never hydrates what it removes.
@@ -526,7 +526,7 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
 
     // GH #344: an interrupted fallback-FTS rebuild can leave a queryable but
     // partial contentless shadow. Inserting one targeted conversation into
-    // that state makes frankensqlite repeatedly re-encode the large partial
+    // that state makes SQLite repeatedly re-encode the large partial
     // table before progress reaches 1/1. Detect exact parity before even the
     // writable no-op below and fail with the resumable doctor repair command.
     if let Some(reason) = targeted_watch_once_fts_parity_problem(&storage, &ctx.opts)? {
@@ -541,7 +541,7 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
     // CASS #162 item 2: Verify the connection is writable early, before the
     // code reaches deep batch-insert paths where a readonly failure is hard
     // to diagnose.  A benign no-op UPDATE catches "attempt to write a readonly
-    // database" from frankensqlite.
+    // database" from SQLite.
     if let Err(err) = storage
         .raw()
         .execute("UPDATE meta SET value = value WHERE key = 'schema_version'")
@@ -605,7 +605,7 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
             tracing::warn!(
                 db_path = %ctx.opts.db_path.display(),
                 error = %detail,
-                "skipping derived fallback FTS validation repair because frankensqlite cannot yet reload populated FTS shadow WITHOUT ROWID tables; canonical indexing will continue"
+                "skipping derived fallback FTS validation repair because populated FTS shadow WITHOUT ROWID reload is unsupported; canonical indexing will continue"
             );
         } else {
             tracing::warn!(
@@ -705,7 +705,7 @@ pub(in crate::indexer) fn run_index_preflight_and_open(
     //
     // cass#265/cass#272 follow-up: both external reports and the
     // local profile of the production archive show this preflight can
-    // peg CPU inside `collect_orphan_message_ids` / fsqlite page-cache
+    // peg CPU inside `collect_orphan_message_ids` / SQLite page-cache
     // eviction for minutes. Routine indexing skips it by default; run
     // with CASS_PREFLIGHT_CLEANUP_ORPHAN_FK_ROWS=1 to force the old
     // repair behavior, or combine that with

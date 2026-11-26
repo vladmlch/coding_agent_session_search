@@ -93,8 +93,8 @@ pub(in crate::indexer) fn ingest_batch_detailed_with_source_completion(
     let trace_span =
         robot_trace_ingest_start("ingest_batch", convs, lexical_strategy, defer_checkpoints);
     // Persistence now uses short-lived writer connections internally so the
-    // long-lived watch/session handle does not accumulate retained MVCC state
-    // on older frankensqlite builds that ignore autocommit_retain.
+    // long-lived watch/session handle does not accumulate retained connection
+    // state.
     //
     // gh373/oeu5a: thread the work-liveness heartbeat into the persist call
     // (per-message ticks during redaction/map, per-chunk ticks during write)
@@ -250,7 +250,7 @@ pub(in crate::indexer) fn ingest_non_watch_batch_once(
 ) -> Result<NonWatchIngestOutcome> {
     if should_inject_non_watch_ingest_test_oom(convs) {
         // Use the typed `FrankenError::OutOfMemory` variant so the OOM detector
-        // exercises the downcast path that real frankensqlite OOMs hit, instead
+        // exercises the downcast path that real SQLite OOMs hit, instead
         // of relying on the plain-string fallback.
         return Err(anyhow::Error::new(
             crate::franken_sync::FrankenError::OutOfMemory,
@@ -359,7 +359,7 @@ pub(in crate::indexer) fn ingest_non_watch_oom_retry_or_quarantine(
 
     let conv = &convs[0];
 
-    // #298: mirror the watch-path plausibility gate. frankensqlite raises the
+    // #298: mirror the watch-path plausibility gate. SQLite raises the
     // same typed `FrankenError::OutOfMemory` for per-statement bounded
     // allocation guards, so a NoMem on a small conversation with no real host
     // memory pressure is not evidence of a poisoned conversation. Defer it
@@ -618,7 +618,7 @@ pub(in crate::indexer) fn ingest_watch_batch_with_oom_split_inner(
         && should_inject_watch_ingest_test_oom(convs)
     {
         // Use the typed `FrankenError::OutOfMemory` variant so the OOM detector
-        // exercises the downcast path that real frankensqlite OOMs hit, instead
+        // exercises the downcast path that real SQLite OOMs hit, instead
         // of relying on the plain-string fallback.
         Err(anyhow::Error::new(
             crate::franken_sync::FrankenError::OutOfMemory,
@@ -701,7 +701,7 @@ pub(in crate::indexer) fn ingest_watch_batch_with_oom_split_inner(
             let conv = &convs[0];
 
             // #298: a typed `FrankenError::OutOfMemory` (NoMem) on the batch
-            // path is NOT proof of real host memory exhaustion — frankensqlite
+            // path is NOT proof of real host memory exhaustion — SQLite
             // raises the same typed error for per-statement bounded allocation
             // guards. Before quarantining a single small conversation that may
             // well ingest fine in isolation, retry it solo (which the reporter
@@ -763,7 +763,7 @@ pub(in crate::indexer) fn ingest_watch_batch_with_oom_split_inner(
                     let should_quarantine = match real_pressure {
                         // Real host pressure: quarantine is justified.
                         Some(true) => true,
-                        // Ample memory reported: the NoMem is a frankensqlite
+                        // Ample memory reported: the NoMem is a transient or
                         // bounded-allocation artifact by definition (#364) —
                         // conversation size makes a guard more likely to trip
                         // but cannot turn it into host exhaustion. Defer so a
@@ -801,7 +801,7 @@ pub(in crate::indexer) fn ingest_watch_batch_with_oom_split_inner(
                                 deferrals = deferral.deferrals,
                                 retry_in_secs,
                                 error = %solo_error,
-                                "watch conversation hit repeated bounded-allocation NoMem with no real memory pressure; deferring (not quarantining) with backoff (#298, GH#510). An FSQLITE_PAGE_BUFFER_MAX above the database size removes the common trigger; `cass quarantine list --json` lists deferred conversations"
+                                "watch conversation hit repeated bounded-allocation NoMem with no real memory pressure; deferring (not quarantining) with backoff (#298, GH#510). `cass quarantine list --json` lists deferred conversations"
                             );
                         } else {
                             tracing::debug!(
@@ -944,7 +944,7 @@ pub(in crate::indexer) fn error_is_out_of_memory(error: &anyhow::Error) -> bool 
 
 /// Default ceiling, in bytes of *indexed text*, under which a watch-ingest
 /// `NoMem` is treated as a bounded-allocation-guard false positive rather than
-/// real host memory exhaustion (#298). frankensqlite raises the same typed
+/// real host memory exhaustion (#298). SQLite raises the same typed
 /// `FrankenError::OutOfMemory` for per-statement bounded allocation limits
 /// (VDBE frame/register/pager guards) as it does for real OS pressure, so a
 /// small conversation that ingests fine solo must never be quarantined just
