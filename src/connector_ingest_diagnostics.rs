@@ -37,7 +37,9 @@ use std::collections::BTreeMap;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
-use crate::franken_sync::compat::{ConnectionExt, OpenFlags, open_with_flags};
+use franken_agent_detection::connectors::sqlite_sync::{
+    ConnectionExt as FadConnectionExt, SqliteError as FadSqliteError, open_external_strict_in_place,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::connectors::{DiscoveredSourceFile, NormalizedConversation, ScanContext};
@@ -386,13 +388,34 @@ fn is_database_lock_message(message: &str) -> bool {
     })
 }
 
+fn is_rusqlite_lock_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ffi::ErrorCode::DatabaseBusy
+                    | rusqlite::ffi::ErrorCode::DatabaseLocked
+                    | rusqlite::ffi::ErrorCode::FileLockingProtocolFailed,
+                ..
+            },
+            _,
+        )
+    )
+}
+
 fn connector_scan_failure_kind(error: &anyhow::Error) -> IngestFailureKind {
     use crate::franken_sync::FrankenError;
 
-    if let Some(io) = error
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
-    {
+    if let Some(io) = error.chain().find_map(|cause| {
+        cause.downcast_ref::<std::io::Error>().or_else(|| {
+            cause
+                .downcast_ref::<FadSqliteError>()
+                .and_then(|sqlite_err| match sqlite_err {
+                    FadSqliteError::Io(io) => Some(io),
+                    _ => None,
+                })
+        })
+    }) {
         return if matches!(
             io.kind(),
             std::io::ErrorKind::WouldBlock | std::io::ErrorKind::ResourceBusy
@@ -422,7 +445,12 @@ fn connector_scan_failure_kind(error: &anyhow::Error) -> IngestFailureKind {
                     | FrankenError::WriteConflict { .. }
                     | FrankenError::SerializationFailure { .. }
             )
-        })
+        }) || cause.downcast_ref::<FadSqliteError>().is_some_and(|error| {
+            matches!(error, FadSqliteError::BusyRecovery)
+                || matches!(error, FadSqliteError::Sqlite(inner) if is_rusqlite_lock_error(inner))
+        }) || cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(is_rusqlite_lock_error)
     });
     if database_locked || is_database_lock_message(&error.root_cause().to_string()) {
         IngestFailureKind::SourceLocked
@@ -827,20 +855,21 @@ impl ConnectorIngestRun {
         }
         // Strict read-only (F17 doctrine): this probe may never write or
         // create any sidecar of the user's store. A plain read-only open on
-        // 0.4.13 rebuilds a never-initialized `-shm` in place (GH#528), which
-        // would mutate the store during `cass index`; the strict bit instead
-        // refuses every WAL-index state needing recovery with the typed
-        // BusyRecovery, which `connector_scan_failure_kind` already maps to
-        // the same transient SourceLocked warning the other crashed-store
-        // classes produce. The connector's own read still goes through FAD's
-        // strict open + private-snapshot fallback (F9/F17), so a store this
-        // probe refuses is still indexed.
-        let probe = open_with_flags(
-            path.to_string_lossy().as_ref(),
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
-        )
-        .and_then(|connection| {
-            connection.query_row_map("SELECT 1 FROM sqlite_master LIMIT 1", &[], |_row| Ok(()))
+        // a WAL database creates or rebuilds sidecars in place, which would
+        // mutate the store during `cass index`; `open_external_strict_in_place`
+        // instead validates the container and sidecars up front and refuses
+        // every state needing recovery with `SqliteError::BusyRecovery`, which
+        // `connector_scan_failure_kind` maps to the transient `SourceLocked`
+        // warning. The connector's own read still goes through FAD's strict
+        // open + private-snapshot fallback (F9/F17), so a store this probe
+        // refuses is still indexed.
+        let probe = open_external_strict_in_place(path).and_then(|connection| {
+            FadConnectionExt::query_row_map(
+                &connection,
+                "SELECT 1 FROM sqlite_master LIMIT 1",
+                &[],
+                |_row| Ok(()),
+            )
         });
         if let Err(error) = probe {
             let error = anyhow::Error::new(error);
