@@ -1252,7 +1252,9 @@ mod lock_preservation_tests {
                     let _ = probe.execute_batch("ROLLBACK");
                     println!("\nLOCK_PROBE=ACQUIRED");
                 }
-                Err(error) if error.is_busy_class() => {
+                Err(error)
+                    if crate::search::contention_diagnostics::is_retryable_contention(&error) =>
+                {
                     println!("\nLOCK_PROBE=HELD_BY_PARENT");
                 }
                 Err(error) => panic!("unexpected child lock probe error: {error:?}"),
