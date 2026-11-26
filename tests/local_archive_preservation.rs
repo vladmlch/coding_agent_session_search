@@ -294,6 +294,8 @@ fn build_fixture() -> (Fixture, i64) {
             params![LEGACY_ORIGIN_HOST],
         )
         .expect("drop auto-registered legacy source row");
+        conn.execute("PRAGMA foreign_keys = ON")
+            .expect("restore foreign key enforcement after legacy patch");
         conn.close().expect("close legacy patch connection");
     }
 
@@ -643,6 +645,8 @@ fn force_rebuild_preserves_remote_rows_without_sources_table_entry() {
             .expect("disable foreign key enforcement for sources patch");
         conn.execute_compat("DELETE FROM sources WHERE id = ?1", params![WORK_SOURCE_ID])
             .expect("drop work-laptop sources row");
+        conn.execute("PRAGMA foreign_keys = ON")
+            .expect("restore foreign key enforcement after sources patch");
         conn.close().expect("close sources patch connection");
     }
     assert!(
