@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
 use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt, Transaction, TransactionExt};
-use crate::franken_sync::{Connection, FrankenError, Row};
+use crate::franken_sync::{Connection, FrankenError, Row, TransactionBehavior};
 use crate::model::conversation_packet::{ConversationPacket, ConversationPacketProvenance};
 use crate::model::types::Conversation;
 
@@ -1301,7 +1301,7 @@ pub fn publish_facts_for_canonical_best_effort(
 ) {
     let result = (|| -> Result<FactPublishOutcome> {
         let mut tx = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("opening viewer session facts transaction")?;
         let outcome = publish_facts_for_canonical(&tx, conv, conversation_id)?;
         tx.commit()
@@ -1326,7 +1326,7 @@ pub fn publish_facts_for_canonical_batch_best_effort<'a>(
 ) {
     let result = (|| -> Result<()> {
         let mut tx = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("opening viewer session facts batch transaction")?;
         for (conv, conversation_id) in pairs {
             publish_facts_for_canonical(&tx, conv, conversation_id)?;

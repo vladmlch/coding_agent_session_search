@@ -345,10 +345,8 @@ pub fn live_region_doc_bound(db: &impl FactsDb) -> Result<u64> {
     if !has_region_marks_table(db)? {
         return Ok(0);
     }
-    // Set-based form of the per-marks-row count. A correlated scalar
-    // `COUNT(*)` subquery is evaluated by frankensqlite's in-memory
-    // correlated fallback, which ignores the `(conversation_id, quill_idx)`
-    // index and never finished on a 6k-session / 762k-region archive. The
+    // Set-based form of the per-marks-row count, avoiding a correlated scalar
+    // `COUNT(*)` subquery over `(conversation_id, quill_idx)`. The
     // JOIN + GROUP BY below yields exactly one row per marks row whose
     // conversation exists (`marks.conversation_id` is the primary key, and
     // `conversations.id` is INTEGER PRIMARY KEY, so the join cannot
@@ -557,11 +555,10 @@ pub fn stale_region_version_session_count(db: &impl FactsDb) -> Result<i64> {
 /// exactly like a live one, and the Stage-1 fast-lane gate counts every
 /// conversation, so the lane must too.
 ///
-/// Deliberately a LEFT JOIN over PK-anchored rows, not correlated
-/// subqueries: frankensqlite evaluates correlated probes through its
-/// in-memory fallback (the same shape `live_region_doc_bound` documents
-/// as pathologically slow at archive scale), while these joins are the
-/// index-seek shape that helper proved at 6k sessions. Marks at the
+/// Deliberately a LEFT JOIN over PK-anchored rows rather than correlated
+/// subqueries (the same shape `live_region_doc_bound` uses at archive
+/// scale); these joins use the index-seek shape that helper proved at
+/// 6k sessions. Marks at the
 /// CURRENT version with a non-`published` `docs_state` are NOT stale:
 /// the pending sweep (the run's final drain) already converges those.
 /// Empty on archives without the extension profile — a non-extension

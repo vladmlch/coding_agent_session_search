@@ -163,14 +163,10 @@ pub fn publish_search_regions(
     // the Quill publish lane removes exactly those identities, so a shrunk
     // or renumbered inventory never leaves a live stale region document.
     // The `quill_idx >= REGION_DOC_BASE` bound is applied in Rust, not in
-    // the WHERE clause: an equality + range pair over the two columns of
-    // `idx_viewer_search_regions_quill` makes the fork's SELECT planner
-    // fall back to a full covering-index SCAN (measured on the 6k-session
-    // archive and pinned as a planner-gap reproducer in
-    // tests/frankensqlite_compat_gates.rs), while the bare
-    // conversation_id equality SEEKS and returns only this session's own
-    // rows. The filtered set is identical, and the caller diffs it as a
-    // set.
+    // the WHERE clause: the bare `conversation_id` equality seeks the
+    // index directly and returns only this session's own rows without
+    // scanning a covering index on an equality + range pair. The filtered
+    // set is identical, and the caller diffs it as a set.
     let previous_slots: Vec<i64> = db
         .facts_query_map(
             "SELECT quill_idx FROM viewer_search_regions WHERE conversation_id = ?1",
@@ -300,12 +296,10 @@ pub fn publish_search_regions(
 
 /// The previous generation's per-scope region row counts for one
 /// conversation — the conservative old-slot bound the session×scope stale
-/// queue uses. Grouped in Rust from an equality-prefix seek: SQL
-/// `GROUP BY scope` on this table plans as a full-table SCAN plus a temp
-/// B-tree on the fork (measured 2.45 s per call on the 6k-session /
-/// 1M-row archive, and the publication lane pays it per conversation),
-/// while the bare `conversation_id = ?` equality SEEKS an index and
-/// returns only the session's own rows. Sorting before the run-length
+/// queue uses. Grouped in Rust from an equality-prefix seek rather than
+/// SQL `GROUP BY scope` + temp B-tree, so the bare `conversation_id = ?`
+/// equality seeks an index and returns only the session's own rows. Sorting
+/// before the run-length
 /// fold reproduces SQL `GROUP BY`'s sorted output order (BINARY text
 /// collation = byte order, same as Rust's `String` ordering), so the
 /// produced `(scope, count)` list is element- and order-identical to the
@@ -386,12 +380,11 @@ pub fn replace_meta_regions(db: &impl FactsDb, conversation_id: i64) -> Result<(
         return Ok(());
     };
     // The `NOT LIKE 'meta:%'` residual is applied in Rust, not in the
-    // WHERE clause: with it inlined the fork's SELECT planner SCANs the
-    // whole region table (measured 2.40 s per call on the 6k-session /
-    // 1M-row archive — this runs per parent-resolved conversation), while
-    // the bare conversation_id equality SEEKS. The fold reproduces
-    // `COALESCE(MAX(region_ordinal), -1)` exactly; `is_meta_region_key`
-    // carries the LIKE pattern's ASCII-case-insensitive semantics.
+    // WHERE clause, so the bare `conversation_id` equality seeks the
+    // index directly instead of scanning the region table. The fold
+    // reproduces `COALESCE(MAX(region_ordinal), -1)` exactly;
+    // `is_meta_region_key` carries the LIKE pattern's
+    // ASCII-case-insensitive semantics.
     let max_message_ordinal: i64 = db
         .facts_query_map(
             "SELECT region_key, region_ordinal FROM viewer_search_regions \

@@ -59,7 +59,7 @@ mod protocol {
 
 use anyhow::{Context, Result};
 use coding_agent_search::franken_sync::compat::{ConnectionExt, RowExt, TransactionExt};
-use coding_agent_search::franken_sync::{Connection, Row, params};
+use coding_agent_search::franken_sync::{Connection, Row, TransactionBehavior, params};
 
 use super::facts::FactsDb;
 
@@ -93,8 +93,8 @@ fn resolve_sort_tie(connection: &Connection, conversation_id: i64) -> Result<Sor
 /// recomputes them — the repair lane below only ever owes the tie key).
 /// The row-ensure is `WHERE EXISTS`-guarded like the guarded writer's: a
 /// conversation deleted between the pending-list read and this write
-/// (FKs are off on the ingest writer) must not regain a dangling sort
-/// row that would wedge on a permanent `session_not_found`.
+/// must not regain a dangling sort row
+/// that would wedge on a permanent `session_not_found`.
 ///
 /// Low-level primitive: every in-repo write lane goes through
 /// [`publish_sort_tie_guarded`], which additionally re-verifies the
@@ -220,7 +220,7 @@ pub fn publish_sort_tie_guarded(
         return Ok(false);
     };
     // Row-ensure shares the guard's honesty: a deleted conversation must
-    // not gain a dangling sort row under a writer with FK enforcement off.
+    // not regain a dangling sort row.
     db.facts_execute(
         "INSERT OR IGNORE INTO viewer_session_sort (conversation_id) \
          SELECT ?1 WHERE EXISTS (SELECT 1 FROM conversations c WHERE c.id = ?1)",
@@ -370,7 +370,7 @@ pub fn repair_sort_keys(connection: &Connection) -> Result<SortRepairStats> {
                 .context("injecting repair-lane tie-race canonical mutation")?;
         }
         let mut tx = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("opening sort tie repair batch transaction")?;
         for (conversation_id, tie, evidence) in &ties {
             if publish_sort_tie_guarded(&tx, *conversation_id, tie, evidence.as_ref())? {

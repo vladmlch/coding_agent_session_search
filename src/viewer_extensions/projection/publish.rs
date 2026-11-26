@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use crate::franken_sync::Connection;
+use crate::franken_sync::{Connection, TransactionBehavior};
 use crate::franken_sync::compat::{ParamValue, RowExt, TransactionExt};
 use crate::model::conversation_packet::{ConversationPacket, ConversationPacketProvenance};
 use crate::model::types::Conversation;
@@ -247,7 +247,7 @@ pub fn publish_structure_for_canonical_best_effort(
 ) {
     let result = (|| -> Result<ProjectionPublishOutcome> {
         let mut tx = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("opening viewer structure projection transaction")?;
         let outcome =
             publish_session_structure(&tx, conversation_id, &structure_for_canonical(conv))?;
@@ -273,7 +273,7 @@ pub fn publish_structure_for_canonical_batch_best_effort<'a>(
 ) {
     let result = (|| -> Result<()> {
         let mut tx = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("opening viewer structure projection batch transaction")?;
         for (conv, conversation_id) in pairs {
             publish_session_structure(&tx, conversation_id, &structure_for_canonical(conv))?;

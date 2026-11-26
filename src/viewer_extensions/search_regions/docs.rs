@@ -452,9 +452,8 @@ pub fn region_docs_published_current(db: &impl FactsDb, conversation_id: i64) ->
 /// JSON must still match or a concurrent republish/meta-edit queued work
 /// this stamp never processed — those rows are left pending (returned
 /// count excludes them) for the next converge pass. The `WHERE EXISTS`
-/// guard shares the sort lane's honesty: a conversation deleted by an
-/// FK-off writer mid-converge leaves an orphan marks row that must never
-/// be stamped `published`.
+/// guard shares the sort lane's honesty: a conversation deleted
+/// mid-converge must never leave an orphan marks row stamped `published`.
 pub fn stamp_region_docs_published(db: &impl FactsDb, stamps: &[RegionDocStamp]) -> Result<usize> {
     let mut stamped = 0_usize;
     for stamp in stamps {

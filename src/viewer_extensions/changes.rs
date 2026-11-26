@@ -1014,7 +1014,7 @@ mod tests {
         let cursor = changes_since(storage.raw(), 0, 64)?.next_seq;
 
         let writer = Connection::open(db.to_string_lossy().into_owned())?;
-        writer.execute("BEGIN")?;
+        writer.execute("BEGIN IMMEDIATE")?;
         writer.execute(
             "INSERT INTO messages (conversation_id, idx, role, content) \
              VALUES (1, 99, 'agent', 'vanished')",
@@ -1069,12 +1069,12 @@ mod tests {
     fn explicit_append_commits_and_rolls_back_with_caller() -> Result<()> {
         let (_temp, _db, storage) = fixture();
         let connection = storage.raw();
-        connection.execute("BEGIN")?;
+        connection.execute("BEGIN IMMEDIATE")?;
         append_change_event(connection, kind::RESET_REQUIRED, None, 0, None)?;
         connection.execute("ROLLBACK")?;
         assert!(changes_since(connection, 0, 64)?.events.is_empty());
 
-        connection.execute("BEGIN")?;
+        connection.execute("BEGIN IMMEDIATE")?;
         let seq = append_change_event(connection, kind::RESET_REQUIRED, None, 7, None)?;
         connection.execute("COMMIT")?;
         let page = changes_since(connection, 0, 64)?;
