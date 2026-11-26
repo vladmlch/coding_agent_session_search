@@ -295,16 +295,31 @@ pub(in crate::indexer) fn incompatible_legacy_fts_shadow_problem(
 pub(in crate::indexer) fn canonical_fts_segment_integrity_problem(
     storage: &FrankenStorage,
 ) -> Result<Option<String>> {
-    let fts_exists = storage
+    let fts_ddl_rows = storage
         .raw()
-        .query_row_map(
-            "SELECT COUNT(*) FROM sqlite_master
+        .query_map_collect(
+            "SELECT sql FROM sqlite_master
              WHERE type = 'table' AND name = 'fts_messages'",
             &[] as &[ParamValue],
-            |row| row.get_typed::<i64>(0),
+            |row| row.get_typed::<Option<String>>(0),
         )
         .context("checking for canonical FTS before segment integrity preflight")?;
-    if fts_exists == 0 {
+    // GH #495: non-canonical legacy `fts_messages` registrations (such as
+    // internal-content 7-column or `content=''`-without-`contentless_delete=1`)
+    // are disposable residue that `rebuild_fts_native` drops and recreates.
+    // Only probe FTS5 segment integrity on canonical contentless shadows.
+    let is_canonical_contentless = !fts_ddl_rows.is_empty()
+        && fts_ddl_rows.iter().all(|sql| {
+            let normalized: String = sql
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .split_whitespace()
+                .collect();
+            (normalized.contains("content=''") || normalized.contains("content=\"\""))
+                && normalized.contains("contentless_delete=1")
+        });
+    if !is_canonical_contentless {
         return Ok(None);
     }
 

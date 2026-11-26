@@ -1241,6 +1241,71 @@ fn full_rebuild_integrity_preflight_rejects_corrupt_fts_structure_record() {
 }
 
 #[test]
+fn full_rebuild_integrity_preflight_allows_legacy_fts_residue_with_missing_docsize_but_rejects_canonical_docsize_loss()
+ {
+    let tmp = TempDir::new().unwrap();
+    let legacy_db = tmp.path().join("legacy-fts-missing-docsize.db");
+    {
+        let storage = FrankenStorage::open(&legacy_db).unwrap();
+        storage
+            .raw()
+            .execute(
+                "DROP TABLE fts_messages;
+                 CREATE VIRTUAL TABLE fts_messages USING fts5(
+                     content, title, agent, workspace, source_path,
+                     created_at UNINDEXED, message_id UNINDEXED, tokenize='porter'
+                 );
+                 INSERT INTO fts_messages(
+                     rowid, content, title, agent, workspace, source_path, created_at, message_id
+                 ) VALUES(1, 'legacy residue text', 'title', 'codex', '/tmp', '/tmp/legacy', 0, 1);
+                 DELETE FROM fts_messages_docsize WHERE id = 1;",
+            )
+            .expect("seed legacy FTS residue with missing _docsize row");
+    }
+
+    assert_eq!(
+        full_rebuild_existing_archive_integrity_preflight(&legacy_db).unwrap(),
+        None,
+        "non-canonical legacy FTS5 residue with missing _docsize must be left for full-index drop/recreate"
+    );
+
+    let canonical_db = tmp.path().join("canonical-fts-missing-docsize.db");
+    {
+        let storage = FrankenStorage::open(&canonical_db).unwrap();
+        storage
+            .ensure_search_fallback_fts_consistency()
+            .expect("materialize canonical FTS shadow");
+        storage
+            .raw()
+            .execute(
+                "INSERT INTO fts_messages(rowid, content, title)
+                 VALUES(1, 'canonical docsize sentinel', 'title')",
+            )
+            .expect("persist canonical FTS row");
+    }
+    {
+        let conn = crate::franken_sync::Connection::open(
+            canonical_db.to_string_lossy().into_owned(),
+        )
+        .unwrap();
+        conn.execute("DELETE FROM fts_messages_docsize WHERE id = 1")
+            .expect("delete canonical _docsize row");
+    }
+
+    let problem = full_rebuild_existing_archive_integrity_preflight(&canonical_db)
+        .unwrap()
+        .expect("canonical FTS shadow with missing _docsize must still be rejected");
+    assert!(
+        problem.contains("FTS5 segment integrity-check failed"),
+        "diagnostic must identify the FTS segment preflight: {problem}"
+    );
+    assert!(
+        !problem.contains("readonly database"),
+        "preflight must inspect FTS5 integrity without triggering readonly error: {problem}"
+    );
+}
+
+#[test]
 fn full_rebuild_integrity_preflight_refuses_legacy_fts_before_schema_repair() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("legacy-fts-before-mutation.db");
