@@ -9,10 +9,10 @@ use crate::franken_sync::compat::{ParamValue, RowExt, param_slice_to_values};
 
 /// Row-mapping conveniences for the dedicated-owner search connection.
 ///
-/// `AsyncConnection` intentionally exposes owned rows across its worker-thread
+/// `SearchSqliteConnection` exposes owned rows across its mutex-guarded
 /// boundary. Mapping them on the caller keeps application-specific conversion
-/// errors out of the worker protocol while preserving the former fallible row
-/// mapper semantics.
+/// errors out of the connection wrapper while preserving fallible row mapper
+/// semantics.
 pub(in crate::search::query) trait SearchSqliteConnectionExt {
     #[cfg(test)]
     fn query_row_map<T, F>(
@@ -222,9 +222,8 @@ pub(in crate::search::query) type SqliteFtsMessageRow = (
     Option<String>,
 );
 
-// Frankensqlite follows SQLite's bind-variable ceiling. Keep fallback
-// hydration IN-lists below that ceiling so large pages do not turn into
-// empty fallback result sets.
+// Keep fallback hydration IN-lists below SQLite's bind-variable ceiling so
+// large pages do not turn into empty fallback result sets.
 pub(in crate::search::query) const SQLITE_FTS5_HYDRATE_PARAM_CHUNK: usize = 30_000;
 pub(in crate::search::query) const SQLITE_MAX_VARIABLE_NUMBER: usize = 32_766;
 pub(in crate::search::query) const SQLITE_FTS5_POST_FILTER_SCAN_CHUNK: usize = 1_024;
@@ -379,13 +378,11 @@ pub(in crate::search::query) fn semantic_doc_component_id_from_db(raw: Option<i6
 /// Render rowids as a literal SQL list (`1,2,3`) for an `IN (...)` over an
 /// `INTEGER PRIMARY KEY`.
 ///
-/// FrankenSQLite through 0.3.17 (verified on 0.3.16, cass GH #382) planned
-/// parameterized `WHERE id IN (?,?,...)` as `SCAN messages`, a full table
-/// walk, while integer literals used primary-key seeks. Version 0.3.18
-/// adds parameterized seeks; this established literal path remains covered
-/// at the full hydration chunk size. The ids come from
-/// cass's own index (never from user text) and `i64`'s `Display` emits only
-/// an optional `-` and ASCII digits, so embedding them cannot form SQL.
+/// Integer literals avoid bind-variable count limits and allow direct
+/// primary-key `IN` list seeks across SQLite hydration chunks at the full
+/// chunk size. The ids come from cass's own index (never from user text)
+/// and `i64`'s `Display` emits only an optional `-` and ASCII digits, so
+/// embedding them cannot form SQL.
 pub fn sql_rowid_literal_list(ids: &[i64]) -> String {
     let mut out = String::with_capacity(ids.len().saturating_mul(8));
     for (idx, id) in ids.iter().enumerate() {

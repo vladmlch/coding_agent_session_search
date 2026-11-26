@@ -279,8 +279,8 @@ impl SearchClient {
     }
 
     /// The message ids of one source-scan page: the next `scan_page_rows`
-    /// ids after the cursor, in id order. A bare rowid range, so
-    /// FrankenSQLite seeks it.
+    /// ids after the cursor, in id order. A bare rowid range, so SQLite
+    /// seeks it directly via the primary key.
     pub(in crate::search::query) fn sqlite_message_scan_page_ids(
         conn: &SearchSqliteConnection,
         after_message_id: Option<i64>,
@@ -303,12 +303,12 @@ impl SearchClient {
     /// conversation metadata and narrowed by every filter.
     ///
     /// The page is a bare rowid range in a subquery, and the joins and
-    /// filters apply outside it. FrankenSQLite seeks a rowid range only when
-    /// nothing else is in its WHERE; `messages m LEFT JOIN … WHERE 1=1 AND
-    /// <filters> AND m.id > ? ORDER BY m.id LIMIT ?` read the whole table for
-    /// every page (5-15 s per 1,024-row page on a 496,736-message archive,
-    /// so one fallback search took most of an hour; this shape takes
-    /// 0.06-0.27 s per page).
+    /// filters apply outside it. Isolating the rowid range in the subquery
+    /// ensures SQLite seeks the primary key before applying joins and filters;
+    /// `messages m LEFT JOIN … WHERE 1=1 AND <filters> AND m.id > ? ORDER BY m.id LIMIT ?`
+    /// read the whole table for every page (5-15 s per 1,024-row page on a
+    /// 496,736-message archive, so one fallback search took most of an hour;
+    /// this shape takes 0.06-0.27 s per page).
     pub(in crate::search::query) fn sqlite_message_scan_query_sql_for_session_paths(
         field_mask: FieldMask,
         filters: &SearchFilters,
