@@ -358,7 +358,7 @@ fn resumed_semantic_candidate_selection_streams_across_sparse_parent_gap() -> Re
     // Conversations 2..=6,669 are newer parents whose messages are all at
     // or below the durable message cursor: 6,668 consecutive misses before
     // the first eligible conversation in conversation-id order.
-    // Seed through FrankenSQLite itself (the project's sole SQLite engine).
+    // Seed through the project's SQLite facade.
     // Multi-row statements are chunked so fixture construction stays
     // parser-bounded while one outer transaction avoids thousands of
     // fsyncs. Every interpolated value below is an integer controlled by
@@ -591,7 +591,7 @@ fn resumed_semantic_selection_matches_large_production_shape() -> Result<()> {
     // Use the repo's existing C-SQLite interop dependency and prepared
     // statements so creating 432k rows does not dominate this ignored
     // acceptance test. The actual count and selection proof below reopens
-    // the database through FrankenStorage/FrankenSQLite.
+    // the database through FrankenStorage.
     let mut sqlite = rusqlite::Connection::open(&db_path)?;
     let tx = sqlite.transaction()?;
     let mut message_id = 1_i64;

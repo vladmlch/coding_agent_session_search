@@ -141,13 +141,13 @@ fn page_callbacks_can_query_the_same_connection_without_ending_its_transaction()
                 |row| row.get_typed(0),
             )?;
             assert_eq!(count, 7);
-            assert!(connection.as_async().in_transaction());
+            assert!(connection.in_transaction());
             ids.push(message.id.unwrap());
             Ok(())
         },
     )?;
     assert_eq!(ids, (1..=7).collect::<Vec<_>>());
-    assert!(connection.as_async().in_transaction());
+    assert!(connection.in_transaction());
     connection.execute("ROLLBACK")?;
     connection.close_without_checkpoint()?;
     Ok(())
@@ -192,7 +192,7 @@ fn malformed_unadmitted_body_is_not_read_and_later_sql_errors_remain_typed() -> 
             Ok(_) => panic!("resuming must report the corrupt body"),
             Err(error) => error,
         };
-        assert!(error.downcast_ref::<FrankenError>().is_some());
+        assert!(error.downcast_ref::<rusqlite::Error>().is_some());
         let mut delivered = 0;
         let error = messages_with_limits(
             &connection,
@@ -239,7 +239,7 @@ fn row_limit_stops_before_decoding_a_corrupt_tail_of_a_large_history() -> Result
         Ok(())
     })
     .unwrap_err();
-    assert!(error.downcast_ref::<FrankenError>().is_some());
+    assert!(error.downcast_ref::<rusqlite::Error>().is_some());
     assert_eq!(delivered, MAX_ROWS);
     connection.close_without_checkpoint()?;
     Ok(())
@@ -328,21 +328,20 @@ fn empty_data_limits_and_errors_never_turn_into_successful_partial_replay() -> R
     );
     connection.execute("ALTER TABLE messages RENAME TO retained_messages")?;
     let error = messages(&connection, 7, &mut |_| Ok(())).unwrap_err();
-    assert!(error.downcast_ref::<FrankenError>().is_some());
+    assert!(error.downcast_ref::<rusqlite::Error>().is_some());
     connection.close_without_checkpoint()?;
     Ok(())
 }
 
 /// GH #534: on the cass schema every replay page query is a seek on the
-/// (conversation_id, idx) key. FrankenSQLite 0.4.12 planned the previous
-/// hinted `ORDER BY idx, id` shape as `SCAN messages` plus a temp B-tree and
+/// (conversation_id, idx) key. Planning the previous
+/// hinted `ORDER BY idx, id` shape as `SCAN messages` plus a temp B-tree
 /// read the whole table for every page (10k rows: 80 ms per page against
 /// 1.3 ms for the seek; about 2 GB per conversation on the reporter's
 /// archive). Any page shape that scans or sorts fails here. Paging over one
 /// conversation of a populated table still returns exactly its messages in
 /// idx order across cursor pages. The indexed shape is chosen from the schema:
-/// only an autoindex on exactly (conversation_id, idx) qualifies, because the
-/// engine does not reject the hint for a missing index in this shape and its
+/// only an index on exactly (conversation_id, idx) qualifies, because the
 /// `idx >` cursor is wrong without the uniqueness.
 #[test]
 fn gh534_replay_page_queries_seek_the_conversation_key() -> Result<()> {
@@ -360,9 +359,8 @@ fn gh534_replay_page_queries_seek_the_conversation_key() -> Result<()> {
         "CREATE TABLE messages (id INTEGER PRIMARY KEY, conversation_id INTEGER,
          idx INTEGER, role TEXT, author TEXT, created_at INTEGER, content TEXT)",
     )?;
-    reversed.execute(
-        "CREATE UNIQUE INDEX idx_messages_conv_idx ON messages(idx, conversation_id)",
-    )?;
+    reversed
+        .execute("CREATE UNIQUE INDEX idx_messages_conv_idx ON messages(idx, conversation_id)")?;
     assert!(!unique_conversation_index(&reversed));
     reversed.close_without_checkpoint()?;
 
@@ -393,9 +391,13 @@ fn gh534_replay_page_queries_seek_the_conversation_key() -> Result<()> {
         ("body, cursor page", cursor, BODY_COLUMNS),
     ] {
         let mut plan: Vec<String> = Vec::new();
+        let params: Vec<_> = bound_values(21, cursor, true, MAX_ROWS)
+            .into_iter()
+            .map(crate::franken_sync::SqliteValue::from)
+            .collect();
         connection.query_with_params_for_each(
             &format!("EXPLAIN QUERY PLAN {}", query(cursor, true, projection)),
-            &bound_values(21, cursor, true, MAX_ROWS),
+            &params,
             |row| {
                 plan.push(row.get_typed(3)?);
                 Ok(())

@@ -7,7 +7,7 @@
 //! Callers retain canonical snapshot/maintenance and publication authority.
 
 use super::{PARENT_PAGE_SIZE, engine, envelopes, pages};
-use crate::franken_sync::{Connection, FrankenError, SqliteValue, compat::RowExt};
+use crate::franken_sync::{Connection, FrankenError, Row, SqliteValue, compat::RowExt};
 use crate::model::types::Message;
 use crate::storage::sqlite::FrankenStorage;
 use anyhow::{Context, Result, ensure};
@@ -156,6 +156,20 @@ fn select_ids(
     Ok(selected)
 }
 
+fn decode_row(row: &Row) -> Result<Message, FrankenError> {
+    let role: String = row.get_typed(2)?;
+    Ok(Message {
+        id: Some(row.get_typed(0)?),
+        idx: row.get_typed(1)?,
+        role: pages::message_role(&role),
+        author: row.get_typed(3)?,
+        created_at: row.get_typed(4)?,
+        content: row.get_typed(5)?,
+        extra_json: serde_json::Value::Null,
+        snippets: Vec::new(),
+    })
+}
+
 fn load_message(connection: &Connection, parent: i64, key: MessageKey) -> Result<Message> {
     let row = connection
         .query_row_with_params(
@@ -167,9 +181,9 @@ fn load_message(connection: &Connection, parent: i64, key: MessageKey) -> Result
             ],
         )
         .context("load selected canonical semantic message")?;
-    // Share the full replay's role/text decoder. Extra source envelopes and
+    // Share the full replay's role decoder. Extra source envelopes and
     // snippets do not enter semantic identity construction.
-    Ok(pages::decode(&row)?)
+    Ok(decode_row(&row)?)
 }
 
 fn project_selection(

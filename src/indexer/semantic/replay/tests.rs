@@ -1,6 +1,5 @@
 //! Exercise the public facade and bounded replay against real FrankenStorage.
 use super::*;
-use crate::franken_sync::FrankenError;
 use crate::model::types::{Agent, AgentKind, MessageRole};
 use std::cell::Cell;
 use std::path::Path;
@@ -126,7 +125,7 @@ fn large_history_consumer_runs_before_an_unadmitted_corrupt_tail_is_decoded() ->
         || Ok(()),
     )
     .unwrap_err();
-    assert!(error.downcast_ref::<FrankenError>().is_some());
+    assert!(error.downcast_ref::<rusqlite::Error>().is_some());
     assert_eq!(delivered, pages::MAX_ROWS);
     storage.close()?;
     Ok(())
@@ -148,13 +147,13 @@ fn consumer_queries_the_same_archive_after_every_message_page() -> Result<()> {
                 |row| row.get_typed(0),
             )?;
             assert_eq!(count, (pages::MAX_ROWS * 2 + 1) as i64);
-            assert!(storage.raw().as_async().in_transaction());
+            assert!(storage.raw().in_transaction());
             actual.push(input);
             Ok(())
         },
         || Ok(()),
     )?;
-    assert!(storage.raw().as_async().in_transaction());
+    assert!(storage.raw().in_transaction());
     storage.raw().execute("ROLLBACK")?;
     assert_eq!(signature(actual), signature(expected));
     storage.close()?;
@@ -315,7 +314,7 @@ fn direct_semantic_progress_precedes_an_unadmitted_corrupt_history_tail() -> Res
         |current, total| progress.push((current, total)),
     )
     .unwrap_err();
-    assert!(error.downcast_ref::<FrankenError>().is_some());
+    assert!(error.downcast_ref::<rusqlite::Error>().is_some());
     assert!(
         progress
             .iter()
@@ -425,7 +424,7 @@ fn direct_semantic_progress_matches_legacy_content_and_actual_nonempty_parent_co
         Some(&(PARENT_PAGE_SIZE + 1, PARENT_PAGE_SIZE + 1)),
         "stale nonempty tail hints must not inflate progress; blank parents still count"
     );
-    assert!(!storage.raw().as_async().in_transaction());
+    assert!(!storage.raw().in_transaction());
     storage.close()?;
     Ok(())
 }
@@ -440,7 +439,7 @@ fn direct_semantic_progress_preserves_caller_transactions_on_success_and_unwind(
         |_, _| {},
     )?;
     assert_eq!(expected.len(), pages::MAX_ROWS + 1);
-    assert!(storage.raw().as_async().in_transaction());
+    assert!(storage.raw().in_transaction());
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = crate::indexer::semantic::packet_embedding_inputs_from_storage_with_progress(
             &storage,
@@ -449,7 +448,7 @@ fn direct_semantic_progress_preserves_caller_transactions_on_success_and_unwind(
     }));
     assert!(outcome.is_err());
     assert!(
-        storage.raw().as_async().in_transaction(),
+        storage.raw().in_transaction(),
         "borrowed transaction must remain caller-owned"
     );
     storage.raw().execute("ROLLBACK")?;
@@ -461,7 +460,7 @@ fn direct_semantic_progress_preserves_caller_transactions_on_success_and_unwind(
     }));
     assert!(outcome.is_err());
     assert!(
-        !storage.raw().as_async().in_transaction(),
+        !storage.raw().in_transaction(),
         "owned snapshot must release on unwind"
     );
     assert_eq!(
@@ -502,7 +501,7 @@ fn direct_semantic_progress_snapshot_does_not_mix_concurrent_canonical_rewrites(
     )?;
     assert!(changed);
     assert_eq!(signature(actual), signature(before));
-    assert!(!storage.raw().as_async().in_transaction());
+    assert!(!storage.raw().in_transaction());
     let later = crate::indexer::semantic::packet_embedding_inputs_from_storage_with_progress(
         &storage,
         |_, _| {},
@@ -528,7 +527,7 @@ fn direct_semantic_progress_empty_archive_reports_no_fabricated_work() -> Result
     )?;
     assert!(inputs.is_empty());
     assert_eq!(progress, vec![(0, 0)]);
-    assert!(!storage.raw().as_async().in_transaction());
+    assert!(!storage.raw().in_transaction());
     storage.close()?;
     Ok(())
 }
@@ -593,7 +592,7 @@ fn direct_semantic_streaming_build_matches_incumbent_vectors_across_batches() ->
         stored_semantic_rows(&incumbent, &indexer)?
     );
     assert_eq!(storage.get_last_embedded_message_id()?, Some(7));
-    assert!(!storage.raw().as_async().in_transaction());
+    assert!(!storage.raw().in_transaction());
     storage.close()?;
     Ok(())
 }
@@ -637,10 +636,10 @@ fn direct_semantic_streaming_late_replay_error_preserves_published_generation() 
         embedded_prefix,
         "the failure must follow useful embedded work"
     );
-    assert!(error.downcast_ref::<FrankenError>().is_some());
+    assert!(error.downcast_ref::<rusqlite::Error>().is_some());
     assert_eq!(std::fs::read(&path)?, before);
     assert_eq!(storage.get_last_embedded_message_id()?, Some(11));
-    assert!(!storage.raw().as_async().in_transaction());
+    assert!(!storage.raw().in_transaction());
     storage.close()?;
     Ok(())
 }
@@ -678,7 +677,7 @@ fn direct_semantic_streaming_build_and_watermark_share_one_snapshot() -> Result<
         stored_semantic_rows(&streaming, &indexer)?,
         stored_semantic_rows(&before, &indexer)?
     );
-    assert!(!storage.raw().as_async().in_transaction());
+    assert!(!storage.raw().in_transaction());
     writer.close()?;
     storage.close()?;
     Ok(())

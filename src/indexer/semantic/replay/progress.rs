@@ -17,7 +17,7 @@ struct ReadSnapshot<'a> {
 
 impl<'a> ReadSnapshot<'a> {
     fn begin(connection: &'a Connection) -> Result<Self> {
-        let owned = !connection.as_async().in_transaction();
+        let owned = !connection.in_transaction();
         if owned {
             connection
                 .execute("BEGIN DEFERRED")
