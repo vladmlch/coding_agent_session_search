@@ -360,6 +360,70 @@ pub(crate) fn doctor_backup_source_bundle_is_complete(
     Ok(())
 }
 
+fn backup_db_has_wal_frames(db_path: &Path, recorded_wal_path: Option<&Path>) -> bool {
+    let wal_has_frames = |path: &Path| {
+        std::fs::symlink_metadata(path)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 32)
+    };
+    if recorded_wal_path.is_some_and(wal_has_frames) {
+        return true;
+    }
+    doctor_sqlite_sidecar_path(db_path, "-wal").is_some_and(|adjacent| wal_has_frames(&adjacent))
+}
+
+fn backup_db_has_nonempty_journal(db_path: &Path) -> bool {
+    doctor_sqlite_sidecar_path(db_path, "-journal").is_some_and(|journal_path| {
+        std::fs::symlink_metadata(&journal_path)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+    })
+}
+
+/// Build an immutable `file:` URI for verified, non-live backup or private
+/// snapshot files that have no WAL frames (`?mode=ro&immutable=1`). Never
+/// call this on a live database with concurrent writers.
+fn sqlite_readonly_immutable_uri(path: &Path) -> Result<String, String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let absolute = std::fs::canonicalize(path)
+        .unwrap_or_else(|_| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()));
+    #[cfg(unix)]
+    let raw_bytes: &[u8] = {
+        use std::os::unix::ffi::OsStrExt as _;
+        absolute.as_os_str().as_bytes()
+    };
+    #[cfg(not(unix))]
+    let raw_text = absolute
+        .to_str()
+        .ok_or_else(|| "SQLite database paths must be valid UTF-8".to_string())?
+        .replace('\\', "/");
+    #[cfg(not(unix))]
+    let raw_bytes = raw_text.as_bytes();
+
+    let mut encoded = String::with_capacity(raw_bytes.len() + 24);
+    #[cfg(not(unix))]
+    if !raw_bytes.starts_with(b"/") {
+        encoded.push('/');
+    }
+    let mut prev_was_slash = false;
+    for &byte in raw_bytes {
+        if byte == b'/' {
+            if !prev_was_slash {
+                encoded.push('/');
+            }
+            prev_was_slash = true;
+            continue;
+        }
+        prev_was_slash = false;
+        if byte <= b' ' || matches!(byte, b'%' | b'?' | b'#') || byte >= 0x80 {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        } else {
+            encoded.push(char::from(byte));
+        }
+    }
+    Ok(format!("file:{encoded}?mode=ro&immutable=1"))
+}
+
 pub(crate) fn verify_doctor_backup_record(
     data_dir: &Path,
     record: DoctorBackupManifestRecord,
@@ -590,62 +654,102 @@ pub(crate) fn verify_doctor_backup_record(
     if verification.blocked_reasons.is_empty()
         && let Some(db_path) = verification.prior_live_db_path.as_ref()
     {
-        // Probe the recorded bundle with the fork's strict read-only mode:
-        // the open may never write or create any sidecar of the bundle it
-        // reads. A plain read-only open recovers a stale WAL index in place
-        // by rewriting the existing `-shm` (the family's read-only-open
-        // hardening since 0.4.13, GH#515/#528), which would invalidate the
-        // manifest's pinned `-shm` checksum for every later restore
-        // consumer. The strict mode instead refuses every WAL-index state
-        // that needs recovery with the typed BusyRecovery, which maps to
-        // `requires_private_wal_index_recovery` below — recovery stays on
-        // the private restore candidate
-        // (`validate_doctor_backup_restore_candidate`), the one place the
-        // restore pipeline rebuilds derived state. A bundle whose WAL
-        // index is self-consistent (a valid `-shm`, or none needed: a
-        // missing or header-less WAL reads the main file) still gets a
-        // real read here, so only recovery-needing bundles defer.
-        match open_franken_with_flags(
-            &db_path.to_string_lossy(),
-            FrankenOpenFlags::SQLITE_OPEN_READ_ONLY
-                | FrankenOpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
-        ) {
-            Ok(mut connection) => {
-                if let Err(err) = connection.close_without_checkpoint_in_place() {
-                    connection.close_best_effort_in_place();
+        let has_wal_frames =
+            backup_db_has_wal_frames(db_path, verification.prior_live_wal_path.as_deref());
+        let has_nonempty_journal = backup_db_has_nonempty_journal(db_path);
+        if !has_wal_frames && !has_nonempty_journal {
+            // Backup bundles with no `-wal` frames (absent, 0-byte, or header-only
+            // `-wal`) and no rollback journal are immutable snapshots in `backup_dir`.
+            // Opening with `?mode=ro&immutable=1` prevents C SQLite from creating a
+            // 0-byte `-wal`/`-shm` sidecar that would invalidate the manifest's
+            // BLAKE3 hashes, and avoids `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE`.
+            match sqlite_readonly_immutable_uri(db_path) {
+                Ok(uri) => {
+                    match open_franken_with_flags(
+                        &uri,
+                        FrankenOpenFlags::SQLITE_OPEN_READ_ONLY
+                            | FrankenOpenFlags::SQLITE_OPEN_URI,
+                    ) {
+                        Ok(mut connection) => {
+                            let probe_res = connection.query_row("PRAGMA schema_version;");
+                            let close_res = connection.close_in_place();
+                            if let Err(err) = probe_res {
+                                verification.storage_probe_status = "failed";
+                                verification.blocked_reasons.push(format!(
+                                    "SQLite read-only probe failed for prior-live backup DB: {err}"
+                                ));
+                            } else if let Err(err) = close_res {
+                                verification.storage_probe_status = "failed";
+                                verification.blocked_reasons.push(format!(
+                                    "closing the prior-live backup read-only probe failed: {err}"
+                                ));
+                            } else {
+                                verification.storage_probe_status = "passed";
+                                // Pinned contract string checked by `tests/cli_doctor.rs`.
+                                verification
+                                    .warnings
+                                    .push("frankensqlite read-only probe passed".to_string());
+                            }
+                        }
+                        Err(err) => {
+                            verification.storage_probe_status = "failed";
+                            verification.blocked_reasons.push(format!(
+                                "SQLite read-only probe failed for prior-live backup DB: {err}"
+                            ));
+                        }
+                    }
+                }
+                Err(err) => {
                     verification.storage_probe_status = "failed";
                     verification.blocked_reasons.push(format!(
-                        "closing the prior-live backup read-only probe failed: {err}"
+                        "SQLite read-only probe failed for prior-live backup DB: {err}"
                     ));
-                } else {
-                    verification.storage_probe_status = "passed";
-                    verification
-                        .warnings
-                        .push("frankensqlite read-only probe passed".to_string());
                 }
             }
-            Err(err)
-                if matches!(
-                    err,
-                    crate::franken_sync::FrankenError::BusyRecovery
-                        | crate::franken_sync::FrankenError::ReadOnly
-                ) && verification
-                    .prior_live_wal_path
-                    .as_ref()
-                    .is_some_and(|path| {
-                        std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > 32)
-                    }) =>
-            {
-                verification.storage_probe_status = "requires_private_wal_index_recovery";
-                verification.warnings.push(
-                    "manifest checksums matched; storage admission requires WAL-index recovery on a private restore candidate before restore can succeed".to_string(),
-                );
-            }
-            Err(err) => {
-                verification.storage_probe_status = "failed";
-                verification.blocked_reasons.push(format!(
-                    "frankensqlite read-only probe failed for prior-live backup DB: {err}"
-                ));
+        } else {
+            // When `-wal` frames are present, `?immutable=1` cannot be used because
+            // SQLite would ignore `-wal`. Use strict read-only probing so a missing
+            // or stale `-shm` defers via `BusyRecovery` to private candidate
+            // recovery instead of mutating `backup_dir`, and preserve `-wal` with
+            // `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` via `close_without_checkpoint_in_place`.
+            match open_franken_with_flags(
+                &db_path.to_string_lossy(),
+                FrankenOpenFlags::SQLITE_OPEN_READ_ONLY
+                    | FrankenOpenFlags::SQLITE_OPEN_STRICT_READ_ONLY,
+            ) {
+                Ok(mut connection) => {
+                    if let Err(err) = connection.close_without_checkpoint_in_place() {
+                        connection.close_best_effort_in_place();
+                        verification.storage_probe_status = "failed";
+                        verification.blocked_reasons.push(format!(
+                            "closing the prior-live backup read-only probe failed: {err}"
+                        ));
+                    } else {
+                        verification.storage_probe_status = "passed";
+                        // Pinned contract string checked by `tests/cli_doctor.rs`.
+                        verification
+                            .warnings
+                            .push("frankensqlite read-only probe passed".to_string());
+                    }
+                }
+                Err(err)
+                    if matches!(
+                        err,
+                        crate::franken_sync::FrankenError::BusyRecovery
+                            | crate::franken_sync::FrankenError::ReadOnly
+                    ) && has_wal_frames =>
+                {
+                    verification.storage_probe_status = "requires_private_wal_index_recovery";
+                    verification.warnings.push(
+                        "manifest checksums matched; storage admission requires WAL-index recovery on a private restore candidate before restore can succeed".to_string(),
+                    );
+                }
+                Err(err) => {
+                    verification.storage_probe_status = "failed";
+                    verification.blocked_reasons.push(format!(
+                        "SQLite read-only probe failed for prior-live backup DB: {err}"
+                    ));
+                }
             }
         }
     }
@@ -813,18 +917,33 @@ pub(crate) fn copy_doctor_backup_restore_bundle(
     Ok(checksum_set)
 }
 
-/// Read only the private, checksum-matched copy. The narrow engine constructor
-/// may rebuild its derived SHM; it cannot write database pages or WAL frames and
-/// cannot checkpoint. Both rehearsal and apply use this exact admission path.
+/// Read only the private, checksum-matched copy. When no `-wal` frames and no
+/// non-empty `-journal` exist, open with `?mode=ro&immutable=1` and close without
+/// `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` so SQLite cannot create a 0-byte `-wal`.
+/// When `-wal` frames are present, use `open_schema_only_with_wal_index_recovery`
+/// and `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` so derived `-shm` may be rebuilt
+/// privately without checkpointing or mutating the copied `-wal` bytes.
 pub(crate) fn validate_doctor_backup_restore_candidate(
     verification: &DoctorBackupVerification,
     candidate_root: &Path,
     candidate_db_path: &Path,
     checksum_set: &mut BTreeMap<String, String>,
 ) -> Result<(), String> {
-    let mut connection = crate::franken_sync::Connection::open_schema_only_with_wal_index_recovery(
-        candidate_db_path.to_string_lossy().into_owned(),
-    )
+    let has_wal_frames = backup_db_has_wal_frames(candidate_db_path, None);
+    let has_nonempty_journal = backup_db_has_nonempty_journal(candidate_db_path);
+    let use_no_ckpt_on_close = has_wal_frames || has_nonempty_journal;
+    let mut connection = if !use_no_ckpt_on_close {
+        let uri = sqlite_readonly_immutable_uri(candidate_db_path)
+            .map_err(|err| format!("private restore candidate admission failed ({err})"))?;
+        open_franken_with_flags(
+            &uri,
+            FrankenOpenFlags::SQLITE_OPEN_READ_ONLY | FrankenOpenFlags::SQLITE_OPEN_URI,
+        )
+    } else {
+        crate::franken_sync::Connection::open_schema_only_with_wal_index_recovery(
+            candidate_db_path.to_string_lossy().into_owned(),
+        )
+    }
     .map_err(|err| {
         format!(
             "private restore candidate admission failed ({:?})",
@@ -857,10 +976,15 @@ pub(crate) fn validate_doctor_backup_restore_candidate(
         }
         Ok(())
     });
-    let close = connection.close_without_checkpoint_in_place();
-    if close.is_err() {
-        connection.close_best_effort_in_place();
-    }
+    let close = if use_no_ckpt_on_close {
+        let res = connection.close_without_checkpoint_in_place();
+        if res.is_err() {
+            connection.close_best_effort_in_place();
+        }
+        res
+    } else {
+        connection.close_in_place()
+    };
     probe.map_err(|err| {
         diagnostic_failure.map_or_else(
             || {
@@ -1460,4 +1584,383 @@ pub(crate) fn run_doctor_backups_impl(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod doc1_tests {
+    use super::*;
+    use crate::franken_sync::{Connection as FrankenConnection, SqliteValue};
+    use serde_json::json;
+    use std::sync::mpsc;
+
+    fn collect_dir_blake3(root: &Path) -> BTreeMap<PathBuf, String> {
+        fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, String>) {
+            for entry in std::fs::read_dir(dir).expect("read_dir") {
+                let entry = entry.expect("dir entry");
+                let path = entry.path();
+                if entry.file_type().expect("file_type").is_dir() {
+                    walk(root, &path, out);
+                } else {
+                    out.insert(
+                        path.strip_prefix(root).expect("strip_prefix").to_path_buf(),
+                        file_blake3_hex(&path).expect("file_blake3_hex"),
+                    );
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(root, root, &mut out);
+        out
+    }
+
+    fn write_backup_manifest(
+        data_dir: &Path,
+        backup_id: &str,
+        backup_db: &Path,
+    ) -> (PathBuf, PathBuf) {
+        let backup_dir = data_dir
+            .join("doctor")
+            .join("candidate-promotions")
+            .join(backup_id)
+            .join("backup");
+        let mut artifacts = Vec::new();
+        for (suffix, role) in [
+            ("", "prior_live_archive_db_backup"),
+            ("-wal", "prior_live_archive_wal_backup"),
+            ("-shm", "prior_live_archive_shm_backup"),
+        ] {
+            let path = if suffix.is_empty() {
+                backup_db.to_path_buf()
+            } else {
+                doctor_sqlite_sidecar_path(backup_db, suffix).expect("sidecar path")
+            };
+            if path.exists() {
+                artifacts.push(json!({
+                    "artifact_kind": role,
+                    "backup_path": path,
+                    "checksum_blake3": file_blake3_hex(&path).expect("blake3"),
+                    "size_bytes": std::fs::metadata(&path).expect("metadata").len(),
+                }));
+            }
+        }
+        let manifest_path = backup_dir.join("manifest.json");
+        let manifest = json!({
+            "schema_version": 1,
+            "manifest_kind": DOCTOR_BACKUP_MANIFEST_KIND,
+            "promotion_id": backup_id,
+            "backup_dir": backup_dir,
+            "artifacts": artifacts,
+        });
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+        )
+        .expect("write manifest");
+        (backup_dir, manifest_path)
+    }
+
+    fn seed_wal_db(db_path: &Path, with_wal_frames: bool) {
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent).expect("create_dir_all");
+        }
+        let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).expect("open");
+        conn.query("PRAGMA journal_mode = WAL;").expect("wal mode");
+        conn.execute("PRAGMA wal_autocheckpoint = 0;")
+            .expect("disable autocheckpoint");
+        conn.execute_batch(
+            "CREATE TABLE items(id INTEGER PRIMARY KEY, body TEXT NOT NULL);
+             INSERT INTO items VALUES (1, 'checkpointed');",
+        )
+        .expect("seed");
+        conn.query("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("checkpoint truncate");
+        if with_wal_frames {
+            conn.execute_with_params(
+                "INSERT INTO items VALUES (2, ?1);",
+                &[SqliteValue::Text("wal-frame-row".into())],
+            )
+            .expect("insert wal row");
+            conn.close_without_checkpoint()
+                .expect("close_without_checkpoint");
+        } else {
+            conn.close().expect("clean close");
+        }
+    }
+
+    #[test]
+    fn backup_verify_immutable_without_wal_frames_preserves_blake3_and_creates_no_sidecars() {
+        for wal_bytes_kind in ["absent", "zero_byte", "header_only_32"] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let data_dir = temp.path().join("cass-data");
+            let backup_id = format!("immutable_no_wal_{wal_bytes_kind}");
+            let backup_dir = data_dir
+                .join("doctor")
+                .join("candidate-promotions")
+                .join(&backup_id)
+                .join("backup");
+            let backup_db = backup_dir.join("live/agent_search.db");
+            seed_wal_db(&backup_db, false);
+
+            let backup_wal = doctor_sqlite_sidecar_path(&backup_db, "-wal").expect("wal path");
+            let backup_shm = doctor_sqlite_sidecar_path(&backup_db, "-shm").expect("shm path");
+            assert!(!backup_wal.exists());
+            assert!(!backup_shm.exists());
+
+            match wal_bytes_kind {
+                "absent" => {}
+                "zero_byte" => std::fs::write(&backup_wal, []).expect("write 0-byte wal"),
+                "header_only_32" => {
+                    let mut wal_hdr = [0u8; 32];
+                    wal_hdr[0..4].copy_from_slice(&0x377f_0682u32.to_be_bytes());
+                    wal_hdr[4..8].copy_from_slice(&3_007_000u32.to_be_bytes());
+                    wal_hdr[8..12].copy_from_slice(&4096u32.to_be_bytes());
+                    std::fs::write(&backup_wal, wal_hdr).expect("write 32-byte wal");
+                }
+                _ => unreachable!(),
+            }
+
+            let (_, manifest_path) = write_backup_manifest(&data_dir, &backup_id, &backup_db);
+            let before_hashes = collect_dir_blake3(&backup_dir);
+            let record = doctor_backup_manifest_record_from_path(&data_dir, &manifest_path)
+                .expect("load record");
+            let verification = verify_doctor_backup_record(&data_dir, record);
+
+            assert_eq!(verification.status, "verified", "{wal_bytes_kind}: {verification:#?}");
+            assert_eq!(verification.storage_probe_status, "passed");
+            assert!(verification.restore_rehearsal_allowed);
+            assert_eq!(
+                collect_dir_blake3(&backup_dir),
+                before_hashes,
+                "immutable backup verification must not create -wal/-shm or alter BLAKE3 ({wal_bytes_kind})"
+            );
+            assert!(!backup_shm.exists());
+            if wal_bytes_kind == "absent" {
+                assert!(!backup_wal.exists());
+            }
+
+            let live_db = temp.path().join("live.db");
+            seed_wal_db(&live_db, false);
+            let (plan, _) = doctor_restore_plan_payload(
+                &data_dir,
+                &live_db,
+                &backup_id,
+                &verification,
+                false,
+                None,
+            );
+            let rehearsal = run_doctor_backup_restore_rehearsal(
+                &data_dir,
+                &live_db,
+                &backup_id,
+                &verification,
+                &plan,
+            );
+            assert_eq!(rehearsal["status"], "passed", "{wal_bytes_kind}: {rehearsal:#}");
+            assert_eq!(rehearsal["storage_probe_status"], "passed");
+            assert_eq!(collect_dir_blake3(&backup_dir), before_hashes);
+        }
+    }
+
+    #[test]
+    fn backup_verify_with_wal_frames_and_coherent_shm_preserves_wal_and_shm_blake3() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("cass-data");
+        let staging_db = temp.path().join("staging.db");
+
+        let conn =
+            FrankenConnection::open(staging_db.to_string_lossy().into_owned()).expect("open");
+        conn.query("PRAGMA journal_mode = WAL;").expect("wal");
+        conn.execute("PRAGMA wal_autocheckpoint = 0;")
+            .expect("no autockpt");
+        conn.execute_batch(
+            "CREATE TABLE items(id INTEGER PRIMARY KEY, body TEXT NOT NULL);
+             INSERT INTO items VALUES (1, 'checkpointed');",
+        )
+        .expect("seed");
+        conn.query("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("truncate");
+        conn.execute("INSERT INTO items VALUES (2, 'uncheckpointed-wal-frame');")
+            .expect("insert");
+
+        let backup_id = "wal_with_coherent_shm";
+        let backup_dir = data_dir
+            .join("doctor")
+            .join("candidate-promotions")
+            .join(backup_id)
+            .join("backup");
+        let backup_db = backup_dir.join("live/agent_search.db");
+        std::fs::create_dir_all(backup_db.parent().expect("parent")).expect("mkdir");
+        std::fs::copy(&staging_db, &backup_db).expect("copy db");
+        let staging_wal = doctor_sqlite_sidecar_path(&staging_db, "-wal").expect("staging wal");
+        let staging_shm = doctor_sqlite_sidecar_path(&staging_db, "-shm").expect("staging shm");
+        let backup_wal = doctor_sqlite_sidecar_path(&backup_db, "-wal").expect("backup wal");
+        let backup_shm = doctor_sqlite_sidecar_path(&backup_db, "-shm").expect("backup shm");
+        assert!(std::fs::metadata(&staging_wal).expect("wal meta").len() > 32);
+        assert!(staging_shm.exists());
+        std::fs::copy(&staging_wal, &backup_wal).expect("copy wal");
+        std::fs::copy(&staging_shm, &backup_shm).expect("copy shm");
+        conn.close_without_checkpoint().expect("close staging");
+
+        let (_, manifest_path) = write_backup_manifest(&data_dir, backup_id, &backup_db);
+        let before_hashes = collect_dir_blake3(&backup_dir);
+        let record =
+            doctor_backup_manifest_record_from_path(&data_dir, &manifest_path).expect("record");
+        let verification = verify_doctor_backup_record(&data_dir, record);
+
+        assert_eq!(verification.status, "verified", "{verification:#?}");
+        assert_eq!(verification.storage_probe_status, "passed");
+        assert_eq!(
+            collect_dir_blake3(&backup_dir),
+            before_hashes,
+            "WAL-backed backup verification must preserve DB, WAL, and SHM BLAKE3"
+        );
+    }
+
+    #[test]
+    fn concurrent_writer_read_uses_wal_path_while_backup_stays_immutable() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("cass-data");
+        let live_db = temp.path().join("live_concurrent.db");
+        seed_wal_db(&live_db, false);
+
+        // Capture a clean single-file backup before starting the concurrent writer.
+        let backup_id = "immutable_during_concurrent_writer";
+        let backup_dir = data_dir
+            .join("doctor")
+            .join("candidate-promotions")
+            .join(backup_id)
+            .join("backup");
+        let backup_db = backup_dir.join("live/agent_search.db");
+        std::fs::create_dir_all(backup_db.parent().expect("parent")).expect("mkdir");
+        std::fs::copy(&live_db, &backup_db).expect("copy backup db");
+        let (_, manifest_path) = write_backup_manifest(&data_dir, backup_id, &backup_db);
+        let backup_before = collect_dir_blake3(&backup_dir);
+
+        let (writer_committed_tx, writer_committed_rx) = mpsc::channel::<()>();
+        let (allow_second_write_tx, allow_second_write_rx) = mpsc::channel::<()>();
+        let (second_committed_tx, second_committed_rx) = mpsc::channel::<()>();
+        let (finish_writer_tx, finish_writer_rx) = mpsc::channel::<()>();
+
+        let writer_db_path = live_db.clone();
+        let writer_thread = std::thread::spawn(move || {
+            let writer = FrankenConnection::open(writer_db_path.to_string_lossy().into_owned())
+                .expect("writer open");
+            writer
+                .execute("PRAGMA wal_autocheckpoint = 0;")
+                .expect("disable autocheckpoint");
+            writer
+                .execute("PRAGMA busy_timeout = 5000;")
+                .expect("busy_timeout");
+            writer
+                .execute("INSERT INTO items VALUES (2, 'concurrent-writer-1');")
+                .expect("writer insert 1");
+            writer_committed_tx.send(()).expect("signal commit 1");
+
+            allow_second_write_rx.recv().expect("wait second write");
+            writer
+                .execute("INSERT INTO items VALUES (3, 'concurrent-writer-2');")
+                .expect("writer insert 2");
+            second_committed_tx.send(()).expect("signal commit 2");
+
+            finish_writer_rx.recv().expect("wait finish");
+            writer
+                .close_without_checkpoint()
+                .expect("writer close without checkpoint");
+        });
+
+        writer_committed_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("writer commit 1");
+
+        // Live database with concurrent writer: must NOT use `?immutable=1`;
+        // `open_schema_only_with_wal_index_recovery` reads WAL snapshot consistently
+        // and closes via `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` without truncating `-wal`.
+        let mut reader1 = FrankenConnection::open_schema_only_with_wal_index_recovery(
+            live_db.to_string_lossy().into_owned(),
+        )
+        .expect("live WAL read-only open");
+        reader1.execute("BEGIN DEFERRED;").expect("begin snapshot");
+        let rows_before: Vec<(i64, String)> = reader1
+            .query("SELECT id, body FROM items ORDER BY id;")
+            .expect("query snapshot 1")
+            .into_iter()
+            .map(|r| (r.get_typed(0).expect("id"), r.get_typed(1).expect("body")))
+            .collect();
+        assert_eq!(
+            rows_before,
+            vec![
+                (1, "checkpointed".to_string()),
+                (2, "concurrent-writer-1".to_string()),
+            ]
+        );
+
+        allow_second_write_tx.send(()).expect("allow second write");
+        second_committed_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("writer commit 2");
+
+        // Snapshot isolation: held transaction on reader1 still sees only rows 1..=2.
+        let rows_still_isolated: Vec<(i64, String)> = reader1
+            .query("SELECT id, body FROM items ORDER BY id;")
+            .expect("query snapshot isolated")
+            .into_iter()
+            .map(|r| (r.get_typed(0).expect("id"), r.get_typed(1).expect("body")))
+            .collect();
+        assert_eq!(rows_still_isolated, rows_before);
+        reader1
+            .close_without_checkpoint_in_place()
+            .expect("close reader1 without checkpoint");
+
+        // A new WAL-aware read-only connection sees commit 2 immediately.
+        let mut reader2 = FrankenConnection::open_schema_only_with_wal_index_recovery(
+            live_db.to_string_lossy().into_owned(),
+        )
+        .expect("live WAL read-only open 2");
+        let rows_after: Vec<(i64, String)> = reader2
+            .query("SELECT id, body FROM items ORDER BY id;")
+            .expect("query after commit 2")
+            .into_iter()
+            .map(|r| (r.get_typed(0).expect("id"), r.get_typed(1).expect("body")))
+            .collect();
+        assert_eq!(
+            rows_after,
+            vec![
+                (1, "checkpointed".to_string()),
+                (2, "concurrent-writer-1".to_string()),
+                (3, "concurrent-writer-2".to_string()),
+            ]
+        );
+        reader2
+            .close_without_checkpoint_in_place()
+            .expect("close reader2 without checkpoint");
+
+        // Verify the boundary: opening the live WAL DB with `?immutable=1` ignores `-wal`
+        // (sees only row 1), confirming `?immutable=1` must never be used on live DBs.
+        let live_immutable_uri = sqlite_readonly_immutable_uri(&live_db).expect("immutable uri");
+        let mut live_imm = open_franken_with_flags(
+            &live_immutable_uri,
+            FrankenOpenFlags::SQLITE_OPEN_READ_ONLY | FrankenOpenFlags::SQLITE_OPEN_URI,
+        )
+        .expect("open immutable probe");
+        let rows_imm: Vec<(i64, String)> = live_imm
+            .query("SELECT id, body FROM items ORDER BY id;")
+            .expect("query immutable")
+            .into_iter()
+            .map(|r| (r.get_typed(0).expect("id"), r.get_typed(1).expect("body")))
+            .collect();
+        live_imm.close_in_place().expect("close immutable");
+        assert_eq!(rows_imm, vec![(1, "checkpointed".to_string())]);
+
+        // Meanwhile, verifying the immutable backup in `backup_dir` passes without
+        // creating sidecars or changing BLAKE3 while the concurrent live writer is open.
+        let record =
+            doctor_backup_manifest_record_from_path(&data_dir, &manifest_path).expect("record");
+        let verification = verify_doctor_backup_record(&data_dir, record);
+        assert_eq!(verification.status, "verified", "{verification:#?}");
+        assert_eq!(verification.storage_probe_status, "passed");
+        assert_eq!(collect_dir_blake3(&backup_dir), backup_before);
+
+        finish_writer_tx.send(()).expect("finish writer");
+        writer_thread.join().expect("join writer thread");
+    }
 }
