@@ -42,7 +42,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 pub(crate) const STATE_DB_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 /// k2k20: one end-to-end wall-clock ceiling for the status-class state probe
 /// (strict open + watermark reads + bounded integrity probe + row counts).
-/// fsqlite's open and even single-row lookups can hydrate a large part of a
+/// Opening and even single-row lookups can scan a large part of a
 /// multi-GB archive, so a busy timeout alone never bounded `cass status`.
 pub(crate) const STATE_DB_PROBE_HARD_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const STATUS_COUNT_SCAN_MAX_DB_BYTES: u64 = 256 * 1024 * 1024;
@@ -116,7 +116,7 @@ pub(crate) fn corruption_class_franken_error(err: &crate::franken_sync::FrankenE
 /// fails when real columns are read (proven on ts2/csd 2026-07-26, where
 /// counts matched while every projection failed). Each probe here projects
 /// real columns from a single row at both ends of the two hot tables. The SQL
-/// shape is logically bounded, but GH #413 proved that fsqlite may still read
+/// shape is logically bounded, but GH #413 proved that a query may still read
 /// or hydrate a large fraction of a huge archive while executing it. Callers
 /// must therefore enforce a physical main+sidecar byte ceiling before using
 /// this probe.
@@ -168,7 +168,7 @@ pub(crate) fn bounded_canonical_db_corruption_probe(
         return None;
     }
     // GH #413: this preflight must have a physical-I/O bound, not merely a
-    // SQL row-count bound. fsqlite can currently hydrate a large part of the
+    // SQL row-count bound. A query can hydrate a large part of the
     // B-tree while executing an ORDER BY ... LIMIT 1 edge lookup; the old
     // four-query "bounded" probe read 8.4 GiB from a 35.7 GB archive before
     // indexing had even entered its preparing phase. A query timeout would
@@ -404,7 +404,7 @@ pub(crate) fn state_db_strict_open_error_message(
 /// - Bounded: open + watermarks + integrity probe + counts run on a dedicated
 ///   owner thread; overrunning [`STATE_DB_PROBE_HARD_TIMEOUT`] abandons the
 ///   worker and reports a retryable open failure naming the last phase, so
-///   `cass status` answers instead of sitting silent (GH #413 showed fsqlite
+///   `cass status` answers instead of sitting silent (GH #413 showed reads
 ///   can hydrate gigabytes even for an ORDER BY … LIMIT 1 edge lookup).
 /// - The real-column integrity probe honors the same physical bundle
 ///   ceiling as [`bounded_canonical_db_corruption_probe`]; above it the

@@ -7,7 +7,7 @@
 //! `status`, `doctor`, and incident mining attribute a failure to
 //! a *family* of root causes **without parsing human prose**. The motivating
 //! observation is that dependency and host issues routinely masquerade as CASS
-//! failures — frankensqlite `OpenRead`/FTS noise reads like a CASS bug, host
+//! failures — SQLite `OpenRead`/FTS noise reads like a CASS bug, host
 //! disk pressure or OOM reads like a hang, an old binary reads like a missing
 //! feature. Encoding the families as a closed enum with stable kebab-case wire
 //! values, per-family descriptors (examples, typical evidence, first probe,
@@ -43,7 +43,7 @@ pub enum RootCauseFamily {
     /// CASS's own derived state is wrong or stale (index, caches, summaries,
     /// quarantine, derived-asset truth-table drift).
     CassDerivedState,
-    /// The frankensqlite storage engine is the proximate cause (OpenRead/FTS
+    /// The SQLite storage engine is the proximate cause (OpenRead/FTS
     /// errors, WAL sidecar issues, busy locks, schema/migration failures).
     FrankensqliteStorage,
     /// The frankensearch search stack is the proximate cause (lexical/semantic
@@ -160,21 +160,21 @@ emptiness.",
             },
             RootCauseFamily::FrankensqliteStorage => RootCauseDescriptor {
                 family: self,
-                title: "frankensqlite storage engine fault",
+                title: "SQLite storage engine fault",
                 examples: &[
-                    "OpenRead error opening the main DB under noisy fsqlite tracing",
+                    "OpenRead error opening the main DB under noisy SQLite tracing",
                     "FTS query fails while plain row reads succeed",
                     "WAL sidecar present but unreadable; busy-lock under concurrent writers",
                 ],
                 typical_evidence: &[
-                    "fsqlite.error_code",
-                    "fsqlite.open_read_failure",
+                    "sqlite.error_code",
+                    "sqlite.open_read_failure",
                     "file:cass.db-wal",
                 ],
                 first_probe: "cass diag --json",
-                false_positive_guidance: "fsqlite INFO/TRACE log lines are noise, not evidence — \
+                false_positive_guidance: "SQLite INFO/TRACE log lines are noise, not evidence — \
 the robot hygiene chokepoint suppresses them in machine modes. Attribute here \
-only on a structured fsqlite error code or an OpenRead/FTS failure, never on \
+only on a structured SQLite error code or an OpenRead/FTS failure, never on \
 the presence of tracing output.",
             },
             RootCauseFamily::FrankensearchSearch => RootCauseDescriptor {
@@ -358,7 +358,7 @@ impl FromStr for RootCauseFamily {
 pub enum FaultLocus {
     /// The fault is in CASS proper.
     Cass,
-    /// The fault is in a bundled dependency (fsqlite/frankensearch/asupersync/…).
+    /// The fault is in a bundled dependency (sqlite/frankensearch/asupersync/…).
     Dependency,
     /// The fault is in the host environment (disk/OOM/load).
     Host,
@@ -374,7 +374,7 @@ pub enum FaultLocus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AttributionConfidence {
-    /// Direct, unambiguous evidence (e.g. an explicit fsqlite error code).
+    /// Direct, unambiguous evidence (e.g. an explicit SQLite error code).
     Confirmed,
     /// Strong but circumstantial evidence; the most likely single explanation.
     Probable,
@@ -433,7 +433,7 @@ pub struct RootCauseDescriptor {
 pub struct EvidenceRef {
     /// Stable kind of evidence — typically one of the family's
     /// [`RootCauseDescriptor::typical_evidence`] keys (e.g.
-    /// `"fsqlite.error_code"`, `"host.disk_free_pct"`).
+    /// `"sqlite.error_code"`, `"host.disk_free_pct"`).
     pub kind: String,
     /// Where the evidence lives: a file path, metric key, log span id, or
     /// exit-code reference.
@@ -683,7 +683,7 @@ mod tests {
             "OpenRead failed on main DB",
         )
         .with_evidence(vec![
-            EvidenceRef::new("fsqlite.error_code", "cass.db").with_detail("SQLITE_CANTOPEN"),
+            EvidenceRef::new("sqlite.error_code", "cass.db").with_detail("SQLITE_CANTOPEN"),
         ]);
 
         let value = serde_json::to_value(&attribution).expect("serialize");
@@ -692,7 +692,7 @@ mod tests {
         assert_eq!(value["locus"], "dependency");
         assert_eq!(value["confidence"], "confirmed");
         assert_eq!(value["summary"], "OpenRead failed on main DB");
-        assert_eq!(value["evidence_refs"][0]["kind"], "fsqlite.error_code");
+        assert_eq!(value["evidence_refs"][0]["kind"], "sqlite.error_code");
         assert_eq!(value["evidence_refs"][0]["detail"], "SQLITE_CANTOPEN");
         // first_probe is pre-seeded as the recommended next probe.
         assert_eq!(value["recommended_next_probe"], "cass diag --json");

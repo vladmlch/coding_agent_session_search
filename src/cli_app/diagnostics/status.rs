@@ -173,7 +173,7 @@ pub(crate) fn gather_projection_signals_from_state(
         ..Default::default()
     };
 
-    // frankensqlite storage: a non-retryable open failure whose error text names
+    // SQLite storage: a non-retryable open failure whose error text names
     // a storage-engine fault (corruption / OpenRead / bad format) — not a
     // permission/not-found/busy condition, which are host/transient, not storage
     // corruption.

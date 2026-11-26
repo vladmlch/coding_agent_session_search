@@ -872,7 +872,7 @@ pub(crate) fn doctor_anomaly_for_check(name: &str, status: &str, message: &str) 
     // is too large).  This is evidence of corruption, not uncertainty.
     let affirmative_database_integrity_failure = name == "database"
         && status == "fail"
-        && (message.starts_with("Database failed frankensqlite ")
+        && (message.starts_with("Database failed SQLite ")
             || message.contains("attestation records structural failure"));
     if affirmative_database_integrity_failure {
         return DoctorAnomaly::ArchiveDbCorrupt;
@@ -882,12 +882,12 @@ pub(crate) fn doctor_anomaly_for_check(name: &str, status: &str, message: &str) 
     // evidence that the archive is corrupt or unreadable.  Keep the robot
     // taxonomy honest: this is a blocked diagnostic, not an archive verdict.
     if matches!(status, "warn" | "fail")
-        && (message.contains("frankensqlite_full_page_integrity_probe_deferred")
+        && (message.contains("full_page_integrity_probe_deferred")
             || message.contains("archive_wide_collectors_deferred")
             || message.contains("busy or locked")
             || message.contains("health is unverified")
             || message.contains("structural integrity is unchecked")
-            || message.contains("health probe failed via frankensqlite")
+            || message.contains("health probe failed via SQLite")
             || message.contains("no integrity verdict was returned")
             || message == "Database query failed")
     {
@@ -975,14 +975,14 @@ pub(crate) fn doctor_anomaly_for_check(name: &str, status: &str, message: &str) 
 }
 
 /// #438: queryability does not establish FTS segment integrity. The historical
-/// disagreement was a real writer-format defect (frankensqlite#404), even
+/// disagreement was a real writer-format defect (cass#438), even
 /// though some MATCH queries succeeded. A newer engine does not establish
 /// that existing derived segments have been rewritten into a valid format.
 pub(crate) const DOCTOR_FTS_TABLE_QUERYABLE_MESSAGE: &str = concat!(
-    "FTS search table (fts_messages) is queryable via frankensqlite. ",
+    "FTS search table (fts_messages) is queryable via SQLite. ",
     "This bounded check does not validate FTS segment structure or every MATCH result. ",
     "Stock SQLite integrity errors must be investigated; successful reads do not rule out ",
-    "the legacy FTS writer-format defect (cass#438, frankensqlite#404). ",
+    "the legacy FTS writer-format defect (cass#438). ",
     "Preserve the archive and validate canonical rows before repair. The FTS shadow is derived: ",
     "`cass doctor --rebuild-canonical-fts --yes` explicitly regenerates it from canonical rows ",
     "and may require substantial memory on large archives."

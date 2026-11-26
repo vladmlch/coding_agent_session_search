@@ -25,9 +25,9 @@ use crate::root_cause_taxonomy::{
 /// gathered; presence (not prose) drives attribution. Defaults are "no signal".
 #[derive(Debug, Clone, Default)]
 pub struct ProjectionSignals {
-    // --- frankensqlite / storage ---
-    /// A structured fsqlite error code was observed (direct evidence).
-    pub fsqlite_error_code: Option<String>,
+    // --- SQLite / storage ---
+    /// A structured SQLite error code was observed (direct evidence).
+    pub sqlite_error_code: Option<String>,
     /// An OpenRead / FTS read failure occurred.
     pub open_read_failure: bool,
 
@@ -89,16 +89,16 @@ struct FamilyHit {
 fn collect_hits(s: &ProjectionSignals) -> Vec<FamilyHit> {
     let mut hits: Vec<FamilyHit> = Vec::new();
 
-    // frankensqlite storage — direct on an explicit error code / OpenRead.
+    // SQLite storage — direct on an explicit error code / OpenRead.
     {
         let mut ev = Vec::new();
         let mut direct = false;
-        if let Some(code) = &s.fsqlite_error_code {
-            ev.push(EvidenceRef::new("fsqlite.error_code", "diag").with_detail(code.clone()));
+        if let Some(code) = &s.sqlite_error_code {
+            ev.push(EvidenceRef::new("sqlite.error_code", "diag").with_detail(code.clone()));
             direct = true;
         }
         if s.open_read_failure {
-            ev.push(EvidenceRef::new("fsqlite.open_read_failure", "diag"));
+            ev.push(EvidenceRef::new("sqlite.open_read_failure", "diag"));
             direct = true;
         }
         if !ev.is_empty() {
@@ -284,10 +284,10 @@ mod tests {
     use crate::root_cause_taxonomy::FaultLocus;
 
     #[test]
-    fn storage_dominated_corpus_attributes_frankensqlite() {
+    fn storage_dominated_corpus_attributes_sqlite_storage() {
         // csd-like: storage-dominated.
         let s = ProjectionSignals {
-            fsqlite_error_code: Some("SQLITE_BUSY".to_string()),
+            sqlite_error_code: Some("SQLITE_BUSY".to_string()),
             open_read_failure: true,
             ..Default::default()
         };
@@ -298,7 +298,7 @@ mod tests {
         assert!(
             a.evidence_refs
                 .iter()
-                .any(|e| e.kind == "fsqlite.error_code")
+                .any(|e| e.kind == "sqlite.error_code")
         );
         assert!(a.recommended_next_probe.is_some());
     }

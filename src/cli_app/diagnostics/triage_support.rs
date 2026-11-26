@@ -808,7 +808,7 @@ pub(crate) fn run_support_bundle(
 /// Archive-independent executable probe for package and binary-promotion gates.
 ///
 /// This deliberately does not resolve a data directory or database override.
-/// The probe exercises the linked frankensqlite engine against an in-memory
+/// The probe exercises the linked SQLite engine against an in-memory
 /// database, including a write and typed read, so a stale, corrupt, locked, or
 /// multi-gigabyte archive cannot affect its cost or exit status (#398).
 pub(crate) fn run_selftest(output_format: Option<RobotFormat>) -> CliResult<()> {
@@ -827,8 +827,7 @@ pub(crate) fn run_selftest(output_format: Option<RobotFormat>) -> CliResult<()> 
         Ok(42) => (
             true,
             "pass",
-            "opened an in-memory frankensqlite database and round-tripped a typed value"
-                .to_string(),
+            "opened an in-memory SQLite database and round-tripped a typed value".to_string(),
             None,
         ),
         Ok(value) => {
@@ -836,7 +835,7 @@ pub(crate) fn run_selftest(output_format: Option<RobotFormat>) -> CliResult<()> 
             (false, "fail", message.clone(), Some(message))
         }
         Err(error) => {
-            let message = format!("in-memory frankensqlite probe failed: {error}");
+            let message = format!("in-memory SQLite probe failed: {error}");
             (false, "fail", message.clone(), Some(message))
         }
     };
@@ -870,7 +869,7 @@ pub(crate) fn run_selftest(output_format: Option<RobotFormat>) -> CliResult<()> 
         )?;
     } else if functional {
         println!("✓ cass executable self-test passed ({latency_ms}ms)");
-        println!("  frankensqlite in-memory round-trip: pass");
+        println!("  SQLite in-memory round-trip: pass");
         println!("  configured archive accessed: no");
     } else {
         println!("✗ cass executable self-test failed ({latency_ms}ms)");

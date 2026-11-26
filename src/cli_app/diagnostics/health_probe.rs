@@ -766,7 +766,7 @@ pub(crate) fn wait_with_progress<T>(
     result
 }
 
-/// frankensqlite VFS namespace lock sidecars (`-fsqlite-ns-gate`,
+/// Legacy VFS namespace lock sidecars (`-fsqlite-ns-gate`,
 /// `-fsqlite-ns-use`) are created next to any database the moment it is
 /// opened — including by an export verification's own read-only probe of
 /// the copy it is checking. They are runtime droppings, never archive
@@ -783,7 +783,7 @@ pub(crate) enum DoctorFtsTableState {
         indexed_messages: i64,
     },
     Missing {
-        frankensqlite_error: String,
+        sqlite_error: String,
         /// The persisted reason when the shadow was dropped for size
         /// (`fts_shadow_not_viable`, GH #413 follow-up).
         not_viable: Option<String>,
@@ -793,14 +793,14 @@ pub(crate) enum DoctorFtsTableState {
     /// `Missing` (a benign absent shadow) so doctor warns instead of
     /// passing (adversarial-review F6).
     ShadowCorrupt {
-        frankensqlite_error: String,
+        sqlite_error: String,
     },
 }
 
 pub(crate) fn probe_doctor_fts_table<C: DoctorArchiveReadConnection>(
     conn: &C,
 ) -> DoctorFtsTableState {
-    if let Err(frankensqlite_error) = conn.doctor_query("SELECT rowid FROM fts_messages LIMIT 1;") {
+    if let Err(sqlite_error) = conn.doctor_query("SELECT rowid FROM fts_messages LIMIT 1;") {
         // GH #413 follow-up (iify0): an absent shadow may be a deliberate drop
         // (the corpus is too large for the engine to materialize); say so.
         let not_viable = conn
@@ -812,7 +812,7 @@ pub(crate) fn probe_doctor_fts_table<C: DoctorArchiveReadConnection>(
             .ok()
             .filter(|detail| !detail.is_empty());
         return DoctorFtsTableState::Missing {
-            frankensqlite_error: frankensqlite_error.to_string(),
+            sqlite_error: sqlite_error.to_string(),
             not_viable,
         };
     }
@@ -827,9 +827,9 @@ pub(crate) fn probe_doctor_fts_table<C: DoctorArchiveReadConnection>(
         |row| row.get_typed::<i64>(0),
     ) {
         Ok(count) => count,
-        Err(frankensqlite_error) => {
+        Err(sqlite_error) => {
             return DoctorFtsTableState::ShadowCorrupt {
-                frankensqlite_error: frankensqlite_error.to_string(),
+                sqlite_error: sqlite_error.to_string(),
             };
         }
     };
