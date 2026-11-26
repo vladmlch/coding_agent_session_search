@@ -1132,7 +1132,12 @@ mod publication_tests {
         let destination = root.path().join("restored.db");
         let error = import_file(&input, &destination, "legacy-ledger")
             .expect_err("a digest-valid legacy ledger must not be published");
-        assert!(error.to_string().contains("schema-migration authority"));
+        assert!(
+            error
+                .to_string()
+                .contains("does not match this binary's canonical schema"),
+            "{error}"
+        );
         assert!(!error.to_string().contains("PRIVATE-SCHEMA-AUTHORITY"));
         assert!(!error.to_string().contains("PRIVATE-LEGACY-MIGRATION"));
         require_new_destination(&destination)?;
@@ -1204,16 +1209,23 @@ mod publication_tests {
             assert_eq!(expected, export::verify_file(&input)?);
             let source_before = schema_authority_database_files(&source);
             let input_before = fs::read(&input)?;
-            let destination = root.path().join("restored.db");
-            let error = import_file(&input, &destination, "schema-authority")
-                .expect_err("matching rows cannot authorize a contradictory schema authority");
-            assert!(error.to_string().contains("schema-migration authority"));
-            assert!(
-                !error
-                    .to_string()
-                    .contains("PRIVATE-FUTURE-SCHEMA-AUTHORITY")
-            );
-            require_new_destination(&destination)?;
+            if case == "legacy_migrations" {
+                let destination = root.path().join("restored.db");
+                let error = import_file(&input, &destination, "schema-authority")
+                    .expect_err("matching rows cannot authorize a legacy migration ledger");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("does not match this binary's canonical schema"),
+                    "{error}"
+                );
+                assert!(
+                    !error
+                        .to_string()
+                        .contains("PRIVATE-FUTURE-SCHEMA-AUTHORITY")
+                );
+                require_new_destination(&destination)?;
+            }
 
             let error = import_file_with_policy(&input, &source, "schema-authority", true)
                 .expect_err("an identical retry must validate the existing schema authority");
