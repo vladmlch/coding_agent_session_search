@@ -11,8 +11,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
-use coding_agent_search::franken_sync::compat::{RowExt, param_slice_to_values};
-use coding_agent_search::franken_sync::{Connection, Row, SqliteValue, params};
+use coding_agent_search::franken_sync::{Connection, FrankenError, SqliteValue};
 use serde_json::{Value, json};
 
 use super::protocol::refuse;
@@ -60,17 +59,25 @@ pub fn sanitize_tags(raw: &[String]) -> Vec<String> {
     out
 }
 
-/// Decode a `viewer_annotations` row to the wire annotation shape. Shared
-/// by `get_annotations` and the writer receipt.
-pub fn annotation_json(conversation_id: i64, row: &Row) -> Result<Value> {
+fn decode_annotation_row(
+    conversation_id: i64,
+    row: &rusqlite::Row<'_>,
+) -> std::result::Result<Value, FrankenError> {
     Ok(json!({
         "conversation_id": conversation_id,
-        "is_pinned": row.get_typed::<i64>(0)? != 0,
-        "custom_title": row.get_typed::<Option<String>>(1)?,
-        "notes": row.get_typed::<Option<String>>(2)?,
-        "revision": row.get_typed::<i64>(3)?,
-        "updated_at_ms": row.get_typed::<Option<i64>>(4)?,
+        "is_pinned": row.get::<_, i64>(0)? != 0,
+        "custom_title": row.get::<_, Option<String>>(1)?,
+        "notes": row.get::<_, Option<String>>(2)?,
+        "revision": row.get::<_, i64>(3)?,
+        "updated_at_ms": row.get::<_, Option<i64>>(4)?,
     }))
+}
+
+/// Decode a `viewer_annotations` row to the wire annotation shape. Shared
+/// by `get_annotations` and the writer receipt.
+#[allow(dead_code)]
+pub fn annotation_json(conversation_id: i64, row: &rusqlite::Row<'_>) -> Result<Value> {
+    Ok(decode_annotation_row(conversation_id, row)?)
 }
 
 /// Tags for a bounded set of conversations (`IN`-list, PK/conversation
@@ -93,17 +100,16 @@ pub fn tags_for(
         placeholders.push_str(&format!("?{}", index + 1));
         params.push(SqliteValue::Integer(*id));
     }
-    let rows = connection.query_with_params(
+    let pairs = connection.query_map(
         &format!(
             "SELECT conversation_id, tag FROM viewer_tags \
              WHERE conversation_id IN ({placeholders}) \
              ORDER BY conversation_id, tag"
         ),
         &params,
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
     )?;
-    for row in rows {
-        let conversation_id: i64 = row.get_typed(0)?;
-        let tag: String = row.get_typed(1)?;
+    for (conversation_id, tag) in pairs {
         out.entry(conversation_id).or_default().push(tag);
     }
     Ok(out)
@@ -114,10 +120,11 @@ pub fn tags_for(
 /// a tag-only conversation still reports an annotation-shaped object with
 /// `revision: 0` (the CAS token for an absent annotation row).
 pub fn read_annotation(connection: &Connection, conversation_id: i64) -> Result<Option<Value>> {
-    let rows = connection.query_with_params(
+    let mut rows = connection.query_map(
         "SELECT is_pinned,custom_title,notes,revision,updated_at_ms \
          FROM viewer_annotations WHERE conversation_id = ?1 LIMIT 2",
-        &param_slice_to_values(params![conversation_id]),
+        &[SqliteValue::Integer(conversation_id)],
+        |row| decode_annotation_row(conversation_id, row),
     )?;
     if rows.len() > 1 {
         return Err(refuse(
@@ -128,9 +135,8 @@ pub fn read_annotation(connection: &Connection, conversation_id: i64) -> Result<
     let tags = tags_for(connection, &[conversation_id])?
         .remove(&conversation_id)
         .unwrap_or_default();
-    match rows.first() {
-        Some(row) => {
-            let mut value = annotation_json(conversation_id, row)?;
+    match rows.pop() {
+        Some(mut value) => {
             value["tags"] = json!(tags);
             Ok(Some(value))
         }

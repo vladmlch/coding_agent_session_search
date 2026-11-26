@@ -1,5 +1,5 @@
 use anyhow::Result;
-use coding_agent_search::franken_sync::{Connection, SqliteValue};
+use coding_agent_search::franken_sync::{Connection, FrankenError, SqliteValue};
 use serde_json::{Map, Value, json};
 
 use super::super::facts_bag;
@@ -8,13 +8,11 @@ use super::super::protocol::refuse;
 use super::TEXT_GUARD_BYTES;
 use super::filters::bind;
 
-/// Phase B — payload hydration for one page id set. FrankenSQLite cannot
-/// compile `IN (list)` inside a JOIN and degrades OR-ed equalities to a
-/// scan (both probe-verified), while an `IN` list on a standalone table
-/// resolves to repeated `SeekRowid` lookups — so the page runs one
-/// bounded probe per side table and assembles the `decode_item` row
-/// contract in Rust. Per page that is a handful of `O(page)` statements
-/// instead of `O(page)` interpreted six-table joins.
+/// Phase B — payload hydration for one page id set. An `IN` list on a
+/// standalone table resolves to repeated `SeekRowid` lookups — so the
+/// page runs one bounded probe per side table and assembles the
+/// `decode_item` row contract in Rust. Per page that is a handful of
+/// `O(page)` statements instead of `O(page)` multi-table joins.
 pub(super) const HYDRATE_CONVERSATIONS_SQL: &str = "\
 SELECT c.id, c.source_id, c.external_id, c.source_path, c.origin_host, \
 c.title, c.started_at, c.ended_at, c.last_message_idx, \
@@ -58,47 +56,57 @@ const HYDRATE_WORKSPACES_SQL: &str = "SELECT w.id, w.path FROM workspaces w WHER
 const HYDRATE_SOURCES_SQL: &str =
     "SELECT s.id, s.kind, s.host_label FROM sources s WHERE s.id IN (";
 
-/// `decode_item`'s row contract, assembled in Rust from the bounded
-/// per-table probes — index-for-index the same shape the old single
-/// `FROM_SQL` join produced (see `select_columns`), with the four
-/// cumulative token sub-totals appended (cells 32–35) and the merged
-/// persisted fact/metrics bag carried alongside (Task 7).
+/// `decode_item`'s typed row contract, assembled in Rust from the bounded
+/// per-table probes — the same fields the old single `FROM_SQL` join
+/// produced, with cumulative token sub-totals and the merged persisted
+/// fact/metrics bag carried alongside (Task 7).
 pub(super) struct HydratedRow {
-    cells: Vec<SqliteValue>,
+    pub(super) id: i64,
+    pub(super) source_id: Option<String>,
+    pub(super) external_id: Option<String>,
+    pub(super) source_path: Option<String>,
+    pub(super) origin_host: Option<String>,
+    pub(super) source_kind: Option<String>,
+    pub(super) source_label: Option<String>,
+    pub(super) title: Option<String>,
+    /// Truncation fact for the bounded `title` preview.
+    pub(super) title_truncated: bool,
+    pub(super) title_bytes: Option<i64>,
+    pub(super) started_at: Option<i64>,
+    pub(super) ended_at: Option<i64>,
+    pub(super) last_message_idx: Option<i64>,
+    pub(super) last_message_created_at: Option<i64>,
+    pub(super) activity: Option<i64>,
+    pub(super) primary_model: Option<String>,
+    pub(super) approx_tokens: Option<i64>,
+    pub(super) grand_total_tokens: Option<i64>,
+    pub(super) estimated_cost_usd: Option<f64>,
+    pub(super) api_call_count: Option<i64>,
+    pub(super) tool_call_count: Option<i64>,
+    pub(super) user_message_count: Option<i64>,
+    pub(super) assistant_message_count: Option<i64>,
+    pub(super) is_pinned: i64,
+    pub(super) custom_title: Option<String>,
+    pub(super) notes: Option<String>,
+    pub(super) is_subagent: Option<i64>,
+    pub(super) task_category: Option<String>,
+    pub(super) classification_coverage: Option<&'static str>,
+    pub(super) parent_conversation_id: Option<i64>,
+    pub(super) workspace_path: Option<String>,
+    pub(super) total_bytes: i64,
+    pub(super) total_input_tokens: Option<i64>,
+    pub(super) total_output_tokens: Option<i64>,
+    pub(super) total_cache_read_tokens: Option<i64>,
+    pub(super) total_cache_creation_tokens: Option<i64>,
     /// `null` when no `viewer_session_facts` row was persisted for this
     /// session; otherwise the merged facts+metrics bag.
-    metrics: Value,
-    /// Truncation fact for the bounded `title` preview (cell 7).
-    title_truncated: bool,
-    title_bytes: Option<i64>,
-}
-
-impl HydratedRow {
-    /// Same semantics as `RowExt::get_typed` on a fetched `Row`.
-    pub(super) fn get_typed<T: coding_agent_search::franken_sync::compat::FromSqliteValue>(
-        &self,
-        index: usize,
-    ) -> Result<T, coding_agent_search::franken_sync::FrankenError> {
-        let value = self.cells.get(index).ok_or_else(|| {
-            coding_agent_search::franken_sync::FrankenError::NoSuchColumn {
-                name: format!("column index {index}"),
-            }
-        })?;
-        T::from_sqlite_value(value)
-    }
+    pub(super) metrics: Value,
 }
 
 /// Text payload guard mirroring the SQL `guard()` expression: payloads
 /// beyond the strict byte profile decode as NULL.
-fn guarded_text(value: Option<String>) -> SqliteValue {
-    match value {
-        Some(text) if text.len() as i64 <= TEXT_GUARD_BYTES => SqliteValue::Text(text.into()),
-        _ => SqliteValue::Null,
-    }
-}
-
-fn integer_or_null(value: Option<i64>) -> SqliteValue {
-    value.map(SqliteValue::Integer).unwrap_or(SqliteValue::Null)
+fn guarded_text_opt(value: Option<String>) -> Option<String> {
+    value.filter(|text| text.len() as i64 <= TEXT_GUARD_BYTES)
 }
 
 /// `length(CAST(x AS BLOB))` on a Rust-held optional text.
@@ -106,12 +114,13 @@ pub(super) fn byte_len(value: Option<&str>) -> i64 {
     value.map(|text| text.len() as i64).unwrap_or(0)
 }
 
-fn run_in_probe(
+fn run_in_probe<T>(
     connection: &Connection,
     head: &str,
     tail: &str,
     ids: &[i64],
-) -> Result<Vec<coding_agent_search::franken_sync::Row>> {
+    map: impl FnMut(&rusqlite::Row<'_>) -> std::result::Result<T, FrankenError>,
+) -> Result<Vec<T>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -121,7 +130,7 @@ fn run_in_probe(
         .map(|id| bind(&mut params, SqliteValue::Integer(*id)))
         .collect::<Vec<_>>()
         .join(",");
-    Ok(connection.query_with_params(&format!("{head}{placeholders}{tail}"), &params)?)
+    Ok(connection.query_map(&format!("{head}{placeholders}{tail}"), &params, map)?)
 }
 
 /// Hydrate every emitted id with bounded standalone-table `IN` probes —
@@ -129,13 +138,11 @@ fn run_in_probe(
 /// index, so page hydration is `O(page)` seeks, never a scan and never a
 /// per-row interpreted join. Tail-state precedence, the annotation/facts
 /// overlays, the text guards and the byte profile are applied in Rust to
-/// reproduce `decode_item`'s 32-cell contract exactly.
+/// reproduce `decode_item`'s typed contract exactly.
 pub(super) fn hydrate_rows(
     connection: &Connection,
     ids: &[i64],
 ) -> Result<std::collections::BTreeMap<i64, HydratedRow>> {
-    use coding_agent_search::franken_sync::compat::RowExt;
-
     // ---- conversations: the outer row of the old join -------------------
     struct Conv {
         source_id: Option<String>,
@@ -163,38 +170,39 @@ pub(super) fn hydrate_rows(
     }
     let mut convs: std::collections::BTreeMap<i64, Conv> = std::collections::BTreeMap::new();
     let mut workspace_ids = std::collections::BTreeSet::new();
-    for row in run_in_probe(connection, HYDRATE_CONVERSATIONS_SQL, ")", ids)? {
-        let workspace_id: Option<i64> = row.get_typed(18)?;
-        if let Some(id) = workspace_id {
-            workspace_ids.insert(id);
-        }
-        convs.insert(
-            row.get_typed(0)?,
+    for (id, conv) in run_in_probe(connection, HYDRATE_CONVERSATIONS_SQL, ")", ids, |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
             Conv {
-                source_id: row.get_typed(1)?,
-                external_id: row.get_typed(2)?,
-                source_path: row.get_typed(3)?,
-                origin_host: row.get_typed(4)?,
-                title: row.get_typed(5)?,
-                started_at: row.get_typed(6)?,
-                ended_at: row.get_typed(7)?,
-                last_message_idx: row.get_typed(8)?,
-                last_message_created_at: row.get_typed(9)?,
-                primary_model: row.get_typed(10)?,
-                approx_tokens: row.get_typed(11)?,
-                grand_total_tokens: row.get_typed(12)?,
-                estimated_cost_usd: row.get_typed(13)?,
-                api_call_count: row.get_typed(14)?,
-                tool_call_count: row.get_typed(15)?,
-                user_message_count: row.get_typed(16)?,
-                assistant_message_count: row.get_typed(17)?,
-                workspace_id,
-                total_input_tokens: row.get_typed(19)?,
-                total_output_tokens: row.get_typed(20)?,
-                total_cache_read_tokens: row.get_typed(21)?,
-                total_cache_creation_tokens: row.get_typed(22)?,
+                source_id: row.get(1)?,
+                external_id: row.get(2)?,
+                source_path: row.get(3)?,
+                origin_host: row.get(4)?,
+                title: row.get(5)?,
+                started_at: row.get(6)?,
+                ended_at: row.get(7)?,
+                last_message_idx: row.get(8)?,
+                last_message_created_at: row.get(9)?,
+                primary_model: row.get(10)?,
+                approx_tokens: row.get(11)?,
+                grand_total_tokens: row.get(12)?,
+                estimated_cost_usd: row.get(13)?,
+                api_call_count: row.get(14)?,
+                tool_call_count: row.get(15)?,
+                user_message_count: row.get(16)?,
+                assistant_message_count: row.get(17)?,
+                workspace_id: row.get(18)?,
+                total_input_tokens: row.get(19)?,
+                total_output_tokens: row.get(20)?,
+                total_cache_read_tokens: row.get(21)?,
+                total_cache_creation_tokens: row.get(22)?,
             },
-        );
+        ))
+    })? {
+        if let Some(ws_id) = conv.workspace_id {
+            workspace_ids.insert(ws_id);
+        }
+        convs.insert(id, conv);
     }
     if convs.is_empty() {
         return Ok(std::collections::BTreeMap::new());
@@ -207,15 +215,17 @@ pub(super) fn hydrate_rows(
         last_message_created_at: Option<i64>,
     }
     let mut tails: std::collections::BTreeMap<i64, Tail> = std::collections::BTreeMap::new();
-    for row in run_in_probe(connection, HYDRATE_TAIL_SQL, ")", ids)? {
-        tails.insert(
-            row.get_typed(0)?,
+    for (id, tail) in run_in_probe(connection, HYDRATE_TAIL_SQL, ")", ids, |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
             Tail {
-                ended_at: row.get_typed(1)?,
-                last_message_idx: row.get_typed(2)?,
-                last_message_created_at: row.get_typed(3)?,
+                ended_at: row.get(1)?,
+                last_message_idx: row.get(2)?,
+                last_message_created_at: row.get(3)?,
             },
-        );
+        ))
+    })? {
+        tails.insert(id, tail);
     }
 
     // ---- annotations + facts: LEFT JOIN semantics = absent Option ------
@@ -226,28 +236,28 @@ pub(super) fn hydrate_rows(
     }
     let mut annotations: std::collections::BTreeMap<i64, Annotation> =
         std::collections::BTreeMap::new();
-    for row in run_in_probe(connection, HYDRATE_ANNOTATIONS_SQL, ")", ids)? {
-        annotations.insert(
-            row.get_typed(0)?,
+    for (id, ann) in run_in_probe(connection, HYDRATE_ANNOTATIONS_SQL, ")", ids, |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
             Annotation {
-                is_pinned: row.get_typed::<Option<i64>>(1)?.unwrap_or(0),
-                custom_title: row.get_typed(2)?,
-                notes: row.get_typed(3)?,
+                is_pinned: row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                custom_title: row.get(2)?,
+                notes: row.get(3)?,
             },
-        );
+        ))
+    })? {
+        annotations.insert(id, ann);
     }
     struct Facts {
         is_subagent: Option<i64>,
         task_category: Option<String>,
-        step_count: Option<i64>,
-        artifact_count: Option<i64>,
         parent_conversation_id: Option<i64>,
         bag: facts_bag::SessionFactBag,
     }
     let mut facts: std::collections::BTreeMap<i64, Facts> = std::collections::BTreeMap::new();
-    for row in run_in_probe(connection, HYDRATE_FACTS_SQL, ")", ids)? {
-        let model_set_json: Option<String> = row.get_typed(14)?;
-        let first_prompt_raw: Option<String> = row.get_typed(15)?;
+    for (id, fact) in run_in_probe(connection, HYDRATE_FACTS_SQL, ")", ids, |row| {
+        let model_set_json: Option<String> = row.get(14)?;
+        let first_prompt_raw: Option<String> = row.get(15)?;
         // Bounded previews: one oversized prompt/model set never refuses a
         // page; the bag carries the preview plus its truncation fact, and
         // the byte profile counts the emitted preview, not the raw cell.
@@ -257,27 +267,27 @@ pub(super) fn hydrate_rows(
         );
         let (first_prompt, first_prompt_truncated, first_prompt_bytes) =
             facts_bag::bound_text_preview(first_prompt_raw);
-        facts.insert(
-            row.get_typed(0)?,
+        let step_count: Option<i64> = row.get(4)?;
+        let artifact_count: Option<i64> = row.get(5)?;
+        Ok((
+            row.get::<_, i64>(0)?,
             Facts {
-                is_subagent: row.get_typed(1)?,
-                task_category: row.get_typed(2)?,
+                is_subagent: row.get(1)?,
+                task_category: row.get(2)?,
                 // Column 3 (the overall facts coverage_state) is deliberately
                 // not read: classification coverage derives from the verdict
                 // alone (facts_bag::classification_coverage).
-                step_count: row.get_typed(4)?,
-                artifact_count: row.get_typed(5)?,
-                parent_conversation_id: row.get_typed(6)?,
+                parent_conversation_id: row.get(6)?,
                 bag: facts_bag::SessionFactBag {
-                    turn_count: row.get_typed(7)?,
-                    step_count: row.get_typed(4)?,
-                    thinking_block_count: row.get_typed(8)?,
-                    artifact_count: row.get_typed(5)?,
-                    subagent_count: row.get_typed(9)?,
-                    tool_error_count: row.get_typed(10)?,
-                    tool_calls_with_exit_status: row.get_typed(11)?,
-                    file_fact_count: row.get_typed(12)?,
-                    compaction_count: row.get_typed(13)?,
+                    turn_count: row.get(7)?,
+                    step_count,
+                    thinking_block_count: row.get(8)?,
+                    artifact_count,
+                    subagent_count: row.get(9)?,
+                    tool_error_count: row.get(10)?,
+                    tool_calls_with_exit_status: row.get(11)?,
+                    file_fact_count: row.get(12)?,
+                    compaction_count: row.get(13)?,
                     model_set,
                     model_set_truncated,
                     model_set_bytes,
@@ -287,16 +297,20 @@ pub(super) fn hydrate_rows(
                     ..Default::default()
                 },
             },
-        );
+        ))
+    })? {
+        facts.insert(id, fact);
     }
 
     // ---- viewer_session_metrics: the quality/health half of the bag ----
     // Additive table — probe `sqlite_master` first so a facts-only
     // archive still serves every fact field with the metric half NULL.
     let metrics_installed = !connection
-        .query(
+        .query_map(
             "SELECT 1 FROM sqlite_master WHERE type='table' \
              AND name='viewer_session_metrics' LIMIT 1",
+            &[],
+            |_| Ok(()),
         )?
         .is_empty();
     struct Metrics {
@@ -304,9 +318,9 @@ pub(super) fn hydrate_rows(
     }
     let mut metrics: std::collections::BTreeMap<i64, Metrics> = std::collections::BTreeMap::new();
     if metrics_installed {
-        for row in run_in_probe(connection, HYDRATE_METRICS_SQL, ")", ids)? {
-            let tools_used_json: Option<String> = row.get_typed(6)?;
-            let task_breakdown_json: Option<String> = row.get_typed(7)?;
+        for (id, entry) in run_in_probe(connection, HYDRATE_METRICS_SQL, ")", ids, |row| {
+            let tools_used_json: Option<String> = row.get(6)?;
+            let task_breakdown_json: Option<String> = row.get(7)?;
             let (tools_used, tools_used_truncated, tools_used_bytes) =
                 facts_bag::bound_json_preview(
                     tools_used_json.clone(),
@@ -317,30 +331,32 @@ pub(super) fn hydrate_rows(
                     task_breakdown_json.clone(),
                     task_breakdown_json.and_then(|text| serde_json::from_str(&text).ok()),
                 );
-            metrics.insert(
-                row.get_typed(0)?,
+            Ok((
+                row.get::<_, i64>(0)?,
                 Metrics {
                     bag: facts_bag::SessionFactBag {
-                        ttfe_seconds: row.get_typed(1)?,
-                        one_shot_rate: row.get_typed(2)?,
-                        retries_count: row.get_typed(3)?,
-                        self_corrections_count: row.get_typed(4)?,
-                        user_corrections_count: row.get_typed(5)?,
+                        ttfe_seconds: row.get(1)?,
+                        one_shot_rate: row.get(2)?,
+                        retries_count: row.get(3)?,
+                        self_corrections_count: row.get(4)?,
+                        user_corrections_count: row.get(5)?,
                         tools_used,
                         tools_used_truncated,
                         tools_used_bytes,
                         task_breakdown,
                         task_breakdown_truncated,
                         task_breakdown_bytes,
-                        health_score: row.get_typed(8)?,
-                        health_grade: row.get_typed(9)?,
-                        health_issues_count: row.get_typed(10)?,
-                        potential_waste_tokens: row.get_typed(11)?,
-                        potential_savings_usd: row.get_typed(12)?,
+                        health_score: row.get(8)?,
+                        health_grade: row.get(9)?,
+                        health_issues_count: row.get(10)?,
+                        potential_waste_tokens: row.get(11)?,
+                        potential_savings_usd: row.get(12)?,
                         ..Default::default()
                     },
                 },
-            );
+            ))
+        })? {
+            metrics.insert(id, entry);
         }
     }
 
@@ -348,8 +364,14 @@ pub(super) fn hydrate_rows(
     let workspace_id_list: Vec<i64> = workspace_ids.iter().copied().collect();
     let mut workspace_paths: std::collections::BTreeMap<i64, Option<String>> =
         std::collections::BTreeMap::new();
-    for row in run_in_probe(connection, HYDRATE_WORKSPACES_SQL, ")", &workspace_id_list)? {
-        workspace_paths.insert(row.get_typed(0)?, row.get_typed(1)?);
+    for (id, path) in run_in_probe(
+        connection,
+        HYDRATE_WORKSPACES_SQL,
+        ")",
+        &workspace_id_list,
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+    )? {
+        workspace_paths.insert(id, path);
     }
     // `sources.id` is a TEXT key — the same bounded `IN` shape as the id
     // probes, still page-scoped (never a full dimension-table read).
@@ -363,21 +385,27 @@ pub(super) fn hydrate_rows(
         let mut source_params = Vec::with_capacity(source_ids.len());
         let source_placeholders = source_ids
             .iter()
-            .map(|id| bind(&mut source_params, SqliteValue::Text(id.clone().into())))
+            .map(|id| bind(&mut source_params, SqliteValue::Text(id.clone())))
             .collect::<Vec<_>>()
             .join(",");
-        for row in connection.query_with_params(
+        for (id, pair) in connection.query_map(
             &format!("{HYDRATE_SOURCES_SQL}{source_placeholders})"),
             &source_params,
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    (
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ),
+                ))
+            },
         )? {
-            sources.insert(
-                row.get_typed::<String>(0)?,
-                (row.get_typed(1)?, row.get_typed(2)?),
-            );
+            sources.insert(id, pair);
         }
     }
 
-    // ---- assemble the 32-cell decode contract ---------------------------
+    // ---- assemble the typed decode contract ----------------------------
     let mut out = std::collections::BTreeMap::new();
     for (id, conv) in convs {
         let tail = tails.get(&id);
@@ -414,7 +442,11 @@ pub(super) fn hydrate_rows(
         // explicit truncation fact, so one oversized title never refuses a
         // page. Annotation/identity/category/model cells stay RAW-counted.
         let (title_preview, title_truncated, title_bytes) =
-            facts_bag::bound_text_preview(conv.title.clone());
+            facts_bag::bound_text_preview(conv.title);
+
+        let custom_title = guarded_text_opt(annotation.and_then(|a| a.custom_title.clone()));
+        let notes = guarded_text_opt(annotation.and_then(|a| a.notes.clone()));
+        let task_category = fact.and_then(|f| f.task_category.clone());
 
         // The byte profile sums the EMITTED preview bytes for the bounded
         // free-text/JSON fields (`title` + the bag's `preview_bytes`) and
@@ -433,65 +465,50 @@ pub(super) fn hydrate_rows(
             + byte_len(workspace_path.as_deref())
             + byte_len(source_kind.as_deref())
             + byte_len(source_label.as_deref())
-            + byte_len(fact.and_then(|f| f.task_category.as_deref()))
+            + byte_len(task_category.as_deref())
             + bag.preview_bytes();
 
-        let cells = vec![
-            SqliteValue::Integer(id), // 0
-            conv.source_id
-                .clone()
-                .map_or(SqliteValue::Null, |s| SqliteValue::Text(s.into())), // 1
-            guarded_text(conv.external_id.clone()), // 2
-            guarded_text(conv.source_path.clone()), // 3
-            guarded_text(conv.origin_host.clone()), // 4
-            source_kind
-                .clone()
-                .map_or(SqliteValue::Null, |s| SqliteValue::Text(s.into())), // 5
-            source_label
-                .clone()
-                .map_or(SqliteValue::Null, |s| SqliteValue::Text(s.into())), // 6
-            title_preview
-                .clone()
-                .map_or(SqliteValue::Null, |s| SqliteValue::Text(s.into())), // 7
-            integer_or_null(conv.started_at), // 8
-            integer_or_null(ended_at), // 9
-            integer_or_null(last_message_idx), // 10
-            integer_or_null(last_message_created_at), // 11
-            integer_or_null(activity), // 12
-            guarded_text(conv.primary_model.clone()), // 13
-            integer_or_null(conv.approx_tokens), // 14
-            integer_or_null(conv.grand_total_tokens), // 15
-            conv.estimated_cost_usd
-                .map_or(SqliteValue::Null, SqliteValue::Float), // 16
-            integer_or_null(conv.api_call_count), // 17
-            integer_or_null(conv.tool_call_count), // 18
-            integer_or_null(conv.user_message_count), // 19
-            integer_or_null(conv.assistant_message_count), // 20
-            SqliteValue::Integer(annotation.map(|a| a.is_pinned).unwrap_or(0)), // 21
-            guarded_text(annotation.and_then(|a| a.custom_title.clone())), // 22
-            guarded_text(annotation.and_then(|a| a.notes.clone())), // 23
-            integer_or_null(fact.and_then(|f| f.is_subagent)), // 24
-            fact.and_then(|f| f.task_category.clone())
-                .map_or(SqliteValue::Null, |s| SqliteValue::Text(s.into())), // 25
-            fact.map(|f| facts_bag::classification_coverage(f.is_subagent))
-                .map_or(SqliteValue::Null, |s| SqliteValue::Text(s.into())), // 26
-            integer_or_null(fact.and_then(|f| f.step_count)), // 27
-            integer_or_null(fact.and_then(|f| f.artifact_count)), // 28
-            integer_or_null(fact.and_then(|f| f.parent_conversation_id)), // 29
-            guarded_text(workspace_path), // 30
-            SqliteValue::Integer(byte_sum), // 31
-            integer_or_null(conv.total_input_tokens), // 32
-            integer_or_null(conv.total_output_tokens), // 33
-            integer_or_null(conv.total_cache_read_tokens), // 34
-            integer_or_null(conv.total_cache_creation_tokens), // 35
-        ];
         out.insert(
             id,
             HydratedRow {
-                cells,
-                metrics: metrics_bag,
+                id,
+                source_id: conv.source_id,
+                external_id: guarded_text_opt(conv.external_id),
+                source_path: guarded_text_opt(conv.source_path),
+                origin_host: guarded_text_opt(conv.origin_host),
+                source_kind,
+                source_label,
+                title: title_preview,
                 title_truncated,
                 title_bytes,
+                started_at: conv.started_at,
+                ended_at,
+                last_message_idx,
+                last_message_created_at,
+                activity,
+                primary_model: guarded_text_opt(conv.primary_model),
+                approx_tokens: conv.approx_tokens,
+                grand_total_tokens: conv.grand_total_tokens,
+                estimated_cost_usd: conv.estimated_cost_usd,
+                api_call_count: conv.api_call_count,
+                tool_call_count: conv.tool_call_count,
+                user_message_count: conv.user_message_count,
+                assistant_message_count: conv.assistant_message_count,
+                is_pinned: annotation.map(|a| a.is_pinned).unwrap_or(0),
+                custom_title,
+                notes,
+                is_subagent: fact.and_then(|f| f.is_subagent),
+                task_category,
+                classification_coverage: fact
+                    .map(|f| facts_bag::classification_coverage(f.is_subagent)),
+                parent_conversation_id: fact.and_then(|f| f.parent_conversation_id),
+                workspace_path: guarded_text_opt(workspace_path),
+                total_bytes: byte_sum,
+                total_input_tokens: conv.total_input_tokens,
+                total_output_tokens: conv.total_output_tokens,
+                total_cache_read_tokens: conv.total_cache_read_tokens,
+                total_cache_creation_tokens: conv.total_cache_creation_tokens,
+                metrics: metrics_bag,
             },
         );
     }
@@ -512,97 +529,77 @@ fn nonnegative_val(value: Option<i64>) -> Result<Value> {
 /// annotation/facts overlay. `public_id`/`provider`/`tags` are filled in
 /// after page emission (`identity` + `tags_for`).
 pub(super) fn decode_item(row: &HydratedRow) -> Result<Value> {
-    let id: i64 = row.get_typed(0)?;
+    let id = row.id;
     if id <= 0 {
         return Err(refuse(
             "canonical_coordinates_invalid",
             "Nonpositive conversation identity",
         ));
     }
-    let cost: Option<f64> = row.get_typed(16)?;
+    let cost = row.estimated_cost_usd;
     if cost.is_some_and(|cost| !cost.is_finite() || cost < 0.0) {
         return Err(refuse(
             "canonical_coordinates_invalid",
             "Invalid canonical cost",
         ));
     }
-    let origin_host: Option<String> = row
-        .get_typed::<Option<String>>(4)?
-        .or(row.get_typed::<Option<String>>(6)?);
-    let workspace_path: Option<String> = row.get_typed(30)?;
-    let project = workspace_path
+    let source_id = row
+        .source_id
+        .as_deref()
+        .ok_or(FrankenError::DatatypeMismatch)?;
+    let origin_host = row
+        .origin_host
+        .as_deref()
+        .or(row.source_label.as_deref());
+    let project = row
+        .workspace_path
         .as_deref()
         .map(identity::path_name)
         .filter(|name| !name.is_empty());
-    let is_subagent: Option<i64> = row.get_typed(24)?;
 
     let mut item = Map::new();
     item.insert("conversation_id".into(), json!(id));
     item.insert("public_id".into(), Value::Null);
     item.insert("provider".into(), Value::Null);
-    item.insert("source_id".into(), json!(row.get_typed::<String>(1)?));
-    item.insert(
-        "source_kind".into(),
-        json!(row.get_typed::<Option<String>>(5)?),
-    );
-    item.insert(
-        "source_path".into(),
-        json!(row.get_typed::<Option<String>>(3)?),
-    );
-    item.insert(
-        "external_id".into(),
-        json!(row.get_typed::<Option<String>>(2)?),
-    );
+    item.insert("source_id".into(), json!(source_id));
+    item.insert("source_kind".into(), json!(row.source_kind));
+    item.insert("source_path".into(), json!(row.source_path));
+    item.insert("external_id".into(), json!(row.external_id));
     item.insert("origin_host".into(), json!(origin_host));
-    item.insert("workspace_path".into(), json!(workspace_path));
+    item.insert("workspace_path".into(), json!(row.workspace_path));
     item.insert("project".into(), json!(project));
-    item.insert("title".into(), json!(row.get_typed::<Option<String>>(7)?));
+    item.insert("title".into(), json!(row.title));
     item.insert("title_truncated".into(), json!(row.title_truncated));
     item.insert("title_bytes".into(), json!(row.title_bytes));
-    item.insert(
-        "custom_title".into(),
-        json!(row.get_typed::<Option<String>>(22)?),
-    );
-    item.insert("notes".into(), json!(row.get_typed::<Option<String>>(23)?));
-    item.insert("is_pinned".into(), json!(row.get_typed::<i64>(21)? != 0));
+    item.insert("custom_title".into(), json!(row.custom_title));
+    item.insert("notes".into(), json!(row.notes));
+    item.insert("is_pinned".into(), json!(row.is_pinned != 0));
     item.insert("tags".into(), json!(Vec::<String>::new()));
-    item.insert(
-        "started_at_ms".into(),
-        json!(row.get_typed::<Option<i64>>(8)?),
-    );
-    item.insert(
-        "ended_at_ms".into(),
-        json!(row.get_typed::<Option<i64>>(9)?),
-    );
+    item.insert("started_at_ms".into(), json!(row.started_at));
+    item.insert("ended_at_ms".into(), json!(row.ended_at));
     item.insert(
         "last_message_created_at_ms".into(),
-        json!(row.get_typed::<Option<i64>>(11)?),
+        json!(row.last_message_created_at),
     );
     item.insert(
         "last_message_idx".into(),
-        nonnegative_val(row.get_typed(10)?)?,
+        nonnegative_val(row.last_message_idx)?,
     );
-    item.insert(
-        "activity_ms".into(),
-        json!(row.get_typed::<Option<i64>>(12)?),
-    );
-    item.insert(
-        "primary_model".into(),
-        json!(row.get_typed::<Option<String>>(13)?),
-    );
-    for (key, index) in [
-        ("approx_tokens", 14),
-        ("grand_total_tokens", 15),
-        ("api_call_count", 17),
-        ("tool_call_count", 18),
-        ("user_message_count", 19),
-        ("assistant_message_count", 20),
-        ("total_input_tokens", 32),
-        ("total_output_tokens", 33),
-        ("total_cache_read_tokens", 34),
-        ("total_cache_creation_tokens", 35),
+    item.insert("activity_ms".into(), json!(row.activity));
+    item.insert("primary_model".into(), json!(row.primary_model));
+    for (key, value) in [
+        ("approx_tokens", row.approx_tokens),
+        ("grand_total_tokens", row.grand_total_tokens),
+        ("api_call_count", row.api_call_count),
+        ("tool_call_count", row.tool_call_count),
+        ("user_message_count", row.user_message_count),
+        ("assistant_message_count", row.assistant_message_count),
+        ("total_input_tokens", row.total_input_tokens),
+        ("total_output_tokens", row.total_output_tokens),
+        ("total_cache_read_tokens", row.total_cache_read_tokens),
+        ("total_cache_creation_tokens", row.total_cache_creation_tokens),
     ] {
-        item.insert(key.into(), nonnegative_val(row.get_typed(index)?)?);
+        item.insert(key.into(), nonnegative_val(value)?);
     }
     item.insert("estimated_cost_usd".into(), json!(cost));
     // The persisted fact/metrics bag (Task 7): `null` when the facts row
@@ -614,19 +611,16 @@ pub(super) fn decode_item(row: &HydratedRow) -> Result<Value> {
     item.insert("parent_public_id".into(), Value::Null);
     item.insert(
         "is_subagent".into(),
-        json!(is_subagent.map(|value| value != 0)),
+        json!(row.is_subagent.map(|value| value != 0)),
     );
-    item.insert(
-        "task_category".into(),
-        json!(row.get_typed::<Option<String>>(25)?),
-    );
+    item.insert("task_category".into(), json!(row.task_category));
     item.insert(
         "classification_coverage".into(),
-        json!(row.get_typed::<Option<String>>(26)?),
+        json!(row.classification_coverage),
     );
     item.insert(
         "parent_conversation_id".into(),
-        json!(row.get_typed::<Option<i64>>(29)?),
+        json!(row.parent_conversation_id),
     );
     Ok(Value::Object(item))
 }

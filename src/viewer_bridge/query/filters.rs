@@ -1,6 +1,5 @@
 use anyhow::Result;
-use coding_agent_search::franken_sync::compat::RowExt;
-use coding_agent_search::franken_sync::{Connection, SqliteValue};
+use coding_agent_search::franken_sync::{Connection, FrankenError, SqliteValue};
 
 use super::super::annotations;
 use super::super::identity;
@@ -41,18 +40,23 @@ fn normalize_provider_filter(connection: &Connection, raw: &str) -> Result<Optio
             "Provider filter is not a valid provider namespace",
         )
     })?;
-    let mut ids = Vec::new();
     // `agents` is a bounded dimension table; normalize each slug in Rust
     // because the canonical store keeps unnormalized slugs.
-    for row in connection.query("SELECT id, slug FROM agents")? {
-        let slug: Option<String> = row.get_typed(1)?;
-        let Some(slug) = slug else { continue };
-        if let Ok(candidate) = identity::normalize_agent_slug(&slug)
-            && candidate == provider
-        {
-            ids.push(row.get_typed::<i64>(0)?);
-        }
-    }
+    let ids = connection
+        .query_map("SELECT id, slug FROM agents", &[], |row| {
+            let Some(slug) = row.get::<_, Option<String>>(1)? else {
+                return Ok(None);
+            };
+            if let Ok(candidate) = identity::normalize_agent_slug(&slug)
+                && candidate == provider
+            {
+                return Ok(Some(row.get::<_, i64>(0)?));
+            }
+            Ok(None)
+        })?
+        .into_iter()
+        .flatten()
+        .collect();
     Ok(Some(ids))
 }
 
@@ -65,16 +69,30 @@ fn normalize_project_filter(connection: &Connection, raw: &str) -> Result<Option
     }
     // `_project_path`: exact workspace path wins; otherwise a unique
     // display-name match; ambiguity and misses are honest, never guessed.
+    enum ProjectMatch {
+        None,
+        Exact(i64),
+        Display(i64),
+    }
     let mut exact = Vec::new();
     let mut display = Vec::new();
-    for row in connection.query("SELECT id, path FROM workspaces")? {
-        let id: i64 = row.get_typed(0)?;
-        let path: Option<String> = row.get_typed(1)?;
-        let Some(path) = path else { continue };
-        if path == raw {
-            exact.push(id);
+    for matched in connection.query_map("SELECT id, path FROM workspaces", &[], |row| {
+        let id: i64 = row.get(0)?;
+        let Some(path) = row.get::<_, Option<String>>(1)? else {
+            return Ok(ProjectMatch::None);
+        };
+        Ok(if path == raw {
+            ProjectMatch::Exact(id)
         } else if identity::path_name(&path) == raw {
-            display.push(id);
+            ProjectMatch::Display(id)
+        } else {
+            ProjectMatch::None
+        })
+    })? {
+        match matched {
+            ProjectMatch::Exact(id) => exact.push(id),
+            ProjectMatch::Display(id) => display.push(id),
+            ProjectMatch::None => {}
         }
     }
     if !exact.is_empty() {
@@ -341,14 +359,15 @@ pub(super) fn build_conditions(
 /// unknown-activity probe must not carry the activity predicates), the
 /// classification *exclusions* (a row excluded by a known-false predicate
 /// never reaches unknown checks), and `extra` (the NULL probe itself).
-fn probe(
+fn probe<T>(
     connection: &Connection,
     resolved: &ResolvedFilters,
     select: &str,
     include_activity: bool,
     include_created: bool,
     extra: impl Fn(&Conditions, &mut Vec<String>),
-) -> Result<Vec<coding_agent_search::franken_sync::Row>> {
+    map: impl FnMut(&rusqlite::Row<'_>) -> std::result::Result<T, FrankenError>,
+) -> Result<Option<T>> {
     let mut params = Vec::new();
     let conds = build_conditions(resolved, &mut params);
     let mut clauses = conds.base.clone();
@@ -367,9 +386,10 @@ fn probe(
     // Probes run against the persisted sort row: a surviving candidate is
     // the same row the order query would emit, on the same columns.
     let sql = format!("SELECT {select} FROM viewer_session_sort vs WHERE {where_sql} LIMIT 1");
-    connection
-        .query_with_params(&sql, &params)
-        .map_err(Into::into)
+    Ok(connection
+        .query_map(&sql, &params, map)?
+        .into_iter()
+        .next())
 }
 
 // ---------------------------------------------------------------------------
@@ -478,16 +498,24 @@ pub(super) fn run_probes(
 
     let has_activity_window = resolved.activity_from.is_some() || resolved.activity_to.is_some();
     if has_activity_window {
-        let rows = probe(connection, resolved, "1", false, true, |conds, clauses| {
-            if let Some(excl) = &conds.subagent_exclusion {
-                clauses.push(excl.clone());
-            }
-            if let Some(excl) = &conds.category_exclusion {
-                clauses.push(excl.clone());
-            }
-            clauses.push("vs.activity_ms IS NULL".to_owned());
-        })?;
-        if !rows.is_empty() {
+        let hit = probe(
+            connection,
+            resolved,
+            "1",
+            false,
+            true,
+            |conds, clauses| {
+                if let Some(excl) = &conds.subagent_exclusion {
+                    clauses.push(excl.clone());
+                }
+                if let Some(excl) = &conds.category_exclusion {
+                    clauses.push(excl.clone());
+                }
+                clauses.push("vs.activity_ms IS NULL".to_owned());
+            },
+            |_| Ok(()),
+        )?;
+        if hit.is_some() {
             return Err(refuse(
                 "data_unavailable",
                 "Session activity time is unknown",
@@ -496,16 +524,24 @@ pub(super) fn run_probes(
     }
     let has_created_window = resolved.created_from.is_some() || resolved.created_to.is_some();
     if has_created_window {
-        let rows = probe(connection, resolved, "1", true, false, |conds, clauses| {
-            if let Some(excl) = &conds.subagent_exclusion {
-                clauses.push(excl.clone());
-            }
-            if let Some(excl) = &conds.category_exclusion {
-                clauses.push(excl.clone());
-            }
-            clauses.push("vs.created_ms IS NULL".to_owned());
-        })?;
-        if !rows.is_empty() {
+        let hit = probe(
+            connection,
+            resolved,
+            "1",
+            true,
+            false,
+            |conds, clauses| {
+                if let Some(excl) = &conds.subagent_exclusion {
+                    clauses.push(excl.clone());
+                }
+                if let Some(excl) = &conds.category_exclusion {
+                    clauses.push(excl.clone());
+                }
+                clauses.push("vs.created_ms IS NULL".to_owned());
+            },
+            |_| Ok(()),
+        )?;
+        if hit.is_some() {
             return Err(refuse(
                 "data_unavailable",
                 "Session creation time is unknown for a filtered row",
@@ -513,7 +549,7 @@ pub(super) fn run_probes(
         }
     }
     if resolved.is_subagent.is_some() {
-        let rows = probe(
+        let hit = probe(
             connection,
             resolved,
             "vs.coverage_state",
@@ -525,13 +561,14 @@ pub(super) fn run_probes(
                 }
                 clauses.push("vs.is_subagent IS NULL".to_owned());
             },
+            |row| Ok(row.get::<_, Option<String>>(0)?),
         )?;
-        if let Some(row) = rows.first() {
-            return Err(classification_refusal(row.get_typed::<Option<String>>(0)?));
+        if let Some(coverage) = hit {
+            return Err(classification_refusal(coverage));
         }
     }
     if resolved.category.is_some() {
-        let rows = probe(
+        let hit = probe(
             connection,
             resolved,
             "vs.coverage_state",
@@ -543,16 +580,17 @@ pub(super) fn run_probes(
                 }
                 clauses.push("vs.task_category IS NULL".to_owned());
             },
+            |row| Ok(row.get::<_, Option<String>>(0)?),
         )?;
-        if let Some(row) = rows.first() {
-            return Err(classification_refusal(row.get_typed::<Option<String>>(0)?));
+        if let Some(coverage) = hit {
+            return Err(classification_refusal(coverage));
         }
     }
 
     // Implicit browse keeps unknown classifications (membership stays
     // exact); the warning reports that classification was not established.
     if resolved.is_subagent.is_none() && !resolved.include_subagents {
-        let rows = probe(
+        let hit = probe(
             connection,
             resolved,
             "vs.coverage_state",
@@ -561,9 +599,9 @@ pub(super) fn run_probes(
             |_conds, clauses| {
                 clauses.push("vs.is_subagent IS NULL".to_owned());
             },
+            |row| Ok(row.get::<_, Option<String>>(0)?),
         )?;
-        if let Some(row) = rows.first() {
-            let coverage: Option<String> = row.get_typed(0)?;
+        if let Some(coverage) = hit {
             warnings.push(
                 match coverage.as_deref() {
                     Some("pending") | None => "classification_pending",
@@ -582,7 +620,7 @@ pub(super) fn run_probes(
 /// refuses `facts_pending`; a persisted resolver refusal surfaces its own
 /// kind (`identity_conflict`, `provenance_conflict`, `session_not_found`).
 pub(super) fn run_tie_probe(connection: &Connection, resolved: &ResolvedFilters) -> Result<()> {
-    let rows = probe(
+    let hit = probe(
         connection,
         resolved,
         "vs.tie_error",
@@ -592,9 +630,9 @@ pub(super) fn run_tie_probe(connection: &Connection, resolved: &ResolvedFilters)
             clauses.extend(conds.classification.iter().cloned());
             clauses.push("vs.tie_key IS NULL".to_owned());
         },
+        |row| Ok(row.get::<_, Option<String>>(0)?),
     )?;
-    if let Some(row) = rows.first() {
-        let stored: Option<String> = row.get_typed(0)?;
+    if let Some(stored) = hit {
         let kind = match stored.as_deref() {
             Some("identity_conflict") => "identity_conflict",
             Some("provenance_conflict") => "provenance_conflict",
