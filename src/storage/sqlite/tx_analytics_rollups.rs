@@ -20,7 +20,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Update daily stats within a frankensqlite transaction.
+/// Update daily stats within a SQLite transaction.
 pub(super) fn franken_update_daily_stats_in_tx(
     storage: &FrankenStorage,
     tx: &FrankenTransaction<'_>,
@@ -206,10 +206,10 @@ fn franken_apply_daily_stats_delta_in_tx(
 }
 
 // -------------------------------------------------------------------------
-// Frankensqlite batch helpers
+// SQLite batch helpers
 // -------------------------------------------------------------------------
 
-/// Batch upsert daily_stats within a frankensqlite transaction.
+/// Batch upsert daily_stats within a SQLite transaction.
 pub(super) fn franken_update_daily_stats_batched_in_tx(
     tx: &FrankenTransaction<'_>,
     entries: &[(i64, String, String, StatsDelta)],
@@ -265,58 +265,7 @@ pub(super) fn franken_update_daily_stats_batched_in_tx_for_target(
     let mut total_affected = 0;
     let upsert_sql = target.upsert_sql();
 
-    // Keep frankensqlite UPSERTs row-wise inside the transaction. The
-    // multi-row VALUES ... ON CONFLICT form still falls back through
-    // INSERT...SELECT in fsqlite-core, which rejects UPSERT/RETURNING during
-    // real cass indexing.
     for (day_id, agent, source, delta) in entries {
-        // The rebuild stage is connection-local and already serialized by the
-        // caller. Avoid routing its repeated aggregate keys through
-        // `INSERT ... ON CONFLICT`: FrankenSQLite currently reports the
-        // primary-key conflict before applying the DO UPDATE arm for this TEMP
-        // table shape. An explicit update-then-insert keeps the same additive
-        // semantics without extending the legacy SQLite fallback.
-        if matches!(target, DailyStatsBatchTarget::RebuildStage) {
-            let rows_changed = tx.execute_compat(
-                "UPDATE daily_stats_rebuild_stage
-                 SET session_count = session_count + ?4,
-                     message_count = message_count + ?5,
-                     total_chars = total_chars + ?6,
-                     last_updated = ?7
-                 WHERE day_id = ?1 AND agent_slug = ?2 AND source_id = ?3",
-                fparams![
-                    *day_id,
-                    agent.as_str(),
-                    source.as_str(),
-                    delta.session_count_delta,
-                    delta.message_count_delta,
-                    delta.total_chars_delta,
-                    now
-                ],
-            )?;
-            if rows_changed > 0 {
-                total_affected += rows_changed;
-                continue;
-            }
-
-            total_affected += tx.execute_compat(
-                "INSERT INTO daily_stats_rebuild_stage (
-                     day_id, agent_slug, source_id, session_count,
-                     message_count, total_chars, last_updated
-                 ) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                fparams![
-                    *day_id,
-                    agent.as_str(),
-                    source.as_str(),
-                    delta.session_count_delta,
-                    delta.message_count_delta,
-                    delta.total_chars_delta,
-                    now
-                ],
-            )?;
-            continue;
-        }
-
         total_affected += tx.execute_compat(
             upsert_sql,
             fparams![
@@ -334,11 +283,7 @@ pub(super) fn franken_update_daily_stats_batched_in_tx_for_target(
     Ok(total_affected)
 }
 
-/// Batch insert token_usage rows within a frankensqlite transaction.
-///
-/// Uses row-wise INSERT OR IGNORE to avoid the frankensqlite limitation where
-/// multi-row VALUES lists fall through to INSERT...SELECT, which rejects
-/// UPSERT/OR IGNORE conflict clauses.
+/// Batch insert token_usage rows within a SQLite transaction.
 pub(super) fn franken_insert_token_usage_batched_in_tx(
     tx: &FrankenTransaction<'_>,
     entries: &[TokenUsageEntry],
@@ -395,7 +340,7 @@ pub(super) fn franken_insert_token_usage_batched_in_tx(
     Ok(total_inserted)
 }
 
-/// Batch upsert token_daily_stats within a frankensqlite transaction.
+/// Batch upsert token_daily_stats within a SQLite transaction.
 pub(super) fn franken_update_token_daily_stats_batched_in_tx(
     tx: &FrankenTransaction<'_>,
     entries: &[(i64, String, String, String, TokenStatsDelta)],
@@ -490,11 +435,7 @@ pub(super) fn franken_update_token_daily_stats_batched_in_tx_for_table(
     Ok(total_affected)
 }
 
-/// Batch insert message_metrics rows within a frankensqlite transaction.
-///
-/// Uses row-wise INSERT OR IGNORE to avoid the frankensqlite limitation where
-/// multi-row VALUES lists fall through to INSERT...SELECT, which rejects
-/// UPSERT/OR IGNORE conflict clauses.
+/// Batch insert message_metrics rows within a SQLite transaction.
 pub(super) fn franken_insert_message_metrics_batched_in_tx(
     tx: &FrankenTransaction<'_>,
     entries: &[MessageMetricsEntry],
@@ -553,7 +494,7 @@ pub(super) fn franken_insert_message_metrics_batched_in_tx(
     Ok(total_inserted)
 }
 
-/// Flush one rollup table (shared logic for hourly + daily) within a frankensqlite transaction.
+/// Flush one rollup table (shared logic for hourly + daily) within a SQLite transaction.
 fn franken_flush_rollup_table(
     tx: &FrankenTransaction<'_>,
     table: &str,
@@ -633,7 +574,7 @@ fn franken_flush_rollup_table(
     Ok(total_affected)
 }
 
-/// Flush usage_models_daily rollup within a frankensqlite transaction.
+/// Flush usage_models_daily rollup within a SQLite transaction.
 fn franken_flush_model_daily_rollup_table(
     tx: &FrankenTransaction<'_>,
     deltas: &HashMap<(i64, String, i64, String, String, String), UsageRollupDelta>,
@@ -704,7 +645,7 @@ fn franken_flush_model_daily_rollup_table(
     Ok(total_affected)
 }
 
-/// Flush AnalyticsRollupAggregator deltas via frankensqlite transaction.
+/// Flush AnalyticsRollupAggregator deltas within a SQLite transaction.
 pub(super) fn franken_flush_analytics_rollups_in_tx(
     tx: &FrankenTransaction<'_>,
     agg: &AnalyticsRollupAggregator,
@@ -979,7 +920,7 @@ pub(super) fn franken_relocate_rollup_subtract(
     Ok(destination_updated.unwrap_or(old_updated))
 }
 
-/// Update conversation-level token summary columns via frankensqlite transaction.
+/// Update conversation-level token summary columns within a SQLite transaction.
 pub(super) fn franken_update_conversation_token_summaries_in_tx(
     tx: &FrankenTransaction<'_>,
     conversation_id: i64,
