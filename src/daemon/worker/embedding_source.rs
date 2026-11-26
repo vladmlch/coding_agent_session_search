@@ -74,26 +74,35 @@ impl SqliteEmbeddingSource {
 
     fn page_after(&self, after: Option<i64>) -> Result<Option<MessagePage>> {
         let limit = i64::try_from(self.page_rows)?;
-        let (sql, params) = match after {
-            Some(id) => (
-                "SELECT id, COALESCE(LENGTH(CAST(content AS BLOB)), 0) \
-                 FROM messages WHERE id > ?1 ORDER BY id LIMIT ?2",
-                vec![SqliteValue::Integer(id), SqliteValue::Integer(limit)],
-            ),
-            None => (
-                "SELECT id, COALESCE(LENGTH(CAST(content AS BLOB)), 0) \
-                 FROM messages ORDER BY id LIMIT ?1",
-                vec![SqliteValue::Integer(limit)],
-            ),
+        let two_params;
+        let one_param;
+        let (sql, params): (&str, &[SqliteValue]) = match after {
+            Some(id) => {
+                two_params = [SqliteValue::Integer(id), SqliteValue::Integer(limit)];
+                (
+                    "SELECT id, COALESCE(LENGTH(CAST(content AS BLOB)), 0) \
+                     FROM messages WHERE id > ?1 ORDER BY id LIMIT ?2",
+                    &two_params,
+                )
+            }
+            None => {
+                one_param = [SqliteValue::Integer(limit)];
+                (
+                    "SELECT id, COALESCE(LENGTH(CAST(content AS BLOB)), 0) \
+                     FROM messages ORDER BY id LIMIT ?1",
+                    &one_param,
+                )
+            }
         };
-        let headers = self.connection.query_with_params(sql, &params)?;
+        let headers = self.connection.query_map(sql, params, |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
         let mut last_id = None;
         let mut planned_bytes = 0usize;
         let mut selected_rows = 0usize;
-        for row in headers {
-            let id = row.get_typed::<i64>(0)?;
-            let bytes = usize::try_from(row.get_typed::<i64>(1)?)
-                .context("invalid embedding message byte length")?;
+        for (id, raw_bytes) in headers {
+            let bytes =
+                usize::try_from(raw_bytes).context("invalid embedding message byte length")?;
             if after.is_some_and(|previous| id <= previous)
                 || last_id.is_some_and(|previous| id <= previous)
             {
@@ -115,25 +124,33 @@ impl SqliteEmbeddingSource {
         };
         // The first page has no lower bound so even i64::MIN is visited and
         // classified consistently with the old whole-archive projection.
-        let (sql, params) = match after {
-            Some(id) => (
-                "SELECT m.id, m.created_at, COALESCE(c.agent_id, 0), \
-                 c.workspace_id, c.source_id, m.role, m.content \
-                 FROM messages m JOIN conversations c ON m.conversation_id = c.id \
-                 WHERE m.id > ?1 AND m.id <= ?2 ORDER BY m.id",
-                vec![SqliteValue::Integer(id), SqliteValue::Integer(last_id)],
-            ),
-            None => (
-                "SELECT m.id, m.created_at, COALESCE(c.agent_id, 0), \
-                 c.workspace_id, c.source_id, m.role, m.content \
-                 FROM messages m JOIN conversations c ON m.conversation_id = c.id \
-                 WHERE m.id <= ?1 ORDER BY m.id",
-                vec![SqliteValue::Integer(last_id)],
-            ),
+        let two_params;
+        let one_param;
+        let (sql, params): (&str, &[SqliteValue]) = match after {
+            Some(id) => {
+                two_params = [SqliteValue::Integer(id), SqliteValue::Integer(last_id)];
+                (
+                    "SELECT m.id, m.created_at, COALESCE(c.agent_id, 0), \
+                     c.workspace_id, c.source_id, m.role, m.content \
+                     FROM messages m JOIN conversations c ON m.conversation_id = c.id \
+                     WHERE m.id > ?1 AND m.id <= ?2 ORDER BY m.id",
+                    &two_params,
+                )
+            }
+            None => {
+                one_param = [SqliteValue::Integer(last_id)];
+                (
+                    "SELECT m.id, m.created_at, COALESCE(c.agent_id, 0), \
+                     c.workspace_id, c.source_id, m.role, m.content \
+                     FROM messages m JOIN conversations c ON m.conversation_id = c.id \
+                     WHERE m.id <= ?1 ORDER BY m.id",
+                    &one_param,
+                )
+            }
         };
         let mut messages = Vec::with_capacity(selected_rows);
         self.connection
-            .query_with_params_for_each(sql, &params, |row| {
+            .query_with_params_for_each(sql, params, |row| {
                 let source_id = row
                     .get_typed::<Option<String>>(4)?
                     .unwrap_or_else(|| "local".to_string());
@@ -249,7 +266,7 @@ mod tests {
             &[
                 SqliteValue::Integer(id),
                 SqliteValue::Integer(conversation),
-                SqliteValue::Text(text.to_string().into()),
+                SqliteValue::Text(text.to_owned()),
             ],
         )?;
         Ok(())
