@@ -290,7 +290,7 @@ pub(super) fn probe_doctor_database_and_wal(
                                                     );
                                                 }
                                                 Some(DoctorFtsTableState::Missing {
-                                                    frankensqlite_error: sqlite_error,
+                                                    sqlite_error,
                                                     not_viable,
                                                 }) => {
                                                     // An absent in-DB FTS shadow is benign
@@ -309,7 +309,7 @@ pub(super) fn probe_doctor_database_and_wal(
                                                     add_check!("fts_table", "pass", message, false);
                                                 }
                                                 Some(DoctorFtsTableState::ShadowCorrupt {
-                                                    frankensqlite_error: sqlite_error,
+                                                    sqlite_error,
                                                 }) => {
                                                     // A queryable table whose docsize shadow
                                                     // cannot be counted is the #362/#368
