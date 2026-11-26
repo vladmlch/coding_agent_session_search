@@ -350,7 +350,7 @@ pub(crate) fn load_indexed_export(
 
     // `open_strict_readonly` — not `open_readonly`: the ordinary read opener
     // creates `doctor/locks/` objects and performs sanctioned repairs
-    // (duplicate-FTS dedupe via the sqlite3 bridge, dirty-WAL checkpoint
+    // (duplicate-FTS dedupe, dirty-WAL checkpoint
     // recovery) before opening. The strict opener is the non-mutating read
     // lane (`SQLITE_OPEN_READ_ONLY`, no create/repair/migrate, no lock-file
     // creation); a corrupt, busy, or schema-conflicting archive surfaces as
