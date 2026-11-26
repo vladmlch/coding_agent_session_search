@@ -502,8 +502,8 @@ pub(in crate::indexer) fn expected_appended_lexical_docs(
 ) -> Result<usize> {
     // The per-message cap makes every message's classification independent of
     // every other, so only the rows appended since the memo need classifying:
-    // a rowid-range scan over them, never a JOIN (fsqlite's join path used to
-    // materialize every message row, content included: 20+ minutes on an
+    // a rowid-range scan over them, never a JOIN (wide join paths previously
+    // materialized every message row, content included: 20+ minutes on an
     // 8M-message archive) and never the older text of a touched conversation.
     let touched: Vec<i64> = storage
         .raw()

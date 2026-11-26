@@ -621,34 +621,43 @@ mod tests {
     }
 }
 
-/// Integration coverage: real reader/writer contention on a frankensqlite-backed
+/// Integration coverage: real reader/writer contention on a SQLite-backed
 /// temp DB. Mirrors the proven concurrent-stress pattern (anyhow + downcast to
 /// `FrankenError`, `concurrent_writer`, `execute_compat`) but drives the retry
-/// loop through this module's shared classifier, proving that every MVCC commit
+/// loop through this module's shared classifier, proving that every contention
 /// conflict is classified as a retryable contention class (never archive loss),
 /// that bounded retry converges, and that no update is lost.
 #[cfg(test)]
 mod contention_integration_tests {
     use super::{ContentionClass, classify_franken_error};
+    use crate::franken_sync::TransactionBehavior;
     use crate::franken_sync::compat::{RowExt, TransactionExt};
     use crate::franken_sync::params as fparams;
-    use crate::storage::sqlite::{ConnectionManagerConfig, FrankenConnectionManager, WriterGuard};
+    use crate::storage::sqlite::{
+        ConnectionManagerConfig, FrankenConnectionManager, FrankenStorage, WriterGuard,
+    };
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use tempfile::TempDir;
 
     /// One blind-increment transaction against the hot counter row. A fresh
-    /// transaction per call reads the latest committed value, so a retried
-    /// commit lands exactly one increment — no lost updates. Returns the raw
-    /// `anyhow` error so the caller can downcast to `FrankenError` and classify
-    /// the contention, mirroring the production retry loop.
+    /// `IMMEDIATE` transaction per call reads the latest committed value, so a
+    /// retried commit lands exactly one increment — no lost updates. Sets
+    /// `busy_timeout = 0` on the pooled writer connection so competing writers
+    /// surface typed `FrankenError::Busy` rather than silently absorbing the
+    /// lock wait inside SQLite, mirroring the production classifier loop.
     fn try_increment(guard: &WriterGuard<'_>) -> anyhow::Result<()> {
-        let mut tx = guard.storage().raw().transaction()?;
+        let conn = guard.storage().raw();
+        conn.execute("PRAGMA busy_timeout = 0;")?;
+        let mut tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute_compat(
             "UPDATE counter SET v = v + ?1 WHERE id = 1",
             fparams![1_i64],
         )?;
+        // Yield while holding the immediate write lock so concurrent writers
+        // deterministically collide and exercise retry classification.
+        std::thread::yield_now();
         tx.commit()?;
         Ok(())
     }
@@ -657,28 +666,26 @@ mod contention_integration_tests {
     fn concurrent_writers_on_hot_row_classify_as_retryable_contention_and_converge() {
         let dir = TempDir::new().expect("temp dir");
         let db_path = dir.path().join("contention.db");
+
+        // Initialize schema-v1 archive first (`FrankenConnectionManager::new`
+        // requires an existing initialized archive) and seed one hot counter row.
+        {
+            let storage = FrankenStorage::open(&db_path).expect("init archive");
+            storage
+                .raw()
+                .execute("CREATE TABLE counter (id INTEGER PRIMARY KEY, v INTEGER NOT NULL)")
+                .expect("create table");
+            storage
+                .raw()
+                .execute("INSERT INTO counter (id, v) VALUES (1, 0)")
+                .expect("seed counter");
+        }
+
         let config = ConnectionManagerConfig {
             reader_count: 2,
             max_writers: 4,
         };
         let mgr = FrankenConnectionManager::new(&db_path, config).expect("open manager");
-
-        // One hot counter row that every writer contends on — maximizes the
-        // chance the MVCC engine raises a real write-write conflict.
-        {
-            let mut guard = mgr.writer().expect("writer");
-            guard
-                .storage()
-                .raw()
-                .execute("CREATE TABLE counter (id INTEGER PRIMARY KEY, v INTEGER NOT NULL)")
-                .expect("create table");
-            guard
-                .storage()
-                .raw()
-                .execute("INSERT INTO counter (id, v) VALUES (1, 0)")
-                .expect("seed counter");
-            guard.mark_committed();
-        }
 
         let num_threads = 6;
         let incr_per_thread = 60;
@@ -768,7 +775,7 @@ mod contention_integration_tests {
             (num_threads * incr_per_thread) as i64,
             "every increment must be durably applied (no lost updates)"
         );
-        // The classifier was actually exercised by real MVCC contention.
+        // The classifier was actually exercised by real writer contention.
         let observed = classified_conflicts.load(Ordering::Relaxed);
         eprintln!("hot-row contention: {observed} classified retryable conflicts");
         assert!(

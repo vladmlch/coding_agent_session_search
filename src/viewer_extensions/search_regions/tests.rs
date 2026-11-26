@@ -54,13 +54,6 @@ fn fixture() -> (tempfile::TempDir, FrankenStorage) {
     let temp = tempfile::tempdir().expect("tempdir");
     let storage = FrankenStorage::open(&temp.path().join("archive.db")).expect("canonical schema");
     crate::viewer_extensions::schema::ensure_schema(storage.raw()).expect("extension schema");
-    // Orphan rows (a conversation deleted under live regions) cannot be
-    // written with cascading foreign keys enforced, so the fixture
-    // relaxes enforcement; the query itself must still exclude them.
-    storage
-        .raw()
-        .execute("PRAGMA foreign_keys = OFF")
-        .expect("relax foreign keys for orphan fixtures");
     (temp, storage)
 }
 
@@ -243,8 +236,13 @@ fn live_region_doc_bound_matches_correlated_oracle_and_hand_count() -> Result<()
 
     // conv 5: marks and regions of a deleted conversation (orphans; the
     // conversation-exists filter must drop the whole group). Hand count: 0.
+    // Cascading foreign keys disallow seeding an orphan directly, so relax
+    // enforcement strictly around the two orphan inserts and restore ON
+    // before running the queries.
+    db.execute("PRAGMA foreign_keys = OFF")?;
     insert_marks(db, 5, r#"["d1","d2","d3"]"#);
     insert_region(db, 5, 0, base(0), Some("o"));
+    db.execute("PRAGMA foreign_keys = ON")?;
 
     // conv 6: a non-array JSON deletes payload contributes zero deletes,
     // but its live doc region still counts. Hand count: 1.

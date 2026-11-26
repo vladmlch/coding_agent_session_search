@@ -249,7 +249,7 @@ pub(in crate::indexer::semantic::engine) fn total_semantic_conversations_with_ca
     // memory is cheap (roughly one integer per conversation) and, critically,
     // never materializes message rows or bodies.
     //
-    // This avoids all three hostile FrankenSQLite 0.1.13 paths found while
+    // This avoids all three hostile legacy-engine query paths found while
     // reproducing #343: correlated EXISTS under COUNT(*) misses the join-loop
     // memo; COUNT(DISTINCT ...) uses a linear seen-set; and GROUP BY retains
     // every source row in per-group vectors.
@@ -320,7 +320,7 @@ pub(in crate::indexer::semantic::engine) fn fetch_bounded_semantic_candidate_con
         // candidates.
         //
         // `messages.id` is the canonical INTEGER PRIMARY KEY cursor.  Force a
-        // table/rowid traversal so FrankenSQLite can stream every eligible
+        // table/rowid traversal so SQLite can stream every eligible
         // post-cursor message through one statement.  A bounded BTreeSet keeps
         // only the smallest `max_candidates` conversation IDs.  This final
         // reconciliation is essential: messages may be appended to older
@@ -329,10 +329,11 @@ pub(in crate::indexer::semantic::engine) fn fetch_bounded_semantic_candidate_con
         // must advance in ascending order without skipping an older candidate.
         //
         // The WHERE must stay the bare rowid range, with the conversation
-        // bound applied in the row callback: FrankenSQLite seeks a rowid range
-        // only when nothing else is in the WHERE. `AND conversation_id > ?2`
-        // turned every batch into a full `messages` scan (on a 496,736-message
-        // archive: about 1 s warm and 7 s cold per batch, versus 0.5 ms).
+        // bound applied in the row callback: historically the query planner
+        // only sought a rowid range when nothing else was in the WHERE.
+        // `AND conversation_id > ?2` turned every batch into a full `messages`
+        // scan (on a 496,736-message archive: about 1 s warm and 7 s cold per
+        // batch, versus 0.5 ms).
         let mut selected = BTreeSet::new();
         let mut rows_scanned = 0_usize;
         storage
@@ -377,10 +378,11 @@ pub(in crate::indexer::semantic::engine) fn fetch_bounded_semantic_candidate_con
 
     // Scan the narrow parent table in bounded pages, then issue an indexed
     // point probe for the message predicate. A correlated EXISTS looks tidy,
-    // but FrankenSQLite 0.1.13's file-backed path clone/substitutes and executes
-    // that subquery per outer row; on #343's 432k-message corpus it consumed
-    // minutes and GiBs. Explicit probes make both bounds visible: at most one
-    // small parent page resident and at most `max_candidates` selected IDs.
+    // but historically file-backed query execution cloned/substituted and
+    // evaluated that subquery per outer row; on #343's 432k-message corpus it
+    // consumed minutes and GiBs. Explicit probes make both bounds visible: at
+    // most one small parent page resident and at most `max_candidates` selected
+    // IDs.
     let page_size = max_candidates.saturating_mul(4).clamp(256, 4_096);
     let page_size_i64 = i64::try_from(page_size).unwrap_or(i64::MAX);
     let hot_tail_ids = if after_message_id.is_none() {

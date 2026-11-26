@@ -562,7 +562,7 @@ pub struct IndexingProgress {
     /// Set by `run_index` while it is inside the post-publish finalize window —
     /// specifically `close_storage_after_index`, which runs the (deferred,
     /// possibly multi-GB) bulk-ingest WAL checkpoint via a synchronous,
-    /// `!Send` frankensqlite `conn.close()` + `wal_checkpoint(TRUNCATE)` on the
+    /// `!Send` SQLite `conn.close()` + `wal_checkpoint(TRUNCATE)` on the
     /// indexer thread. That checkpoint cannot report progress and, on a large
     /// corpus (esp. macOS, where Darwin fsync/flock is slow), legitimately
     /// takes minutes. The stall watchdog reads this flag so it does not misread

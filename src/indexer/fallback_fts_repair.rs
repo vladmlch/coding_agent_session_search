@@ -297,7 +297,7 @@ pub(in crate::indexer) enum FallbackFtsRepairOutcome {
     },
     /// #329/#345: the optional DB-resident fallback FTS repair failed for a
     /// reason outside the enumerated nonfatal classes (e.g. an internal
-    /// frankensqlite allocation failure on a multi-million-message shadow
+    /// SQLite allocation failure on a multi-million-message shadow
     /// rebuild). The canonical archive and the published Tantivy index are
     /// already good at this point, so the failure is reported instead of
     /// failing the whole `index --full` run with exit 9 after hours of
@@ -358,8 +358,7 @@ pub(in crate::indexer) fn repair_fallback_fts_after_full_index_run(
     // Use a short-lived, freshly-opened FrankenStorage for *every* step
     // of the repair — the fingerprint probe, the consistency check, and
     // the marker write.  The long-running indexer connection accumulates
-    // per-thread cursor cancellation state across the rayon worker pool
-    // (see `observe_cursor_cancellation` in fsqlite-btree), which can
+    // per-thread cursor cancellation state across the rayon worker pool, which can
     // surface on the FIRST subsequent query as `SQLITE_ABORT`
     // ("callback requested query abort").  That failure was making
     // every full-rebuild `run_index` call in the bench harness return
@@ -390,7 +389,7 @@ pub(in crate::indexer) fn repair_fallback_fts_after_full_index_run(
             // repair must not fail the whole run.
             return Ok(Some(FallbackFtsRepairOutcome::SkippedRepairFailed {
                 detail: format!(
-                    "opening fresh frankensqlite connection for fallback FTS repair: {detail}"
+                    "opening fresh SQLite connection for fallback FTS repair: {detail}"
                 ),
             }));
         }
@@ -438,7 +437,7 @@ pub(in crate::indexer) fn repair_fallback_fts_after_full_index_run(
                 if let Some(outcome) = nonfatal_fallback_fts_repair_outcome(detail.clone()) {
                     break 'compute outcome;
                 }
-                // #329/#345: internal repair failures (frankensqlite "out of
+                // #329/#345: internal repair failures (SQLite "out of
                 // memory" on huge shadow rebuilds being the reported case) no
                 // longer fail an `index --full` whose canonical + Tantivy work
                 // already completed. Lexical search is served by Tantivy and

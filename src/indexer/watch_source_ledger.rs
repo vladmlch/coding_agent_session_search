@@ -7,7 +7,7 @@
 //! root-wide replay debt.
 
 use super::*;
-use crate::franken_sync::compat::TransactionExt;
+use crate::franken_sync::compat::TransactionBehavior;
 use crate::storage::sqlite::SourceIngestLedgerEntry;
 use std::cell::{Cell, RefCell};
 
@@ -312,7 +312,9 @@ impl WatchSourceLedger {
             false,
             "invalidating watch source receipts",
             |writer| {
-                let mut tx = writer.raw().transaction()?;
+                let mut tx = writer
+                    .raw()
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
                 tx.execute_compat(
                     "INSERT OR IGNORE INTO meta(key, value) VALUES(?1, ?2)",
                     &[
@@ -385,7 +387,9 @@ impl WatchSourceLedger {
             false,
             "acknowledging published watch sources",
             |writer| {
-                let mut tx = writer.raw().transaction()?;
+                let mut tx = writer
+                    .raw()
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
                 for path in &ready {
                     let Some(completion) = self.completions.get(path) else {
                         continue;

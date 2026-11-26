@@ -90,15 +90,10 @@ pub fn check_schema(connection: &Connection) -> Result<()> {
     ))?;
     let migrations = connection.query("PRAGMA table_info(\"_schema_migrations\")")?;
     if !migrations.is_empty() {
-        let version: Option<i64> = connection
-            .query_row("SELECT MAX(version) FROM _schema_migrations")?
-            .get_typed(0)?;
-        if version != Some(super::reader::STRICT_SCHEMA_VERSION) {
-            return Err(refuse(
-                "incompatible_schema",
-                "Canonical schema tracking disagrees with meta version",
-            ));
-        }
+        return Err(refuse(
+            "incompatible_schema",
+            "Legacy _schema_migrations table is incompatible with schema-1",
+        ));
     }
     Ok(())
 }

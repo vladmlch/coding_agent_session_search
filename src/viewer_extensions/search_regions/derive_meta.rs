@@ -92,11 +92,9 @@ pub fn derive_meta_regions(
         next += 1;
     }
     // Subagents scope: resolved child descriptors bound to this parent.
-    // The fork plans the one-shot JOIN as full scans of facts and
-    // conversations (measured 75 ms per call on the 6k-session archive,
-    // and this runs per republished conversation), so it is split into an
-    // equality seek on the facts parent index plus one rowid fetch per
-    // child, ordered and truncated in Rust. The row set is identical:
+    // Split into an equality seek on the facts parent index plus one rowid
+    // fetch per child, ordered and truncated in Rust rather than a one-shot
+    // JOIN over facts and conversations. The row set is identical:
     // `conversations.id` is the unique INTEGER PRIMARY KEY, so
     // `ORDER BY c2.id` is a total order and `LIMIT 64` truncates the same
     // prefix; a facts row without a canonical conversation drops out here

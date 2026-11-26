@@ -11,7 +11,10 @@ use crate::daemon::protocol::{
     EmbeddingJobDetail, EmbeddingJobInfo, ErrorCode, ErrorResponse, Response,
 };
 use crate::daemon::worker::{EmbeddingJobConfig, EmbeddingWorkerHandle};
-use crate::franken_sync::compat::{ConnectionExt, OpenFlags, ParamValue, RowExt, open_with_flags};
+use crate::franken_sync::{
+    compat::{ConnectionExt, OpenFlags, RowExt, open_with_flags},
+    params,
+};
 
 const MAX_STATUS_ROWS: usize = 256;
 const MAX_MODEL_CHARS: usize = 256;
@@ -137,12 +140,12 @@ fn read_status(db_path: &str) -> anyhow::Result<Vec<EmbeddingJobDetail>> {
         "SELECT id, substr(model_id, 1, ?2), substr(status, 1, ?3), \
          total_docs, completed_docs, substr(error_message, 1, ?4) \
          FROM embedding_jobs WHERE db_path = ?1 ORDER BY id DESC LIMIT ?5",
-        &[
-            ParamValue::from(db_path),
-            ParamValue::from((MAX_MODEL_CHARS + 1) as i64),
-            ParamValue::from((MAX_STATE_CHARS + 1) as i64),
-            ParamValue::from((MAX_ERROR_CHARS + 1) as i64),
-            ParamValue::from((MAX_STATUS_ROWS + 1) as i64),
+        params![
+            db_path,
+            (MAX_MODEL_CHARS + 1) as i64,
+            (MAX_STATE_CHARS + 1) as i64,
+            (MAX_ERROR_CHARS + 1) as i64,
+            (MAX_STATUS_ROWS + 1) as i64,
         ],
         |row| {
             Ok(EmbeddingJobDetail {
@@ -293,13 +296,7 @@ mod tests {
         ] {
             connection.execute_compat(
                 "INSERT INTO embedding_jobs VALUES (?1, ?2, ?3, ?4, 10, ?5, NULL)",
-                &[
-                    ParamValue::from(id),
-                    ParamValue::from(path_text.as_str()),
-                    ParamValue::from(model),
-                    ParamValue::from(state),
-                    ParamValue::from(done),
-                ],
+                params![id, path_text.as_str(), model, state, done],
             )?;
         }
         connection.close()?;
@@ -326,10 +323,7 @@ mod tests {
         let diagnostic = "界".repeat(MAX_ERROR_CHARS + 100);
         connection.execute_compat(
             "INSERT INTO embedding_jobs VALUES (1, ?1, 'minilm', 'failed', 10, 0, ?2)",
-            &[
-                ParamValue::from(path.as_str()),
-                ParamValue::from(diagnostic.as_str()),
-            ],
+            params![path.as_str(), diagnostic.as_str()],
         )?;
         connection.close()?;
         let rows = read_status(&path)?;
@@ -341,7 +335,7 @@ mod tests {
         let oversized = "m".repeat(MAX_MODEL_CHARS + 1);
         connection.execute_compat(
             "UPDATE embedding_jobs SET model_id = ?1",
-            &[ParamValue::from(oversized.as_str())],
+            params![oversized.as_str()],
         )?;
         connection.close()?;
         assert!(read_status(&path).is_err());
@@ -359,7 +353,7 @@ mod tests {
         for id in 1..=MAX_STATUS_ROWS + 1 {
             connection.execute_compat(
                 "INSERT INTO embedding_jobs VALUES (?1, ?2, 'hash', 'completed', 0, 0, NULL)",
-                &[ParamValue::from(id as i64), ParamValue::from(path.as_str())],
+                params![id as i64, path.as_str()],
             )?;
         }
         connection.execute("COMMIT")?;

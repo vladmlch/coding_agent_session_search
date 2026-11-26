@@ -231,7 +231,7 @@ impl IndexRunLockGuard {
 /// v0.6.6 against a 3.25 GB / 7,566-conversation / 417,234-message DB
 /// — i.e. the `ORDER BY conversation_id ASC LIMIT 1` query in
 /// `collect_orphan_message_ids` descends the `messages` B-tree without
-/// a usable index and wedges in fsqlite.
+/// a usable index and wedges in SQLite.
 ///
 /// This module turns the diagnostic infrastructure into a *self-
 /// debugging surface*. The hard watchdog applies to watch startup. Plain
@@ -248,7 +248,7 @@ impl IndexRunLockGuard {
 /// 2. Per-op skip env vars: `CASS_SKIP_PREFLIGHT_<NAME>=1` lets an
 ///    operator bypass a single wedged step (e.g.
 ///    `CASS_SKIP_PREFLIGHT_CLEANUP_ORPHAN_FK_ROWS=1`) so they can
-///    actually use cass while the underlying fsqlite/cass bug is
+///    actually use cass while the underlying storage/cass bug is
 ///    being root-caused.
 /// 3. Per-op completion bump: every bounded preflight step calls the
 ///    completion macro after it returns, disarming the per-op watchdog
@@ -731,7 +731,7 @@ pub(in crate::indexer) fn watch_startup_step_idx(sub_phase: &str) -> Option<u8> 
 /// a lie: GH #443 reported a plain incremental run "stalled in
 /// `classify_nonresumable_checkpoint`" (a sidecar-only read that returns in
 /// milliseconds) when the process was actually wedged in the writable
-/// frankensqlite open that follows it. `cass status`, the `stall_detected`
+/// SQLite open that follows it. `cass status`, the `stall_detected`
 /// diagnostics and the operator all key on this string, so it must name the
 /// step that is running now. The per-step abort watchdog is a separate
 /// decision (`timeout_enforced` in the macro) and stays watch-startup-only.

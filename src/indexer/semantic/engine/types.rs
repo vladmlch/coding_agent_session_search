@@ -144,24 +144,22 @@ impl BackfillFilePair {
 
     #[cfg(unix)]
     pub(in crate::indexer::semantic::engine) fn archive(storage: &FrankenStorage) -> Option<Self> {
-        if storage.raw().as_async().in_transaction() {
+        if storage.raw().in_transaction() {
             return None;
         }
         // The VFS resolves symlinks before choosing its WAL. Bind this lookup
         // to the actual open main-file descriptor as well: a pathname can
         // have been replaced since the storage handle was opened.
         let path = storage.database_path().ok()?.canonicalize().ok()?;
-        let file = fs::File::open(&path).ok()?;
         let descriptor = storage.raw().file_identity().ok()??;
-        if crate::franken_sync::FileIdentity::from_file(&file).ok()? != Some(descriptor) {
+        if crate::franken_sync::FileIdentity::from_path(&path).ok()? != Some(descriptor) {
             return None;
         }
         let pair = Self::capture(
             &path,
             &crate::storage::sqlite::database_sidecar_path(&path, "-wal"),
         )?;
-        let current_file = fs::File::open(&path).ok()?;
-        (crate::franken_sync::FileIdentity::from_file(&current_file).ok()? == Some(descriptor))
+        (crate::franken_sync::FileIdentity::from_path(&path).ok()? == Some(descriptor))
             .then_some(pair)
     }
 

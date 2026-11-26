@@ -625,10 +625,6 @@ fn assert_gh466_canonical_prefix_cap(agent_slug: &str, route: usize, expand_pref
     let cap = if expand_prefix { 8 * 1024 * 1024 } else { 128 };
     let _cap = set_env("CASS_LEXICAL_MAX_MESSAGE_CONTENT_BYTES", &cap.to_string());
     let _defer = set_env("CASS_DEFER_LEXICAL_UPDATES", "0");
-    let _begin = set_env(
-        "CASS_INDEXER_BEGIN_CONCURRENT",
-        if route == 2 { "1" } else { "0" },
-    );
     let dir = tempfile::TempDir::new().unwrap();
     let db_path = dir.path().join("agent_search.db");
     let storage = create_franken_db(&db_path);
@@ -677,7 +673,7 @@ fn assert_gh466_canonical_prefix_cap(agent_slug: &str, route: usize, expand_pref
         }
     };
     persist(&mut index, &conv);
-    // Leave the direct/serial/begin-concurrent incremental additions
+    // Leave the direct/batched incremental additions
     // pending, then enter rebuild twice without a caller commit or a
     // count helper that could conceal the production batch boundary.
     for _ in 0..2 {
@@ -946,7 +942,7 @@ fn assert_gh466_canonical_prefix_cap(agent_slug: &str, route: usize, expand_pref
 #[serial]
 fn gh466_incremental_lexical_cap_uses_retained_canonical_prefix_for_every_route() {
     for agent in ["claude_code", "codex"] {
-        for route in 0..3 {
+        for route in 0..2 {
             assert_gh466_canonical_prefix_cap(agent, route, true);
         }
     }
@@ -955,7 +951,7 @@ fn gh466_incremental_lexical_cap_uses_retained_canonical_prefix_for_every_route(
 #[test]
 #[serial]
 fn gh466_incremental_append_after_a_capped_message_stays_searchable() {
-    for route in 0..3 {
+    for route in 0..2 {
         assert_gh466_canonical_prefix_cap("claude_code", route, false);
     }
 }
@@ -1138,7 +1134,6 @@ fn giant_conversation_persists_in_slices_like_one_transaction() {
     use crate::search::query::{FieldMask, SearchClient, SearchFilters};
 
     let _defer = set_env("CASS_DEFER_LEXICAL_UPDATES", "0");
-    let _begin = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "0");
     let limits = PersistSliceLimits {
         messages: 7,
         content_bytes: usize::MAX,
@@ -1271,7 +1266,6 @@ fn sliced_inline_rebuild_batch_indexes_every_conversation() {
     use crate::search::query::{FieldMask, SearchClient, SearchFilters};
 
     let _defer = set_env("CASS_DEFER_LEXICAL_UPDATES", "0");
-    let _begin = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "0");
     let limits = PersistSliceLimits {
         messages: 7,
         content_bytes: usize::MAX,

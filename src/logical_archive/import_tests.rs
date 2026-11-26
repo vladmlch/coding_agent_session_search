@@ -310,7 +310,7 @@ fn late_constraint_failure_keeps_safe_row_coordinates_and_engine_cause() -> Resu
         message.contains("canonical row insertion failed"),
         "{message}"
     );
-    assert!(message.contains("FrankenSQLite Constraint"), "{message}");
+    assert!(message.contains("SQLite Constraint"), "{message}");
     assert!(!message.contains("PRIVATE-RESTORED-PARENT"));
     assert!(!message.contains("private_parent_names"));
     assert!(error.chain().any(|cause| {
@@ -418,10 +418,7 @@ fn cancellation_after_reading_a_late_row_retains_the_insert_failure() -> Result<
         message.contains("canonical row insertion failed"),
         "{message}"
     );
-    assert!(
-        message.contains("FrankenSQLite Abort (code 4)"),
-        "{message}"
-    );
+    assert!(message.contains("SQLite Abort (code 4)"), "{message}");
     assert!(!message.contains("PRIVATE-CANCELLED-RESTORE"));
     assert!(error.chain().any(|cause| {
         matches!(
@@ -454,10 +451,7 @@ fn cancelled_database_verification_reports_a_probe_failure_without_private_paylo
         message.contains("cannot check restored archive relationships"),
         "{message}"
     );
-    assert!(
-        message.contains("FrankenSQLite Abort (code 4)"),
-        "{message}"
-    );
+    assert!(message.contains("SQLite Abort (code 4)"), "{message}");
     assert!(!message.contains("broken canonical relationships"));
     assert!(error.chain().any(|cause| {
         matches!(

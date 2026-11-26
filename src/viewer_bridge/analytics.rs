@@ -18,7 +18,7 @@
 //!   `activity_ms is None` fails any bound); they join the unwindowed
 //!   universe like any other row.
 //! * Median TTFE and the category/tool/file-churn explosions are computed
-//!   over bounded rows — the JSON paths are FrankenSQLite-qualified
+//!   over bounded rows — the JSON paths are SQLite JSON1-qualified
 //!   (`json_extract`/`json_each`/`json_valid`/`json_type` probed at call
 //!   time) with a deterministic Rust fold as the honest fallback.
 //! * Dashboard recommendations come from the folded aggregates
@@ -31,8 +31,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
-use coding_agent_search::franken_sync::compat::RowExt;
-use coding_agent_search::franken_sync::{Connection, SqliteValue};
+use coding_agent_search::franken_sync::{Connection, FrankenError, SqliteValue};
 use serde_json::{Map, Value, json};
 
 use super::facts_bag;
@@ -157,16 +156,21 @@ fn resolve_provider(connection: &Connection, raw: &str) -> Result<Option<Vec<i64
             "Provider scope is not a valid provider namespace",
         )
     })?;
-    let mut ids = Vec::new();
-    for row in connection.query("SELECT id, slug FROM agents")? {
-        let slug: Option<String> = row.get_typed(1)?;
-        let Some(slug) = slug else { continue };
-        if let Ok(candidate) = identity::normalize_agent_slug(&slug)
-            && candidate == provider
-        {
-            ids.push(row.get_typed::<i64>(0)?);
-        }
-    }
+    let ids = connection
+        .query_map("SELECT id, slug FROM agents", &[], |row| {
+            let Some(slug) = row.get::<_, Option<String>>(1)? else {
+                return Ok(None);
+            };
+            if let Ok(candidate) = identity::normalize_agent_slug(&slug)
+                && candidate == provider
+            {
+                return Ok(Some(row.get::<_, i64>(0)?));
+            }
+            Ok(None)
+        })?
+        .into_iter()
+        .flatten()
+        .collect();
     Ok(Some(ids))
 }
 
@@ -177,16 +181,30 @@ fn resolve_project(connection: &Connection, raw: &str) -> Result<Option<Vec<i64>
     ) {
         return Ok(None);
     }
+    enum ProjectMatch {
+        None,
+        Exact(i64),
+        Display(i64),
+    }
     let mut exact = Vec::new();
     let mut display = Vec::new();
-    for row in connection.query("SELECT id, path FROM workspaces")? {
-        let id: i64 = row.get_typed(0)?;
-        let path: Option<String> = row.get_typed(1)?;
-        let Some(path) = path else { continue };
-        if path == raw {
-            exact.push(id);
+    for matched in connection.query_map("SELECT id, path FROM workspaces", &[], |row| {
+        let id: i64 = row.get(0)?;
+        let Some(path) = row.get::<_, Option<String>>(1)? else {
+            return Ok(ProjectMatch::None);
+        };
+        Ok(if path == raw {
+            ProjectMatch::Exact(id)
         } else if identity::path_name(&path) == raw {
-            display.push(id);
+            ProjectMatch::Display(id)
+        } else {
+            ProjectMatch::None
+        })
+    })? {
+        match matched {
+            ProjectMatch::Exact(id) => exact.push(id),
+            ProjectMatch::Display(id) => display.push(id),
+            ProjectMatch::None => {}
         }
     }
     if !exact.is_empty() {
@@ -302,9 +320,11 @@ fn scope_where(scope: &ResolvedScope, params: &mut Vec<SqliteValue>, extra: &mut
 /// `true` when the facts-owned Task-10 metric table exists. Archives whose
 /// profile predates it degrade every metric to NULL — unknown, never 0.
 fn metrics_installed(connection: &Connection) -> Result<bool> {
-    let rows = connection.query(
+    let rows = connection.query_map(
         "SELECT 1 FROM sqlite_master WHERE type='table' \
          AND name='viewer_session_metrics' LIMIT 1",
+        &[],
+        |_| Ok(()),
     )?;
     Ok(!rows.is_empty())
 }
@@ -335,14 +355,18 @@ fn from_sql(metrics: bool) -> String {
     )
 }
 
-fn run_scoped(
+fn run_scoped_map<T, F>(
     connection: &Connection,
     metrics: bool,
     select: &str,
     scope: &ResolvedScope,
     extra_where: &[&str],
     tail: &str,
-) -> Result<Vec<coding_agent_search::franken_sync::Row>> {
+    f: F,
+) -> Result<Vec<T>>
+where
+    F: FnMut(&rusqlite::Row<'_>) -> std::result::Result<T, FrankenError>,
+{
     let mut params = Vec::new();
     let mut clauses = Vec::new();
     scope_where(scope, &mut params, &mut clauses);
@@ -356,7 +380,7 @@ fn run_scoped(
         "SELECT {select} {} WHERE {where_sql} {tail}",
         from_sql(metrics)
     );
-    Ok(connection.query_with_params(&sql, &params)?)
+    Ok(connection.query_map(&sql, &params, f)?)
 }
 
 fn require_extensions(connection: &Connection) -> Result<()> {
@@ -423,39 +447,40 @@ fn core_aggregates(connection: &Connection, metrics: bool, scope: &ResolvedScope
     // second scan of the joined universe.
     select.push_str(&format!(", {UNCERTAIN_CLASSIFICATION_SQL}"));
     select.push_str(", MIN(CASE WHEN w.path != '' THEN w.path END)");
-    let rows = run_scoped(connection, metrics, &select, scope, &[], "")?;
-    let row = rows
-        .first()
-        .ok_or_else(|| refuse("canonical_read_failed", "Aggregate query returned no row"))?;
-    let mut core = Core {
-        total_sessions: row.get_typed(0)?,
-        ..Core::default()
-    };
-    let mut index = 1_usize;
-    for (name, _) in CORE_COLUMNS {
-        let sum: Option<f64> = row.get_typed(index)?;
-        let known: i64 = row.get_typed(index + 1)?;
-        if let Some(sum) = sum {
-            core.sums.insert((*name).to_owned(), json!(sum));
-        } else {
-            core.sums.insert((*name).to_owned(), Value::Null);
+    let rows = run_scoped_map(connection, metrics, &select, scope, &[], "", |row| {
+        let mut core = Core {
+            total_sessions: row.get(0)?,
+            ..Core::default()
+        };
+        let mut index = 1_usize;
+        for (name, _) in CORE_COLUMNS {
+            let sum: Option<f64> = row.get(index)?;
+            let known: i64 = row.get(index + 1)?;
+            if let Some(sum) = sum {
+                core.sums.insert((*name).to_owned(), json!(sum));
+            } else {
+                core.sums.insert((*name).to_owned(), Value::Null);
+            }
+            core.known.insert((*name).to_owned(), json!(known));
+            index += 2;
         }
-        core.known.insert((*name).to_owned(), json!(known));
-        index += 2;
-    }
-    let duration_sum: Option<f64> = row.get_typed(index)?;
-    let duration_known: i64 = row.get_typed(index + 1)?;
-    core.sums.insert("duration".to_owned(), json!(duration_sum));
-    core.known
-        .insert("duration".to_owned(), json!(duration_known));
-    let hit_avg: Option<f64> = row.get_typed(index + 2)?;
-    core.sums.insert("cache_hit_avg".to_owned(), json!(hit_avg));
-    let one_shot_avg: Option<f64> = row.get_typed(index + 3)?;
-    core.sums
-        .insert("one_shot_avg".to_owned(), json!(one_shot_avg));
-    core.uncertain = row.get_typed(index + 4)?;
-    core.project_path = row.get_typed(index + 5)?;
-    Ok(core)
+        let duration_sum: Option<f64> = row.get(index)?;
+        let duration_known: i64 = row.get(index + 1)?;
+        core.sums.insert("duration".to_owned(), json!(duration_sum));
+        core.known
+            .insert("duration".to_owned(), json!(duration_known));
+        let hit_avg: Option<f64> = row.get(index + 2)?;
+        core.sums.insert("cache_hit_avg".to_owned(), json!(hit_avg));
+        let one_shot_avg: Option<f64> = row.get(index + 3)?;
+        core.sums
+            .insert("one_shot_avg".to_owned(), json!(one_shot_avg));
+        core.uncertain = row.get(index + 4)?;
+        core.project_path = row.get(index + 5)?;
+        Ok(core)
+    })?;
+    rows.into_iter()
+        .next()
+        .ok_or_else(|| refuse("canonical_read_failed", "Aggregate query returned no row"))
 }
 
 fn sum_f64(core: &Core, name: &str) -> Option<f64> {
@@ -531,18 +556,43 @@ mod shared_col {
     pub const M_TTFE: usize = 9;
 }
 
+struct SharedFoldRow {
+    slug: Option<String>,
+    model: Option<String>,
+    cost: Option<f64>,
+    one_shot: Option<f64>,
+    task_category: Option<String>,
+    step_count: Option<i64>,
+    tools_json: Option<String>,
+    breakdown_json: Option<String>,
+    ttfe: Option<f64>,
+}
+
 fn shared_fold_rows(
     connection: &Connection,
     metrics: bool,
     scope: &ResolvedScope,
-) -> Result<Vec<coding_agent_search::franken_sync::Row>> {
-    let rows = run_scoped(
+) -> Result<Vec<SharedFoldRow>> {
+    let rows = run_scoped_map(
         connection,
         metrics,
         SHARED_FOLD_SELECT,
         scope,
         &[],
         &format!("ORDER BY c.id LIMIT {ANALYTICS_ROW_LIMIT}"),
+        |row| {
+            Ok(SharedFoldRow {
+                slug: row.get(shared_col::A_SLUG)?,
+                model: row.get(shared_col::C_MODEL)?,
+                cost: row.get(shared_col::C_COST)?,
+                one_shot: row.get(shared_col::M_ONE_SHOT)?,
+                task_category: row.get(shared_col::F_CATEGORY)?,
+                step_count: row.get(shared_col::F_STEP)?,
+                tools_json: row.get(shared_col::M_TOOLS_JSON)?,
+                breakdown_json: row.get(shared_col::M_BREAKDOWN_JSON)?,
+                ttfe: row.get(shared_col::M_TTFE)?,
+            })
+        },
     )?;
     if rows.len() as i64 >= ANALYTICS_ROW_LIMIT {
         return Err(refuse(
@@ -557,7 +607,7 @@ fn median_ttfe(
     connection: &Connection,
     metrics: bool,
     scope: &ResolvedScope,
-    shared: Option<&[coding_agent_search::franken_sync::Row]>,
+    shared: Option<&[SharedFoldRow]>,
 ) -> Result<Option<f64>> {
     let owned;
     let rows = match shared {
@@ -572,8 +622,7 @@ fn median_ttfe(
     // the exact same value set reaches the median.
     let mut values = Vec::new();
     for row in rows {
-        let ttfe: Option<f64> = row.get_typed(shared_col::M_TTFE)?;
-        if let Some(value) = ttfe
+        if let Some(value) = row.ttfe
             && value >= 0.0
         {
             values.push(value);
@@ -613,24 +662,31 @@ fn punchcard(connection: &Connection, metrics: bool, scope: &ResolvedScope) -> R
          COUNT(*), COALESCE(SUM(c.estimated_cost_usd),0.0), \
          COALESCE(SUM(c.grand_total_tokens),0)"
     );
-    let rows = run_scoped(
+    let rows = run_scoped_map(
         connection,
         metrics,
         &select,
         scope,
         &[&format!("{ACTIVITY_SQL} IS NOT NULL")],
         "GROUP BY 1, 2",
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, f64>(3)?,
+                row.get::<_, i64>(4)?,
+            ))
+        },
     )?;
-    for row in rows {
-        let weekday: i64 = row.get_typed(0)?;
-        let hour: i64 = row.get_typed(1)?;
+    for (weekday, hour, session_count, cost_usd, token_count) in rows {
         if !(0..7).contains(&weekday) || !(0..24).contains(&hour) {
             continue;
         }
         let cell = &mut cells[(weekday * 24 + hour) as usize];
-        cell["session_count"] = json!(row.get_typed::<i64>(2)?);
-        cell["cost_usd"] = json!(round2(row.get_typed::<f64>(3)?));
-        cell["token_count"] = json!(row.get_typed::<i64>(4)?);
+        cell["session_count"] = json!(session_count);
+        cell["cost_usd"] = json!(round2(cost_usd));
+        cell["token_count"] = json!(token_count);
     }
     Ok(cells)
 }
@@ -644,7 +700,11 @@ fn punchcard(connection: &Connection, metrics: bool, scope: &ResolvedScope) -> R
 /// Probed per call — never assumed.
 fn json1_qualified(connection: &Connection) -> bool {
     connection
-        .query("SELECT j.value FROM json_each('[1]') j WHERE json_valid('{\"a\":1}') AND json_type('{\"a\":1}') = 'object' AND json_extract('{\"a\":1}','$.a') = 1")
+        .query_map(
+            "SELECT j.value FROM json_each('[1]') j WHERE json_valid('{\"a\":1}') AND json_type('{\"a\":1}') = 'object' AND json_extract('{\"a\":1}','$.a') = 1",
+            &[],
+            |_| Ok(()),
+        )
         .is_ok()
 }
 
@@ -666,11 +726,10 @@ fn reworked_of(breakdown: Option<&str>) -> Map<String, Value> {
 /// The Rust fold half of `file_churn` over a [`SHARED_FOLD_SELECT`] row
 /// set — the same `reworked_of` guard and the same edit/sessions sort the
 /// prior per-helper query fed.
-fn fold_file_churn(rows: &[coding_agent_search::franken_sync::Row]) -> Result<Vec<Value>> {
+fn fold_file_churn(rows: &[SharedFoldRow]) -> Result<Vec<Value>> {
     let mut churn: BTreeMap<String, (i64, i64)> = BTreeMap::new();
     for row in rows {
-        let breakdown: Option<String> = row.get_typed(shared_col::M_BREAKDOWN_JSON)?;
-        for (path, edits) in reworked_of(breakdown.as_deref()) {
+        for (path, edits) in reworked_of(row.breakdown_json.as_deref()) {
             if path.is_empty() {
                 continue;
             }
@@ -710,7 +769,7 @@ fn file_churn(
     connection: &Connection,
     metrics: bool,
     scope: &ResolvedScope,
-    shared: Option<&[coding_agent_search::franken_sync::Row]>,
+    shared: Option<&[SharedFoldRow]>,
 ) -> Result<Vec<Value>> {
     if metrics && json1_qualified(connection) {
         let json = "CASE WHEN m.task_breakdown_json IS NOT NULL \
@@ -731,17 +790,13 @@ fn file_churn(
              GROUP BY j.key ORDER BY 3 DESC, 2 DESC LIMIT {limit_bind}",
             from_sql(metrics)
         );
-        let rows = connection.query_with_params(&sql, &params)?;
-        return rows
-            .iter()
-            .map(|row| {
-                Ok(json!({
-                    "file_path": row.get_typed::<String>(0)?,
-                    "sessions_count": row.get_typed::<i64>(1)?,
-                    "edits_count": row.get_typed::<i64>(2)?,
-                }))
-            })
-            .collect();
+        return Ok(connection.query_map(&sql, &params, |row| {
+            Ok(json!({
+                "file_path": row.get::<_, String>(0)?,
+                "sessions_count": row.get::<_, i64>(1)?,
+                "edits_count": row.get::<_, i64>(2)?,
+            }))
+        })?);
     }
     // Rust fold — same guard and ordering over a bounded row set.
     let owned;
@@ -758,13 +813,14 @@ fn file_churn(
 /// The Rust fold half of `tools_frequency` over a [`SHARED_FOLD_SELECT`]
 /// row set — identical JSON-array walk and count merge.
 fn fold_tools_frequency(
-    rows: &[coding_agent_search::franken_sync::Row],
+    rows: &[SharedFoldRow],
     sessions_per_tool: &mut BTreeMap<String, i64>,
 ) -> Result<()> {
     for row in rows {
-        let text: Option<String> = row.get_typed(shared_col::M_TOOLS_JSON)?;
-        let Some(text) = text else { continue };
-        let Ok(Value::Array(names)) = serde_json::from_str::<Value>(&text) else {
+        let Some(text) = row.tools_json.as_deref() else {
+            continue;
+        };
+        let Ok(Value::Array(names)) = serde_json::from_str::<Value>(text) else {
             continue;
         };
         for name in names {
@@ -782,7 +838,7 @@ fn tools_frequency(
     connection: &Connection,
     metrics: bool,
     scope: &ResolvedScope,
-    shared: Option<&[coding_agent_search::franken_sync::Row]>,
+    shared: Option<&[SharedFoldRow]>,
 ) -> Result<(Map<String, Value>, Vec<String>)> {
     let mut sessions_per_tool: BTreeMap<String, i64> = BTreeMap::new();
     if metrics && json1_qualified(connection) {
@@ -801,9 +857,10 @@ fn tools_frequency(
              WHERE {where_sql} GROUP BY j.value ORDER BY 2 DESC, 1",
             from_sql(metrics)
         );
-        for row in connection.query_with_params(&sql, &params)? {
-            let name: String = row.get_typed(0)?;
-            sessions_per_tool.insert(name, row.get_typed(1)?);
+        for (name, count) in connection.query_map(&sql, &params, |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })? {
+            sessions_per_tool.insert(name, count);
         }
     } else {
         let owned;
@@ -839,7 +896,7 @@ fn tools_frequency(
 /// The per-session category explosion over a [`SHARED_FOLD_SELECT`] row
 /// set — same fallback-category rule, pro-rated cost and one-shot mean the
 /// prior per-helper query fed.
-fn fold_categories(rows: &[coding_agent_search::franken_sync::Row]) -> Result<Vec<Value>> {
+fn fold_categories(rows: &[SharedFoldRow]) -> Result<Vec<Value>> {
     struct Bucket {
         turns: f64,
         cost: f64,
@@ -847,15 +904,11 @@ fn fold_categories(rows: &[coding_agent_search::franken_sync::Row]) -> Result<Ve
     }
     let mut exploded: BTreeMap<String, Bucket> = BTreeMap::new();
     for row in rows {
-        let cost: Option<f64> = row.get_typed(shared_col::C_COST)?;
-        let session_cost = cost.unwrap_or(0.0);
-        let one_shot: Option<f64> = row.get_typed(shared_col::M_ONE_SHOT)?;
-        let task_category: Option<String> = row.get_typed(shared_col::F_CATEGORY)?;
-        let step_count: Option<i64> = row.get_typed(shared_col::F_STEP)?;
-        let breakdown: Option<String> = row.get_typed(shared_col::M_BREAKDOWN_JSON)?;
+        let session_cost = row.cost.unwrap_or(0.0);
+        let one_shot = row.one_shot;
         let mut cats: Vec<(String, f64)> = Vec::new();
-        if let Some(breakdown) = breakdown
-            && let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&breakdown)
+        if let Some(breakdown) = row.breakdown_json.as_deref()
+            && let Ok(Value::Object(map)) = serde_json::from_str::<Value>(breakdown)
         {
             for (key, value) in &map {
                 if key == "reworked_files" {
@@ -869,7 +922,8 @@ fn fold_categories(rows: &[coding_agent_search::franken_sync::Row]) -> Result<Ve
             }
         }
         if cats.is_empty() {
-            let category = task_category
+            let category = row
+                .task_category
                 .as_deref()
                 .filter(|c| !c.is_empty())
                 .unwrap_or("general")
@@ -879,7 +933,7 @@ fn fold_categories(rows: &[coding_agent_search::franken_sync::Row]) -> Result<Ve
                 cost: 0.0,
                 one_shots: Vec::new(),
             });
-            entry.turns += (step_count.unwrap_or(0).max(1)) as f64;
+            entry.turns += (row.step_count.unwrap_or(0).max(1)) as f64;
             entry.cost += session_cost;
             if let Some(rate) = one_shot {
                 entry.one_shots.push(rate);
@@ -942,20 +996,23 @@ fn fold_categories(rows: &[coding_agent_search::franken_sync::Row]) -> Result<Ve
 /// without a second joined-universe scan.
 #[allow(clippy::type_complexity)]
 fn fold_provider_model(
-    rows: &[coding_agent_search::franken_sync::Row],
+    rows: &[SharedFoldRow],
 ) -> Result<(Map<String, Value>, Map<String, Value>, i64)> {
     let mut providers: BTreeMap<String, i64> = BTreeMap::new();
     let mut models: BTreeMap<String, i64> = BTreeMap::new();
     let mut unknown_model = 0_i64;
     for row in rows {
-        let slug: Option<String> = row.get_typed(shared_col::A_SLUG)?;
-        let model: Option<String> = row.get_typed(shared_col::C_MODEL)?;
-        if let Some(slug) = slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(slug) = row.slug.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             let provider =
                 identity::normalize_agent_slug(slug).unwrap_or_else(|_| slug.to_string());
             *providers.entry(provider).or_insert(0) += 1;
         }
-        match model.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        match row
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             Some(model) => *models.entry(model.to_string()).or_insert(0) += 1,
             None => unknown_model += 1,
         }
@@ -1016,19 +1073,17 @@ fn recent_sessions(
          LIMIT {limit_bind}",
         from_sql(metrics)
     );
-    let rows = connection.query_with_params(&sql, &params)?;
-    let mut items = Vec::new();
-    for row in &rows {
-        let workspace_path: Option<String> = row.get_typed(13)?;
+    let mut items = connection.query_map(&sql, &params, |row| {
+        let workspace_path: Option<String> = row.get(13)?;
         let origin_host: Option<String> = row
-            .get_typed::<Option<String>>(4)?
-            .or(row.get_typed::<Option<String>>(6)?);
+            .get::<_, Option<String>>(4)?
+            .or(row.get::<_, Option<String>>(6)?);
         // The persisted fact bag: `null` when no facts row rides this row
         // (`f.conversation_id` is the presence marker), otherwise every
         // measured column — a known zero stays a zero.
-        let model_set_json: Option<String> = row.get_typed(36)?;
-        let tools_used_json: Option<String> = row.get_typed(43)?;
-        let task_breakdown_json: Option<String> = row.get_typed(44)?;
+        let model_set_json: Option<String> = row.get(36)?;
+        let tools_used_json: Option<String> = row.get(43)?;
+        let task_breakdown_json: Option<String> = row.get(44)?;
         // Bounded previews with truncation facts — the same bag contract
         // the list/detail lanes emit, so one oversized session never
         // bloats the recent slice.
@@ -1037,7 +1092,7 @@ fn recent_sessions(
             facts_bag::decode_string_list(model_set_json.as_deref()),
         );
         let (first_prompt, first_prompt_truncated, first_prompt_bytes) =
-            facts_bag::bound_text_preview(row.get_typed(37)?);
+            facts_bag::bound_text_preview(row.get(37)?);
         let (tools_used, tools_used_truncated, tools_used_bytes) = facts_bag::bound_json_preview(
             tools_used_json.clone(),
             facts_bag::decode_string_list(tools_used_json.as_deref()),
@@ -1048,77 +1103,77 @@ fn recent_sessions(
                 task_breakdown_json.and_then(|text| serde_json::from_str(&text).ok()),
             );
         let (title_preview, title_truncated, title_bytes) =
-            facts_bag::bound_text_preview(row.get_typed(7)?);
+            facts_bag::bound_text_preview(row.get(7)?);
         let bag = facts_bag::SessionFactBag {
-            turn_count: row.get_typed(27)?,
-            step_count: row.get_typed(28)?,
-            thinking_block_count: row.get_typed(29)?,
-            artifact_count: row.get_typed(30)?,
-            subagent_count: row.get_typed(31)?,
-            tool_error_count: row.get_typed(32)?,
-            tool_calls_with_exit_status: row.get_typed(33)?,
-            file_fact_count: row.get_typed(34)?,
-            compaction_count: row.get_typed(35)?,
+            turn_count: row.get(27)?,
+            step_count: row.get(28)?,
+            thinking_block_count: row.get(29)?,
+            artifact_count: row.get(30)?,
+            subagent_count: row.get(31)?,
+            tool_error_count: row.get(32)?,
+            tool_calls_with_exit_status: row.get(33)?,
+            file_fact_count: row.get(34)?,
+            compaction_count: row.get(35)?,
             model_set,
             model_set_truncated,
             model_set_bytes,
             first_prompt,
             first_prompt_truncated,
             first_prompt_bytes,
-            ttfe_seconds: row.get_typed(38)?,
-            one_shot_rate: row.get_typed(39)?,
-            retries_count: row.get_typed(40)?,
-            self_corrections_count: row.get_typed(41)?,
-            user_corrections_count: row.get_typed(42)?,
+            ttfe_seconds: row.get(38)?,
+            one_shot_rate: row.get(39)?,
+            retries_count: row.get(40)?,
+            self_corrections_count: row.get(41)?,
+            user_corrections_count: row.get(42)?,
             tools_used,
             tools_used_truncated,
             tools_used_bytes,
             task_breakdown,
             task_breakdown_truncated,
             task_breakdown_bytes,
-            health_score: row.get_typed(45)?,
-            health_grade: row.get_typed(46)?,
-            health_issues_count: row.get_typed(47)?,
-            potential_waste_tokens: row.get_typed(48)?,
-            potential_savings_usd: row.get_typed(49)?,
+            health_score: row.get(45)?,
+            health_grade: row.get(46)?,
+            health_issues_count: row.get(47)?,
+            potential_waste_tokens: row.get(48)?,
+            potential_savings_usd: row.get(49)?,
         };
-        let facts_present: Option<i64> = row.get_typed(18)?;
-        let is_subagent: Option<i64> = row.get_typed(17)?;
-        items.push(json!({
-            "conversation_id": row.get_typed::<i64>(0)?,
-            "source_id": row.get_typed::<Option<String>>(1)?,
-            "external_id": row.get_typed::<Option<String>>(2)?,
-            "source_path": row.get_typed::<Option<String>>(3)?,
+        let facts_present: Option<i64> = row.get(18)?;
+        let is_subagent: Option<i64> = row.get(17)?;
+        Ok(json!({
+            "conversation_id": row.get::<_, i64>(0)?,
+            "source_id": row.get::<_, Option<String>>(1)?,
+            "external_id": row.get::<_, Option<String>>(2)?,
+            "source_path": row.get::<_, Option<String>>(3)?,
             "origin_host": origin_host,
-            "source_kind": row.get_typed::<Option<String>>(5)?,
+            "source_kind": row.get::<_, Option<String>>(5)?,
             "title": title_preview,
             "title_truncated": title_truncated,
             "title_bytes": title_bytes,
-            "custom_title": row.get_typed::<Option<String>>(15)?,
-            "is_pinned": row.get_typed::<i64>(14)? != 0,
-            "started_at_ms": row.get_typed::<Option<i64>>(8)?,
-            "ended_at_ms": row.get_typed::<Option<i64>>(19)?,
-            "last_message_created_at_ms": row.get_typed::<Option<i64>>(20)?,
-            "activity_ms": row.get_typed::<Option<i64>>(9)?,
-            "estimated_cost_usd": row.get_typed::<Option<f64>>(10)?,
-            "total_tokens": row.get_typed::<Option<i64>>(11)?,
-            "total_input_tokens": row.get_typed::<Option<i64>>(21)?,
-            "total_output_tokens": row.get_typed::<Option<i64>>(22)?,
-            "total_cache_read_tokens": row.get_typed::<Option<i64>>(23)?,
-            "total_cache_creation_tokens": row.get_typed::<Option<i64>>(24)?,
-            "primary_model": row.get_typed::<Option<String>>(12)?,
+            "custom_title": row.get::<_, Option<String>>(15)?,
+            "is_pinned": row.get::<_, i64>(14)? != 0,
+            "started_at_ms": row.get::<_, Option<i64>>(8)?,
+            "ended_at_ms": row.get::<_, Option<i64>>(19)?,
+            "last_message_created_at_ms": row.get::<_, Option<i64>>(20)?,
+            "activity_ms": row.get::<_, Option<i64>>(9)?,
+            "estimated_cost_usd": row.get::<_, Option<f64>>(10)?,
+            "total_tokens": row.get::<_, Option<i64>>(11)?,
+            "total_input_tokens": row.get::<_, Option<i64>>(21)?,
+            "total_output_tokens": row.get::<_, Option<i64>>(22)?,
+            "total_cache_read_tokens": row.get::<_, Option<i64>>(23)?,
+            "total_cache_creation_tokens": row.get::<_, Option<i64>>(24)?,
+            "primary_model": row.get::<_, Option<String>>(12)?,
             "workspace_path": workspace_path,
             "project": workspace_path.as_deref().map(identity::path_name).filter(|n| !n.is_empty()),
-            "task_category": row.get_typed::<Option<String>>(16)?,
+            "task_category": row.get::<_, Option<String>>(16)?,
             "is_subagent": is_subagent.map(|v| v != 0),
             // Relationship evidence only — the overall coverage_state
             // (column 25) never invalidates a known verdict.
             "classification_coverage": facts_present
                 .map(|_| facts_bag::classification_coverage(is_subagent)),
-            "parent_conversation_id": row.get_typed::<Option<i64>>(26)?,
+            "parent_conversation_id": row.get::<_, Option<i64>>(26)?,
             "metrics": bag.emit(facts_present.is_some()),
-        }));
-    }
+        }))
+    })?;
     let ids: Vec<i64> = items
         .iter()
         .map(|item| item["conversation_id"].as_i64().expect("decoded id"))
@@ -1266,17 +1321,17 @@ fn dynamic_rules_resources(
     metrics: bool,
     scope: &ResolvedScope,
 ) -> Result<Value> {
-    let rows = run_scoped(
+    let paths = run_scoped_map(
         connection,
         metrics,
         "DISTINCT w.path",
         scope,
         &["w.path IS NOT NULL", "w.path != ''"],
         &format!("ORDER BY w.path LIMIT {RULES_PROJECT_LIMIT}"),
+        |row| row.get::<_, String>(0).map_err(FrankenError::from),
     )?;
     let mut files = Vec::new();
-    for row in &rows {
-        let path: String = row.get_typed(0)?;
+    for path in &paths {
         for name in ["CLAUDE.md", "AGENTS.md"] {
             let file_path = Path::new(&path).join(name);
             let mut entry = Map::new();
@@ -1317,7 +1372,7 @@ fn dynamic_rules_resources(
     Ok(json!({
         "rules_files": files,
         "folded_into_score": false,
-        "projects_examined": rows.len(),
+        "projects_examined": paths.len(),
     }))
 }
 
@@ -1357,57 +1412,56 @@ pub fn projects(connection: &Connection, scope: &AnalyticsScope) -> Result<Value
         select.push_str(&format!(", SUM({column}), COUNT({column})"));
     }
     select.push_str(&format!(", {UNCERTAIN_CLASSIFICATION_SQL}"));
-    let rows = run_scoped(
+    let items = run_scoped_map(
         connection,
         metrics,
         &select,
         &scope,
         &["w.path IS NOT NULL", "w.path != ''"],
         "GROUP BY c.workspace_id ORDER BY w.path",
-    )?;
-    let mut items = Vec::new();
-    for row in &rows {
-        let path: String = row.get_typed(0)?;
-        let session_count: i64 = row.get_typed(1)?;
-        let last_activity: Option<i64> = row.get_typed(2)?;
-        let mut index = 3_usize;
-        let duration_sum: Option<f64> = row.get_typed(index)?;
-        let duration_known: i64 = row.get_typed(index + 1)?;
-        index += 2;
-        let mut metric_map = Map::new();
-        let aggregate = |total: Option<f64>, known: i64| -> Value {
-            let unknown = session_count - known;
-            json!({
-                "total": total,
-                "known_count": known,
-                "unknown_count": unknown,
-                "quality": if total.is_none() { "unknown" }
-                    else if unknown > 0 { "partial" } else { "known" },
-            })
-        };
-        metric_map.insert(
-            "duration_seconds".to_owned(),
-            aggregate(duration_sum, duration_known),
-        );
-        for (name, _) in PROJECT_METRICS {
-            let total: Option<f64> = row.get_typed(index)?;
-            let known: i64 = row.get_typed(index + 1)?;
+        |row| {
+            let path: String = row.get(0)?;
+            let session_count: i64 = row.get(1)?;
+            let last_activity: Option<i64> = row.get(2)?;
+            let mut index = 3_usize;
+            let duration_sum: Option<f64> = row.get(index)?;
+            let duration_known: i64 = row.get(index + 1)?;
             index += 2;
-            metric_map.insert((*name).to_owned(), aggregate(total, known));
-        }
-        let uncertain: i64 = row.get_typed::<Option<i64>>(index)?.unwrap_or(0);
-        items.push(json!({
-            "project_path": path,
-            "project_name": identity::path_name(&path),
-            "session_count": session_count,
-            "last_activity_ms": last_activity,
-            "metrics": Value::Object(metric_map),
-            "classification": {
-                "complete": uncertain == 0,
-                "uncertain_count": uncertain,
-            },
-        }));
-    }
+            let mut metric_map = Map::new();
+            let aggregate = |total: Option<f64>, known: i64| -> Value {
+                let unknown = session_count - known;
+                json!({
+                    "total": total,
+                    "known_count": known,
+                    "unknown_count": unknown,
+                    "quality": if total.is_none() { "unknown" }
+                        else if unknown > 0 { "partial" } else { "known" },
+                })
+            };
+            metric_map.insert(
+                "duration_seconds".to_owned(),
+                aggregate(duration_sum, duration_known),
+            );
+            for (name, _) in PROJECT_METRICS {
+                let total: Option<f64> = row.get(index)?;
+                let known: i64 = row.get(index + 1)?;
+                index += 2;
+                metric_map.insert((*name).to_owned(), aggregate(total, known));
+            }
+            let uncertain: i64 = row.get::<_, Option<i64>>(index)?.unwrap_or(0);
+            Ok(json!({
+                "project_path": path,
+                "project_name": identity::path_name(&path),
+                "session_count": session_count,
+                "last_activity_ms": last_activity,
+                "metrics": Value::Object(metric_map),
+                "classification": {
+                    "complete": uncertain == 0,
+                    "uncertain_count": uncertain,
+                },
+            }))
+        },
+    )?;
     Ok(json!({
         "projects": items,
         "generation": revisions::generation(connection)?,

@@ -146,7 +146,7 @@ pub(in crate::indexer) fn run_index_lexical_and_scan(
         // cass#272 performance follow-up: routine incremental refreshes on a
         // populated canonical archive should not probe historical bundles at
         // startup. Discovery opens candidate backup/snapshot DBs and can wedge
-        // in fsqlite page-cache eviction before real indexing starts. Keep the
+        // in page-cache eviction before real indexing starts. Keep the
         // automatic path for explicit full/rebuilt/empty recovery, and expose
         // the old populated-incremental discovery behavior behind
         // CASS_PREFLIGHT_HISTORICAL_SALVAGE_DISCOVERY=1.
@@ -297,7 +297,7 @@ pub(in crate::indexer) fn run_index_lexical_and_scan(
             // repair branch — `count_total_messages_exact` issues a
             // `SELECT COUNT(*) FROM messages` which, on the cass#265
             // reporter's 417k-row DB, can route through the same
-            // fsqlite full-table-scan path that wedges
+            // full-table-scan path that stalls
             // `cleanup_orphan_fk_rows`. Skipping leaves the planner
             // in the "no repair plan" branch, which falls through to
             // the normal scan loop instead of the lexical-repair

@@ -4,7 +4,7 @@
 //! and tags. Uses a separate `SQLite` database file to avoid schema conflicts.
 
 use crate::franken_sync::Connection;
-use crate::franken_sync::compat::{ConnectionExt, OptionalExtension, RowExt, TransactionExt};
+use crate::franken_sync::compat::{ConnectionExt, OptionalExtension, RowExt, TransactionBehavior};
 use crate::franken_sync::params;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
@@ -152,23 +152,7 @@ impl BookmarkStore {
     /// Add a new bookmark
     pub fn add(&self, bookmark: &Bookmark) -> Result<i64> {
         let line_number = line_number_to_db(bookmark.line_number)?;
-
-        self.conn.execute_compat(
-            "INSERT INTO bookmarks (title, source_path, line_number, agent, workspace, note, tags, created_at, updated_at, snippet)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                bookmark.title.as_str(),
-                bookmark.source_path.as_str(),
-                line_number,
-                bookmark.agent.as_str(),
-                bookmark.workspace.as_str(),
-                bookmark.note.as_str(),
-                bookmark.tags.as_str(),
-                bookmark.created_at,
-                bookmark.updated_at,
-                bookmark.snippet.as_str(),
-            ],
-        )?;
+        insert_bookmark_row(&self.conn, bookmark, line_number)?;
 
         let rowid = self.conn.last_insert_rowid();
         Ok(rowid)
@@ -279,17 +263,30 @@ impl BookmarkStore {
     /// Add `bookmark` unless its `source_path` + line is already bookmarked,
     /// so saving the same hit twice (the TUI's bookmark key) keeps one row.
     pub fn add_unless_bookmarked(&self, bookmark: &Bookmark) -> Result<BookmarkAddOutcome> {
-        if self.is_bookmarked(&bookmark.source_path, bookmark.line_number)? {
+        let line_number = line_number_to_db(bookmark.line_number)?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists: i64 = tx.query_row_map(
+            DUPLICATE_CHECK_SQL,
+            params![bookmark.source_path.as_str(), line_number],
+            |row: &crate::franken_sync::Row| row.get_typed(0),
+        )?;
+        if exists != 0 {
+            tx.rollback()?;
             return Ok(BookmarkAddOutcome::AlreadyBookmarked);
         }
-        Ok(BookmarkAddOutcome::Added(self.add(bookmark)?))
+        insert_bookmark_row(&tx, bookmark, line_number)?;
+        let rowid = tx.last_insert_rowid()?;
+        tx.commit()?;
+        Ok(BookmarkAddOutcome::Added(rowid))
     }
 
     /// Check if a `source_path` + line is already bookmarked
     pub fn is_bookmarked(&self, source_path: &str, line_number: Option<usize>) -> Result<bool> {
         let line_number = line_number_to_db(line_number)?;
         let exists: i64 = self.conn.query_row_map(
-            "SELECT EXISTS(SELECT 1 FROM bookmarks WHERE source_path = ?1 AND line_number IS ?2)",
+            DUPLICATE_CHECK_SQL,
             params![source_path, line_number],
             |row: &crate::franken_sync::Row| row.get_typed(0),
         )?;
@@ -303,12 +300,14 @@ impl BookmarkStore {
     }
 
     /// Import bookmarks from JSON (merges, doesn't overwrite)
-    pub fn import_json(&self, json: &str) -> Result<usize> {
+    pub fn import_json(&mut self, json: &str) -> Result<usize> {
         let bookmarks: Vec<Bookmark> =
             serde_json::from_str(json).context("parsing bookmark JSON")?;
         let mut imported = 0;
 
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         for mut bookmark in bookmarks {
             let line_number = line_number_to_db(bookmark.line_number)?;
@@ -316,10 +315,7 @@ impl BookmarkStore {
             // Check for duplicates
             let check_params = params![bookmark.source_path.as_str(), line_number];
             let check_values = crate::franken_sync::compat::param_slice_to_values(check_params);
-            let exists_row = tx.query_with_params(
-                "SELECT EXISTS(SELECT 1 FROM bookmarks WHERE source_path = ?1 AND line_number IS ?2)",
-                &check_values,
-            )?;
+            let exists_row = tx.query_with_params(DUPLICATE_CHECK_SQL, &check_values)?;
             let exists: i64 = exists_row
                 .first()
                 .ok_or_else(|| {
@@ -336,22 +332,7 @@ impl BookmarkStore {
 
             if exists == 0 {
                 bookmark.id = 0; // Reset ID for new insert
-                tx.execute_compat(
-                    "INSERT INTO bookmarks (title, source_path, line_number, agent, workspace, note, tags, created_at, updated_at, snippet)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                    params![
-                        bookmark.title.as_str(),
-                        bookmark.source_path.as_str(),
-                        line_number,
-                        bookmark.agent.as_str(),
-                        bookmark.workspace.as_str(),
-                        bookmark.note.as_str(),
-                        bookmark.tags.as_str(),
-                        bookmark.created_at,
-                        bookmark.updated_at,
-                        bookmark.snippet.as_str(),
-                    ],
-                )?;
+                insert_bookmark_row(&tx, &bookmark, line_number)?;
                 imported += 1;
             }
         }
@@ -360,6 +341,35 @@ impl BookmarkStore {
 
         Ok(imported)
     }
+}
+
+const DUPLICATE_CHECK_SQL: &str =
+    "SELECT EXISTS(SELECT 1 FROM bookmarks WHERE source_path = ?1 AND line_number IS ?2)";
+
+const INSERT_BOOKMARK_SQL: &str =
+    "INSERT INTO bookmarks (title, source_path, line_number, agent, workspace, note, tags, created_at, updated_at, snippet)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)";
+
+fn insert_bookmark_row<C: ConnectionExt>(
+    conn: &C,
+    bookmark: &Bookmark,
+    line_number: Option<i64>,
+) -> Result<usize, crate::franken_sync::FrankenError> {
+    conn.execute_compat(
+        INSERT_BOOKMARK_SQL,
+        params![
+            bookmark.title.as_str(),
+            bookmark.source_path.as_str(),
+            line_number,
+            bookmark.agent.as_str(),
+            bookmark.workspace.as_str(),
+            bookmark.note.as_str(),
+            bookmark.tags.as_str(),
+            bookmark.created_at,
+            bookmark.updated_at,
+            bookmark.snippet.as_str(),
+        ],
+    )
 }
 
 /// Convert a database row to a Bookmark
@@ -862,7 +872,7 @@ fn execute(command: &BookmarksCommand, out: &mut dyn Write) -> BookmarkCliResult
             let payload = serde_json::to_string(&bookmarks)
                 .map_err(|e| BookmarkCliError::io("serializing import payload", e.to_string()))?;
 
-            let store = open_store(&db_path)?;
+            let mut store = open_store(&db_path)?;
             let imported = store
                 .import_json(&payload)
                 .map_err(|e| BookmarkCliError::io("importing bookmarks", format!("{e:#}")))?;
@@ -1512,7 +1522,7 @@ mod tests {
 
         let json = store1.export_json().unwrap();
 
-        let (store2, _dir2) = test_store();
+        let (mut store2, _dir2) = test_store();
         let imported = store2.import_json(&json).unwrap();
         assert_eq!(imported, 2);
         assert_eq!(store2.count().unwrap(), 2);
@@ -1520,7 +1530,7 @@ mod tests {
 
     #[test]
     fn test_import_deduplicates_null_and_specific_line_numbers_separately() {
-        let (store, _dir) = test_store();
+        let (mut store, _dir) = test_store();
         let bookmarks = vec![
             Bookmark::new("Whole file", "/same.rs", "agent", "/w"),
             Bookmark::new("Specific line", "/same.rs", "agent", "/w").with_line(10),
@@ -1540,7 +1550,7 @@ mod tests {
             return Ok(());
         }
 
-        let (store, _dir) = test_store();
+        let (mut store, _dir) = test_store();
         let bookmarks = vec![
             Bookmark::new("Valid first row", "/valid.rs", "agent", "/w"),
             Bookmark::new("Invalid second row", "/invalid.rs", "agent", "/w")
@@ -1556,6 +1566,89 @@ mod tests {
             "unexpected import error: {error}"
         );
         anyhow::ensure!(store.count()? == 0, "the first insert must roll back");
+        Ok(())
+    }
+
+    #[test]
+    fn preexisting_user_bookmarks_db_migrates_without_data_loss_and_deduplicates_import()
+    -> Result<()> {
+        let dir = tempdir()?;
+        let path = bookmarks_path_in(dir.path());
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            conn.execute_batch(SCHEMA)?;
+            conn.execute(
+                "INSERT INTO bookmarks (title, source_path, line_number, agent, workspace, note, tags, created_at, updated_at, snippet)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    "Legacy line hit",
+                    "/legacy/session.jsonl",
+                    42_i64,
+                    "codex",
+                    "/ws/a",
+                    "keep this note",
+                    "legacy,important",
+                    1_700_000_000_000_i64,
+                    1_700_000_000_100_i64,
+                    "matched snippet"
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO bookmarks (title, source_path, line_number, agent, workspace, note, tags, created_at, updated_at, snippet)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                rusqlite::params![
+                    "Legacy whole file",
+                    "/legacy/whole.jsonl",
+                    Option::<i64>::None,
+                    "claude_code",
+                    "/ws/b",
+                    "",
+                    "keep",
+                    1_700_000_000_200_i64,
+                    1_700_000_000_200_i64,
+                    ""
+                ],
+            )?;
+        }
+
+        let mut store = BookmarkStore::open(&path)?;
+        assert_eq!(store.count()?, 2);
+        assert!(store.is_bookmarked("/legacy/session.jsonl", Some(42))?);
+        assert!(store.is_bookmarked("/legacy/whole.jsonl", None)?);
+
+        let existing = store.list(None)?;
+        assert_eq!(existing.len(), 2);
+        let legacy_hit = existing
+            .iter()
+            .find(|b| b.source_path == "/legacy/session.jsonl")
+            .expect("legacy line bookmark retained");
+        assert_eq!(legacy_hit.line_number, Some(42));
+        assert_eq!(legacy_hit.note, "keep this note");
+        assert_eq!(legacy_hit.tags, "legacy,important");
+        assert_eq!(legacy_hit.snippet, "matched snippet");
+
+        let import_payload = serde_json::to_string(&vec![
+            Bookmark::new(
+                "Duplicate line hit",
+                "/legacy/session.jsonl",
+                "codex",
+                "/ws/a",
+            )
+            .with_line(42),
+            Bookmark::new("New imported hit", "/new/session.jsonl", "codex", "/ws/c")
+                .with_line(7)
+                .with_note("newly imported"),
+        ])?;
+        assert_eq!(store.import_json(&import_payload)?, 1);
+        assert_eq!(store.count()?, 3);
+        assert_eq!(
+            store
+                .get(legacy_hit.id)?
+                .expect("legacy bookmark preserved after import")
+                .note,
+            "keep this note"
+        );
+        assert!(store.is_bookmarked("/new/session.jsonl", Some(7))?);
         Ok(())
     }
 }

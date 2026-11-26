@@ -2,13 +2,13 @@ use super::*;
 
 #[cfg(test)]
 pub(in crate::indexer) fn reset_storage(storage: &FrankenStorage) -> Result<()> {
-    // Wrap the canonical-table reset in a transaction so partial clears roll back.
-    // The derived FTS table is recreated explicitly afterward because the
-    // frankensqlite writer path does not implement the FTS5 control-column
-    // `delete-all` command used by stock SQLite.
-    storage.raw().execute_batch(
-        "BEGIN TRANSACTION;
-         DELETE FROM usage_models_daily;
+    // Wrap the canonical-table reset in an immediate write transaction so
+    // partial clears roll back, then recreate the derived FTS table.
+    let mut tx = storage
+        .raw()
+        .transaction_with_behavior(crate::franken_sync::compat::TransactionBehavior::Immediate)?;
+    tx.execute_batch(
+        "DELETE FROM usage_models_daily;
          DELETE FROM usage_daily;
          DELETE FROM usage_hourly;
          DELETE FROM token_daily_stats;
@@ -22,9 +22,9 @@ pub(in crate::indexer) fn reset_storage(storage: &FrankenStorage) -> Result<()> 
          DELETE FROM workspaces;
          DELETE FROM tags;
          DELETE FROM conversation_tags;
-         DELETE FROM meta WHERE key = 'last_scan_ts';
-         COMMIT;",
+         DELETE FROM meta WHERE key = 'last_scan_ts';",
     )?;
+    tx.commit()?;
     storage.rebuild_fts()?;
     Ok(())
 }

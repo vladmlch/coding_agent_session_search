@@ -1,6 +1,5 @@
 use anyhow::Result;
-use coding_agent_search::franken_sync::compat::RowExt;
-use coding_agent_search::franken_sync::{Connection, SqliteValue};
+use coding_agent_search::franken_sync::{Connection, FrankenError, SqliteValue};
 use serde_json::{Map, Value, json};
 
 use super::super::annotations;
@@ -192,7 +191,7 @@ fn sql_value(cursor: &Cursor) -> SqliteValue {
 /// Phase A — the index-ordered scan. One statement per pin partition
 /// (exactly one when `pin_first` applies or a pinned filter already binds
 /// the partition): `ORDER BY` mirrors the composite index's column order
-/// verbatim so FrankenSQLite satisfies the sort from the index itself —
+/// verbatim so SQLite satisfies the sort from the index itself —
 /// no sorter, no full-candidate materialization, `LIMIT limit+1` rows.
 ///
 /// The selected columns are exactly the order-key tuple; `cursor_tuple`
@@ -228,7 +227,7 @@ fn build_order_sql(
     } else {
         clauses.join(" AND ")
     };
-    // Column order MUST mirror `idx_viewer_sort_*` exactly: fsqlite
+    // Column order MUST mirror `idx_viewer_sort_*` exactly: SQLite
     // satisfies the ORDER BY only when every term is an index column —
     // a trailing `conversation_id` term (the implicit rowid tail, which
     // still orders the scan) would force a sorter pass (probe-verified).
@@ -258,20 +257,20 @@ struct OrderRow {
 }
 
 fn decode_order_row(
-    row: &coding_agent_search::franken_sync::Row,
+    row: &rusqlite::Row<'_>,
     key: SortKey,
-) -> Result<OrderRow> {
+) -> std::result::Result<OrderRow, FrankenError> {
     let value: Option<Value> = if key.cursor_value_is_text() {
-        row.get_typed::<Option<String>>(3)?.map(Value::from)
+        row.get::<_, Option<String>>(3)?.map(Value::from)
     } else {
-        row.get_typed::<Option<i64>>(3)?.map(Value::from)
+        row.get::<_, Option<i64>>(3)?.map(Value::from)
     };
     Ok(OrderRow {
-        id: row.get_typed(0)?,
-        pin: row.get_typed(1)?,
-        known: row.get_typed(2)?,
+        id: row.get(0)?,
+        pin: row.get(1)?,
+        known: row.get(2)?,
         value,
-        tie: row.get_typed::<Option<String>>(4)?.unwrap_or_default(),
+        tie: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
     })
 }
 
@@ -334,11 +333,7 @@ fn run_order_streams(
     for partition in partitions {
         let (sql, params) =
             build_order_sql(resolved, key, desc, pin_first, partition, cursor, limit);
-        let rows = connection.query_with_params(&sql, &params)?;
-        let mut decoded = Vec::with_capacity(rows.len());
-        for row in &rows {
-            decoded.push(decode_order_row(row, key)?);
-        }
+        let decoded = connection.query_map(&sql, &params, |row| decode_order_row(row, key))?;
         streams.push(decoded.into_iter());
     }
     if streams.len() == 1 {
@@ -523,7 +518,7 @@ pub fn list_sessions(
     // id; an unresolvable/ambiguous parent stays typed NULL).
     let mut parent_ids: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
     for row in by_id.values() {
-        if let Some(parent_id) = row.get_typed::<Option<i64>>(29)? {
+        if let Some(parent_id) = row.parent_conversation_id {
             parent_ids.insert(parent_id);
         }
     }
@@ -552,7 +547,7 @@ pub fn list_sessions(
             last = Some(position);
             continue;
         };
-        let total_bytes: i64 = row.get_typed(31)?;
+        let total_bytes = row.total_bytes;
         if !(0..=ROW_BYTES).contains(&total_bytes) {
             return Err(refuse(
                 "canonical_payload_too_large",
@@ -626,22 +621,35 @@ pub fn list_annotations(
         None => 0,
     };
     let mut params = Vec::new();
+    struct AnnotationPageRow {
+        id: i64,
+        is_pinned: i64,
+        custom_title: Option<String>,
+        notes: Option<String>,
+        revision: i64,
+    }
     let after_bind = bind(&mut params, SqliteValue::Integer(after));
     let limit_bind = bind(&mut params, SqliteValue::Integer((limit + 1) as i64));
-    let rows = connection.query_with_params(
+    let rows = connection.query_map(
         &format!(
             "SELECT conversation_id, is_pinned, custom_title, notes, revision \
              FROM viewer_annotations WHERE conversation_id > {after_bind} \
              ORDER BY conversation_id LIMIT {limit_bind}"
         ),
         &params,
+        |row| {
+            Ok(AnnotationPageRow {
+                id: row.get(0)?,
+                is_pinned: row.get(1)?,
+                custom_title: row.get(2)?,
+                notes: row.get(3)?,
+                revision: row.get(4)?,
+            })
+        },
     )?;
     let has_more = rows.len() > limit;
-    let page_rows = &rows[..rows.len().min(limit)];
-    let ids: Vec<i64> = page_rows
-        .iter()
-        .map(|row| row.get_typed::<i64>(0))
-        .collect::<std::result::Result<Vec<i64>, _>>()?;
+    let page_len = rows.len().min(limit);
+    let ids: Vec<i64> = rows[..page_len].iter().map(|row| row.id).collect();
     let tags = annotations::tags_for(connection, &ids)?;
     let public_ids = identity::resolve_public_ids_tolerant(connection, &ids)?;
     let generation = revisions::generation(connection)?;
@@ -651,12 +659,12 @@ pub fn list_annotations(
     let mut last: Option<i64> = None;
     let mut truncated = false;
     let mut unresolved = 0_usize;
-    for row in page_rows {
-        let id: i64 = row.get_typed(0)?;
-        let is_pinned: i64 = row.get_typed(1)?;
-        let custom_title: Option<String> = row.get_typed(2)?;
-        let notes: Option<String> = row.get_typed(3)?;
-        let revision: i64 = row.get_typed(4)?;
+    for row in rows.into_iter().take(limit) {
+        let id = row.id;
+        let is_pinned = row.is_pinned;
+        let custom_title = row.custom_title;
+        let notes = row.notes;
+        let revision = row.revision;
         let row_tags = tags.get(&id).cloned().unwrap_or_default();
         // Annotations are never truncated: the row profile counts their RAW
         // bytes, so an annotation-only overflow keeps the strict refusal.

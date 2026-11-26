@@ -39,7 +39,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::Value;
 
 use crate::franken_sync::compat::{ParamValue, RowExt, TransactionExt};
-use crate::franken_sync::{Connection, Row};
+use crate::franken_sync::{Connection, Row, TransactionBehavior};
 use crate::model::types::{Conversation, Message, MessageRole, Snippet};
 
 use super::facts::{self, FactPublishOutcome, FactsDb};
@@ -644,7 +644,7 @@ pub fn backfill_viewer_extensions(
         }
 
         let mut tx = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .context("opening extension backfill batch transaction")?;
         for conv in &batch {
             let conversation_id = conv.id.expect("paged rows carry canonical ids");

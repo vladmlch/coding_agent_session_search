@@ -1,6 +1,6 @@
 //! Native row-cursor tests, including a later row that cannot be decoded.
 use super::*;
-use crate::franken_sync::compat::{ConnectionExt, ParamValue};
+use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt};
 use std::io;
 
 fn database(path: &std::path::Path, indexed: bool) -> Result<Connection> {
@@ -44,7 +44,7 @@ fn native_cursor_stops_before_decoding_later_rows_of_the_same_conversation() -> 
         assert_eq!(delivered, 1);
         let error = messages(&connection, 7, &mut |_| Ok(()))
             .expect_err("without the stop, the malformed later row must be observed");
-        assert!(error.downcast_ref::<FrankenError>().is_some());
+        assert!(error.downcast_ref::<rusqlite::Error>().is_some());
         // Both aborts finish cursor cleanup before we reuse or close the bridge.
         let count: i64 = connection.query_row_map(
             "SELECT COUNT(*) FROM messages",
@@ -143,7 +143,7 @@ fn callback_errors_never_trigger_missing_index_fallback_or_lose_their_type() -> 
             Ok(())
         })
         .expect_err("missing canonical data is not successful empty replay");
-        assert!(error.downcast_ref::<FrankenError>().is_some());
+        assert!(error.downcast_ref::<rusqlite::Error>().is_some());
         assert_eq!(delivered, 1);
         connection.close_without_checkpoint()?;
     }

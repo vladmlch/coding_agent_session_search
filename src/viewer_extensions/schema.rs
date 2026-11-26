@@ -7,7 +7,7 @@
 //! DDL itself — only constructs the canonical schema already relies on
 //! (`REFERENCES`, composite `PRIMARY KEY`, `AUTOINCREMENT`, `INSERT OR
 //! IGNORE`). `tests/viewer_bridge_extensions.rs` probes and pins the actual
-//! FrankenSQLite behavior (FK declaration visibility, enforcement,
+//! SQLite behavior (FK declaration visibility, enforcement,
 //! `EXPLAIN QUERY PLAN`, optional JSON functions).
 //!
 //! `viewer_change_log` is provisioned empty now (bounded replay journal for
@@ -314,8 +314,8 @@ VALUES ('extension_schema_version', '3');
 /// `viewer_ingest_receipt_cleanup` for the parent link: the fixup creates
 /// `parent_conversation_id` references in the child-first direction, so a
 /// `cass forget` of a resolved parent would otherwise be refused by the
-/// `REFERENCES conversations(id)` constraint (or, under a writer without
-/// FK enforcement, leave a child pointing at a gone conversation). The
+/// `REFERENCES conversations(id)` constraint (or leave a child pointing at
+/// a gone conversation). The
 /// BEFORE DELETE trigger NULLs the link inside the same statement — the
 /// child's own rows stay, and a later matching parent can re-resolve the
 /// still-durable `parent_external_id` evidence.
@@ -968,7 +968,7 @@ pub fn ensure_schema(connection: &Connection) -> Result<()> {
         .execute("PRAGMA foreign_keys = ON")
         .context("enabling foreign key enforcement for viewer extension schema")?;
     connection
-        .execute("BEGIN")
+        .execute("BEGIN IMMEDIATE")
         .context("starting viewer extension schema transaction")?;
     let applied = (|| -> Result<()> {
         connection.execute_batch(VIEWER_SCHEMA_V1)?;

@@ -1,4 +1,5 @@
 use super::*;
+use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 
 #[test]

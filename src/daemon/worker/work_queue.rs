@@ -118,8 +118,10 @@ impl JobControl {
             .map(|(_, _, cancellation)| cancellation.clone())
     }
 
-    /// Engine relays invoke wakers, so callers must release the mailbox and
-    /// worker ownership mutexes before propagating these already-latched flags.
+    /// `CancellationHandle::cancel()` acquires its registration lock and invokes
+    /// `sqlite3_interrupt` via registered `InterruptHandle`s, so callers must
+    /// release the mailbox and worker ownership mutexes before propagating these
+    /// already-latched flags.
     fn propagate_sql_cancellation(&self) {
         for (_, cancelled, cancellation) in &self.0.models {
             if cancelled.load(Ordering::SeqCst) {

@@ -449,9 +449,8 @@ pub(super) fn build_block_seek_evidence(
 /// Conversations owning a region whose column is IN the matched values —
 /// the has_mcp `named` existence set. Same seeking shape as
 /// [`seek_region_keys_by_values`] (the `(conversation_id, region_key)`
-/// projection SEEKs `idx_viewer_search_regions_*`; a `SELECT DISTINCT
-/// conversation_id` variant plans as a full-table SCAN in the pinned fork
-/// rev, pinned as a planner gap in tests/frankensqlite_compat_gates.rs),
+/// projection SEEKs `idx_viewer_search_regions_*`, whereas `SELECT DISTINCT
+/// conversation_id` can degrade to a full-table SCAN),
 /// deduped here in Rust. Counts every returned row in `regions_loaded` —
 /// the receipt means "region rows read by this request", not "distinct
 /// conversations found".

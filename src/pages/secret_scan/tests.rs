@@ -451,7 +451,7 @@ fn staged_export_scan_rejects_unbound_sqlite_sidecars() -> Result<()> {
     let config = SecretScanConfig::from_inputs_with_env(&[], &[], false)?;
     let artifact_paths = sqlite_fixed_artifact_paths(Path::new("export.db"))
         .into_iter()
-        .filter(|path| !crate::pages::is_fsqlite_namespace_identity_record(path));
+        .filter(|path| !crate::pages::is_legacy_namespace_identity_record(path));
     for relative_path in artifact_paths {
         let temp = tempfile::tempdir()?;
         let db_path = temp.path().join("export.db");
@@ -478,7 +478,7 @@ fn staged_export_scan_rejects_unbound_sqlite_sidecars() -> Result<()> {
         );
     }
 
-    // FrankenSQLite namespace identity records are unavoidable runtime
+    // Legacy namespace identity records are unavoidable runtime
     // droppings, not payload: their presence alone must not block a
     // main-file-only attestation.
     for suffix in ["-fsqlite-ns-gate", "-fsqlite-ns-use"] {

@@ -141,8 +141,10 @@ impl EmbeddingWorkerHandle {
     }
 
     /// Request cooperative shutdown immediately, not after queued jobs finish.
-    /// Engine operations drain through cancellation and embedding batches finish
-    /// before their next checkpoint; this does not forcibly kill the thread.
+    /// In-flight SQLite operations are interrupted via `CancellationHandle`
+    /// (`sqlite3_interrupt` through registered `InterruptHandle`s) and
+    /// embedding batches finish before their next checkpoint; this does not
+    /// forcibly kill the thread.
     pub fn shutdown(&self) -> Result<(), String> {
         self.shutdown_requested.store(true, Ordering::SeqCst);
         self.cancel_flag.store(true, Ordering::SeqCst);
@@ -573,8 +575,8 @@ impl EmbeddingWorker {
                     )
                 })()
             };
-            // The engine operation has fully drained and its cancellation
-            // scope has ended before any durable terminal-status update.
+            // The SQLite cancellation scope has exited and any interrupted
+            // statement has returned before any durable terminal-status update.
             let pass_result = match pass_result {
                 Err(error) if self.is_cancelled() => {
                     debug!(model = model_name, %error, "Embedding pass cancelled after storage drained");

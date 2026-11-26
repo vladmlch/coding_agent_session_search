@@ -1,6 +1,6 @@
 use super::*;
 
-/// Open frankensqlite storage for indexing without replacing canonical data.
+/// Open SQLite storage for indexing without replacing canonical data.
 ///
 /// Returns `(storage, rebuilt, opened_fresh_for_full)`. `rebuilt` and
 /// `opened_fresh_for_full` are retained for progress metadata compatibility;
@@ -97,7 +97,7 @@ pub(in crate::indexer) fn open_storage_for_index(
     } else {
         FrankenStorage::open(db_path)
             .map(|storage| (storage, false, full_index))
-            .with_context(|| format!("creating frankensqlite storage at {}", db_path.display()))
+            .with_context(|| format!("creating SQLite storage at {}", db_path.display()))
     }
 }
 
@@ -254,10 +254,10 @@ pub(in crate::indexer) fn archive_bundle_size_for_integrity_preflight(
 }
 
 /// Detect the exact legacy FTS5 shadow DDL behind GH #374 without walking the
-/// archive. FrankenSQLite versions before its canonical-shadow fix created
+/// archive. Legacy storage-engine versions before the canonical-shadow fix created
 /// `%_config`/`%_idx` as ordinary rowid tables; stock SQLite then reported
 /// `wrong # of entries in index sqlite_autoindex_fts_messages_config_1`, while
-/// fsqlite's own `quick_check` could still return `ok`. The two sqlite_master
+/// legacy `quick_check` could still return `ok`. The two sqlite_master
 /// rows are tiny, stable metadata and therefore remain suitable for a bounded
 /// full-index preflight.
 pub(in crate::indexer) fn incompatible_legacy_fts_shadow_problem(
@@ -287,7 +287,7 @@ pub(in crate::indexer) fn incompatible_legacy_fts_shadow_problem(
     Ok(None)
 }
 
-/// Ask FrankenSQLite's FTS5 reader to decode the persisted structure,
+/// Ask SQLite's FTS5 reader to decode the persisted structure,
 /// averages, and every segment leaf. `PRAGMA quick_check` validates SQLite's
 /// b-trees, but it does not understand the payload stored inside `%_data`, so
 /// it can report `ok` for the exact corrupt-segment shape seen in GH #374.
@@ -329,7 +329,7 @@ pub(in crate::indexer) fn full_rebuild_existing_storage_integrity_problem(
         tracing::warn!(
             bundle_bytes = bundle_bytes.unwrap_or_default(),
             max_bytes,
-            "skipping every fsqlite-backed integrity query before a large full rebuild; the fixed-size SQLite header guard already ran, and later rebuild phases provide named progress. Use 'cass doctor check --json' for the exhaustive scan, or set CASS_INDEX_INTEGRITY_PREFLIGHT_MAX_BYTES=0 to force it here"
+            "skipping every SQLite-backed integrity query before a large full rebuild; the fixed-size SQLite header guard already ran, and later rebuild phases provide named progress. Use 'cass doctor check --json' for the exhaustive scan, or set CASS_INDEX_INTEGRITY_PREFLIGHT_MAX_BYTES=0 to force it here"
         );
         return Ok(None);
     }
@@ -458,16 +458,16 @@ pub(in crate::indexer) fn full_rebuild_existing_archive_integrity_preflight_with
         return Ok(None);
     }
 
-    // GH #413: decide from filesystem metadata before opening fsqlite. Even a
+    // GH #413: decide from filesystem metadata before opening SQLite. Even a
     // syntactically tiny sqlite_master or COUNT query can hydrate gigabytes in
-    // the current engine, so an after-open/after-query cap is not a bound.
+    // a large archive, so an after-open/after-query cap is not a bound.
     let bundle_bytes = database_bundle_size_bytes(db_path);
     if !should_run_engine_backed_archive_integrity_preflight(Some(bundle_bytes), max_bytes) {
         tracing::warn!(
             db_path = %db_path.display(),
             bundle_bytes,
             max_bytes,
-            "large full-rebuild archive passed the fixed SQLite header guard; deferring all fsqlite-backed integrity work to named rebuild/doctor phases"
+            "large full-rebuild archive passed the fixed SQLite header guard; deferring all SQLite-backed integrity work to named rebuild/doctor phases"
         );
         return Ok(None);
     }
@@ -1012,10 +1012,9 @@ pub(crate) struct FullRebuildHeadroomProjection {
     pub(crate) quarantine_bytes: u64,
     /// The db growth allowance charged (`db_bundle_bytes / 16`).
     pub(crate) db_growth_allowance_bytes: u64,
-    /// Whether the engine's one-time migration repair is still pending for
-    /// the archive (its `.fsqlite-migration-state` marker is absent or
-    /// incomplete). That repair keeps a `.pre-migration-bak` copy of the
-    /// whole bundle, so only then is the bundle charged a second time.
+    /// Whether the archive's one-time migration repair is still pending
+    /// (`index_engine_migration_is_complete` is false). While pending, the
+    /// headroom rule charges a second copy of the whole db bundle.
     pub(crate) migration_repair_pending: bool,
     /// `db_bundle_bytes` while `migration_repair_pending`, else 0.
     pub(crate) migration_copy_bytes: u64,
@@ -1039,8 +1038,8 @@ pub(crate) struct FullRebuildHeadroomProjection {
 /// 3.0 GB db / 1.3 GiB-live archive used 2.8 GB, all lexical, while
 /// `db * 2 + lexical * 2` demanded 9.1 GB and refused a `--full` that then
 /// wrote nothing. So the bundle is charged a growth allowance, plus one
-/// whole copy only while the engine's one-time migration repair (which keeps
-/// a `.pre-migration-bak` copy) is pending. The rebuild itself stops at the
+/// whole copy only while the archive's one-time migration repair is pending.
+/// The rebuild itself stops at the
 /// free-space floor rather than filling the disk if the projection is short
 /// ([`ensure_lexical_rebuild_free_space`]).
 ///
@@ -1365,27 +1364,16 @@ pub(in crate::indexer) fn database_sidecar_paths(db_path: &Path) -> [PathBuf; 2]
 }
 
 /// GH #450: how long a writable canonical open may take before it is worth an
-/// operator-visible warning naming the phase (schema migration / frankensqlite
+/// operator-visible warning naming the phase (schema migration / one-time
 /// migration repair). Well above a healthy open on a multi-gigabyte archive.
 pub(in crate::indexer) const SLOW_STORAGE_OPEN_WARN_THRESHOLD: Duration = Duration::from_secs(30);
 
 /// GH #450: the files whose byte footprint proves a writable storage open is
-/// still doing work. The archive and its WAL/SHM sidecars cover an ordinary
-/// open and a schema migration; the `.pre-migration-bak*` copies and the
-/// `.fsqlite-migration-state` marker cover frankensqlite's one-time migration
-/// repair, whose first (and longest) act is writing that backup.
+/// still doing work: the canonical archive and its WAL/SHM sidecars.
 pub(in crate::indexer) fn storage_open_liveness_targets(db_path: &Path) -> Vec<PathBuf> {
-    let mut targets = Vec::with_capacity(7);
+    let mut targets = Vec::with_capacity(3);
     targets.push(db_path.to_path_buf());
     targets.extend(database_sidecar_paths(db_path));
-    for suffix in [
-        ".pre-migration-bak",
-        ".pre-migration-bak-wal",
-        ".pre-migration-bak-shm",
-        ".fsqlite-migration-state",
-    ] {
-        targets.push(database_path_with_suffix(db_path, suffix));
-    }
     targets
 }
 
@@ -1405,7 +1393,7 @@ pub(in crate::indexer) fn file_size_bytes(path: &Path) -> u64 {
 #[cfg(test)]
 pub(in crate::indexer) fn current_schema_fast_probe(db_path: &Path) -> Result<bool> {
     let mut storage = FrankenStorage::open_readonly(db_path)
-        .with_context(|| format!("opening frankensqlite db readonly at {}", db_path.display()))?;
+        .with_context(|| format!("opening SQLite db readonly at {}", db_path.display()))?;
 
     let version = storage
         .raw()

@@ -19,7 +19,7 @@ use crate::storage::sqlite::FrankenStorage;
 use anyhow::{Context, Result, ensure};
 use frankensearch::index::{Quantization, VectorIndex, wal_path_for};
 use std::collections::HashSet;
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -248,15 +248,14 @@ struct ArchiveStamp {
 
 impl ArchiveStamp {
     fn capture(storage: &FrankenStorage) -> Result<Option<Self>> {
-        if storage.raw().as_async().in_transaction() {
+        if storage.raw().in_transaction() {
             return Ok(None);
         }
         let path = storage.database_path()?.canonicalize()?;
         let Some(identity) = storage.raw().file_identity()? else {
             return Ok(None);
         };
-        let file = File::open(&path)?;
-        if crate::franken_sync::FileIdentity::from_file(&file)? != Some(identity) {
+        if crate::franken_sync::FileIdentity::from_path(&path)? != Some(identity) {
             return Ok(None);
         }
         let Some(main) = stamp(&path)? else {
@@ -269,8 +268,7 @@ impl ArchiveStamp {
             return Ok(None);
         }
         // Recheck against the live descriptor after both pathname observations.
-        let current = File::open(&path)?;
-        if crate::franken_sync::FileIdentity::from_file(&current)? != Some(identity) {
+        if crate::franken_sync::FileIdentity::from_path(&path)? != Some(identity) {
             return Ok(None);
         }
         Ok(Some(Self { path, main, wal }))

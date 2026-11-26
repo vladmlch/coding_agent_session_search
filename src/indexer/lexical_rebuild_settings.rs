@@ -4,7 +4,7 @@ use super::*;
 // thousands of conversations on a developer workstation (~512MB tantivy heap,
 // 4 writer threads). Raise via env vars on constrained hosts or when a corpus
 // exceeds these budgets. The previous (much smaller) defaults served
-// correctness during the frankensqlite migration but capped throughput at
+// correctness during an earlier storage migration but capped throughput at
 // ~20 docs/sec on a 4.7M-message corpus; the values below keep Tantivy's
 // writer threads fed and cut SQL round-trips by ~5x without blowing the
 // configured heap.

@@ -29,6 +29,25 @@ fn require_same_file(connection: &Connection, path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn require_same_identity(
+    connection: &Connection,
+    path: &Path,
+    expected: FileIdentity,
+) -> Result<()> {
+    let actual = identity(path)?;
+    let matched = match connection.file_identity().map_err(|error| {
+        super::database_failure("cannot recheck the existing destination identity", error)
+    })? {
+        Some(opened) => opened == actual,
+        None => actual == expected,
+    };
+    ensure!(
+        matched,
+        "restore destination changed during comparison; retry without replacing it"
+    );
+    Ok(())
+}
+
 pub(super) fn verify_existing(
     input: &mut impl BufRead,
     header: Header,
@@ -49,10 +68,15 @@ pub(super) fn verify_existing(
     let expected = validator.finish().map_err(super::integrity_unless_io)?;
     let admitted = identity(destination)?;
     let reader = export::open_source(destination)?;
+    let opened_identity = reader.file_identity().map_err(|error| {
+        super::database_failure("cannot read the existing destination identity", error)
+    })?;
+    let still_same = match opened_identity {
+        Some(opened) => opened == admitted,
+        None => identity(destination)? == admitted,
+    };
     ensure!(
-        reader.file_identity().map_err(|error| {
-            super::database_failure("cannot read the existing destination identity", error)
-        })? == Some(admitted),
+        still_same,
         "restore destination changed before comparison; nothing was replaced"
     );
     let actual = export::snapshot_for_version(
@@ -67,7 +91,7 @@ pub(super) fn verify_existing(
     );
     import::verify_schema_authority(&reader, &expected.0.storage_schema_version)?;
     import::verify_database(&reader)?;
-    require_same_file(&reader, destination)?;
+    require_same_identity(&reader, destination, admitted)?;
     reader.execute("ROLLBACK").map_err(|error| {
         super::database_failure(
             "cannot release the existing destination comparison snapshot",

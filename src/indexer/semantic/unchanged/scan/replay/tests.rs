@@ -1,4 +1,4 @@
-//! Lazy admission uses real FrankenSQLite rows and the established packet encoder.
+//! Lazy admission uses real SQLite rows and the established packet encoder.
 //! Loader instrumentation observes actual body reads, never substitutes a DB.
 
 use super::*;

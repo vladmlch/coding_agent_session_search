@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::franken_sync::Connection;
+use crate::franken_sync::{Connection, TransactionBehavior};
 use crate::franken_sync::compat::{ParamValue, RowExt, TransactionExt};
 use crate::model::conversation_packet::ConversationPacket;
 use crate::model::types::Conversation;
@@ -465,7 +465,7 @@ pub fn publish_ingest_generation(
                     .context("injecting tie-race canonical mutation")?;
             }
             let mut tx = connection
-                .transaction()
+                .transaction_with_behavior(TransactionBehavior::Immediate)
                 .context("opening ingest generation transaction")?;
             publish_ingest_generation_in_tx(&tx, conv, conversation_id, &generation, &receipt)?;
             if crate::viewer_extensions::sort::publish_sort_tie_guarded(

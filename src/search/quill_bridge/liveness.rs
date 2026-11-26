@@ -156,7 +156,7 @@ pub(super) fn watch_target_footprint(targets: &[PathBuf]) -> (u64, u64) {
 }
 
 /// GH #450: run one opaque, potentially very long blocking call — a
-/// frankensqlite open that may perform a multi-gigabyte migration repair — with
+/// SQLite open that may perform a multi-gigabyte recovery or migration — with
 /// the same honest liveness sampler the Quill sink uses (see
 /// [`EngineLivenessProbe`]).
 ///

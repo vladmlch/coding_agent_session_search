@@ -38,10 +38,9 @@ pub(in crate::indexer) fn close_storage_after_index(
     // checkpoint could not fully truncate) — the abort path (#321) is the one that
     // must branch on the outcome.
     //
-    // GH #382 / g3zyo: bounded. On an archive whose frankensqlite writable path
-    // loops (the disowned-page reclaim sweep rescans the WAL per ledger page)
-    // this checkpoint never returned, so every index run hung *after* a
-    // successful publish. The publish is durable before this point, but a
+    // GH #382 / g3zyo: bounded. If a writable checkpoint stalls or loops on a
+    // large WAL, this checkpoint must not hang *after* a successful publish.
+    // The publish is durable before this point, but a
     // still-running checkpoint cannot be left behind when writer ownership
     // is released. The existing deadline now ends the process with exit 70;
     // the next owner recovers the committed WAL normally.
@@ -193,7 +192,7 @@ pub(in crate::indexer) fn classify_final_wal_checkpoint(
 /// The `cass index` stall-abort path exits via `std::process::exit(70)`, which
 /// skips destructors — so the canonical WAL is never checkpointed and a killed
 /// run leaves a multi-GB orphaned `*.db-wal` behind a tiny `*.db` (the #296
-/// symptom). This opens a *fresh, independent* frankensqlite connection to the
+/// symptom). This opens a *fresh, independent* SQLite connection to the
 /// canonical DB file and runs
 /// `wal_checkpoint(TRUNCATE)` so the post-abort DB is recoverable by stock
 /// SQLite. The fresh checkpoint stays on this calling thread and gets only
@@ -287,8 +286,8 @@ pub(in crate::indexer) fn best_effort_abort_wal_checkpoint_for_db(db_path: &Path
 pub(crate) const CASS_TEST_WAL_CHECKPOINT_PARK_MS_ENV: &str = "CASS_TEST_WAL_CHECKPOINT_PARK_MS";
 
 /// [`checkpoint_wal_truncate`] with a wall-clock deadline (GH #382, bead
-/// g3zyo). On the owner-scale archive with a 200 MB WAL, frankensqlite's
-/// writable open never returns, which turned `cass doctor --fix` into an
+/// g3zyo). On the owner-scale archive with a 200 MB WAL, a slow or stalled
+/// writable open/checkpoint turned `cass doctor --fix` into an
 /// infinite hang. The checkpoint stays on the caller thread, under its own
 /// canonical archive lease. If it exceeds `deadline`, exit 70 preserves the
 /// ownership boundary; returning a report while a detached writer remained
@@ -327,9 +326,9 @@ pub(in crate::indexer) fn run_final_wal_checkpoint(
     {
         std::thread::sleep(Duration::from_millis(park_ms));
     }
-    // Run this after closing the indexing storage handle: frankensqlite flushes
-    // retained autocommit writes during close, and TRUNCATE avoids leaving the
-    // completed bulk-ingest WAL for the next opener to replay.
+    // Run this after closing the indexing storage handle so pending writes are
+    // flushed, and TRUNCATE avoids leaving the completed bulk-ingest WAL for
+    // the next opener to replay.
     let checkpoint_db_path = db_path.to_string_lossy().into_owned();
     let conn = crate::franken_sync::Connection::open(checkpoint_db_path).with_context(|| {
         format!(

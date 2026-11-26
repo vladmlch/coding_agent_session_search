@@ -404,7 +404,7 @@ static SCENARIOS: &[E2eScenario] = &[
             ],
             env: &[ScenarioEnv {
                 key: "RUST_LOG",
-                value: "trace,fsqlite=trace,fsqlite_core=trace",
+                value: "trace,rusqlite=trace,tantivy=trace,frankensearch=trace",
             }],
             accepted_exit_codes: &[0, 1],
             json_assertions: &[
@@ -413,7 +413,7 @@ static SCENARIOS: &[E2eScenario] = &[
                     pointer: "/recommended_action",
                 },
             ],
-            forbidden_stream_markers: &[" INFO ", " DEBUG ", " TRACE ", "fsqlite"],
+            forbidden_stream_markers: &[" INFO ", " DEBUG ", " TRACE ", "rusqlite"],
             expected_extra_artifacts: &["{trace_path}"],
             timeout_ms: 30_000,
         }],

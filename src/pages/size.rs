@@ -97,11 +97,7 @@ impl SizeEstimate {
         let params_slice = &param_values;
 
         // Query conversation count. We read the COUNT(*) cell as Option<i64>
-        // because frankensqlite can return NULL from `COUNT(*)` when the
-        // WHERE clause excludes all rows (e.g., the empty-agent-filter "1=0"
-        // path) — standard SQLite returns 0, fsqlite currently returns NULL.
-        // The Option<i64>.unwrap_or(0) shim absorbs the difference without a
-        // type-mismatch panic.
+        // so empty or edge-case aggregates absorb NULL safely as 0.
         let conv_sql = format!("SELECT COUNT(*) FROM conversations c{}", where_clause);
         let conversation_count: u64 = conn
             .query_row_map(&conv_sql, params_slice, |row: &Row| {

@@ -729,7 +729,7 @@ fn load_keep_tag_conversation_ids(
     manifests: &[RawMirrorPruneManifest],
     keep_tags: &[String],
 ) -> Result<HashSet<i64>> {
-    use crate::franken_sync::compat::{ConnectionExt as _, ParamValue, RowExt as _};
+    use crate::franken_sync::{FrankenError, SqliteValue};
 
     let mut conversation_ids = manifests
         .iter()
@@ -775,12 +775,12 @@ fn load_keep_tag_conversation_ids(
         );
         let mut params = keep_tags
             .iter()
-            .map(|tag| ParamValue::from(tag.as_str()))
+            .map(|tag| SqliteValue::from(tag.as_str()))
             .collect::<Vec<_>>();
-        params.extend(id_chunk.iter().copied().map(ParamValue::from));
+        params.extend(id_chunk.iter().copied().map(SqliteValue::from));
         let rows: Vec<i64> = conn
-            .query_map_collect(&sql, &params, |row: &crate::franken_sync::Row| {
-                row.get_typed(0)
+            .query_map(&sql, &params, |row: &rusqlite::Row<'_>| {
+                row.get::<_, i64>(0).map_err(FrankenError::from)
             })
             .with_context(|| "query raw-mirror prune keep-tag conversation pins")?;
         pinned.extend(rows);

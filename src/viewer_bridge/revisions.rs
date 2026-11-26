@@ -47,7 +47,7 @@
 //! replayed values. Genuine tail movement always accompanies a canonical
 //! `conversations`/`messages` write, so those tables' observers cover it.
 //!
-//! Qualified against pinned FrankenSQLite 0.4.12 in
+//! Qualified against SQLite in
 //! `tests/viewer_bridge_extensions.rs::revisions_engine_trigger_semantics_probe`
 //! and `tests/viewer_change_stream.rs::journal_engine_insert_select_guard_probe`.
 

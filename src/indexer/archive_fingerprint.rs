@@ -1,7 +1,7 @@
 use super::*;
 #[cfg(test)]
 use crate::franken_sync::compat::{
-    Transaction as FrankenTransaction, TransactionExt as FrankenTransactionExt,
+    Transaction as FrankenTransaction, TransactionBehavior as FrankenTransactionBehavior,
 };
 #[cfg(test)]
 use crate::storage::sqlite::{DailyStatsRebuildResult, StatsAggregator, StatsDelta};
@@ -660,7 +660,7 @@ pub(in crate::indexer) fn persist_final_index_run_metadata(
         scan_start_ts,
         now_ms,
         || {
-            persist::with_concurrent_retry(persist::begin_concurrent_retry_limit(), || {
+            persist::with_writer_retry(persist::writer_retry_limit(), || {
                 persist::with_ephemeral_writer(
                     storage,
                     false,
@@ -740,7 +740,7 @@ pub(in crate::indexer) fn persist_connector_scan_watermarks(
         scanned_connectors.len(),
         scan_start_ts,
         || {
-            persist::with_concurrent_retry(persist::begin_concurrent_retry_limit(), || {
+            persist::with_writer_retry(persist::writer_retry_limit(), || {
                 persist::with_ephemeral_writer(
                     storage,
                     false,
@@ -980,7 +980,10 @@ pub(in crate::indexer) fn rebuild_daily_stats_from_conversation_packets(
     let (agent_slugs, workspace_paths) = storage
         .build_lexical_rebuild_lookups()
         .with_context(|| format!("building packet rebuild lookups for {}", db_path.display()))?;
-    let mut tx = storage.raw().transaction().with_context(|| {
+    let mut tx = storage
+        .raw()
+        .transaction_with_behavior(FrankenTransactionBehavior::Immediate)
+        .with_context(|| {
         format!(
             "opening packet daily_stats rebuild transaction for {}",
             db_path.display()

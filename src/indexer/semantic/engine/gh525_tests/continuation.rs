@@ -1,5 +1,5 @@
 //! Checkpoint continuation and failure regressions for GH #525.
-//! These tests call the production selector; storage cases use FrankenSQLite.
+//! These tests call the production selector; storage cases use FrankenStorage.
 
 use super::*;
 

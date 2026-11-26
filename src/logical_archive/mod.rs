@@ -1,6 +1,7 @@
 //! Explicit logical-archive commands. Kept outside the ordinary search startup
-//! path. Only explicit import flags opt into canonical-only lexical rebuilding
-//! or the reviewed v20/v21/v22 -> v23 schema migrations; export and verification never do so.
+//! path. Only explicit import flags opt into canonical-only lexical rebuilding;
+//! restoration requires the exact current canonical schema, and export and
+//! verification never mutate or repair sources.
 
 mod codec;
 #[cfg(test)]
@@ -10,7 +11,6 @@ mod conversation_extract;
 mod export;
 mod extract;
 mod import;
-mod migrate;
 mod query;
 mod reimport;
 
@@ -153,10 +153,9 @@ enum Operation {
         /// reviewed migration-projection match. This never grants overwrite permission.
         #[arg(long)]
         if_identical: bool,
-        /// Permit only reviewed storage-schema v20, v21 or v22 -> v23 migrations.
-        /// Canonical table/column/primary-key descriptors must match the current
-        /// ones, apart from tables added after the archived schema, which start
-        /// empty. Existing source and session tombstones are preserved.
+        /// Compatibility flag retained for CLI callers; only the current
+        /// canonical storage schema is supported, so compatible imports
+        /// delegate directly to exact restoration and identical comparison.
         #[arg(long)]
         allow_compatible_schema: bool,
         /// Rebuild lexical search from the restored DB, without scanning providers.
@@ -247,7 +246,7 @@ fn database_failure_message(context: impl std::fmt::Display, error: &FrankenErro
         _ => String::new(),
     };
     format!(
-        "{context}: FrankenSQLite {:?} (code {}){detail}",
+        "{context}: SQLite {:?} (code {}){detail}",
         error.error_code(),
         error.extended_error_code(),
     )
@@ -390,7 +389,6 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let Root::Archive { command } = cli.command;
     let mut destination_status = None;
     let mut lexical_rebuild = None;
-    let mut schema_migration = None;
     let (operation, header, completion) = match command {
         Operation::Export {
             output,
@@ -512,24 +510,15 @@ pub fn run(args: Vec<String>) -> Result<()> {
             let output = plan
                 .as_ref()
                 .map_or(output.as_path(), ArchiveIndexPlan::database);
-            let (header, completion, created) = if allow_compatible_schema {
-                let outcome =
-                    migrate::import_compatible(&input, output, &archive_id, if_identical)?;
-                schema_migration = outcome.migration;
-                (outcome.header, outcome.completion, outcome.created)
-            } else if if_identical {
-                import::import_file_with_policy(&input, output, &archive_id, true)?
+            let (header, completion, created) = if allow_compatible_schema || if_identical {
+                import::import_file_with_policy(&input, output, &archive_id, if_identical)?
             } else {
                 let (header, completion) = import::import_file(&input, output, &archive_id)?;
                 (header, completion, true)
             };
             destination_status = Some(if created { "created" } else { "unchanged" });
             if let Some(plan) = plan {
-                let retry_flags = if schema_migration.is_some() {
-                    "--if-identical --allow-compatible-schema --rebuild-index"
-                } else {
-                    "--if-identical --rebuild-index"
-                };
+                let retry_flags = "--if-identical --rebuild-index";
                 lexical_rebuild = Some(plan.rebuild().map_err(|error| {
                     index_rebuild_failure(error, plan.database(), created, retry_flags)
                 })?);
@@ -551,9 +540,6 @@ pub fn run(args: Vec<String>) -> Result<()> {
     });
     if let Some(status) = destination_status {
         receipt["destination_status"] = serde_json::Value::String(status.to_owned());
-    }
-    if let Some(migration) = schema_migration {
-        receipt["schema_migration"] = serde_json::to_value(migration)?;
     }
     if let Some(rebuild) = lexical_rebuild {
         receipt["derived_search_assets"] = serde_json::json!("lexical_rebuilt_semantic_not_built");
@@ -653,7 +639,7 @@ mod tests {
                     conflicting_pages: "PRIVATE-WORKER-CONTENT".into(),
                 }),
                 (7, "logical-archive-busy", true),
-                "FrankenSQLite",
+                "SQLite",
             ),
             (
                 anyhow::Error::new(FrankenError::SnapshotTooOld { txn_id: 88 }),
@@ -673,7 +659,7 @@ mod tests {
                     detail: "PRIVATE-WORKER-CONTENT".into(),
                 }),
                 (9, "logical-archive-error", false),
-                "FrankenSQLite",
+                "SQLite",
             ),
             (
                 anyhow!("busy permission denied PRIVATE-WORKER-CONTENT"),
@@ -830,7 +816,7 @@ mod tests {
             assert!(error.downcast_ref::<FrankenError>().is_some());
             let message = error.to_string();
             assert!(message.contains("logical table messages, row 257 (id=1799)"));
-            assert!(message.contains("FrankenSQLite"));
+            assert!(message.contains("SQLite"));
             assert!(!message.contains("PRIVATE-SQL-AND-MESSAGE"));
         }
     }

@@ -1,6 +1,5 @@
 mod batch_map;
 mod canonical_replay;
-mod concurrent;
 #[cfg(test)]
 #[path = "tests/mod.rs"]
 mod persist_internal_tests;
@@ -28,13 +27,18 @@ pub(in crate::indexer) use canonical_replay::{
     replay_watch_canonical_conversation,
 };
 #[cfg(test)]
-pub(in crate::indexer) use concurrent::{
+pub(in crate::indexer) use serial_batch::{
     BULK_IMPORT_WAL_AUTOCHECKPOINT_PAGES, SERIAL_CHUNK_CONTENTION_RETRIES,
 };
-pub(in crate::indexer) use concurrent::{
+pub(in crate::indexer) use serial_batch::{
     apply_index_writer_busy_timeout, apply_index_writer_checkpoint_policy,
-    begin_concurrent_retry_limit, defer_lexical_updates_enabled, maybe_checkpoint_bulk_ingest_wal,
-    with_concurrent_retry, with_ephemeral_writer,
+    defer_lexical_updates_enabled, maybe_checkpoint_bulk_ingest_wal, with_ephemeral_writer,
+    with_writer_retry, writer_retry_limit,
+};
+// Compat aliases for unowned wave-2.2 test callers (`gh473_tests.rs`, `preflight_watchdog_tests.rs`).
+pub(in crate::indexer) use serial_batch::{
+    with_writer_retry as with_concurrent_retry,
+    writer_retry_limit as begin_concurrent_retry_limit,
 };
 
 #[cfg(test)]
@@ -51,11 +55,7 @@ use canonical_replay::{
     replay_canonical_conversation_in_chunks, stage_persisted_region_docs,
 };
 #[cfg(test)]
-use concurrent::{
-    BEGIN_CONCURRENT_CHUNK_SIZE_MAX, BEGIN_CONCURRENT_RETRY_MAX,
-    BEGIN_CONCURRENT_WRITER_CACHE_KIB_MAX, BulkIngestWalCheckpointMode,
-    begin_concurrent_chunk_size, begin_concurrent_writer_cache_kib,
-    begin_concurrent_writes_enabled, duplicate_conversation_keys_present,
-    index_writer_wal_autocheckpoint_pages, is_retryable_franken_error,
-    persist_conversations_batched_begin_concurrent,
+use serial_batch::{
+    BulkIngestWalCheckpointMode, WRITER_RETRY_MAX, index_writer_wal_autocheckpoint_pages,
+    is_retryable_franken_error,
 };

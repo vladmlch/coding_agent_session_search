@@ -855,29 +855,21 @@ fn database_sidecar_paths_preserve_filename_bytes_without_display_roundtrip() {
     assert_eq!(shm, PathBuf::from("/tmp/cass.db-shm"));
 }
 
-/// GH #450: the storage-open liveness probe must watch the frankensqlite
-/// migration-repair artifacts, not just the live archive — writing the
-/// `.pre-migration-bak` copy is the longest, most opaque part of the open
-/// and is the only footprint that grows while it runs.
+/// GH #450: the storage-open liveness probe watches the canonical archive and
+/// its SQLite WAL/SHM sidecars without adding retired migration-repair artifacts.
 #[test]
 fn storage_open_liveness_targets_cover_the_migration_repair_artifacts() {
     let db_path = PathBuf::from("/tmp/cass.db");
     let targets = storage_open_liveness_targets(&db_path);
 
-    for expected in [
-        "/tmp/cass.db",
-        "/tmp/cass.db-wal",
-        "/tmp/cass.db-shm",
-        "/tmp/cass.db.pre-migration-bak",
-        "/tmp/cass.db.pre-migration-bak-wal",
-        "/tmp/cass.db.pre-migration-bak-shm",
-        "/tmp/cass.db.fsqlite-migration-state",
-    ] {
-        assert!(
-            targets.contains(&PathBuf::from(expected)),
-            "missing liveness watch target {expected}: {targets:?}"
-        );
-    }
+    assert_eq!(
+        targets,
+        vec![
+            PathBuf::from("/tmp/cass.db"),
+            PathBuf::from("/tmp/cass.db-wal"),
+            PathBuf::from("/tmp/cass.db-shm"),
+        ]
+    );
 }
 
 #[test]
