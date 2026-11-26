@@ -193,6 +193,21 @@ impl LeakedPagesInspection {
 
 const LEAKED_PAGES_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+pub(super) fn reclaimed_pages_count(
+    page_count_before: i64,
+    freelist_count_before: i64,
+    page_count_after: i64,
+    freelist_count_after: i64,
+) -> usize {
+    let page_before = u64::try_from(page_count_before).unwrap_or(0);
+    let free_before = u64::try_from(freelist_count_before).unwrap_or(0);
+    let page_after = u64::try_from(page_count_after).unwrap_or(0);
+    let free_after = u64::try_from(freelist_count_after).unwrap_or(0);
+    let non_freelist_before = page_before.saturating_sub(free_before);
+    let non_freelist_after = page_after.saturating_sub(free_after);
+    usize::try_from(non_freelist_before.saturating_sub(non_freelist_after)).unwrap_or(usize::MAX)
+}
+
 fn leaked_pages_single_integer(
     conn: &crate::franken_sync::Connection,
     sql: &str,
@@ -604,10 +619,12 @@ pub fn run_doctor_repair_leaked_pages(
         let freelist_count_after = leaked_pages_single_integer(&conn, "PRAGMA freelist_count;")?;
         conn.close()
             .map_err(|err| format!("closing the repaired archive: {err}"))?;
-        let non_freelist_before = page_count_before.saturating_sub(freelist_count_before);
-        let non_freelist_after = page_count_after.saturating_sub(freelist_count_after);
-        Ok(usize::try_from(non_freelist_before.saturating_sub(non_freelist_after))
-            .unwrap_or(usize::MAX))
+        Ok(reclaimed_pages_count(
+            page_count_before,
+            freelist_count_before,
+            page_count_after,
+            freelist_count_after,
+        ))
     })()
     .map_err(|err| CliError {
         code: 3,

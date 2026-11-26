@@ -1,6 +1,7 @@
 use super::fts::fts_rebuild_dry_run_envelope;
 use super::leaked_pages::{
     LeakedPagesVerdict, classify_leaked_pages, leaked_pages_bundle_components,
+    reclaimed_pages_count,
 };
 use super::*;
 use crate::RobotFormat;
@@ -1555,4 +1556,9 @@ fn repair_leaked_pages_reclaims_detached_freelist_via_vacuum() {
         .expect("messages count");
     assert_eq!(convs, 1);
     assert_eq!(msgs, 2);
+
+    assert_eq!(reclaimed_pages_count(10, 0, 4, 0), 6);
+    assert_eq!(reclaimed_pages_count(10, 2, 5, 0), 3);
+    assert_eq!(reclaimed_pages_count(5, 0, 6, 0), 0);
+    assert_eq!(reclaimed_pages_count(10, 5, 6, 0), 0);
 }
