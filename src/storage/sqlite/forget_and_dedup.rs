@@ -8,7 +8,7 @@ use crate::franken_sync::{
     compat::{
         ConnectionExt as FrankenConnectionExt, OptionalExtension as FrankenOptionalExtension,
         ParamValue, RowExt as FrankenRowExt, Transaction as FrankenTransaction,
-        TransactionExt as FrankenTransactionExt,
+        TransactionBehavior, TransactionExt as FrankenTransactionExt,
     },
 };
 use anyhow::{Context, Result, bail};
@@ -67,7 +67,6 @@ impl FrankenStorage {
         }
         let statement = self.conn.prepare(
             "SELECT size_bytes, mtime_ms FROM forgotten_sources
-             INDEXED BY sqlite_autoindex_forgotten_sources_1
              WHERE source_path = ?1 LIMIT 1",
         )?;
         let mut matched = HashMap::new();
@@ -185,7 +184,12 @@ impl FrankenStorage {
         dry_run: bool,
     ) -> Result<ReincludeForgetExclusionsResult> {
         let compiled = CompiledForgetExclusionSelector::new(selector, true)?;
-        let mut tx = self.conn.transaction()?;
+        let behavior = if dry_run {
+            TransactionBehavior::Deferred
+        } else {
+            TransactionBehavior::Immediate
+        };
+        let mut tx = self.conn.transaction_with_behavior(behavior)?;
         let listed = self.collect_forget_exclusions(&tx, &compiled)?;
         let blocked_by_source_stamps = if compiled.source_only() {
             Vec::new()
@@ -431,7 +435,6 @@ impl FrankenStorage {
         }
         let statement = self.conn.prepare(
             "SELECT 1 FROM forgotten_conversations
-             INDEXED BY sqlite_autoindex_forgotten_conversations_1
              WHERE source_id = ?1 AND agent_slug = ?2
                AND source_path = ?3 AND external_id = ?4
              LIMIT 1",
@@ -480,7 +483,9 @@ impl FrankenStorage {
     /// Drops the tombstones of forgotten sources that changed since the
     /// forget, so their next ingest is permanent.
     pub fn clear_forgotten_sources(&self, paths: &[String]) -> Result<()> {
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         for path in paths {
             tx.execute_compat(
                 "DELETE FROM forgotten_sources WHERE source_path = ?1",
@@ -545,7 +550,12 @@ impl FrankenStorage {
             dry_run,
             ..Default::default()
         };
-        let mut tx = self.conn.transaction()?;
+        let behavior = if dry_run {
+            TransactionBehavior::Deferred
+        } else {
+            TransactionBehavior::Immediate
+        };
+        let mut tx = self.conn.transaction_with_behavior(behavior)?;
         let mut next_id = i64::MIN;
         let mut matched = Vec::new();
         let mut selected_by_path: HashMap<String, usize> = HashMap::new();
@@ -859,7 +869,9 @@ impl FrankenStorage {
         // transaction. Messages, snippets, conversation_tags, token_usage,
         // etc. carry `ON DELETE CASCADE`; the two external-lookup tables do
         // not, so delete them explicitly first (mirrors `purge_agent_archive`).
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         for candidate in &result.pairs {
             delete_duplicate_conversation_rows(&tx, candidate.drop_conversation_id)?;
         }
@@ -944,7 +956,9 @@ impl FrankenStorage {
             return Ok(result);
         }
 
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         for drop_id in &drop_ids {
             delete_duplicate_conversation_rows(&tx, *drop_id)?;
         }
@@ -1038,7 +1052,9 @@ impl FrankenStorage {
             return Ok(retired);
         }
 
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         for row in &retired {
             delete_duplicate_conversation_rows(&tx, row.conversation_id)?;
         }
