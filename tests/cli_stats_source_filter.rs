@@ -12,6 +12,8 @@ fn stats_source_filter_preserves_date_range() {
 
     // Minimal schema required by `cass stats` queries.
     let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).expect("open db");
+    conn.execute_batch("PRAGMA application_id = 0x43415353; PRAGMA user_version = 1;")
+        .expect("stamp schema v1");
     conn.execute("CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT NOT NULL)")
         .expect("create agents");
     conn.execute("CREATE TABLE workspaces (id INTEGER PRIMARY KEY, path TEXT NOT NULL)")
@@ -82,6 +84,8 @@ fn stats_test_archive(omit: Option<&str>) -> TempDir {
             .into_owned(),
     )
     .expect("create archive");
+    conn.execute_batch("PRAGMA application_id = 0x43415353; PRAGMA user_version = 1;")
+        .expect("stamp schema v1");
     conn.execute("CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT NOT NULL)")
         .expect("agents");
     conn.execute("CREATE TABLE workspaces (id INTEGER PRIMARY KEY, path TEXT NOT NULL)")

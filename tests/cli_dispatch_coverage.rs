@@ -533,8 +533,10 @@ fn context_legacy_nulls_and_zero_limit_remain_readonly_before_migration() {
     let db_path = data_dir.join("agent_search.db");
     let conn = FrankenConnection::open(db_path.to_string_lossy().as_ref()).unwrap();
     conn.execute_batch(
-        "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
-         INSERT INTO meta VALUES('schema_version', '20');
+        "PRAGMA application_id = 0x43415353;
+         PRAGMA user_version = 1;
+         CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+         INSERT INTO meta VALUES('schema_version', '1');
          CREATE TABLE agents(id INTEGER PRIMARY KEY, slug TEXT);
          INSERT INTO agents VALUES(1, NULL);
          CREATE TABLE workspaces(id INTEGER PRIMARY KEY, path TEXT);
@@ -726,7 +728,9 @@ fn context_help_shows_options() {
 fn seed_timeline_count_fixture(db_path: &Path, archive_messages: i64, body_bytes: usize) {
     let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
     conn.execute_batch(
-        "CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT);
+        "PRAGMA application_id = 0x43415353;
+         PRAGMA user_version = 1;
+         CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT);
          CREATE TABLE sources (id TEXT PRIMARY KEY, kind TEXT);
          CREATE TABLE conversations (
              id INTEGER PRIMARY KEY, agent_id INTEGER, title TEXT,
