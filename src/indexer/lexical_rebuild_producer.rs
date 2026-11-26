@@ -962,8 +962,8 @@ pub(in crate::indexer) fn spawn_lexical_rebuild_packet_producer(
             log_prep_step("load_sources", &mut prep_step_started);
 
             // Pre-fetch agent/workspace lookup maps to avoid 3-table JOINs in the
-            // rebuild query path — frankensqlite materialises the full Cartesian
-            // product for multi-table JOINs, causing 200x+ regressions.
+            // rebuild query path — wide multi-table JOINs can materialise a large
+            // Cartesian product, causing major regressions.
             let (agent_slugs, workspace_paths) = match storage.build_lexical_rebuild_lookups() {
                 Ok(lookups) => lookups,
                 Err(err) => {

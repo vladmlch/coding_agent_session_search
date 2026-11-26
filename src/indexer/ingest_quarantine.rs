@@ -957,7 +957,7 @@ pub fn conversation_ingest_quarantine_summary(
         } else {
             (deferred_conversations > 0).then(|| {
                 format!(
-                    "{deferred_conversations} conversation(s) are deferred by the watcher after repeated bounded-allocation NoMem and are missing from search until they ingest; `cass quarantine list --json` lists them. An FSQLITE_PAGE_BUFFER_MAX above the database size removes the common trigger."
+                    "{deferred_conversations} conversation(s) are deferred by the watcher after repeated bounded-allocation NoMem and are missing from search until they ingest; `cass quarantine list --json` lists them."
                 )
             })
         },

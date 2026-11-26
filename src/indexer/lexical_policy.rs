@@ -962,7 +962,7 @@ pub(in crate::indexer) fn nonresumable_pending_lexical_rebuild_status_without_fi
 /// the canonical database. In particular, path identity, schema, execution
 /// mode, and checkpoint shape are all available in the small JSON sidecar and
 /// must be rejected before an exact conversation count can hydrate a very
-/// large fsqlite archive (GH #413).
+/// large SQLite archive (GH #413).
 pub(in crate::indexer) fn nonresumable_pending_lexical_rebuild_state_for_db(
     index_path: &Path,
     db_path: &Path,
