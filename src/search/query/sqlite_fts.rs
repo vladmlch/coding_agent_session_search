@@ -1384,7 +1384,7 @@ mod tests {
             SearchFilters::default(),
             2,
             0,
-            FieldMask::new(true, true, false, false),
+            FieldMask::new(false, true, true, false),
         )?;
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].title, "claude high");
