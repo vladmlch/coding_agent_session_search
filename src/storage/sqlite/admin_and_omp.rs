@@ -19,7 +19,7 @@ use super::omp_and_semantic_meta::{
 };
 use super::storage_core::{EnsuredAgentKey, EnsuredWorkspaceKey, FrankenStorage};
 use crate::franken_sync::{
-    SqliteValue,
+    SqliteValue, TransactionBehavior,
     compat::{
         ConnectionExt as FrankenConnectionExt, OptionalExtension as FrankenOptionalExtension,
         RowExt as FrankenRowExt, TransactionExt as FrankenTransactionExt,
@@ -394,13 +394,10 @@ impl FrankenStorage {
     }
 
     /// Load per-connector scan watermarks and archived-row presence in one
-    /// explicit transaction.
+    /// consistent read-only transaction snapshot.
     ///
-    /// These reads run during index startup. On large file-backed archives,
-    /// issuing them one-at-a-time in autocommit can force frankensqlite's
-    /// clean prepared-read path to refresh the file-backed MemDatabase before
-    /// any connector work starts. A single explicit transaction keeps the
-    /// startup path on the pager-backed read path while preserving the same
+    /// Keeping both queries in one explicit deferred transaction avoids
+    /// observing mid-scan drift across tables while preserving the same
     /// newly-enabled-connector semantics as the scalar helpers below.
     pub fn connector_scan_states(
         &self,
@@ -425,7 +422,9 @@ impl FrankenStorage {
             return Ok(states);
         }
 
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Deferred)?;
         let watermark_rows: Vec<(String, String)> = tx.query_map_collect(
             "SELECT key, value FROM meta
              WHERE key LIKE 'last_scan_ts:connector:%' OR key LIKE 'scan_contract:connector:%'",
@@ -751,7 +750,9 @@ impl FrankenStorage {
                 ));
             }
 
-            let mut tx = self.conn.transaction()?;
+            let mut tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_compat(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES(?1, ?2)",
                 fparams![LEGACY_OMP_RECLASSIFICATION_META_KEY, pending_state.as_str()],
@@ -865,7 +866,9 @@ impl FrankenStorage {
             // Older builds may already have committed the identity swap before
             // crashing, so also invalidate semantic identity metadata on this
             // zero-row recovery path.
-            let mut tx = self.conn.transaction()?;
+            let mut tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
             tx.execute_compat(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES(?1, ?2)",
                 fparams![LEGACY_OMP_RECLASSIFICATION_META_KEY, pending_state.as_str()],
@@ -973,7 +976,9 @@ impl FrankenStorage {
         // retirement are one durable state transition. A failure cannot leave
         // `complete:<context>` paired with a stale resume cursor, nor can it
         // advertise a phase whose own cleanup did not commit.
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute_compat(
             "INSERT OR REPLACE INTO meta(key, value) VALUES(?1, ?2)",
             fparams![phase_key, context],
@@ -1210,7 +1215,9 @@ impl FrankenStorage {
             |row| row.get_typed(0),
         )?;
 
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute_compat(
             "DELETE FROM conversation_external_lookup
              WHERE conversation_id IN (

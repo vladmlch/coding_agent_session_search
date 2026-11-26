@@ -7,7 +7,7 @@ use std::collections::HashMap;
 /// Canonical schema version of freshly bootstrapped archives.
 ///
 /// Under the bundled-rusqlite engine (Task C3) the former v1-v23
-/// FrankenSQLite migration chain collapsed into a single baseline: the
+/// legacy migration chain collapsed into a single baseline: the
 /// complete ex-v23 DDL is applied once by
 /// `open::initialize_schema_v1`, and archive identity is the
 /// `(application_id = 0x43415353, user_version = 1)` header stamp. There is

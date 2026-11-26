@@ -127,7 +127,7 @@ impl FrankenStorage {
     /// Whether any historical backup bundles still await salvage.
     ///
     /// Task C3 retired the legacy-bundle salvage lane (it existed to import
-    /// archives stamped with the FrankenSQLite-era schema, which the new
+    /// archives stamped with the pre-v1 legacy schema, which the current
     /// open contract refuses rather than imports). The API is kept so
     /// indexer call sites compile; it reports "nothing pending".
     pub(crate) fn has_pending_historical_bundles(&self, canonical_db_path: &Path) -> Result<bool> {
@@ -278,11 +278,9 @@ pub(super) struct HistoricalBatchImportTotals {
     pub(super) inserted_messages: usize,
 }
 
-/// `PRAGMA table_info` answers from the connection's schema. A `sqlite_master`
-/// query instead materializes a virtual table, and fsqlite 0.4.4's clean-root
-/// probe for it reads every page of the file: the token rollup stage's check
-/// for its stage table held 17 GB on a 16 GB archive (xcqqa). Callers pass
-/// internal table names; views also answer, which none of them name.
+/// Check whether `table` exists in the connection's schema via
+/// `PRAGMA table_info`. Callers pass internal table names; views also answer,
+/// which none of them name.
 pub(super) fn historical_table_exists(conn: &FrankenConnection, table: &str) -> Result<bool> {
     let quoted = table.replace('"', "\"\"");
     let columns = conn
@@ -291,7 +289,7 @@ pub(super) fn historical_table_exists(conn: &FrankenConnection, table: &str) -> 
     Ok(!columns.is_empty())
 }
 
-/// Historical-bundle baseline seeding was a FrankenSQLite-era migration
+/// Historical-bundle baseline seeding was a pre-v1 legacy migration
 /// path: it copied a legacy archive into the canonical location and stamped
 /// the old `_schema_migrations` ledger. Under the schema-v1 contract a
 /// legacy archive is refused by [`super::open::archive_disposition`] and the
