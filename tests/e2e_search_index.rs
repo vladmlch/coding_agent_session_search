@@ -218,14 +218,37 @@ mod gh472 {
         /// The region share pins exactly too: every gh472 fixture session
         /// is titled, so each ships exactly one `meta:title` document.
         fn assert_indexed_docs(checkpoint: &Value, messages: usize, conversations: usize) {
+            let db_path = checkpoint["db"]["db_path"]
+                .as_str()
+                .expect("checkpoint records db.db_path");
+            let storage = SqliteStorage::open_readonly(Path::new(db_path))
+                .expect("open archive to inspect live_region_doc_bound");
+            let live_bound =
+                coding_agent_search::viewer_extensions::search_regions::live_region_doc_bound(
+                    storage.raw(),
+                )
+                .expect("compute live_region_doc_bound") as usize;
+            storage
+                .close_without_checkpoint()
+                .expect("close readonly archive");
             let region_docs = checkpoint["indexed_region_docs"]
                 .as_u64()
                 .expect("checkpoint records indexed_region_docs")
                 as usize;
-            assert_eq!(region_docs, conversations, "{checkpoint}");
+            let indexed_docs = checkpoint["indexed_docs"]
+                .as_u64()
+                .expect("checkpoint records indexed_docs") as usize;
+            let expected_region_docs = 3 * conversations;
+            assert_eq!(region_docs, expected_region_docs, "{checkpoint}");
+            assert_eq!(live_bound, expected_region_docs, "{checkpoint}");
             assert_eq!(
-                checkpoint["indexed_docs"].as_u64().expect("indexed_docs") as usize,
-                messages + region_docs,
+                indexed_docs.saturating_sub(live_bound),
+                messages,
+                "{checkpoint}"
+            );
+            assert_eq!(
+                indexed_docs,
+                messages + expected_region_docs,
                 "{checkpoint}"
             );
         }
