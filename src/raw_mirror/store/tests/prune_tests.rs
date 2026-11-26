@@ -849,20 +849,22 @@ fn prune_apply_keep_tag_pins_linked_manifest_and_blob() {
          PRAGMA user_version = 1;",
     )
     .expect("stamp schema v1");
-    let tx = conn
-        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
-        .expect("begin immediate keep-tag setup");
-    tx.execute("CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)")
-        .expect("create tags");
-    tx.execute(
-        "CREATE TABLE conversation_tags (conversation_id INTEGER NOT NULL, tag_id INTEGER NOT NULL, PRIMARY KEY (conversation_id, tag_id))",
-    )
-    .expect("create conversation_tags");
-    tx.execute("INSERT INTO tags (id, name) VALUES (1, 'keep')")
-        .expect("insert tag");
-    tx.execute("INSERT INTO conversation_tags (conversation_id, tag_id) VALUES (7, 1)")
-        .expect("insert conversation tag");
-    tx.commit().expect("commit keep-tag setup");
+    {
+        let mut tx = conn
+            .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+            .expect("begin immediate keep-tag setup");
+        tx.execute("CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)")
+            .expect("create tags");
+        tx.execute(
+            "CREATE TABLE conversation_tags (conversation_id INTEGER NOT NULL, tag_id INTEGER NOT NULL, PRIMARY KEY (conversation_id, tag_id))",
+        )
+        .expect("create conversation_tags");
+        tx.execute("INSERT INTO tags (id, name) VALUES (1, 'keep')")
+            .expect("insert tag");
+        tx.execute("INSERT INTO conversation_tags (conversation_id, tag_id) VALUES (7, 1)")
+            .expect("insert conversation tag");
+        tx.commit().expect("commit keep-tag setup");
+    }
     conn.close().expect("close keep-tag db");
 
     let report = prune(
