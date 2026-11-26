@@ -190,20 +190,6 @@ where
     }
 }
 
-#[cfg(test)]
-pub(crate) fn with_frankensqlite_connection<T, F>(
-    db_path: &Path,
-    context: &str,
-    op: F,
-) -> std::result::Result<T, crate::franken_sync::FrankenError>
-where
-    F: FnOnce(
-        &crate::franken_sync::Connection,
-    ) -> std::result::Result<T, crate::franken_sync::FrankenError>,
-{
-    with_sqlite_connection(db_path, context, op)
-}
-
 pub struct ParsedCli {
     pub cli: Cli,
     pub(crate) raw_args: Vec<String>,
