@@ -1,6 +1,6 @@
 //! Native row-cursor tests, including a later row that cannot be decoded.
 use super::*;
-use crate::franken_sync::compat::{ConnectionExt, ParamValue};
+use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt};
 use std::io;
 
 fn database(path: &std::path::Path, indexed: bool) -> Result<Connection> {

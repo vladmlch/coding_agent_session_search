@@ -1,5 +1,5 @@
 use super::*;
-use crate::franken_sync::compat::{ConnectionExt, ParamValue};
+use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt};
 use std::io;
 use std::path::Path;
 
