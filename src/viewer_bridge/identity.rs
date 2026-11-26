@@ -754,7 +754,7 @@ pub fn resolve_public_id(
 /// Batch variant for the `list_sessions` overlay and the maintenance
 /// lanes: dimension lookups load once, then the canonical evidence comes
 /// from `IN (ids)` probes on the primary key — repeated `SeekRowid`
-/// lookups under FrankenSQLite, one bounded statement per chunk instead
+/// lookups under SQLite, one bounded statement per chunk instead
 /// of one interpreted query per row. Each row's identity is still
 /// recomputed from canonical evidence — an unverifiable row surfaces its
 /// typed refusal for the whole page, matching the oracle's catalog
