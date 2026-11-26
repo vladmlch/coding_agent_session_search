@@ -590,10 +590,7 @@ fn context_wide_archive_limit_one_is_bounded_and_readonly() {
     let storage = FrankenStorage::open(&db_path).unwrap();
     let conn = storage.raw();
     conn.execute_batch(
-        "DROP INDEX idx_conversations_context;
-         DELETE FROM _schema_migrations WHERE version >= 21;
-         UPDATE meta SET value = '20' WHERE key = 'schema_version';
-         INSERT INTO agents(id, slug, name, kind, created_at, updated_at)
+        "INSERT INTO agents(id, slug, name, kind, created_at, updated_at)
              VALUES(1, 'codex', 'Codex', 'cli', 0, 0),
                    (2, 'claude', 'Claude', 'cli', 0, 0);
          INSERT INTO workspaces(id, path) VALUES(1, '/context-workspace'), (2, '/elsewhere');
@@ -636,8 +633,8 @@ fn context_wide_archive_limit_one_is_bounded_and_readonly() {
     .unwrap();
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
     drop(storage);
-    // Upgrade a populated file through the ordinary writable open, then prove
-    // every metadata payload survived the index build before invoking the CLI.
+    // Reopen through ordinary storage on schema v1, then prove every metadata
+    // payload survived before invoking the CLI.
     let storage = FrankenStorage::open(&db_path).unwrap();
     assert_eq!(storage.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
     {
@@ -758,7 +755,7 @@ fn seed_timeline_count_fixture(db_path: &Path, archive_messages: i64, body_bytes
     )
     .unwrap();
     let body = "x".repeat(body_bytes);
-    conn.execute("BEGIN").unwrap();
+    conn.execute("BEGIN IMMEDIATE").unwrap();
     if archive_messages > 128 {
         // Match the report's conversation cardinality with a tiny window.
         for id in 9..=12_667_i64 {
