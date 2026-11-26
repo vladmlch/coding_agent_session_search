@@ -321,6 +321,10 @@ fn fallback_fts_repair_after_full_run_ticks_its_heartbeat_per_page() {
     let storage = FrankenStorage::open(&db_path).unwrap();
     // No shadow at all, so the repair has to stream every canonical row.
     seed_lexical_rebuild_fixture(&storage);
+    storage
+        .raw()
+        .execute("DROP TABLE IF EXISTS fts_messages;")
+        .unwrap();
 
     let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let heartbeat_ticks = Arc::clone(&ticks);
@@ -408,11 +412,8 @@ fn full_rebuild_does_not_restart_based_on_historical_local_rowids() {
     insert_demo_conversation(&healthy_backup, "backup-1", 0, 1_700_000_000_100);
     insert_demo_conversation(&healthy_backup, "backup-2", 1, 1_700_000_000_200);
 
-    // Migrated from rusqlite per AGENTS.md Rule 2 + bead uiojh: the
-    // meta row seed is a plain INSERT into a user table (not a
-    // writable_schema path), so fsqlite handles it with no upstream
-    // feature dependency. Opens a FrankenConnection directly against
-    // the file written by SqliteStorage above.
+    // Plain INSERT into a user table via `crate::franken_sync::Connection`
+    // against the file written by `FrankenStorage` above.
     let canonical_db_path = canonical_db.to_string_lossy().to_string();
     let conn = crate::franken_sync::Connection::open(canonical_db_path).unwrap();
     conn.execute_compat(

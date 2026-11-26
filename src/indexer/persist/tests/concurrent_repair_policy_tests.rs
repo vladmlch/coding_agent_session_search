@@ -6,7 +6,6 @@ use crate::indexer::LexicalPopulationStrategy;
 use crate::model::types::{Agent, AgentKind, Conversation, MessageRole};
 use crate::search::tantivy::TantivyIndex;
 use crate::sources::provenance::{Source, SourceKind};
-use crate::storage::sqlite::FrankenStorage;
 use crate::franken_sync::SqliteValue;
 use serial_test::serial;
 use std::collections::HashSet;
@@ -560,8 +559,8 @@ fn gh425_bulk_checkpoint_resets_wal_and_stays_on_the_primary_writer() {
     with_ephemeral_writer(&storage, true, "gh425 post-reset primary write", |writer| {
         // This INSERT can succeed only on the original primary: a
         // newly opened or cached second connection cannot see its TEMP
-        // table. It also proves the MVCC clock refresh prevented the
-        // planted post-TRUNCATE BusySnapshot failure.
+        // table. It also proves the post-TRUNCATE connection reset
+        // prevented stale-snapshot contention.
         writer
             .raw()
             .execute("INSERT INTO gh425_primary_only(value) VALUES (2);")?;

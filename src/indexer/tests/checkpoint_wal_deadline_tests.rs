@@ -7,7 +7,7 @@ use tempfile::TempDir;
 
 /// #298 gate (non-watch): a small conversation that hits a typed NoMem
 /// with no real host memory pressure is deferred to the next index run —
-/// never quarantined — because frankensqlite's bounded allocation guards
+/// never quarantined — because SQLite's bounded allocation guards
 /// raise the same typed error without the host being out of memory.
 #[test]
 #[serial]
