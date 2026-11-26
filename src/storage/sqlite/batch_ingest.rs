@@ -10,7 +10,7 @@ use super::fts_rebuild::{
     FTS_ENTRY_BATCH_MAX_CHARS, FTS_ENTRY_BATCH_MAX_DOCS, FtsEntry, flush_pending_fts_entries,
     role_str,
 };
-use super::source_and_historical_import::historical_raw_json;
+use super::omp_and_semantic_meta::SemanticIdentityTier;
 use super::reconcile_and_codebuff::{
     ExistingConversationNewMessages, InsertOutcome, MessageMergeFingerprint,
     MessageReplayFingerprintSet, PendingConversationKey, SourceIngestLedgerEntry,
@@ -21,7 +21,7 @@ use super::reconcile_and_codebuff::{
     message_merge_fingerprint, message_replay_parts, provider_workspace_is_authoritative,
     shelley_metadata_is_authoritative,
 };
-use super::omp_and_semantic_meta::SemanticIdentityTier;
+use super::source_and_historical_import::historical_raw_json;
 use super::storage_core::{EnsuredConversationSourceKey, FrankenStorage};
 use super::tx_analytics_rollups::{
     TOKEN_DAILY_STATS_REBUILD_CURSOR_KEY, TOKEN_USAGE_REVISION_GENERATION_META_KEY,
@@ -39,9 +39,12 @@ use super::tx_message_insert::{
     franken_append_insert_new_messages, franken_batch_insert_new_messages,
     franken_collect_batched_existing_new_messages, franken_insert_snippets,
 };
-use crate::franken_sync::compat::{
-    ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt,
-    Transaction as FrankenTransaction, TransactionExt as FrankenTransactionExt,
+use crate::franken_sync::{
+    TransactionBehavior,
+    compat::{
+        ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt,
+        Transaction as FrankenTransaction, TransactionExt as FrankenTransactionExt,
+    },
 };
 use crate::model::types::{Conversation, Message};
 use crate::sources::provenance::{LOCAL_SOURCE_ID, Source, SourceKind};
@@ -51,7 +54,7 @@ use std::collections::{HashMap, HashSet};
 
 impl FrankenStorage {
     /// Batch insert multiple conversations with full analytics (token usage,
-    /// message metrics, rollups).  Frankensqlite equivalent of
+    /// message metrics, rollups).  Transaction-batched equivalent of
     /// `SqliteStorage::insert_conversations_batched`.
     pub fn insert_conversations_batched(
         &self,
@@ -101,7 +104,9 @@ impl FrankenStorage {
         {
             bail!("source completion ledger key must name a source_ingest_v1 observation");
         }
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute_compat(
             "INSERT OR REPLACE INTO meta(key, value) VALUES(?1, ?2)",
             fparams![completion.key.as_str(), completion.observation.as_str()],
@@ -150,14 +155,14 @@ impl FrankenStorage {
         });
         let mut pricing_diag = PricingDiagnostics::default();
 
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        // Bug #167: Ensure all referenced agents, workspaces, and sources
-        // exist inside the transaction so FK checks pass.  The caller resolves
-        // IDs via ensure_agent / ensure_workspace / ensure_sources_for_batch
-        // outside the transaction, but those autocommit writes may not be
-        // visible inside the transaction snapshot in frankensqlite.  Re-verify
-        // (and insert if missing) within the tx.
+        // Ensure all referenced agents, workspaces, and sources exist inside
+        // the transaction so PRAGMA foreign_keys = ON checks pass even when the
+        // in-memory ensured_* cache is stale (e.g. after purge/forget) or a
+        // caller passes numeric IDs directly.
         ensure_agents_in_tx(&tx, conversations)?;
         ensure_workspaces_in_tx(&tx, conversations)?;
         ensure_sources_in_tx(&tx, conversations)?;
@@ -992,7 +997,7 @@ impl FrankenStorage {
 // FrankenStorage transaction helper functions
 // =========================================================================
 
-/// Get last_insert_rowid from a frankensqlite transaction.
+/// Get last_insert_rowid from a storage transaction.
 pub(super) fn franken_last_rowid(tx: &FrankenTransaction<'_>) -> Result<i64> {
     tx.last_insert_rowid()
         .ok()
@@ -1000,11 +1005,11 @@ pub(super) fn franken_last_rowid(tx: &FrankenTransaction<'_>) -> Result<i64> {
         .with_context(|| "last_insert_rowid() returned NULL or 0 after INSERT")
 }
 
-/// Bug #167: Ensure all agents referenced by a batch exist within the
-/// transaction.  The caller already resolved `agent_id` values via
-/// `ensure_agent` outside the transaction, but those autocommit writes may
-/// not be visible inside a frankensqlite transaction snapshot.  This function
-/// checks each unique agent_id and creates a stub row if it's missing.
+/// Ensure all agents referenced by a batch exist within the transaction.
+/// Acts as an in-tx guard for `PRAGMA foreign_keys = ON` when the caller's
+/// cached IDs are stale (e.g. after purge/forget) or numeric IDs are passed
+/// directly, checking each unique `agent_id` and inserting a stub row if
+/// missing.
 pub(super) fn ensure_agents_in_tx(
     tx: &FrankenTransaction<'_>,
     conversations: &[(i64, Option<i64>, &Conversation)],
@@ -1046,7 +1051,7 @@ pub(super) fn ensure_agents_in_tx(
     Ok(())
 }
 
-/// Bug #167: Ensure all workspaces referenced by a batch exist within the
+/// Ensure all workspaces referenced by a batch exist within the
 /// transaction.  Same rationale as `ensure_agents_in_tx`.
 pub(super) fn ensure_workspaces_in_tx(
     tx: &FrankenTransaction<'_>,
@@ -1087,9 +1092,9 @@ pub(super) fn ensure_workspaces_in_tx(
     Ok(())
 }
 
-/// Bug #167: Ensure all sources referenced by a batch exist within the
-/// transaction.  Same rationale as `ensure_agents_in_tx` — source_id is a
-/// TEXT FK on the conversations table.
+/// Ensure all sources referenced by a batch exist within the
+/// transaction.  Same rationale as `ensure_agents_in_tx` — `source_id` is a
+/// TEXT FK on the `conversations` table.
 pub(super) fn ensure_sources_in_tx(
     tx: &FrankenTransaction<'_>,
     conversations: &[(i64, Option<i64>, &Conversation)],

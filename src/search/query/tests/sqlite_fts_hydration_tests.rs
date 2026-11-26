@@ -1343,9 +1343,131 @@ fn sqlite_backend_generates_snippet_from_content() -> Result<()> {
 
     let hits = client.search("delta", SearchFilters::default(), 5, 0, FieldMask::FULL)?;
     assert_eq!(hits.len(), 1);
-    // With contentless FTS5, snippet is generated from content via snippet_from_content()
-    assert_eq!(hits[0].snippet, snippet_from_content(&hits[0].content));
-    assert!(hits[0].snippet.contains("delta"));
+    // With contentless FTS5, snippet is built from messages.content with term highlighting.
+    assert_eq!(
+        hits[0].snippet,
+        super::super::fusion::snippet_from_content_for_query(&hits[0].content, "delta")
+    );
+    assert!(hits[0].snippet.contains("**delta**"));
+
+    Ok(())
+}
+
+#[test]
+fn sqlite_schema_v1_contentless_fts5_ranks_bm25_and_highlights_snippet() -> Result<()> {
+    let dir = TempDir::new()?;
+    let db_path = dir.path().join("schema-v1-fts5.db");
+    let storage = FrankenStorage::open(&db_path)?;
+    let agent_id = storage.ensure_agent(&Agent {
+        id: None,
+        slug: "codex".into(),
+        name: "Codex".into(),
+        version: None,
+        kind: AgentKind::Cli,
+    })?;
+    let workspace_id = storage.ensure_workspace(Path::new("/tmp/schema-v1-ws"), None)?;
+    let make_conv =
+        |external_id: &str, title: &str, source_path: &str, content: &str| Conversation {
+            id: None,
+            agent_slug: "codex".into(),
+            workspace: Some(PathBuf::from("/tmp/schema-v1-ws")),
+            external_id: Some(external_id.into()),
+            title: Some(title.into()),
+            source_path: PathBuf::from(source_path),
+            started_at: Some(1_700_000_000_000),
+            ended_at: Some(1_700_000_000_100),
+            approx_tokens: None,
+            metadata_json: serde_json::Value::Null,
+            messages: vec![Message {
+                id: None,
+                idx: 0,
+                role: MessageRole::User,
+                author: Some("user".into()),
+                created_at: Some(1_700_000_000_050),
+                content: content.into(),
+                extra_json: serde_json::Value::Null,
+                snippets: Vec::new(),
+            }],
+            source_id: "local".into(),
+            origin_host: None,
+        };
+    storage.insert_conversation_tree(
+        agent_id,
+        Some(workspace_id),
+        &make_conv(
+            "bm25-best",
+            "dense bm25 hit",
+            "/tmp/bm25-best.jsonl",
+            "needle appears needle once and needle again in schema v1 contentless body",
+        ),
+    )?;
+    storage.insert_conversation_tree(
+        agent_id,
+        Some(workspace_id),
+        &make_conv(
+            "bm25-other",
+            "single bm25 hit",
+            "/tmp/bm25-other.jsonl",
+            "prefix context before a single needle occurrence in schema v1 contentless body",
+        ),
+    )?;
+    storage.rebuild_fts()?;
+    drop(storage);
+
+    let client = SearchClient {
+        reader: LexicalReaderSlot::default(),
+        sqlite: Mutex::new(None),
+        sqlite_path: Some(db_path.clone()),
+        prefix_cache: Mutex::new(CacheShards::new(*CACHE_TOTAL_CAP, *CACHE_BYTE_CAP)),
+        reload_on_search: true,
+        strict_read_only: false,
+        last_reload: Mutex::new(None),
+        last_generation: Mutex::new(None),
+        reload_epoch: Arc::new(AtomicU64::new(0)),
+        warm_tx: None,
+        _warm_handle: None,
+        metrics: Metrics::default(),
+        cache_namespace: format!("v{CACHE_KEY_VERSION}|schema:test"),
+        semantic: Mutex::new(None),
+        last_tantivy_total_count: Mutex::new(None),
+        last_lexical_degrade_reason: Mutex::new(None),
+        last_wildcard_fallback_skip: Mutex::new(None),
+    };
+
+    let direct_hits = client.search_sqlite_fts5(
+        &db_path,
+        "needle",
+        SearchFilters::default(),
+        5,
+        0,
+        FieldMask::FULL,
+    )?;
+    assert_eq!(direct_hits.len(), 2);
+    assert_eq!(direct_hits[0].title, "dense bm25 hit");
+    assert_eq!(direct_hits[1].title, "single bm25 hit");
+    assert!(
+        direct_hits[0].score > direct_hits[1].score,
+        "native bm25(fts_messages) must rank higher term-frequency match first: {} vs {}",
+        direct_hits[0].score,
+        direct_hits[1].score
+    );
+    assert!(!direct_hits[0].snippet.is_empty());
+    assert!(direct_hits[0].snippet.contains("**needle**"));
+    assert!(direct_hits[1].snippet.contains("**needle**"));
+    assert_eq!(direct_hits[0].agent, "codex");
+    assert_eq!(direct_hits[0].workspace, "/tmp/schema-v1-ws");
+    assert_eq!(direct_hits[0].source_path, "/tmp/bm25-best.jsonl");
+
+    let snippet_only_hits = client.search(
+        "needle",
+        SearchFilters::default(),
+        5,
+        0,
+        FieldMask::new(true, true, false, false),
+    )?;
+    assert_eq!(snippet_only_hits.len(), 2);
+    assert!(!snippet_only_hits[0].snippet.is_empty());
+    assert!(snippet_only_hits[0].snippet.contains("**needle**"));
 
     Ok(())
 }

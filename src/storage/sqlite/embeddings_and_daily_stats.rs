@@ -13,7 +13,7 @@ use super::tx_analytics_rollups::{
     DailyStatsBatchTarget, franken_update_daily_stats_batched_in_tx_for_target,
 };
 use crate::franken_sync::{
-    Row as FrankenRow, SqliteValue,
+    Row as FrankenRow, SqliteValue, TransactionBehavior,
     compat::{
         ConnectionExt as FrankenConnectionExt, OptionalExtension as FrankenOptionalExtension,
         ParamValue, RowExt as FrankenRowExt, TransactionExt as FrankenTransactionExt,
@@ -343,8 +343,7 @@ impl FrankenStorage {
         // conversations; filter on agent slug via an EXISTS subquery only
         // when that filter is actually requested.  This avoids the unneeded
         // 2-table JOIN (which also silently dropped legacy conversations
-        // with NULL agent_id) and sidesteps frankensqlite's materialization
-        // fallback entirely.
+        // with NULL agent_id) and keeps the query to a single-table scan.
         let mut sql = "SELECT COUNT(*) FROM conversations c WHERE 1=1".to_string();
         let mut param_values: Vec<ParamValue> = Vec::new();
         let mut idx = 1;
@@ -516,10 +515,10 @@ impl FrankenStorage {
         let mut message_batch_count = 0_usize;
         let mut raw_entries_flushed = 0_usize;
         let mut expanded_entries_flushed = 0_usize;
-        // GH #424 (third finding): the former `JOIN message_metrics` page cost
-        // ~8 s per call on frankensqlite 0.3.8 regardless of conversation
-        // size, and replacing the JOIN with one point lookup per message still
-        // executed hundreds of thousands of avoidable statements. Canonical
+        // GH #424 (third finding): the former `JOIN message_metrics` page scan
+        // was slow regardless of conversation size, and replacing the JOIN with
+        // one point lookup per message still executed hundreds of thousands of
+        // avoidable statements. Canonical
         // message content is the source of truth. Rust's `String::len()` and
         // SQLite's BLOB length both count UTF-8 bytes, so the bounded single-
         // table keyset preserves the existing `total_chars` contract without
@@ -568,11 +567,11 @@ impl FrankenStorage {
             .with_context(|| "preparing daily_stats bounded message scan")?;
 
         loop {
-            // Avoid the 2-table JOIN with LIMIT that triggers frankensqlite's
-            // materialization fallback (which is what the OOM retry below is
-            // defending against — see 860acb12).  Inline agent slug via
-            // correlated subquery and degrade NULL agent_id to 'unknown' for
-            // consistency with the lexical/FTS rebuild paths.
+            // Avoid a 2-table JOIN with LIMIT that triggers full-table
+            // materialization (which the OOM retry below defends against).
+            // Inline agent slug via correlated subquery and degrade NULL
+            // agent_id to 'unknown' for consistency with the lexical/FTS
+            // rebuild paths.
             if let Some(control) = control {
                 control()?;
             }
@@ -636,11 +635,14 @@ impl FrankenStorage {
                 if let Some(control) = control {
                     control()?;
                 }
-                let mut batch_tx = self.conn.transaction().with_context(|| {
-                    format!(
-                        "daily_stats phase=conversation_stage_begin last_conversation_id={last_conversation_id}"
-                    )
-                })?;
+                let mut batch_tx = self
+                    .conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .with_context(|| {
+                        format!(
+                            "daily_stats phase=conversation_stage_begin last_conversation_id={last_conversation_id}"
+                        )
+                    })?;
                 franken_update_daily_stats_batched_in_tx_for_target(
                     &batch_tx,
                     &entries,
@@ -756,11 +758,14 @@ impl FrankenStorage {
                         if let Some(control) = control {
                             control()?;
                         }
-                        let mut batch_tx = self.conn.transaction().with_context(|| {
-                            format!(
-                                "daily_stats phase=message_stage_begin conversation_id={conversation_id} cursor_message_idx={cursor_message_idx}"
-                            )
-                        })?;
+                        let mut batch_tx = self
+                            .conn
+                            .transaction_with_behavior(TransactionBehavior::Immediate)
+                            .with_context(|| {
+                                format!(
+                                    "daily_stats phase=message_stage_begin conversation_id={conversation_id} cursor_message_idx={cursor_message_idx}"
+                                )
+                            })?;
                         franken_update_daily_stats_batched_in_tx_for_target(
                             &batch_tx,
                             &entries,
@@ -824,7 +829,7 @@ impl FrankenStorage {
         }
         let mut publish_tx = self
             .conn
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .with_context(|| "daily_stats phase=publish_begin")?;
         publish_tx
             .execute("DELETE FROM daily_stats")

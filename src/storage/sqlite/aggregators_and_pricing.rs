@@ -838,7 +838,7 @@ impl PricingTable {
         Self::franken_load(conn)
     }
 
-    /// Load all pricing entries from a frankensqlite connection.
+    /// Load all pricing entries from a SQLite connection.
     pub fn franken_load(conn: &FrankenConnection) -> Result<Self> {
         let rows = conn.query(
             "SELECT model_pattern, provider, input_cost_per_mtok, output_cost_per_mtok,

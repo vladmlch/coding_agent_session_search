@@ -679,6 +679,112 @@ pub(in crate::search::query) fn snippet_from_content(content: &str) -> String {
     }
 }
 
+/// Build a bounded snippet from `messages.content` with `**...**` match
+/// highlighting for the query terms extracted by [`snippet_terms_for_query`].
+///
+/// Falls back to [`snippet_from_content`] when the query carries no highlightable
+/// terms or none appear verbatim in `content`.
+pub(in crate::search::query) fn snippet_from_content_for_query(
+    content: &str,
+    query: &str,
+) -> String {
+    const MAX_WINDOW_CHARS: usize = 200;
+    const LEAD_CONTEXT_CHARS: usize = 30;
+
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let raw_terms = snippet_terms_for_query(query);
+    let terms: Vec<Vec<char>> = raw_terms
+        .into_iter()
+        .map(|term| term.trim_end_matches('*').to_lowercase())
+        .filter(|term| !term.is_empty())
+        .map(|term| term.chars().collect::<Vec<char>>())
+        .collect();
+    if terms.is_empty() {
+        return snippet_from_content(content);
+    }
+
+    let orig_chars: Vec<char> = trimmed.chars().collect();
+    let mut lower_chars: Vec<char> = Vec::with_capacity(orig_chars.len());
+    let mut lower_to_orig_char: Vec<usize> = Vec::with_capacity(orig_chars.len());
+    for (orig_idx, &ch) in orig_chars.iter().enumerate() {
+        for lc in ch.to_lowercase() {
+            lower_chars.push(lc);
+            lower_to_orig_char.push(orig_idx);
+        }
+    }
+
+    // Collect non-overlapping (start_orig_char, end_orig_char) match spans.
+    let mut match_spans: Vec<(usize, usize)> = Vec::new();
+    let mut lower_pos = 0usize;
+    while lower_pos < lower_chars.len() {
+        let best_len = terms
+            .iter()
+            .filter(|term| {
+                lower_pos + term.len() <= lower_chars.len()
+                    && lower_chars[lower_pos..lower_pos + term.len()] == term[..]
+            })
+            .map(Vec::len)
+            .max();
+        if let Some(len) = best_len {
+            let start_orig = lower_to_orig_char[lower_pos];
+            let end_orig = lower_to_orig_char[lower_pos + len - 1] + 1;
+            if match_spans
+                .last()
+                .is_none_or(|&(_, prev_end)| start_orig >= prev_end)
+            {
+                match_spans.push((start_orig, end_orig));
+            }
+            lower_pos += len;
+        } else {
+            lower_pos += 1;
+        }
+    }
+
+    let Some(&(first_start, _)) = match_spans.first() else {
+        return snippet_from_content(content);
+    };
+
+    let window_start = if first_start <= LEAD_CONTEXT_CHARS + 10 {
+        0
+    } else {
+        first_start.saturating_sub(LEAD_CONTEXT_CHARS)
+    };
+    let window_end = (window_start + MAX_WINDOW_CHARS).min(orig_chars.len());
+
+    let mut out = String::new();
+    if window_start > 0 {
+        out.push_str("...");
+    }
+    let mut cursor = window_start;
+    for &(span_start, span_end) in &match_spans {
+        if span_end <= window_start || span_start >= window_end {
+            continue;
+        }
+        let clipped_start = span_start.max(window_start);
+        let clipped_end = span_end.min(window_end);
+        if cursor < clipped_start {
+            out.extend(&orig_chars[cursor..clipped_start]);
+        }
+        if clipped_start < clipped_end {
+            out.push_str("**");
+            out.extend(&orig_chars[clipped_start..clipped_end]);
+            out.push_str("**");
+        }
+        cursor = clipped_end;
+    }
+    if cursor < window_end {
+        out.extend(&orig_chars[cursor..window_end]);
+    }
+    if window_end < orig_chars.len() {
+        out.push_str("...");
+    }
+    out
+}
+
 /// Deduplicate search hits by message-level provenance and content, keeping
 /// only the highest-scored hit for each unique matched message.
 ///

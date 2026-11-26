@@ -130,7 +130,7 @@ pub(super) fn franken_message_insert_payload(msg: &Message) -> Result<MessageIns
 /// `SQLITE_MAX_VARIABLE_NUMBER` limit of 999 while still amortizing parse cost.
 const MESSAGE_INSERT_BATCH_SIZE: usize = 100;
 
-/// Append workloads profile fastest with larger chunks on current frankensqlite.
+/// Append workloads profile fastest with 50-row chunks on SQLite.
 ///
 /// After the tail-state hot table removed conversation-row rewrites from the
 /// append path, 50-row chunks beat the old 20-row setting on the append-merge
@@ -394,7 +394,7 @@ fn franken_batch_insert_new_messages_with_profile_batch_size(
     Ok(inserted_ids)
 }
 
-/// Insert snippets within a frankensqlite transaction.
+/// Insert snippets within a SQLite transaction.
 pub(super) fn franken_insert_snippets(
     tx: &FrankenTransaction<'_>,
     message_id: i64,
@@ -834,7 +834,7 @@ pub(super) fn franken_collect_batched_existing_new_messages<'a>(
     ))
 }
 
-/// Batch insert FTS5 entries within a frankensqlite transaction.
+/// Batch insert FTS5 entries within a SQLite transaction.
 pub(super) fn franken_batch_insert_fts(
     storage: &FrankenStorage,
     tx: &FrankenTransaction<'_>,
@@ -867,20 +867,10 @@ pub(super) fn franken_batch_insert_fts(
             param_values.push(SqliteValue::from(entry.title.as_str()));
         }
 
-        // GH #413 (bead cjugu): frankensqlite wraps every statement in an
-        // internal savepoint, and a savepoint on a live fts5 table deep-clones
-        // the table's whole in-memory state (Fts5Table::snapshot_state) — so a
-        // plain execute here costs O(|fts_messages|) per statement, minutes each
-        // and a ~35 GB transient once the table holds half a million rows
-        // (the "wedge at a batch boundary" on large archives). The enclosing
-        // batch transaction is the rollback boundary for these rows, so the
-        // statement savepoint is skipped. The per-transaction `begin` clone
-        // remains until frankensqlite#405 lands. Consequence, accepted: a
-        // chunk whose INSERT fails midway may leave some of its rows pending
-        // in the transaction (the error path below keeps the transaction so
-        // the canonical rows still commit); the derived FTS is best-effort and
-        // the post-run parity repair rebuilds it when rows are missing.
-        match tx.execute_with_params_skip_statement_savepoint(&sql, &param_values) {
+        // Derived FTS maintenance is best-effort within the enclosing batch
+        // transaction: if a batch insert fails, the canonical message rows
+        // still commit and post-run parity repair rebuilds missing FTS rows.
+        match tx.execute_with_params(&sql, &param_values) {
             Ok(_) => {
                 inserted += chunk.len();
             }
@@ -901,7 +891,7 @@ pub(super) fn franken_batch_insert_fts(
                     tracing::warn!(
                         error = %err,
                         chunk_docs = chunk.len(),
-                        "frankensqlite FTS batch insert failed; skipping db-resident FTS maintenance because Tantivy is authoritative"
+                        "SQLite FTS batch insert failed; skipping db-resident FTS maintenance because Tantivy is authoritative"
                     );
                 }
                 return Ok(inserted);

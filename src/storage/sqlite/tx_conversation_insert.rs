@@ -33,16 +33,10 @@ use std::time::Duration;
 /// GH #413 follow-up: how much of one index run the inline `fts_messages`
 /// shadow writes may cost before the rest of the run skips them.
 ///
-/// fsqlite's FTS5 does O(table) work per statement on a populated shadow: the
-/// in-memory index is hydrated on the first write and, on the pinned engine,
-/// cloned per transaction (frankensqlite#405, #406). Past a few hundred
-/// thousand messages that turns an incremental run into an hour-long crawl
-/// whose process dies before `last_indexed_at` is written — on 2026-09-03 a
-/// background catch-up on a 10 GB archive was OOM-killed at 14 GB after an
-/// hour, and every stale read respawned it. Skipping the shadow keeps the
-/// canonical rows and the Quill index landing; the shadow, which only the SQL
-/// search fallback reads, is left Partial with the reason recorded for
-/// `doctor`. `CASS_FTS_INLINE_BUDGET_SECS` overrides; `0` disables the budget.
+/// Skipping the shadow keeps the canonical rows and the Quill index landing;
+/// the shadow, which only the SQL search fallback reads, is left Partial with
+/// the reason recorded for `doctor`. `CASS_FTS_INLINE_BUDGET_SECS` overrides;
+/// `0` disables the budget.
 const DEFAULT_FTS_INLINE_BUDGET_SECS: u64 = 300;
 
 pub(super) fn fts_inline_flush_budget() -> Option<Duration> {
@@ -53,10 +47,9 @@ pub(super) fn fts_inline_flush_budget() -> Option<Duration> {
     (secs > 0).then_some(Duration::from_secs(secs))
 }
 
-/// Per-page budget for the paged shadow repair and rebuild
-/// (`stream_fts_rows_via_frankensqlite`). A page of `CASS_FTS_REBUILD_BATCH_SIZE`
-/// rows that takes longer than this has hit the same engine wall, and the
-/// maintenance stops with the reason instead of wedging the run for hours
+/// Per-page budget for paged shadow repair and rebuild. A page of
+/// `CASS_FTS_REBUILD_BATCH_SIZE` rows that takes longer than this stops
+/// maintenance with the reason instead of wedging the run for hours
 /// (GH #345/#369/#413). `CASS_FTS_REPAIR_PAGE_BUDGET_SECS` overrides; `0`
 /// disables the budget.
 const DEFAULT_FTS_REPAIR_PAGE_BUDGET_SECS: u64 = 120;
@@ -72,21 +65,14 @@ pub(super) fn fts_repair_page_budget() -> Option<Duration> {
 /// Largest canonical corpus (indexable message count) for which cass keeps
 /// the derived `fts_messages` shadow at all.
 ///
-/// fsqlite's FTS5 rebuilds the whole in-memory index of a populated shadow at
-/// every memdb reload after a write transaction, not once per open
-/// (`rebuild_materialized_live_vtab_instances_from_reload` →
-/// `Fts5Table::rebuild_documents`, frankensqlite#408): on the owner's archive 631,657 messages
-/// cost about 20 GB resident and minutes before cass has written a single row
-/// (accept/L2, 2026-09-03; roughly 32 KB of RAM per message), and every later
-/// write transaction clones that index again. Message count is the measure
-/// because it is exact and cheap (`FTS_INDEXABLE_MESSAGE_COUNT_SQL`) —
-/// `daily_stats.total_chars` summed to 436 MiB on that archive and would have
-/// passed a byte bound. Above this bound the shadow is dropped — it is derived
-/// data; Quill is the lexical engine and the SQL search fallback scans
-/// `messages` when no shadow exists — and it is not recreated until the corpus
-/// fits again. `CASS_FTS_SHADOW_MAX_MESSAGES` overrides; `0` disables the
-/// bound.
-const DEFAULT_FTS_SHADOW_MAX_MESSAGES: u64 = 100_000;
+/// Message count is the measure because it is exact and cheap
+/// (`FTS_INDEXABLE_MESSAGE_COUNT_SQL`). When a positive bound is configured,
+/// the shadow is dropped above it — it is derived data; Quill is the lexical
+/// engine and the SQL search fallback scans `messages` when no shadow exists —
+/// and it is not recreated until the corpus fits again.
+/// `CASS_FTS_SHADOW_MAX_MESSAGES` overrides; `0` (the default on native SQLite)
+/// disables the bound.
+const DEFAULT_FTS_SHADOW_MAX_MESSAGES: u64 = 0;
 
 pub(crate) fn fts_shadow_max_messages() -> Option<u64> {
     let messages = dotenvy::var("CASS_FTS_SHADOW_MAX_MESSAGES")
@@ -112,10 +98,10 @@ pub(crate) enum FtsShadowViability {
 
 /// The one sentence every surface (index log, status marker, doctor) uses
 /// for a shadow the engine cannot materialize.
-/// GH #374: frankensqlite versions before its canonical-shadow fix created the
+/// GH #374: legacy engine versions before the canonical-shadow fix created the
 /// FTS5 `%_config`/`%_idx` shadow tables as ordinary rowid tables. Stock SQLite
 /// then reports `wrong # of entries in index sqlite_autoindex_fts_messages_config_1`
-/// while fsqlite's own `quick_check` can still return `ok`. Shared by the full
+/// while legacy `quick_check` could still return `ok`. Shared by the full
 /// index preflight and residue classification so both agree on the shape.
 pub(crate) fn incompatible_legacy_fts_shadow_ddl(table: &str, ddl: &str) -> Option<String> {
     let normalized = ddl
@@ -137,11 +123,10 @@ pub(crate) fn fts_shadow_not_viable_detail(corpus_messages: u64, bound_messages:
         "{FTS_SHADOW_NOT_VIABLE_ERROR_PREFIX}settled state, not a pending repair: the canonical \
          corpus is {corpus_messages} messages, over the {bound_messages} message bound \
          (CASS_FTS_SHADOW_MAX_MESSAGES), so the derived shadow stays retired. Quill lexical \
-         search is unaffected; the SQL search fallback scans messages. fsqlite's FTS5 rebuilds \
-         the whole shadow in memory on the first write after every writable open (about 32 KB \
-         of RAM per message; GH #413). `cass index --full` or `cass doctor \
-         --rebuild-canonical-fts --yes` recreates it only after CASS_FTS_SHADOW_MAX_MESSAGES is \
-         raised to at least the corpus size"
+         search is unaffected; the SQL search fallback scans messages; the derived FTS5 shadow \
+         stays retired above CASS_FTS_SHADOW_MAX_MESSAGES (GH #413). `cass index --full` or \
+         `cass doctor --rebuild-canonical-fts --yes` recreates it only after \
+         CASS_FTS_SHADOW_MAX_MESSAGES is raised to at least the corpus size"
     )
 }
 
@@ -771,7 +756,7 @@ pub(super) fn franken_insert_conversation_or_get_existing_after_miss(
     }
 }
 
-/// Insert a conversation into the DB within a frankensqlite transaction.
+/// Insert a conversation into the DB within a storage transaction.
 ///
 /// Uses a plain `INSERT` so the common miss path stays on the slim direct
 /// insert lane. Duplicate provenance conflicts are converted into `Ok(None)`

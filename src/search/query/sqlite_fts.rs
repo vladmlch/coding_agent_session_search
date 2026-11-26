@@ -6,11 +6,11 @@ use std::path::Path;
 use crate::franken_sync::compat::{ParamValue, RowExt};
 use crate::sources::provenance::SourceFilter;
 
-use super::{SearchClient, SearchSqliteConnection};
 use super::fusion::{
     normalize_search_source_filter_value, normalized_search_hit_origin_kind,
     normalized_search_hit_source_id_parts, normalized_search_origin_kind_sql_expr,
-    normalized_search_source_id_sql_expr, snippet_from_content, stable_hit_hash,
+    normalized_search_source_id_sql_expr, snippet_from_content, snippet_from_content_for_query,
+    stable_hit_hash,
 };
 use super::parsing::{dominant_match_type, transpile_to_fts5};
 use super::sqlite_hydration::{
@@ -21,6 +21,7 @@ use super::sqlite_hydration::{
 };
 use super::sqlite_scan::SqliteMessageScanRequest;
 use super::types::{FieldMask, MatchType, SearchFilters, SearchHit, default_source_id};
+use super::{SearchClient, SearchSqliteConnection};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::search::query) enum SqliteFtsMatchMode {
@@ -46,6 +47,32 @@ impl SearchClient {
         Ok(ddl_rows
             .first()
             .map(|sql| sql.to_ascii_lowercase().contains("message_id"))
+            .unwrap_or(false))
+    }
+
+    pub(in crate::search::query) fn sqlite_fts_has_metadata_columns(
+        conn: &SearchSqliteConnection,
+    ) -> Result<bool> {
+        let params: [ParamValue; 0] = [];
+        let ddl_rows: Vec<String> = franken_query_map_collect_retry(
+            conn,
+            "SELECT COALESCE(sql, '')
+             FROM sqlite_master
+             WHERE name = 'fts_messages'
+             ORDER BY rowid DESC
+             LIMIT 1",
+            &params,
+            |row: &crate::franken_sync::Row| row.get_typed::<String>(0),
+        )?;
+        Ok(ddl_rows
+            .first()
+            .map(|sql| {
+                let lower = sql.to_ascii_lowercase();
+                lower.contains("agent")
+                    && lower.contains("workspace")
+                    && lower.contains("source_path")
+                    && lower.contains("created_at")
+            })
             .unwrap_or(false))
     }
 
@@ -204,8 +231,7 @@ impl SearchClient {
         };
         let normalized_source_sql =
             normalized_search_source_id_sql_expr("c.source_id", "s.kind", "c.origin_host");
-        // Literal rowid list: avoids the parameterized IN scan used by
-        // FrankenSQLite through 0.3.17 (see `sql_rowid_literal_list`).
+        // Literal rowid list (see `sql_rowid_literal_list`).
         let rowids = sql_rowid_literal_list(message_ids);
 
         format!(
@@ -362,6 +388,16 @@ impl SearchClient {
                 );
                 return self.search_sqlite_message_scan(conn, scan_request);
             };
+        let has_metadata_columns = if let Ok(has_metadata) =
+            Self::sqlite_fts_has_metadata_columns(conn)
+        {
+            has_metadata
+        } else {
+            tracing::warn!(
+                "sqlite FTS fallback metadata columns could not be inspected; skipping fallback search"
+            );
+            return self.search_sqlite_message_scan(conn, scan_request);
+        };
         let match_mode = match Self::sqlite_fts_match_mode(conn) {
             Ok(match_mode) => match_mode,
             Err(err) => {
@@ -374,7 +410,7 @@ impl SearchClient {
         };
         if !Self::sqlite_fts5_rowid_projection_available(conn) {
             tracing::warn!(
-                "sqlite FTS fallback cannot project rowid through frankensqlite; using source-table scan fallback"
+                "sqlite FTS fallback cannot project rowid; using source-table scan fallback"
             );
             return self.search_sqlite_message_scan(conn, scan_request);
         }
@@ -426,47 +462,62 @@ impl SearchClient {
             let mut message_ids = Vec::with_capacity(ranked_rows.len());
             let mut seen_message_ids = HashSet::with_capacity(ranked_rows.len());
 
-            for rank_chunk in Self::sqlite_fts5_hydrate_row_chunks(&ranked_rows) {
-                let hydrate_sql =
-                    Self::sqlite_fts5_hydrate_query(rank_chunk.len(), field_mask, uses_message_id);
-                let hydrate_params = rank_chunk
-                    .iter()
-                    .map(|(fts_rowid, _)| ParamValue::from(*fts_rowid))
-                    .collect::<Vec<_>>();
-                let rows: Vec<SqliteFtsHydratedRow> = match franken_query_map_collect_retry(
-                    conn,
-                    &hydrate_sql,
-                    &hydrate_params,
-                    |row| {
-                        Ok((
-                            row.get_typed(0)?,
-                            row.get_typed(1)?,
-                            row.get_typed(2)?,
-                            row.get_typed(3)?,
-                            row.get_typed(4)?,
-                            row.get_typed(5)?,
-                            row.get_typed(6)?,
-                            row.get_typed(7)?,
-                        ))
-                    },
-                ) {
-                    Ok(rows) => rows,
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %err,
-                            "sqlite FTS fallback rowid hydration query failed; returning no fallback hits"
-                        );
-                        return self.search_sqlite_message_scan(conn, scan_request);
-                    }
-                };
+            if has_metadata_columns {
+                for rank_chunk in Self::sqlite_fts5_hydrate_row_chunks(&ranked_rows) {
+                    let hydrate_sql = Self::sqlite_fts5_hydrate_query(
+                        rank_chunk.len(),
+                        field_mask,
+                        uses_message_id,
+                    );
+                    let hydrate_params = rank_chunk
+                        .iter()
+                        .map(|(fts_rowid, _)| ParamValue::from(*fts_rowid))
+                        .collect::<Vec<_>>();
+                    let rows: Vec<SqliteFtsHydratedRow> = match franken_query_map_collect_retry(
+                        conn,
+                        &hydrate_sql,
+                        &hydrate_params,
+                        |row| {
+                            Ok((
+                                row.get_typed(0)?,
+                                row.get_typed(1)?,
+                                row.get_typed(2)?,
+                                row.get_typed(3)?,
+                                row.get_typed(4)?,
+                                row.get_typed(5)?,
+                                row.get_typed(6)?,
+                                row.get_typed(7)?,
+                            ))
+                        },
+                    ) {
+                        Ok(rows) => rows,
+                        Err(err) => {
+                            tracing::warn!(
+                                error = %err,
+                                "sqlite FTS fallback rowid hydration query failed; returning no fallback hits"
+                            );
+                            return self.search_sqlite_message_scan(conn, scan_request);
+                        }
+                    };
 
-                for row in rows {
-                    let fts_rowid = row.0;
-                    let message_id = row.1.unwrap_or(fts_rowid);
-                    if seen_message_ids.insert(message_id) {
-                        message_ids.push(message_id);
+                    for row in rows {
+                        let fts_rowid = row.0;
+                        let message_id = row.1.unwrap_or(fts_rowid);
+                        if seen_message_ids.insert(message_id) {
+                            message_ids.push(message_id);
+                        }
+                        fts_rows_by_rowid.insert(fts_rowid, row);
                     }
-                    fts_rows_by_rowid.insert(fts_rowid, row);
+                }
+            } else {
+                for &(fts_rowid, _) in &ranked_rows {
+                    if seen_message_ids.insert(fts_rowid) {
+                        message_ids.push(fts_rowid);
+                    }
+                    fts_rows_by_rowid.insert(
+                        fts_rowid,
+                        (fts_rowid, None, None, None, None, None, None, None),
+                    );
                 }
             }
 
@@ -580,6 +631,7 @@ impl SearchClient {
                         metadata_origin_host,
                         metadata_raw_origin_kind,
                     ),
+                    None if !has_metadata_columns => continue,
                     None => (
                         fts_title.unwrap_or_default(),
                         fts_content.unwrap_or_default(),
@@ -608,7 +660,7 @@ impl SearchClient {
                     .and_then(|i| usize::try_from(i).ok())
                     .map(|i| i.saturating_add(1));
                 let snippet = if field_mask.wants_snippet() {
-                    snippet_from_content(&raw_content)
+                    snippet_from_content_for_query(&raw_content, raw_query)
                 } else {
                     String::new()
                 };
