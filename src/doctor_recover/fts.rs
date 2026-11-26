@@ -113,6 +113,54 @@ pub(super) fn fts_rebuild_dry_run_envelope(
     })
 }
 
+fn emit_corrupt_shadow_dry_run(
+    detail: String,
+    structured_format: Option<RobotFormat>,
+) -> CliResult<()> {
+    // A dry-run must stay read-only and non-locking: report the planned repair
+    // straight from the diagnostic without mutating the archive.
+    let envelope = serde_json::json!({
+        "surface": "doctor_rebuild_canonical_fts_dry_run",
+        "status": "shadow_structure_corrupt",
+        "planned_action": "drop_recreate_rebuild_from_canonical",
+        "detail": detail,
+    });
+    if structured_format.is_some() {
+        print_json(&envelope)?;
+    } else {
+        println!(
+            "Canonical FTS5 dry-run: status=shadow_structure_corrupt, planned_action=drop_recreate_rebuild_from_canonical; re-run with --yes to drop, recreate, and rebuild the corrupt shadow from canonical"
+        );
+    }
+    Ok(())
+}
+
+fn rebuild_from_corrupt_shadow(
+    storage: &FrankenStorage,
+    structured_format: Option<RobotFormat>,
+) -> CliResult<()> {
+    let inserted = storage.rebuild_fts_shadow_via_drop_recreate().map_err(|e| {
+        storage_error(
+            format!("rebuilding corrupt canonical FTS5 shadow via drop+recreate: {e:#}"),
+            Some("Preserve the archive bundle and run 'cass doctor check --json'."),
+        )
+    })?;
+    let envelope = serde_json::json!({
+        "surface": "doctor_rebuild_canonical_fts",
+        "status": "rebuilt_from_corrupt_shadow",
+        "method": "drop_recreate_rebuild_from_canonical",
+        "inserted_messages": inserted,
+    });
+    if structured_format.is_some() {
+        print_json(&envelope)?;
+    } else {
+        println!(
+            "Canonical FTS5 shadow was structurally corrupt; dropped, recreated, and rebuilt {inserted} message(s) from canonical rows."
+        );
+    }
+    Ok(())
+}
+
 /// Verify and safely repair the canonical FTS5 shadow tables in place.
 ///
 /// Queryable partial shadows are retained and caught up in bounded, resumable
@@ -182,7 +230,7 @@ pub fn run_doctor_rebuild_canonical_fts(
         // #368 defect 3 / #434 defect 2: the FTS5 shadow is corrupt enough that
         // the archive cannot be opened normally (the schema reload decodes the
         // corrupt %_data, or refuses a shadow object's sqlite_master state).
-        // Open with FTS5 hydration DEFERRED and rebuild the shadow by dropping
+        // Open with FTS5 validation DEFERRED or rebuild the shadow by dropping
         // + recreating it from canonical rows — the shadow is fully derived
         // and canonical rows are never touched.
         Err(open_err)
@@ -197,24 +245,7 @@ pub fn run_doctor_rebuild_canonical_fts(
                 ));
             }
             if dry_run {
-                // A dry-run must stay read-only and non-locking: report the
-                // planned repair straight from the open error, WITHOUT opening
-                // the archive writable or taking the doctor mutation lock that
-                // `open_deferred_fts5_for_repair` acquires.
-                let envelope = serde_json::json!({
-                    "surface": "doctor_rebuild_canonical_fts_dry_run",
-                    "status": "shadow_structure_corrupt",
-                    "planned_action": "drop_recreate_rebuild_from_canonical",
-                    "detail": format!("{open_err:#}"),
-                });
-                if structured_format.is_some() {
-                    print_json(&envelope)?;
-                } else {
-                    println!(
-                        "Canonical FTS5 dry-run: status=shadow_structure_corrupt, planned_action=drop_recreate_rebuild_from_canonical; re-run with --yes to drop, recreate, and rebuild the corrupt shadow from canonical"
-                    );
-                }
-                return Ok(());
+                return emit_corrupt_shadow_dry_run(format!("{open_err:#}"), structured_format);
             }
             let deferred = FrankenStorage::open_deferred_fts5_for_repair(&db_path).map_err(|e| {
                 // #434 defect 2: BOTH structured opens failed. Say so
@@ -230,30 +261,7 @@ pub fn run_doctor_rebuild_canonical_fts(
                     ),
                 )
             })?;
-            let inserted = deferred
-                .rebuild_fts_shadow_via_drop_recreate()
-                .map_err(|e| {
-                    storage_error(
-                        format!(
-                            "rebuilding corrupt canonical FTS5 shadow via drop+recreate: {e:#}"
-                        ),
-                        Some("Preserve the archive bundle and run 'cass doctor check --json'."),
-                    )
-                })?;
-            let envelope = serde_json::json!({
-                "surface": "doctor_rebuild_canonical_fts",
-                "status": "rebuilt_from_corrupt_shadow",
-                "method": "drop_recreate_rebuild_from_canonical",
-                "inserted_messages": inserted,
-            });
-            if structured_format.is_some() {
-                print_json(&envelope)?;
-            } else {
-                println!(
-                    "Canonical FTS5 shadow was structurally corrupt; dropped, recreated, and rebuilt {inserted} message(s) from canonical rows."
-                );
-            }
-            return Ok(());
+            return rebuild_from_corrupt_shadow(&deferred, structured_format);
         }
         Err(open_err) => {
             return Err(storage_error(
@@ -275,6 +283,18 @@ pub fn run_doctor_rebuild_canonical_fts(
             ));
         }
     };
+    if let Err(probe_err) = storage
+        .raw()
+        .query("SELECT rowid FROM fts_messages WHERE fts_messages MATCH 'probe' LIMIT 1")
+    {
+        let probe_err = anyhow::Error::new(probe_err);
+        if is_fts5_shadow_open_corruption_error(&probe_err) {
+            if dry_run {
+                return emit_corrupt_shadow_dry_run(format!("{probe_err:#}"), structured_format);
+            }
+            return rebuild_from_corrupt_shadow(&storage, structured_format);
+        }
+    }
     if dry_run {
         let before = storage
             .inspect_search_fallback_fts_parity_dry_run(fts_dry_run_rowid_comparison_cap())
@@ -336,6 +356,9 @@ pub fn run_doctor_rebuild_canonical_fts(
     })?;
     let repair = match storage.ensure_search_fallback_fts_consistency() {
         Ok(repair) => repair,
+        Err(e) if is_fts5_shadow_open_corruption_error(&e) => {
+            return rebuild_from_corrupt_shadow(&storage, structured_format);
+        }
         Err(e) if fts_shadow_not_viable_detail_in(&e).is_some() => {
             return report_fts_shadow_retired(
                 &storage,
@@ -364,22 +387,25 @@ pub fn run_doctor_rebuild_canonical_fts(
         }
     };
     // GH #438: an explicit repair of a shadow whose rows already match must
-    // still rewrite segments written by an older engine (frankensqlite#404);
-    // queryable rows do not prove a valid segment format. Optimize rewrites
-    // them with the current writer (a no-op on an already optimized index)
-    // and the FTS5 integrity-check then validates the result.
+    // still rewrite segments written by an older engine; queryable rows do not
+    // prove a valid segment format. Optimize rewrites them with the current
+    // writer (a no-op on an already optimized index) and the FTS5
+    // integrity-check then validates the result.
     let segments_optimized = if matches!(repair, FtsConsistencyRepair::AlreadyHealthy { .. }) {
-        storage
+        if let Err(e) = storage
             .optimize_fts_messages_segments()
             .and_then(|()| storage.validate_fts_messages_integrity())
-            .map_err(|e| {
-                storage_error(
-                    format!("rewriting existing FTS5 segments of a parity-healthy shadow: {e:#}"),
-                    Some(
-                        "Canonical rows are unchanged. Re-run the dry-run; if segment rewriting keeps failing, remove the derived shadow with `cass index --full` after preserving the database bundle.",
-                    ),
-                )
-            })?;
+        {
+            if is_fts5_shadow_open_corruption_error(&e) {
+                return rebuild_from_corrupt_shadow(&storage, structured_format);
+            }
+            return Err(storage_error(
+                format!("rewriting existing FTS5 segments of a parity-healthy shadow: {e:#}"),
+                Some(
+                    "Canonical rows are unchanged. Re-run the dry-run; if segment rewriting keeps failing, remove the derived shadow with `cass index --full` after preserving the database bundle.",
+                ),
+            ));
+        }
         true
     } else {
         false
