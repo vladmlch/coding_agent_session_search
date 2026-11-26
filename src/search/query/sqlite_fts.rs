@@ -1233,15 +1233,19 @@ mod tests {
     use super::super::cache::{
         CacheShards, LexicalReaderSlot, Metrics, SEARCH_CLIENT_INSTANCE_COUNTER,
     };
-    use super::super::sqlite_hydration::SearchSqliteFixture;
-    use super::super::{Arc, AtomicU64, Mutex, Ordering, params};
+    use super::super::{Arc, AtomicU64, Mutex, Ordering, PathBuf, params};
     use super::*;
+    use crate::franken_sync::Connection as FrankenConnection;
+    use crate::franken_sync::compat::ConnectionExt as FrankenConnectionExt;
+    use crate::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
+    use crate::storage::sqlite::FrankenStorage;
+    use tempfile::TempDir;
 
-    fn test_client(conn: SearchSqliteFixture) -> SearchClient {
+    fn test_client_for_path(db_path: PathBuf) -> SearchClient {
         SearchClient {
             reader: LexicalReaderSlot::default(),
-            sqlite: Mutex::new(Some(conn.into_connection())),
-            sqlite_path: None,
+            sqlite: Mutex::new(None),
+            sqlite_path: Some(db_path),
             strict_read_only: false,
             prefix_cache: Mutex::new(CacheShards::new(128, 1024 * 1024)),
             reload_on_search: false,
@@ -1293,69 +1297,89 @@ mod tests {
 
     #[test]
     fn search_sqlite_fts5_direct_join_ranks_highlights_and_skips_orphan_rows() -> Result<()> {
-        let conn = SearchSqliteFixture::in_memory()?;
-        conn.execute_batch(
-            "CREATE TABLE sources (id TEXT PRIMARY KEY, kind TEXT);
-             CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE);
-             CREATE TABLE workspaces (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE);
-             CREATE TABLE conversations (
-                id INTEGER PRIMARY KEY,
-                agent_id INTEGER,
-                workspace_id INTEGER,
-                source_id TEXT,
-                origin_host TEXT,
-                title TEXT,
-                source_path TEXT
-             );
-             CREATE TABLE messages (
-                id INTEGER PRIMARY KEY,
-                conversation_id INTEGER,
-                idx INTEGER,
-                content TEXT,
-                created_at INTEGER
-             );
-             CREATE VIRTUAL TABLE fts_messages USING fts5(
-                content,
-                title,
-                content='',
-                contentless_delete=1,
-                tokenize='porter'
-             );",
-        )?;
-        conn.execute("INSERT INTO sources(id, kind) VALUES('local', 'local')")?;
-        conn.execute("INSERT INTO agents(id, slug) VALUES(1, 'codex'), (2, 'claude')")?;
-        conn.execute("INSERT INTO workspaces(id, path) VALUES(1, '/ws/direct-join')")?;
-        conn.execute(
-            "INSERT INTO conversations(id, agent_id, workspace_id, source_id, origin_host, title, source_path)
-             VALUES(1, 1, 1, 'local', NULL, 'codex low', '/tmp/codex-low.jsonl'),
-                   (2, 2, 1, 'local', NULL, 'claude high', '/tmp/claude-high.jsonl')",
-        )?;
-        conn.execute(
-            "INSERT INTO messages(id, conversation_id, idx, content, created_at)
-             VALUES(10, 1, 0, 'single auth token in codex', 100),
-                   (20, 2, 1, 'auth token auth auth in claude', 200)",
-        )?;
-        conn.execute_compat(
-            "INSERT INTO fts_messages(rowid, content, title) VALUES(?1, ?2, ?3)",
-            params![10_i64, "single auth token in codex", "codex low"],
-        )?;
-        conn.execute_compat(
-            "INSERT INTO fts_messages(rowid, content, title) VALUES(?1, ?2, ?3)",
-            params![20_i64, "auth token auth auth in claude", "claude high"],
-        )?;
+        let dir = TempDir::new()?;
+        let db_path = dir.path().join("direct-join-fts5.db");
+        {
+            let storage = FrankenStorage::open(&db_path)?;
+            let codex_id = storage.ensure_agent(&Agent {
+                id: None,
+                slug: "codex".into(),
+                name: "Codex".into(),
+                version: None,
+                kind: AgentKind::Cli,
+            })?;
+            let claude_id = storage.ensure_agent(&Agent {
+                id: None,
+                slug: "claude".into(),
+                name: "Claude".into(),
+                version: None,
+                kind: AgentKind::Cli,
+            })?;
+            let workspace_id = storage.ensure_workspace(Path::new("/ws/direct-join"), None)?;
+            let make_conv = |agent_slug: &str,
+                             external_id: &str,
+                             title: &str,
+                             source_path: &str,
+                             content: &str| Conversation {
+                id: None,
+                agent_slug: agent_slug.into(),
+                workspace: Some(PathBuf::from("/ws/direct-join")),
+                external_id: Some(external_id.into()),
+                title: Some(title.into()),
+                source_path: PathBuf::from(source_path),
+                started_at: Some(1_700_000_000_000),
+                ended_at: Some(1_700_000_000_100),
+                approx_tokens: None,
+                metadata_json: serde_json::Value::Null,
+                messages: vec![Message {
+                    id: None,
+                    idx: 0,
+                    role: MessageRole::User,
+                    author: Some("user".into()),
+                    created_at: Some(1_700_000_000_050),
+                    content: content.into(),
+                    extra_json: serde_json::Value::Null,
+                    snippets: Vec::new(),
+                }],
+                source_id: "local".into(),
+                origin_host: None,
+            };
+            storage.insert_conversation_tree(
+                codex_id,
+                Some(workspace_id),
+                &make_conv(
+                    "codex",
+                    "codex-low",
+                    "codex low",
+                    "/tmp/codex-low.jsonl",
+                    "single auth token in codex",
+                ),
+            )?;
+            storage.insert_conversation_tree(
+                claude_id,
+                Some(workspace_id),
+                &make_conv(
+                    "claude",
+                    "claude-high",
+                    "claude high",
+                    "/tmp/claude-high.jsonl",
+                    "auth token auth auth in claude",
+                ),
+            )?;
+            storage.rebuild_fts()?;
+        }
         // Orphaned FTS row with highest term frequency must be dropped before LIMIT.
-        conn.execute_compat(
-            "INSERT INTO fts_messages(rowid, content, title) VALUES(?1, ?2, ?3)",
-            params![
-                999_i64,
-                "auth auth auth auth auth orphan",
-                "orphan entry"
-            ],
-        )?;
+        {
+            let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())?;
+            conn.execute_compat(
+                "INSERT INTO fts_messages(rowid, content, title) VALUES(?1, ?2, ?3)",
+                params![999_999_i64, "auth auth auth auth auth orphan", "orphan entry"],
+            )?;
+        }
 
-        let client = test_client(conn);
+        let client = test_client_for_path(db_path.clone());
         let hits = client.search_sqlite_fts5(
-            Path::new(":memory:"),
+            &db_path,
             "auth",
             SearchFilters::default(),
             2,
@@ -1371,7 +1395,7 @@ mod tests {
         assert!(hits[0].content.is_empty());
 
         let filtered = client.search_sqlite_fts5(
-            Path::new(":memory:"),
+            &db_path,
             "auth",
             SearchFilters {
                 agents: HashSet::from(["codex".to_string()]),
