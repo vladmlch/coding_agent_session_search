@@ -378,9 +378,6 @@ pub(crate) fn run_quarantine_list(
                 entry.source_path, entry.agent, entry.deferrals
             );
         }
-        println!(
-            "  An FSQLITE_PAGE_BUFFER_MAX above the database size removes the common trigger."
-        );
         println!();
     }
     if entries.is_empty() {
