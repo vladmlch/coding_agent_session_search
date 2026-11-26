@@ -215,7 +215,46 @@ impl std::io::Write for LogBuffer {
     }
 }
 
+struct SometimesNoopSubscriber;
+
+impl tracing::Subscriber for SometimesNoopSubscriber {
+    fn register_callsite(
+        &self,
+        _metadata: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::sometimes()
+    }
+
+    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+        false
+    }
+
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+    fn event(&self, _event: &tracing::Event<'_>) {}
+
+    fn enter(&self, _span: &tracing::span::Id) {}
+
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
 pub(super) fn capture_logs<F: FnOnce()>(f: F) -> String {
+    static LOG_CAPTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static INIT: std::sync::Once = std::sync::Once::new();
+
+    let _guard = LOG_CAPTURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    INIT.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(SometimesNoopSubscriber);
+    });
+
     let writer = LogBuffer::default();
     let drain = writer.clone();
     let subscriber = tracing_subscriber::fmt()
@@ -225,9 +264,16 @@ pub(super) fn capture_logs<F: FnOnce()>(f: F) -> String {
         .with_max_level(tracing::Level::INFO)
         .finish();
 
-    tracing::subscriber::with_default(subscriber, f);
+    tracing::subscriber::with_default(subscriber, || {
+        tracing::callsite::rebuild_interest_cache();
+        f();
+    });
 
-    let bytes = drain.0.lock().expect("log buffer lock").clone();
+    let bytes = drain
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     String::from_utf8_lossy(&bytes).to_string()
 }
 
