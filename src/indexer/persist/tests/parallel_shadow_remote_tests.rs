@@ -8,15 +8,11 @@ use crate::storage::sqlite::FrankenStorage;
 use serial_test::serial;
 
 #[test]
-#[serial]
-fn persist_conversations_batched_falls_back_for_duplicate_keys() {
+fn persist_conversations_batched_merges_duplicate_keys() {
     use crate::connectors::NormalizedConversation;
     use crate::franken_sync::compat::{ConnectionExt, RowExt};
     use crate::search::tantivy::TantivyIndex;
     use crate::sources::provenance::{Source, SourceKind};
-
-    let _begin_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "1");
-    let _chunk_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_CHUNK_SIZE", "1");
 
     let dir = tempfile::TempDir::new().unwrap();
     let db_path = dir.path().join("test.db");
@@ -107,7 +103,7 @@ fn persist_conversations_batched_falls_back_for_duplicate_keys() {
         LexicalPopulationStrategy::IncrementalInline,
         false,
     )
-    .expect("duplicate-key batch should fall back to serial path");
+    .expect("duplicate-key batch should merge cleanly");
 
     let reader = FrankenStorage::open(&db_path).unwrap();
     let conversation_count: i64 = reader
@@ -140,7 +136,6 @@ fn persist_conversations_batched_parallel_pre_map_preserves_content_and_order() 
     use crate::franken_sync::compat::{ConnectionExt, RowExt};
     use crate::search::tantivy::TantivyIndex;
 
-    let _begin_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "0");
     // Force redaction on so we exercise the heavier allocation path
     // that is the real target of the parallel hoist.
     let _redact_guard = set_env("CASS_REDACT_SECRETS", "1");
@@ -245,7 +240,6 @@ fn persist_conversations_batched_parallel_pre_map_preserves_content_and_order() 
 fn incremental_lexical_redaction_matches_canonical_rebuild() {
     use crate::search::query::{FieldMask, SearchClient, SearchFilters};
 
-    let _begin_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "0");
     let _defer_guard = set_env("CASS_DEFER_LEXICAL_UPDATES", "0");
     let _redact_guard = set_env("CASS_REDACT_SECRETS", "1");
 
@@ -376,99 +370,11 @@ fn incremental_lexical_redaction_matches_canonical_rebuild() {
 
 #[test]
 #[serial]
-fn persist_conversations_batched_parallel_pre_map_preserves_content_in_begin_concurrent_path() {
-    // Mirror of the serial-path regression test: prove that the
-    // parallel pre-compute of internal_convs still feeds the
-    // begin-concurrent writers the *same* redacted, ordered data the
-    // old per-chunk map_to_internal loop produced.
-    use crate::connectors::NormalizedConversation;
-    use crate::franken_sync::compat::{ConnectionExt, RowExt};
-    use crate::search::tantivy::TantivyIndex;
-
-    let _begin_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "1");
-    // Use chunk_size 8 so the 32-conv batch splits across multiple
-    // rayon chunks. That exercises the per-chunk slicing of
-    // internal_convs.
-    let _chunk_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_CHUNK_SIZE", "8");
-    let _redact_guard = set_env("CASS_REDACT_SECRETS", "1");
-
-    let dir = tempfile::TempDir::new().unwrap();
-    let db_path = dir.path().join("parallel-pre-map-concurrent.db");
-    let index_path = dir.path().join("tantivy");
-
-    let storage = create_franken_db(&db_path);
-    let mut t_index = TantivyIndex::open_or_create(&index_path).unwrap();
-
-    let convs: Vec<NormalizedConversation> = (0..32)
-        .map(|i| NormalizedConversation {
-            agent_slug: format!("agent-bc-{}", i % 4),
-            external_id: Some(format!("bc-session-{i}")),
-            // Stripe regex requires `[A-Za-z0-9]{20,}` after sk_live_.
-            title: Some(format!(
-                "Title bc-{i} sk_live_ABCdef0123456789AAAAbbbb{i:04}"
-            )),
-            workspace: Some(std::path::PathBuf::from(format!("/ws/bc-{}", i % 3))),
-            source_path: std::path::PathBuf::from(format!("/log/bc{i}.jsonl")),
-            started_at: Some(2_000 + i as i64),
-            ended_at: Some(2_010 + i as i64),
-            metadata: serde_json::json!({}),
-            messages: vec![NormalizedMessage {
-                idx: 0,
-                role: "user".into(),
-                author: Some("tester".into()),
-                created_at: Some(2_000 + i as i64),
-                content: format!("bc hello {i}"),
-                extra: serde_json::json!({}),
-                snippets: vec![],
-                invocations: Vec::new(),
-            }],
-        })
-        .collect();
-
-    persist_conversations_batched(
-        &storage,
-        Some(&mut t_index),
-        &convs,
-        LexicalPopulationStrategy::IncrementalInline,
-        false,
-    )
-    .expect("begin-concurrent path with parallel pre-map should persist all conversations");
-
-    let reader = FrankenStorage::open(&db_path).unwrap();
-    let conversation_count: i64 = reader
-        .raw()
-        .query_row_map("SELECT COUNT(*) FROM conversations", &[], |row| {
-            row.get_typed(0)
-        })
-        .unwrap();
-    assert_eq!(conversation_count, convs.len() as i64);
-
-    let titles: Vec<String> = reader
-        .raw()
-        .query_map_collect(
-            "SELECT title FROM conversations WHERE title IS NOT NULL ORDER BY id",
-            &[],
-            |row| row.get_typed(0),
-        )
-        .unwrap();
-    assert_eq!(titles.len(), convs.len());
-    for title in &titles {
-        assert!(
-            !title.contains("sk_live_"),
-            "begin-concurrent hoist must preserve secret redaction; found raw token: {title}"
-        );
-    }
-
-    t_index.commit().unwrap();
-}
-
-#[test]
-#[serial]
 fn parallel_wal_shadow_observer_does_not_change_persisted_state() {
     // C1.3 per `ALIEN-ARTIFACT-CARD1-SPEC.md`:
     // Toggling the shadow observer must NOT change what gets
     // committed. Run the same 16-conv workload through the
-    // begin-concurrent path with CASS_INDEXER_PARALLEL_WAL unset
+    // serial batched path with CASS_INDEXER_PARALLEL_WAL unset
     // and with =shadow, diff the resulting DB state by
     // (external_id, started_at) tuples.
     use crate::connectors::NormalizedConversation;
@@ -476,8 +382,7 @@ fn parallel_wal_shadow_observer_does_not_change_persisted_state() {
     use crate::search::tantivy::TantivyIndex;
 
     fn run_once(parallel_wal: Option<&str>) -> Vec<(String, i64)> {
-        let _begin_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "1");
-        let _chunk_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_CHUNK_SIZE", "4");
+        let _chunk_guard = set_env("CASS_INDEXER_SERIAL_CHUNK_SIZE", "4");
         let _wal_guard = parallel_wal.map(|v| set_env("CASS_INDEXER_PARALLEL_WAL", v));
         let _ = _wal_guard;
 
@@ -517,7 +422,7 @@ fn parallel_wal_shadow_observer_does_not_change_persisted_state() {
             LexicalPopulationStrategy::IncrementalInline,
             false,
         )
-        .expect("begin-concurrent path should persist all conversations");
+        .expect("serial batched path should persist all conversations");
 
         let reader = FrankenStorage::open(&db_path).unwrap();
         reader
@@ -534,11 +439,6 @@ fn parallel_wal_shadow_observer_does_not_change_persisted_state() {
             .unwrap()
     }
 
-    // BEGIN CONCURRENT commits chunks in nondeterministic order
-    // (par_chunks scheduling), so the committed-row order is NOT
-    // identical run-to-run. The invariant we care about is "the
-    // SET of persisted (external_id, started_at) tuples is
-    // identical." Compare as sorted vectors to normalize.
     let mut off = run_once(None);
     let mut shadow = run_once(Some("shadow"));
     off.sort();
@@ -555,13 +455,12 @@ fn parallel_wal_shadow_observer_does_not_change_persisted_state() {
 #[serial]
 fn parallel_wal_shadow_observer_emits_chunk_telemetry() {
     // Positive control: with shadow mode ON, running a real
-    // begin-concurrent batch should populate the shadow observer
+    // serial batched persist should populate the shadow observer
     // ring buffer with at least one record.
     use crate::connectors::NormalizedConversation;
     use crate::search::tantivy::TantivyIndex;
 
-    let _begin_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "1");
-    let _chunk_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_CHUNK_SIZE", "4");
+    let _chunk_guard = set_env("CASS_INDEXER_SERIAL_CHUNK_SIZE", "4");
     let _wal_guard = set_env("CASS_INDEXER_PARALLEL_WAL", "shadow");
 
     let dir = tempfile::TempDir::new().unwrap();
@@ -601,13 +500,13 @@ fn parallel_wal_shadow_observer_emits_chunk_telemetry() {
         LexicalPopulationStrategy::IncrementalInline,
         false,
     )
-    .expect("shadow-mode begin-concurrent should persist");
+    .expect("shadow-mode serial batched persist should succeed");
     let after = crate::indexer::parallel_wal_shadow::telemetry_snapshot();
 
     assert!(after.active, "active must be true under shadow");
     assert!(
         after.chunks_observed > baseline.chunks_observed,
-        "shadow observer must record ≥1 chunk when begin-concurrent path runs"
+        "shadow observer must record ≥1 chunk when serial batched path runs"
     );
 }
 
@@ -617,8 +516,6 @@ fn persist_conversations_batched_registers_missing_remote_source_in_serial_path(
     use crate::connectors::NormalizedConversation;
     use crate::franken_sync::compat::{ConnectionExt, RowExt};
     use crate::search::tantivy::TantivyIndex;
-
-    let _begin_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "0");
 
     let dir = tempfile::TempDir::new().unwrap();
     let db_path = dir.path().join("serial-source.db");
@@ -683,86 +580,10 @@ fn persist_conversations_batched_registers_missing_remote_source_in_serial_path(
 
 #[test]
 #[serial]
-fn persist_conversations_batched_registers_missing_remote_source_in_begin_concurrent_path() {
-    use crate::connectors::NormalizedConversation;
-    use crate::franken_sync::compat::{ConnectionExt, RowExt};
-    use crate::search::tantivy::TantivyIndex;
-
-    let _begin_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "1");
-    let _chunk_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_CHUNK_SIZE", "1");
-
-    let dir = tempfile::TempDir::new().unwrap();
-    let db_path = dir.path().join("begin-concurrent-source.db");
-    let index_path = dir.path().join("tantivy");
-
-    let storage = create_franken_db(&db_path);
-    let mut t_index = TantivyIndex::open_or_create(&index_path).unwrap();
-    let convs = vec![NormalizedConversation {
-        agent_slug: "codex".into(),
-        external_id: Some("remote-begin-session".into()),
-        title: Some("Remote begin-concurrent session".into()),
-        workspace: Some(std::path::PathBuf::from("/ws/remote")),
-        source_path: std::path::PathBuf::from("/log/remote-begin.jsonl"),
-        started_at: Some(2_000),
-        ended_at: Some(2_010),
-        metadata: serde_json::json!({
-            "cass": {
-                "origin": {
-                    "source_id": "remote-begin-source",
-                    "host": "builder-2"
-                }
-            }
-        }),
-        messages: vec![NormalizedMessage {
-            idx: 0,
-            role: "assistant".into(),
-            author: Some("tester".into()),
-            created_at: Some(2_005),
-            content: "begin-concurrent remote content".into(),
-            extra: serde_json::json!({}),
-            snippets: vec![],
-            invocations: Vec::new(),
-        }],
-    }];
-
-    persist_conversations_batched(
-        &storage,
-        Some(&mut t_index),
-        &convs,
-        LexicalPopulationStrategy::IncrementalInline,
-        false,
-    )
-    .expect("begin-concurrent path should auto-register embedded remote sources");
-
-    let reader = FrankenStorage::open(&db_path).unwrap();
-    let source_ids = reader.get_source_ids().unwrap();
-    assert_eq!(source_ids, vec!["remote-begin-source".to_string()]);
-
-    let provenance: Vec<(String, Option<String>)> = reader
-        .raw()
-        .query_map_collect(
-            "SELECT source_id, origin_host FROM conversations",
-            &[],
-            |row| Ok((row.get_typed(0)?, row.get_typed(1)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        provenance,
-        vec![(
-            "remote-begin-source".to_string(),
-            Some("builder-2".to_string())
-        )]
-    );
-}
-
-#[test]
-#[serial]
 fn persist_conversations_batched_reuses_auto_registered_remote_source_across_serial_runs() {
     use crate::connectors::NormalizedConversation;
     use crate::franken_sync::compat::{ConnectionExt, RowExt};
     use crate::search::tantivy::TantivyIndex;
-
-    let _begin_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "0");
 
     let dir = tempfile::TempDir::new().unwrap();
     let db_path = dir.path().join("serial-source-reuse.db");
@@ -879,135 +700,6 @@ fn persist_conversations_batched_reuses_auto_registered_remote_source_across_ser
     assert!(
         fk_violations.is_empty(),
         "serial path should not leave any foreign-key violations after source auto-registration"
-    );
-}
-
-#[test]
-#[serial]
-fn persist_conversations_batched_reuses_auto_registered_remote_source_across_begin_concurrent_runs()
-{
-    use crate::connectors::NormalizedConversation;
-    use crate::franken_sync::compat::{ConnectionExt, RowExt};
-    use crate::search::tantivy::TantivyIndex;
-
-    let _begin_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "1");
-    let _chunk_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_CHUNK_SIZE", "1");
-
-    let dir = tempfile::TempDir::new().unwrap();
-    let db_path = dir.path().join("begin-source-reuse.db");
-    let index_path = dir.path().join("tantivy");
-
-    let storage = create_franken_db(&db_path);
-    let mut t_index = TantivyIndex::open_or_create(&index_path).unwrap();
-    let metadata = serde_json::json!({
-        "cass": {
-            "origin": {
-                "source_id": "remote-begin-reused",
-                "host": "builder-reuse-2"
-            }
-        }
-    });
-
-    for (external_id, started_at, content, source_path) in [
-        (
-            "remote-begin-session-1",
-            30_000_i64,
-            "begin-concurrent content one",
-            "/log/remote-begin-1.jsonl",
-        ),
-        (
-            "remote-begin-session-2",
-            40_000_i64,
-            "begin-concurrent content two",
-            "/log/remote-begin-2.jsonl",
-        ),
-    ] {
-        let convs = vec![NormalizedConversation {
-            agent_slug: "codex".into(),
-            external_id: Some(external_id.into()),
-            title: Some(format!("Remote begin session {external_id}")),
-            workspace: Some(std::path::PathBuf::from("/ws/remote")),
-            source_path: std::path::PathBuf::from(source_path),
-            started_at: Some(started_at),
-            ended_at: Some(started_at + 10),
-            metadata: metadata.clone(),
-            messages: vec![NormalizedMessage {
-                idx: 0,
-                role: "assistant".into(),
-                author: Some("tester".into()),
-                created_at: Some(started_at + 5),
-                content: content.into(),
-                extra: serde_json::json!({}),
-                snippets: vec![],
-                invocations: Vec::new(),
-            }],
-        }];
-
-        persist_conversations_batched(
-            &storage,
-            Some(&mut t_index),
-            &convs,
-            LexicalPopulationStrategy::IncrementalInline,
-            false,
-        )
-        .expect("begin-concurrent path should keep reusing the auto-registered source");
-    }
-
-    let reader = FrankenStorage::open(&db_path).unwrap();
-    let source_rows: Vec<(String, Option<String>)> = reader
-        .raw()
-        .query_map_collect(
-            "SELECT id, host_label FROM sources WHERE id <> 'local' ORDER BY id",
-            &[],
-            |row| Ok((row.get_typed(0)?, row.get_typed(1)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        source_rows,
-        vec![(
-            "remote-begin-reused".to_string(),
-            Some("builder-reuse-2".to_string())
-        )],
-        "begin-concurrent path should upsert the missing remote source once and then reuse it"
-    );
-
-    let provenance: Vec<(String, Option<String>, String)> = reader
-        .raw()
-        .query_map_collect(
-            "SELECT source_id, origin_host, external_id FROM conversations ORDER BY external_id",
-            &[],
-            |row| Ok((row.get_typed(0)?, row.get_typed(1)?, row.get_typed(2)?)),
-        )
-        .unwrap();
-    assert_eq!(
-        provenance,
-        vec![
-            (
-                "remote-begin-reused".to_string(),
-                Some("builder-reuse-2".to_string()),
-                "remote-begin-session-1".to_string()
-            ),
-            (
-                "remote-begin-reused".to_string(),
-                Some("builder-reuse-2".to_string()),
-                "remote-begin-session-2".to_string()
-            )
-        ],
-        "every begin-concurrent persist should retain the recovered source provenance"
-    );
-
-    let conversation_count: i64 = reader
-        .raw()
-        .query_row_map("SELECT COUNT(*) FROM conversations", &[], |row| {
-            row.get_typed(0)
-        })
-        .unwrap();
-    assert_eq!(conversation_count, 2);
-
-    let fk_violations = reader.raw().query("PRAGMA foreign_key_check").unwrap();
-    assert!(
-        fk_violations.is_empty(),
-        "begin-concurrent path should not leave any foreign-key violations after source auto-registration"
     );
 }
 
@@ -1223,65 +915,6 @@ fn persist_conversation_stage_profile_tracks_steady_state_remote_reuse() {
             profile.log_summary(&format!("remote_reuse_{msg_count}_msgs"));
         }
     }
-}
-
-#[test]
-fn duplicate_conversation_keys_present_for_shared_source_path_without_external_id() {
-    use crate::connectors::NormalizedConversation;
-
-    let convs = vec![
-        NormalizedConversation {
-            agent_slug: "shared-agent".into(),
-            external_id: None,
-            title: Some("Shared Session".into()),
-            workspace: Some(std::path::PathBuf::from("/ws/shared")),
-            source_path: std::path::PathBuf::from("/log/shared.jsonl"),
-            started_at: Some(1_000),
-            ended_at: Some(1_010),
-            metadata: serde_json::json!({}),
-            messages: vec![NormalizedMessage {
-                idx: 0,
-                role: "user".into(),
-                author: Some("tester".into()),
-                created_at: Some(1_000),
-                content: "first".into(),
-                extra: serde_json::json!({}),
-                snippets: vec![],
-                invocations: Vec::new(),
-            }],
-        },
-        NormalizedConversation {
-            agent_slug: "shared-agent".into(),
-            external_id: None,
-            title: Some("Shared Session".into()),
-            workspace: Some(std::path::PathBuf::from("/ws/shared")),
-            source_path: std::path::PathBuf::from("/log/shared.jsonl"),
-            started_at: Some(9_999),
-            ended_at: Some(10_010),
-            metadata: serde_json::json!({}),
-            messages: vec![NormalizedMessage {
-                idx: 1,
-                role: "assistant".into(),
-                author: Some("tester".into()),
-                created_at: Some(1_001),
-                content: "second".into(),
-                extra: serde_json::json!({}),
-                snippets: vec![],
-                invocations: Vec::new(),
-            }],
-        },
-    ];
-
-    assert!(duplicate_conversation_keys_present(&convs));
-}
-
-#[test]
-fn begin_concurrent_disabled_falls_through_to_default() {
-    let _guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "0");
-    assert!(!begin_concurrent_writes_enabled());
-
-    let _guard2 = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "false");
-    assert!(!begin_concurrent_writes_enabled());
 }
 
 /// `coding_agent_session_search-5b9p0`: pin the new helper that

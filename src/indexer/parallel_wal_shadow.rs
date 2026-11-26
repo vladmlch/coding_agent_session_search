@@ -2,7 +2,7 @@
 //! graveyard). **This module does NOT change commit semantics.** Per the
 //! design in `tests/artifacts/perf/2026-04-21-profile-run/ALIEN-ARTIFACT-CARD1-SPEC.md`
 //! §5.7, the shadow-run is the mandatory first rollout stage: we run the
-//! existing `persist_conversations_batched_begin_concurrent` path
+//! existing serial batched persist path
 //! unchanged, but instrument it so we can see what an epoch-ordered
 //! group-commit path *would* do on the same workload.
 //!

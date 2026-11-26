@@ -19,8 +19,10 @@ use super::canonical_replay::{
     PersistBatchOutcome, lexical_packet_for_changed_messages, positional_indices_for_inserted,
     publish_changed_packet_messages, record_sliced_raw_mirror_db_link,
 };
-use super::concurrent::{defer_lexical_updates_enabled, with_ephemeral_writer};
-use super::serial_batch::{map_role, persist_conversations_batched_whole};
+use super::serial_batch::{
+    defer_lexical_updates_enabled, map_role, persist_conversations_batched_whole,
+    with_ephemeral_writer,
+};
 
 /// Extract provenance (source_id, origin_host) from conversation metadata.
 ///
@@ -144,7 +146,7 @@ pub(crate) fn map_to_internal_with_redactor(
 /// form on the rayon pool with one `MemoizingRedactor` per worker.
 ///
 /// This is the single shared implementation for BOTH batched persist
-/// paths (begin-concurrent and serial) — and for the
+/// paths (batched and single-conversation) — and for the
 /// `redaction_perf` bench harness via
 /// [`bench_map_batch_to_internal`] — so benchmark numbers measure
 /// the exact production transform by construction.

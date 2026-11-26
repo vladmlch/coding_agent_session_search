@@ -71,9 +71,9 @@ pub(super) fn set_env(key: &'static str, value: &str) -> EnvGuard {
     }
 }
 
-/// Helper: create a frankensqlite-native database with schema applied.
+/// Helper: create a SQLite database with schema applied.
 pub(super) fn create_franken_db(path: &std::path::Path) -> FrankenStorage {
-    let fs = FrankenStorage::open(path).expect("open frankensqlite db");
+    let fs = FrankenStorage::open(path).expect("open sqlite db");
     fs.run_migrations().expect("run migrations");
     fs
 }

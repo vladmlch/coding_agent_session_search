@@ -12,18 +12,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
-#[test]
-fn begin_concurrent_flag_parsing() {
-    let _guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT", "1");
-    assert!(begin_concurrent_writes_enabled());
-}
-
-#[test]
-fn begin_concurrent_chunk_size_parsing() {
-    let _guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_CHUNK_SIZE", "7");
-    assert_eq!(begin_concurrent_chunk_size(), 7);
-}
-
 /// gh373/oeu5a: mapping one giant conversation must tick the
 /// work-liveness heartbeat per MAP_HEARTBEAT_MESSAGE_STRIDE messages
 /// so the stall watchdog sees live work during the minutes-long
@@ -465,55 +453,26 @@ fn conversation_metadata_redaction_is_structural_and_fail_closed() {
 }
 
 #[test]
-fn begin_concurrent_retry_limit_parsing() {
-    let _guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_RETRIES", "9");
-    assert_eq!(begin_concurrent_retry_limit(), 9);
-}
-
-#[test]
-fn begin_concurrent_writer_cache_parsing() {
-    let _guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_WRITER_CACHE_KIB", "2048");
-    assert_eq!(begin_concurrent_writer_cache_kib(), 2048);
-}
-
-#[test]
-fn begin_concurrent_writer_cache_invalid_defaults() {
-    let _guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_WRITER_CACHE_KIB", "0");
-    assert_eq!(begin_concurrent_writer_cache_kib(), 4096);
-}
-
-#[test]
-fn begin_concurrent_knobs_are_clamped_to_safe_caps() {
-    // Pathological values (typos, overflow-adjacent integers) must be
-    // clamped, not honored verbatim. Each knob here is exercised at the
-    // upper edge the user could type; the expected post-clamp value is
-    // the constant cap.
+#[serial]
+fn writer_retry_limit_parsing_fallback_and_clamping() {
     {
-        let _guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_RETRIES", "1000000000");
-        assert_eq!(begin_concurrent_retry_limit(), BEGIN_CONCURRENT_RETRY_MAX);
+        let _new_guard = set_env("CASS_INDEXER_WRITER_RETRIES", "11");
+        let _legacy_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_RETRIES", "9");
+        assert_eq!(writer_retry_limit(), 11);
     }
     {
-        let _guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_CHUNK_SIZE", "1000000000");
-        assert_eq!(
-            begin_concurrent_chunk_size(),
-            BEGIN_CONCURRENT_CHUNK_SIZE_MAX
-        );
+        let _new_guard = set_env("CASS_INDEXER_WRITER_RETRIES", "0");
+        let _legacy_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_RETRIES", "9");
+        assert_eq!(writer_retry_limit(), 9);
     }
     {
-        let _guard = set_env(
-            "CASS_INDEXER_BEGIN_CONCURRENT_WRITER_CACHE_KIB",
-            "9999999999",
-        );
-        assert_eq!(
-            begin_concurrent_writer_cache_kib(),
-            BEGIN_CONCURRENT_WRITER_CACHE_KIB_MAX
-        );
+        let _new_guard = set_env("CASS_INDEXER_WRITER_RETRIES", "1000000000");
+        assert_eq!(writer_retry_limit(), WRITER_RETRY_MAX);
     }
-    // Negative or zero inputs still fall through to the existing
-    // default path (not clamp-to-max).
     {
-        let _guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_WRITER_CACHE_KIB", "-42");
-        assert_eq!(begin_concurrent_writer_cache_kib(), 4096);
+        let _new_guard = set_env("CASS_INDEXER_WRITER_RETRIES", "0");
+        let _legacy_guard = set_env("CASS_INDEXER_BEGIN_CONCURRENT_RETRIES", "0");
+        assert_eq!(writer_retry_limit(), 6);
     }
 }
 
