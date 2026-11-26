@@ -1088,6 +1088,12 @@ pub(in crate::indexer) fn rebuild_tantivy_from_db_via_staged_shards(
     // EVERY marked session into the publish path BEFORE the manifest and
     // fingerprint are recorded, so the staged swap ships the persisted
     // inventory whole and the post-publish doc-count verify stays exact.
+    storage.close_without_checkpoint().with_context(|| {
+        format!(
+            "closing readonly database after staged Tantivy rebuild without checkpoint: {}",
+            db_path.display()
+        )
+    })?;
     let (region_docs, certification_floor, marks_storage) = {
         let mut region_index = TantivyIndex::open_or_create(&final_merge_artifact.publish_path)
             .with_context(|| {
@@ -1186,12 +1192,6 @@ pub(in crate::indexer) fn rebuild_tantivy_from_db_via_staged_shards(
     persist_lexical_refresh_ledger(index_path, &refresh_ledger)?;
     log_lexical_refresh_ledger_published(&refresh_ledger);
 
-    storage.close_without_checkpoint().with_context(|| {
-        format!(
-            "closing readonly database after staged Tantivy rebuild without checkpoint: {}",
-            db_path.display()
-        )
-    })?;
     marks_storage.close().with_context(|| {
         format!(
             "closing region-marks writer after staged Tantivy rebuild: {}",

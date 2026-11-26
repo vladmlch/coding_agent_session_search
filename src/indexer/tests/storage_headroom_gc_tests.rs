@@ -1233,6 +1233,10 @@ fn full_rebuild_integrity_preflight_rejects_corrupt_fts_structure_record() {
         problem.contains("FTS5 segment integrity-check failed"),
         "diagnostic must identify the FTS segment preflight: {problem}"
     );
+    assert!(
+        !problem.contains("readonly database"),
+        "preflight must inspect FTS5 integrity without triggering readonly error: {problem}"
+    );
     storage.close_best_effort_in_place();
 }
 

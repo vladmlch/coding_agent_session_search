@@ -1316,6 +1316,14 @@ pub(in crate::indexer) fn rebuild_tantivy_from_db_once(
     // re-upserts report it again, so that share is taken out before this pass
     // counts its own region documents.
     indexed_docs = indexed_docs.saturating_sub(rebuild_state.indexed_region_docs);
+    publication.run("close_canonical_reader", || {
+        storage.close_without_checkpoint().with_context(|| {
+            format!(
+                "closing readonly database after Tantivy rebuild without checkpoint: {}",
+                db_path.display()
+            )
+        })
+    })?;
     let (region_docs, marks_storage) = {
         let marks_storage = FrankenStorage::open_writer(db_path).with_context(|| {
             format!(
@@ -1470,21 +1478,13 @@ pub(in crate::indexer) fn rebuild_tantivy_from_db_once(
     // is still open; fresh rebuilds already observed every canonical packet.
     let final_observed_messages = if resumed_from_checkpoint {
         publication.run("count_canonical_messages", || {
-            count_total_messages_exact(&storage)
+            count_total_messages_exact(&marks_storage)
         })?
     } else {
         // `indexed_docs` includes the Task-5 region documents converged
         // above — the canonical message count must not inherit them.
         observed_messages.max(indexed_docs.saturating_sub(region_docs))
     };
-    publication.run("close_canonical_reader", || {
-        storage.close_without_checkpoint().with_context(|| {
-            format!(
-                "closing readonly database after Tantivy rebuild without checkpoint: {}",
-                db_path.display()
-            )
-        })
-    })?;
     let final_total_conversations = if options.defer_initial_content_fingerprint {
         processed_conversations
     } else {

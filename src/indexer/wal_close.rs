@@ -25,7 +25,7 @@ pub(in crate::indexer) fn close_storage_after_index(
     context: &str,
 ) -> Result<()> {
     prepare_storage_for_final_checkpoint(&storage, db_path, context);
-    storage.close().with_context(|| {
+    storage.close_without_checkpoint().with_context(|| {
         format!(
             "closing canonical db before final WAL checkpoint after {context}: {}",
             db_path.display()

@@ -1220,11 +1220,13 @@ fn make_bulk_codex_sessions(
 }
 
 fn count_messages(db_path: &Path) -> i64 {
-    let storage = SqliteStorage::open(db_path).expect("open sqlite");
-    storage
+    let storage = SqliteStorage::open_readonly(db_path).expect("open sqlite");
+    let count = storage
         .raw()
         .query_row_map("SELECT COUNT(*) FROM messages", &[], |r| r.get_typed(0))
-        .expect("count messages")
+        .expect("count messages");
+    storage.close_without_checkpoint().expect("close sqlite");
+    count
 }
 
 fn total_matches_from_search_output(output: &[u8]) -> u64 {

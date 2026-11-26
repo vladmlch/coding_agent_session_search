@@ -298,6 +298,10 @@ fn rebuild_canonical_fts_repairs_absent_shadow_without_canonical_row_changes() {
             0,
             r#"{"type":"user","uuid":"fts-1","text":"canonical sentinel"}"#,
         );
+        storage
+            .raw()
+            .execute("DROP TABLE IF EXISTS fts_messages;")
+            .expect("drop default FTS shadow before absent check");
         assert_eq!(
             storage
                 .inspect_search_fallback_fts_parity()

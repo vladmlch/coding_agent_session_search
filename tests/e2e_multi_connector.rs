@@ -493,6 +493,10 @@ fn multi_connector_pipeline() {
         .arg(&data_dir)
         .env("HOME", home.to_string_lossy().as_ref())
         .env("XDG_DATA_HOME", xdg_data.to_string_lossy().as_ref())
+        .env(
+            "OPENCODE_STORAGE_ROOT",
+            xdg_data.join("opencode/storage").to_string_lossy().as_ref(),
+        )
         .env("CODEX_HOME", dot_codex.to_string_lossy().as_ref())
         .env("GEMINI_HOME", dot_gemini.to_string_lossy().as_ref())
         .output()
@@ -636,6 +640,10 @@ fn multi_connector_pipeline() {
         .arg(&data_dir)
         .env("HOME", home.to_string_lossy().as_ref())
         .env("XDG_DATA_HOME", xdg_data.to_string_lossy().as_ref())
+        .env(
+            "OPENCODE_STORAGE_ROOT",
+            xdg_data.join("opencode/storage").to_string_lossy().as_ref(),
+        )
         .env("CODEX_HOME", dot_codex.to_string_lossy().as_ref())
         .env("GEMINI_HOME", dot_gemini.to_string_lossy().as_ref())
         .output()

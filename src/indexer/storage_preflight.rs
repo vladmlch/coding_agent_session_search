@@ -308,11 +308,16 @@ pub(in crate::indexer) fn canonical_fts_segment_integrity_problem(
         return Ok(None);
     }
 
-    match storage
-        .raw()
-        .execute("INSERT INTO fts_messages(fts_messages) VALUES('integrity-check')")
-    {
-        Ok(_) => Ok(None),
+    match storage.raw().query_map_collect(
+        "PRAGMA integrity_check(fts_messages)",
+        &[] as &[ParamValue],
+        |row| row.get_typed::<String>(0),
+    ) {
+        Ok(rows) if rows.len() == 1 && rows[0].trim().eq_ignore_ascii_case("ok") => Ok(None),
+        Ok(rows) => Ok(Some(format!(
+            "FTS5 segment integrity-check failed: {}",
+            rows.join("; ")
+        ))),
         Err(err) if crate::storage::sqlite::retryable_franken_error(&err) => Err(anyhow::anyhow!(
             "full rebuild FTS segment integrity preflight hit transient storage contention: {err}"
         )),
@@ -477,6 +482,38 @@ pub(in crate::indexer) fn full_rebuild_existing_archive_integrity_preflight_with
         Duration::from_secs(10),
     ) {
         Ok(storage) => storage,
+        Err(err)
+            if err.chain().any(|cause| {
+                matches!(
+                    cause.downcast_ref::<crate::franken_sync::FrankenError>(),
+                    Some(crate::franken_sync::FrankenError::BusyRecovery)
+                )
+            }) =>
+        {
+            tracing::debug!(
+                db_path = %db_path.display(),
+                error = %err,
+                "strict read-only full-rebuild preflight encountered unrecovered WAL/SHM; falling back to private read-only snapshot"
+            );
+            match FrankenStorage::open_readonly_with_doctor_lock_timeout(
+                db_path,
+                Duration::from_secs(10),
+            ) {
+                Ok(storage) => storage,
+                Err(snapshot_err)
+                    if anyhow_chain_indicates_retryable_storage_contention(&snapshot_err) =>
+                {
+                    return Err(anyhow::anyhow!(
+                        "full rebuild read-only archive preflight hit transient storage contention: {snapshot_err:#}"
+                    ));
+                }
+                Err(snapshot_err) => {
+                    return Ok(Some(format!(
+                        "read-only full-rebuild integrity preflight could not open the canonical archive: {snapshot_err:#}"
+                    )));
+                }
+            }
+        }
         Err(err) if anyhow_chain_indicates_retryable_storage_contention(&err) => {
             return Err(anyhow::anyhow!(
                 "full rebuild read-only archive preflight hit transient storage contention: {err:#}"
