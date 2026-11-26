@@ -1,6 +1,7 @@
 use super::fts::fts_rebuild_dry_run_envelope;
 use super::leaked_pages::{
     LeakedPagesVerdict, classify_leaked_pages, leaked_pages_bundle_components,
+    reclaimed_pages_count,
 };
 use super::*;
 use crate::RobotFormat;
@@ -346,10 +347,10 @@ fn rebuild_canonical_fts_repairs_absent_shadow_without_canonical_row_changes() {
 }
 
 /// GH #438: an explicit repair of a parity-healthy shadow must rewrite its
-/// segments (stock validators reject segments written before
-/// frankensqlite#404 even though reads work), not report "already
-/// healthy" and leave them. Three catch-up passes leave several segments;
-/// the repair must merge them into one without changing any search result.
+/// segments (older validators rejected unmerged segments even though reads
+/// work), not report "already healthy" and leave them. Three catch-up passes
+/// leave several segments; the repair must merge them into one without
+/// changing any search result.
 #[test]
 fn rebuild_canonical_fts_rewrites_segments_of_a_parity_healthy_shadow() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -606,11 +607,9 @@ fn gh345_indeterminate_fts_dry_run_defers_exact_parity_without_claiming_mutation
 /// leaf-offset space (91,548 bytes observed in a real Codex rollout) used
 /// to fail every canonical FTS repair path with "fts5: corrupt %_data
 /// record: segment leaf term offset exceeds u16" — including this exact
-/// `--rebuild-canonical-fts` recovery. With the pinned frankensqlite
-/// hotfix family (branch `fts5-overlong-hotfix-cass362`, which carries
-/// the overlong-term skip cap) the overlong term is skipped at the
-/// tokenizer, the rebuild completes, and neighboring terms in the same
-/// message stay indexed.
+/// `--rebuild-canonical-fts` recovery. With C SQLite FTS5, the rebuild
+/// completes natively and neighboring terms in the same message stay
+/// indexed.
 #[test]
 fn rebuild_canonical_fts_survives_overlong_term_in_corpus() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -663,13 +662,11 @@ fn rebuild_canonical_fts_survives_overlong_term_in_corpus() {
     assert_eq!(parity.indexed_messages, Some(2));
 }
 
-/// GH #368 (defect 3): when the FTS5 `%_data` *structure* record is corrupt
-/// enough that the archive cannot be opened normally (the schema reload
-/// eagerly decodes it), `--rebuild-canonical-fts --yes` must still repair it
-/// by reopening with FTS5 hydration DEFERRED and dropping + recreating +
-/// repopulating the shadow from canonical rows. This drives the full doctor
-/// CLI fallback end-to-end (`is_fts5_shadow_open_corruption_error` detection
-/// plus the corrupt-shadow branch of `run_doctor_rebuild_canonical_fts`,
+/// GH #368 (defect 3): when the FTS5 `%_data` *structure* record is corrupt,
+/// querying `fts_messages` fails even though opening succeeds; `--rebuild-canonical-fts --yes`
+/// must repair it by dropping + recreating + repopulating the shadow from canonical rows.
+/// This drives the full doctor CLI fallback end-to-end (`is_fts5_shadow_open_corruption_error`
+/// detection plus the corrupt-shadow branch of `run_doctor_rebuild_canonical_fts`,
 /// including the read-only dry-run report) — coverage the storage-level test
 /// `drop_recreate_repairs_corrupt_fts_shadow_structure` does not reach.
 #[test]
@@ -699,16 +696,14 @@ fn rebuild_canonical_fts_repairs_structurally_corrupt_shadow_that_blocks_open() 
                 ] as &[ParamValue],
             )
             .expect("insert canonical message");
-        storage
-            .rebuild_fts_via_frankensqlite()
-            .expect("build a valid FTS shadow");
+        storage.rebuild_fts().expect("build a valid FTS shadow");
     }
 
     // Corrupt the %_data structure record (rowid 10) through a fresh
     // connection (the FTS is still valid here, so the open succeeds).
     {
         let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned())
-            .expect("open raw franken connection");
+            .expect("open raw connection");
         let garbage = [0xFFu8; 12];
         conn.execute_compat(
             "UPDATE fts_messages_data SET block = ?1 WHERE id = ?2",
@@ -720,17 +715,27 @@ fn rebuild_canonical_fts_repairs_structurally_corrupt_shadow_that_blocks_open() 
         .expect("corrupt the FTS5 structure record");
     }
 
-    // Both the read-only open (dry-run path) and the schema-only repair open
-    // (apply path) must now fail on the corrupt structure, so the doctor
-    // command is forced through the deferred-open corrupt-shadow fallback
-    // rather than the ordinary parity path.
-    assert!(
-        FrankenStorage::open_readonly(&db_path).is_err(),
-        "read-only open must fail on a corrupt FTS5 %_data structure record"
+    // Querying the corrupt %_data structure record must fail on both the
+    // read-only open (dry-run path) and the schema-only repair open (apply
+    // path), forcing the doctor command through the corrupt-shadow branch.
+    let assert_match_fails = |storage: FrankenStorage, label: &str| {
+        let err = storage
+            .raw()
+            .query("SELECT COUNT(*) FROM fts_messages WHERE fts_messages MATCH 'needle'")
+            .expect_err(label);
+        assert!(
+            is_fts5_shadow_open_corruption_error(&anyhow::Error::new(err)),
+            "{label}"
+        );
+    };
+    assert_match_fails(
+        FrankenStorage::open_readonly(&db_path).expect("open read-only"),
+        "read-only MATCH must fail on a corrupt FTS5 structure record",
     );
-    assert!(
-        FrankenStorage::open_existing_schema_only_for_fts_repair(&db_path).is_err(),
-        "schema-only repair open must fail on a corrupt FTS5 %_data structure record"
+    assert_match_fails(
+        FrankenStorage::open_existing_schema_only_for_fts_repair(&db_path)
+            .expect("open schema-only for repair"),
+        "schema-only repair MATCH must fail on a corrupt FTS5 structure record",
     );
 
     // Dry-run (even with --yes) must report the planned repair while staying
@@ -750,9 +755,10 @@ fn rebuild_canonical_fts_repairs_structurally_corrupt_shadow_that_blocks_open() 
         bytes_after_dry_run, bytes_before_dry_run,
         "corrupt-shadow dry-run must not alter any database bytes"
     );
-    assert!(
-        FrankenStorage::open_existing_schema_only_for_fts_repair(&db_path).is_err(),
-        "dry-run must not have repaired the corrupt shadow"
+    assert_match_fails(
+        FrankenStorage::open_existing_schema_only_for_fts_repair(&db_path)
+            .expect("reopen after dry-run"),
+        "dry-run must not have repaired the corrupt shadow",
     );
 
     // Apply: the fallback drops + recreates + rebuilds the shadow from
@@ -799,13 +805,13 @@ fn rebuild_canonical_fts_repairs_structurally_corrupt_shadow_that_blocks_open() 
 fn gh434_schema_level_shadow_open_failures_route_to_deferred_repair() {
     // Verbatim shapes from the #434 report (index refusal + doctor refusal).
     let index_refusal = anyhow::anyhow!(
-        "opening raw frankensqlite db readonly at /home/claude/.local/share/coding-agent-search/agent_search.db: \
+        "opening raw sqlite db readonly at /home/claude/.local/share/coding-agent-search/agent_search.db: \
          database disk image is malformed: sqlite_master is missing implicit autoindex slot 1 for table `fts_messages_config`"
     );
     assert!(is_fts_shadow_schema_level_open_failure(&index_refusal));
 
     let doctor_refusal = anyhow::anyhow!(
-        "opening frankensqlite db readonly at /tmp/cass-check/agent_search.db: \
+        "opening sqlite db readonly at /tmp/cass-check/agent_search.db: \
          database disk image is malformed: sqlite_master is missing implicit autoindex slot 1 for table `fts_messages_config`"
     );
     assert!(is_fts_shadow_schema_level_open_failure(&doctor_refusal));
@@ -825,6 +831,13 @@ fn gh434_schema_level_shadow_open_failures_route_to_deferred_repair() {
     assert!(!is_fts_shadow_schema_level_open_failure(&data_corruption));
     assert!(is_fts5_shadow_open_corruption_error(&data_corruption));
 
+    let structure_corruption =
+        anyhow::anyhow!("fts5: corrupt structure record for table \"fts_messages\"");
+    assert!(!is_fts_shadow_schema_level_open_failure(
+        &structure_corruption
+    ));
+    assert!(is_fts5_shadow_open_corruption_error(&structure_corruption));
+
     // The gh#369 oversized-leaf shape is a write-time engine limitation,
     // not an open-blocking schema failure.
     let oversized =
@@ -832,40 +845,54 @@ fn gh434_schema_level_shadow_open_failures_route_to_deferred_repair() {
     assert!(!is_fts_shadow_schema_level_open_failure(&oversized));
 }
 
-/// GH #503: ENGINE_REPAIRS_MISSING_FTS5_SHADOW_AUTOINDEX must describe the
-/// pinned engine. The real deferred-FTS5 repair open runs on a copy of a
-/// small archive whose `fts_messages_config` carries the pre-#434 catalog;
-/// a pin bump that changes the outcome fails here until the constant (and
-/// with it the status hint and the doctor refusal) is updated.
+/// GH #503: pre-v1 archives without the schema-v1 stamp are refused with
+/// `SchemaRebuildRequired`, while a schema-v1 archive opens under
+/// `open_deferred_fts5_for_repair` matching `ENGINE_REPAIRS_MISSING_FTS5_SHADOW_AUTOINDEX`,
+/// and the string predicates keep classifying missing-autoindex shadow failures.
 #[test]
 fn pinned_engine_deferred_open_matches_the_legacy_shadow_catalog_policy() {
+    use crate::storage::sqlite::SchemaRebuildRequired;
+
     let dir = tempfile::TempDir::new().unwrap();
-    let db_path = dir.path().join("agent_search.db");
+    let legacy_db = dir.path().join("legacy_agent_search.db");
     std::fs::copy(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/gh503/legacy_fts_config_shadow.db"),
-        &db_path,
+        &legacy_db,
     )
     .unwrap();
 
-    let ordinary = FrankenStorage::open_readonly(&db_path)
+    let ordinary = FrankenStorage::open_readonly(&legacy_db)
         .err()
-        .expect("the legacy shadow catalog fails an ordinary open");
+        .expect("unstamped pre-v1 fixture must be refused by schema-v1 open");
     assert!(
-        is_missing_fts5_shadow_autoindex_failure(&ordinary),
-        "fixture must reproduce the #503 refusal: {ordinary:#}"
+        ordinary.downcast_ref::<SchemaRebuildRequired>().is_some(),
+        "expected SchemaRebuildRequired on pre-v1 fixture: {ordinary:#}"
+    );
+    let legacy_repair = FrankenStorage::open_deferred_fts5_for_repair(&legacy_db)
+        .err()
+        .expect("unstamped pre-v1 fixture must also be refused by deferred repair open");
+    assert!(
+        legacy_repair
+            .downcast_ref::<SchemaRebuildRequired>()
+            .is_some(),
+        "expected SchemaRebuildRequired on deferred repair open: {legacy_repair:#}"
     );
 
-    let repair_open = FrankenStorage::open_deferred_fts5_for_repair(&db_path);
+    let v1_db = dir.path().join("agent_search.db");
+    drop(FrankenStorage::open(&v1_db).expect("bootstrap schema-v1 db"));
+    let repair_open = FrankenStorage::open_deferred_fts5_for_repair(&v1_db);
     assert_eq!(
         repair_open.is_ok(),
         ENGINE_REPAIRS_MISSING_FTS5_SHADOW_AUTOINDEX,
-        "the pinned engine's repair open disagrees with the constant: {:?}",
+        "schema-v1 deferred repair open disagrees with policy constant: {:?}",
         repair_open.as_ref().err()
     );
-    if let Err(err) = repair_open {
-        assert!(is_missing_fts5_shadow_autoindex_failure(&err), "{err:#}");
-    }
+
+    let shadow_missing = anyhow::anyhow!(
+        "database disk image is malformed: sqlite_master is missing implicit autoindex slot 1 for table `fts_messages_config`"
+    );
+    assert!(is_missing_fts5_shadow_autoindex_failure(&shadow_missing));
 
     // The predicate names only the shadow shape.
     let canonical = anyhow::anyhow!(
@@ -879,7 +906,7 @@ fn pinned_engine_deferred_open_matches_the_legacy_shadow_catalog_policy() {
 /// gets a reassuring "search still works via Tantivy" diagnostic rather than
 /// the generic storage wall. This mirrors the exact wrapped chain the
 /// failure-atomic rebuild produces (`sqlite.rs` `.context(...)`), with the
-/// fsqlite root string preserved.
+/// FTS5 root string preserved.
 #[test]
 fn oversized_leaf_error_is_classified_and_gets_reassuring_diagnostic() {
     let wrapped = anyhow::anyhow!(
@@ -1244,6 +1271,8 @@ fn leaked_pages_classifier_accepts_only_a_lone_engine_leak_row() {
     for leak in [
         "database disk image is malformed: page 8196 is never used",
         "page 8196 is never used",
+        "*** in database main ***\nPage 8196: never used",
+        "*** in database main ***\npage 8196: never used",
     ] {
         assert_eq!(
             classify_leaked_pages(&rows(&["ok"]), &rows(&[leak])),
@@ -1253,6 +1282,25 @@ fn leaked_pages_classifier_accepts_only_a_lone_engine_leak_row() {
             "{leak}"
         );
     }
+    // C SQLite reports leaked pages in both quick_check(1) and multi-line
+    // integrity_check(8) output.
+    assert_eq!(
+        classify_leaked_pages(
+            &rows(&["*** in database main ***\nPage 3: never used"]),
+            &rows(&["*** in database main ***\nPage 3: never used\nPage 4: never used\nPage 5: never used"]),
+        ),
+        LeakedPagesVerdict::LeakedPagesOnly {
+            first_leaked_page: 3
+        }
+    );
+    // `integrity_is_leaked_pages_only` receives quick_check output with an
+    // empty integrity_check list when doctor_taxonomy skips integrity_check.
+    assert_eq!(
+        classify_leaked_pages(&rows(&["*** in database main ***\nPage 7: never used"]), &[]),
+        LeakedPagesVerdict::LeakedPagesOnly {
+            first_leaked_page: 7
+        }
+    );
 }
 
 #[test]
@@ -1269,7 +1317,7 @@ fn leaked_pages_classifier_refuses_every_other_failure() {
             vec!["database disk image is malformed: btree page 3 is malformed"],
             vec![],
         ),
-        // More than one failure row is not the engine's leak-only shape.
+        // A non-leak failure alongside leaked pages is other damage.
         (
             vec!["ok"],
             vec![
@@ -1277,6 +1325,15 @@ fn leaked_pages_classifier_refuses_every_other_failure() {
                 "*** in database aux ***\nindex mismatch",
             ],
         ),
+        (
+            vec!["*** in database main ***\nPage 3: never used"],
+            vec![
+                "*** in database main ***\nPage 3: never used",
+                "wrong # of entries in index idx_messages_conv_idx",
+            ],
+        ),
+        // A bare database header without diagnostic lines is never Clean.
+        (vec!["*** in database main ***"], vec!["ok"]),
         // Near misses of the leak text.
         (vec!["ok"], vec!["page 9 is never used again"]),
         (vec!["ok"], vec!["page -9 is never used"]),
@@ -1328,6 +1385,10 @@ fn leaked_pages_guidance_predicates_match_the_classifier() {
         "ok",
         &rows(&["database disk image is malformed: page 12 is never used"])
     ));
+    assert!(integrity_is_leaked_pages_only(
+        "*** in database main ***\nPage 12: never used",
+        &[]
+    ));
     assert!(!integrity_is_leaked_pages_only(
         "ok",
         &rows(&["database disk image is malformed: page 12 is referenced multiple times"])
@@ -1337,13 +1398,167 @@ fn leaked_pages_guidance_predicates_match_the_classifier() {
         "integrity_check",
         Some("database disk image is malformed: page 12 is never used")
     ));
-    // quick_check never scans for unowned pages, so it cannot attest a leak.
+    assert!(attested_integrity_is_leaked_pages_only(
+        "integrity_check",
+        Some("*** in database main ***\nPage 12: never used\nPage 13: never used")
+    ));
+    assert!(attested_integrity_is_leaked_pages_only(
+        "quick_check",
+        Some("*** in database main ***\nPage 12: never used")
+    ));
     assert!(!attested_integrity_is_leaked_pages_only(
         "quick_check",
-        Some("database disk image is malformed: page 12 is never used")
+        Some("wrong # of entries in index idx_messages_conv_idx")
+    ));
+    assert!(!attested_integrity_is_leaked_pages_only(
+        "other_check",
+        Some("*** in database main ***\nPage 12: never used")
     ));
     assert!(!attested_integrity_is_leaked_pages_only(
         "integrity_check",
         None
     ));
+}
+
+#[test]
+fn repair_leaked_pages_reclaims_detached_freelist_via_vacuum() {
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let data_dir = tmp.path().to_path_buf();
+    let db_path = data_dir.join("agent_search.db");
+    let page_count_before = {
+        let storage = FrankenStorage::open(&db_path).expect("open db");
+        let agent_id = seed_agent(&storage);
+        let cid = seed_conversation(&storage, agent_id, "leak-1", "/orig/leak.jsonl");
+        write_message(
+            &storage,
+            cid,
+            0,
+            r#"{"type":"user","uuid":"u1","text":"hi"}"#,
+        );
+        write_message(
+            &storage,
+            cid,
+            1,
+            r#"{"type":"assistant","uuid":"a1","text":"yo"}"#,
+        );
+        storage
+            .raw()
+            .execute("CREATE TABLE leak_probe(id INTEGER PRIMARY KEY, payload TEXT NOT NULL)")
+            .expect("create leak_probe");
+        for id in 1_i64..=24 {
+            let payload = format!("{id:04}{}", "leak probe payload ".repeat(180));
+            storage
+                .raw()
+                .execute_compat(
+                    "INSERT INTO leak_probe(id, payload) VALUES(?1, ?2)",
+                    &[ParamValue::from(id), ParamValue::from(payload)] as &[ParamValue],
+                )
+                .expect("insert leak_probe");
+        }
+        storage
+            .raw()
+            .execute("DELETE FROM leak_probe")
+            .expect("delete leak_probe");
+        storage
+            .raw()
+            .query("PRAGMA wal_checkpoint(TRUNCATE);")
+            .expect("checkpoint");
+        storage
+            .raw()
+            .query_row_map("PRAGMA page_count;", &[] as &[ParamValue], |row| {
+                row.get_typed::<i64>(0)
+            })
+            .expect("page_count")
+    };
+
+    // Detach the durable freelist trunk + count in the 100-byte SQLite header
+    // (bytes 32..40) so those formerly free pages become unowned ("never used").
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&db_path)
+            .expect("open db bytes");
+        let mut header = [0u8; 8];
+        file.seek(SeekFrom::Start(32)).expect("seek freelist header");
+        file.read_exact(&mut header).expect("read freelist header");
+        let trunk = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
+        let count = u32::from_be_bytes([header[4], header[5], header[6], header[7]]);
+        assert!(
+            trunk > 1 && count >= 8,
+            "fixture needs durable freelist pages: trunk={trunk} count={count}"
+        );
+        file.seek(SeekFrom::Start(32)).expect("seek freelist header");
+        file.write_all(&[0u8; 8]).expect("detach freelist");
+        file.sync_all().expect("sync header");
+    }
+
+    // Dry-run classifies the leaked pages without altering the DB.
+    run_doctor_repair_leaked_pages(
+        Some(data_dir.clone()),
+        Some(db_path.clone()),
+        true,
+        false,
+        Some(RobotFormat::Json),
+    )
+    .expect("dry-run repair_leaked_pages");
+
+    // Apply runs VACUUM; behind a backup and re-verifies integrity_check.
+    run_doctor_repair_leaked_pages(
+        Some(data_dir.clone()),
+        Some(db_path.clone()),
+        false,
+        true,
+        Some(RobotFormat::Json),
+    )
+    .expect("apply repair_leaked_pages via VACUUM");
+
+    let readonly = FrankenStorage::open_readonly(&db_path).expect("reopen read-only");
+    let integrity: Vec<String> = readonly
+        .raw()
+        .query_map_collect("PRAGMA integrity_check(8);", &[] as &[ParamValue], |row| {
+            row.get_typed(0)
+        })
+        .expect("integrity_check after repair");
+    assert_eq!(integrity, vec!["ok".to_string()]);
+    let freelist_after: i64 = readonly
+        .raw()
+        .query_row_map("PRAGMA freelist_count;", &[] as &[ParamValue], |row| {
+            row.get_typed(0)
+        })
+        .expect("freelist_count after repair");
+    assert_eq!(freelist_after, 0);
+    let page_count_after: i64 = readonly
+        .raw()
+        .query_row_map("PRAGMA page_count;", &[] as &[ParamValue], |row| {
+            row.get_typed(0)
+        })
+        .expect("page_count after repair");
+    assert!(
+        page_count_after < page_count_before,
+        "VACUUM must shrink page_count ({page_count_before} -> {page_count_after})"
+    );
+    let convs: i64 = readonly
+        .raw()
+        .query_row_map(
+            "SELECT COUNT(*) FROM conversations;",
+            &[] as &[ParamValue],
+            |row| row.get_typed(0),
+        )
+        .expect("conversations count");
+    let msgs: i64 = readonly
+        .raw()
+        .query_row_map("SELECT COUNT(*) FROM messages;", &[] as &[ParamValue], |row| {
+            row.get_typed(0)
+        })
+        .expect("messages count");
+    assert_eq!(convs, 1);
+    assert_eq!(msgs, 2);
+
+    assert_eq!(reclaimed_pages_count(10, 0, 4, 0), 6);
+    assert_eq!(reclaimed_pages_count(10, 2, 5, 0), 3);
+    assert_eq!(reclaimed_pages_count(5, 0, 6, 0), 0);
+    assert_eq!(reclaimed_pages_count(10, 5, 6, 0), 0);
 }

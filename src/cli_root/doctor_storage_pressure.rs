@@ -560,10 +560,9 @@ pub(crate) struct DoctorFullRebuildReadinessReport {
     pub(crate) quarantine_bytes: u64,
     /// nw61n: the db growth allowance charged (`db_bundle_bytes / 16`).
     pub(crate) db_growth_allowance_bytes: u64,
-    /// nw61n: whether the engine's one-time migration repair is still
-    /// pending (its `.fsqlite-migration-state` marker absent or incomplete).
-    /// Only then is the whole db bundle charged again, for the repair's
-    /// `.pre-migration-bak` copy (`migration_copy_bytes`).
+    /// nw61n: whether a legacy migration repair is still pending (always
+    /// `false` on unified SQLite; kept for doctor JSON contract compatibility
+    /// with `FullRebuildHeadroomProjection::migration_copy_bytes`).
     pub(crate) migration_repair_pending: bool,
     pub(crate) migration_copy_bytes: u64,
     /// Free bytes at the most constrained probe path (`None` when unknown).

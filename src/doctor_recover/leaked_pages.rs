@@ -10,12 +10,12 @@ use super::{io_error, print_json, resolve_db_path};
 pub(super) enum LeakedPagesVerdict {
     /// quick_check and integrity_check both report `ok`.
     Clean,
-    /// The only failure is an unowned page. frankensqlite's integrity_check
-    /// reports at most one failure per database, and it scans for unowned pages
-    /// only after the freelist and every table and index b-tree were walked
-    /// with no doubly owned, out-of-range, or malformed page. A lone
-    /// "page N is never used" row therefore proves the damage is leaked pages
-    /// alone: pages that left the freelist without entering a tree.
+    /// The only failure is unowned page(s). SQLite's integrity_check
+    /// scans for unowned pages only after the freelist and every table and
+    /// index b-tree were walked with no doubly owned, out-of-range, or
+    /// malformed page. Only "Page N: never used" (or legacy "page N is never
+    /// used") lines therefore prove the damage is leaked pages alone: pages
+    /// that left the freelist without entering a tree.
     LeakedPagesOnly { first_leaked_page: u64 },
     /// Any other failure: a doubled reference, a malformed page or freelist,
     /// an index that disagrees with its table. Freeing leaked pages cannot
@@ -47,20 +47,65 @@ impl LeakedPagesVerdict {
     }
 }
 
-/// The page number of an engine "page N is never used" diagnostic, with or
-/// without the `database disk image is malformed: ` prefix fsqlite adds.
+/// The page number of a leaked-page diagnostic, supporting both C SQLite's
+/// `Page N: never used` (case-insensitive to `Page`/`page`) and legacy
+/// `page N is never used` (with or without `database disk image is malformed: `).
 fn leaked_page_number(diagnostic: &str) -> Option<u64> {
     let detail = diagnostic.trim();
     let detail = detail
         .strip_prefix("database disk image is malformed: ")
         .unwrap_or(detail);
-    let number = detail
-        .strip_prefix("page ")?
-        .strip_suffix(" is never used")?;
+    let number = if let Some(rest) = detail
+        .strip_prefix("Page ")
+        .or_else(|| detail.strip_prefix("page "))
+        .and_then(|rest| rest.strip_suffix(": never used"))
+    {
+        rest
+    } else {
+        detail
+            .strip_prefix("page ")?
+            .strip_suffix(" is never used")?
+    };
     if number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
     number.parse().ok()
+}
+
+fn is_sqlite_database_header(line: &str) -> bool {
+    line.starts_with("*** in database ") && line.ends_with(" ***")
+}
+
+/// Extract non-`ok`, non-`note:` diagnostic lines from `quick_check` /
+/// `integrity_check` result cells, splitting multi-line C SQLite cells.
+/// `*** in database ... ***` headers are skipped only when accompanied by
+/// diagnostic lines so a lone header never collapses to `Clean`.
+fn diagnostic_lines(rows: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for row in rows {
+        let mut headers_in_row = Vec::new();
+        let mut details_in_row = Vec::new();
+        for raw_line in row.lines() {
+            let line = raw_line.trim();
+            if line.is_empty()
+                || line.eq_ignore_ascii_case("ok")
+                || line.starts_with("note:")
+            {
+                continue;
+            }
+            if is_sqlite_database_header(line) {
+                headers_in_row.push(line.to_string());
+            } else {
+                details_in_row.push(line.to_string());
+            }
+        }
+        if details_in_row.is_empty() {
+            out.extend(headers_in_row);
+        } else {
+            out.extend(details_in_row);
+        }
+    }
+    out
 }
 
 /// Classify quick_check and integrity_check output rows. `ok` rows and the
@@ -69,22 +114,20 @@ pub(super) fn classify_leaked_pages(
     quick_check: &[String],
     integrity_check: &[String],
 ) -> LeakedPagesVerdict {
-    let failures = |rows: &[String]| -> Vec<String> {
-        rows.iter()
-            .map(|row| row.trim())
-            .filter(|row| !row.is_empty() && !row.eq_ignore_ascii_case("ok"))
-            .filter(|row| !row.starts_with("note:"))
-            .map(str::to_string)
-            .collect()
-    };
-    let quick = failures(quick_check);
-    let full = failures(integrity_check);
+    let quick = diagnostic_lines(quick_check);
+    let full = diagnostic_lines(integrity_check);
     if quick.is_empty() && full.is_empty() {
         return LeakedPagesVerdict::Clean;
     }
-    if quick.is_empty()
-        && let [only] = full.as_slice()
-        && let Some(first_leaked_page) = leaked_page_number(only)
+    let all_leaked = quick
+        .iter()
+        .chain(full.iter())
+        .all(|line| leaked_page_number(line).is_some());
+    if all_leaked
+        && let Some(first_leaked_page) = full
+            .iter()
+            .chain(quick.iter())
+            .find_map(|line| leaked_page_number(line))
     {
         return LeakedPagesVerdict::LeakedPagesOnly { first_leaked_page };
     }
@@ -109,11 +152,17 @@ pub fn integrity_is_leaked_pages_only(
     )
 }
 
-/// True when a cached failing attestation recorded a full integrity_check whose
-/// only diagnostic is a leaked page.
+/// True when a cached failing attestation recorded an `integrity_check` or
+/// `quick_check` whose diagnostics are solely leaked pages.
 pub fn attested_integrity_is_leaked_pages_only(check_depth: &str, detail: Option<&str>) -> bool {
-    check_depth == "integrity_check"
-        && detail.is_some_and(|detail| leaked_page_number(detail).is_some())
+    if !matches!(check_depth, "integrity_check" | "quick_check") {
+        return false;
+    }
+    let Some(detail) = detail else {
+        return false;
+    };
+    let lines = diagnostic_lines(&[detail.to_string()]);
+    !lines.is_empty() && lines.iter().all(|line| leaked_page_number(line).is_some())
 }
 
 /// What one read-only inspection of the canonical archive observed.
@@ -143,6 +192,21 @@ impl LeakedPagesInspection {
 }
 
 const LEAKED_PAGES_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+pub(super) fn reclaimed_pages_count(
+    page_count_before: i64,
+    freelist_count_before: i64,
+    page_count_after: i64,
+    freelist_count_after: i64,
+) -> usize {
+    let page_before = u64::try_from(page_count_before).unwrap_or(0);
+    let free_before = u64::try_from(freelist_count_before).unwrap_or(0);
+    let page_after = u64::try_from(page_count_after).unwrap_or(0);
+    let free_after = u64::try_from(freelist_count_after).unwrap_or(0);
+    let non_freelist_before = page_before.saturating_sub(free_before);
+    let non_freelist_after = page_after.saturating_sub(free_after);
+    usize::try_from(non_freelist_before.saturating_sub(non_freelist_after)).unwrap_or(usize::MAX)
+}
 
 fn leaked_pages_single_integer(
     conn: &crate::franken_sync::Connection,
@@ -386,15 +450,14 @@ fn backup_bundle_before_leaked_pages_repair(
     Ok((backup_id, manifest_path, manifest))
 }
 
-/// `cass doctor --repair-leaked-pages`: return leaked pages (integrity_check's
-/// "page N is never used" class) to the freelist in place, after proving they
-/// are the only damage and backing up the live bundle (2l1b0.73).
+/// `cass doctor --repair-leaked-pages`: reclaim leaked pages (integrity_check's
+/// "Page N: never used" / legacy "page N is never used" class) via `VACUUM;`
+/// after proving they are the only damage and backing up the live bundle
+/// (2l1b0.73).
 ///
-/// frankensqlite's one-time first-open migration runs the same engine repair
-/// once per archive (its marker records `repair_orphaned_pages:<n>`); pages that
-/// leak afterwards stay leaked, fail integrity_check, and waste their bytes.
-/// Freeing them changes no row: the repair returns pages that no table, index
-/// or freelist owns, and the counts and integrity_check are re-verified after.
+/// Reclaiming them changes no row: `VACUUM;` rewrites only live tables and
+/// indexes, dropping unowned pages, and the counts and `integrity_check` are
+/// re-verified afterward.
 pub fn run_doctor_repair_leaked_pages(
     data_dir_override: Option<PathBuf>,
     db_override: Option<PathBuf>,
@@ -409,7 +472,7 @@ pub fn run_doctor_repair_leaked_pages(
         return Err(CliError {
             code: 4,
             kind: "refused-unsafe",
-            message: "`cass doctor --repair-leaked-pages` rewrites the canonical archive's freelist and requires `--yes`".to_string(),
+            message: "`cass doctor --repair-leaked-pages` rewrites the canonical archive via VACUUM and requires `--yes`".to_string(),
             hint: Some(
                 "Inspect first with `cass doctor --repair-leaked-pages --dry-run --json`; apply with `--yes` only when it reports status=leaked_pages. The live bundle is backed up first and restorable with `cass doctor backups restore <id>`.".to_string(),
             ),
@@ -477,7 +540,7 @@ pub fn run_doctor_repair_leaked_pages(
             "planned_action": planned_action,
             "backup_required_bytes": backup_required_bytes,
             "next_command": next_command,
-            "note": "Read-only. The apply path re-inspects under the index-run lock, backs up the live bundle, frees only pages no table, index or freelist owns, and re-runs integrity_check.",
+            "note": "Read-only. The apply path re-inspects under the index-run lock, backs up the live bundle, runs VACUUM to reclaim leaked pages, and re-runs integrity_check.",
         });
         if structured_format.is_some() {
             print_json(&envelope)?;
@@ -548,12 +611,20 @@ pub fn run_doctor_repair_leaked_pages(
             LEAKED_PAGES_OPEN_TIMEOUT,
         )
         .map_err(|err| format!("opening the archive writable: {err:#}"))?;
-        let freed = conn
-            .repair_orphaned_pages()
-            .map_err(|err| format!("freeing leaked pages: {err}"))?;
+        let page_count_before = leaked_pages_single_integer(&conn, "PRAGMA page_count;")?;
+        let freelist_count_before = leaked_pages_single_integer(&conn, "PRAGMA freelist_count;")?;
+        conn.execute("VACUUM;")
+            .map_err(|err| format!("vacuuming leaked pages: {err}"))?;
+        let page_count_after = leaked_pages_single_integer(&conn, "PRAGMA page_count;")?;
+        let freelist_count_after = leaked_pages_single_integer(&conn, "PRAGMA freelist_count;")?;
         conn.close()
             .map_err(|err| format!("closing the repaired archive: {err}"))?;
-        Ok(freed)
+        Ok(reclaimed_pages_count(
+            page_count_before,
+            freelist_count_before,
+            page_count_after,
+            freelist_count_after,
+        ))
     })()
     .map_err(|err| CliError {
         code: 3,
@@ -574,7 +645,7 @@ pub fn run_doctor_repair_leaked_pages(
             code: 3,
             kind: "repair-failure",
             message: format!(
-                "after freeing {freed_pages} leaked page(s), {} is {} with {} conversations / {} messages (before: {} / {}){}",
+                "after reclaiming {freed_pages} leaked page(s), {} is {} with {} conversations / {} messages (before: {} / {}){}",
                 db_path.display(),
                 after.verdict.status(),
                 leaked_pages_count_text(after.conversations),
@@ -609,7 +680,7 @@ pub fn run_doctor_repair_leaked_pages(
         "backup_artifacts": backup_manifest["artifacts"].clone(),
         "verify_command": format!("cass doctor backups verify {backup_id} --json"),
         "restore_rehearsal_command": format!("cass doctor backups restore {backup_id} --json"),
-        "note": "Freed pages joined the freelist and are reused by later writes; the file does not shrink.",
+        "note": "Leaked pages were reclaimed via VACUUM; integrity_check passes and canonical rows are unchanged.",
     });
     if structured_format.is_some() {
         print_json(&envelope)?;

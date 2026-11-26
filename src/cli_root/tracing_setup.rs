@@ -180,66 +180,13 @@ pub(crate) fn resolve_subcommand_structured_format(cli: &Cli, json: bool) -> Opt
         .or_else(robot_format_from_env)
 }
 
-/// Default tracing directive for interactive human mode: emit INFO and above
-/// but suppress frankensqlite internal telemetry that spams at INFO level.
+/// Default tracing directive for interactive human mode: emit INFO and above.
 ///
-/// `EnvFilter` uses `::` as the hierarchy separator, so `fsqlite=warn` covers
-/// `fsqlite::runtime`, `fsqlite::cx`, etc. Crate-level targets like
-/// `fsqlite_vdbe` and `fsqlite_core` need their own directives. Custom
-/// dot-separated targets (`fsqlite.statement_reuse`, `fsqlite.compat`, etc.) are
-/// NOT matched by the hierarchical prefix, so each must be listed explicitly.
-///
-/// This list is only consulted in interactive human mode (and only when
+/// This directive is only consulted in interactive human mode (and only when
 /// `RUST_LOG` is unset). Robot/quiet mode never reaches it — those modes pin the
 /// filter to `error` via [`robot_aware_log_directive`], which is the actual
-/// stdout/stderr hygiene guarantee. A missing entry here can therefore only make
-/// human-mode stderr noisier, never corrupt a robot JSON stream.
-pub(crate) const DEFAULT_DEP_LOG_SUPPRESSION: &str = concat!(
-    "info",
-    // Hierarchical (::) targets
-    ",fsqlite=warn",
-    ",fsqlite_core=warn",
-    ",fsqlite_vdbe=warn",
-    ",fsqlite_mvcc=warn",
-    ",fsqlite_pager=warn",
-    ",fsqlite_func=warn",
-    ",fsqlite_vfs=warn",
-    ",fsqlite_wal=warn",
-    ",fsqlite_c_api=warn",
-    ",fsqlite_planner=warn",
-    ",fsqlite_types=warn",
-    ",fsqlite_observability=warn",
-    // Dot-separated custom targets
-    ",fsqlite.compat=warn",
-    ",fsqlite.compat_trace=warn",
-    ",fsqlite.statement_reuse=warn",
-    ",fsqlite.statement=warn",
-    ",fsqlite.execution=warn",
-    ",fsqlite.execute_path=warn",
-    ",fsqlite.plan=warn",
-    ",fsqlite.planner=warn",
-    ",fsqlite.planner_runtime=warn",
-    ",fsqlite.parse=warn",
-    ",fsqlite.provenance=warn",
-    ",fsqlite.dp=warn",
-    ",fsqlite.udf=warn",
-    ",fsqlite.vdbe=warn",
-    ",fsqlite.rcu=warn",
-    ",fsqlite.seqlock=warn",
-    ",fsqlite.left_right=warn",
-    ",fsqlite.flat_combine=warn",
-    ",fsqlite.commit_combine=warn",
-    ",fsqlite.snapshot_publication=warn",
-    ",fsqlite.wal_publication=warn",
-    ",fsqlite.storage_wiring=warn",
-    ",fsqlite.cx_propagation=warn",
-    ",fsqlite.sketch_telemetry=warn",
-    ",fsqlite.time_travel=warn",
-    ",fsqlite.trace_export=warn",
-    ",fsqlite.txn_slot=warn",
-    ",fsqlite.evidence=warn",
-    ",fsqlite.lab_schedule=warn",
-);
+/// stdout/stderr hygiene guarantee.
+pub(crate) const DEFAULT_DEP_LOG_SUPPRESSION: &str = "info";
 
 /// Decide the tracing filter directive for the active output mode.
 ///
@@ -249,11 +196,11 @@ pub(crate) const DEFAULT_DEP_LOG_SUPPRESSION: &str = concat!(
 ///
 /// Robot and quiet modes are machine-consumed: they pin the filter to `error`
 /// (unless the operator explicitly opts into `--verbose`) so that dependency
-/// INFO/WARN logging — frankensqlite telemetry in particular — can never
-/// interleave with a JSON stream, even when `RUST_LOG` is set in the
-/// environment. This is the single source of truth for robot stdout/stderr
-/// hygiene; the regression suite in `tests/cli_robot_log_hygiene.rs` exercises it
-/// end-to-end under deliberately noisy `RUST_LOG` settings.
+/// INFO/WARN logging can never interleave with a JSON stream, even when
+/// `RUST_LOG` is set in the environment. This is the single source of truth for
+/// robot stdout/stderr hygiene; the regression suite in
+/// `tests/cli_robot_log_hygiene.rs` exercises it end-to-end under deliberately
+/// noisy `RUST_LOG` settings.
 pub(crate) fn robot_aware_log_directive(
     robot_mode: bool,
     verbose: bool,

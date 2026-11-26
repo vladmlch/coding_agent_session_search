@@ -139,8 +139,7 @@ fn doctor_franken_deep_integrity_size_gate_counts_the_wal_bundle() {
 #[cfg(test)]
 #[test]
 fn doctor_deferred_integrity_never_implies_corruption_or_destructive_rebuild() {
-    let deferred_message =
-        "frankensqlite_full_page_integrity_probe_deferred: bounded probe skipped";
+    let deferred_message = "full_page_integrity_probe_deferred: bounded probe skipped";
     assert_eq!(
         doctor_anomaly_for_check("database", "warn", deferred_message),
         DoctorAnomaly::RepairBlocked
@@ -149,7 +148,7 @@ fn doctor_deferred_integrity_never_implies_corruption_or_destructive_rebuild() {
         doctor_anomaly_for_check(
             "database",
             "fail",
-            "cached quick_check attestation records structural failure; frankensqlite_full_page_integrity_probe_deferred"
+            "cached quick_check attestation records structural failure; full_page_integrity_probe_deferred"
         ),
         DoctorAnomaly::ArchiveDbCorrupt,
         "a current cached FAIL must not be hidden by the deferral marker"
@@ -158,7 +157,7 @@ fn doctor_deferred_integrity_never_implies_corruption_or_destructive_rebuild() {
         doctor_anomaly_for_check(
             "database",
             "fail",
-            "Database failed frankensqlite quick_check: malformed page"
+            "Database failed SQLite quick_check: malformed page"
         ),
         DoctorAnomaly::ArchiveDbCorrupt,
         "a completed affirmative live integrity failure remains corruption evidence"
@@ -187,8 +186,8 @@ fn doctor_deferred_integrity_never_implies_corruption_or_destructive_rebuild() {
         "a timeout is diagnostic uncertainty, not evidence that the archive is unreadable"
     );
     for unverified_message in [
-        "Database health probe failed via frankensqlite: running PRAGMA quick_check(1): unsupported page state",
-        "Database health probe failed via frankensqlite: running PRAGMA integrity_check: unsupported page state",
+        "Database health probe failed via SQLite: running PRAGMA quick_check(1): unsupported page state",
+        "Database health probe failed via SQLite: running PRAGMA integrity_check: unsupported page state",
         "Database row counts completed but no integrity verdict was returned",
         "Database query failed",
     ] {

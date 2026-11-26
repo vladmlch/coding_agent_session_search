@@ -246,8 +246,9 @@ pub(crate) fn store_index_idempotency_result(
         db_path,
         crate::search::asset_state::SearchMaintenanceJobKind::LexicalRefresh,
     )?;
-    with_frankensqlite_connection(db_path, "storing index idempotency result", |conn| {
-        let mut transaction = conn.transaction()?;
+    with_sqlite_connection(db_path, "storing index idempotency result", |conn| {
+        let mut transaction =
+            conn.transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)?;
         transaction.execute(
             "CREATE TABLE IF NOT EXISTS idempotency_keys (
                 key TEXT PRIMARY KEY,
@@ -1125,10 +1126,8 @@ pub(crate) fn run_index_with_data(
         // Derive result counts from the indexer's own progress tracking rather
         // than reopening the live DB after the lexical checkpoint has already
         // been written (CASS #192). A post-checkpoint reopen through
-        // with_frankensqlite_connection triggers Connection::open →
-        // reload_memdb_from_pager_with_mode → rebuild_materialized_live_vtab,
-        // which advances the DB fingerprint and leaves the just-written
-        // lexical checkpoint stale, so the very next `cass health --json`
+        // with_sqlite_connection can advance the DB fingerprint and leave the
+        // just-written lexical checkpoint stale, so the very next `cass health --json`
         // reports `unhealthy: database fingerprint changed since the last
         // lexical checkpoint`. Progress stats are captured before checkpoint,
         // so they are both safe and sufficient — if total_counts_exact is

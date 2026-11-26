@@ -51,7 +51,7 @@ mod gh473_preflight {
                     value: &dyn std::fmt::Debug,
                 ) {
                     if field.name() == "message" {
-                        self.0 = format!("{value:?}") == "begin_concurrent_retry";
+                        self.0 = format!("{value:?}") == "writer_retry";
                     }
                 }
             }
@@ -138,7 +138,7 @@ mod gh473_preflight {
         };
         let mut bodies = 0;
         let started = Instant::now();
-        // Deliberately do NOT add a test-only with_concurrent_retry around the
+        // Deliberately do NOT add a test-only with_writer_retry around the
         // writer. The actual production setup must handle the first conflict.
         let (result, retries) = with_held_writer(&path, release_after_failure, || {
             persist::with_ephemeral_writer(&storage, false, "GH473 preflight", |writer| {
@@ -176,7 +176,7 @@ mod gh473_preflight {
         let tmp = TempDir::new().unwrap();
         let storage = FrankenStorage::open(&tmp.path().join("permanent.db")).unwrap();
         let mut attempts = 0;
-        let result = persist::with_concurrent_retry(2, || {
+        let result = persist::with_writer_retry(2, || {
             attempts += 1;
             persist::with_ephemeral_writer(&storage, false, "GH473 permanent error", |writer| {
                 writer
@@ -266,7 +266,7 @@ mod gh473_preflight {
         }
         let mut attempts = 0;
         let mut bodies = 0;
-        let result = persist::with_concurrent_retry(2, || {
+        let result = persist::with_writer_retry(2, || {
             attempts += 1;
             persist::with_ephemeral_writer(&storage, false, "GH473 read-only preflight", |_| {
                 bodies += 1;

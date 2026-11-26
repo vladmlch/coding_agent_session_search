@@ -484,7 +484,7 @@ pub(super) fn execute_doctor_repairs_and_cleanup(
                                         name: "database_after_candidate_promotion".to_string(),
                                         status: "pass".to_string(),
                                         message: format!(
-                                            "Promoted archive DB passed frankensqlite quick_check ({} conversations, {} messages)",
+                                            "Promoted archive DB passed SQLite quick_check ({} conversations, {} messages)",
                                             conv_count, msg_count
                                         ),
                                         fix_available: false,
@@ -505,7 +505,7 @@ pub(super) fn execute_doctor_repairs_and_cleanup(
                                         name: "database_after_candidate_promotion".to_string(),
                                         status: "fail".to_string(),
                                         message: format!(
-                                            "Promoted archive DB failed frankensqlite quick_check: {}",
+                                            "Promoted archive DB failed SQLite quick_check: {}",
                                             status.trim()
                                         ),
                                         fix_available: true,

@@ -262,7 +262,7 @@ pub(super) fn ensure_fts_schema(storage: &FrankenStorage) {
             .raw()
             .query("SELECT rowid FROM fts_messages LIMIT 1")
             .is_ok(),
-        "fts_messages should remain queryable via frankensqlite in tests"
+        "fts_messages should remain queryable via SQLite in tests"
     );
 }
 

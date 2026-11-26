@@ -13,7 +13,7 @@ use super::{
 /// `target_dir` receives one `.jsonl` file per reconstructable conversation.
 /// The canonical archive is opened read-only and never mutated. After this
 /// completes the operator can `cass index --full` over `target_dir` to produce
-/// a fresh frankensqlite-native archive.
+/// a fresh SQLite archive.
 pub fn run_doctor_recover_from_archive(
     data_dir_override: Option<PathBuf>,
     db_override: Option<PathBuf>,

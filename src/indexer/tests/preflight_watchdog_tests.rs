@@ -13,7 +13,7 @@ use tempfile::TempDir;
 /// `phase=watch_startup` block ran with no progress bump and no
 /// sub-phase breadcrumb. If any one of them wedged (e.g. a multi-
 /// second-to-multi-hour COUNT scan against `messages` triggering a
-/// fsqlite B-tree descent bug), operators saw only the opaque
+/// SQLite B-tree descent bug), operators saw only the opaque
 /// `phase=watch_startup` for hours, with no way to tell whether
 /// the wedge was in `cleanup_orphan_fk_rows`, the lexical-
 /// checkpoint probe, the tantivy reader preflight, or somewhere
@@ -949,7 +949,7 @@ fn gh473_short_writer_wait_preserves_live_reader_ingest() {
     writer.execute("PRAGMA busy_timeout = 10").unwrap();
     storage.raw().execute("BEGIN IMMEDIATE").unwrap();
     let mut attempts = 0;
-    persist::with_concurrent_retry(2, || {
+    persist::with_writer_retry(2, || {
         attempts += 1;
         let result = writer
             .execute("INSERT INTO gh473_retry VALUES(1)")

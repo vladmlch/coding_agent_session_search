@@ -745,7 +745,7 @@ fn storage_source_forbids_manual_raw_connection_auto_trait_overrides() {
         for fragment in &forbidden {
             assert!(
                 !source.contains(fragment),
-                "thread-affine FrankenSQLite safety override reintroduced in {rel_path}: {fragment}"
+                "thread-affine SQLite safety override reintroduced in {rel_path}: {fragment}"
             );
         }
     }

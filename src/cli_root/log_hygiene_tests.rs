@@ -114,12 +114,8 @@ fn interactive_default_defers_to_env() {
 }
 
 #[test]
-fn dep_suppression_quiets_fsqlite_targets() {
-    // The fallback list must keep frankensqlite telemetry below INFO so even
-    // human-mode stderr is not flooded.
-    assert!(DEFAULT_DEP_LOG_SUPPRESSION.starts_with("info"));
-    assert!(DEFAULT_DEP_LOG_SUPPRESSION.contains("fsqlite=warn"));
-    assert!(DEFAULT_DEP_LOG_SUPPRESSION.contains("fsqlite_core=warn"));
+fn dep_suppression_defaults_to_info() {
+    assert_eq!(DEFAULT_DEP_LOG_SUPPRESSION, "info");
 }
 
 #[test]
@@ -141,8 +137,8 @@ fn trace_filter_keeps_cass_debug_and_only_dependency_warnings() -> TraceTestResu
         "default trace policy must quarantine routine redaction memo events"
     );
     trace_test_require!(
-        !DEFAULT_TRACE_FILE_LOG_DIRECTIVE.contains("fsqlite=debug"),
-        "default trace policy must reject frankensqlite DEBUG"
+        !DEFAULT_TRACE_FILE_LOG_DIRECTIVE.contains("rusqlite=debug"),
+        "default trace policy must reject dependency DEBUG"
     );
     Ok(())
 }
@@ -304,12 +300,12 @@ fn bounded_trace_is_valid_redacted_jsonl_with_truncation_receipt() -> TraceTestR
             "per-character tokenizer trace must be statically disabled"
         );
         tracing::debug!(
-            target: "fsqlite.parse",
+            target: "tantivy::directory",
             parser_token = "dependency-debug-must-not-survive",
             "dependency debug"
         );
         tracing::warn!(
-            target: "fsqlite.parse",
+            target: "tantivy::directory",
             warning_code = "dependency-warning-survives",
             "dependency warning"
         );
@@ -454,25 +450,25 @@ fn bounded_trace_is_valid_redacted_jsonl_with_truncation_receipt() -> TraceTestR
         trace_json_count_is_positive(receipt, "/fields/filtered_events"),
         "filter receipt omitted its rejected-event count"
     );
-    // fsqlite 0.3.x's engine emits many more distinct filtered targets
-    // (connection, snapshot_publication, ...) than 0.2.x did, so the
-    // receipt's bounded per-target list can evict `fsqlite.parse` into
-    // the overflow counter. The receipt property that matters is that the
-    // rejected event is accounted for — either named in the bounded list
-    // or rolled into `filtered_target_overflow_events`.
+    // Other concurrent dependencies can emit distinct filtered targets into the
+    // process-global subscriber filter, so the receipt's bounded per-target
+    // list can evict `tantivy::directory` into the overflow counter. The receipt
+    // property that matters is that the rejected event is accounted for —
+    // either named in the bounded list or rolled into
+    // `filtered_target_overflow_events`.
     let parse_target_named = receipt
         .pointer("/fields/filtered_targets")
         .and_then(serde_json::Value::as_array)
         .is_some_and(|targets| {
             targets.iter().any(|target| {
-                trace_json_text_is(target, "/target", "fsqlite.parse")
+                trace_json_text_is(target, "/target", "tantivy::directory")
                     && trace_json_count_is_positive(target, "/count")
             })
         });
     trace_test_require!(
         parse_target_named
             || trace_json_count_is_positive(receipt, "/fields/filtered_target_overflow_events"),
-        "filter receipt must count the rejected fsqlite.parse DEBUG event \
+        "filter receipt must count the rejected tantivy::directory DEBUG event \
          (named or via target overflow): {receipt}"
     );
     Ok(())

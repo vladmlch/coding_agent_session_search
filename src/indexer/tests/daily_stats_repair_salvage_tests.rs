@@ -499,6 +499,10 @@ fn targeted_watch_once_allows_absent_lazy_fts_shadow() {
         Some(vec![tmp.path().join("not-opened-by-this-unit-test.jsonl")]),
     );
     let storage = FrankenStorage::open(&opts.db_path).unwrap();
+    storage
+        .raw()
+        .execute("DROP TABLE IF EXISTS fts_messages;")
+        .unwrap();
     assert_eq!(
         storage
             .inspect_search_fallback_fts_parity()
@@ -1078,6 +1082,10 @@ fn full_run_fallback_fts_repair_rebuilds_missing_schema_when_needed() {
     let db_path = dir.path().join("fts-missing.db");
     let storage = FrankenStorage::open(&db_path).unwrap();
     seed_lexical_rebuild_fixture(&storage);
+    storage
+        .raw()
+        .execute("DROP TABLE IF EXISTS fts_messages;")
+        .unwrap();
 
     let repair =
         repair_fallback_fts_after_full_index_run(&storage, &db_path, true, false, None, None)
@@ -1310,6 +1318,7 @@ fn gh461_expected_lexical_docs_memo_serves_unchanged_and_extends_appends_exactly
     // append (5ajer: the delta filters it with a point lookup, not a JOIN).
     storage.raw().execute("PRAGMA foreign_keys = OFF").unwrap();
     insert(conversation_id + 1_000_000, 0, "user", "orphaned evidence");
+    storage.raw().execute("PRAGMA foreign_keys = ON").unwrap();
     assert_eq!(cached(), full());
     assert_eq!(
         sidecar().delta_generations,

@@ -12,10 +12,8 @@ use tempfile::TempDir;
 // =========================================================================
 
 /// Helper: create a FrankenStorage wrapping an in-memory connection and
-/// run migrations. This exercises the same code path as `open()` but avoids
-/// frankensqlite's file-based autoindex renaming limitation (V5 uses
-/// ALTER TABLE RENAME which triggers sqlite_autoindex lookup issues on
-/// file-based pagers).
+/// run migrations. This exercises the same schema-v1 bootstrap path as
+/// `open()` on an in-memory SQLite database.
 fn franken_storage_in_memory() -> FrankenStorage {
     let conn = FrankenConnection::open(":memory:").unwrap();
     let storage = FrankenStorage::new(conn, PathBuf::from(":memory:"));
@@ -332,7 +330,7 @@ fn franken_storage_open_fresh_db_keeps_single_franken_fts_schema_row() {
     drop(storage);
 
     let c_reader = FrankenConnection::open(db_path.to_string_lossy().into_owned())
-        .expect("open DB via frankensqlite for sqlite_master inspection");
+        .expect("open DB via SQLite for sqlite_master inspection");
     assert_eq!(
         franken_fts_schema_rows(&c_reader).unwrap(),
         1,
@@ -346,6 +344,6 @@ fn franken_storage_open_fresh_db_keeps_single_franken_fts_schema_row() {
             .raw()
             .query("SELECT COUNT(*) FROM fts_messages")
             .is_ok(),
-        "fts_messages must be queryable through frankensqlite after open"
+        "fts_messages must be queryable through SQLite after open"
     );
 }

@@ -1,10 +1,7 @@
 use super::*;
-use crate::franken_sync::{
-    Connection as FrankenConnection,
-    compat::{
-        ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt,
-        TransactionExt as FrankenTransactionExt,
-    },
+use crate::franken_sync::compat::{
+    ConnectionExt as FrankenConnectionExt, RowExt as FrankenRowExt,
+    TransactionExt as FrankenTransactionExt,
 };
 use crate::model::types::{Agent, AgentKind};
 use crate::sources::provenance::LOCAL_SOURCE_ID;
@@ -78,7 +75,9 @@ fn reinclude_ledger_failure_rolls_back_both_exclusion_kinds() -> Result<()> {
 fn reinclude_preview_samples_do_not_limit_the_selected_release() -> Result<()> {
     let directory = TempDir::new()?;
     let storage = FrankenStorage::open(&directory.path().join("reinclude-samples.db"))?;
-    let mut tx = storage.raw().transaction()?;
+    let mut tx = storage
+        .raw()
+        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)?;
     for index in 0..25 {
         tx.execute_compat(
             "INSERT INTO forgotten_conversations
@@ -375,7 +374,9 @@ fn forget_selection_continues_past_an_unmatched_page() -> Result<()> {
         version: None,
         kind: AgentKind::Cli,
     })?;
-    let mut tx = storage.raw().transaction()?;
+    let mut tx = storage
+        .raw()
+        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)?;
     for id in 1..=257_i64 {
         let source = if id == 257 {
             "/fixture/selected.jsonl"
@@ -633,7 +634,10 @@ fn cleanup_orphan_fk_rows_handles_more_than_one_delete_chunk() {
 
     storage.raw().execute("PRAGMA foreign_keys = OFF").unwrap();
     {
-        let mut tx = storage.raw().transaction().unwrap();
+        let mut tx = storage
+            .raw()
+            .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+            .unwrap();
         for idx in 0..orphan_count {
             let message_id = 10_000_i64 + i64::try_from(idx).unwrap();
             let conversation_id = 20_000_i64 + i64::try_from(idx).unwrap();
@@ -690,7 +694,10 @@ fn cleanup_orphan_fk_rows_pages_direct_child_orphans() {
 
     storage.raw().execute("PRAGMA foreign_keys = OFF").unwrap();
     {
-        let mut tx = storage.raw().transaction().unwrap();
+        let mut tx = storage
+            .raw()
+            .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+            .unwrap();
         for idx in 0..orphan_count {
             let message_id = 50_000_i64 + i64::try_from(idx).unwrap();
             tx.execute_compat(

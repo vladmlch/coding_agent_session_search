@@ -146,8 +146,8 @@ pub(crate) fn stats_agent_count_sql(source_join: &str, source_where: &str) -> St
 }
 
 pub(crate) fn sort_stats_counts<K: Ord>(rows: &mut [(K, i64)]) {
-    // Keep aggregate ordering out of SQL: fsqlite 0.3.18's pager-backed
-    // GROUP BY lane rejects ORDER BY COUNT(*) and materializes input rows.
+    // Keep aggregate ordering out of SQL: sorting only the grouped counts
+    // in Rust keeps the GROUP BY query simple and avoids materializing rows.
     // Sort only the groups, with ascending IDs (NULL first) breaking ties.
     rows.sort_by(|(left_id, left_count), (right_id, right_count)| {
         right_count

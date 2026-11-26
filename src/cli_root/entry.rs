@@ -153,7 +153,7 @@ pub(crate) fn index_entrypoint_diagnostics(
     }
 }
 
-pub(crate) fn with_frankensqlite_connection<T, F>(
+pub(crate) fn with_sqlite_connection<T, F>(
     db_path: &Path,
     context: &str,
     op: F,

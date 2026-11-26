@@ -867,19 +867,10 @@ fn keyset_traversal_handles_sparse_holey_conversation_ids() {
             .unwrap();
     }
 
-    storage.conn.execute("PRAGMA foreign_keys = OFF").unwrap();
     storage
         .conn
         .execute_compat("DELETE FROM conversations WHERE id IN (2, 4)", fparams![])
         .unwrap();
-    storage
-        .conn
-        .execute_compat(
-            "DELETE FROM messages WHERE conversation_id IN (2, 4)",
-            fparams![],
-        )
-        .unwrap();
-    storage.conn.execute("PRAGMA foreign_keys = ON").unwrap();
 
     let (agent_slugs, workspace_paths) = storage.build_lexical_rebuild_lookups().unwrap();
 
@@ -964,7 +955,6 @@ fn keyset_traversal_through_id_with_sparse_ranges() {
             .unwrap();
     }
 
-    storage.conn.execute("PRAGMA foreign_keys = OFF").unwrap();
     storage
         .conn
         .execute_compat(
@@ -972,14 +962,6 @@ fn keyset_traversal_through_id_with_sparse_ranges() {
             fparams![],
         )
         .unwrap();
-    storage
-        .conn
-        .execute_compat(
-            "DELETE FROM messages WHERE conversation_id IN (3, 5, 7, 8)",
-            fparams![],
-        )
-        .unwrap();
-    storage.conn.execute("PRAGMA foreign_keys = ON").unwrap();
 
     let (agent_slugs, workspace_paths) = storage.build_lexical_rebuild_lookups().unwrap();
 
@@ -1403,7 +1385,7 @@ fn list_conversation_footprints_for_lexical_rebuild_tolerates_legacy_search_demo
         .join("fixtures")
         .join("search_demo_data")
         .join("agent_search.db");
-    // Never open the checked-in fixture in place: FrankenSQLite maintains
+    // Never open the checked-in fixture in place: legacy engine opens wrote
     // machine-local namespace identity records beside every opened DB.
     // A dirty local tree can already contain those ignored sidecars while
     // a clean remote checkout cannot, masking first-contact failures and

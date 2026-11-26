@@ -87,7 +87,7 @@ pub(crate) fn query_doctor_raw_mirror_backfill_candidates(
     let message_count_expr = if can_count_messages {
         // Count messages in one narrow streaming index pass after the bounded
         // conversation metadata query.  A correlated COUNT here executes one
-        // messages scan per conversation under FrankenSQLite.
+        // messages scan per conversation.
         "0"
     } else if conversation_columns.contains("message_count") {
         "COALESCE(c.message_count, 0)"
@@ -144,7 +144,7 @@ pub(crate) fn query_doctor_raw_mirror_backfill_candidates(
 
 /// Visit every message's conversation id in one streaming pass, for callers
 /// that need per-conversation message counts across many conversations.
-/// FrankenSQLite runs a correlated or grouped COUNT over messages as a scan
+/// Avoids running a correlated or grouped COUNT over messages as a scan
 /// per conversation or a sorter over every joined row; this pass reads the
 /// table once and allocates nothing per message.
 pub(crate) fn for_each_message_conversation_id(

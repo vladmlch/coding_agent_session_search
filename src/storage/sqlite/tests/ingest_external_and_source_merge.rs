@@ -243,7 +243,10 @@ fn franken_insert_conversation_or_get_existing_recovers_unique_conflict() {
         origin_host: None,
     };
 
-    let tx = storage.conn.transaction().unwrap();
+    let tx = storage
+        .conn
+        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+        .unwrap();
     let inserted_id = franken_insert_conversation(&tx, agent_id, None, &conv)
         .unwrap()
         .expect("first insert should succeed");
@@ -567,24 +570,6 @@ fn parallel_insert_conversation_tree_keeps_unique_external_ids_distinct() {
     use rand::RngExt;
     use rayon::prelude::*;
 
-    fn retryable_franken_error(err: &anyhow::Error) -> bool {
-        err.downcast_ref::<crate::franken_sync::FrankenError>()
-            .or_else(|| {
-                err.root_cause()
-                    .downcast_ref::<crate::franken_sync::FrankenError>()
-            })
-            .is_some_and(|inner| {
-                matches!(
-                    inner,
-                    crate::franken_sync::FrankenError::Busy
-                        | crate::franken_sync::FrankenError::BusyRecovery
-                        | crate::franken_sync::FrankenError::BusySnapshot { .. }
-                        | crate::franken_sync::FrankenError::WriteConflict { .. }
-                        | crate::franken_sync::FrankenError::SerializationFailure { .. }
-                )
-            })
-    }
-
     fn with_retry<F, T>(mut f: F) -> anyhow::Result<T>
     where
         F: FnMut() -> anyhow::Result<T>,
@@ -594,7 +579,9 @@ fn parallel_insert_conversation_tree_keeps_unique_external_ids_distinct() {
         for attempt in 0..=24 {
             match f() {
                 Ok(value) => return Ok(value),
-                Err(err) if attempt < 24 && retryable_franken_error(&err) => {
+                Err(err)
+                    if attempt < 24 && crate::storage::sqlite::retryable_franken_anyhow(&err) =>
+                {
                     let sleep_ms = backoff_ms + rng.random_range(0..=backoff_ms);
                     std::thread::sleep(Duration::from_millis(sleep_ms));
                     backoff_ms = (backoff_ms * 2).min(512);
@@ -638,7 +625,7 @@ fn parallel_insert_conversation_tree_keeps_unique_external_ids_distinct() {
     let mut outcomes: Vec<(String, i64, Vec<i64>)> = conversations
         .par_chunks(3)
         .map(|chunk| {
-            let storage = FrankenStorage::open_writer(&db_path).unwrap();
+            let mut storage = with_retry(|| FrankenStorage::open_writer(&db_path)).unwrap();
             let mut agent_cache: HashMap<String, i64> = HashMap::new();
             let mut workspace_cache: HashMap<PathBuf, i64> = HashMap::new();
             let mut chunk_outcomes = Vec::with_capacity(chunk.len());
@@ -684,7 +671,7 @@ fn parallel_insert_conversation_tree_keeps_unique_external_ids_distinct() {
                 ));
             }
 
-            storage.close().unwrap();
+            with_retry(|| storage.close_without_checkpoint_in_place()).unwrap();
             chunk_outcomes
         })
         .flatten()

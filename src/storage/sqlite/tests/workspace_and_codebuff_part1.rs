@@ -81,7 +81,10 @@ fn gh459_seed_workspace_analytics(
         .unwrap()[0]
         .conversation_id;
     let messages = storage.fetch_messages(id).unwrap();
-    let mut tx = storage.conn.transaction().unwrap();
+    let mut tx = storage
+        .conn
+        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+        .unwrap();
     let mut metrics = Vec::new();
     let mut tokens = Vec::new();
     let mut rollups = AnalyticsRollupAggregator::new();
@@ -567,7 +570,10 @@ fn gh459_analytics_relocation_rejects_drift_and_rolls_back_with_identity() {
         }
         conv.agent_slug = "codex".into();
         conv.metadata_json = serde_json::json!({"cursor_format":"agent", "cursor_workspace_attribution":"workspace_trusted"});
-        let mut tx = storage.conn.transaction().unwrap();
+        let mut tx = storage
+            .conn
+            .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+            .unwrap();
         franken_reassociate_provider_analytics_workspace(&tx, id, &conv).unwrap();
         tx.commit().unwrap();
         assert_eq!(snapshot(), original);

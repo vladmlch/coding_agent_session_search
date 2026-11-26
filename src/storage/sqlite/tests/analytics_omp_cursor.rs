@@ -586,7 +586,9 @@ fn gh424_stale_initial_analytics_cursor_rebuilds_without_double_counting() -> an
     for retained in TABLES.into_iter().map(Some).chain([None]) {
         storage.rebuild_analytics_since_with_chunk_size(None, 128)?;
         let context = "gh424-stale-initial-cursor";
-        let mut tx = storage.raw().transaction()?;
+        let mut tx = storage
+            .raw()
+            .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)?;
         for table in TABLES {
             if retained != Some(table) {
                 tx.execute(&format!("DELETE FROM {table}"))?;

@@ -136,7 +136,7 @@ pub(crate) fn persist_post_index_integrity_attestation(
                     code: 9,
                     kind: CliErrorKind::Index.kind_str(),
                     message: format!(
-                        "indexing returned success but the final archive failed frankensqlite {}: {}",
+                        "indexing returned success but the final archive failed SQLite {}: {}",
                         integrity.failed_pragma_name(),
                         integrity.diagnostic_summary()
                     ),
@@ -285,10 +285,9 @@ pub(crate) fn validate_successful_index_artifacts(
     Ok(())
 }
 
-// FrankenSQLite's debug-mode async open futures can exceed the 2 MiB default
-// worker stack on Linux as well as the 1 MiB MSVC default. Keep the explicit
-// bound on every platform so `cass index` does not depend on RUST_MIN_STACK or
-// release-mode frame shrinking just to open the canonical archive.
+// Keep an explicit 16 MiB worker stack bound on every platform so `cass index`
+// does not depend on RUST_MIN_STACK or release-mode frame shrinking while
+// opening and indexing large canonical archives.
 pub(crate) const INDEX_WORKER_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 
 pub(crate) fn index_worker_thread_builder() -> std::thread::Builder {

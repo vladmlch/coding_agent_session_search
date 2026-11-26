@@ -38,7 +38,7 @@ use tracing::{info, warn};
 #[allow(unused_imports)]
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
-/// Open a read-only frankensqlite connection for analytics queries.
+/// Open a read-only SQLite connection for analytics queries.
 pub(crate) fn open_franken_analytics_db(
     data_dir: &Option<PathBuf>,
     db_path_override: Option<&PathBuf>,

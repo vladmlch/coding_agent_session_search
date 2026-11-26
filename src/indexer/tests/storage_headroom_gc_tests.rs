@@ -899,13 +899,29 @@ fn incremental_index_startup_headroom_uses_safety_floor_not_archive_clone_size()
     );
 }
 
+fn stamp_sqlite_header_in_place(db_path: &Path, application_id: i32, user_version: i32) {
+    use std::io::{Seek, SeekFrom, Write};
+
+    let mut header = [0_u8; 100];
+    header[..16].copy_from_slice(b"SQLite format 3\0");
+    header[60..64].copy_from_slice(&user_version.to_be_bytes());
+    header[68..72].copy_from_slice(&application_id.to_be_bytes());
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(db_path)
+        .unwrap();
+    file.seek(SeekFrom::Start(0)).unwrap();
+    file.write_all(&header).unwrap();
+    file.flush().unwrap();
+}
+
 /// `--full` and `--force-rebuild` take the full-rebuild requirement. With no
 /// lexical index the projection is the db charge: a whole copy of the
-/// bundle while the engine's one-time migration repair is pending (it keeps
-/// a `.pre-migration-bak`), plus the 1/16 growth allowance. Neither path
-/// clones the canonical archive otherwise (a `--full` that would need to
-/// replace it is refused), so once the migration marker is complete only
-/// the allowance remains (nw61n).
+/// bundle while the schema-v1 migration is pending, plus the 1/16 growth
+/// allowance. Neither path clones the canonical archive otherwise (a `--full`
+/// that would need to replace it is refused), so once the archive carries the
+/// schema-v1 stamp only the allowance remains (nw61n).
 #[test]
 fn full_and_force_rebuild_startup_headroom_charge_the_archive_copy_only_while_migration_is_pending()
 {
@@ -941,12 +957,8 @@ fn full_and_force_rebuild_startup_headroom_charge_the_archive_copy_only_while_mi
         "an unmigrated archive is charged the migration repair's whole copy"
     );
 
-    // A completed engine migration marker removes the copy and nothing else.
-    std::fs::write(
-        database_path_with_suffix(&db_path, ".fsqlite-migration-state"),
-        br#"{"last_upgrade_version":1,"last_run_at":0,"repairs_applied":[]}"#,
-    )
-    .unwrap();
+    // Stamping the schema-v1 header removes the copy charge and nothing else.
+    stamp_sqlite_header_in_place(&db_path, 0x4341_5353, 1);
     assert!(crate::storage::sqlite::index_engine_migration_is_complete(
         &db_path
     ));
@@ -1001,7 +1013,7 @@ fn full_rebuild_integrity_preflight_size_gate_is_bounded_and_fail_safe() {
 }
 
 #[test]
-fn full_rebuild_integrity_preflight_large_archive_stops_before_fsqlite_open() {
+fn full_rebuild_integrity_preflight_large_archive_stops_before_sqlite_open() {
     // bet45/qu81y: the 4096-byte cap is INJECTED instead of set via
     // process-global env — the env guard leaked into parallel sibling
     // preflight tests and made their engine-backed detection skip.
@@ -1020,20 +1032,20 @@ fn full_rebuild_integrity_preflight_large_archive_stops_before_fsqlite_open() {
     assert_eq!(
         full_rebuild_existing_archive_integrity_preflight_with_max_bytes(&db_path, 4096).unwrap(),
         None,
-        "a large archive must defer engine-backed integrity work instead of opening fsqlite"
+        "a large archive must defer engine-backed integrity work instead of opening SQLite"
     );
-    for suffix in ["-fsqlite-ns-gate", "-fsqlite-ns-use"] {
+    for suffix in ["-wal", "-shm", "-journal"] {
         let sidecar = database_path_with_suffix(&db_path, suffix);
         assert!(
             !sidecar.exists(),
-            "large-archive preflight opened fsqlite and created {}",
+            "large-archive preflight opened SQLite and created {}",
             sidecar.display()
         );
     }
 }
 
-/// GH #450: background runs defer the engine's one-time migration repair
-/// only for a large archive whose migration marker is absent or invalid.
+/// GH #450: background runs defer the schema-v1 migration repair only for a
+/// large archive lacking the `(0x43415353, 1)` schema-v1 header stamp.
 #[test]
 fn background_migration_repair_deferral_needs_a_large_unmigrated_archive() {
     let tmp = TempDir::new().unwrap();
@@ -1053,18 +1065,13 @@ fn background_migration_repair_deferral_needs_a_large_unmigrated_archive() {
     );
     assert_eq!(pending(0), None, "a zero cap disables the size guard");
 
-    let marker = database_path_with_suffix(&db_path, ".fsqlite-migration-state");
-    fs::write(&marker, b"{\"last_upgrade_version\":1}").unwrap();
+    stamp_sqlite_header_in_place(&db_path, 0x4341_5353, 0);
     assert_eq!(
         pending(4096),
         Some(8192),
-        "a truncated marker is not a migration"
+        "an incomplete schema stamp is not a completed migration"
     );
-    fs::write(
-        &marker,
-        br#"{"last_upgrade_version":1,"last_run_at":0,"repairs_applied":[]}"#,
-    )
-    .unwrap();
+    stamp_sqlite_header_in_place(&db_path, 0x4341_5353, 1);
     assert_eq!(pending(4096), None, "a completed migration never defers");
     assert_eq!(fs::metadata(&db_path).unwrap().len(), 8192);
 }
@@ -1078,7 +1085,8 @@ fn full_rebuild_integrity_preflight_accepts_only_empty_bootstrap_states() {
             let conn =
                 crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
                     .unwrap();
-            // Persist a valid SQLite header even in the zero-object case.
+            // Persist a valid schema-v1 SQLite header even in the zero-object case.
+            conn.execute("PRAGMA application_id = 0x43415353").unwrap();
             conn.execute("PRAGMA user_version = 1").unwrap();
             if tracking_table {
                 conn.execute(
@@ -1096,15 +1104,29 @@ fn full_rebuild_integrity_preflight_accepts_only_empty_bootstrap_states() {
         assert_eq!(
             full_rebuild_existing_archive_integrity_preflight(&db_path).unwrap(),
             None,
-            "an interrupted empty bootstrap must permit normal migrations"
+            "an interrupted empty bootstrap must pass preflight without mutating the file"
         );
         assert_eq!(fs::read(&db_path).unwrap(), before);
-        let storage = FrankenStorage::open(&db_path).unwrap();
-        assert_eq!(
-            storage.schema_version().unwrap(),
-            crate::storage::sqlite::CURRENT_SCHEMA_VERSION
+        assert!(
+            FrankenStorage::open(&db_path).is_err(),
+            "a stamped empty catalog missing the meta table requires a full-rebuild reset"
         );
     }
+
+    let zero_tmp = TempDir::new().unwrap();
+    let zero_path = zero_tmp.path().join("interrupted-zero-bootstrap.db");
+    File::create(&zero_path).unwrap();
+    assert_eq!(
+        full_rebuild_existing_archive_integrity_preflight(&zero_path).unwrap(),
+        None,
+        "a zero-byte interrupted bootstrap must permit normal initialization"
+    );
+    assert_eq!(fs::metadata(&zero_path).unwrap().len(), 0);
+    let storage = FrankenStorage::open(&zero_path).unwrap();
+    assert_eq!(
+        storage.schema_version().unwrap(),
+        crate::storage::sqlite::CURRENT_SCHEMA_VERSION
+    );
 }
 
 #[test]
@@ -1124,6 +1146,8 @@ fn full_rebuild_integrity_preflight_refuses_nonempty_bootstrap_catalogs() {
             let conn =
                 crate::franken_sync::Connection::open(db_path.to_string_lossy().into_owned())
                     .unwrap();
+            conn.execute("PRAGMA application_id = 0x43415353").unwrap();
+            conn.execute("PRAGMA user_version = 1").unwrap();
             conn.execute_batch(sql).unwrap();
         }
         let before = fs::read(&db_path).unwrap();
@@ -1179,14 +1203,10 @@ fn full_rebuild_integrity_preflight_rejects_corrupt_fts_structure_record() {
         storage
             .raw()
             .execute(
-                // bet45: the contentless fts_messages shadow no longer
-                // carries a message_id column; the rowid IS the message id.
-                "INSERT INTO fts_messages(
-                     rowid, content, title, agent, workspace, source_path, created_at
-                 ) VALUES(
-                     1, 'segment corruption sentinel', 'title', 'codex', '/workspace',
-                     '/tmp/session.jsonl', 1
-                 )",
+                // Schema-v1 contentless fts_messages carries `(content, title)`
+                // plus the implicit `rowid` (= message id).
+                "INSERT INTO fts_messages(rowid, content, title)
+                 VALUES(1, 'segment corruption sentinel', 'title')",
             )
             .expect("persist one FTS segment");
     }
@@ -1224,7 +1244,7 @@ fn full_rebuild_integrity_preflight_refuses_legacy_fts_before_schema_repair() {
     storage
         .raw()
         .execute(
-            "DROP TABLE _schema_migrations;
+            "DROP TABLE IF EXISTS fts_messages;
              CREATE TABLE fts_messages_config(k TEXT PRIMARY KEY, v);
              CREATE TABLE fts_messages_idx(segid INTEGER, term BLOB, pgno INTEGER);",
         )
@@ -1342,10 +1362,7 @@ fn open_storage_for_index_fast_current_schema_path_preserves_transition_state() 
 
     {
         let storage = FrankenStorage::open(&db_path).unwrap();
-        storage
-            .raw()
-            .execute("DROP TABLE _schema_migrations")
-            .unwrap();
+        drop(storage);
     }
 
     assert!(current_schema_fast_probe(&db_path).unwrap());
@@ -1362,7 +1379,8 @@ fn open_storage_for_index_fast_current_schema_path_preserves_transition_state() 
         storage
             .raw()
             .query("SELECT version FROM _schema_migrations LIMIT 1;")
-            .is_ok()
+            .is_err(),
+        "schema-v1 archives must not recreate _schema_migrations"
     );
 }
 

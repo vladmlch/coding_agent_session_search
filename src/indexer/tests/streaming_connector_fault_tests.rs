@@ -1010,12 +1010,15 @@ fn lexical_rebuild_failure_channels_preserve_database_and_io_causes() -> Result<
 #[test]
 fn lexical_rebuild_page_prep_open_failure_retains_its_engine_cause() -> Result<()> {
     let root = TempDir::new()?;
-    let db_path = root.path().join("PRIVATE-WORKER-ARCHIVE-PATH.db");
+
+    // 1. Missing path: strict read-only admission refuses without creating the archive
+    // or leaking the private path into the outer error message.
+    let missing_path = root.path().join("PRIVATE-MISSING-WORKER-ARCHIVE-PATH.db");
     let (work_tx, work_rx) = bounded(1);
     let (result_tx, result_rx) = bounded(1);
     let workers = spawn_lexical_rebuild_page_prep_workers(
         1,
-        db_path.clone(),
+        missing_path.clone(),
         Arc::new(HashMap::new()),
         work_rx,
         result_tx,
@@ -1035,17 +1038,61 @@ fn lexical_rebuild_page_prep_open_failure_retains_its_engine_cause() -> Result<(
         anyhow::bail!("missing archive did not fail page-prep admission");
     };
     assert_eq!(sequence, 0);
+    assert!(error.to_string().contains("page-prep worker 0"));
     assert!(
-        error
-            .downcast_ref::<crate::franken_sync::FrankenError>()
-            .is_some(),
-        "page-prep admission must retain the engine error type"
+        !error
+            .to_string()
+            .contains("PRIVATE-MISSING-WORKER-ARCHIVE-PATH")
+    );
+    assert!(
+        !missing_path.exists(),
+        "read-only admission cannot create an archive"
+    );
+
+    // 2. Stamped schema-v1 archive with an orphaned `-wal` (no `-shm`):
+    // strict read-only admission surfaces `FrankenError::BusyRecovery` intact.
+    let db_path = root.path().join("PRIVATE-WORKER-ARCHIVE-PATH.db");
+    {
+        let storage = FrankenStorage::open(&db_path)?;
+        storage.close()?;
+    }
+    let wal_path = database_path_with_suffix(&db_path, "-wal");
+    let shm_path = database_path_with_suffix(&db_path, "-shm");
+    std::fs::write(&wal_path, vec![0_u8; 64])?;
+    let _ = std::fs::remove_file(&shm_path);
+
+    let (work_tx, work_rx) = bounded(1);
+    let (result_tx, result_rx) = bounded(1);
+    let workers = spawn_lexical_rebuild_page_prep_workers(
+        1,
+        db_path,
+        Arc::new(HashMap::new()),
+        work_rx,
+        result_tx,
+        Arc::new(StreamingByteLimiter::new(1024)),
+        Arc::new(LexicalRebuildReservationOrder::new()),
+        Arc::new(LexicalRebuildProducerTelemetry::default()),
+        None,
+    )?;
+    let response = result_rx.recv_timeout(Duration::from_secs(30))?;
+    drop(work_tx);
+    for worker in workers {
+        worker
+            .join()
+            .map_err(|_| anyhow::anyhow!("archive admission worker panicked"))?;
+    }
+    let LexicalRebuildPagePrepResult::Error { sequence, error } = response else {
+        anyhow::bail!("unrecovered WAL archive did not fail strict page-prep admission");
+    };
+    assert_eq!(sequence, 0);
+    assert!(
+        matches!(
+            error.downcast_ref::<crate::franken_sync::FrankenError>(),
+            Some(crate::franken_sync::FrankenError::BusyRecovery)
+        ),
+        "page-prep admission must retain the engine BusyRecovery error type, got: {error:#}"
     );
     assert!(error.to_string().contains("page-prep worker 0"));
     assert!(!error.to_string().contains("PRIVATE-WORKER-ARCHIVE-PATH"));
-    assert!(
-        !db_path.exists(),
-        "read-only admission cannot create an archive"
-    );
     Ok(())
 }

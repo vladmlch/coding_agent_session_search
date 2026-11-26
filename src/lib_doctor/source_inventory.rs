@@ -308,9 +308,9 @@ pub(crate) fn query_doctor_source_inventory_db_rows(
     // Keep the database side of this inventory to a plain metadata scan.  The
     // report builder below already folds rows into deterministic BTreeMaps, so
     // asking the SQL engine to GROUP BY and ORDER BY the same dimensions only
-    // duplicates work.  More importantly, FrankenSQLite currently materializes
-    // that aggregate/sort pipeline; on a multi-million-message archive the
-    // transient values can dwarf the conversations table and exhaust memory.
+    // duplicates work.  More importantly, materializing that aggregate/sort
+    // pipeline in SQL on a multi-million-message archive creates transient
+    // values that can dwarf the conversations table and exhaust memory.
     // Emitting one unit row per conversation preserves the exact aggregation
     // semantics while keeping the SQL executor streaming and sorter-free.
     let sql = format!(

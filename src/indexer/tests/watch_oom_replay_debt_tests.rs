@@ -495,7 +495,7 @@ fn watch_nomem_deferral_backoff_doubles_to_one_hour() {
 /// #364 gate: a *large* conversation whose solo isolate-retry also OOMs
 /// must still be deferred — not quarantined — when the host reports ample
 /// available memory. Ample memory proves the typed NoMem is a
-/// frankensqlite bounded-allocation artifact; conversation size makes a
+/// SQLite bounded-allocation artifact; conversation size makes a
 /// guard more likely to trip but cannot turn it into host exhaustion, and
 /// a quarantine here is a same-version-irreducible coverage hole for a
 /// healthy, replayable source (the reported case: a 36 MB Codex session

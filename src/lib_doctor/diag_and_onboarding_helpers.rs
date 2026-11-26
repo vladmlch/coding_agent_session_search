@@ -344,7 +344,7 @@ pub(crate) fn gather_onboarding_observation(
     // "Existing indexed DB" means a DB that actually carries content, so an
     // empty/just-created DB still routes the user to a first index.
     let indexed_conversation_count = if db_path.exists() {
-        crate::storage::sqlite::FrankenStorage::open(db_path)
+        crate::storage::sqlite::FrankenStorage::open_readonly(db_path)
             .ok()
             .and_then(|storage| storage.total_conversation_count().ok())
             .unwrap_or(0) as u64

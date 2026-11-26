@@ -1462,7 +1462,10 @@ fn gh459_cursor_workspace_repair_preserves_rows_and_requires_explicit_authority(
         conv.workspace = Some(correct.clone());
         conv.metadata_json["cursor_workspace_attribution"] = serde_json::json!("workspace_trusted");
         {
-            let mut tx = storage.conn.transaction().unwrap();
+            let mut tx = storage
+                .conn
+                .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+                .unwrap();
             assert!(
                 franken_reconcile_provider_workspace(
                     &tx,

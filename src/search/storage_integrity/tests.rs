@@ -71,7 +71,7 @@ fn every_state_has_a_defined_risk_and_storage_family() {
             assert_eq!(risk, SourceOfTruthRisk::None);
         }
         // Every non-deferred, non-unchecked state attributes to
-        // frankensqlite-storage.
+        // RootCauseFamily::FrankensqliteStorage.
         let fam = s.root_cause_family();
         if matches!(s, StorageState::UnknownDeferred | StorageState::Unchecked) {
             assert_eq!(fam, RootCauseFamily::Unknown);
@@ -675,10 +675,11 @@ fn dedicated_probe_distinguishes_openable_schema_drift_from_legacy_layout() -> a
 
     let legacy_dir = tempfile::tempdir()?;
     let legacy_db = legacy_dir.path().join("agent_search.db");
-    seed_schema_version(
-        &legacy_db,
-        crate::storage::sqlite::MIN_IN_PLACE_MIGRATION_SCHEMA_VERSION - 1,
-    )?;
+    {
+        let conn = crate::franken_sync::Connection::open(legacy_db.to_string_lossy().as_ref())?;
+        conn.execute("CREATE TABLE conversations (id INTEGER PRIMARY KEY);")?;
+        conn.close()?;
+    }
     let legacy = probe_dedicated_storage_state(&legacy_db, std::time::Duration::from_secs(1));
     assert!(legacy.legacy_interop_failed);
     assert!(!legacy.schema_drift);

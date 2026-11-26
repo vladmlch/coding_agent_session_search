@@ -308,7 +308,7 @@ pub(crate) fn run_sessions(
     }
 
     // Backfill message/human-turn counts for the surviving sessions only.
-    // Deliberately NOT a SQL aggregate: the frankensqlite planner executes
+    // Deliberately NOT a SQL aggregate: an earlier query planner executed
     // `SELECT COUNT(..) WHERE conversation_id = ?` as a full messages-table
     // scan even under an INDEXED BY hint (verified via live backtraces on a
     // 26 GB index). The plain indexed row-fetch shape below is the same one
@@ -547,9 +547,9 @@ pub(crate) fn context_related_ids(
     } else {
         "SELECT id, workspace_id, agent_id, started_at FROM conversations"
     };
-    // In fsqlite 0.3.18 a WHERE on the ordered-index path still reads the
-    // conversation record. An unfiltered covering walk avoids every metadata
-    // overflow chain. Filter these small keys here, then hydrate only results.
+    // An unfiltered covering walk on the ordered-index path avoids reading
+    // conversation records and metadata overflow chains. Filter these small
+    // keys here, then hydrate only results.
     let mut candidates = conn
         .query_map_collect(sql, &[], |row| {
             Ok(ContextCandidate {

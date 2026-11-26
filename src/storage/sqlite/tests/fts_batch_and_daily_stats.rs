@@ -9,11 +9,9 @@ use serial_test::serial;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
-/// fsqlite before 0.4.7 dropped VDBE register writes above 65,535
-/// (frankensqlite bd-2eebi, fixed upstream in 1f53ff965), so a multi-row
-/// INSERT whose compiled program crossed that lost its later rows. The
-/// FTS shadow is written in FTS5_BATCH_SIZE-row statements; every row of a
-/// full batch, the last ones included, must round-trip.
+/// Multi-row INSERT programs with large register counts must preserve every
+/// row. The FTS shadow is written in FTS5_BATCH_SIZE-row statements; every row
+/// of a full batch, the last ones included, must round-trip.
 #[test]
 fn fts_batch_insert_round_trips_every_row_of_a_full_batch() {
     let dir = TempDir::new().unwrap();
@@ -482,11 +480,11 @@ fn insert_conversation_tree_stage_profile_tracks_steady_state_remote_reuse() {
 
         let mut profile = InsertConversationTreePerfProfile::default();
         for external_id in 1..=iterations {
-            // fsqlite 0.3.x can surface a transient BusySnapshot while a
-            // prior session's epoch unwinds; the production insert path
-            // retries these, so the raw profiled call must too. Restore
-            // the profile snapshot on retry so an aborted attempt's stage
-            // durations don't double-count against the recorded total.
+            // Transient busy/snapshot contention can surface during
+            // back-to-back writes; the production insert path retries these,
+            // so the raw profiled call must too. Restore the profile snapshot
+            // on retry so an aborted attempt's stage durations don't
+            // double-count against the recorded total.
             let profile_snapshot = profile.clone();
             retry_transient_storage_op("stage_profile_insert", || {
                 profile = profile_snapshot.clone();
@@ -555,10 +553,9 @@ fn insert_conversation_tree_stage_profile_tracks_append_remote_source_merge() {
 
         let mut profile = InsertConversationTreePerfProfile::default();
         for external_id in 0..iterations {
-            // See stage_profile_insert note: transient BusySnapshot under
-            // fsqlite 0.3.x session reclamation must be retried here just
-            // as the production append path does, with the profile
-            // snapshot restored per attempt to keep stage sums <= total.
+            // See stage_profile_insert note: transient contention must be
+            // retried here just as the production append path does, with the
+            // profile snapshot restored per attempt to keep stage sums <= total.
             let profile_snapshot = profile.clone();
             retry_transient_storage_op("stage_profile_append", || {
                 profile = profile_snapshot.clone();
@@ -905,7 +902,10 @@ fn rebuild_daily_stats_uses_canonical_message_bytes_when_metrics_are_stale() {
         )
         .unwrap();
 
-    let mut tx = storage.conn.transaction().unwrap();
+    let mut tx = storage
+        .conn
+        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+        .unwrap();
     franken_update_daily_stats_in_tx(
         &storage,
         &tx,
@@ -993,7 +993,10 @@ fn rebuild_daily_stats_raw_fallback_preserves_byte_counts() {
         )
         .unwrap();
 
-    let mut tx = storage.conn.transaction().unwrap();
+    let mut tx = storage
+        .conn
+        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+        .unwrap();
     franken_update_daily_stats_in_tx(
         &storage,
         &tx,
@@ -1050,12 +1053,15 @@ fn rebuild_daily_stats_reuses_streaming_statement_across_large_message_pages() {
     let bootstrap = SqliteStorage::open(&db_path).unwrap();
 
     // Build the fixture outside the measured region through the same
-    // FrankenSQLite compatibility transaction used by production storage.
+    // SQLite compatibility transaction used by production storage.
     // Batch size one forces
-    // 512 executions of the same prepared FrankenSQLite statement; the
+    // 512 executions of the same prepared SQLite statement; the
     // pre-#329 ad-hoc materialization path retained enough per-execution
     // state to reach ~10.4 GiB on the 967k-message field corpus.
-    let mut fixture_tx = bootstrap.conn.transaction().unwrap();
+    let mut fixture_tx = bootstrap
+        .conn
+        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+        .unwrap();
     fixture_tx
         .execute(
             "INSERT INTO agents(id, slug, name, kind, created_at, updated_at)

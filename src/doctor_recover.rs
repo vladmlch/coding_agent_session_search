@@ -2,14 +2,14 @@
 //!
 //! When the read-only pre-index health gate refuses to index because the
 //! canonical `agent_search.db` is corrupt, the operator previously hit a wall:
-//! `doctor repair` refuses an unreadable archive, a stock-sqlite `.recover`
-//! rebuild is rejected by frankensqlite on readonly open, and the only working
+//! `doctor repair` refuses an unreadable archive, a plain `.recover`
+//! rebuild can be rejected on readonly open, and the only working
 //! path was a hand-rolled JSONL reconstruction from cass's own preserved
 //! events. This module turns that working recovery into first-class commands:
 //!
 //! * [`run_doctor_recover_from_archive`] rebuilds the source JSONL tree from the
 //!   canonical archive's preserved `extra_json`/`extra_bin` envelopes so the
-//!   data can be re-ingested into a fresh, frankensqlite-native archive — no
+//!   data can be re-ingested into a fresh SQLite archive — no
 //!   `.recover` and no external SQLite tool needed.
 //! * [`run_doctor_rebuild_canonical_fts`] inspects exact FTS5 parity, resumes
 //!   partial shadows in bounded batches, transactionally creates an absent
@@ -17,8 +17,8 @@
 //! * [`run_doctor_cleanup_interrupted_artifacts`] quarantines interrupted
 //!   `raw_mirror_capture` staging dirs that otherwise block doctor mutation,
 //!   without forcing the operator to `rm` inside cass's own data dir.
-//! * [`run_doctor_repair_leaked_pages`] frees pages that left the freelist
-//!   without entering a tree (integrity_check's "page N is never used"), after
+//! * [`run_doctor_repair_leaked_pages`] reclaims pages that left the freelist
+//!   without entering a tree (integrity_check's "Page N: never used"), after
 //!   proving that is the only damage and backing up the live bundle.
 //!
 //! None of these surfaces ever delete canonical rows or source data: recovery
@@ -103,13 +103,13 @@ fn storage_error(message: impl Into<String>, hint: Option<&str>) -> CliError {
     }
 }
 
-/// True when an FTS-repair failure is the frankensqlite FTS5 segment-writer
+/// True when an FTS-repair failure is the FTS5 segment-writer
 /// leaf-offset ceiling rather than corruption of the operator's data (GH #369).
 ///
-/// frankensqlite writes exactly one segment leaf per flush and stores each
-/// term's byte offset inside that leaf in a `u16`. When a single insert batch's
-/// combined terms + doclists encode past 65,535 bytes, `Fts5SegmentLeaf::encode`
-/// hard-fails with `segment leaf term offset exceeds u16` (surfaced as
+/// A single-leaf-per-segment writer stores each term's byte offset inside that
+/// leaf in a `u16`. When a single insert batch's combined terms + doclists
+/// encode past 65,535 bytes, segment encoding hard-fails with
+/// `segment leaf term offset exceeds u16` (surfaced as
 /// `fts5: corrupt %_data record: …`) and the failure-atomic rebuild rolls back
 /// without publishing a partial shadow. This is a *content-dependent, sticky*
 /// engine limitation — not archive corruption — so it deserves a distinct,
@@ -118,7 +118,7 @@ fn storage_error(message: impl Into<String>, hint: Option<&str>) -> CliError {
 /// not address this: the overflow is cumulative across many in-cap terms, not a
 /// single oversized token.
 fn is_fts5_oversized_leaf_error(err: &anyhow::Error) -> bool {
-    // Match the full rendered chain so it is robust to however the fsqlite
+    // Match the full rendered chain so it is robust to however the storage
     // error was wrapped on the way up (context strings, `{e:#}`, etc.).
     let rendered = format!("{err:#}");
     rendered.contains("segment leaf term offset exceeds u16")
@@ -129,16 +129,16 @@ fn is_fts5_oversized_leaf_error(err: &anyhow::Error) -> bool {
 }
 
 /// #368 defect 3: does this error indicate the FTS5 `%_data` shadow structure
-/// is corrupt enough to fail an ordinary open during the schema reload (e.g.
-/// "structure segment count exceeds FTS5 maximum")? Such an archive can't be
-/// opened normally to repair it, but CAN be opened with FTS5 hydration deferred
-/// and then rebuilt by dropping + recreating the shadow from canonical. The
-/// oversized-*leaf* (gh#369) shape is excluded — that is a content-dependent
-/// write-time engine limitation with its own reassuring diagnostic, not a
-/// persisted open-blocking corruption.
+/// is corrupt enough to fail a read or open (e.g. C SQLite's
+/// `"fts5: corrupt structure record for table ..."` or legacy
+/// `"corrupt %_data record"`)? Such a shadow can be rebuilt by dropping and
+/// recreating it from canonical rows. The oversized-*leaf* (gh#369) shape is
+/// excluded — that is a content-dependent write-time limitation with its own
+/// reassuring diagnostic, not a persisted corruption.
 fn is_fts5_shadow_open_corruption_error(err: &anyhow::Error) -> bool {
     let rendered = format!("{err:#}");
-    rendered.contains("corrupt %_data record") && !is_fts5_oversized_leaf_error(err)
+    (rendered.contains("corrupt %_data record") || rendered.contains("corrupt structure record"))
+        && !is_fts5_oversized_leaf_error(err)
 }
 
 /// #434 defect 2: schema-level open refusals that name a derived FTS5 shadow
@@ -160,15 +160,14 @@ pub(crate) fn is_fts_shadow_schema_level_open_failure(err: &anyhow::Error) -> bo
                 && rendered.contains("sqlite_master")))
 }
 
-/// Whether the pinned frankensqlite's deferred-FTS5 repair open accepts an
+/// Whether the pinned storage engine's deferred-FTS5 repair open accepts an
 /// FTS5 shadow table whose declared implicit autoindex has no `sqlite_master`
 /// row: the catalog cass wrote for `fts_messages_config` before the #434
-/// writer fix (GH #503). Ordinary opens still refuse that catalog; since
-/// frankensqlite 0.4.7 (cbd0b98dc) the repair open binds the missing
-/// autoindex, so `--rebuild-canonical-fts` rebuilds that shadow in place.
+/// writer fix (GH #503). Since the repair open binds/accepts the missing
+/// autoindex, `--rebuild-canonical-fts` rebuilds that shadow in place.
 /// `pinned_engine_deferred_open_matches_the_legacy_shadow_catalog_policy`
-/// runs the real repair open on a fixture with that catalog and fails when a
-/// pin bump changes the answer, so this cannot silently go stale.
+/// runs the real repair open on a schema-v1 archive and fails when a pin bump
+/// changes the answer, so this cannot silently go stale.
 pub(crate) const ENGINE_REPAIRS_MISSING_FTS5_SHADOW_AUTOINDEX: bool = true;
 
 /// The GH #503 open refusal: an `fts_messages*` shadow table declares an
@@ -205,7 +204,7 @@ fn fts5_oversized_leaf_shadow_error(db_path: &Path) -> CliError {
         kind: "fts5-oversized-leaf-shadow-unbuildable",
         message: format!(
             "the canonical SQLite FTS5 shadow cannot be built for {} because a single insert \
-             batch in this corpus encodes past the frankensqlite FTS5 segment-leaf u16 offset \
+             batch in this corpus encodes past the SQLite FTS5 segment-leaf u16 offset \
              ceiling (one-leaf-per-segment limitation, GH #369) — this is an engine limitation, \
              not corruption of your archive, and the failed rebuild was rolled back without \
              publishing a partial shadow",
@@ -216,7 +215,7 @@ fn fts5_oversized_leaf_shadow_error(db_path: &Path) -> CliError {
              Tantivy lexical index are intact and fully serve search — only the optional \
              SQLite-side `fts_messages` shadow is affected, and `cass doctor check` stays \
              healthy. This is tracked upstream for a multi-leaf FTS5 segment writer; re-run \
-             `--rebuild-canonical-fts --yes` once the pinned frankensqlite build ships that fix."
+             `--rebuild-canonical-fts --yes` once the pinned SQLite build ships that fix."
                 .to_string(),
         ),
         retryable: false,

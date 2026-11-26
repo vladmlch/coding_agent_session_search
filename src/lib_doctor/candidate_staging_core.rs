@@ -434,14 +434,14 @@ pub(crate) fn doctor_candidate_table_count(
     }
 }
 
-pub(crate) fn doctor_candidate_probe_frankensqlite(
+pub(crate) fn doctor_candidate_probe_sqlite(
     candidate_db_path: &Path,
     candidate_id: &str,
 ) -> Result<(Option<usize>, Option<usize>), String> {
     let conn = crate::franken_sync::Connection::open(candidate_db_path.to_string_lossy().as_ref())
         .map_err(|err| {
             format!(
-                "failed to open candidate archive DB with frankensqlite at {}: {err}",
+                "failed to open candidate archive DB with SQLite at {}: {err}",
                 candidate_db_path.display()
             )
         })?;
