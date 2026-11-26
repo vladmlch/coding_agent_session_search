@@ -195,7 +195,7 @@ fn generate_db(
     remainder: usize,
     message_len: usize,
 ) -> Result<()> {
-    let storage = FrankenStorage::open(db_path).context("open frankensqlite storage")?;
+    let storage = FrankenStorage::open(db_path).context("open SQLite storage")?;
 
     let agent = Agent {
         id: None,

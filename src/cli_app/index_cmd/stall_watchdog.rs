@@ -254,7 +254,7 @@ pub(crate) fn index_stall_abort_threshold(
 ///
 /// A non-watch, non-semantic `cass index --full` ends by checkpointing the
 /// deferred bulk-ingest WAL inside `close_storage_after_index` — a synchronous,
-/// `!Send` frankensqlite `conn.close()` + `wal_checkpoint(TRUNCATE)` that runs
+/// `!Send` SQLite `conn.close()` + `wal_checkpoint(TRUNCATE)` that runs
 /// on the indexer thread and cannot advance the progress atomics. On a large
 /// corpus (the #319 report: a ~1.1 GB / ~290k-frame WAL) that checkpoint
 /// legitimately takes minutes, especially on macOS where Darwin fsync/flock is
@@ -551,7 +551,7 @@ impl IndexStallWatchdog {
             return None;
         }
 
-        // fr7wp / gh#413: the slow canonical-DB open (and fsqlite's WAL-replay
+        // fr7wp / gh#413: the slow canonical-DB open (and SQLite's WAL-replay
         // work inside it) runs under "preparing" before any progress atomic
         // can tick — the 2026-08-23 report needed CASS_INDEX_STALL_ABORT_SECS=0
         // just to get past a healthy slow open on a 2.1GB archive. Sample
@@ -693,7 +693,7 @@ impl IndexStallWatchdog {
         // #319/#321: while the indexer signals `finalizing`, the phase-0 /
         // current==total / quiescent shape is the post-publish WAL-checkpoint
         // window, not a #297 wedge. The checkpoint is a synchronous, `!Send`
-        // frankensqlite call on the indexer thread that cannot advance the
+        // SQLite call on the indexer thread that cannot advance the
         // progress atomics, so it can only be recognised via this flag. Give it
         // the larger `finalize_abort_threshold` so a slow-but-active checkpoint
         // of a large deferred WAL completes instead of being killed mid-write
@@ -706,7 +706,7 @@ impl IndexStallWatchdog {
         // rebuild is active but its pipeline has not produced the first page
         // yet (`is_rebuilding` set, quiescent, current >= total). That
         // ingest→staged-shard-build hand-off legitimately blocks in
-        // synchronous frankensqlite work — e.g. a multi-GB WAL replay inside
+        // synchronous SQLite work — e.g. a multi-GB WAL replay inside
         // the producer's read-only open — that cannot be heartbeated, exactly
         // like the finalize checkpoint. Once the pipeline starts moving, the
         // runtime refresh ticks `activity` on every stage-progress change and
