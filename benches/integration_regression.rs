@@ -1,8 +1,7 @@
 //! Integration regression benchmarks for cass ingestion/storage paths.
 //!
 //! `SqliteStorage` is now a compatibility alias for `FrankenStorage`, so this
-//! benchmark suite no longer compares rusqlite/legacy SQLite against
-//! frankensqlite. Instead it compares two distinct cass-owned paths:
+//! benchmark suite compares two distinct cass-owned paths:
 //! - `persist_conversation`: normalized ingestion + lexical index updates
 //! - direct `FrankenStorage` calls: pre-resolved IDs + storage-only writes
 //!
@@ -584,7 +583,7 @@ where
 // =============================================================================
 
 fn bench_concurrent_writes(c: &mut Criterion) {
-    use coding_agent_search::franken_sync::compat::TransactionExt;
+    use coding_agent_search::franken_sync::compat::{TransactionBehavior, TransactionExt};
 
     let mut group = c.benchmark_group("concurrent_writes");
     group.sample_size(10);
@@ -627,7 +626,7 @@ fn bench_concurrent_writes(c: &mut Criterion) {
     });
 
     // ConnectionManager with 4 concurrent writers using raw SQL.
-    // Uses raw INSERT + retry to benchmark the MVCC concurrent write path
+    // Uses raw INSERT + retry to benchmark the pooled concurrent write path
     // independent of the full insert_conversation_tree complexity.
     group.throughput(Throughput::Elements(400));
     group.bench_function("4_writers_raw_400_rows", |b| {
@@ -657,7 +656,10 @@ fn bench_concurrent_writes(c: &mut Criterion) {
                             for seq in 0..100 {
                                 let mut guard = m.concurrent_writer().unwrap();
                                 with_retry(50, || {
-                                    let mut tx = guard.storage().raw().transaction()?;
+                                    let mut tx = guard
+                                        .storage()
+                                        .raw()
+                                        .transaction_with_behavior(TransactionBehavior::Immediate)?;
                                     tx.execute(&format!(
                                         "INSERT INTO bench_raw (tid, seq, val) VALUES ({tid}, {seq}, 'bench-{tid}-{seq}')"
                                     ))?;
