@@ -1172,7 +1172,6 @@ pub(in crate::indexer) fn rebuild_tantivy_from_db_via_staged_shards(
     // actually open. A refusal above never reached this point, so no
     // durable certification can outlive a manifest that never went live.
     TantivyIndex::certify_published_manifest(marks_storage.raw(), index_path, certification_floor);
-    drop(marks_storage);
     let refresh_ledger =
         build_authoritative_lexical_refresh_ledger(AuthoritativeLexicalRefreshLedgerInput {
             publish_mode: "atomic_staged_swap",
@@ -1190,6 +1189,12 @@ pub(in crate::indexer) fn rebuild_tantivy_from_db_via_staged_shards(
     storage.close_without_checkpoint().with_context(|| {
         format!(
             "closing readonly database after staged Tantivy rebuild without checkpoint: {}",
+            db_path.display()
+        )
+    })?;
+    marks_storage.close().with_context(|| {
+        format!(
+            "closing region-marks writer after staged Tantivy rebuild: {}",
             db_path.display()
         )
     })?;

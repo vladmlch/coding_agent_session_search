@@ -1566,7 +1566,12 @@ pub(in crate::indexer) fn rebuild_tantivy_from_db_once(
     // never went live. The floor captured at build start bounds the
     // receipt's coverage claim.
     TantivyIndex::certify_published_manifest(marks_storage.raw(), &index_path, certification_floor);
-    drop(marks_storage);
+    marks_storage.close().with_context(|| {
+        format!(
+            "closing region-marks writer after Tantivy rebuild: {}",
+            db_path.display()
+        )
+    })?;
     log_lexical_generation_manifest_published(&generation_manifest, &equivalence_evidence);
 
     if let Some(p) = &progress {
