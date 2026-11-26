@@ -10,7 +10,7 @@
     {
       "name": "frankensqlite-in-memory-roundtrip",
       "status": "pass",
-      "detail": "opened an in-memory frankensqlite database and round-tripped a typed value"
+      "detail": "opened an in-memory SQLite database and round-tripped a typed value"
     }
   ]
 }

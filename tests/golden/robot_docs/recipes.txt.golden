@@ -134,7 +134,7 @@ auto-deletes. Branch on the quarantine reason:
 Robot/JSON output must stay parseable even when a dependency logs. When a
 failure surfaces, attribute it before reacting:
 
-  * storage / "database is busy" / OpenRead -> likely `frankensqlite`.
+  * storage / "database is busy" / OpenRead -> likely `SQLite` (`rusqlite`).
   * lexical / vector / hybrid search -> likely `frankensearch` (Quill/vector).
   * runtime / scheduler / load stalls -> likely `asupersync` or host load.
   * (removed) remote transport -> cass is local-only; remote transports no
