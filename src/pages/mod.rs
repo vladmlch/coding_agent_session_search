@@ -27,7 +27,7 @@ pub mod wizard;
 
 /// Content/recovery companions whose presence means a Pages SQLite export is
 /// not a self-contained main file. These are the finite companions emitted by
-/// the pinned FrankenSQLite 0.3.8 producer; publication must preserve and
+/// legacy or external SQLite producers; publication must preserve and
 /// reject them rather than guessing that they are stale.
 const SQLITE_MIGRATION_MARKER_SUFFIX: &str = ".fsqlite-migration-state";
 const SQLITE_MIGRATION_MARKER_TEMP_SUFFIX: &str = ".fsqlite-migration-state.tmp";
@@ -64,7 +64,7 @@ fn sqlite_migration_marker_path(path: &Path) -> PathBuf {
 /// Return every content/recovery path associated with `path`.
 ///
 /// The WAL-FEC rewrite temporary is intentionally constructed with
-/// `Path::with_extension`, matching `fsqlite-vfs` 0.3.8. For `export.db` this
+/// `Path::with_extension`, matching legacy VFS naming. For `export.db` this
 /// is `export.wal-fec.tmp`, not `export.db-wal-fec.tmp`.
 fn sqlite_content_artifact_paths(path: &Path) -> Vec<PathBuf> {
     let mut paths = SQLITE_CONTENT_ARTIFACT_SUFFIXES
@@ -75,9 +75,9 @@ fn sqlite_content_artifact_paths(path: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// Return operational companions left by an explicitly closed FrankenSQLite
+/// Return operational companions left by an explicitly closed legacy SQLite
 /// writer. Windows creates its lock triplet for each read-write VFS artifact.
-/// Pinned 0.3.8 opens the rollback journal, WAL, WAL certificate, and WAL
+/// Legacy VFS layers opened the rollback journal, WAL, WAL certificate, and WAL
 /// certificate handoff through that path in addition to the main file. SHM
 /// and WAL-FEC use separate direct-file paths and do not acquire this triplet.
 /// Namespace gate/use files are scoped to the main database.
@@ -110,10 +110,10 @@ fn sqlite_fixed_artifact_paths(path: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// Enumerate FrankenSQLite's variable parallel-WAL segments in the database's
-/// direct parent. Pinned 0.3.8 treats every `<db-name>-wal-seg-*` entry as a
-/// recovery companion, including malformed epochs, so this mirrors that exact
-/// prefix rather than guessing which suffix payloads are valid.
+/// Enumerate legacy variable parallel-WAL segments in the database's
+/// direct parent. Legacy WAL producers treated every `<db-name>-wal-seg-*`
+/// entry as a recovery companion, including malformed epochs, so this mirrors
+/// that exact prefix rather than guessing which suffix payloads are valid.
 fn sqlite_wal_segment_artifact_paths(path: &Path) -> Result<Vec<PathBuf>> {
     let parent = path
         .parent()
@@ -122,7 +122,7 @@ fn sqlite_wal_segment_artifact_paths(path: &Path) -> Result<Vec<PathBuf>> {
     let db_name = path.file_name().ok_or_else(|| {
         anyhow::anyhow!("SQLite artifact path has no file name: {}", path.display())
     })?;
-    // `fsqlite-wal` 0.3.8's `segment_path` and `list_segments` both derive
+    // Legacy `segment_path` and `list_segments` both derive
     // this filename through `to_string_lossy()`. Mirror that producer rule so
     // a non-UTF-8 database basename cannot hide its actual UTF-8 segment name.
     let segment_prefix = format!("{}-wal-seg-", db_name.to_string_lossy());
@@ -176,28 +176,28 @@ fn sqlite_artifact_paths(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-/// FrankenSQLite namespace identity records (`-fsqlite-ns-gate`,
-/// `-fsqlite-ns-use`) are stamped next to any database the VFS touches —
+/// Legacy namespace identity records (`-fsqlite-ns-gate`,
+/// `-fsqlite-ns-use`) were stamped next to any database the legacy VFS touched —
 /// including a `VACUUM INTO` target and a verifier's read-only probe — and
-/// persist as quiescent records after every clean close. They hold no
+/// persisted as quiescent records after clean close. They hold no
 /// database content.
-fn is_fsqlite_namespace_identity_record(path: &Path) -> bool {
+fn is_legacy_namespace_identity_record(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.ends_with("-fsqlite-ns-gate") || name.ends_with("-fsqlite-ns-use"))
 }
 
-/// The artifact family minus FrankenSQLite's namespace identity records.
+/// The artifact family minus legacy namespace identity records.
 ///
 /// Main-file-only attestations and destination replacement guards must use
 /// this set: the identity records are unavoidable runtime droppings, never
-/// payload, so refusing on them would refuse every FrankenSQLite-built
-/// artifact. Whole-family cleanup keeps using [`sqlite_artifact_paths`] so
+/// payload, so refusing on them would refuse valid legacy-touched SQLite
+/// artifacts. Whole-family cleanup keeps using [`sqlite_artifact_paths`] so
 /// the records are still removed with their database.
 fn sqlite_content_bearing_artifact_paths(path: &Path) -> Result<Vec<PathBuf>> {
     Ok(sqlite_artifact_paths(path)?
         .into_iter()
-        .filter(|sidecar| !is_fsqlite_namespace_identity_record(sidecar))
+        .filter(|sidecar| !is_legacy_namespace_identity_record(sidecar))
         .collect())
 }
 
@@ -308,7 +308,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sqlite_artifact_paths_match_fsqlite_non_append_and_nested_names() {
+    fn sqlite_artifact_paths_match_legacy_non_append_and_nested_names() {
         let db = Path::new("export.db");
         let content = sqlite_content_artifact_paths(db);
         let runtime = sqlite_runtime_artifact_paths(db);
@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(
             sqlite_wal_segment_artifact_paths(&db)?,
             vec![producer_segment],
-            "scanner must mirror fsqlite-wal 0.3.8's lossy segment basename"
+            "scanner must mirror legacy WAL lossy segment basename"
         );
         Ok(())
     }

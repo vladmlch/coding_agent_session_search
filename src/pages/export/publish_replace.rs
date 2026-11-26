@@ -42,12 +42,12 @@ fn cleanup_sqlite_sidecars(artifacts: Vec<PathBuf>) -> Result<()> {
     first_error.map_or(Ok(()), Err)
 }
 
-/// gz8xg: fsqlite stamps two zero-content namespace identity records
+/// Legacy VFS layers stamped two zero-content namespace identity records
 /// (`-fsqlite-ns-gate` / `-fsqlite-ns-use`) beside every `VACUUM INTO`
 /// target. Once the staged candidate has been renamed onto the destination
 /// its main file is gone, so those two records would otherwise remain as
 /// unpredictable-named litter in the output directory. Remove exactly that
-/// pair, tolerating absence (older engines may not stamp them).
+/// pair, tolerating absence.
 ///
 /// Runs only after the export is live and durably synced, so a failure here
 /// is logged, never surfaced: cosmetic litter must not turn a successful
@@ -60,14 +60,14 @@ fn cleanup_candidate_namespace_identity_records(temp_path: &Path) {
         tracing::warn!(
             error = %err,
             candidate = %temp_path.display(),
-            "published Pages export is live, but its staged candidate's fsqlite namespace identity records could not be removed"
+            "published Pages export is live, but its staged candidate's legacy namespace identity records could not be removed"
         );
     }
 }
 
 pub(super) fn finalize_staged_sqlite_sidecars(path: &Path) -> Result<()> {
     // The publishable path is a VACUUM INTO image and is never opened through
-    // a read-write FrankenSQLite connection. It therefore owns no companion
+    // a read-write SQLite connection. It therefore owns no companion
     // artifacts at all. Even namespace or lock files at this random pathname
     // are unexpected entries, not builder residue, so preserve and reject
     // them. Only the separately owned, explicitly closed builder is cleaned.
@@ -238,8 +238,8 @@ pub(super) fn enforce_private_candidate_permissions(path: &Path) -> Result<()> {
 /// readers observe a mixed or corrupt generation. The exporter cannot safely
 /// decide that an existing sidecar is stale, so preserve it and fail closed.
 pub(super) fn reject_existing_sqlite_sidecars(path: &Path, artifact_label: &str) -> Result<()> {
-    // Namespace identity records are exempt: FrankenSQLite stamps them next
-    // to every database it touches (VACUUM INTO targets included) and they
+    // Namespace identity records are exempt: legacy VFS layers stamped them next
+    // to every database they touched (VACUUM INTO targets included) and they
     // carry no database content, so they cannot make a main-file-only
     // artifact incomplete.
     for sidecar in sqlite_content_bearing_artifact_paths(path)? {

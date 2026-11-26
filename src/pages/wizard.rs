@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use crate::franken_sync::Connection;
 use crate::pages::bundle::{BundleBuilder, BundleConfig};
 use crate::pages::confirmation::{
     ConfirmationConfig, ConfirmationFlow, ConfirmationStep, StepValidation, UNENCRYPTED_ACK_PHRASE,
@@ -788,14 +787,11 @@ impl PagesWizard {
 
     /// Generate the pre-publish summary from the database.
     fn generate_prepublish_summary(&self) -> Result<PrePublishSummary> {
-        let conn = Connection::open(self.state.db_path.to_string_lossy().as_ref())
+        let conn = crate::pages::open_existing_sqlite_db(&self.state.db_path)
             .context("Failed to open database for summary generation")?;
 
-        conn.execute_batch(
-            "PRAGMA busy_timeout = 5000;
-             PRAGMA journal_mode = WAL;",
-        )
-        .context("Failed to set PRAGMAs for summary generation")?;
+        conn.execute("PRAGMA busy_timeout = 5000;")
+            .context("Failed to set PRAGMA busy_timeout for summary generation")?;
 
         let since_ts = self
             .state

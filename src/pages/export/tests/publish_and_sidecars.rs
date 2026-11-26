@@ -713,7 +713,8 @@ fn vacuum_into_detaches_candidate_from_expected_builder_wal() -> Result<()> {
 
     let builder = Connection::open(builder_path.to_string_lossy().as_ref())?;
     builder.execute_batch(
-        "PRAGMA journal_mode = 'delete';
+        "PRAGMA page_size = 4096;
+         PRAGMA journal_mode = 'delete';
          CREATE TABLE exported (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
          INSERT INTO exported VALUES (1, 'candidate row');",
     )?;
@@ -733,10 +734,6 @@ fn vacuum_into_detaches_candidate_from_expected_builder_wal() -> Result<()> {
         .into_iter()
         .find(|path| path.as_os_str().to_string_lossy().ends_with("-wal"))
         .ok_or_else(|| anyhow::anyhow!("shared artifact family omitted builder WAL"))?;
-    assert!(
-        builder_wal.exists(),
-        "test requires pinned FrankenSQLite's retained bootstrap WAL"
-    );
     reject_existing_sqlite_sidecars(&candidate_path, "VACUUM INTO candidate")?;
     assert!(
         std::fs::metadata(&candidate_path)?.len() > 0,
@@ -745,6 +742,10 @@ fn vacuum_into_detaches_candidate_from_expected_builder_wal() -> Result<()> {
 
     cleanup_sqlite_temp_artifacts(&builder_path)?;
     assert!(
+        !builder_path.exists(),
+        "closed private builder survived exact-family cleanup"
+    );
+    assert!(
         !builder_wal.exists(),
         "closed private builder WAL survived exact-family cleanup"
     );
@@ -752,6 +753,14 @@ fn vacuum_into_detaches_candidate_from_expected_builder_wal() -> Result<()> {
     let candidate = crate::pages::open_existing_sqlite_db(&candidate_path)?;
     let row = candidate.query_row("SELECT COUNT(*) FROM exported")?;
     assert_eq!(row.get_typed::<i64>(0)?, 1);
+    let page_size = candidate
+        .query_row("PRAGMA page_size;")?
+        .get_typed::<i64>(0)?;
+    assert_eq!(page_size, 4096);
+    let journal_mode = candidate
+        .query_row("PRAGMA journal_mode;")?
+        .get_typed::<String>(0)?;
+    assert_eq!(journal_mode, "delete");
     candidate.close()?;
     Ok(())
 }
@@ -944,7 +953,7 @@ fn replacement_rejects_existing_sqlite_sidecars_without_mutating_artifacts() -> 
     // see `sqlite_content_bearing_artifact_paths`.
     let artifact_paths = sqlite_fixed_artifact_paths(Path::new("export.db"))
         .into_iter()
-        .filter(|path| !crate::pages::is_fsqlite_namespace_identity_record(path));
+        .filter(|path| !crate::pages::is_legacy_namespace_identity_record(path));
     for relative_path in artifact_paths {
         let temp_dir = TempDir::new()?;
         let final_path = temp_dir.path().join("export.db");

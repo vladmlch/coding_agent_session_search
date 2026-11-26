@@ -257,8 +257,7 @@ impl<'a> SummaryGenerator<'a> {
             .query_row_map(&conv_query, params, |row: &Row| row.get_typed(0))
             .context("Failed to count conversations")?;
 
-        // Count messages and characters using subquery to avoid
-        // JOIN + aggregate without GROUP BY (frankensqlite limitation).
+        // Count messages and characters using a subquery on the filtered conversations.
         let msg_query = format!(
             "SELECT COUNT(*), SUM(LENGTH(content))
              FROM messages
@@ -310,9 +309,8 @@ impl<'a> SummaryGenerator<'a> {
         where_clause: &str,
         params: &[ParamValue],
     ) -> Result<Vec<DateHistogramEntry>> {
-        // Use integer day computation instead of DATE() which isn't supported
-        // by frankensqlite. The day_epoch is seconds-since-epoch / 86400.
-        // Use subquery instead of JOIN to avoid frankensqlite aggregate limitation.
+        // Compute integer day buckets from millisecond timestamps
+        // (seconds-since-epoch / 86400) via a subquery.
         let query = format!(
             "SELECT created_at / 1000 / 86400,
                     COUNT(*)
@@ -324,11 +322,8 @@ impl<'a> SummaryGenerator<'a> {
             where_clause
         );
 
-        // Count distinct conversations per day using a subquery approach.
-        // The subquery is explicitly aliased as `day_pairs` so frankensqlite's
-        // query planner can resolve the outer GROUP BY without falling back to
-        // an internal default-alias path (which currently surfaces as
-        // "column not found: subquery.conversation_id").
+        // Count distinct conversations per day using an explicitly aliased
+        // `day_pairs` subquery.
         let conv_query = format!(
             "SELECT day_epoch, COUNT(*)
              FROM (

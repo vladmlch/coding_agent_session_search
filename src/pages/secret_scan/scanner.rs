@@ -154,10 +154,9 @@ pub fn scan_staged_export_database<P: AsRef<Path>>(
 }
 
 pub(super) fn ensure_staged_export_has_no_sidecars(db_path: &Path, phase: &str) -> Result<()> {
-    // FrankenSQLite namespace identity records are exempt: the VFS stamps
-    // them next to any database it touches (including this scan's own
-    // read-only open) and they hold no database content, so they cannot
-    // change what the attested main file contains.
+    // Legacy namespace identity records are exempt: older VFS layers stamped
+    // them next to any database they touched and they hold no database content,
+    // so they cannot change what the attested main file contains.
     for sidecar_path in crate::pages::sqlite_content_bearing_artifact_paths(db_path)? {
         match std::fs::symlink_metadata(&sidecar_path) {
             Ok(_) => {

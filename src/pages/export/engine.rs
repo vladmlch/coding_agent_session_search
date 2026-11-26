@@ -13,7 +13,9 @@ use super::sql_helpers::{
     existing_regular_files_share_identity, normalize_optional_text, table_columns_in_transaction,
     table_exists_in_transaction,
 };
-use crate::franken_sync::compat::{ConnectionExt, ParamValue, RowExt, TransactionExt};
+use crate::franken_sync::compat::{
+    ConnectionExt, ParamValue, RowExt, TransactionBehavior, TransactionExt,
+};
 use crate::franken_sync::{Connection, Row as FrankenRow, params};
 use crate::pages::profiles::ShareProfile;
 use crate::pages::redact::RedactionEngine;
@@ -226,11 +228,10 @@ impl ExportEngine {
         let src = crate::pages::open_existing_sqlite_db(&self.source_db_path)
             .context("Failed to open source database")?;
 
-        // 2. Build into a private writer database, then ask FrankenSQLite to
-        // produce a separate, self-contained candidate with VACUUM INTO. A
-        // brand-new on-disk connection permanently retains its bootstrap WAL;
-        // the engine's bounded image contract therefore explicitly requires
-        // VACUUM INTO rather than publishing an in-place writer database.
+        // 2. Build into a private writer database, then materialize a separate,
+        // self-contained candidate with VACUUM INTO. The engine's bounded image
+        // contract requires VACUUM INTO rather than publishing an in-place
+        // writer database.
         let builder_path =
             unpredictable_atomic_sidecar_path(&output_path, "builder", "pages_export.db")?;
         let temp_output_path =
@@ -251,8 +252,11 @@ impl ExportEngine {
             dest.execute_batch(
                 // Pages exports are encrypted/copied as one portable SQLite file.
                 // WAL would allow committed schema/data to remain in a sidecar
-                // that is not part of the encrypted payload.
-                "PRAGMA journal_mode = 'delete';
+                // that is not part of the encrypted payload. Set page_size before
+                // journal_mode/schema creation so the export and its VACUUM INTO
+                // candidate use 4096-byte pages.
+                "PRAGMA page_size = 4096;
+                 PRAGMA journal_mode = 'delete';
                  PRAGMA synchronous = NORMAL;
                  PRAGMA busy_timeout = 5000;
                  PRAGMA foreign_keys = ON;",
@@ -267,7 +271,7 @@ impl ExportEngine {
                 .transaction()
                 .context("Failed to start source database read snapshot")?;
             let mut tx = match dest
-                .transaction()
+                .transaction_with_behavior(TransactionBehavior::Immediate)
                 .context("Failed to start destination export transaction")
             {
                 Ok(tx) => tx,
