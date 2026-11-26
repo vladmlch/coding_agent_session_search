@@ -225,7 +225,7 @@ fn journal_canonical_and_annotation_writes_yield_monotonic_events() -> Result<()
     // the same transaction in patch_annotations; the journal append rides
     // the extension-table trigger so ANY writer's commit is observed.
     let update = open(&fixture.db)?;
-    update.execute("BEGIN")?;
+    update.execute("BEGIN IMMEDIATE")?;
     update.execute_with_params(
         "INSERT INTO viewer_annotations \
          (conversation_id,is_pinned,custom_title,notes,revision,updated_at_ms) \
@@ -281,7 +281,7 @@ fn journal_rollback_leaves_no_visible_event() -> Result<()> {
     let baseline = journal::changes_since(&reader, 0, 256)?;
 
     let writer = open(&fixture.db)?;
-    writer.execute("BEGIN")?;
+    writer.execute("BEGIN IMMEDIATE")?;
     writer.execute(
         "INSERT INTO messages (conversation_id,idx,role,content) VALUES (1,99,'agent','vanished')",
     )?;
@@ -389,7 +389,7 @@ fn journal_commit_without_notify_still_replays_then_compacts() -> Result<()> {
     // A bulk append (writer crash after commit before notify): raw per-row
     // events are already durable inside the same commit.
     let writer = open(&fixture.db)?;
-    writer.execute("BEGIN")?;
+    writer.execute("BEGIN IMMEDIATE")?;
     for idx in 4..12 {
         writer.execute_with_params(
             "INSERT INTO messages (conversation_id,idx,role,content) VALUES (1,?1,'agent','appended')",
@@ -485,7 +485,7 @@ fn journal_explicit_append_rides_callers_transaction() -> Result<()> {
     let cursor = journal::changes_since(&reader, 0, 256)?.next_seq;
 
     let writer = open(&fixture.db)?;
-    writer.execute("BEGIN")?;
+    writer.execute("BEGIN IMMEDIATE")?;
     journal::append_change_event(
         &writer,
         journal::kind::RESET_REQUIRED,
@@ -503,7 +503,7 @@ fn journal_explicit_append_rides_callers_transaction() -> Result<()> {
     );
 
     let writer = open(&fixture.db)?;
-    writer.execute("BEGIN")?;
+    writer.execute("BEGIN IMMEDIATE")?;
     let seq = journal::append_change_event(
         &writer,
         journal::kind::RESET_REQUIRED,
@@ -942,7 +942,7 @@ fn subscribe_reconnect_replays_missed_changes() -> Result<()> {
     // Missed commits: a canonical insert AND an annotation edit.
     let conversation = insert_conversation(&bridge.db, &canned_conversation(2, "missed", 1))?;
     let writer = open(&bridge.db)?;
-    writer.execute("BEGIN")?;
+    writer.execute("BEGIN IMMEDIATE")?;
     writer.execute_with_params(
         "INSERT INTO viewer_annotations \
          (conversation_id,is_pinned,custom_title,notes,revision,updated_at_ms) \
@@ -1044,7 +1044,7 @@ fn subscribe_readiness_events_split_canonical_from_lexical() -> Result<()> {
 
     // Metadata-only edit on a second connection.
     let writer = open(&bridge.db)?;
-    writer.execute("BEGIN")?;
+    writer.execute("BEGIN IMMEDIATE")?;
     writer.execute_with_params(
         "INSERT INTO viewer_annotations \
          (conversation_id,is_pinned,custom_title,notes,revision,updated_at_ms) \
@@ -1610,7 +1610,7 @@ fn subscribe_queue_overflow_requests_reset_required() -> Result<()> {
     let agent_id: i64 = writer
         .query_row("SELECT agent_id FROM conversations WHERE id = 1")?
         .get_typed(0)?;
-    writer.execute("BEGIN")?;
+    writer.execute("BEGIN IMMEDIATE")?;
     for id in 2..=300_i64 {
         writer.execute_with_params(
             "INSERT INTO conversations (agent_id, source_id, external_id, source_path) \

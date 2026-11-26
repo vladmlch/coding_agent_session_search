@@ -21,7 +21,7 @@ fn open_db(path: &Path) -> TestResult<Connection> {
 }
 
 /// Staged-export verifiers must not dirty the artifact they attest: a
-/// read-write FrankenSQLite open stamps `.fsqlite-migration-state` next to
+/// read-write open can stamp sidecar or recovery artifacts next to
 /// the database, which the engine then rejects as a verifier-created sidecar.
 fn open_db_readonly(path: &Path) -> TestResult<Connection> {
     let path_str = path.to_string_lossy();
@@ -363,9 +363,9 @@ fn export_engine_exports_all_conversations_with_no_filter() {
 }
 
 /// gz8xg: a successful publish must leave nothing of the staged candidate
-/// behind — including fsqlite's `-fsqlite-ns-gate` / `-fsqlite-ns-use`
-/// identity records stamped beside the `VACUUM INTO` target — on both the
-/// first publication and a re-publish over an existing output.
+/// behind — including legacy namespace identity records stamped beside
+/// the `VACUUM INTO` target — on both the first publication and a
+/// re-publish over an existing output.
 #[test]
 fn export_engine_publish_leaves_no_staged_candidate_litter() {
     fn staged_litter(dir: &Path) -> Vec<String> {

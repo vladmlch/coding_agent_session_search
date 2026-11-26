@@ -3,7 +3,7 @@
 //! Bead: coding_agent_session_search-cass-fleet-resilience-20260608-uojcg.2.5
 //! ("Gate dependency tracing behind explicit trace surfaces").
 //!
-//! Dependency-level logs (frankensqlite / frankensearch / asupersync) must NOT
+//! Dependency-level logs (rusqlite / tantivy / frankensearch / asupersync) must NOT
 //! appear during normal robot commands; they are available only through an
 //! explicit surface. These tests pin that contract for `--trace-file`: even under
 //! a deliberately noisy `RUST_LOG`, robot stdout stays pure JSON and stderr stays
@@ -30,7 +30,7 @@ macro_rules! trace_test_require {
 
 /// A `RUST_LOG` loud enough that any unfiltered dependency span would otherwise
 /// flood stderr/stdout.
-const NOISY_RUST_LOG: &str = "trace,fsqlite=trace,fsqlite_core=trace";
+const NOISY_RUST_LOG: &str = "trace,rusqlite=trace,tantivy=trace,frankensearch=trace";
 
 fn noisy_robot_cmd() -> Command {
     let mut cmd = Command::new(cass_bin());
@@ -56,10 +56,12 @@ fn parse_stdout_json(stdout: &str) -> CliTraceTestResult<Value> {
 
 fn check_stderr_has_no_dependency_tracing(label: &str, stderr: &str) -> CliTraceTestResult {
     let lower = stderr.to_lowercase();
-    trace_test_require!(
-        !lower.contains("fsqlite"),
-        "{label}: stderr leaked frankensqlite tracing despite --trace-file routing; stderr:\n{stderr}"
-    );
+    for dep in ["rusqlite", "tantivy", "frankensearch"] {
+        trace_test_require!(
+            !lower.contains(dep),
+            "{label}: stderr leaked `{dep}` dependency tracing despite --trace-file routing; stderr:\n{stderr}"
+        );
+    }
     for level in [" INFO ", " DEBUG ", " TRACE "] {
         trace_test_require!(
             !stderr.contains(level),
@@ -158,9 +160,11 @@ fn trace_file_keeps_stdout_clean_and_captures_to_file() -> CliTraceTestResult {
     trace_test_require!(
         !events.iter().any(|event| {
             event["level"] == "DEBUG"
-                && event["target"]
-                    .as_str()
-                    .is_some_and(|target| target.starts_with("fsqlite"))
+                && event["target"].as_str().is_some_and(|target| {
+                    target.starts_with("rusqlite")
+                        || target.starts_with("tantivy")
+                        || target.starts_with("frankensearch")
+                })
         }),
         "dependency DEBUG events must not enter the bounded trace artifact"
     );

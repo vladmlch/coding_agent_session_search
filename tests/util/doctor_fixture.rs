@@ -299,7 +299,7 @@ impl DoctorFixtureFactory {
         SqliteStorage::open(&db_path).expect("create fixture archive db");
         self.log(
             "seed_empty_archive_db",
-            "created frankensqlite archive schema",
+            "created SQLite archive schema",
         );
         self
     }

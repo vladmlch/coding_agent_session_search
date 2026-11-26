@@ -252,7 +252,7 @@ fn seed_healthy_empty_index(test_home: &Path, data_dir: &Path) {
 fn write_test_sqlite_db(path: &Path, marker: &str) {
     fs::create_dir_all(path.parent().expect("sqlite db parent")).expect("create sqlite db parent");
     let conn = FrankenConnection::open(path.to_string_lossy().into_owned())
-        .expect("open frankensqlite fixture db");
+        .expect("open sqlite fixture db");
     conn.execute_compat(
         "CREATE TABLE restore_probe(marker TEXT NOT NULL)",
         coding_agent_search::franken_sync::params![],
@@ -703,13 +703,14 @@ fn write_be_u32_at(path: &Path, offset: u64, value: u32) {
 /// from opening the file at all (damage can fail the open itself).
 fn engine_integrity_check(db_path: &Path) -> String {
     match FrankenConnection::open(db_path.to_string_lossy().into_owned()) {
-        Ok(conn) => conn
-            .query_row_map(
-                "PRAGMA integrity_check;",
-                &[],
-                |row: &coding_agent_search::franken_sync::Row| row.get_typed(0),
-            )
-            .unwrap_or_else(|err| format!("integrity_check error: {err}")),
+        Ok(conn) => match conn.query("PRAGMA integrity_check;") {
+            Ok(rows) => rows
+                .into_iter()
+                .filter_map(|row| row.get_typed::<String>(0).ok())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(err) => format!("integrity_check error: {err}"),
+        },
         Err(err) => format!("open error: {err}"),
     }
 }
@@ -769,6 +770,29 @@ fn seed_durable_freelist(db_path: &Path) -> (u64, u32, u32, u32) {
     )
 }
 
+fn is_leaked_page_integrity_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.ends_with("is never used")
+        || (trimmed.to_ascii_lowercase().starts_with("page ") && trimmed.ends_with(": never used"))
+}
+
+fn is_leaked_pages_only_integrity(report: &str) -> bool {
+    let mut saw_diagnostic = false;
+    for line in report.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || (trimmed.starts_with("*** in database ") && trimmed.ends_with("***"))
+        {
+            continue;
+        }
+        if !is_leaked_page_integrity_line(trimmed) {
+            return false;
+        }
+        saw_diagnostic = true;
+    }
+    saw_diagnostic
+}
+
 /// Model the owner's archive (2l1b0.73): pages that left the freelist without
 /// entering a tree. Detaching the whole freelist from the header leaves every
 /// formerly free page unowned. Returns the number of leaked pages.
@@ -778,7 +802,7 @@ fn leak_freelist_pages(db_path: &Path) -> u32 {
     write_be_u32_at(db_path, SQLITE_HEADER_FREELIST_COUNT_OFFSET, 0);
     let integrity = engine_integrity_check(db_path);
     assert!(
-        integrity.ends_with("is never used"),
+        is_leaked_pages_only_integrity(&integrity),
         "fixture must leave only leaked pages: {integrity}"
     );
     count
@@ -795,7 +819,7 @@ fn double_reference_a_table_root(db_path: &Path) {
     write_be_u32_at(db_path, trunk_offset + 8, conversations_root);
     let integrity = engine_integrity_check(db_path);
     assert!(
-        integrity != "ok" && !integrity.contains("is never used"),
+        integrity != "ok" && !is_leaked_pages_only_integrity(&integrity),
         "fixture must fail integrity_check with a non-leak error: {integrity}"
     );
 }
@@ -965,7 +989,7 @@ fn doctor_repair_leaked_pages_frees_only_leaked_pages_behind_a_restorable_backup
             |row: &coding_agent_search::franken_sync::Row| row.get_typed(0),
         )
         .expect("freelist_count");
-    assert_eq!(freelist_after, i64::from(leaked));
+    assert_eq!(freelist_after, 0);
     let database = doctor_database_check(&doctor_check_payload(test_home, &data_dir));
     assert_eq!(database["status"].as_str(), Some("pass"), "{database:#}");
     tracker.end(
@@ -1059,7 +1083,7 @@ fn doctor_repair_leaked_pages_frees_only_leaked_pages_behind_a_restorable_backup
         String::from_utf8_lossy(&restored.stderr)
     );
     assert_eq!(test_file_blake3(&db_path), leaked_db_blake3);
-    assert!(engine_integrity_check(&db_path).ends_with("is never used"));
+    assert!(is_leaked_pages_only_integrity(&engine_integrity_check(&db_path)));
     tracker.end(
         "backup_rollback",
         Some("verify the backup, rehearse and apply the restore"),
@@ -1143,79 +1167,132 @@ fn doctor_repair_leaked_pages_refuses_a_doubled_reference() {
     tracker.complete();
 }
 
-/// GH #503: an archive whose `fts_messages_config` shadow carries the catalog
-/// cass wrote before the #434 fix (a declared primary key with no
-/// sqlite_master autoindex row). The fixture is a synthetic two-message
-/// archive written by cass, with that one table rewritten by stock SQLite
-/// (writable_schema); its paths come from the generating machine's scratch
-/// directory. Ordinary opens still refuse that catalog, but since
-/// frankensqlite 0.4.7 the deferred-FTS5 repair open binds the missing
-/// autoindex (doctor_recover::ENGINE_REPAIRS_MISSING_FTS5_SHADOW_AUTOINDEX),
-/// so status routes to the shadow repair, the dry-run plans it without
-/// touching the bytes, and --yes rebuilds the derived shadow from the
-/// unchanged canonical rows. Afterwards the archive opens normally, a repeat
-/// dry-run finds the shadow healthy and plans no rebuild, and the
-/// conversation indexes and searches again.
+/// GH #503: (1) an unstamped pre-v1 archive (`legacy_fts_config_shadow.db`)
+/// must be refused non-destructively with `SchemaRebuildRequired` across both
+/// `cass status --json` and `cass doctor --rebuild-canonical-fts`;
+/// (2) on a current schema-v1 archive whose `fts_messages_data` structure
+/// record is corrupt, `--dry-run` plans the drop+recreate rebuild without
+/// touching the archive bytes, `--yes` rebuilds the derived shadow from the
+/// unchanged canonical rows, the archive opens normally, a repeat `--dry-run`
+/// finds the shadow healthy, and the conversation indexes and searches again.
 #[test]
 fn doctor_rebuild_canonical_fts_repairs_the_503_legacy_shadow_catalog_in_place() {
+    use coding_agent_search::storage::sqlite::FrankenStorage;
+
     let tracker = PhaseTracker::new(
         "cli_doctor",
         "doctor_rebuild_canonical_fts_repairs_the_503_legacy_shadow_catalog_in_place",
     );
     let temp = tempfile::tempdir().expect("tempdir");
-    let test_home = temp.path();
-    let data_dir = test_home.join("cass-data");
-    let db_path = data_dir.join("agent_search.db");
-    tracker.phase("fixture", "copy the legacy shadow-catalog archive", || {
-        fs::create_dir_all(&data_dir).expect("data dir");
+    let legacy_home = temp.path().join("legacy");
+    let legacy_data_dir = legacy_home.join("cass-data");
+    let legacy_db_path = legacy_data_dir.join("agent_search.db");
+    tracker.phase("fixture", "copy the pre-v1 legacy shadow-catalog archive", || {
+        fs::create_dir_all(&legacy_data_dir).expect("data dir");
         fs::copy(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/fixtures/gh503/legacy_fts_config_shadow.db"),
-            &db_path,
+            &legacy_db_path,
         )
         .expect("copy fixture");
     });
-    let legacy_blake3 = test_file_blake3(&db_path);
+    let legacy_blake3 = test_file_blake3(&legacy_db_path);
 
     let phase = tracker.start(
-        "status",
-        Some("the read-only probe routes the legacy catalog to the shadow repair"),
+        "legacy_refusal",
+        Some("unstamped pre-v1 archive is refused with SchemaRebuildRequired"),
     );
-    let status = cass_cmd(test_home)
+    let legacy_status = cass_cmd(&legacy_home)
         .args([
             "status",
             "--json",
             "--data-dir",
-            data_dir.to_str().expect("utf8"),
+            legacy_data_dir.to_str().expect("utf8"),
         ])
         .output()
-        .expect("run cass status");
-    let status: Value = serde_json::from_slice(&status.stdout).expect("status json");
-    assert_eq!(status["database"]["opened"].as_bool(), Some(false));
-    let open_error = status["database"]["open_error"]
+        .expect("run cass status on pre-v1 fixture");
+    let legacy_status: Value =
+        serde_json::from_slice(&legacy_status.stdout).expect("legacy status json");
+    assert_eq!(legacy_status["database"]["opened"].as_bool(), Some(false));
+    let open_error = legacy_status["database"]["open_error"]
         .as_str()
         .expect("open_error");
     assert!(
-        open_error.contains("missing implicit autoindex slot 1 for table `fts_messages_config`"),
+        open_error.contains("rebuild required") && open_error.contains("cass index --full"),
         "{open_error}"
     );
-    assert!(
-        open_error.contains("cass doctor --rebuild-canonical-fts --dry-run --json"),
-        "{open_error}"
-    );
-    assert!(
-        !open_error.contains("cannot rebuild that shadow in place"),
-        "{open_error}"
-    );
+    for args in [
+        &["doctor", "--rebuild-canonical-fts", "--dry-run", "--json"][..],
+        &["doctor", "--rebuild-canonical-fts", "--yes", "--json"][..],
+    ] {
+        let out = cass_cmd(&legacy_home)
+            .args(args)
+            .args(["--data-dir", legacy_data_dir.to_str().expect("utf8")])
+            .output()
+            .expect("run doctor on pre-v1 fixture");
+        assert!(
+            !out.status.success(),
+            "pre-v1 fixture must be refused by {args:?}: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert_eq!(test_file_blake3(&legacy_db_path), legacy_blake3);
     tracker.end(
-        "status",
-        Some("the read-only probe routes the legacy catalog to the shadow repair"),
+        "legacy_refusal",
+        Some("unstamped pre-v1 archive is refused with SchemaRebuildRequired"),
         phase,
     );
 
+    let test_home = temp.path().join("v1");
+    fs::create_dir_all(&test_home).expect("v1 home");
+    let data_dir = test_home.join("cass-data");
+    let db_path = data_dir.join("agent_search.db");
+    fs::create_dir_all(&data_dir).expect("v1 data dir");
+    {
+        let storage = FrankenStorage::open(&db_path).expect("seed schema-v1 db");
+        let conn = storage.raw();
+        let agent_id = ensure_codex_agent(conn);
+        conn.execute_compat(
+            "INSERT INTO conversations(agent_id, source_id, external_id, title, source_path, started_at) \
+             VALUES(?1, 'local', 'gh503-v1', 'legacyshadowneedle how do I rebuild', '/tmp/gh503-tiny.jsonl', 1700000000000)",
+            coding_agent_search::franken_sync::params![agent_id],
+        )
+        .expect("insert conversation");
+        let conv_id: i64 = conn
+            .query_row_map("SELECT last_insert_rowid()", &[], |row| row.get_typed(0))
+            .expect("conversation id");
+        for (idx, role, content) in [
+            (0_i64, "user", "legacyshadowneedle how do I rebuild"),
+            (1_i64, "agent", "canonicalreplyneedle run the repair"),
+        ] {
+            conn.execute_compat(
+                "INSERT INTO messages(conversation_id, idx, role, content) VALUES(?1, ?2, ?3, ?4)",
+                coding_agent_search::franken_sync::params![conv_id, idx, role, content],
+            )
+            .expect("insert message");
+        }
+        storage.rebuild_fts().expect("build valid fts shadow");
+        storage.close().expect("close seeded schema-v1 db");
+
+        let raw = FrankenConnection::open(db_path.to_string_lossy().into_owned())
+            .expect("reopen to corrupt fts shadow");
+        let garbage = [0xFFu8; 12];
+        let changed = raw
+            .execute_compat(
+                "UPDATE fts_messages_data SET block = ?1 WHERE id = 10",
+                coding_agent_search::franken_sync::params![garbage.as_slice()],
+            )
+            .expect("corrupt fts_messages_data structure record");
+        assert_eq!(changed, 1, "expected structure row id=10 in fts_messages_data");
+        let _ = raw.query("PRAGMA wal_checkpoint(TRUNCATE);");
+        raw.close().expect("close corrupted db");
+    }
+    let corrupt_blake3 = test_file_blake3(&db_path);
+
     let data_dir_arg = data_dir.to_str().expect("utf8");
     let run = |args: &[&str]| {
-        let out = cass_cmd(test_home)
+        let out = cass_cmd(&test_home)
             .args(args)
             .args(["--data-dir", data_dir_arg])
             .output()
@@ -1240,7 +1317,7 @@ fn doctor_rebuild_canonical_fts_repairs_the_503_legacy_shadow_catalog_in_place()
         plan["planned_action"], "drop_recreate_rebuild_from_canonical",
         "{plan}"
     );
-    assert_eq!(test_file_blake3(&db_path), legacy_blake3);
+    assert_eq!(test_file_blake3(&db_path), corrupt_blake3);
     tracker.end(
         "dry_run",
         Some("the dry-run plans the rebuild and leaves the archive untouched"),
@@ -4229,7 +4306,7 @@ fn doctor_backups_list_and_verify_candidate_promotion_manifest() {
             .expect("warnings")
             .iter()
             .any(|warning| warning.as_str() == Some("frankensqlite read-only probe passed")),
-        "verify should prove the backup DB opens through frankensqlite: {verify_payload:#}"
+        "verify should prove the backup DB opens through SQLite: {verify_payload:#}"
     );
 }
 

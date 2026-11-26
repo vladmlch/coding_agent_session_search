@@ -3,12 +3,12 @@
 //! Bead: coding_agent_session_search-cass-fleet-resilience-20260608-uojcg.2.1
 //! ("Audit and enforce stdout/stderr hygiene for robot commands").
 //!
-//! The source report observed `cass view` emitting extensive frankensqlite INFO
+//! The source report observed `cass view` emitting extensive SQLite layer INFO
 //! tracing and corrupting machine-readable output. These tests pin the
 //! contract: every robot-mode command keeps **stdout = data-only** (pure JSON)
 //! and never lets dependency tracing interleave with the data stream — even when
 //! `RUST_LOG` is set to a deliberately noisy level that would otherwise flood
-//! the process with frankensqlite trace/info events.
+//! the process with dependency trace/info events.
 //!
 //! The enforcement chokepoint under test lives in `src/lib.rs`
 //! (`robot_aware_log_directive` / `build_robot_aware_log_filter`): robot/quiet
@@ -21,9 +21,9 @@ use tempfile::TempDir;
 mod util;
 use util::cass_bin;
 
-/// A `RUST_LOG` value loud enough that any unfiltered frankensqlite span would
+/// A `RUST_LOG` value loud enough that any unfiltered dependency span would
 /// land on stderr (or worse, stdout) if the robot hygiene guard regressed.
-const NOISY_RUST_LOG: &str = "trace,fsqlite=trace,fsqlite_core=trace,fsqlite_vdbe=trace";
+const NOISY_RUST_LOG: &str = "trace,rusqlite=trace,tantivy=trace,frankensearch=trace";
 
 /// Build a robot command with noisy dependency logging forced on and the run
 /// kept hermetic (no scan of the operator's real session corpus).
@@ -56,11 +56,13 @@ fn parse_stdout_json(stdout: &str) -> Value {
 /// `RUST_LOG` leaked past the hygiene chokepoint.
 fn assert_no_dependency_tracing(label: &str, stderr: &str) {
     let lower = stderr.to_lowercase();
-    assert!(
-        !lower.contains("fsqlite"),
-        "{label}: robot-mode stderr leaked frankensqlite tracing despite the error-level \
-         filter; stderr was:\n{stderr}\n--- end stderr ---"
-    );
+    for dep in ["rusqlite", "tantivy", "frankensearch"] {
+        assert!(
+            !lower.contains(dep),
+            "{label}: robot-mode stderr leaked `{dep}` dependency tracing despite the error-level \
+             filter; stderr was:\n{stderr}\n--- end stderr ---"
+        );
+    }
     // Tracing fmt lines carry an uppercase level token; INFO/DEBUG/TRACE must
     // not appear because the filter is pinned to `error`.
     for level in [" INFO ", " DEBUG ", " TRACE "] {
@@ -138,7 +140,7 @@ fn diag_stdout_is_pure_json_under_noisy_logging() {
 #[test]
 fn view_stdout_is_pure_json_under_noisy_logging() {
     // The exact command from the source report. `view` reading a plain file must
-    // not interleave frankensqlite tracing with the JSON payload.
+    // not interleave dependency tracing with the JSON payload.
     let json = assert_robot_hygiene(
         "view",
         &[

@@ -802,7 +802,7 @@ mod synthetic_history {
                         std::time::UNIX_EPOCH + Duration::from_millis(start as u64),
                     )?;
                 } else if provider == 2 {
-                    opencode.execute_batch("BEGIN;")?;
+                    opencode.execute_batch("BEGIN IMMEDIATE;")?;
                     opencode.execute_compat(
                         "INSERT INTO session_v2 VALUES(?1,'history',?2,?1,?3,?4)",
                         params![
@@ -838,7 +838,7 @@ mod synthetic_history {
                     }
                     opencode.execute_batch("COMMIT;")?;
                 } else {
-                    devin.execute_batch("BEGIN;")?;
+                    devin.execute_batch("BEGIN IMMEDIATE;")?;
                     let mut parent: Option<i64> = None;
                     for message in 0..messages {
                         node_id += 1;
@@ -891,7 +891,7 @@ mod synthetic_history {
                 .as_ref(),
         )?;
         let now = FrankenStorage::now_millis();
-        conn.execute_batch("BEGIN;")?;
+        conn.execute_batch("BEGIN IMMEDIATE;")?;
         conn.execute_compat(
             "UPDATE session_v2 SET time_updated=?1 WHERE id='history-2-0'",
             params![now],

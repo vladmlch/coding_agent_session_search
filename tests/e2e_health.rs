@@ -427,7 +427,8 @@ fn seed_large_health_latency_db(data_dir: &Path) {
         fparams![],
     )
     .expect("seed latency fixture agent");
-    conn.execute("BEGIN").expect("begin latency fixture seed");
+    conn.execute("BEGIN IMMEDIATE")
+        .expect("begin latency fixture seed");
 
     {
         let insert_conversation = conn
@@ -1390,7 +1391,7 @@ fn health_binary_only_exit_code_ignores_archive_state() {
 /// state, not merely override the exit code after paying archive open costs.
 /// The planted-negative archive path is a directory, which the ordinary
 /// health surface rejects as an unopenable database; selftest must still run
-/// a real in-memory FrankenSQLite write/read round-trip and leave that path
+/// a real in-memory SQLite write/read round-trip and leave that path
 /// untouched.
 #[test]
 fn selftest_is_archive_independent_and_exercises_the_database_engine() {

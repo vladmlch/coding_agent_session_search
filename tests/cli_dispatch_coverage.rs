@@ -533,8 +533,10 @@ fn context_legacy_nulls_and_zero_limit_remain_readonly_before_migration() {
     let db_path = data_dir.join("agent_search.db");
     let conn = FrankenConnection::open(db_path.to_string_lossy().as_ref()).unwrap();
     conn.execute_batch(
-        "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
-         INSERT INTO meta VALUES('schema_version', '20');
+        "PRAGMA application_id = 0x43415353;
+         PRAGMA user_version = 1;
+         CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+         INSERT INTO meta VALUES('schema_version', '1');
          CREATE TABLE agents(id INTEGER PRIMARY KEY, slug TEXT);
          INSERT INTO agents VALUES(1, NULL);
          CREATE TABLE workspaces(id INTEGER PRIMARY KEY, path TEXT);
@@ -590,10 +592,7 @@ fn context_wide_archive_limit_one_is_bounded_and_readonly() {
     let storage = FrankenStorage::open(&db_path).unwrap();
     let conn = storage.raw();
     conn.execute_batch(
-        "DROP INDEX idx_conversations_context;
-         DELETE FROM _schema_migrations WHERE version >= 21;
-         UPDATE meta SET value = '20' WHERE key = 'schema_version';
-         INSERT INTO agents(id, slug, name, kind, created_at, updated_at)
+        "INSERT INTO agents(id, slug, name, kind, created_at, updated_at)
              VALUES(1, 'codex', 'Codex', 'cli', 0, 0),
                    (2, 'claude', 'Claude', 'cli', 0, 0);
          INSERT INTO workspaces(id, path) VALUES(1, '/context-workspace'), (2, '/elsewhere');
@@ -636,8 +635,8 @@ fn context_wide_archive_limit_one_is_bounded_and_readonly() {
     .unwrap();
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
     drop(storage);
-    // Upgrade a populated file through the ordinary writable open, then prove
-    // every metadata payload survived the index build before invoking the CLI.
+    // Reopen through ordinary storage on schema v1, then prove every metadata
+    // payload survived before invoking the CLI.
     let storage = FrankenStorage::open(&db_path).unwrap();
     assert_eq!(storage.schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
     {
@@ -729,7 +728,9 @@ fn context_help_shows_options() {
 fn seed_timeline_count_fixture(db_path: &Path, archive_messages: i64, body_bytes: usize) {
     let conn = FrankenConnection::open(db_path.to_string_lossy().into_owned()).unwrap();
     conn.execute_batch(
-        "CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT);
+        "PRAGMA application_id = 0x43415353;
+         PRAGMA user_version = 1;
+         CREATE TABLE agents (id INTEGER PRIMARY KEY, slug TEXT);
          CREATE TABLE sources (id TEXT PRIMARY KEY, kind TEXT);
          CREATE TABLE conversations (
              id INTEGER PRIMARY KEY, agent_id INTEGER, title TEXT,
@@ -758,7 +759,7 @@ fn seed_timeline_count_fixture(db_path: &Path, archive_messages: i64, body_bytes
     )
     .unwrap();
     let body = "x".repeat(body_bytes);
-    conn.execute("BEGIN").unwrap();
+    conn.execute("BEGIN IMMEDIATE").unwrap();
     if archive_messages > 128 {
         // Match the report's conversation cardinality with a tiny window.
         for id in 9..=12_667_i64 {

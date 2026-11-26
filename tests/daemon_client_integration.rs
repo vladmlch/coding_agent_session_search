@@ -1297,9 +1297,27 @@ mod indexer_process_coexistence {
             );
             assert_eq!(
                 connection
-                    .query_row("SELECT MAX(version) FROM _schema_migrations")?
+                    .query_row("PRAGMA application_id")?
+                    .get_typed::<i64>(0)?,
+                0x4341_5353
+            );
+            assert_eq!(
+                connection
+                    .query_row("PRAGMA user_version")?
                     .get_typed::<i64>(0)?,
                 CURRENT_SCHEMA_VERSION
+            );
+            assert_eq!(
+                connection
+                    .query_row("SELECT value FROM meta WHERE key = 'schema_version'")?
+                    .get_typed::<String>(0)?,
+                CURRENT_SCHEMA_VERSION.to_string()
+            );
+            assert_eq!(
+                connection
+                    .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_schema_migrations'")?
+                    .get_typed::<i64>(0)?,
+                0
             );
             for row in connection.query("PRAGMA integrity_check")? {
                 assert_eq!(row.get_typed::<String>(0)?, "ok");
@@ -1327,25 +1345,6 @@ mod indexer_process_coexistence {
             };
             connection.close_without_checkpoint()?;
             Ok(count)
-        }
-
-        fn prepare_v21_schema(&self) -> Result<()> {
-            // V22 and V23 add the source and session tombstone tables. Remove
-            // both objects and their ledger entries so this is really V21.
-            let connection = Connection::open(self.db.to_string_lossy())?;
-            connection.execute_batch(
-                "DROP TABLE forgotten_conversations; \
-                 DROP TABLE forgotten_sources; \
-                 DELETE FROM _schema_migrations WHERE version > 21; \
-                 UPDATE meta SET value = '21' WHERE key = 'schema_version';",
-            )?;
-            assert_eq!(
-                connection
-                    .query_row("SELECT MAX(version) FROM _schema_migrations")?
-                    .get_typed::<i64>(0)?,
-                21
-            );
-            Ok(())
         }
 
         fn job(&self) -> EmbeddingJobConfig {
@@ -1406,9 +1405,8 @@ mod indexer_process_coexistence {
         let (mut daemon, client) = fixture.daemon(false)?;
         fixture.index("fresh", &["--full"])?;
         fixture.assert_archive(1)?;
-        fixture.prepare_v21_schema()?;
         fixture.seed(1)?;
-        fixture.index("upgrade", &[])?;
+        fixture.index("incremental", &[])?;
         fixture.assert_archive(2)?;
         fixture.index("unchanged", &[])?;
         fixture.assert_archive(2)?;
@@ -1948,7 +1946,19 @@ mod indexer_process_coexistence {
         let fixture = Fixture::new()?;
         fixture.seed(0)?;
         fixture.index("initial", &["--full"])?;
-        fixture.prepare_v21_schema()?;
+        // Reset the archive to an uninitialized zero-byte file without sidecars
+        // so `open_storage_for_index` enters `FrankenStorage::open`
+        // (`Uninitialized`) -> `index_storage_open_rendezvous_for_test` and
+        // awaits `blocker`'s transaction in `initialize_schema_v1`.
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let mut sidecar = fixture.db.as_os_str().to_os_string();
+            sidecar.push(suffix);
+            let sidecar_path = PathBuf::from(sidecar);
+            if sidecar_path.exists() {
+                fs::remove_file(sidecar_path)?;
+            }
+        }
+        fs::write(&fixture.db, b"")?;
         let (mut daemon, client) = fixture.daemon(false)?;
         let ready = fixture.data.join("migration-open-ready.json");
         let release = fixture.data.join("migration-open-release");
@@ -1969,13 +1979,12 @@ mod indexer_process_coexistence {
         })?;
         // Hold a real independent SQLite writer, without the CASS admission
         // lock, only after the child's raw engine constructor has returned.
-        // The pending CASS migration must await this transaction, which stays
-        // held until the signalled index has cooperatively drained.
+        // The pending CASS schema bootstrap must await this transaction, which
+        // stays held until the signalled index has cooperatively drained.
         let blocker = Connection::open(fixture.db.to_string_lossy())?;
-        blocker.execute("PRAGMA fsqlite.concurrent_mode = OFF")?;
         blocker.execute("BEGIN IMMEDIATE")?;
-        blocker.execute("INSERT INTO meta(key, value) VALUES('gh515_uncommitted', 'rollback')")?;
-        fs::write(&release, b"continue into CASS migration")?;
+        blocker.execute("CREATE TABLE _gh515_hold(x INT)")?;
+        fs::write(&release, b"continue into CASS schema bootstrap")?;
         fixture.wait_index_owner(
             &mut indexer,
             indexer_pid,
@@ -2015,19 +2024,23 @@ mod indexer_process_coexistence {
         );
         assert_eq!(
             blocker
-                .query_row("SELECT value FROM meta WHERE key = 'gh515_uncommitted'")?
+                .query_row(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = '_gh515_hold'",
+                )?
                 .get_typed::<String>(0)?,
-            "rollback"
+            "_gh515_hold"
         );
         blocker.execute("ROLLBACK")?;
         blocker.close()?;
         daemon.assert_running()?;
-        fixture.index("after-sigterm", &[])?;
+        fixture.index("after-sigterm", &["--full"])?;
         fixture.assert_archive(1)?;
         let recovered = Connection::open(fixture.db.to_string_lossy())?;
         assert_eq!(
             recovered
-                .query_row("SELECT COUNT(*) FROM meta WHERE key = 'gh515_uncommitted'")?
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '_gh515_hold'",
+                )?
                 .get_typed::<i64>(0)?,
             0
         );
@@ -2038,20 +2051,32 @@ mod indexer_process_coexistence {
     #[test]
     fn gh515_sigterm_bounds_contended_engine_open_and_recovers_with_resident_daemon() -> Result<()>
     {
-        let fixture = Fixture::new()?;
+        let mut fixture = Fixture::new()?;
+        fixture.db = fixture.data.join("agent_search.db");
         fixture.seed(0)?;
         fixture.index("initial", &["--full"])?;
-        fixture.prepare_v21_schema()?;
         let (mut daemon, client) = fixture.daemon(false)?;
-        // This writer is acquired before the child's raw engine constructor.
-        // Its bootstrap retry precedes CASS's cancellable migration SQL, so
-        // the existing five-second forced shutdown must bound this stage.
+        // Hold both a SQLite write transaction and the doctor-repair open lock
+        // before launching the child: the non-cancellable wait in
+        // `acquire_doctor_mutation_db_open_guard` inside
+        // `watch_startup:open_storage` must be bounded by the five-second
+        // forced shutdown.
         let blocker = Connection::open(fixture.db.to_string_lossy())?;
-        blocker.execute("PRAGMA fsqlite.concurrent_mode = OFF")?;
         blocker.execute("BEGIN IMMEDIATE")?;
         blocker.execute(
             "INSERT INTO meta(key, value) VALUES('gh515_bootstrap_uncommitted', 'rollback')",
         )?;
+        let doctor_lock_path = fixture.data.join("doctor/locks/doctor-repair.lock");
+        if let Some(parent) = doctor_lock_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let doctor_lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&doctor_lock_path)?;
+        fs2::FileExt::lock_exclusive(&doctor_lock)?;
         let mut indexer = fixture.spawn("contended-engine-open", fixture.index_command(&[]))?;
         let indexer_pid = indexer.child.id();
         fixture.wait_index_owner(
@@ -2134,6 +2159,8 @@ mod indexer_process_coexistence {
         );
         blocker.execute("ROLLBACK")?;
         blocker.close()?;
+        fs2::FileExt::unlock(&doctor_lock)?;
+        drop(doctor_lock);
         daemon.assert_running()?;
         fixture.index("after-forced-bootstrap-shutdown", &[])?;
         fixture.assert_archive(1)?;

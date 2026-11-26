@@ -15,15 +15,12 @@ use tempfile::TempDir;
 
 fn open_fixture_db(path: &Path) -> FrankenConnection {
     let path = path.to_string_lossy();
-    FrankenConnection::open(path.as_ref()).expect("open frankensqlite fixture database")
+    FrankenConnection::open(path.as_ref()).expect("open SQLite fixture database")
 }
 
-/// Run a fixture batch atomically (BEGIN/COMMIT) with a bounded retry: fsqlite
-/// 0.3.x can abort the whole batch with a transient `BusySnapshot` while a
-/// previously-dropped session's epoch unwinds (tempdir inode reuse), and the
-/// atomic wrapper makes a wholesale re-run safe.
+/// Run a fixture batch atomically (BEGIN IMMEDIATE/COMMIT) with a bounded retry on transient busy states.
 fn run_fixture_batch(conn: &FrankenConnection, sql: &str) {
-    let wrapped = format!("BEGIN;\n{sql}\nCOMMIT;");
+    let wrapped = format!("BEGIN IMMEDIATE;\n{sql}\nCOMMIT;");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut delay = std::time::Duration::from_millis(10);
     loop {
@@ -143,6 +140,8 @@ fn test_migration_preserves_data() {
             &conn,
             &format!(
                 r#"
+            PRAGMA application_id = 0x43415353;
+            PRAGMA user_version = 1;
             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
             INSERT INTO meta (key, value) VALUES ('schema_version', '{}');
             CREATE TABLE agents (
@@ -396,6 +395,8 @@ fn test_fts_rebuild() {
             &conn,
             &format!(
                 r#"
+            PRAGMA application_id = 0x43415353;
+            PRAGMA user_version = 1;
             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
             INSERT INTO meta (key, value) VALUES ('schema_version', '{}');
 

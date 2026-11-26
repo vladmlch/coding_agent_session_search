@@ -1,5 +1,5 @@
 //! GH#521: filter conversation metadata before counting messages.
-//! These exercise the real CLI/FrankenSQLite reader, not a stock SQLite model.
+//! These exercise the real CLI/SQLite reader, not a stock SQLite model.
 use assert_cmd::Command;
 use coding_agent_search::franken_sync::compat::ConnectionExt;
 use coding_agent_search::franken_sync::{Connection, params};
@@ -17,8 +17,10 @@ fn archive(root: &Path) -> Connection {
     let conn = Connection::open(db.to_string_lossy().into_owned()).unwrap();
     // Production streams the canonical idx_messages_conv_idx covering index.
     conn.execute_batch(
-        "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
-         INSERT INTO meta VALUES('schema_version', '20');
+        "PRAGMA application_id = 0x43415353;
+         PRAGMA user_version = 1;
+         CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+         INSERT INTO meta VALUES('schema_version', '1');
          CREATE TABLE agents(id INTEGER PRIMARY KEY, slug TEXT);
          INSERT INTO agents VALUES(1, 'claude_code'), (2, 'codex');
          CREATE TABLE sources(id TEXT PRIMARY KEY, kind TEXT);

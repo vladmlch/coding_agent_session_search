@@ -58,6 +58,9 @@ fn sort_example_paths(value: &mut Value) {
             if let Some(Value::Array(paths)) = map.get_mut("example_paths") {
                 paths.sort_by(|left, right| left.as_str().cmp(&right.as_str()));
             }
+            if map.contains_key("recent_decisions") && map.contains_key("calibration") {
+                map.insert("memory".to_string(), json!("[LIVE_SAMPLE]"));
+            }
             for (key, child) in map.iter_mut() {
                 match key.as_str() {
                     "current_capacity_pct" => {

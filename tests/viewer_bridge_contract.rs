@@ -11,7 +11,7 @@ fn strict_bridge_has_versioned_limits_and_does_not_claim_runtime_qualification()
     let before = bridge.tree()?;
     let hello = bridge.exchange(json!({"op":"hello","id":1}))?;
     assert_eq!(hello["result"]["bridge_protocol"], 1);
-    assert_eq!(hello["result"]["db_schema_version"], 23);
+    assert_eq!(hello["result"]["db_schema_version"], 1);
     assert_eq!(hello["result"]["exact_rank"], false);
     assert_eq!(hello["result"]["rank_enumeration_supported"], true);
     assert_eq!(hello["result"]["qualification"], "static_only");
@@ -129,7 +129,7 @@ fn schema_mismatch_and_oversized_canonical_body_are_explicit_refusals() -> Resul
     );
     let writer = Connection::open(bridge.db.to_string_lossy().into_owned())?;
     // One past the pinned profile: simulates an archive from a newer CASS.
-    writer.execute("UPDATE meta SET value='24' WHERE key='schema_version'")?;
+    writer.execute("UPDATE meta SET value='2' WHERE key='schema_version'")?;
     drop(writer);
     let mismatch = bridge.exchange(json!({"op":"reload"}))?;
     assert_eq!(mismatch["ok"], false);

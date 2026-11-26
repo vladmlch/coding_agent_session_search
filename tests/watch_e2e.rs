@@ -1637,21 +1637,10 @@ fn watch_once_repeated_idle_cycles_stay_healthy_and_accept_new_content() {
 
     let db_path = data_dir.join("agent_search.db");
     let storage = SqliteStorage::open(&db_path).expect("open indexed db");
-    let namespaced: i64 = storage
-        .raw()
-        .query_row_map("PRAGMA fsqlite.autocommit_retain;", &[], |row| {
-            row.get_typed(0)
-        })
-        .expect("query fsqlite autocommit_retain");
-    let alias: i64 = storage
-        .raw()
-        .query_row_map("PRAGMA autocommit_retain;", &[], |row| row.get_typed(0))
-        .expect("query autocommit_retain alias");
-    assert_eq!(
-        namespaced, 0,
-        "writer connections should disable retained autocommit"
+    assert!(
+        storage.raw().is_autocommit(),
+        "writer connections should stay in autocommit mode"
     );
-    assert_eq!(alias, 0, "autocommit_retain alias should also be disabled");
 
     for cycle in 1..=8 {
         let (output, stdout, stderr) = run_watch_once_with_env(

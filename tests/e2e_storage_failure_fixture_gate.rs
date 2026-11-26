@@ -63,7 +63,7 @@
 //! ([`spawn_with_timeout_or_diag`]), which keeps stdout/stderr separate and
 //! turns a hang into a loud `TIMEOUT DIAGNOSTIC` + panic — categorically
 //! distinct from this gate's `Err` (assertion fail) and `Ok` (pass). A failed
-//! probe is attributed to one of the four bead categories — CASS, frankensqlite
+//! probe is attributed to one of the four bead categories — CASS, SQLite
 //! storage, host-pressure, or fixture-setup — by [`attribute_failure`], proven
 //! by [`failure_attribution_separates_the_four_categories`].
 //!
@@ -186,6 +186,10 @@ enum Expected {
     /// Only a derived asset drifted: `search` must fail open (rebuild lexical
     /// from SQLite) and return results, and `status` must stay healthy.
     FailOpenTruthful,
+    /// Suspect/incoherent WAL sidecar: `search` fails open using the existing
+    /// Tantivy index, while strict read-only `status` defers opening (`opened == false`,
+    /// `health_level != "healthy"`) and preserves the canonical DB byte-identically.
+    SearchFailOpenStatusDeferred,
 }
 
 /// One storage-failure fixture: provenance, the `.14.1` expectations, the
@@ -287,12 +291,12 @@ fn fixtures() -> Vec<StorageFixture> {
             id: "fm-storage-legacy-interop-fail",
             class: "legacy database readability / migration-plan",
             provenance: "valid baseline DB with the schema-format number (bytes 44..48) set to \
-                         the legacy value 1 so the current engine cannot interop",
+                         the unsupported value 5 so the current engine cannot interop",
             expected_storage_state: "legacy_interop_failed",
             expected_source_of_truth_risk: "medium",
             corruption: Corruption::SetHeaderBytes {
                 offset: 44,
-                bytes: &[0x00, 0x00, 0x00, 0x01],
+                bytes: &[0x00, 0x00, 0x00, 0x05],
             },
             expected: Expected::FailClosed {
                 error_kinds: STORAGE_ERROR_KINDS,
@@ -311,10 +315,10 @@ fn fixtures() -> Vec<StorageFixture> {
             expected_storage_state: "wal_sidecar_suspect",
             expected_source_of_truth_risk: "medium",
             corruption: Corruption::OrphanWalShm,
-            // fsqlite 0.3.x repairs stale/orphaned sidecars on open (the
-            // GH#334/d29339c quiescent-record repair that also fixed
-            // cass#393), so reads now succeed instead of failing closed.
-            expected: Expected::FailOpenTruthful,
+            // Strict read-only `status` refuses incoherent sidecars with
+            // BusyRecovery without mutating them, while `search` sees
+            // `wal_sidecar_suspect` and fails open onto the existing Tantivy index.
+            expected: Expected::SearchFailOpenStatusDeferred,
             safe_command: "cass status --json",
             unsafe_command: "cass doctor --repair --yes --plan-fingerprint <fp>",
             human_summary: "storage wal_sidecar_suspect (source-of-truth risk medium) — \
@@ -329,10 +333,10 @@ fn fixtures() -> Vec<StorageFixture> {
             expected_storage_state: "busy_or_locked",
             expected_source_of_truth_risk: "low",
             corruption: Corruption::ActiveWal,
-            // fsqlite 0.3.x retries transient recovery states at autocommit
-            // boundaries (GH#333) and completes the abandoned writer's WAL
-            // recovery, so reads now succeed instead of failing closed.
-            expected: Expected::FailOpenTruthful,
+            // Strict read-only `status` refuses a populated WAL without `-shm`
+            // via BusyRecovery without mutating sidecars, while `search` sees
+            // the suspect sidecar and fails open onto the existing Tantivy index.
+            expected: Expected::SearchFailOpenStatusDeferred,
             safe_command: "cass status --json",
             unsafe_command: "cass doctor --repair --yes --plan-fingerprint <fp>",
             human_summary: "storage busy_or_locked (source-of-truth risk low) — \
@@ -396,16 +400,16 @@ const STORAGE_ERROR_KINDS: &[&str] = &[
 // =============================================================================
 
 /// Which layer a failed probe is attributed to. The bead requires every E2E
-/// failure to say whether it is a CASS bug, a frankensqlite-storage problem,
+/// failure to say whether it is a CASS bug, a storage-engine problem,
 /// host pressure, or a fixture-setup error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Attribution {
     /// A cass-level defect: wrong dispatch, malformed envelope, stdout leakage,
     /// or a contract the gate expected but did not see.
     Cass,
-    /// A frankensqlite-storage error surfaced honestly (e.g. a storage/corrupt
+    /// A storage-engine error surfaced honestly (e.g. a storage/corrupt
     /// envelope) — the storage engine behaving as the fixture intends.
-    Frankensqlite,
+    StorageEngine,
     /// A bounded-runner timeout: a hang or host-pressure stall.
     HostPressure,
     /// The fixture's own setup failed (baseline build, copy, or corruption) —
@@ -417,7 +421,7 @@ impl Attribution {
     fn as_str(self) -> &'static str {
         match self {
             Attribution::Cass => "cass",
-            Attribution::Frankensqlite => "frankensqlite",
+            Attribution::StorageEngine => "storage-engine",
             Attribution::HostPressure => "host-pressure",
             Attribution::FixtureSetup => "fixture-setup",
         }
@@ -426,7 +430,7 @@ impl Attribution {
 
 /// Pure attribution: fixture-setup outranks everything (no cass behavior was
 /// observed), then a timeout (host pressure / hang), then a storage-engine
-/// error (frankensqlite behaving as intended), else a cass-level defect.
+/// error (storage engine behaving as intended), else a cass-level defect.
 fn attribute_failure(
     fixture_setup_failed: bool,
     timed_out: bool,
@@ -439,7 +443,7 @@ fn attribute_failure(
         return Attribution::HostPressure;
     }
     if storage_engine_error {
-        return Attribution::Frankensqlite;
+        return Attribution::StorageEngine;
     }
     Attribution::Cass
 }
@@ -743,7 +747,7 @@ fn check_fail_closed_search(out: &Output, error_kinds: &[&str]) -> Result<bool, 
             "process exit code {code} does not mirror error.code {ecode} (exit-code contract)"
         ));
     }
-    // A storage envelope (kind in the storage set, retryable) is a frankensqlite
+    // A storage envelope (kind in the storage set, retryable) is a storage-engine
     // signal, not a cass-dispatch bug — record that for attribution.
     Ok(true)
 }
@@ -999,6 +1003,11 @@ fn evaluate_fixture(
             check_fail_open_search(&search_out)?;
             check_status_canonical_intact(&status_out)?;
             check_db_preserved(data_dir, hash_before, false)
+        })(),
+        Expected::SearchFailOpenStatusDeferred => (|| {
+            check_fail_open_search(&search_out)?;
+            check_status_honest_about_breakage(&status_out)?;
+            check_db_preserved(data_dir, hash_before, true)
         })(),
     };
 
@@ -1488,7 +1497,7 @@ fn command_is_mutating(cmd: &str) -> bool {
 }
 
 /// Attribution separates the four bead categories — fixture-setup, host
-/// pressure (timeout), frankensqlite storage, and cass — with the documented
+/// pressure (timeout), storage engine, and cass — with the documented
 /// precedence (setup outranks timeout outranks storage-error outranks cass).
 #[test]
 fn failure_attribution_separates_the_four_categories() -> Result<(), String> {
@@ -1497,7 +1506,7 @@ fn failure_attribution_separates_the_four_categories() -> Result<(), String> {
         (true, false, false, Attribution::FixtureSetup),
         (false, true, true, Attribution::HostPressure),
         (false, true, false, Attribution::HostPressure),
-        (false, false, true, Attribution::Frankensqlite),
+        (false, false, true, Attribution::StorageEngine),
         (false, false, false, Attribution::Cass),
     ];
     for (setup, timed_out, storage_err, want) in cases {
@@ -1515,7 +1524,7 @@ fn failure_attribution_separates_the_four_categories() -> Result<(), String> {
     // The four categories have distinct wire labels (no silent collisions).
     let labels = [
         Attribution::Cass.as_str(),
-        Attribution::Frankensqlite.as_str(),
+        Attribution::StorageEngine.as_str(),
         Attribution::HostPressure.as_str(),
         Attribution::FixtureSetup.as_str(),
     ];
@@ -1602,10 +1611,9 @@ fn acceptable_doctor_storage_states(fixture_id: &str) -> &'static [&'static str]
         | "fm-storage-legacy-interop-fail" => {
             &["openread_failed", "integrity_failed", "unknown_deferred"]
         }
-        // fsqlite 0.3.x heals stale sidecars and abandoned WALs on open
-        // (GH#333 recovery retries + GH#334/d29339c sidecar repair), so
-        // doctor now reports the exact suspicion class — or full health —
-        // while reads succeed, instead of a generic open failure.
+        // Strict read-only defers stale/incoherent sidecars without mutating
+        // them, so doctor reports either the exact suspicion class, an open/
+        // deferred state, or a snapshot-recovered healthy state.
         "fm-storage-stale-wal-shm" | "fm-storage-busy-lock-active-writer" => &[
             "openread_failed",
             "integrity_failed",
@@ -1789,7 +1797,10 @@ fn probe_doctor_storage_state(
     // 6. doctor --check is read-only: the canonical DB is byte-identical for a
     //    canonical-broken fixture, and at minimum keeps its SQLite magic for a
     //    derived-only one (the source-of-truth-preservation invariant).
-    let require_byte_identical = matches!(fixture.expected, Expected::FailClosed { .. });
+    let require_byte_identical = matches!(
+        fixture.expected,
+        Expected::FailClosed { .. } | Expected::SearchFailOpenStatusDeferred
+    );
     if let Err(why) = check_db_preserved(fixture_dd, &hash_before, require_byte_identical) {
         problems.push(format!("[{}] {why}", fixture.id));
     }
@@ -1993,10 +2004,14 @@ fn set_probe_fixture_schema_version(db: &Path, legacy: bool) -> Result<(), Strin
     let current = raw_current
         .parse::<i64>()
         .map_err(|err| format!("parse fixture schema version {raw_current:?}: {err}"))?;
-    let diagnostic_version = if legacy { 1 } else { current.saturating_add(1) };
+    let diagnostic_version = if legacy {
+        "legacy".to_string()
+    } else {
+        current.saturating_add(1).to_string()
+    };
     conn.execute_compat(
         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
-        &[ParamValue::from(diagnostic_version.to_string())],
+        &[ParamValue::from(diagnostic_version)],
     )
     .map_err(|err| format!("set fixture schema version: {err}"))?;
     // Fixture setup is the mutating phase: close normally so the deliberate
@@ -2294,7 +2309,7 @@ fn prove_dedicated_fixture_surfaces(
 
 /// The four probe-dependent states have dedicated, openable fixtures and are
 /// exact on every truth surface. The busy fixture holds a real exclusive
-/// frankensqlite transaction; no generic `retryable` hint or fabricated WAL is
+/// SQLite transaction; no generic `retryable` hint or fabricated WAL is
 /// accepted as contention evidence.
 #[test]
 fn dedicated_openable_fixtures_are_exact_across_status_search_and_doctor() -> Result<(), String> {

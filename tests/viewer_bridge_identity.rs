@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::{Result, ensure};
-use coding_agent_search::franken_sync::Connection;
+use coding_agent_search::franken_sync::{Connection, SqliteValue};
 use coding_agent_search::model::types::{Agent, AgentKind, Conversation, Message, MessageRole};
 use coding_agent_search::storage::sqlite::FrankenStorage;
 use serde_json::{Value, json};
@@ -599,15 +599,15 @@ fn conversation_id_never_leaks_into_public_identity() -> Result<()> {
 fn both_lookup_directions_use_provenance_indexes() -> Result<()> {
     let fixture = IdentityFixture::build(&[FixtureRow::new("claude", "/c/ix.jsonl", Some("ix"))])?;
     let conn = fixture.connect()?;
-    let plan_rows = |sql: &str| -> Result<Vec<String>> {
+    let plan_rows = |sql: &str, params: &[SqliteValue]| -> Result<Vec<String>> {
         let mut lines = Vec::new();
-        for row in conn.query(&format!("EXPLAIN QUERY PLAN {sql}"))? {
+        for row in conn.query_with_params(&format!("EXPLAIN QUERY PLAN {sql}"), params)? {
             use coding_agent_search::franken_sync::compat::RowExt;
             lines.push(row.get_typed::<String>(3)?);
         }
         Ok(lines)
     };
-    let forward = plan_rows(identity::FORWARD_ROW_SQL)?;
+    let forward = plan_rows(identity::FORWARD_ROW_SQL, &[SqliteValue::Integer(1)])?;
     eprintln!("forward plan: {forward:?}");
     ensure!(
         forward
@@ -615,7 +615,10 @@ fn both_lookup_directions_use_provenance_indexes() -> Result<()> {
             .any(|line| { line.contains("SEARCH conversations USING INTEGER PRIMARY KEY") }),
         "forward lookup must be a primary-key probe, not a scan: {forward:?}"
     );
-    let reverse = plan_rows(identity::REVERSE_CANDIDATE_SQL)?;
+    let reverse = plan_rows(
+        identity::REVERSE_CANDIDATE_SQL,
+        &[SqliteValue::Text("local".into())],
+    )?;
     eprintln!("reverse plan: {reverse:?}");
     ensure!(
         reverse

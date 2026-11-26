@@ -650,7 +650,7 @@ fn fixup_parent_links_lookup_cost_is_index_served() -> Result<()> {
     // Every row carries DISTINCT pending parent evidence (the archive-wide
     // worst case for the old scan); the parent call below matches exactly
     // one child (`evid-7`).
-    conn.execute("BEGIN")?;
+    conn.execute("BEGIN IMMEDIATE")?;
     // 100k rows seed in this one transaction, so the per-row strings are
     // formatted into preallocated reusable buffers rather than fresh
     // allocations every iteration (`fmt::Write` into a String is
@@ -1969,7 +1969,7 @@ fn revisions_writer_requires_installed_extension_profile() -> Result<()> {
 
 #[test]
 fn revisions_engine_trigger_semantics_probe() -> Result<()> {
-    // Qualify the chosen revision mechanism against the pinned FrankenSQLite
+    // Qualify the chosen revision mechanism against the pinned SQLite
     // build: AFTER INSERT/DELETE fire unconditionally, and an UPDATE trigger
     // whose bump carries `WHERE OLD.x IS NOT NEW.x` suppresses same-values
     // rewrites while genuine column changes still bump — across connections.
@@ -3081,10 +3081,11 @@ fn assert_index_bounded_plan(
     connection: &Connection,
     label: &str,
     sql: &str,
+    params: &[SqliteValue],
     expect_index: &str,
 ) -> Result<()> {
     let opcodes: Vec<String> = connection
-        .query(&format!("EXPLAIN {sql}"))?
+        .query_with_params(&format!("EXPLAIN {sql}"), params)?
         .iter()
         .map(|row| row.get_typed::<String>(1).unwrap_or_default())
         .collect();
@@ -3094,7 +3095,7 @@ fn assert_index_bounded_plan(
         "order scan must be index-satisfied, never a sorter pass [{label}]: {opcodes:?}"
     );
     let plan: Vec<String> = connection
-        .query(&format!("EXPLAIN QUERY PLAN {sql}"))?
+        .query_with_params(&format!("EXPLAIN QUERY PLAN {sql}"), params)?
         .iter()
         .map(|row| row.get_typed::<String>(3).unwrap_or_default())
         .collect();
@@ -3113,9 +3114,9 @@ fn assert_index_bounded_plan(
 
 /// `EXPLAIN QUERY PLAN` detail lines for the hydration probe, joined for
 /// assertion/error reporting.
-fn hydrate_sql_plan(connection: &Connection, sql: &str) -> Result<String> {
+fn hydrate_sql_plan(connection: &Connection, sql: &str, params: &[SqliteValue]) -> Result<String> {
     let plan: Vec<String> = connection
-        .query(&format!("EXPLAIN QUERY PLAN {sql}"))?
+        .query_with_params(&format!("EXPLAIN QUERY PLAN {sql}"), params)?
         .iter()
         .map(|row| row.get_typed::<String>(3).unwrap_or_default())
         .collect();
@@ -3201,11 +3202,12 @@ fn list_sessions_query_plan_audit() -> Result<()> {
                 &connection,
                 &format!("{label} order#{i}"),
                 sql,
+                params,
                 expected_index,
             )?;
         }
         // Hydration is a bounded `WHERE c.id IN (page ids)` probe —
-        // FrankenSQLite resolves a standalone-table IN list to repeated
+        // SQLite resolves a standalone-table IN list to repeated
         // `SeekRowid` lookups (scratch probe `in-list`), and the audit
         // pins that probe shape plus the no-messages guarantee.
         ensure!(
@@ -3221,7 +3223,11 @@ fn list_sessions_query_plan_audit() -> Result<()> {
         );
         // The probe shape with a real page-id list: repeated rowid seeks.
         let hydrated_probe = planned.hydrate_query.replace("?1..?N", "?1,?2");
-        let joined = hydrate_sql_plan(&connection, &hydrated_probe)?;
+        let joined = hydrate_sql_plan(
+            &connection,
+            &hydrated_probe,
+            &[SqliteValue::Integer(1), SqliteValue::Integer(2)],
+        )?;
         eprintln!("EQP [{label} hydrate]: {joined}");
         ensure!(
             !joined.to_uppercase().contains("MESSAGES"),
@@ -3280,7 +3286,7 @@ struct ScaleSortRow {
 /// and a third of the rows carry no workspace (project unknown).
 fn seed_sort_scale_canonical(db: &Path, count: usize) -> Result<()> {
     let conn = Connection::open(db.to_string_lossy().into_owned())?;
-    conn.execute("BEGIN")?;
+    conn.execute("BEGIN IMMEDIATE")?;
     conn.execute(
         "INSERT OR IGNORE INTO sources (id,kind,created_at,updated_at) \
          VALUES ('local','local',0,0)",
@@ -3363,7 +3369,7 @@ fn seed_sort_scale_canonical(db: &Path, count: usize) -> Result<()> {
 /// the canonical columns; these writes cover the trigger path).
 fn seed_sort_scale_extensions(db: &Path, count: usize) -> Result<()> {
     let conn = Connection::open(db.to_string_lossy().into_owned())?;
-    conn.execute("BEGIN")?;
+    conn.execute("BEGIN IMMEDIATE")?;
     let insert = conn.prepare(
         "INSERT INTO viewer_session_facts \
          (conversation_id,extractor_version,source_revision,coverage_state,\
@@ -3589,11 +3595,12 @@ fn list_sessions_sort_index_50k_exact_order_and_bounded_work() -> Result<()> {
             None,
             200,
         )?;
-        for (i, (sql, _params)) in planned.order_queries.iter().enumerate() {
+        for (i, (sql, params)) in planned.order_queries.iter().enumerate() {
             assert_index_bounded_plan(
                 &connection,
                 &format!("50k {sort:?}#{i}"),
                 sql,
+                params,
                 expected_index,
             )?;
         }
@@ -3738,11 +3745,12 @@ fn list_sessions_sort_index_50k_exact_order_and_bounded_work() -> Result<()> {
         cursor.as_deref(),
         200,
     )?;
-    for (i, (sql, _)) in planned.order_queries.iter().enumerate() {
+    for (i, (sql, params)) in planned.order_queries.iter().enumerate() {
         assert_index_bounded_plan(
             &connection2,
             &format!("50k keyset#{i}"),
             sql,
+            params,
             "idx_viewer_sort_activity_desc",
         )?;
     }
@@ -3777,11 +3785,12 @@ fn list_sessions_sort_index_scaling_evidence() -> Result<()> {
             None,
             200,
         )?;
-        for (i, (sql, _)) in planned.order_queries.iter().enumerate() {
+        for (i, (sql, params)) in planned.order_queries.iter().enumerate() {
             assert_index_bounded_plan(
                 &connection,
                 &format!("{count}k#{i}"),
                 sql,
+                params,
                 "idx_viewer_sort_activity_desc",
             )?;
         }
@@ -8045,7 +8054,7 @@ fn repair_sort_tie_delete_race_leaves_no_dangling_row() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Engine capability probe (Task 4 audit evidence): pins the FrankenSQLite
+// Engine capability probe (Task 4 audit evidence): pins the SQLite
 // plan/codegen behaviors the indexed browse design depends on — a
 // multi-column ORDER BY (ASC/DESC mix) satisfied from a composite index
 // with no SorterOpen, IN-list probes compiled to repeated SeekRowid, the
@@ -8056,7 +8065,7 @@ fn repair_sort_tie_delete_race_leaves_no_dangling_row() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn fsqlite_sort_index_capability_probe() -> Result<()> {
+fn sqlite_sort_index_capability_probe() -> Result<()> {
     let dir = std::env::temp_dir().join(format!("sort-probe-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let db = dir.join("probe.db");

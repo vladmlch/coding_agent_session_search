@@ -506,7 +506,7 @@ mod devin_ingestion {
         // Schema and JSON shapes from the published FAD 0.2.3 Devin connector,
         // independently populated here with branch, hidden and empty sessions.
         conn.execute_batch(
-            "BEGIN;
+            "BEGIN IMMEDIATE;
              CREATE TABLE sessions (
                  id TEXT PRIMARY KEY, title TEXT, working_directory TEXT,
                  model TEXT, agent_mode TEXT, created_at INTEGER,
@@ -1031,7 +1031,7 @@ mod devin_ingestion {
             (9, 8, "devindelayedwalneedle"),
         ] {
             writer
-                .execute_batch("BEGIN;")
+                .execute_batch("BEGIN IMMEDIATE;")
                 .expect("begin provider append");
             writer
                 .execute_compat(

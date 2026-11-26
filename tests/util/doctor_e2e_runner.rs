@@ -1820,7 +1820,7 @@ impl DoctorE2eFileTreeSnapshot {
                         .to_string_lossy()
                         .replace('\\', "/");
                     // SQLite `-shm` files are shared-memory scratch, not
-                    // database state: since fsqlite 0.3.12 (GH#399) even a
+                    // database state: under SQLite WAL mode even a
                     // READ-ONLY connection registers itself in the WAL-index
                     // there — exactly like stock SQLite readers — so hashing
                     // shm content would make every read-only doctor run a

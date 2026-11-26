@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use coding_agent_search::franken_sync::compat::TransactionExt;
+use coding_agent_search::franken_sync::compat::{TransactionBehavior, TransactionExt};
 use coding_agent_search::franken_sync::{Connection, SqliteValue};
 use coding_agent_search::search::canonicalize::{canonicalize_for_embedding, content_hash};
 use coding_agent_search::search::embedder::Embedder;
@@ -215,7 +215,9 @@ fn unchanged_refinement_eliminates_one_complete_fast_scan_against_live_incumbent
 fn source_change_after_initial_invalidates_fast_ranking_before_refusion() -> TestResult {
     let fixture = Fixture::new(false)?;
     let visits = Visits::default();
-    let mut tx = fixture.conn.transaction()?;
+    let mut tx = fixture
+        .conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut phases = fixture
         .reader
         .progressive_current_text_in_transaction(fixture.request(&visits, 5), &tx)?;

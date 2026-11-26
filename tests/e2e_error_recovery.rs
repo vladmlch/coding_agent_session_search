@@ -208,17 +208,9 @@ fn test_corrupted_database_fresh_creation() {
     let start = tracker.start("backup_corrupted", Some("Backup corrupted database"));
     let backup_path = db_path.with_extension("db.corrupt");
     fs::rename(&db_path, &backup_path).expect("backup corrupted");
-    // The fsqlite 0.3.x namespace/WAL sidecars carry the corrupt file's
-    // identity; leaving them beside the vacated path makes the fresh create
-    // refuse with "unable to open database file". A real set-aside moves the
-    // whole family, so the fixture must too.
-    for suffix in [
-        "-fsqlite-ns-gate",
-        "-fsqlite-ns-use",
-        "-wal",
-        "-shm",
-        "-wal-cert-head",
-    ] {
+    // Move any SQLite journal/WAL sidecars beside the corrupt file so the
+    // fresh create starts cleanly.
+    for suffix in ["-wal", "-shm", "-journal"] {
         let sidecar = PathBuf::from(format!("{}{suffix}", db_path.display()));
         if sidecar.exists() {
             let sidecar_backup = PathBuf::from(format!("{}{suffix}", backup_path.display()));

@@ -1282,7 +1282,7 @@ mod tests {
             );
             INSERT INTO agents (id, slug) VALUES (1, 'codex');
             INSERT INTO workspaces (id, path) VALUES (1, '/tmp/project');
-            BEGIN;
+            BEGIN IMMEDIATE;
             "#,
         )?;
 

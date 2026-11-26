@@ -1,5 +1,7 @@
-//! Real-binary proof for the reviewed logical-archive v20, v21 and v22 -> v23
-//! bridges.
+//! Real-binary proof for the schema-v1 logical-archive `--allow-compatible-schema`
+//! contract: v1 backups restore cleanly and retry read-only under `--if-identical`,
+//! while legacy pre-v1 or `_schema_migrations`-bearing backups are refused without
+//! mutating the destination even when `--allow-compatible-schema` is passed.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -13,8 +15,6 @@ use coding_agent_search::franken_sync::compat::RowExt;
 use coding_agent_search::model::types::{Agent, AgentKind};
 use coding_agent_search::storage::sqlite::{CURRENT_SCHEMA_VERSION, SqliteStorage};
 use serde_json::Value;
-
-const REVIEWED_TARGET_VERSION: i64 = 23;
 
 fn command(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_cass"));
@@ -57,66 +57,30 @@ fn database_files(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         .collect()
 }
 
-/// A canonical database at storage schema `version`, made by undoing on a
-/// current database exactly what each later reviewed step added: v23's session
-/// tombstones, v22's source tombstones, and v21's context index. The v22 fixture
-/// retains an existing source tombstone, which migration must preserve.
-fn make_source(root: &Path, version: i64) -> PathBuf {
+fn make_v1_source(root: &Path, name: &str) -> PathBuf {
     assert_eq!(
-        CURRENT_SCHEMA_VERSION, REVIEWED_TARGET_VERSION,
-        "reviewed migration test must be revisited when the canonical target schema advances"
+        CURRENT_SCHEMA_VERSION, 1,
+        "schema-v1 logical archive test must be revisited if CURRENT_SCHEMA_VERSION changes"
     );
-    let source = root.join(format!("source-v{version}.db"));
+    let source = root.join(name);
     let storage = SqliteStorage::open(&source).expect("create current canonical fixture");
     storage
         .ensure_agent(&Agent {
             id: None,
-            slug: format!("reviewed-v{version}-agent"),
-            name: format!("Reviewed v{version} agent"),
+            slug: "schema-v1-agent".into(),
+            name: "Schema v1 agent".into(),
             version: Some("preserve-me".into()),
             kind: AgentKind::Cli,
         })
         .expect("insert canonical source row");
-    if version >= 22 {
-        storage
-            .raw()
-            .execute(
-                "INSERT INTO forgotten_sources(source_path, size_bytes, mtime_ms, forgotten_at_ms)
+    storage
+        .raw()
+        .execute(
+            "INSERT INTO forgotten_sources(source_path, size_bytes, mtime_ms, forgotten_at_ms)
              VALUES('/fixture/retained-forget.jsonl', 12, 34, 56)",
-            )
-            .expect("seed existing source tombstone");
-    }
+        )
+        .expect("seed existing source tombstone");
     drop(storage);
-
-    let downgrade = match version {
-        20 => {
-            "DROP TABLE forgotten_conversations;
-             DROP TABLE forgotten_sources;
-             DROP INDEX idx_conversations_context;
-             DELETE FROM _schema_migrations WHERE version >= 21;
-             UPDATE meta SET value = '20' WHERE key = 'schema_version';"
-        }
-        21 => {
-            "DROP TABLE forgotten_conversations;
-             DROP TABLE forgotten_sources;
-             DELETE FROM _schema_migrations WHERE version >= 22;
-             UPDATE meta SET value = '21' WHERE key = 'schema_version';"
-        }
-        22 => {
-            "DROP TABLE forgotten_conversations;
-             DELETE FROM _schema_migrations WHERE version >= 23;
-             UPDATE meta SET value = '22' WHERE key = 'schema_version';"
-        }
-        other => panic!("no reviewed downgrade for schema {other}"),
-    };
-    let connection =
-        Connection::open(source.to_str().expect("UTF-8 fixture path")).expect("open fixture");
-    connection
-        .execute_batch(downgrade)
-        .expect("downgrade only what the reviewed steps added");
-    connection
-        .close()
-        .expect("durably close downgraded fixture");
     source
 }
 
@@ -133,136 +97,191 @@ fn export_source(home: &Path, source: &Path, backup: &Path, archive_id: &str) ->
 }
 
 #[test]
-fn reviewed_v20_backup_migrates_to_v23_and_retries_read_only() {
-    assert_reviewed_backup_migrates(20, "reviewed_v20_to_v23");
-}
-
-/// A v0.9.0 export (schema v21) restores into the current v23 build.
-#[test]
-fn reviewed_v21_backup_migrates_to_v23_and_retries_read_only() {
-    assert_reviewed_backup_migrates(21, "reviewed_v21_to_v23");
-}
-
-#[test]
-fn reviewed_v22_backup_preserves_tombstones_and_retries_read_only() {
-    assert_reviewed_backup_migrates(22, "reviewed_v22_to_v23");
-}
-
-fn assert_reviewed_backup_migrates(version: i64, mode: &str) {
+fn schema_v1_backup_round_trips_with_allow_compatible_schema_and_if_identical() {
     let home = tempfile::tempdir().expect("temp home");
-    let source = make_source(home.path(), version);
-    let archive_id = format!("reviewed-v{version}");
-    let backup = home.path().join(format!("v{version}.jsonl"));
-    let export_receipt = export_source(home.path(), &source, &backup, &archive_id);
+    let source = make_v1_source(home.path(), "source-v1.db");
+    let archive_id = "schema-v1-compatible";
+    let backup = home.path().join("v1.jsonl");
+    let export_receipt = export_source(home.path(), &source, &backup, archive_id);
     assert_eq!(export_receipt["archive_id"], archive_id, "{export_receipt}");
 
-    let exact_destination = home.path().join("exact-refused.db");
-    let exact = command(home.path())
-        .args(["archive", "import"])
-        .arg(&backup)
-        .args(["--archive-id", &archive_id, "--include-private", "--output"])
-        .arg(&exact_destination)
-        .output()
-        .expect("run exact import");
-    assert!(
-        !exact.status.success(),
-        "exact schema import unexpectedly accepted v{version}"
-    );
-    assert!(
-        !exact_destination.exists(),
-        "failed exact import must publish nothing"
-    );
-
-    let destination = home.path().join("migrated.db");
+    let destination = home.path().join("restored.db");
     let created = json(
         command(home.path())
             .args(["archive", "import"])
             .arg(&backup)
             .args([
                 "--archive-id",
-                &archive_id,
+                archive_id,
                 "--include-private",
                 "--allow-compatible-schema",
                 "--output",
             ])
             .arg(&destination)
             .output()
-            .expect("run reviewed migration"),
+            .expect("run schema-v1 compatible import"),
     );
     assert_eq!(created["destination_status"], "created", "{created}");
-    assert_eq!(created["schema_migration"]["mode"], mode, "{created}");
-    assert_eq!(
-        created["schema_migration"]["from_storage_schema_version"],
-        version.to_string(),
-        "{created}"
-    );
-    assert_eq!(
-        created["schema_migration"]["to_storage_schema_version"],
-        REVIEWED_TARGET_VERSION.to_string(),
-        "{created}"
-    );
-    assert_eq!(
-        created["schema_migration"]["source_rows_verified"], true,
-        "{created}"
+    assert!(
+        created.get("schema_migration").is_none_or(Value::is_null),
+        "clean schema-v1 import must not emit legacy schema_migration: {created}"
     );
 
-    let storage = SqliteStorage::open_readonly(&destination).expect("open migrated archive");
+    let storage = SqliteStorage::open_readonly(&destination).expect("open restored archive");
     assert_eq!(
         storage.schema_version().expect("read current schema"),
-        REVIEWED_TARGET_VERSION
+        CURRENT_SCHEMA_VERSION
     );
+    let user_version = storage
+        .raw()
+        .query_row("PRAGMA user_version")
+        .expect("read PRAGMA user_version")
+        .get_typed::<i64>(0)
+        .expect("decode PRAGMA user_version");
+    assert_eq!(user_version, CURRENT_SCHEMA_VERSION);
+    let legacy_migrations = storage
+        .raw()
+        .query("PRAGMA table_info(\"_schema_migrations\")")
+        .expect("inspect legacy _schema_migrations table");
+    assert!(
+        legacy_migrations.is_empty(),
+        "restored schema-v1 archive must not carry _schema_migrations"
+    );
+
     let agent = storage
         .raw()
-        .query_row(&format!(
-            "SELECT slug, version FROM agents WHERE slug = 'reviewed-v{version}-agent'"
-        ))
-        .expect("read migrated agent");
+        .query_row("SELECT slug, version FROM agents WHERE slug = 'schema-v1-agent'")
+        .expect("read restored agent");
     assert_eq!(
         agent.get_typed::<String>(0).expect("agent slug"),
-        format!("reviewed-v{version}-agent")
+        "schema-v1-agent"
     );
     assert_eq!(
         agent.get_typed::<Option<String>>(1).expect("agent version"),
         Some("preserve-me".into())
     );
-    // Newly introduced tables are empty; existing v22 tombstones survive.
-    let forgotten = storage
+    let stamp = storage
         .raw()
-        .query_row("SELECT COUNT(*) FROM forgotten_sources")
-        .expect("forgotten_sources exists after migration");
+        .query_row(
+            "SELECT source_path, size_bytes, mtime_ms, forgotten_at_ms FROM forgotten_sources",
+        )
+        .expect("preserved source tombstone");
     assert_eq!(
-        forgotten.get_typed::<i64>(0).expect("count"),
-        if version >= 22 { 1 } else { 0 }
+        stamp.get_typed::<String>(0).expect("source path"),
+        "/fixture/retained-forget.jsonl"
     );
-    if version >= 22 {
-        let stamp = storage
-            .raw()
-            .query_row(
-                "SELECT source_path, size_bytes, mtime_ms, forgotten_at_ms FROM forgotten_sources",
-            )
-            .expect("preserved source tombstone");
-        assert_eq!(
-            stamp.get_typed::<String>(0).expect("source path"),
-            "/fixture/retained-forget.jsonl"
-        );
-        assert_eq!(stamp.get_typed::<i64>(1).expect("size"), 12);
-        assert_eq!(stamp.get_typed::<i64>(2).expect("mtime"), 34);
-        assert_eq!(stamp.get_typed::<i64>(3).expect("forgotten time"), 56);
-    }
-    assert_eq!(
-        storage
-            .raw()
-            .query_row("SELECT COUNT(*) FROM forgotten_conversations")
-            .expect("session tombstones table exists")
-            .get_typed::<i64>(0)
-            .expect("count"),
-        0
-    );
+    assert_eq!(stamp.get_typed::<i64>(1).expect("size"), 12);
+    assert_eq!(stamp.get_typed::<i64>(2).expect("mtime"), 34);
+    assert_eq!(stamp.get_typed::<i64>(3).expect("forgotten time"), 56);
     drop(storage);
 
     let before = database_files(&destination);
     let repeated = json(
         command(home.path())
+            .args(["archive", "import"])
+            .arg(&backup)
+            .args([
+                "--archive-id",
+                archive_id,
+                "--include-private",
+                "--allow-compatible-schema",
+                "--if-identical",
+                "--output",
+            ])
+            .arg(&destination)
+            .output()
+            .expect("run identical retry with --allow-compatible-schema"),
+    );
+    assert_eq!(repeated["destination_status"], "unchanged", "{repeated}");
+    assert!(
+        repeated.get("schema_migration").is_none_or(Value::is_null),
+        "identical schema-v1 retry must not emit legacy schema_migration: {repeated}"
+    );
+    assert_eq!(
+        before,
+        database_files(&destination),
+        "identical retry must not mutate the restored database image"
+    );
+}
+
+#[test]
+fn pre_v1_and_legacy_migrations_backups_are_refused_without_mutating_destination() {
+    let home = tempfile::tempdir().expect("temp home");
+    let valid_source = make_v1_source(home.path(), "valid-v1.db");
+    let valid_backup = home.path().join("valid-v1.jsonl");
+    export_source(home.path(), &valid_source, &valid_backup, "valid-v1");
+    let existing_destination = home.path().join("existing.db");
+    let existing_receipt = json(
+        command(home.path())
+            .args(["archive", "import"])
+            .arg(&valid_backup)
+            .args(["--archive-id", "valid-v1", "--include-private", "--output"])
+            .arg(&existing_destination)
+            .output()
+            .expect("seed existing destination"),
+    );
+    assert_eq!(existing_receipt["destination_status"], "created");
+    let existing_before = database_files(&existing_destination);
+
+    for (case_name, downgrade_sql) in [
+        (
+            "legacy-meta-v20",
+            "PRAGMA user_version = 0;
+             UPDATE meta SET value = '20' WHERE key = 'schema_version';",
+        ),
+        (
+            "legacy-schema-migrations-table",
+            "CREATE TABLE _schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL);
+             INSERT INTO _schema_migrations VALUES (1, 'legacy');",
+        ),
+    ] {
+        let source = make_v1_source(home.path(), &format!("{case_name}.db"));
+        let connection =
+            Connection::open(source.to_str().expect("UTF-8 fixture path")).expect("open fixture");
+        connection
+            .execute_batch(downgrade_sql)
+            .expect("apply legacy schema marker");
+        connection.close().expect("durably close legacy fixture");
+
+        let archive_id = format!("refused-{case_name}");
+        let backup = home.path().join(format!("{case_name}.jsonl"));
+        export_source(home.path(), &source, &backup, &archive_id);
+
+        for allow_compatible in [false, true] {
+            let fresh_destination = home.path().join(format!(
+                "refused-{case_name}-compat-{allow_compatible}.db"
+            ));
+            let mut cmd = command(home.path());
+            cmd.args(["archive", "import"])
+                .arg(&backup)
+                .args(["--archive-id", &archive_id, "--include-private"]);
+            if allow_compatible {
+                cmd.arg("--allow-compatible-schema");
+            }
+            let output = cmd
+                .arg("--output")
+                .arg(&fresh_destination)
+                .output()
+                .expect("run refused import");
+            assert!(
+                !output.status.success(),
+                "{case_name} (allow_compatible={allow_compatible}) unexpectedly succeeded"
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{case_name}: failed import must emit no stdout receipt"
+            );
+            assert!(
+                serde_json::from_slice::<Value>(&output.stderr).is_ok(),
+                "{case_name}: failed import must emit JSON error on stderr"
+            );
+            assert!(
+                !fresh_destination.exists(),
+                "{case_name}: refused import must publish nothing"
+            );
+        }
+
+        let overwrite_attempt = command(home.path())
             .args(["archive", "import"])
             .arg(&backup)
             .args([
@@ -273,15 +292,17 @@ fn assert_reviewed_backup_migrates(version: i64, mode: &str) {
                 "--if-identical",
                 "--output",
             ])
-            .arg(&destination)
+            .arg(&existing_destination)
             .output()
-            .expect("run reviewed identical retry"),
-    );
-    assert_eq!(repeated["destination_status"], "unchanged", "{repeated}");
-    assert_eq!(repeated["schema_migration"]["mode"], mode, "{repeated}");
-    assert_eq!(
-        before,
-        database_files(&destination),
-        "identical reviewed retry must not mutate the migrated database image"
-    );
+            .expect("run refused import against existing destination");
+        assert!(
+            !overwrite_attempt.status.success(),
+            "{case_name}: refused import against existing destination unexpectedly succeeded"
+        );
+        assert_eq!(
+            database_files(&existing_destination),
+            existing_before,
+            "{case_name}: refused import must not mutate existing destination"
+        );
+    }
 }
