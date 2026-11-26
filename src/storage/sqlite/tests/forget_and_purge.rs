@@ -500,7 +500,9 @@ fn forgotten_source_batch_lookup_is_indexed_bounded_and_observes_changes() -> Re
             .is_empty()
     );
     let mut fixtures = Vec::new();
-    let mut tx = storage.raw().transaction()?;
+    let mut tx = storage
+        .raw()
+        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)?;
     for index in 0..512_i64 {
         let path = format!("/fixture/history/rollout-{index}.jsonl");
         let stamp = SourceFileStamp {
@@ -554,7 +556,6 @@ fn forgotten_source_batch_lookup_is_indexed_bounded_and_observes_changes() -> Re
     );
     let plan: Vec<String> = storage.raw().query_map_collect(
         "EXPLAIN QUERY PLAN SELECT size_bytes, mtime_ms FROM forgotten_sources
-         INDEXED BY sqlite_autoindex_forgotten_sources_1
          WHERE source_path = ?1 LIMIT 1",
         fparams![fixtures[7].0.as_str()],
         |row| row.get_typed(3),
@@ -592,7 +593,9 @@ fn forgotten_conversation_batch_lookup_uses_exact_indexed_keys() -> Result<()> {
         "an initially empty table must not hide the same key after insertion below"
     );
     let mut keys = Vec::new();
-    let mut tx = storage.raw().transaction()?;
+    let mut tx = storage
+        .raw()
+        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)?;
     for index in 0..512 {
         let key = ForgottenConversationKey {
             source_id: "local".into(),
@@ -654,7 +657,6 @@ fn forgotten_conversation_batch_lookup_uses_exact_indexed_keys() -> Result<()> {
     );
     let plan: Vec<String> = storage.raw().query_map_collect(
         "EXPLAIN QUERY PLAN SELECT 1 FROM forgotten_conversations
-         INDEXED BY sqlite_autoindex_forgotten_conversations_1
          WHERE source_id = ?1 AND agent_slug = ?2
            AND source_path = ?3 AND external_id = ?4
          LIMIT 1",

@@ -243,7 +243,10 @@ fn franken_insert_conversation_or_get_existing_recovers_unique_conflict() {
         origin_host: None,
     };
 
-    let tx = storage.conn.transaction().unwrap();
+    let tx = storage
+        .conn
+        .transaction_with_behavior(crate::franken_sync::TransactionBehavior::Immediate)
+        .unwrap();
     let inserted_id = franken_insert_conversation(&tx, agent_id, None, &conv)
         .unwrap()
         .expect("first insert should succeed");

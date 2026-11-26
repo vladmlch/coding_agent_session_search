@@ -345,7 +345,7 @@ fn legacy_omp_reclassification_preserves_one_canonical_conversation() -> anyhow:
 
 #[test]
 fn literal_rowid_in_list_plans_as_primary_key_seek() -> anyhow::Result<()> {
-    // GH #382 (semantic hydration stall): FrankenSQLite through 0.3.17
+    // GH #382 (semantic hydration stall): legacy engines
     // planned parameterized `WHERE id IN (?,?)` as a full messages SCAN,
     // so search hydration renders the ids as literals. Pin the plan the
     // literal form gets so an engine or query regression is caught here
@@ -395,7 +395,7 @@ fn literal_rowid_in_list_at_hydration_chunk_size_executes_and_seeks() -> anyhow:
     // through a different parser/planner path than the three-element list
     // above (the parameterized form it replaced was bounded by the
     // 32_766 variable limit, which literals are not), so pin that
-    // frankensqlite both executes it and still seeks by primary key.
+    // SQLite both executes it and still seeks by primary key.
     let dir = TempDir::new()?;
     let storage = SqliteStorage::open(&dir.path().join("test.db"))?;
     let ids: Vec<i64> = (1..=30_000_i64).map(|i| i * 7).collect();
