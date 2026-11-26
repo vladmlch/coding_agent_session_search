@@ -703,13 +703,14 @@ fn write_be_u32_at(path: &Path, offset: u64, value: u32) {
 /// from opening the file at all (damage can fail the open itself).
 fn engine_integrity_check(db_path: &Path) -> String {
     match FrankenConnection::open(db_path.to_string_lossy().into_owned()) {
-        Ok(conn) => conn
-            .query_row_map(
-                "PRAGMA integrity_check;",
-                &[],
-                |row: &coding_agent_search::franken_sync::Row| row.get_typed(0),
-            )
-            .unwrap_or_else(|err| format!("integrity_check error: {err}")),
+        Ok(conn) => match conn.query("PRAGMA integrity_check;") {
+            Ok(rows) => rows
+                .into_iter()
+                .filter_map(|row| row.get_typed::<String>(0).ok())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            Err(err) => format!("integrity_check error: {err}"),
+        },
         Err(err) => format!("open error: {err}"),
     }
 }
@@ -775,6 +776,23 @@ fn is_leaked_page_integrity_line(line: &str) -> bool {
         || (trimmed.to_ascii_lowercase().starts_with("page ") && trimmed.ends_with(": never used"))
 }
 
+fn is_leaked_pages_only_integrity(report: &str) -> bool {
+    let mut saw_diagnostic = false;
+    for line in report.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty()
+            || (trimmed.starts_with("*** in database ") && trimmed.ends_with("***"))
+        {
+            continue;
+        }
+        if !is_leaked_page_integrity_line(trimmed) {
+            return false;
+        }
+        saw_diagnostic = true;
+    }
+    saw_diagnostic
+}
+
 /// Model the owner's archive (2l1b0.73): pages that left the freelist without
 /// entering a tree. Detaching the whole freelist from the header leaves every
 /// formerly free page unowned. Returns the number of leaked pages.
@@ -784,7 +802,7 @@ fn leak_freelist_pages(db_path: &Path) -> u32 {
     write_be_u32_at(db_path, SQLITE_HEADER_FREELIST_COUNT_OFFSET, 0);
     let integrity = engine_integrity_check(db_path);
     assert!(
-        is_leaked_page_integrity_line(&integrity),
+        is_leaked_pages_only_integrity(&integrity),
         "fixture must leave only leaked pages: {integrity}"
     );
     count
@@ -801,7 +819,7 @@ fn double_reference_a_table_root(db_path: &Path) {
     write_be_u32_at(db_path, trunk_offset + 8, conversations_root);
     let integrity = engine_integrity_check(db_path);
     assert!(
-        integrity != "ok" && !is_leaked_page_integrity_line(&integrity),
+        integrity != "ok" && !is_leaked_pages_only_integrity(&integrity),
         "fixture must fail integrity_check with a non-leak error: {integrity}"
     );
 }
@@ -1065,7 +1083,7 @@ fn doctor_repair_leaked_pages_frees_only_leaked_pages_behind_a_restorable_backup
         String::from_utf8_lossy(&restored.stderr)
     );
     assert_eq!(test_file_blake3(&db_path), leaked_db_blake3);
-    assert!(is_leaked_page_integrity_line(&engine_integrity_check(&db_path)));
+    assert!(is_leaked_pages_only_integrity(&engine_integrity_check(&db_path)));
     tracker.end(
         "backup_rollback",
         Some("verify the backup, rehearse and apply the restore"),
