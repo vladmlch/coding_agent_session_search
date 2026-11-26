@@ -36,7 +36,9 @@ pub struct ArchiveStamp {
     pub schema_version: i64,
 }
 
-fn hash_file_state(hasher: &mut blake3::Hasher, path: &Path) -> Result<()> {
+fn hash_file_state(hasher: &mut blake3::Hasher, path: &Path, include_ctime: bool) -> Result<()> {
+    #[cfg(not(unix))]
+    let _ = include_ctime;
     let meta = std::fs::symlink_metadata(path).map_err(|e| {
         refuse(
             "canonical_db_missing",
@@ -64,8 +66,13 @@ fn hash_file_state(hasher: &mut blake3::Hasher, path: &Path) -> Result<()> {
         hasher.update(&meta.ino().to_le_bytes());
         hasher.update(&meta.mtime().to_le_bytes());
         hasher.update(&meta.mtime_nsec().to_le_bytes());
-        hasher.update(&meta.ctime().to_le_bytes());
-        hasher.update(&meta.ctime_nsec().to_le_bytes());
+        // Under euid == 0, C SQLite's `unixOpen` (`robustFchown`) bumps
+        // `st_ctime` on `-wal`/`-journal` even on read-only in-place opens;
+        // omit `ctime` for sidecars while keeping it on the main `.db` file.
+        if include_ctime {
+            hasher.update(&meta.ctime().to_le_bytes());
+            hasher.update(&meta.ctime_nsec().to_le_bytes());
+        }
     }
     let mut file = File::open(path).map_err(|e| {
         refuse(
@@ -113,13 +120,13 @@ fn hash_file_state(hasher: &mut blake3::Hasher, path: &Path) -> Result<()> {
 fn disk_revision(path: &Path) -> Result<String> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"db:");
-    hash_file_state(&mut hasher, path)?;
+    hash_file_state(&mut hasher, path, true)?;
     for suffix in ["-wal", "-journal"] {
         let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
         match std::fs::symlink_metadata(&sidecar) {
             Ok(meta) if meta.file_type().is_file() => {
                 hasher.update(suffix.as_bytes());
-                let _ = hash_file_state(&mut hasher, &sidecar);
+                let _ = hash_file_state(&mut hasher, &sidecar, false);
             }
             _ => {
                 hasher.update(b"none:");

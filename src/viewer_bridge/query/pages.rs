@@ -7,7 +7,8 @@ use super::super::identity;
 use super::super::protocol::{ListFilters, RESPONSE_BYTES, refuse};
 use super::super::revisions;
 use super::filters::{
-    ResolvedFilters, bind, build_conditions, resolve_filters, run_probes, run_tie_probe,
+    ResolvedFilters, append_clauses, bind, build_conditions, resolve_filters, run_probes,
+    run_tie_probe,
 };
 use super::hydrate::{HYDRATE_CONVERSATIONS_SQL, byte_len, decode_item, hydrate_rows};
 use super::{CURSOR_MAX_BYTES, ROW_BYTES, SortKey, sort_plan};
@@ -206,12 +207,13 @@ fn build_order_sql(
     cursor: Option<&Cursor>,
     limit: usize,
 ) -> (String, Vec<SqliteValue>) {
+    let conds = build_conditions(resolved);
     let mut params = Vec::new();
-    let conds = build_conditions(resolved, &mut params);
-    let mut clauses = conds.base.clone();
-    clauses.extend(conds.activity.iter().cloned());
-    clauses.extend(conds.created.iter().cloned());
-    clauses.extend(conds.classification.iter().cloned());
+    let mut clauses = Vec::new();
+    append_clauses(&mut clauses, &mut params, &conds.base);
+    append_clauses(&mut clauses, &mut params, &conds.activity);
+    append_clauses(&mut clauses, &mut params, &conds.created);
+    append_clauses(&mut clauses, &mut params, &conds.classification);
     if let Some(pin) = pin_partition {
         clauses.push(format!(
             "vs.is_pinned = {}",

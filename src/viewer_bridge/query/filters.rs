@@ -215,132 +215,198 @@ fn text(value: &str) -> SqliteValue {
     SqliteValue::Text(value.to_owned().into())
 }
 
-/// Candidate-condition groups for ONE query (probe or page). Rebuilt per
-/// query so `?N` placeholders always match that query's param list.
+/// Deferred SQL predicate carrying its own bound values so callers only bind
+/// parameters for the clause groups actually emitted in a query.
+#[derive(Clone)]
+pub(super) struct SqlClause {
+    chunks: Vec<String>,
+    params: Vec<SqliteValue>,
+}
+
+impl SqlClause {
+    fn raw(sql: impl Into<String>) -> Self {
+        Self {
+            chunks: vec![sql.into()],
+            params: Vec::new(),
+        }
+    }
+
+    fn one(before: &str, param: SqliteValue, after: &str) -> Self {
+        Self {
+            chunks: vec![before.to_owned(), after.to_owned()],
+            params: vec![param],
+        }
+    }
+
+    fn in_list(column: &str, ids: &[i64]) -> Self {
+        let mut chunks = Vec::with_capacity(ids.len() + 1);
+        let mut params = Vec::with_capacity(ids.len());
+        for (idx, id) in ids.iter().enumerate() {
+            chunks.push(if idx == 0 {
+                format!("{column} IN (")
+            } else {
+                ",".to_owned()
+            });
+            params.push(SqliteValue::Integer(*id));
+        }
+        chunks.push(")".to_owned());
+        Self { chunks, params }
+    }
+}
+
+pub(super) fn append_clauses(
+    clauses: &mut Vec<String>,
+    params: &mut Vec<SqliteValue>,
+    group: &[SqlClause],
+) {
+    for clause in group {
+        if clause.params.is_empty() {
+            clauses.push(clause.chunks[0].clone());
+            continue;
+        }
+        let mut sql = String::new();
+        for (idx, param) in clause.params.iter().enumerate() {
+            sql.push_str(&clause.chunks[idx]);
+            sql.push_str(&bind(params, param.clone()));
+        }
+        sql.push_str(
+            clause
+                .chunks
+                .last()
+                .expect("SqlClause always has params.len() + 1 chunks"),
+        );
+        clauses.push(sql);
+    }
+}
+
+/// Candidate-condition groups for ONE query (probe or page). Each group holds
+/// deferred [`SqlClause`] entries so `?N` placeholders are assigned strictly for
+/// the clauses included in that specific query.
 pub(super) struct Conditions {
     /// Provider/source/workspace/pinned/tag — always computable.
-    pub(super) base: Vec<String>,
+    pub(super) base: Vec<SqlClause>,
     /// Rows whose *known* `is_subagent` fails the request are excluded
     /// before unknown checks (`NOT (known AND <> requested)`), or the
     /// implicit browse exclusion (drop proven subagents, keep unknowns).
-    subagent_exclusion: Option<String>,
+    subagent_exclusion: Option<SqlClause>,
     /// Same shape for `category`.
-    category_exclusion: Option<String>,
+    category_exclusion: Option<SqlClause>,
     /// Window predicates on the activity expression.
-    pub(super) activity: Vec<String>,
+    pub(super) activity: Vec<SqlClause>,
     /// Window predicates on `c.started_at`.
-    pub(super) created: Vec<String>,
+    pub(super) created: Vec<SqlClause>,
     /// Final classification predicates applied by the page query itself.
-    pub(super) classification: Vec<String>,
+    pub(super) classification: Vec<SqlClause>,
 }
 
-pub(super) fn build_conditions(
-    resolved: &ResolvedFilters,
-    params: &mut Vec<SqliteValue>,
-) -> Conditions {
+pub(super) fn build_conditions(resolved: &ResolvedFilters) -> Conditions {
     let mut base = Vec::new();
     if let Some(ids) = &resolved.agent_ids {
         if ids.is_empty() {
-            base.push("1 = 0".to_owned());
+            base.push(SqlClause::raw("1 = 0"));
         } else {
-            let placeholders = ids
-                .iter()
-                .map(|id| bind(params, SqliteValue::Integer(*id)))
-                .collect::<Vec<_>>()
-                .join(",");
-            base.push(format!("vs.agent_id IN ({placeholders})"));
+            base.push(SqlClause::in_list("vs.agent_id", ids));
         }
     }
     if let Some(source_id) = &resolved.source_id {
-        base.push(format!("vs.source_id = {}", bind(params, text(source_id))));
+        base.push(SqlClause::one("vs.source_id = ", text(source_id), ""));
     }
     if let Some(ids) = &resolved.workspace_ids {
         if ids.is_empty() {
-            base.push("1 = 0".to_owned());
+            base.push(SqlClause::raw("1 = 0"));
         } else {
-            let placeholders = ids
-                .iter()
-                .map(|id| bind(params, SqliteValue::Integer(*id)))
-                .collect::<Vec<_>>()
-                .join(",");
-            base.push(format!("vs.workspace_id IN ({placeholders})"));
+            base.push(SqlClause::in_list("vs.workspace_id", ids));
         }
     }
     if let Some(pinned) = resolved.pinned {
-        base.push(format!(
-            "vs.is_pinned = {}",
-            bind(params, SqliteValue::Integer(pinned))
+        base.push(SqlClause::one(
+            "vs.is_pinned = ",
+            SqliteValue::Integer(pinned),
+            "",
         ));
     }
     if let Some(tag) = &resolved.tag {
         // Tags stay a per-row EXISTS probe on the keyed `viewer_tags` index:
         // they are user state, never a mirrored sort column.
-        base.push(format!(
+        base.push(SqlClause::one(
             "EXISTS (SELECT 1 FROM viewer_tags vt \
-             WHERE vt.conversation_id = vs.conversation_id AND vt.tag = {})",
-            bind(params, text(tag))
+             WHERE vt.conversation_id = vs.conversation_id AND vt.tag = ",
+            text(tag),
+            ")",
         ));
     }
 
     let subagent_exclusion = match resolved.is_subagent {
-        Some(true) => Some("NOT (vs.is_subagent IS NOT NULL AND vs.is_subagent = 0)".to_owned()),
-        Some(false) => Some("NOT (vs.is_subagent IS NOT NULL AND vs.is_subagent <> 0)".to_owned()),
-        None if !resolved.include_subagents => Some("COALESCE(vs.is_subagent,0) = 0".to_owned()),
+        Some(true) => Some(SqlClause::raw(
+            "NOT (vs.is_subagent IS NOT NULL AND vs.is_subagent = 0)",
+        )),
+        Some(false) => Some(SqlClause::raw(
+            "NOT (vs.is_subagent IS NOT NULL AND vs.is_subagent <> 0)",
+        )),
+        None if !resolved.include_subagents => {
+            Some(SqlClause::raw("COALESCE(vs.is_subagent,0) = 0"))
+        }
         None => None,
     };
     let category_exclusion = resolved.category.as_ref().map(|category| {
-        format!(
-            "NOT (vs.task_category IS NOT NULL AND vs.task_category <> {})",
-            bind(params, text(category))
+        SqlClause::one(
+            "NOT (vs.task_category IS NOT NULL AND vs.task_category <> ",
+            text(category),
+            ")",
         )
     });
 
     let mut activity = Vec::new();
     if let Some(from) = resolved.activity_from {
-        activity.push(format!(
-            "vs.activity_ms >= {}",
-            bind(params, SqliteValue::Integer(from))
+        activity.push(SqlClause::one(
+            "vs.activity_ms >= ",
+            SqliteValue::Integer(from),
+            "",
         ));
     }
     if let Some(to) = resolved.activity_to {
         // Oracle: `activity >= activity_to_ms` is excluded (strictly below).
-        activity.push(format!(
-            "vs.activity_ms < {}",
-            bind(params, SqliteValue::Integer(to))
+        activity.push(SqlClause::one(
+            "vs.activity_ms < ",
+            SqliteValue::Integer(to),
+            "",
         ));
     }
     let mut created = Vec::new();
     if let Some(from) = resolved.created_from {
-        created.push(format!(
-            "vs.created_ms >= {}",
-            bind(params, SqliteValue::Integer(from))
+        created.push(SqlClause::one(
+            "vs.created_ms >= ",
+            SqliteValue::Integer(from),
+            "",
         ));
     }
     if let Some(to) = resolved.created_to {
-        created.push(format!(
-            "vs.created_ms < {}",
-            bind(params, SqliteValue::Integer(to))
+        created.push(SqlClause::one(
+            "vs.created_ms < ",
+            SqliteValue::Integer(to),
+            "",
         ));
     }
 
     let mut classification = Vec::new();
     match (resolved.is_subagent, resolved.include_subagents) {
         (Some(true), _) => {
-            classification.push("vs.is_subagent IS NOT NULL AND vs.is_subagent <> 0".to_owned());
+            classification.push(SqlClause::raw(
+                "vs.is_subagent IS NOT NULL AND vs.is_subagent <> 0",
+            ));
         }
         (Some(false), _) => {
-            classification.push("vs.is_subagent IS NOT NULL AND vs.is_subagent = 0".to_owned());
+            classification.push(SqlClause::raw(
+                "vs.is_subagent IS NOT NULL AND vs.is_subagent = 0",
+            ));
         }
         (None, false) => {
-            classification.push("COALESCE(vs.is_subagent,0) = 0".to_owned());
+            classification.push(SqlClause::raw("COALESCE(vs.is_subagent,0) = 0"));
         }
         (None, true) => {}
     }
     if let Some(category) = &resolved.category {
-        classification.push(format!(
-            "vs.task_category = {}",
-            bind(params, text(category))
-        ));
+        classification.push(SqlClause::one("vs.task_category = ", text(category), ""));
     }
 
     Conditions {
@@ -365,19 +431,20 @@ fn probe<T>(
     select: &str,
     include_activity: bool,
     include_created: bool,
-    extra: impl Fn(&Conditions, &mut Vec<String>),
+    extra: impl Fn(&Conditions, &mut Vec<String>, &mut Vec<SqliteValue>),
     map: impl FnMut(&rusqlite::Row<'_>) -> std::result::Result<T, FrankenError>,
 ) -> Result<Option<T>> {
+    let conds = build_conditions(resolved);
     let mut params = Vec::new();
-    let conds = build_conditions(resolved, &mut params);
-    let mut clauses = conds.base.clone();
+    let mut clauses = Vec::new();
+    append_clauses(&mut clauses, &mut params, &conds.base);
     if include_activity {
-        clauses.extend(conds.activity.iter().cloned());
+        append_clauses(&mut clauses, &mut params, &conds.activity);
     }
     if include_created {
-        clauses.extend(conds.created.iter().cloned());
+        append_clauses(&mut clauses, &mut params, &conds.created);
     }
-    extra(&conds, &mut clauses);
+    extra(&conds, &mut clauses, &mut params);
     let where_sql = if clauses.is_empty() {
         "1 = 1".to_owned()
     } else {
@@ -431,12 +498,13 @@ impl ResolvedFilters {
     /// (summary join, tags, region inventory) materializes the identical
     /// filtered candidate set instead of re-transporting an id list.
     pub fn universe_subquery(&self) -> (String, Vec<SqliteValue>) {
+        let conds = build_conditions(self);
         let mut params = Vec::new();
-        let conds = build_conditions(self, &mut params);
-        let mut clauses = conds.base.clone();
-        clauses.extend(conds.activity.iter().cloned());
-        clauses.extend(conds.created.iter().cloned());
-        clauses.extend(conds.classification.iter().cloned());
+        let mut clauses = Vec::new();
+        append_clauses(&mut clauses, &mut params, &conds.base);
+        append_clauses(&mut clauses, &mut params, &conds.activity);
+        append_clauses(&mut clauses, &mut params, &conds.created);
+        append_clauses(&mut clauses, &mut params, &conds.classification);
         let where_sql = if clauses.is_empty() {
             "1 = 1".to_owned()
         } else {
@@ -504,12 +572,12 @@ pub(super) fn run_probes(
             "1",
             false,
             true,
-            |conds, clauses| {
+            |conds, clauses, params| {
                 if let Some(excl) = &conds.subagent_exclusion {
-                    clauses.push(excl.clone());
+                    append_clauses(clauses, params, std::slice::from_ref(excl));
                 }
                 if let Some(excl) = &conds.category_exclusion {
-                    clauses.push(excl.clone());
+                    append_clauses(clauses, params, std::slice::from_ref(excl));
                 }
                 clauses.push("vs.activity_ms IS NULL".to_owned());
             },
@@ -530,12 +598,12 @@ pub(super) fn run_probes(
             "1",
             true,
             false,
-            |conds, clauses| {
+            |conds, clauses, params| {
                 if let Some(excl) = &conds.subagent_exclusion {
-                    clauses.push(excl.clone());
+                    append_clauses(clauses, params, std::slice::from_ref(excl));
                 }
                 if let Some(excl) = &conds.category_exclusion {
-                    clauses.push(excl.clone());
+                    append_clauses(clauses, params, std::slice::from_ref(excl));
                 }
                 clauses.push("vs.created_ms IS NULL".to_owned());
             },
@@ -555,9 +623,9 @@ pub(super) fn run_probes(
             "vs.coverage_state",
             true,
             true,
-            |conds, clauses| {
+            |conds, clauses, params| {
                 if let Some(excl) = &conds.category_exclusion {
-                    clauses.push(excl.clone());
+                    append_clauses(clauses, params, std::slice::from_ref(excl));
                 }
                 clauses.push("vs.is_subagent IS NULL".to_owned());
             },
@@ -574,9 +642,9 @@ pub(super) fn run_probes(
             "vs.coverage_state",
             true,
             true,
-            |conds, clauses| {
+            |conds, clauses, params| {
                 if let Some(excl) = &conds.subagent_exclusion {
-                    clauses.push(excl.clone());
+                    append_clauses(clauses, params, std::slice::from_ref(excl));
                 }
                 clauses.push("vs.task_category IS NULL".to_owned());
             },
@@ -596,7 +664,7 @@ pub(super) fn run_probes(
             "vs.coverage_state",
             true,
             true,
-            |_conds, clauses| {
+            |_conds, clauses, _params| {
                 clauses.push("vs.is_subagent IS NULL".to_owned());
             },
             |row| Ok(row.get::<_, Option<String>>(0)?),
@@ -626,8 +694,8 @@ pub(super) fn run_tie_probe(connection: &Connection, resolved: &ResolvedFilters)
         "vs.tie_error",
         true,
         true,
-        |conds, clauses| {
-            clauses.extend(conds.classification.iter().cloned());
+        |conds, clauses, params| {
+            append_clauses(clauses, params, &conds.classification);
             clauses.push("vs.tie_key IS NULL".to_owned());
         },
         |row| Ok(row.get::<_, Option<String>>(0)?),
