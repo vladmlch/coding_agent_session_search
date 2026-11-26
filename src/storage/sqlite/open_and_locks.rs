@@ -801,7 +801,6 @@ pub(crate) fn retryable_franken_error(err: &crate::franken_sync::FrankenError) -
     matches!(
         err,
         crate::franken_sync::FrankenError::Busy
-            | crate::franken_sync::FrankenError::BusyRecovery
             | crate::franken_sync::FrankenError::BusySnapshot { .. }
             | crate::franken_sync::FrankenError::DatabaseLocked { .. }
             | crate::franken_sync::FrankenError::LockFailed { .. }

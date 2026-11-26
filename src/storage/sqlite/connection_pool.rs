@@ -62,7 +62,26 @@ fn apply_owner_readonly_pragmas(
 #[derive(Debug)]
 pub struct FrankenOwnerConnection(pub(super) parking_lot::Mutex<crate::franken_sync::Connection>);
 
+fn is_in_memory_sqlite_target(path: &str) -> bool {
+    path.is_empty()
+        || path == ":memory:"
+        || (path.starts_with("file:")
+            && (path.starts_with("file::memory:") || path.contains("mode=memory")))
+}
+
 impl FrankenOwnerConnection {
+    /// Open an isolated `:memory:` read/write owner connection synchronously.
+    ///
+    /// Bypasses on-disk `archive_disposition` checks and `PRAGMA query_only = 1`
+    /// so in-memory fixtures remain writable.
+    #[allow(dead_code)]
+    pub(crate) fn open_in_memory_sync() -> std::result::Result<Self, crate::franken_sync::FrankenError>
+    {
+        let conn = crate::franken_sync::Connection::open(":memory:")?;
+        conn.execute("PRAGMA busy_timeout = 5000;")?;
+        Ok(Self(parking_lot::Mutex::new(conn)))
+    }
+
     pub(super) fn open_readonly_with_doctor_guard(
         path: &Path,
         guard: &DoctorMutationDbOpenGuard,
@@ -84,6 +103,55 @@ impl FrankenOwnerConnection {
             path: path.to_path_buf(),
             source,
         })?;
+        Ok(Self(parking_lot::Mutex::new(conn)))
+    }
+
+    /// Open a pool reader connection in place for [`FrankenConnectionManager`].
+    ///
+    /// Uses `SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_NO_MUTEX` (without
+    /// `readonly_shm=1` and without snapshot copying) so readers observe commits
+    /// from `manager.writer()`/`manager.concurrent_writer()` and never latch
+    /// `unixShmNode.isReadonly = 1` across the process.
+    pub(super) fn open_pool_reader_with_doctor_guard(
+        path: &Path,
+        guard: &DoctorMutationDbOpenGuard,
+    ) -> std::result::Result<Self, LazyDbError> {
+        match archive_disposition_with_doctor_guard(path, guard)? {
+            ArchiveDisposition::Current => {}
+            ArchiveDisposition::Uninitialized => {
+                return Err(LazyDbError::NotFound(path.to_path_buf()));
+            }
+        }
+        let path_str = path.to_string_lossy().into_owned();
+        let conn = crate::franken_sync::Connection::open_in_place_readonly_for_pool(path_str)
+            .map_err(|source| LazyDbError::FrankenOpenFailed {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        apply_owner_readonly_pragmas(&conn).map_err(|source| LazyDbError::FrankenOpenFailed {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Ok(Self(parking_lot::Mutex::new(conn)))
+    }
+
+    pub(super) fn open_pool_reader(
+        path: &Path,
+    ) -> std::result::Result<Self, crate::franken_sync::FrankenError> {
+        match archive_disposition(path) {
+            Ok(ArchiveDisposition::Current) => {}
+            Ok(ArchiveDisposition::Uninitialized) => {
+                return Err(crate::franken_sync::FrankenError::CannotOpen {
+                    path: path.to_path_buf(),
+                });
+            }
+            Err(err) => {
+                return Err(crate::franken_sync::FrankenError::Internal(err.to_string()));
+            }
+        }
+        let path_str = path.to_string_lossy().into_owned();
+        let conn = crate::franken_sync::Connection::open_in_place_readonly_for_pool(path_str)?;
+        apply_owner_readonly_pragmas(&conn)?;
         Ok(Self(parking_lot::Mutex::new(conn)))
     }
 
@@ -113,7 +181,13 @@ impl FrankenOwnerConnection {
     pub(crate) fn open_sync(
         path: impl Into<String>,
     ) -> std::result::Result<Self, crate::franken_sync::FrankenError> {
-        Self::open(path)
+        let path_string: String = path.into();
+        if is_in_memory_sqlite_target(&path_string) {
+            let conn = crate::franken_sync::Connection::open(path_string)?;
+            conn.execute("PRAGMA busy_timeout = 5000;")?;
+            return Ok(Self(parking_lot::Mutex::new(conn)));
+        }
+        Self::open(path_string)
     }
 
     pub(crate) fn open_schema_only_with_wal_index_recovery_sync(
@@ -513,7 +587,7 @@ impl FrankenConnectionManager {
         let mut readers: Vec<parking_lot::Mutex<FrankenOwnerConnection>> =
             Vec::with_capacity(reader_count);
         for _ in 0..reader_count {
-            let conn = match FrankenOwnerConnection::open_readonly_with_doctor_guard(
+            let conn = match FrankenOwnerConnection::open_pool_reader_with_doctor_guard(
                 &db_path,
                 &_doctor_guard,
             ) {
@@ -576,8 +650,7 @@ impl FrankenConnectionManager {
         let mut guard = self.readers[slot].lock();
         let current_epoch = self.write_epoch.load(std::sync::atomic::Ordering::Acquire);
         if self.reader_epochs[slot].load(std::sync::atomic::Ordering::Acquire) != current_epoch
-            && let Ok(new_conn) =
-                FrankenOwnerConnection::open(self.db_path.to_string_lossy().into_owned())
+            && let Ok(new_conn) = FrankenOwnerConnection::open_pool_reader(&self.db_path)
         {
             guard.close_best_effort_in_place();
             *guard = new_conn;

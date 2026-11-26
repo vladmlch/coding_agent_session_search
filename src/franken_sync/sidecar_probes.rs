@@ -9,8 +9,17 @@ use super::{Connection, FileIdentity, FrankenError, Row, SqliteValue, compat};
 #[derive(Clone, Copy, Default)]
 struct LiveDbState {
     count: usize,
+    rw_count: usize,
+    strict_wal_ro_count: usize,
     known_wal: Option<bool>,
     known_stamp: Option<(i64, i64)>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LiveRegHandle {
+    pub(super) id: FileIdentity,
+    pub(super) is_rw: bool,
+    pub(super) is_strict_wal_ro: bool,
 }
 
 /// Result of safely probing the 100-byte SQLite header stamp without dropping
@@ -34,15 +43,63 @@ fn live_db_map() -> &'static Mutex<HashMap<FileIdentity, LiveDbState>> {
     LIVE_DB_CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub(super) fn register_live_connection(id: FileIdentity, known_wal: Option<bool>) {
+pub(super) fn canonical_db_path(db_path: &Path) -> PathBuf {
+    std::fs::canonicalize(db_path).unwrap_or_else(|_| db_path.to_path_buf())
+}
+
+pub(super) fn uri_has_readonly_mode(path_str: &str) -> bool {
+    if !path_str.starts_with("file:") {
+        return false;
+    }
+    let Some((_, query)) = path_str.split_once('?') else {
+        return false;
+    };
+    let query = query.split('#').next().unwrap_or(query);
+    query.split('&').any(|pair| pair == "mode=ro")
+}
+
+fn read_header_stamp_from_file(path: &Path) -> Option<(i64, i64)> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut header = [0_u8; SQLITE_HEADER_PROBE_SIZE];
+    file.read_exact(&mut header).ok()?;
+    match parse_sqlite_header_stamp(&header) {
+        SqliteHeaderStamp::Stamp {
+            application_id,
+            user_version,
+        } => Some((application_id, user_version)),
+        SqliteHeaderStamp::NotSqlite => None,
+    }
+}
+
+pub(super) fn register_live_connection(
+    id: FileIdentity,
+    known_wal: Option<bool>,
+    is_rw: bool,
+    is_strict_wal_ro: bool,
+    known_stamp: Option<(i64, i64)>,
+) -> LiveRegHandle {
     let mut map = match live_db_map().lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
     let entry = map.entry(id).or_default();
     entry.count = entry.count.saturating_add(1);
+    if is_rw {
+        entry.rw_count = entry.rw_count.saturating_add(1);
+    }
+    if is_strict_wal_ro {
+        entry.strict_wal_ro_count = entry.strict_wal_ro_count.saturating_add(1);
+    }
     if known_wal.is_some() {
         entry.known_wal = known_wal;
+    }
+    if entry.known_stamp.is_none() && known_stamp.is_some() {
+        entry.known_stamp = known_stamp;
+    }
+    LiveRegHandle {
+        id,
+        is_rw,
+        is_strict_wal_ro,
     }
 }
 
@@ -72,15 +129,21 @@ pub(crate) fn record_live_archive_stamp(
     }
 }
 
-pub(super) fn unregister_live_connection(id: FileIdentity) {
+pub(super) fn unregister_live_connection(reg: LiveRegHandle) {
     let mut map = match live_db_map().lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
-    if let Some(entry) = map.get_mut(&id) {
+    if let Some(entry) = map.get_mut(&reg.id) {
         entry.count = entry.count.saturating_sub(1);
+        if reg.is_rw {
+            entry.rw_count = entry.rw_count.saturating_sub(1);
+        }
+        if reg.is_strict_wal_ro {
+            entry.strict_wal_ro_count = entry.strict_wal_ro_count.saturating_sub(1);
+        }
         if entry.count == 0 {
-            map.remove(&id);
+            map.remove(&reg.id);
         }
     }
 }
@@ -108,12 +171,28 @@ fn live_archive_stamp(id: FileIdentity) -> Option<(i64, i64)> {
 fn acquire_pre_reg_in_map(
     map: &mut HashMap<FileIdentity, LiveDbState>,
     id: Option<FileIdentity>,
+    is_rw: bool,
+    is_strict_wal_ro: bool,
+    known_stamp: Option<(i64, i64)>,
 ) -> LivePreRegistration {
     if let Some(id) = id {
         let entry = map.entry(id).or_default();
         entry.count = entry.count.saturating_add(1);
+        if is_rw {
+            entry.rw_count = entry.rw_count.saturating_add(1);
+        }
+        if is_strict_wal_ro {
+            entry.strict_wal_ro_count = entry.strict_wal_ro_count.saturating_add(1);
+        }
+        if entry.known_stamp.is_none() && known_stamp.is_some() {
+            entry.known_stamp = known_stamp;
+        }
     }
-    LivePreRegistration { id }
+    LivePreRegistration {
+        id,
+        is_rw,
+        is_strict_wal_ro,
+    }
 }
 
 fn parse_sqlite_header_stamp(header: &[u8; SQLITE_HEADER_PROBE_SIZE]) -> SqliteHeaderStamp {
@@ -146,17 +225,65 @@ fn parse_sqlite_header_stamp(header: &[u8; SQLITE_HEADER_PROBE_SIZE]) -> SqliteH
 ///   in-process connection holds locks), falling back to the registered live
 ///   stamp only if the live WAL store has no sidecars yet or is exclusively
 ///   locked.
+fn read_stamp_via_connection(
+    conn: &Connection,
+    db_id: Option<FileIdentity>,
+) -> std::io::Result<SqliteHeaderStamp> {
+    let _ = conn.raw().busy_timeout(Duration::from_millis(250));
+    let app_res = conn.query_row("PRAGMA application_id;");
+    let ver_res = conn.query_row("PRAGMA user_version;");
+    match (app_res, ver_res) {
+        (Ok(app_row), Ok(ver_row)) => {
+            let application_id = row_i64(&app_row, 0);
+            let user_version = row_i64(&ver_row, 0);
+            if let Some(id) = db_id {
+                record_live_archive_stamp(id, application_id, user_version);
+            }
+            Ok(SqliteHeaderStamp::Stamp {
+                application_id,
+                user_version,
+            })
+        }
+        (Err(err), _) | (_, Err(err)) if err.is_busy_class() => {
+            if let Some((application_id, user_version)) = db_id.and_then(live_archive_stamp) {
+                return Ok(SqliteHeaderStamp::Stamp {
+                    application_id,
+                    user_version,
+                });
+            }
+            Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                err.to_string(),
+            ))
+        }
+        (Err(FrankenError::NotADatabase { .. }), _)
+        | (_, Err(FrankenError::NotADatabase { .. })) => Ok(SqliteHeaderStamp::NotSqlite),
+        (Err(err), _) | (_, Err(err)) => Err(std::io::Error::other(err.to_string())),
+    }
+}
+
 pub(crate) fn probe_sqlite_header_stamp_safely(
     path: &Path,
 ) -> std::io::Result<SqliteHeaderStamp> {
     let db_id = FileIdentity::from_path(path)?;
-    {
+    let (has_rw, has_strict_wal_ro, known_wal) = {
         let map = match live_db_map().lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let is_live = db_id.is_some_and(|id| map.get(&id).is_some_and(|entry| entry.count > 0));
-        if !is_live {
+        if let Some(entry) = db_id.and_then(|id| map.get(&id).filter(|e| e.count > 0)) {
+            if let Some((application_id, user_version)) = entry.known_stamp {
+                return Ok(SqliteHeaderStamp::Stamp {
+                    application_id,
+                    user_version,
+                });
+            }
+            (
+                entry.rw_count > 0,
+                entry.strict_wal_ro_count > 0,
+                entry.known_wal,
+            )
+        } else {
             let mut file = std::fs::File::open(path)?;
             let mut header = [0_u8; SQLITE_HEADER_PROBE_SIZE];
             let stamp = match file.read_exact(&mut header) {
@@ -169,53 +296,32 @@ pub(crate) fn probe_sqlite_header_stamp_safely(
             drop(file);
             return Ok(stamp);
         }
+    };
+
+    let canonical_db = canonical_db_path(path);
+    let path_str = path.to_string_lossy();
+    let wal_exists = sidecar_exists(&sidecar_path(&canonical_db, "-wal"));
+    let shm_exists = sidecar_exists(&sidecar_path(&canonical_db, "-shm"));
+    if !has_strict_wal_ro
+        && ((wal_exists && shm_exists)
+            || (!wal_exists && !shm_exists && known_wal == Some(false)))
+    {
+        match Connection::open_in_place_readonly_for_pool(path_str.as_ref()) {
+            Ok(conn) => return read_stamp_via_connection(&conn, db_id),
+            Err(FrankenError::NotADatabase { .. }) => return Ok(SqliteHeaderStamp::NotSqlite),
+            Err(err) if !err.is_busy_class() && !matches!(err, FrankenError::BusyRecovery) => {
+                return Err(std::io::Error::other(err.to_string()));
+            }
+            Err(_) => {}
+        }
     }
 
-    let path_str = path.to_string_lossy();
     let strict_flags =
         compat::OpenFlags::SQLITE_OPEN_READ_ONLY | compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY;
     let mut attempts = 0u32;
     loop {
         match Connection::open_strict_readonly(&path_str, strict_flags) {
-            Ok(conn) => {
-                let _ = conn.raw().busy_timeout(Duration::from_millis(250));
-                let app_res = conn.query_row("PRAGMA application_id;");
-                let ver_res = conn.query_row("PRAGMA user_version;");
-                match (app_res, ver_res) {
-                    (Ok(app_row), Ok(ver_row)) => {
-                        let application_id = row_i64(&app_row, 0);
-                        let user_version = row_i64(&ver_row, 0);
-                        if let Some(id) = db_id {
-                            record_live_archive_stamp(id, application_id, user_version);
-                        }
-                        return Ok(SqliteHeaderStamp::Stamp {
-                            application_id,
-                            user_version,
-                        });
-                    }
-                    (Err(err), _) | (_, Err(err)) if err.is_busy_class() => {
-                        if let Some((application_id, user_version)) =
-                            db_id.and_then(live_archive_stamp)
-                        {
-                            return Ok(SqliteHeaderStamp::Stamp {
-                                application_id,
-                                user_version,
-                            });
-                        }
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::WouldBlock,
-                            err.to_string(),
-                        ));
-                    }
-                    (Err(FrankenError::NotADatabase { .. }), _)
-                    | (_, Err(FrankenError::NotADatabase { .. })) => {
-                        return Ok(SqliteHeaderStamp::NotSqlite);
-                    }
-                    (Err(err), _) | (_, Err(err)) => {
-                        return Err(std::io::Error::other(err.to_string()));
-                    }
-                }
-            }
+            Ok(conn) => return read_stamp_via_connection(&conn, db_id),
             Err(FrankenError::NotADatabase { .. }) => return Ok(SqliteHeaderStamp::NotSqlite),
             Err(FrankenError::BusyRecovery) => {
                 if db_id.and_then(live_connection_state).flatten().is_none() && attempts < 20 {
@@ -229,6 +335,7 @@ pub(crate) fn probe_sqlite_header_stamp_safely(
                         user_version,
                     });
                 }
+                let _ = has_rw;
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,
                     "archive is live in-process without readable WAL sidecars",
@@ -246,6 +353,8 @@ pub(crate) fn probe_sqlite_header_stamp_safely(
 /// success.
 pub(super) struct LivePreRegistration {
     id: Option<FileIdentity>,
+    is_rw: bool,
+    is_strict_wal_ro: bool,
 }
 
 impl LivePreRegistration {
@@ -255,33 +364,86 @@ impl LivePreRegistration {
         flags: Option<compat::OpenFlags>,
     ) -> Result<Self, FrankenError> {
         let id = compute_open_identity(path_str, fs_path, flags)?;
-        Ok(Self::acquire_id(id))
+        let is_readonly = match flags {
+            Some(f) => {
+                f.contains(compat::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                    || f.contains(compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY)
+            }
+            None => uri_has_readonly_mode(path_str),
+        };
+        let is_rw = !is_readonly;
+        let Some(db_id) = id else {
+            return Ok(Self {
+                id: None,
+                is_rw,
+                is_strict_wal_ro: false,
+            });
+        };
+        let header_path = fs_path.or_else(|| {
+            (!path_str.starts_with("file:")).then(|| Path::new(path_str))
+        });
+        let mut map = match live_db_map().lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let known_stamp = if map.get(&db_id).is_none_or(|e| e.count == 0) {
+            header_path.and_then(read_header_stamp_from_file)
+        } else {
+            None
+        };
+        Ok(acquire_pre_reg_in_map(
+            &mut map,
+            Some(db_id),
+            is_rw,
+            false,
+            known_stamp,
+        ))
     }
 
-    pub(super) fn acquire_id(id: Option<FileIdentity>) -> Self {
+    pub(super) fn acquire_id_with_mode(
+        id: Option<FileIdentity>,
+        is_rw: bool,
+        is_strict_wal_ro: bool,
+    ) -> Self {
         if let Some(id) = id {
-            register_live_connection(id, None);
+            let mut map = match live_db_map().lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            return acquire_pre_reg_in_map(&mut map, Some(id), is_rw, is_strict_wal_ro, None);
         }
-        Self { id }
+        Self {
+            id: None,
+            is_rw,
+            is_strict_wal_ro,
+        }
     }
 
     pub(super) fn id(&self) -> Option<FileIdentity> {
         self.id
     }
 
-    pub(super) fn commit(&mut self, known_wal: Option<bool>) -> Option<FileIdentity> {
+    pub(super) fn commit(&mut self, known_wal: Option<bool>) -> Option<LiveRegHandle> {
         let id = self.id.take()?;
         if let Some(is_wal) = known_wal {
             update_live_wal_state(id, is_wal);
         }
-        Some(id)
+        Some(LiveRegHandle {
+            id,
+            is_rw: self.is_rw,
+            is_strict_wal_ro: self.is_strict_wal_ro,
+        })
     }
 }
 
 impl Drop for LivePreRegistration {
     fn drop(&mut self) {
         if let Some(id) = self.id.take() {
-            unregister_live_connection(id);
+            unregister_live_connection(LiveRegHandle {
+                id,
+                is_rw: self.is_rw,
+                is_strict_wal_ro: self.is_strict_wal_ro,
+            });
         }
     }
 }
@@ -357,7 +519,8 @@ impl Connection {
                 path: db_path.to_path_buf(),
             });
         }
-        let db_id = FileIdentity::from_path(db_path).map_err(FrankenError::Io)?;
+        let canonical_db = canonical_db_path(db_path);
+        let db_id = FileIdentity::from_path(&canonical_db).map_err(FrankenError::Io)?;
         enum StrictPlan {
             Live(Option<bool>),
             Mode1Rollback(LivePreRegistration),
@@ -366,9 +529,9 @@ impl Connection {
             Mode2Wal(LivePreRegistration),
         }
 
-        let journal_path = sidecar_path(db_path, "-journal");
-        let wal_path = sidecar_path(db_path, "-wal");
-        let shm_path = sidecar_path(db_path, "-shm");
+        let journal_path = sidecar_path(&canonical_db, "-journal");
+        let wal_path = sidecar_path(&canonical_db, "-wal");
+        let shm_path = sidecar_path(&canonical_db, "-shm");
 
         // Synchronize offline `File::open` + `close()` checks against
         // `LIVE_DB_CONNECTIONS` so no concurrent `Connection::open` can acquire
@@ -386,7 +549,7 @@ impl Connection {
                 StrictPlan::Live(known_wal)
             } else {
                 let mut header = [0_u8; SQLITE_HEADER_PROBE_SIZE];
-                std::fs::File::open(db_path)
+                std::fs::File::open(&canonical_db)
                     .and_then(|mut file| file.read_exact(&mut header))
                     .map_err(|error| {
                         if error.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -402,6 +565,13 @@ impl Connection {
                         path: db_path.to_path_buf(),
                     });
                 }
+                let parsed_stamp = match parse_sqlite_header_stamp(&header) {
+                    SqliteHeaderStamp::Stamp {
+                        application_id,
+                        user_version,
+                    } => Some((application_id, user_version)),
+                    SqliteHeaderStamp::NotSqlite => None,
+                };
 
                 // A live rollback journal means the store needs recovery a
                 // read-only open must not perform.
@@ -423,7 +593,13 @@ impl Connection {
                 let shm_exists = sidecar_exists(&shm_path);
 
                 if !is_wal_header && !wal_exists && !shm_exists {
-                    StrictPlan::Mode1Rollback(acquire_pre_reg_in_map(&mut map, db_id))
+                    StrictPlan::Mode1Rollback(acquire_pre_reg_in_map(
+                        &mut map,
+                        db_id,
+                        false,
+                        false,
+                        parsed_stamp,
+                    ))
                 } else if is_wal_header && !wal_exists && !shm_exists {
                     // Cleanly closed 1-file WAL database (no sidecars, no live
                     // journal, not open in-process): read through a private
@@ -436,7 +612,13 @@ impl Connection {
                         if !wal_and_shm_are_coherent(&wal_path, &shm_path)? {
                             return Err(FrankenError::BusyRecovery);
                         }
-                        StrictPlan::Mode2Wal(acquire_pre_reg_in_map(&mut map, db_id))
+                        StrictPlan::Mode2Wal(acquire_pre_reg_in_map(
+                            &mut map,
+                            db_id,
+                            false,
+                            true,
+                            parsed_stamp,
+                        ))
                     } else {
                         return Err(FrankenError::BusyRecovery);
                     }
@@ -451,9 +633,14 @@ impl Connection {
 
         let open_flags = strict_readonly_rusqlite_flags(flags);
         match plan {
-            StrictPlan::Live(known_wal) => {
-                Self::open_strict_readonly_live_process(db_path, path, db_id, known_wal, flags)
-            }
+            StrictPlan::Live(known_wal) => Self::open_strict_readonly_live_process(
+                &canonical_db,
+                db_path,
+                path,
+                db_id,
+                known_wal,
+                flags,
+            ),
             StrictPlan::Mode1Rollback(pre_reg) => {
                 let inner = rusqlite::Connection::open_with_flags(path, open_flags)
                     .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
@@ -462,12 +649,248 @@ impl Connection {
                     Some(PathBuf::from(path)),
                     pre_reg,
                     Some(false),
+                    true,
                 ))
             }
             StrictPlan::CleanWalSnapshot => Self::open_snapshot_copy(db_path),
             #[cfg(unix)]
             StrictPlan::Mode2Wal(pre_reg) => {
-                Self::open_wal_strict_in_place(db_path, path, pre_reg)
+                Self::open_wal_strict_in_place(&canonical_db, db_path, path, pre_reg)
+            }
+        }
+    }
+
+    /// Read-only open with safe WAL recovery:
+    ///
+    /// * When no connection on the archive is live in-process: rollback-only
+    ///   archives open in place (`READ_ONLY | NO_MUTEX`), while WAL / sidecar /
+    ///   journal archives read through a bounded private snapshot copy (never
+    ///   `readonly_shm=1`, so subsequent writers in this process never hit
+    ///   `unixShmNode.isReadonly = 1`).
+    /// * When a live connection already holds descriptors on the inode: NEVER
+    ///   snapshots (copying `.db` closes an fd and drops POSIX `fcntl` locks);
+    ///   opens in place without `readonly_shm=1` unless an explicit strict-WAL
+    ///   connection is the only live handle.
+    pub(super) fn open_recovery_readonly(path: &str) -> Result<Self, FrankenError> {
+        let db_path = Path::new(path);
+        let meta = std::fs::metadata(db_path).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => FrankenError::CannotOpen {
+                path: db_path.to_path_buf(),
+            },
+            _ => FrankenError::Io(error),
+        })?;
+        if !meta.is_file() {
+            return Err(FrankenError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("SQLite path is not a regular file: {}", db_path.display()),
+            )));
+        }
+        if meta.len() < SQLITE_HEADER_PROBE_SIZE as u64 {
+            return Err(FrankenError::NotADatabase {
+                path: db_path.to_path_buf(),
+            });
+        }
+        let canonical_db = canonical_db_path(db_path);
+        let db_id = FileIdentity::from_path(&canonical_db).map_err(FrankenError::Io)?;
+        let journal_path = sidecar_path(&canonical_db, "-journal");
+        let wal_path = sidecar_path(&canonical_db, "-wal");
+        let shm_path = sidecar_path(&canonical_db, "-shm");
+
+        enum RecoveryPlan {
+            Live {
+                known_wal: Option<bool>,
+                has_rw: bool,
+                has_strict_wal_ro: bool,
+            },
+            Mode1Rollback(LivePreRegistration),
+            Snapshot {
+                allow_mode2_fallback: bool,
+            },
+        }
+
+        let plan = {
+            let mut map = match live_db_map().lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if let Some(entry) = db_id.and_then(|id| map.get(&id).filter(|e| e.count > 0)).copied()
+            {
+                RecoveryPlan::Live {
+                    known_wal: entry.known_wal,
+                    has_rw: entry.rw_count > 0,
+                    has_strict_wal_ro: entry.strict_wal_ro_count > 0,
+                }
+            } else {
+                let mut header = [0_u8; SQLITE_HEADER_PROBE_SIZE];
+                std::fs::File::open(&canonical_db)
+                    .and_then(|mut file| file.read_exact(&mut header))
+                    .map_err(|error| {
+                        if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                            FrankenError::NotADatabase {
+                                path: db_path.to_path_buf(),
+                            }
+                        } else {
+                            FrankenError::Io(error)
+                        }
+                    })?;
+                if header[..16] != SQLITE_HEADER_MAGIC {
+                    return Err(FrankenError::NotADatabase {
+                        path: db_path.to_path_buf(),
+                    });
+                }
+                let parsed_stamp = match parse_sqlite_header_stamp(&header) {
+                    SqliteHeaderStamp::Stamp {
+                        application_id,
+                        user_version,
+                    } => Some((application_id, user_version)),
+                    SqliteHeaderStamp::NotSqlite => None,
+                };
+                let journal_active = if std::fs::metadata(&journal_path)
+                    .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+                {
+                    let mut first = [0_u8; 1];
+                    match std::fs::File::open(&journal_path)
+                        .and_then(|mut f| f.read_exact(&mut first))
+                    {
+                        Ok(()) => first[0] != 0,
+                        Err(error) => return Err(FrankenError::Io(error)),
+                    }
+                } else {
+                    false
+                };
+                let is_wal_header = header[18] == 2 || header[19] == 2;
+                let wal_exists = sidecar_exists(&wal_path);
+                let shm_exists = sidecar_exists(&shm_path);
+
+                if !journal_active && !is_wal_header && !wal_exists && !shm_exists {
+                    RecoveryPlan::Mode1Rollback(acquire_pre_reg_in_map(
+                        &mut map,
+                        db_id,
+                        false,
+                        false,
+                        parsed_stamp,
+                    ))
+                } else {
+                    RecoveryPlan::Snapshot {
+                        allow_mode2_fallback: !journal_active && wal_exists && shm_exists,
+                    }
+                }
+            }
+        };
+
+        let plain_ro_flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        match plan {
+            RecoveryPlan::Mode1Rollback(pre_reg) => {
+                let inner = rusqlite::Connection::open_with_flags(path, plain_ro_flags)
+                    .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
+                Ok(Self::from_parts(
+                    inner,
+                    Some(PathBuf::from(path)),
+                    pre_reg,
+                    Some(false),
+                    true,
+                ))
+            }
+            RecoveryPlan::Snapshot {
+                allow_mode2_fallback,
+            } => match Self::open_snapshot_copy(db_path) {
+                Ok(conn) => Ok(conn),
+                Err(FrankenError::Internal(msg))
+                    if allow_mode2_fallback && msg.contains("snapshot limit") =>
+                {
+                    let strict_flags = compat::OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY;
+                    Self::open_strict_readonly(path, strict_flags)
+                }
+                Err(error) => Err(error),
+            },
+            RecoveryPlan::Live {
+                known_wal,
+                has_rw,
+                has_strict_wal_ro,
+            } => {
+                if std::fs::metadata(&journal_path)
+                    .is_ok_and(|meta| meta.is_file() && meta.len() > 0)
+                {
+                    return Err(FrankenError::BusyRecovery);
+                }
+                let wal_exists = sidecar_exists(&wal_path);
+                let shm_exists = sidecar_exists(&shm_path);
+                if !wal_exists && !shm_exists {
+                    return match known_wal {
+                        Some(false) => {
+                            let pre_reg =
+                                LivePreRegistration::acquire_id_with_mode(db_id, false, false);
+                            let inner = rusqlite::Connection::open_with_flags(path, plain_ro_flags)
+                                .map_err(|error| {
+                                    FrankenError::from_rusqlite(error, Some(db_path))
+                                })?;
+                            Ok(Self::from_parts(
+                                inner,
+                                Some(PathBuf::from(path)),
+                                pre_reg,
+                                Some(false),
+                                true,
+                            ))
+                        }
+                        Some(true) | None => Err(FrankenError::BusyRecovery),
+                    };
+                }
+                #[cfg(unix)]
+                if wal_exists && shm_exists {
+                    if !wal_file_is_valid(&wal_path)? {
+                        return Err(FrankenError::BusyRecovery);
+                    }
+                    let shm_meta = match std::fs::metadata(&shm_path) {
+                        Ok(meta) => meta,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            return Err(FrankenError::BusyRecovery);
+                        }
+                        Err(error) => return Err(FrankenError::Io(error)),
+                    };
+                    if !shm_meta.is_file() || shm_meta.len() < SQLITE_SHM_MIN_SIZE {
+                        return Err(FrankenError::BusyRecovery);
+                    }
+                    if has_strict_wal_ro && !has_rw {
+                        return Self::open_wal_strict_in_place(
+                            &canonical_db,
+                            db_path,
+                            path,
+                            LivePreRegistration::acquire_id_with_mode(db_id, false, true),
+                        );
+                    }
+                    let pre_reg = LivePreRegistration::acquire_id_with_mode(db_id, false, false);
+                    let inner = rusqlite::Connection::open_with_flags(path, plain_ro_flags)
+                        .map_err(|error| {
+                            if wal_index_open_failure(&error) {
+                                FrankenError::BusyRecovery
+                            } else {
+                                FrankenError::from_rusqlite(error, Some(db_path))
+                            }
+                        })?;
+                    match inner.query_row("PRAGMA schema_version;", [], |row| {
+                        row.get::<usize, i64>(0)
+                    }) {
+                        Ok(_) => {
+                            return Ok(Self::from_parts(
+                                inner,
+                                Some(PathBuf::from(path)),
+                                pre_reg,
+                                Some(true),
+                                true,
+                            ));
+                        }
+                        Err(error) if wal_index_open_failure(&error) => {
+                            drop(inner);
+                            return Err(FrankenError::BusyRecovery);
+                        }
+                        Err(error) => {
+                            return Err(FrankenError::from_rusqlite(error, Some(db_path)));
+                        }
+                    }
+                }
+                Err(FrankenError::BusyRecovery)
             }
         }
     }
@@ -476,19 +899,20 @@ impl Connection {
     /// avoids `File::open` on `.db`, `-journal`, and `-shm` so existing
     /// in-process POSIX `fcntl` locks stay intact.
     fn open_strict_readonly_live_process(
+        canonical_db: &Path,
         db_path: &Path,
         path: &str,
         db_id: Option<FileIdentity>,
         known_wal: Option<bool>,
         flags: compat::OpenFlags,
     ) -> Result<Self, FrankenError> {
-        let journal_path = sidecar_path(db_path, "-journal");
+        let journal_path = sidecar_path(canonical_db, "-journal");
         if std::fs::metadata(&journal_path).is_ok_and(|meta| meta.is_file() && meta.len() > 0) {
             return Err(FrankenError::BusyRecovery);
         }
 
-        let wal_path = sidecar_path(db_path, "-wal");
-        let shm_path = sidecar_path(db_path, "-shm");
+        let wal_path = sidecar_path(canonical_db, "-wal");
+        let shm_path = sidecar_path(canonical_db, "-shm");
         let wal_exists = sidecar_exists(&wal_path);
         let shm_exists = sidecar_exists(&shm_path);
         let open_flags = strict_readonly_rusqlite_flags(flags);
@@ -496,7 +920,8 @@ impl Connection {
         if !wal_exists && !shm_exists {
             return match known_wal {
                 Some(false) => {
-                    let pre_reg = LivePreRegistration::acquire_id(db_id);
+                    let pre_reg =
+                        LivePreRegistration::acquire_id_with_mode(db_id, false, false);
                     let inner = rusqlite::Connection::open_with_flags(path, open_flags)
                         .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
                     Ok(Self::from_parts(
@@ -504,6 +929,7 @@ impl Connection {
                         Some(PathBuf::from(path)),
                         pre_reg,
                         Some(false),
+                        true,
                     ))
                 }
                 // `Some(true)` means WAL header with missing sidecars; `None`
@@ -530,9 +956,10 @@ impl Connection {
                 return Err(FrankenError::BusyRecovery);
             }
             return Self::open_wal_strict_in_place(
+                canonical_db,
                 db_path,
                 path,
-                LivePreRegistration::acquire_id(db_id),
+                LivePreRegistration::acquire_id_with_mode(db_id, false, true),
             );
         }
         #[cfg(not(unix))]
@@ -548,11 +975,12 @@ impl Connection {
     /// them: zero bytes and zero mtime changes on all three files.
     #[cfg(unix)]
     fn open_wal_strict_in_place(
+        canonical_db: &Path,
         db_path: &Path,
         path: &str,
         pre_reg: LivePreRegistration,
     ) -> Result<Self, FrankenError> {
-        let uri = read_only_uri(db_path);
+        let uri = read_only_uri(canonical_db);
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
             | rusqlite::OpenFlags::SQLITE_OPEN_URI
             | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
@@ -574,6 +1002,7 @@ impl Connection {
                 Some(PathBuf::from(path)),
                 pre_reg,
                 Some(true),
+                true,
             )),
             Err(error) if wal_index_open_failure(&error) => {
                 drop(inner);

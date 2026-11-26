@@ -164,7 +164,13 @@ pub struct Connection {
     /// still detects `rename()` replacements.
     open_identity: Option<FileIdentity>,
     /// Key currently registered in the in-process live-connection table.
-    live_registration: Option<FileIdentity>,
+    live_registration: Option<super::sidecar_probes::LiveRegHandle>,
+    /// Whether this handle was opened read-only (controls close-time WAL
+    /// checkpointing on `Drop`: RW checkpoints, RO/snapshot skips checkpoint).
+    is_readonly: bool,
+    /// Canonical filesystem identity of the original archive behind a private
+    /// snapshot copy (`None` for non-snapshot connections).
+    snapshot_source_identity: Option<FileIdentity>,
     /// Optional private snapshot directory for zero-mutation read-only opens.
     /// Kept as the final field so `inner` drops before the temporary copy is
     /// removed.
@@ -192,6 +198,7 @@ impl Connection {
         path: Option<PathBuf>,
         mut pre_reg: LivePreRegistration,
         known_wal: Option<bool>,
+        is_readonly: bool,
     ) -> Self {
         let detected_wal = known_wal.or_else(|| {
             inner
@@ -203,12 +210,11 @@ impl Connection {
             path.as_deref()
                 .and_then(|p| compute_open_identity(&p.to_string_lossy(), None, None).ok().flatten())
         });
-        let live_registration = if let Some(id) = pre_reg.commit(detected_wal) {
-            Some(id)
+        let live_registration = if let Some(handle) = pre_reg.commit(detected_wal) {
+            Some(handle)
         } else {
             open_identity.map(|id| {
-                register_live_connection(id, detected_wal);
-                id
+                register_live_connection(id, detected_wal, !is_readonly, false, None)
             })
         };
         Self {
@@ -217,6 +223,8 @@ impl Connection {
             savepoint_seq: AtomicU64::new(0),
             open_identity,
             live_registration,
+            is_readonly,
+            snapshot_source_identity: None,
             snapshot_dir: None,
         }
     }
@@ -225,6 +233,7 @@ impl Connection {
         inner: rusqlite::Connection,
         original_path: PathBuf,
         snapshot_dir: tempfile::TempDir,
+        snapshot_source_identity: Option<FileIdentity>,
     ) -> Self {
         Self {
             inner: Some(inner),
@@ -232,14 +241,23 @@ impl Connection {
             savepoint_seq: AtomicU64::new(0),
             open_identity: None,
             live_registration: None,
+            is_readonly: true,
+            snapshot_source_identity,
             snapshot_dir: Some(snapshot_dir),
         }
+    }
+
+    /// Canonical filesystem identity of the original archive when this
+    /// connection reads a private snapshot copy (`None` for live connections).
+    pub fn snapshot_source_identity(&self) -> Option<FileIdentity> {
+        self.snapshot_source_identity
     }
 
     /// Open a database at `path` (`:memory:` supported).
     pub fn open(path: impl AsRef<str>) -> Result<Self, FrankenError> {
         check_connection_admission()?;
         let path = path.as_ref().to_owned();
+        let is_readonly = super::sidecar_probes::uri_has_readonly_mode(&path);
         let pre_reg = LivePreRegistration::acquire_for_path(&path, None, None)?;
         let inner = rusqlite::Connection::open(&path)
             .map_err(|error| FrankenError::from_rusqlite(error, Some(Path::new(&path))))?;
@@ -248,6 +266,7 @@ impl Connection {
             Some(PathBuf::from(path)),
             pre_reg,
             None,
+            is_readonly,
         ))
     }
 
@@ -266,10 +285,10 @@ impl Connection {
 
     /// Open an existing database read-only without mutating the original files.
     ///
-    /// Tries [`Self::open_strict_readonly`] first; on `BusyRecovery` (e.g.
-    /// `-wal` without `-shm`, damaged/mismatched `-shm`, or active `-journal`),
-    /// falls back to a bounded private `TempDir` snapshot copy instead of
-    /// letting C SQLite create 0-byte `-wal`/`-shm` sidecars in place.
+    /// Rollback-only archives open in place (`READ_ONLY | NO_MUTEX`); offline
+    /// WAL / sidecar / journal archives read through a bounded private `TempDir`
+    /// snapshot copy (never `readonly_shm=1`); in-process live archives open in
+    /// place without `readonly_shm=1` to keep POSIX locks intact.
     pub fn open_schema_only_with_wal_index_recovery(
         path: impl AsRef<str>,
     ) -> Result<Self, FrankenError> {
@@ -279,16 +298,25 @@ impl Connection {
             || (path.starts_with("file:")
                 && (path.starts_with("file::memory:") || path.contains("mode=memory")))
         {
-            return Self::open_with_flags_inner(path, compat::OpenFlags::SQLITE_OPEN_READ_ONLY);
+            return Self::open_with_flags_inner(
+                path,
+                compat::OpenFlags::SQLITE_OPEN_READ_ONLY | compat::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            );
         }
         check_connection_admission()?;
-        let strict_flags = compat::OpenFlags::SQLITE_OPEN_READ_ONLY
-            | compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY;
-        match Self::open_strict_readonly(path, strict_flags) {
-            Ok(conn) => Ok(conn),
-            Err(FrankenError::BusyRecovery) => Self::open_snapshot_copy(Path::new(path)),
-            Err(error) => Err(error),
-        }
+        Self::open_recovery_readonly(path)
+    }
+
+    /// Open an existing database read-only *in place* (`SQLITE_OPEN_READ_ONLY |
+    /// SQLITE_OPEN_NO_MUTEX`, without `readonly_shm=1` and without snapshot
+    /// copying) for reader pools paired with in-process writers.
+    pub(crate) fn open_in_place_readonly_for_pool(
+        path: impl AsRef<str>,
+    ) -> Result<Self, FrankenError> {
+        Self::open_with_flags_inner(
+            path.as_ref(),
+            compat::OpenFlags::SQLITE_OPEN_READ_ONLY | compat::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
     }
 
     /// Historical alias preserved for callers referencing the
@@ -436,19 +464,38 @@ impl Connection {
     }
 
     pub(super) fn maybe_refresh_wal_state(&self, sql: &str) {
-        if self.live_registration.is_some() && sql_mentions_journal_mode(sql) {
-            self.refresh_wal_state_now();
+        if self.live_registration.is_some() {
+            if sql_mentions_journal_mode(sql) {
+                self.refresh_wal_state_now();
+            }
+            if sql_mentions_stamp_pragma(sql) {
+                self.refresh_stamp_state_now();
+            }
         }
     }
 
     pub(super) fn refresh_wal_state_now(&self) {
-        let Some(id) = self.live_registration else {
+        let Some(reg) = self.live_registration else {
             return;
         };
         if let Some(raw) = self.inner.as_ref() {
             if let Ok(mode) = raw.query_row("PRAGMA journal_mode", [], |r| r.get::<_, String>(0)) {
-                update_live_wal_state(id, mode.eq_ignore_ascii_case("wal"));
+                update_live_wal_state(reg.id, mode.eq_ignore_ascii_case("wal"));
             }
+        }
+    }
+
+    fn refresh_stamp_state_now(&self) {
+        let Some(reg) = self.live_registration else {
+            return;
+        };
+        if let Some(raw) = self.inner.as_ref()
+            && let (Ok(app_id), Ok(user_ver)) = (
+                raw.query_row("PRAGMA application_id", [], |r| r.get::<_, i64>(0)),
+                raw.query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0)),
+            )
+        {
+            super::sidecar_probes::record_live_archive_stamp(reg.id, app_id, user_ver);
         }
     }
 
@@ -857,11 +904,11 @@ impl Connection {
         let Some(conn) = self.inner.take() else {
             return Ok(());
         };
-        let _ = conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, false);
+        let _ = conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, self.is_readonly);
         match conn.close() {
             Ok(()) => {
-                if let Some(id) = self.live_registration.take() {
-                    unregister_live_connection(id);
+                if let Some(reg) = self.live_registration.take() {
+                    unregister_live_connection(reg);
                 }
                 self.snapshot_dir.take();
                 Ok(())
@@ -890,8 +937,8 @@ impl Connection {
         let _ = conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true);
         match conn.close() {
             Ok(()) => {
-                if let Some(id) = self.live_registration.take() {
-                    unregister_live_connection(id);
+                if let Some(reg) = self.live_registration.take() {
+                    unregister_live_connection(reg);
                 }
                 self.snapshot_dir.take();
                 Ok(())
@@ -903,18 +950,19 @@ impl Connection {
         }
     }
 
-    /// Close best-effort, never erroring: skip the close-time checkpoint and
-    /// discard the handle.
+    /// Close best-effort, never erroring: RW handles checkpoint/clean up on
+    /// close (`NO_CKPT_ON_CLOSE = false`), while read-only/snapshot handles skip
+    /// close-time checkpointing (`NO_CKPT_ON_CLOSE = true`).
     pub fn close_best_effort_in_place(&mut self) {
         if let Some(conn) = self.inner.take() {
-            let _ = conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true);
+            let _ = conn.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, self.is_readonly);
             match conn.close() {
                 Ok(()) => {}
                 Err((conn, _)) => drop(conn),
             }
         }
-        if let Some(id) = self.live_registration.take() {
-            unregister_live_connection(id);
+        if let Some(reg) = self.live_registration.take() {
+            unregister_live_connection(reg);
         }
         self.snapshot_dir.take();
     }
@@ -929,6 +977,7 @@ impl Connection {
         if flags.contains(compat::OpenFlags::SQLITE_OPEN_STRICT_READ_ONLY) {
             return Self::open_strict_readonly(path, flags);
         }
+        let is_readonly = flags.contains(compat::OpenFlags::SQLITE_OPEN_READ_ONLY);
         let rusqlite_flags = flags.to_rusqlite();
         let pre_reg = LivePreRegistration::acquire_for_path(path, None, Some(flags))?;
         let inner = rusqlite::Connection::open_with_flags(path, rusqlite_flags)
@@ -938,6 +987,7 @@ impl Connection {
             Some(PathBuf::from(path)),
             pre_reg,
             None,
+            is_readonly,
         ))
     }
 
@@ -1024,16 +1074,20 @@ impl Connection {
         db_path: &Path,
         budget: &SnapshotBudget,
     ) -> Result<Self, FrankenError> {
-        let file_name = db_path.file_name().ok_or_else(|| {
-            FrankenError::Internal(format!(
-                "cannot snapshot a non-file SQLite path: {}",
-                db_path.display()
-            ))
-        })?;
-        let wal_path = super::sidecar_probes::sidecar_path(db_path, "-wal");
-        let journal_path = super::sidecar_probes::sidecar_path(db_path, "-journal");
+        let canonical_db = super::sidecar_probes::canonical_db_path(db_path);
+        let file_name = canonical_db
+            .file_name()
+            .or_else(|| db_path.file_name())
+            .ok_or_else(|| {
+                FrankenError::Internal(format!(
+                    "cannot snapshot a non-file SQLite path: {}",
+                    db_path.display()
+                ))
+            })?;
+        let wal_path = super::sidecar_probes::sidecar_path(&canonical_db, "-wal");
+        let journal_path = super::sidecar_probes::sidecar_path(&canonical_db, "-journal");
         for attempt in 0..2 {
-            let before_db = stable_stamp(db_path)?;
+            let before_db = stable_stamp(&canonical_db)?;
             let before_wal = stable_stamp(&wal_path)?;
             let before_journal = stable_stamp(&journal_path)?;
             let Some(before_db) = before_db else {
@@ -1041,6 +1095,8 @@ impl Connection {
                     path: db_path.to_path_buf(),
                 });
             };
+            let source_identity =
+                FileIdentity::from_path(&canonical_db).map_err(FrankenError::Io)?;
             let wal_bytes = before_wal.map_or(0, |wal| wal.len);
             let total_bytes = before_db.len.saturating_add(wal_bytes);
             if total_bytes > budget.max_bytes {
@@ -1069,7 +1125,7 @@ impl Connection {
                 .tempdir()
                 .map_err(FrankenError::Io)?;
             let copy_db = snapshot_dir.path().join(file_name);
-            std::fs::copy(db_path, &copy_db).map_err(FrankenError::Io)?;
+            std::fs::copy(&canonical_db, &copy_db).map_err(FrankenError::Io)?;
             clear_copy_readonly(&copy_db)?;
             if wal_path.is_file() {
                 let copy_wal = super::sidecar_probes::sidecar_path(&copy_db, "-wal");
@@ -1081,9 +1137,11 @@ impl Connection {
                 std::fs::copy(&journal_path, &copy_journal).map_err(FrankenError::Io)?;
                 clear_copy_readonly(&copy_journal)?;
             }
-            let stable = stable_stamp(db_path)?.is_some_and(|after| after == before_db)
+            let stable = stable_stamp(&canonical_db)?.is_some_and(|after| after == before_db)
                 && stable_stamp(&wal_path)? == before_wal
-                && stable_stamp(&journal_path)? == before_journal;
+                && stable_stamp(&journal_path)? == before_journal
+                && FileIdentity::from_path(&canonical_db).map_err(FrankenError::Io)?
+                    == source_identity;
             if !stable {
                 drop(snapshot_dir);
                 if attempt == 1 {
@@ -1091,7 +1149,19 @@ impl Connection {
                 }
                 continue;
             }
-            let inner = rusqlite::Connection::open(&copy_db)
+            let rw_inner = rusqlite::Connection::open(&copy_db)
+                .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
+            rw_inner
+                .execute_batch(
+                    "PRAGMA schema_version; PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;",
+                )
+                .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
+            if let Err((_c, error)) = rw_inner.close() {
+                return Err(FrankenError::from_rusqlite(error, Some(db_path)));
+            }
+            let ro_flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+            let inner = rusqlite::Connection::open_with_flags(&copy_db, ro_flags)
                 .map_err(|error| FrankenError::from_rusqlite(error, Some(db_path)))?;
             inner
                 .execute_batch("PRAGMA query_only = 1;")
@@ -1100,6 +1170,7 @@ impl Connection {
                 inner,
                 db_path.to_path_buf(),
                 snapshot_dir,
+                source_identity,
             ));
         }
         unreachable!("snapshot copy retry loop returns from both arms")
@@ -1170,4 +1241,16 @@ fn sql_mentions_journal_mode(sql: &str) -> bool {
             .as_bytes()
             .windows(12)
             .any(|w| w.eq_ignore_ascii_case(b"journal_mode"))
+}
+
+fn sql_mentions_stamp_pragma(sql: &str) -> bool {
+    let bytes = sql.as_bytes();
+    (bytes.len() >= 14
+        && bytes
+            .windows(14)
+            .any(|w| w.eq_ignore_ascii_case(b"application_id")))
+        || (bytes.len() >= 12
+            && bytes
+                .windows(12)
+                .any(|w| w.eq_ignore_ascii_case(b"user_version")))
 }

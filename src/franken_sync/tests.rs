@@ -1066,3 +1066,139 @@ use std::time::{Duration, Instant};
             assert!(matches!(err, FrankenError::Abort), "got {err:?}");
         }
     }
+
+    #[test]
+    fn rw_drop_checkpoints_while_ro_and_snapshot_drop_preserve_wal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("drop_ckpt.db");
+        let path_str = path.to_string_lossy().into_owned();
+        let wal_path = sidecar_path(&path, "-wal");
+        let shm_path = sidecar_path(&path, "-shm");
+
+        {
+            let rw = Connection::open(&path_str).expect("open rw");
+            rw.execute("PRAGMA journal_mode = WAL;").expect("wal");
+            rw.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (1);")
+                .expect("seed");
+            drop(rw);
+        }
+        assert!(
+            !wal_path.exists() || std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0) == 0,
+            "dropping RW connection must checkpoint/truncate WAL"
+        );
+        assert!(!shm_path.exists(), "dropping RW connection must clean up -shm");
+
+        {
+            let rw = Connection::open(&path_str).expect("reopen rw");
+            rw.execute("INSERT INTO t VALUES (2);").expect("insert");
+            rw.close_without_checkpoint().expect("close without ckpt");
+        }
+        let wal_before = std::fs::read(&wal_path).expect("wal before");
+        assert!(wal_before.len() > 32, "precondition: dirty wal frames");
+
+        {
+            let snap = Connection::open_schema_only_with_wal_index_recovery(&path_str)
+                .expect("recovery ro snapshot");
+            let count: i64 = snap
+                .query_row("SELECT COUNT(*) FROM t")
+                .expect("count")
+                .get_typed(0)
+                .unwrap();
+            assert_eq!(count, 2);
+            drop(snap);
+        }
+        assert_eq!(
+            std::fs::read(&wal_path).expect("wal after snapshot drop"),
+            wal_before,
+            "dropping RO snapshot must never checkpoint or modify original -wal"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_copy_reopens_readonly_and_resolves_symlink_sidecars() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real_dir = dir.path().join("real");
+        std::fs::create_dir(&real_dir).expect("mkdir");
+        let real_db = real_dir.join("archive.db");
+        let real_str = real_db.to_string_lossy().into_owned();
+
+        {
+            let rw = Connection::open(&real_str).expect("open real");
+            rw.execute("PRAGMA journal_mode = WAL;").expect("wal");
+            rw.execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES (42);")
+                .expect("seed");
+            rw.close_without_checkpoint().expect("preserve wal");
+        }
+
+        let link_db = dir.path().join("link.db");
+        std::os::unix::fs::symlink(&real_db, &link_db).expect("symlink");
+
+        let snap =
+            Connection::open_schema_only_with_wal_index_recovery(link_db.to_string_lossy().as_ref())
+                .expect("snapshot via symlink");
+        assert_eq!(
+            snap.query_row("SELECT x FROM t")
+                .expect("read via symlink")
+                .get_typed::<i64>(0)
+                .unwrap(),
+            42
+        );
+        assert_eq!(
+            snap.snapshot_source_identity(),
+            FileIdentity::from_path(&real_db).expect("real id")
+        );
+        snap.execute("PRAGMA query_only = OFF;")
+            .expect("query_only pragma executes");
+        let write_err = snap
+            .execute("CREATE TABLE should_fail(x);")
+            .expect_err("snapshot handle must stay read-only at fd level");
+        assert!(
+            matches!(write_err, FrankenError::ReadOnly),
+            "expected ReadOnly after PRAGMA query_only = OFF, got {write_err:?}"
+        );
+    }
+
+    #[test]
+    fn recovery_readonly_and_stamp_probe_do_not_poison_writer_shm() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("no_shm_poison.db");
+        let db_str = db_path.to_string_lossy().into_owned();
+
+        {
+            let rw = Connection::open(&db_str).expect("open rw");
+            rw.execute_batch(
+                "PRAGMA application_id = 1128354643;
+                 PRAGMA user_version = 1;
+                 PRAGMA journal_mode = WAL;
+                 CREATE TABLE t(x);
+                 INSERT INTO t VALUES (1);",
+            )
+            .expect("seed");
+            rw.close_without_checkpoint().expect("preserve wal+shm");
+        }
+
+        assert!(matches!(
+            super::sidecar_probes::probe_sqlite_header_stamp_safely(&db_path)
+                .expect("stamp probe"),
+            super::sidecar_probes::SqliteHeaderStamp::Stamp {
+                application_id: 1128354643,
+                user_version: 1
+            }
+        ));
+
+        let ro = Connection::open_schema_only_with_wal_index_recovery(&db_str)
+            .expect("recovery ro");
+        assert_eq!(
+            ro.query_row("SELECT x FROM t")
+                .expect("read")
+                .get_typed::<i64>(0)
+                .unwrap(),
+            1
+        );
+
+        let rw2 = Connection::open(&db_str).expect("open writer after recovery ro");
+        rw2.execute_batch("BEGIN IMMEDIATE; INSERT INTO t VALUES (2); COMMIT;")
+            .expect("writer must not hit SQLITE_READONLY");
+        drop(ro);
+    }

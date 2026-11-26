@@ -545,3 +545,87 @@ fn connection_manager_default_config() {
     assert_eq!(config.reader_count, 4);
     assert!(config.max_writers > 0);
 }
+
+#[test]
+fn owner_open_in_memory_sync_and_open_sync_are_writable() {
+    use crate::franken_sync::compat::RowExt;
+
+    let mem1 = FrankenOwnerConnection::open_in_memory_sync().expect("open_in_memory_sync");
+    mem1.execute_sync("CREATE TABLE m1(x INTEGER); INSERT INTO m1(x) VALUES (7);")
+        .expect("write via open_in_memory_sync");
+    let rows1 = mem1.query_sync("SELECT x FROM m1").expect("query m1");
+    assert_eq!(rows1[0].get_typed::<i64>(0).unwrap(), 7);
+
+    let mem2 = FrankenOwnerConnection::open_sync(":memory:").expect("open_sync(:memory:)");
+    mem2.execute_sync("CREATE TABLE m2(x INTEGER); INSERT INTO m2(x) VALUES (11);")
+        .expect("write via open_sync(:memory:)");
+    let rows2 = mem2.query_sync("SELECT x FROM m2").expect("query m2");
+    assert_eq!(rows2[0].get_typed::<i64>(0).unwrap(), 11);
+
+    let mem3 = FrankenOwnerConnection::open_sync("file::memory:").expect("file::memory:");
+    mem3.execute_sync("CREATE TABLE m3(x INTEGER); INSERT INTO m3(x) VALUES (13);")
+        .expect("write via file::memory:");
+    let rows3 = mem3.query_sync("SELECT x FROM m3").expect("query m3");
+    assert_eq!(rows3[0].get_typed::<i64>(0).unwrap(), 13);
+}
+
+#[test]
+fn connection_manager_readers_on_wal_do_not_poison_concurrent_writers() {
+    use crate::franken_sync::compat::{ConnectionExt, RowExt};
+
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("cm_wal_no_poison.db");
+
+    let fs = FrankenStorage::open(&db_path).unwrap();
+    fs.raw().execute("PRAGMA journal_mode = WAL;").unwrap();
+    fs.raw()
+        .execute_batch("CREATE TABLE cm_t (id INTEGER PRIMARY KEY, val TEXT); INSERT INTO cm_t (val) VALUES ('init');")
+        .unwrap();
+    fs.close_without_checkpoint().unwrap();
+
+    let config = ConnectionManagerConfig {
+        reader_count: 2,
+        max_writers: 2,
+    };
+    let mgr = FrankenConnectionManager::new(&db_path, config).unwrap();
+
+    // Hold a reader open while acquiring writers so any shared shm node would expose isReadonly=1.
+    let initial_reader = mgr.reader();
+    let initial_rows = initial_reader.query("SELECT val FROM cm_t").unwrap();
+    assert_eq!(initial_rows.len(), 1);
+    drop(initial_reader);
+
+    {
+        let mut guard = mgr.concurrent_writer().unwrap();
+        guard
+            .storage()
+            .raw()
+            .execute("INSERT INTO cm_t (val) VALUES ('from_concurrent')")
+            .unwrap();
+        guard.mark_committed();
+    }
+
+    {
+        let mut guard = mgr.writer().unwrap();
+        guard
+            .storage()
+            .raw()
+            .execute("INSERT INTO cm_t (val) VALUES ('from_writer')")
+            .unwrap();
+        guard.mark_committed();
+    }
+
+    // Read across all reader slots to trigger epoch reopen via open_pool_reader.
+    let mut vals = Vec::new();
+    for _ in 0..2 {
+        let reader_guard = mgr.reader();
+        let rows = reader_guard
+            .query("SELECT val FROM cm_t ORDER BY id")
+            .unwrap();
+        vals = rows
+            .iter()
+            .map(|r| r.get_typed::<String>(0).unwrap())
+            .collect();
+    }
+    assert_eq!(vals, vec!["init", "from_concurrent", "from_writer"]);
+}
