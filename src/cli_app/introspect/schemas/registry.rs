@@ -916,7 +916,7 @@ pub(crate) fn build_response_schemas() -> std::collections::BTreeMap<String, ser
                 },
                 "parallel_wal_shadow": {
                     "type": "object",
-                    "description": "Parallel-WAL shadow observer (Card 1, shadow-only phase). Activates under CASS_INDEXER_PARALLEL_WAL=shadow. Records per-chunk wall-clock on begin-concurrent writes so operators can assess what an epoch-ordered group-commit coordinator would have decided. NEVER changes commit semantics.",
+                    "description": "Parallel-WAL shadow observer (Card 1, shadow-only phase). Activates under CASS_INDEXER_PARALLEL_WAL=shadow. Records per-chunk wall-clock on serialized chunk writes so operators can assess what an epoch-ordered group-commit coordinator would have decided. NEVER changes commit semantics.",
                     "properties": {
                         "active": { "type": "boolean", "description": "True when shadow mode is enabled." },
                         "chunks_observed": { "type": "integer", "description": "Cumulative shadow-observed chunks since startup." },
