@@ -491,7 +491,7 @@ impl Semantic {
                 guard
                     .0
                     .get(artifact.fsvi_path())
-                    .is_some_and(Option::is_some),
+                    .is_some_and(|asset| asset.stamp.is_some()),
                 "semantic artifact lacks a pre-admission file witness"
             );
         }
