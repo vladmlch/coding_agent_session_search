@@ -20,7 +20,7 @@ use super::tx_analytics_rollups::{
     token_daily_stats_rebuild_stage_ddl, write_token_daily_stats_rebuild_cursor,
 };
 use crate::franken_sync::{
-    Row as FrankenRow,
+    Row as FrankenRow, TransactionBehavior,
     compat::{
         ConnectionExt as FrankenConnectionExt, OptionalExtension as FrankenOptionalExtension,
         RowExt as FrankenRowExt, TransactionExt as FrankenTransactionExt,
@@ -100,7 +100,9 @@ impl FrankenStorage {
                 // the staged partial aggregate is unusable. Reset it in one
                 // transaction so a crash here leaves either the old
                 // checkpoint (still consistent) or a clean slate.
-                let mut tx = self.conn.transaction()?;
+                let mut tx = self
+                    .conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
                 tx.execute(&format!(
                     "DELETE FROM {TOKEN_DAILY_STATS_REBUILD_STAGE_TABLE}"
                 ))?;
@@ -117,7 +119,9 @@ impl FrankenStorage {
             if let Some(control) = control {
                 control()?;
             }
-            let mut tx = self.conn.transaction()?;
+            let mut tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
             let conversation_rows = tx.query_map_collect(
                 "SELECT c.id, c.started_at, c.source_id,
                         COALESCE((SELECT a.slug FROM agents a WHERE a.id = c.agent_id), 'unknown')
@@ -294,7 +298,9 @@ impl FrankenStorage {
         if let Some(control) = control {
             control()?;
         }
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let (row_count, max_id) = tx.query_row_map(
             "SELECT COUNT(*), COALESCE(MAX(id), 0) FROM token_usage",
             fparams![],
@@ -459,7 +465,7 @@ impl FrankenStorage {
         checkpoint()?;
         // Inspect the actual archive before invalidating authority. The current
         // schema uses rowid tables; a historical alternate layout must not be
-        // mistaken for the bounded SeekRowid path supported by fsqlite 0.3.18.
+        // mistaken for the bounded rowid-seek delete path.
         let layouts: Vec<(String, String, String, i64)> =
             self.conn
                 .query_map_collect("PRAGMA table_list", fparams![], |row| {
@@ -483,12 +489,14 @@ impl FrankenStorage {
                 tracing::warn!(
                     target: "cass::analytics",
                     table,
-                    "legacy OMP analytics table is WITHOUT ROWID; retaining the unbounded transactional reset because fsqlite 0.3.18 lacks bounded primary-key delete seeks"
+                    "legacy OMP analytics table is WITHOUT ROWID; retaining the unbounded transactional reset"
                 );
             }
         }
         checkpoint()?;
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute_compat(
             "DELETE FROM meta WHERE key IN (?1, ?2, ?3, ?4)",
             fparams![
@@ -511,7 +519,9 @@ impl FrankenStorage {
             for (_, select_sql, delete_prefix) in TABLES {
                 loop {
                     checkpoint()?;
-                    let mut tx = self.conn.transaction()?;
+                    let mut tx = self
+                        .conn
+                        .transaction_with_behavior(TransactionBehavior::Immediate)?;
                     let ids: Vec<i64> =
                         tx.query_map_collect(select_sql, fparams![], |row| row.get_typed(0))?;
                     if ids.is_empty() {
@@ -533,7 +543,9 @@ impl FrankenStorage {
         }
 
         checkpoint()?;
-        let mut tx = self.conn.transaction()?;
+        let mut tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         if !bounded {
             // Preserve the previous all-table reset for unexpected layouts.
             // This fallback deliberately carries no row-count/RSS bound.
@@ -628,11 +640,9 @@ impl FrankenStorage {
 
         // GH #424: resolve the dimension tables once, in memory, instead of
         // JOINing `conversations` (plus the agents subquery) into every
-        // chunk. frankensqlite 0.3.8 materializes `JOIN ... ORDER BY ...
-        // LIMIT` in full before applying the limit, which measured ~635 s per
-        // 10k-row chunk on a 652k-message archive; the single-table keyset
-        // costs ~0.2 s. Both maps are tiny next to `messages`: one entry per
-        // conversation and one per agent.
+        // chunk. Avoiding the repeated multi-table JOIN keeps every 10k-row
+        // keyset chunk fast. Both maps are tiny next to `messages`: one entry
+        // per conversation and one per agent.
         if let Some(control) = control {
             control()?;
         }
@@ -820,7 +830,9 @@ impl FrankenStorage {
             if let Some(control) = control {
                 control()?;
             }
-            let mut tx = self.conn.transaction()?;
+            let mut tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
             match scope {
                 None => {
                     tx.execute("DELETE FROM message_metrics")?;
@@ -1088,7 +1100,9 @@ impl FrankenStorage {
                     control()?;
                 }
                 // GH #424: one short write transaction per chunk.
-                let mut tx = self.conn.transaction()?;
+                let mut tx = self
+                    .conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
                 if !entries.is_empty() {
                     for entry in &entries {
                         if let Some(control) = control {
@@ -1238,9 +1252,9 @@ pub(super) fn rebuild_batch_size_env(var: &str, default: usize) -> usize {
 /// Returns true when the error chain represents a real `FrankenError::OutOfMemory`
 /// (typed variant) or a bare "out of memory" / "not enough memory" message.
 ///
-/// We *deliberately* do not do substring matching on the rendered chain: frankensqlite's
+/// We *deliberately* do not do substring matching on the rendered chain: SQLite's
 /// `FrankenError::OutOfMemory` renders as the literal "out of memory" and is also emitted
-/// for several non-process-OOM internal conditions (VFS buffer / VDBE register allocation).
+/// for non-process-OOM internal conditions.
 /// Contextual messages like "connector parse failed: not enough memory in record" must not
 /// be promoted into the OOM-bisect/quarantine path. See `retryable_franken_anyhow` above
 /// for the same downcast idiom.
