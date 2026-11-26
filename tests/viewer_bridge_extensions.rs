@@ -3081,10 +3081,11 @@ fn assert_index_bounded_plan(
     connection: &Connection,
     label: &str,
     sql: &str,
+    params: &[SqliteValue],
     expect_index: &str,
 ) -> Result<()> {
     let opcodes: Vec<String> = connection
-        .query(&format!("EXPLAIN {sql}"))?
+        .query_with_params(&format!("EXPLAIN {sql}"), params)?
         .iter()
         .map(|row| row.get_typed::<String>(1).unwrap_or_default())
         .collect();
@@ -3094,7 +3095,7 @@ fn assert_index_bounded_plan(
         "order scan must be index-satisfied, never a sorter pass [{label}]: {opcodes:?}"
     );
     let plan: Vec<String> = connection
-        .query(&format!("EXPLAIN QUERY PLAN {sql}"))?
+        .query_with_params(&format!("EXPLAIN QUERY PLAN {sql}"), params)?
         .iter()
         .map(|row| row.get_typed::<String>(3).unwrap_or_default())
         .collect();
@@ -3113,9 +3114,9 @@ fn assert_index_bounded_plan(
 
 /// `EXPLAIN QUERY PLAN` detail lines for the hydration probe, joined for
 /// assertion/error reporting.
-fn hydrate_sql_plan(connection: &Connection, sql: &str) -> Result<String> {
+fn hydrate_sql_plan(connection: &Connection, sql: &str, params: &[SqliteValue]) -> Result<String> {
     let plan: Vec<String> = connection
-        .query(&format!("EXPLAIN QUERY PLAN {sql}"))?
+        .query_with_params(&format!("EXPLAIN QUERY PLAN {sql}"), params)?
         .iter()
         .map(|row| row.get_typed::<String>(3).unwrap_or_default())
         .collect();
@@ -3201,6 +3202,7 @@ fn list_sessions_query_plan_audit() -> Result<()> {
                 &connection,
                 &format!("{label} order#{i}"),
                 sql,
+                params,
                 expected_index,
             )?;
         }
@@ -3221,7 +3223,11 @@ fn list_sessions_query_plan_audit() -> Result<()> {
         );
         // The probe shape with a real page-id list: repeated rowid seeks.
         let hydrated_probe = planned.hydrate_query.replace("?1..?N", "?1,?2");
-        let joined = hydrate_sql_plan(&connection, &hydrated_probe)?;
+        let joined = hydrate_sql_plan(
+            &connection,
+            &hydrated_probe,
+            &[SqliteValue::Integer(1), SqliteValue::Integer(2)],
+        )?;
         eprintln!("EQP [{label} hydrate]: {joined}");
         ensure!(
             !joined.to_uppercase().contains("MESSAGES"),
@@ -3589,11 +3595,12 @@ fn list_sessions_sort_index_50k_exact_order_and_bounded_work() -> Result<()> {
             None,
             200,
         )?;
-        for (i, (sql, _params)) in planned.order_queries.iter().enumerate() {
+        for (i, (sql, params)) in planned.order_queries.iter().enumerate() {
             assert_index_bounded_plan(
                 &connection,
                 &format!("50k {sort:?}#{i}"),
                 sql,
+                params,
                 expected_index,
             )?;
         }
@@ -3738,11 +3745,12 @@ fn list_sessions_sort_index_50k_exact_order_and_bounded_work() -> Result<()> {
         cursor.as_deref(),
         200,
     )?;
-    for (i, (sql, _)) in planned.order_queries.iter().enumerate() {
+    for (i, (sql, params)) in planned.order_queries.iter().enumerate() {
         assert_index_bounded_plan(
             &connection2,
             &format!("50k keyset#{i}"),
             sql,
+            params,
             "idx_viewer_sort_activity_desc",
         )?;
     }
@@ -3777,11 +3785,12 @@ fn list_sessions_sort_index_scaling_evidence() -> Result<()> {
             None,
             200,
         )?;
-        for (i, (sql, _)) in planned.order_queries.iter().enumerate() {
+        for (i, (sql, params)) in planned.order_queries.iter().enumerate() {
             assert_index_bounded_plan(
                 &connection,
                 &format!("{count}k#{i}"),
                 sql,
+                params,
                 "idx_viewer_sort_activity_desc",
             )?;
         }
