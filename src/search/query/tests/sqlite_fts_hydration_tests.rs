@@ -1365,6 +1365,7 @@ fn sqlite_schema_v1_contentless_fts5_ranks_bm25_and_highlights_snippet() -> Resu
         version: None,
         kind: AgentKind::Cli,
     })?;
+    let workspace_id = storage.ensure_workspace(Path::new("/tmp/schema-v1-ws"), None)?;
     let make_conv =
         |external_id: &str, title: &str, source_path: &str, content: &str| Conversation {
             id: None,
@@ -1392,7 +1393,7 @@ fn sqlite_schema_v1_contentless_fts5_ranks_bm25_and_highlights_snippet() -> Resu
         };
     storage.insert_conversation_tree(
         agent_id,
-        None,
+        Some(workspace_id),
         &make_conv(
             "bm25-best",
             "dense bm25 hit",
@@ -1402,7 +1403,7 @@ fn sqlite_schema_v1_contentless_fts5_ranks_bm25_and_highlights_snippet() -> Resu
     )?;
     storage.insert_conversation_tree(
         agent_id,
-        None,
+        Some(workspace_id),
         &make_conv(
             "bm25-other",
             "single bm25 hit",

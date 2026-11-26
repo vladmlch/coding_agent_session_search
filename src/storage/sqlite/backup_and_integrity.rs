@@ -402,8 +402,8 @@ pub(crate) const FTS_INDEXABLE_MESSAGE_COUNT_SQL: &str = "SELECT COUNT(*) \
 /// messages exactly. No TEMP writes are required, which is essential for
 /// read-only doctor dry-runs.
 pub(super) const FTS_INDEXED_CANONICAL_INTERSECTION_SQL: &str = "SELECT m.conversation_id \
-     FROM fts_messages_docsize f \
-     INNER JOIN messages m ON m.id = f.id";
+     FROM fts_messages_docsize f NOT INDEXED \
+     INNER JOIN messages m NOT INDEXED ON m.id = f.id";
 pub(super) const DAILY_STATS_HEALTH_META_KEY: &str = "daily_stats_archive_fingerprint";
 pub(super) const DAILY_STATS_HEALTH_GENERATION_META_KEY: &str = "daily_stats_health_generation";
 pub(super) const DAILY_STATS_HEALTH_GENERATION: i64 = 1;
