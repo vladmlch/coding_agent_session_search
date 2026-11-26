@@ -217,3 +217,102 @@ fn gh538_watch_ledger_detects_withheld_completion_at_scan_end() -> Result<()> {
 fn gh538_watch_ledger_detects_withheld_completion_at_next_source() -> Result<()> {
     detect_withheld_completion(true)
 }
+
+#[test]
+fn resolve_completion_key_matches_logical_subpaths() {
+    let db = PathBuf::from("/tmp/devin/sessions.db");
+    let other = PathBuf::from("/tmp/devin/other.db");
+    let mut completions = HashMap::new();
+    completions.insert(
+        db.clone(),
+        Completion {
+            remaining: 1,
+            entry: SourceIngestLedgerEntry {
+                key: "source_ingest_v1:k".to_string(),
+                observation: "{}".to_string(),
+            },
+        },
+    );
+    assert_eq!(resolve_completion_key(&completions, &db), Some(db.clone()));
+    assert_eq!(
+        resolve_completion_key(&completions, &db.join("kept")),
+        Some(db.clone())
+    );
+    assert_eq!(
+        resolve_completion_key(&completions, &db.join("kept/subagent")),
+        Some(db)
+    );
+    assert_eq!(resolve_completion_key(&completions, &other), None);
+}
+
+#[test]
+fn validate_discovered_source_path_allows_file_scan_root_sqlite_sidecars_and_rejects_escapes() {
+    use crate::indexer::raw_mirror_capture::validate_discovered_source_path;
+
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join("sessions.db");
+    fs::write(&db, b"sqlite").unwrap();
+    let root = ScanRoot::local(db.clone());
+
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = temp.path().join(format!("sessions.db{suffix}"));
+        fs::write(&sidecar, b"sidecar").unwrap();
+        let discovered = DiscoveredSourceFile::new(
+            "devin",
+            &root,
+            sidecar,
+            DiscoveredSourceRole::MetadataSidecar,
+            suffix == "-wal",
+        );
+        assert_eq!(validate_discovered_source_path(&discovered), Ok(()));
+    }
+
+    let wrong_role = DiscoveredSourceFile::new(
+        "devin",
+        &root,
+        temp.path().join("sessions.db-wal"),
+        DiscoveredSourceRole::PrimarySessionLog,
+        true,
+    );
+    assert!(validate_discovered_source_path(&wrong_role).is_err());
+
+    let unrelated = DiscoveredSourceFile::new(
+        "devin",
+        &root,
+        temp.path().join("sessions.db-other"),
+        DiscoveredSourceRole::MetadataSidecar,
+        false,
+    );
+    assert!(validate_discovered_source_path(&unrelated).is_err());
+
+    let escaped = DiscoveredSourceFile::new(
+        "devin",
+        &root,
+        temp.path().join("../sessions.db-wal"),
+        DiscoveredSourceRole::MetadataSidecar,
+        true,
+    );
+    assert!(validate_discovered_source_path(&escaped).is_err());
+
+    #[cfg(unix)]
+    {
+        let target = temp.path().join("outside-wal");
+        fs::write(&target, b"outside").unwrap();
+        let link = temp.path().join("link.db-wal");
+        let link_db = temp.path().join("link.db");
+        fs::write(&link_db, b"db").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let linked_root = ScanRoot::local(link_db);
+        let linked_sidecar = DiscoveredSourceFile::new(
+            "devin",
+            &linked_root,
+            link,
+            DiscoveredSourceRole::MetadataSidecar,
+            true,
+        );
+        assert_eq!(
+            validate_discovered_source_path(&linked_sidecar),
+            Err("source path contains symlink component")
+        );
+    }
+}

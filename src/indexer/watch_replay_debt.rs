@@ -470,9 +470,11 @@ impl WatchRecoverySourceCoverage {
     }
 
     pub(in crate::indexer) fn contains_normalized(&self, path: &Path) -> bool {
-        self.fingerprints
-            .binary_search(&Self::fingerprint(path))
-            .is_ok()
+        path.ancestors().any(|candidate| {
+            self.fingerprints
+                .binary_search(&Self::fingerprint(candidate))
+                .is_ok()
+        })
     }
 }
 
@@ -1113,5 +1115,23 @@ pub(in crate::indexer) mod mirror_scan_skip_tests {
         assert_eq!(scanned4.len(), 1, "a changed mirror must re-scan");
         assert_eq!(fps4.len(), 1, "changed mirror captures a new fingerprint");
         assert_ne!(fps4[0].1, fps[0].1, "fingerprint changed with content");
+    }
+
+    #[test]
+    fn recovery_source_coverage_matches_logical_subpaths() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("sessions.db");
+        std::fs::write(&db, b"db").unwrap();
+        let normalized_db = crate::normalize_path_identity(&db);
+        let coverage = WatchRecoverySourceCoverage {
+            fingerprints: vec![WatchRecoverySourceCoverage::fingerprint(&normalized_db)],
+        };
+        assert!(coverage.contains_normalized(&normalized_db));
+        assert!(coverage.contains_normalized(&crate::normalize_path_identity(&db.join("kept"))));
+        assert!(
+            !coverage.contains_normalized(&crate::normalize_path_identity(
+                &tmp.path().join("other.db")
+            ))
+        );
     }
 }

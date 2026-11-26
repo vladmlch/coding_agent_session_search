@@ -37,6 +37,20 @@ pub(super) struct WatchSourceLedger {
     pub(super) unstable_sources: bool,
 }
 
+fn resolve_completion_key(
+    completions: &HashMap<PathBuf, Completion>,
+    source_path: &Path,
+) -> Option<PathBuf> {
+    if completions.contains_key(source_path) {
+        return Some(source_path.to_path_buf());
+    }
+    source_path
+        .ancestors()
+        .skip(1)
+        .find(|ancestor| completions.contains_key(*ancestor))
+        .map(Path::to_path_buf)
+}
+
 impl WatchSourceLedger {
     /// Sources whose complete delivered stream and reconstruction inputs were
     /// observed stable. These paths certify parsing, not publication: callers
@@ -365,10 +379,13 @@ impl WatchSourceLedger {
     ) -> Result<()> {
         let mut ready = Vec::new();
         for conversation in conversations {
-            if let Some(completion) = self.completions.get_mut(&conversation.source_path) {
-                completion.remaining = completion.remaining.saturating_sub(1);
+            if let Some(key) = resolve_completion_key(&self.completions, &conversation.source_path)
+                && let Some(completion) = self.completions.get_mut(&key)
+                && completion.remaining > 0
+            {
+                completion.remaining -= 1;
                 if completion.remaining == 0 {
-                    ready.push(conversation.source_path.clone());
+                    ready.push(key);
                 }
             }
         }
